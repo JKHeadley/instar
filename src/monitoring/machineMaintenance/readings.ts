@@ -166,9 +166,17 @@ export function readOwnerPresent(s: MachineSignals, ownUser: string, platform: N
   return { active: tty !== undefined, evidence: tty ? 'tty activity' : 'no tty activity' };
 }
 
-/** tmux sessions that belong to no agent in the census. `instar-codex-arm-` is Instar's own and self-closing. */
-export function foreignTmuxSessions(all: string[] | null, ownSessions: string[], agentNames: string[]): string[] | null {
+/** An operator-declared entry: an exact tmux session name, or a prefix ending in `*`. */
+export function isDeclaredNonAgent(name: string, declared: string[]): boolean {
+  return declared.some((d) => (d.endsWith('*') ? name.startsWith(d.slice(0, -1)) : name === d));
+}
+
+/**
+ * tmux sessions that belong to no agent in the census. `instar-codex-arm-` is Instar's own and
+ * self-closing. Sessions the operator declared as not agent work are left out.
+ */
+export function foreignTmuxSessions(all: string[] | null, ownSessions: string[], agentNames: string[], nonAgent: string[] = []): string[] | null {
   if (all === null) return null;
   const own = new Set(ownSessions);
-  return all.filter((name) => !own.has(name) && !name.startsWith('instar-codex-arm-') && !agentNames.some((a) => name === a || name.startsWith(`${a}-`)));
+  return all.filter((name) => !own.has(name) && !name.startsWith('instar-codex-arm-') && !agentNames.some((a) => name === a || name.startsWith(`${a}-`)) && !isDeclaredNonAgent(name, nonAgent));
 }

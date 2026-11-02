@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-02T02:27:06.878Z",
+  "slug": "machine-self-maintenance-watch-only",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 57,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/types.ts",
+      "src/monitoring/machineMaintenance/DrainRehearsal.ts",
+      "src/monitoring/machineMaintenance/WorkYieldRegistry.ts",
+      "src/monitoring/machineMaintenance/planner.ts",
+      "src/monitoring/machineMaintenance/readings.ts"
+    ],
+    "addedLines": 48,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -8,6 +8,8 @@ A development agent now runs a practice restart on paper every night. It picks a
 
 It cannot restart a machine or stop any work. The build holds no restart command and no method that stops anything, its operating system commands come from a short list of readers, and a test of the source fails if that changes. It sends no notice, closes no work, and refuses nothing. Read it at `GET /machine-maintenance`, in `logs/machine-drain.jsonl`, or on the console's Machines page. It is dark on the fleet (`machineMaintenance`, development-agent gated) and never runs on a throwaway agent.
 
+Slack sessions count as resumable work, because they return on the next message from a saved resume. An operator can list tmux sessions that are not agent work in `machineMaintenance.nonAgentTmuxSessions`; the list is empty by default.
+
 Spec: docs/specs/machine-self-maintenance.md. The real restart, enrolment, browser cleanup, wedge restart and app controls are later increments.
 
 ## What to Tell Your User

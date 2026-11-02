@@ -222,6 +222,16 @@ describe('readings', () => {
     expect(foreignTmuxSessions(null, [], [])).toBeNull();
   });
 
+  it('leaves out only the sessions the operator declared, by exact name or by a prefix ending in *', () => {
+    const all = ['desk-runner', 'desk-merge', 'desk', 'room1', 'room12', 'mystery'];
+    expect(foreignTmuxSessions(all, [], [], ['desk-*', 'room1'])).toEqual(['desk', 'room12', 'mystery']);
+    expect(foreignTmuxSessions(all, [], [])).toEqual(all);
+    expect(foreignTmuxSessions(all, [], [], [])).toEqual(all);
+    expect(normalizeSettings(undefined).nonAgentTmuxSessions).toEqual([]);
+    expect(normalizeSettings({ nonAgentTmuxSessions: [' room1 ', '', '*', 7 as unknown as string] }).nonAgentTmuxSessions).toEqual(['room1']);
+    expect(normalizeSettings({ nonAgentTmuxSessions: 'room1' as unknown as string[] }).nonAgentTmuxSessions).toEqual([]);
+  });
+
   it('runs only named calls, with no way to pass arguments', async () => {
     const run = makeReadOnlyRunner();
     await expect(run('killServer' as never)).rejects.toThrow(/not a read-only call/);
@@ -250,7 +260,7 @@ describe('readings', () => {
 describe('WorkYieldRegistry', () => {
   it('finds each declared kind from its reading', () => {
     const kinds = discoverWork({
-      sessions: [{ name: 's', tmuxSession: 't1', topicId: 7, atBoundary: false }, { name: 'j', tmuxSession: 't2', jobSlug: 'daily', atBoundary: null }],
+      sessions: [{ name: 's', tmuxSession: 't1', topicId: 7, atBoundary: false }, { name: 'j', tmuxSession: 't2', jobSlug: 'daily', atBoundary: null }, { name: 'c', tmuxSession: 't3', slackRoutingKey: 'C1:171.5', atBoundary: true }],
       autonomousRuns: [{ topic: '7' }],
       localVerifyRunning: [{ pr: 1, headSha: 'a' }],
       localVerifyQueued: [{ pr: 2 }],
@@ -268,6 +278,7 @@ describe('DrainRehearsal', () => {
   let census: WorkCensusInputs;
   let boundaryReads: boolean[];
   let agents: string[];
+  let settings: typeof D;
   const t0 = local(11, 4);
   const empty = (): WorkCensusInputs => ({ sessions: [], autonomousRuns: [], localVerifyRunning: [], localVerifyQueued: [], testRuns: [], scriptRuns: [] });
 
@@ -275,7 +286,7 @@ describe('DrainRehearsal', () => {
     agentName, version: '1.0.0', stateDir: path.join(dir, agentName), logPath: path.join(dir, agentName, 'logs', 'machine-drain.jsonl'),
     store: new HostMaintenanceStore({ dir: path.join(dir, 'host'), now: () => now }),
     enabled: () => true,
-    settings: () => D,
+    settings: () => settings,
     readSignals: async () => signals,
     census: async ({ readBoundaries }) => { boundaryReads.push(readBoundaries); return census; },
     resumeQueue: () => ({ disabled: null, paused: false, dryRun: true, entries: 0 }),
@@ -295,6 +306,7 @@ describe('DrainRehearsal', () => {
     census = empty();
     boundaryReads = [];
     agents = ['echo'];
+    settings = D;
   });
   afterEach(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/machine-maintenance.test.ts' }));
 
@@ -454,6 +466,22 @@ describe('DrainRehearsal', () => {
     await run(r, t0 - 71 * MIN, t0 + 70 * MIN);
     const night = r.status().lastRehearsal as Record<string, unknown>;
     expect(night).toMatchObject({ final: true, undeclared: ['desk-runner'], wouldEndOnFinalNight: ['desk-runner'], outcome: 'would-restart' });
+  });
+
+  it('does not read a Slack session or a declared non-agent session as D2, and an undeclared one still is', async () => {
+    signals.tmuxSessions = ['desk-runner', 'room1', 'mystery'];
+    settings = { ...D, nonAgentTmuxSessions: ['desk-*', 'room1'] };
+    census = { ...empty(), sessions: [{ name: 'slacky', tmuxSession: 'echo-slacky', slackRoutingKey: 'C1', atBoundary: false }, { name: 'bare', tmuxSession: 'echo-bare', atBoundary: false }] };
+    const r = make();
+    await run(r, t0 - 71 * MIN, t0 + 70 * MIN);
+    const night = r.status().lastRehearsal as { undeclared: string[]; kinds: Array<{ kind: string; count: number }> };
+    expect(night.undeclared.sort()).toEqual(['bare', 'mystery']);
+    expect(night.kinds.find((k) => k.kind === 'slack-session')?.count).toBe(1);
+  });
+
+  it('names the Slack conversation in the live census, not a guess', () => {
+    const source = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf-8');
+    expect(source).toContain('slackRoutingKey: _slackAdapter?.getChannelForSession(s.tmuxSession) ?? undefined');
   });
 
   it('lets two co-resident agents share one record, and the second finishes after the first closes', async () => {

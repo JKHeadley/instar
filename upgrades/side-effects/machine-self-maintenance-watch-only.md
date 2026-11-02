@@ -85,3 +85,16 @@ machine-local-justification: hardware-bound-resource
 ## Second-pass review
 
 Independent reviewer, reading the code with no conclusion supplied. Raised a concern: no path to action, but evidence that could read better than the truth, and lint holes. All resolved before commit except the Slack identity false alarm, stated in section 2: idle sessions no longer sampled; a vanished session is not a yield, and one prompt read is not enough; late phases measure nothing; only whole nights count, deduped by episode; unreadable tmux reads as not read; stale acks ignored; slowest samples kept; `holds` written to the record; lock wait bounded and sleeping; boundary reads stop at T-0, read the tail and run async; commands reduced to a named table with exact arguments; lint changed from a denylist to an import allowlist. The fixes themselves were not re-read by the reviewer.
+
+---
+
+## Addendum: the two false delay readings
+
+Tier 1, about 60 lines of source. The 14-night evidence could not pass, because two kinds of work read as D2 every night. Twelve tmux sessions on the Studio that belong to no agent (the 2.0 desk and others) counted as work that cannot move, and every Slack session counted as having no identity.
+
+- **Slack sessions** are now the `slack-session` kind. The code shows they resume: `beforeSessionKill` and shutdown save the conversation in the channel-resume map, the heartbeat keeps it current, and the next message in that channel or thread respawns it. This supersedes the Slack limit named in sections 2 and the second-pass note. It comes back on that message, not by itself, and the saved resume lasts 24 hours, so the kind names `slack-channel-resume` rather than the resume queue, and it is left out of `wouldEnqueue`.
+- **`machineMaintenance.nonAgentTmuxSessions`** lets the operator declare known non-agent sessions, by exact name or a prefix ending in `*`. Default empty, read live. A bare `*` is dropped so it cannot silence the whole reading.
+
+1. Over-block: none; nothing is blocked. 2. Under-block: a declared session is invisible to D2 by the operator's own statement, and a wide prefix could hide real work; unlisted sessions still count. A Slack session whose resume could not be saved reads as resumable; the real drain has to confirm that. 3. Level: the census and the delay reading, where the false readings arose. 4. Signal vs authority: paper evidence only, no authority. 5. Interactions: `wouldEndOnFinalNight` shrinks by the same names. 6. External surfaces: one optional config key and one new kind in the status. 7. Multi-machine: still machine-local; each machine lists its own sessions, because tmux sessions are per machine. 8. Rollback: empty the list; a revert leaves nothing behind.
+
+It stays watch-only: no restart path, no way to stop work, no notice. `tests/unit/machine-maintenance-watch-only.test.ts` is unchanged and passes.

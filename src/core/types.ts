@@ -3599,6 +3599,8 @@ export interface InstarConfig {
     window?: { start: string; end: string };
     maxIntervalDays?: number;
     maxEpisodeDelayMinutes?: number;
+    /** tmux sessions that are not agent work: exact name, or a prefix ending in `*`. Default empty. */
+    nonAgentTmuxSessions?: string[];
   };
   /** Operator-initiated native desktop access. Explicit opt-in on a
    * development agent only; omitted and false both leave every route dark. */

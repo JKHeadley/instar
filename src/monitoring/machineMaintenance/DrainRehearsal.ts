@@ -437,8 +437,8 @@ export class DrainRehearsal {
     this.signalsAt = this.now();
     const owner = readOwnerPresent(s, this.deps.ownUser, this.platform);
     const agents = this.deps.coResidentAgents();
-    const foreign = foreignTmuxSessions(s.tmuxSessions, census.sessions.map((x) => x.tmuxSession), [this.deps.agentName, ...agents]);
-    const noIdentity = census.sessions.filter((x) => x.topicId === undefined && !x.jobSlug).map((x) => x.name);
+    const foreign = foreignTmuxSessions(s.tmuxSessions, census.sessions.map((x) => x.tmuxSession), [this.deps.agentName, ...agents], this.deps.settings().nonAgentTmuxSessions);
+    const noIdentity = census.sessions.filter((x) => x.topicId === undefined && !x.jobSlug && !x.slackRoutingKey).map((x) => x.name);
     const undeclared = [...(foreign ?? []), ...noIdentity];
     const notRead = (reason: string): { active: null; evidence: string } => ({ active: null, evidence: reason });
     const prior = this.delays.find((d) => d.id === 'D3');

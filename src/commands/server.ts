@@ -23793,6 +23793,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             for (const s of sessionManager.getCachedRunningSessions().sessions) {
               sessions.push({
                 name: s.name, tmuxSession: s.tmuxSession, topicId: s.telegramTopicId, jobSlug: s.jobSlug,
+                slackRoutingKey: _slackAdapter?.getChannelForSession(s.tmuxSession) ?? undefined,
                 atBoundary: readBoundaries ? await atBoundary(s.tmuxSession) : null,
               });
             }

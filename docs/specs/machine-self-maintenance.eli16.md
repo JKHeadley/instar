@@ -90,3 +90,7 @@ the system, and a machine earns unattended restarts only by passing it.
 Justin replied "go" on 2026-11-01 at 14:55 PST, accepting the two rules and the core-first order. Review did not converge: nine rounds ran against a cap of six, and the last round's three fixes have not been read by a reviewer.
 
 The first build only watches. Each night it practises a restart on paper and writes down what it would have done and how long work took to reach a stopping point. It has no way to restart a machine or stop any work, and a test of the source fails the build if that changes. Everything that acts comes later: the real restart, the owner's tap, browser cleanup, wedge restart and the app controls.
+
+## Two corrections to the nightly evidence
+
+The paper nights must come back clean for 14 nights before a real restart is trusted. Two false readings would have stopped that. Terminal sessions that belong to no agent, like the 2.0 desk on the Studio, counted as work that cannot move. You can now list those in `machineMaintenance.nonAgentTmuxSessions`, by exact name or a prefix ending in `*`. The list starts empty, so anything you have not listed still counts. Slack sessions also counted as work with no way back, but they do have one: their conversation is saved, and the next message in the channel or thread brings them back. They are now their own kind of work. Neither change gives this feature any power to act. It still only watches.

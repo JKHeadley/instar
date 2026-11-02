@@ -14,6 +14,11 @@ export interface MachineMaintenanceSettings {
   window: RestartWindow;
   maxIntervalDays: number;
   maxEpisodeDelayMinutes: number;
+  /**
+   * tmux sessions the operator declares are not agent work: an exact name, or a prefix ending
+   * in `*`. They stop counting as D2. Default empty, so every unknown session still counts.
+   */
+  nonAgentTmuxSessions: string[];
 }
 
 export const DEFAULT_MACHINE_MAINTENANCE: MachineMaintenanceSettings = {
@@ -21,6 +26,7 @@ export const DEFAULT_MACHINE_MAINTENANCE: MachineMaintenanceSettings = {
   window: { start: '03:00', end: '06:00' },
   maxIntervalDays: 10,
   maxEpisodeDelayMinutes: 120,
+  nonAgentTmuxSessions: [],
 };
 
 const MIN = 60_000;
@@ -60,7 +66,9 @@ export function normalizeSettings(raw: Partial<MachineMaintenanceSettings> | und
   const length = candidate ? windowLengthMinutes(candidate) : null;
   // The window must hold T-0, which sits an hour after it opens, plus an hour of slack.
   const window = candidate && length !== null && length >= 120 ? { start: candidate.start, end: candidate.end } : d.window;
-  return { cadenceDays, window, maxIntervalDays, maxEpisodeDelayMinutes };
+  const declared = Array.isArray(raw?.nonAgentTmuxSessions) ? raw.nonAgentTmuxSessions : [];
+  const nonAgentTmuxSessions = declared.filter((n): n is string => typeof n === 'string' && n.trim() !== '' && n.trim() !== '*').map((n) => n.trim()).slice(0, 100);
+  return { cadenceDays, window, maxIntervalDays, maxEpisodeDelayMinutes, nonAgentTmuxSessions };
 }
 
 export interface PlannedWindow { start: number; end: number; restartAt: number }

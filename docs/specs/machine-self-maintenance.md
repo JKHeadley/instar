@@ -298,7 +298,7 @@ The T-5 pause works without the agent's cooperation: the owner of a stopped thin
 | # | Delay | Holds while | Maximum per episode | At the maximum |
 |---|---|---|---|---|
 | D1 | Owner at this machine | Input under 15 min (`HIDIdleTime` via `ioreg`, discounting Instar's own driver activity; Linux headless by tty activity), a live desktop grant, a live AnyDesk connection, an operator message to a topic on this machine in 30 min, or presence unreadable | 60 min | Rolls |
-| D2 | Work with no resume path | Foreign tmux session with CPU, session with no topic or job identity, Live test harness, work with no yield declaration | 60 min | Rolls |
+| D2 | Work with no resume path | Foreign tmux session with CPU, session with no topic, job or Slack identity, Live test harness, work with no yield declaration. A tmux session the operator lists in `machineMaintenance.nonAgentTmuxSessions` (exact name, or a prefix ending in `*`; default empty) is not foreign | 60 min | Rolls |
 | D3 | Agent not answering | A census agent with no ack, or no receipt for its live autonomous run | 30 min | Rolls |
 | D4 | Short critical step | Declared `finish-bounded` work: Instar update or migration, a merge in flight, a sign-in repair, a credential swap, a transfer in flight | 30 min | Restart proceeds |
 | D5 | Lease will not hand off | Three failed handoffs | 30 min | Restart proceeds; the lease moves by TTL, as on any crash |
@@ -351,6 +351,7 @@ S1, S2 and S3 end by themselves in normal use. A hung installer does not, which 
 | Local Verify peer attempt | `cancel-requeue` | T-60, peer answers busy | T-10 cancel; coordinator's existing peer failure path requeues | On the coordinator |
 | Test suite, targeted run | `cancel-requeue` | Suite T-60, targeted T-10, a typed `HostDrainingError` saying this is not a test failure | T-10: SIGTERM to the holder's process group, identity checked by (pid, start time), on this path regardless of the limiter's posture or its TTL signal arm | The session's revival prompt names the run to repeat |
 | Session mid-turn | `stop-at-boundary` | Existing sessions keep receiving messages | T-20 notice: "This machine restarts at 04:00. Save your place, finish this step and stop. You will be resumed." T-5 Escape if still going | Resume queue; last unanswered message re-injected |
+| Slack session mid-turn | `stop-at-boundary` | Existing sessions keep receiving messages | The same T-20 notice and T-5 Escape | The channel-resume map holds the conversation for 24 hours; the next message in that channel or thread respawns it |
 | `/build`, `/instar-dev` | `stop-at-boundary` | T-60 | As a session; worktree and build state are on disk | Resume queue |
 | Autonomous run | `checkpoint-resume` | T-60 | T-20: state file marked `drain_suspended_for: <episodeId>`, on the `moved_to` pattern, so the stop hook lets it stop and this is not a completion | Resume queue; marker cleared on revival |
 | Scheduled job session | `checkpoint-resume` | T-60 | As a session | Resume queue with or without `resumeOnReap`, unless the job sets `yield: next-trigger` |

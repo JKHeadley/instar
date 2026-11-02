@@ -26,7 +26,11 @@ export interface WorkItem {
 }
 
 export interface WorkCensusInputs {
-  sessions: Array<{ name: string; tmuxSession: string; topicId?: number; jobSlug?: string; atBoundary: boolean | null; }>;
+  sessions: Array<{
+    name: string; tmuxSession: string; topicId?: number; jobSlug?: string; atBoundary: boolean | null;
+    /** Slack routing key (`<channel>` or `<channel>:<thread>`) when a Slack conversation owns this session. */
+    slackRoutingKey?: string;
+  }>;
   autonomousRuns: Array<{ topic: string; goal?: string }>;
   localVerifyRunning: Array<{ pr: number; headSha?: string }>;
   localVerifyQueued: Array<{ pr: number; headSha?: string }>;
@@ -42,12 +46,13 @@ export interface WorkYieldEntry {
   /** The real chokepoint this kind starts from, walked by the registry test. */
   spawnChokepoint: string;
   wouldYield: string;
-  comesBackVia: 'resume-queue' | 'requeue' | 'next-trigger' | 'repeat-by-session';
+  comesBackVia: 'resume-queue' | 'slack-channel-resume' | 'requeue' | 'next-trigger' | 'repeat-by-session';
   maxYieldSeconds: number;
   discover(input: WorkCensusInputs): WorkItem[];
 }
 
 const sessionLabel = (s: WorkCensusInputs['sessions'][number]): string => (s.topicId !== undefined ? `topic ${s.topicId}` : s.name);
+const isSlack = (s: WorkCensusInputs['sessions'][number]): boolean => !s.jobSlug && !!s.slackRoutingKey;
 
 export const WORK_YIELD_REGISTRY: readonly WorkYieldEntry[] = [
   {
@@ -98,7 +103,21 @@ export const WORK_YIELD_REGISTRY: readonly WorkYieldEntry[] = [
     wouldYield: 'one stop-at-next-boundary notice, then an interrupt at T-5',
     comesBackVia: 'resume-queue',
     maxYieldSeconds: 900,
-    discover: (i) => i.sessions.filter((s) => !s.jobSlug).map((s) => ({ kind: 'session', key: `session:${s.tmuxSession}`, label: sessionLabel(s), atBoundary: s.atBoundary })),
+    discover: (i) => i.sessions.filter((s) => !s.jobSlug && !isSlack(s)).map((s) => ({ kind: 'session', key: `session:${s.tmuxSession}`, label: sessionLabel(s), atBoundary: s.atBoundary })),
+  },
+  {
+    // A Slack session has a resume path of its own: beforeSessionKill and shutdown save its
+    // conversation in the channel-resume map, and the next message in that channel or thread
+    // respawns it from there. It returns on that message, not from the resume queue, so it is
+    // counted apart. The saved resume lasts 24 hours.
+    kind: 'slack-session',
+    class: 'stop-at-boundary',
+    askOffsetMinutes: 20,
+    spawnChokepoint: 'src/core/SessionManager.ts',
+    wouldYield: 'one stop-at-next-boundary notice, then an interrupt at T-5',
+    comesBackVia: 'slack-channel-resume',
+    maxYieldSeconds: 900,
+    discover: (i) => i.sessions.filter(isSlack).map((s) => ({ kind: 'slack-session', key: `slack-session:${s.tmuxSession}`, label: `Slack ${s.slackRoutingKey}`, atBoundary: s.atBoundary })),
   },
   {
     kind: 'job-session',
