@@ -11,6 +11,8 @@ review-convergence: "2026-11-02T18:36:18.256Z"
 review-iterations: 6
 review-completed-at: "2026-11-02T18:36:18.256Z"
 review-report: "docs/specs/reports/install-experience-convergence.md"
+approved: true
+approved-by: "Justin, topic 135786, 2026-11-02 (\"Yes to everything\")"
 cross-model-review: "codex-cli:gpt-6-astra"
 single-run-completable: true
 frontloaded-decisions: 6
@@ -83,7 +85,7 @@ All paths run the same installer. Each states what it depends on.
 | npm | `npx instar@latest` | Node already installed |
 | iPhone app | Install on the computer, then scan its QR code on the same network or over a private address | The App Store or TestFlight app |
 
-**The app can't start a computer.** A phone-first start means the app gives the person the command to run on their computer, then connects to that install. Provisioning cloud computers from the app is out of scope. `hosted-relay.md` removes the private-address requirement.
+**The app can't start a computer.** A phone-first start means the app gives the person the command to run on their computer, then connects to that install. Provisioning cloud computers from the app was offered to the operator on 2026-11-02 (topic 135786) and declined, so it isn't planned. `hosted-relay.md` removes the private-address requirement.
 
 Windows runs through the same installer inside WSL. Enabling WSL needs an administrator prompt and a reboot; the PowerShell companion records progress in the Windows user profile and resumes after the reboot through one per-user logon task, which it removes when done.
 

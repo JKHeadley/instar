@@ -206,6 +206,6 @@ Single-machine agents have no replication.
 ## Left behind
 
 - Standards gate: repeated reset notices. They are the veto control for a security event, not repeated requests for input, so they're accepted.
-- Goes to the operator: section 7's exception to Mobile-Complete Operator Actions. See the convergence report.
+- Section 7's exception to Mobile-Complete Operator Actions: approved by the operator on 2026-11-02 (topic 135786).
 - Argon2id parameters are set by measurement on iOS Safari and older laptops during the build.
 - Backup: the owner record holds only public keys and is backed up. Private keys live on the owner's devices.

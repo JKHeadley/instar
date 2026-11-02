@@ -40,7 +40,7 @@ Originally the owner key travelled in the install command, and any copied comman
 
 ## Standards gate on the final text
 
-Standards gate flags on the final text: **Mobile-Complete Operator Actions, which needs the operator's decision.** Recovering after losing everything needs machine or network access, and the standard has no such exception. Allowing it from a phone alone would let anyone reset ownership. The Agent Carries the Loop (repeated reset notices): accepted, since they're the veto control for a security event.
+Standards gate flags on the final text: **Mobile-Complete Operator Actions, approved by the operator as an exception on 2026-11-02 (topic 135786).** Recovering after losing everything needs machine or network access, and the standard has no such exception. Allowing it from a phone alone would let anyone reset ownership. The Agent Carries the Loop (repeated reset notices): accepted, since they're the veto control for a security event.
 
 ## Left behind
 
