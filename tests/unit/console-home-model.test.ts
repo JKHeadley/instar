@@ -411,3 +411,16 @@ describe('a machine that misses one pooled read', () => {
     expect(fillPartial(anon, prev, 'items', T, T)).toBeNull();
   });
 });
+
+describe('needs-you rows say each thing once', () => {
+  it('drops the machine when the title already names it, and never shows the priority word', () => {
+    const items = [
+      { id: 'a', status: 'OPEN', source: 'agent', priority: 'HIGH', title: 'Mac Lan: Remote Desktop needs its Mac permission again', machineNickname: 'Mac Lan', createdAt: new Date().toISOString() },
+      { id: 'b', status: 'OPEN', source: 'agent', priority: 'HIGH', title: 'Approve the schedule change', machineNickname: 'Laptop', createdAt: new Date().toISOString() },
+    ];
+    const card = buildNeeds({ ok: true, data: { items } }, Date.now());
+    const byTitle = Object.fromEntries(card.all.map((r: { main: string; sub: string }) => [r.main, r.sub]));
+    expect(byTitle['Mac Lan: Remote Desktop needs its Mac permission again']).toBe('');
+    expect(byTitle['Approve the schedule change']).toBe('Laptop');
+  });
+});

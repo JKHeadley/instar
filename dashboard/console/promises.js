@@ -56,7 +56,8 @@ export async function renderPromises(main, ctx) {
     }),
     page.coverage ? note(page.coverage) : null,
     el('div', { class: 'page-sections' },
-      section({ id: 'waiting', title: 'Waiting on you', rows: s.waiting.map((r) => ({ ...r, tone: 'attn' })), empty: 'Nothing is waiting on you.', onRow: open }),
+      // When nothing waits on the operator the headline already says so; an empty card would repeat it.
+      s.waiting.length ? section({ id: 'waiting', title: 'Waiting on you', rows: s.waiting.map((r) => ({ ...r, tone: 'attn' })), empty: 'Nothing is waiting on you.', onRow: open }) : null,
       section({ id: 'carrying', title: 'I’m handling', rows: s.carrying, collapsed: true, onRow: open }),
       section({ id: 'handled', title: 'Older, still open', rows: s.handled.map((r) => ({ ...r, tone: 'unknown' })), collapsed: true, onRow: open }),
       section({ id: 'closed', title: 'Closed this week', rows: s.closed, collapsed: true, onRow: open }),

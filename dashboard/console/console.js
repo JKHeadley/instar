@@ -393,6 +393,8 @@ function paintCard(def, model, repaint = false) {
     foot.append(b);
   } else foot.append(el('span', { class: 'card-age', text: extra > 0 ? `and ${extra} more` : '' }));
   if (def.href) foot.append(el('a', { href: def.href, text: 'Open', 'aria-label': `Open ${def.title} in the dashboard` }));
+  // An empty footer would leave a blank band (and its divider) under the rows.
+  foot.hidden = !foot.textContent.trim() && !foot.querySelector('a, button');
   return model;
 }
 
@@ -565,7 +567,6 @@ function renderGroup(main, g) {
     el('section', { class: 'group-head' },
       el('div', { class: 'eyebrow', text: g.label }),
       el('h1', { text: g.question }),
-      el('p', { text: 'Each of these opens in the dashboard, where everything works exactly as before.' }),
     ),
     el('div', { class: 'tiles' }, g.tabs.map((t) => tile(t))),
     ...groupExtras(g, { get }), // the Development tile (Work, maintainer mode only) and the developer-tools switch (Settings)
@@ -585,8 +586,8 @@ function renderGroup(main, g) {
 
 function footNote() {
   return el('p', { class: 'foot-note' },
-    document.createTextNode('This is the new Instar console. Everything is still in the '),
-    el('a', { href: '/dashboard', text: 'legacy dashboard' }),
+    document.createTextNode('The older dashboard is still available: '),
+    el('a', { href: '/dashboard', text: 'open the legacy dashboard' }),
     document.createTextNode('.'),
   );
 }

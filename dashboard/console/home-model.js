@@ -166,7 +166,10 @@ export function buildNeeds(res, now = Date.now(), names = {}) {
     return {
       key: groupKey(top), stale, last: g.last, prio: PRIORITY[top.priority] ?? 9,
       main: top.title || top.summary || 'Untitled item',
-      sub: [g.items.length > 1 ? `${g.items.length} copies` : null, [...g.machines].join(', ') || null, String(top.priority || '').toLowerCase()].filter(Boolean).join(' · '),
+      // The machine only when the title does not already start with it; the
+      // priority word is the queue's bookkeeping, not something to act on.
+      sub: [g.items.length > 1 ? `${g.items.length} copies` : null,
+        [...g.machines].filter((m) => !String(top.title || top.summary || '').startsWith(`${m}:`)).join(', ') || null].filter(Boolean).join(' · '),
       end: (ago(g.last, now) || '').replace(' ago', '') ? `${ago(g.last, now)}` : '',
       tone: stale ? 'unknown' : (top.priority === 'URGENT' ? 'bad' : 'attn'),
       detail: top.description || top.body || '',
