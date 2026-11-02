@@ -170,3 +170,35 @@ you and that agent (either direction), and once a minute after each server start
 the same rules: only the serving machine creates, an existing topic is reused, and a stranger
 cannot cause one. And it is now on by default everywhere instead of only on development
 agents, because the operator asked for this by name; setting it to `false` turns it off.
+
+## Addendum, 2026-10-31 (second half): every message, not just the first
+
+The first half of today's change made the server post a paired agent's message into that
+agent's own topic, but only the first message of each conversation. Later messages that needed
+you depended on the session handling them remembering to post them in the right place. That is
+the kind of thing an instruction cannot guarantee.
+
+Now each message is looked at on its own and the server asks one question: is this meant for the
+person? A delivery receipt ("Message received") is recognised by its fixed type and is never
+posted, with no model involved. For everything else, Jev answers first when this agent has a Jev
+key; when Jev is unsure, or there is no key, a fast Codex model answers, and if Codex is not
+there either, the agent's own model answers. So an agent with only a Claude subscription still
+gets this. The question is about meaning: a peer writing "tell Justin the invoice is ready" or
+"for your person" counts as meant for you, and two agents sorting out a technical detail
+between themselves does not.
+
+When no answer can be had at all (every model down), the message is posted anyway. A message
+you see twice costs you a glance; a message you never see can cost a missed decision. The cost
+is bounded: at most 300 model calls a day and 30 judged messages per paired agent per hour. Past
+either limit it goes back to posting only the first message of a conversation, so a spent budget
+never turns into a flood. The existing limit of three posts a minute into one topic still holds;
+a message held by it is tried again a minute later rather than dropped. The message text (with
+secrets removed) is sent to whichever model answers.
+
+The session handling the conversation is now told, only when it is true, that the server has
+already posted these messages, so it does not post them a second time.
+
+What you would decide: nothing, unless you want it off. Setting
+`threadline.peerHomebase.perMessageClassification` to `false` brings back the first-message-only
+behaviour. A record of every decision, without any message text, is kept in
+`logs/peer-user-meant.jsonl`, which is how we will measure how often the model gets it right.

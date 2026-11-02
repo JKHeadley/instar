@@ -13,6 +13,10 @@ import { fileURLToPath } from 'node:url';
 import { makePeerUserTopicResolver } from '../../../src/threadline/peerHomebase.js';
 import { PeerHomebaseRelay } from '../../../src/threadline/peerHomebaseRelay.js';
 import { SalienceGate } from '../../../src/threadline/SalienceGate.js';
+import { buildPeerUserMeantJudge } from '../../../src/threadline/PeerUserMeantJudge.js';
+import os from 'node:os';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
+import type { IntelligenceProvider } from '../../../src/core/types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const read = (p: string) => fs.readFileSync(path.resolve(__dirname, p), 'utf-8');
@@ -74,5 +78,56 @@ describe('§2.6 user-meant peer messages land in the homebase — wiring', () =>
     expect(r).toEqual({ posted: true, topicId: 4242 });
     expect(sent[0][0]).toBe(4242);
     expect(vi).toBeDefined();
+  });
+});
+
+describe('§2.7 every user-meant message is judged — wiring', () => {
+  it('boot builds the judge (Codex then the shared provider as referees) and hands it to the relay', () => {
+    expect(serverSrc).toMatch(/peerUserMeantJudge = buildPeerUserMeantJudge\(\{/);
+    expect(serverSrc).toMatch(/readPeerHomebaseBlock: \(\) => liveConfig\.get<unknown>\('threadline\.peerHomebase', undefined\)/);
+    expect(serverSrc).toMatch(/name: 'codex', provider: userMeantCodex[\s\S]{0,120}name: 'shared', provider: sharedIntelligence/);
+    expect(serverSrc).toMatch(/new PeerHomebaseRelay\(\{[\s\S]{0,200}userMeantJudge: peerUserMeantJudge,/);
+  });
+
+  it('the topic-linked redirect and the spawn prompt are wired to it', () => {
+    const tlh = serverSrc.indexOf('new TopicLinkageHandler({');
+    expect(serverSrc.indexOf('judgeUserMeant: async (q) =>')).toBeGreaterThan(tlh);
+    expect(serverSrc).toMatch(/setPeerUserTopicResolver\([\s\S]{0,200}serverPostsUserMeant: \(threadId\) =>/);
+    // The relay seam passes the wire type, so protocol traffic is excluded by type.
+    expect(serverSrc).toMatch(/messageType: typeof msgType === 'string' \? msgType : null/);
+  });
+
+  it('is alive end to end through the production factory: a later message is posted, an internal one is not', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-pm-e2e-'));
+    try {
+      const shared = { evaluate: async (p: string) => (/approve/.test((p.split('<<<TEXT')[1] ?? '').split('TEXT>>>')[0]) ? '{"user_meant": true}' : '{"user_meant": false}') } as unknown as IntelligenceProvider;
+      const judge = buildPeerUserMeantJudge({
+        readPeerHomebaseBlock: () => undefined, // omitted ⇒ on
+        readSecret: () => null, // no Jev key: the single-provider path
+        referees: () => [{ name: 'shared', provider: shared }],
+        stateDir: path.join(dir, '.instar'),
+      });
+      expect(judge.enabled()).toBe(true);
+      const sent: number[] = [];
+      let now = 1_000_000;
+      const relay = new PeerHomebaseRelay({
+        resolve: () => ({ topicId: 4242, via: 'homebase' }),
+        salienceGate: new SalienceGate(),
+        userMeantJudge: judge,
+        sendToTopic: async (t) => { sent.push(t); },
+        now: () => now,
+      });
+      await relay.relayInbound({ threadId: 'th', peers: ['fp-scout'], senderName: 'scout', text: 'Report is ready.' });
+      now += 1000;
+      expect(await relay.relayInbound({ threadId: 'th', peers: ['fp-scout'], senderName: 'scout', text: 'Justin, please approve the spend.' })).toEqual({ posted: true, topicId: 4242 });
+      expect(await relay.relayInbound({ threadId: 'th2', peers: ['fp-scout'], senderName: 'scout', text: 'x', messageType: 'ack' })).toMatchObject({ posted: false });
+      expect(sent.filter((t) => t === 4242).length).toBeGreaterThanOrEqual(1);
+      expect(fs.existsSync(path.join(dir, 'logs', 'peer-user-meant.jsonl'))).toBe(true);
+      // Kill switch: explicit false restores first-only.
+      const off = buildPeerUserMeantJudge({ readPeerHomebaseBlock: () => ({ perMessageClassification: false }), readSecret: () => null, referees: () => [], stateDir: path.join(dir, '.instar') });
+      expect(off.enabled()).toBe(false);
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/threadline/peer-homebase-user-routing-alive.test.ts' });
+    }
   });
 });

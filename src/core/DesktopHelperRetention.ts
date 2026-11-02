@@ -225,7 +225,7 @@ export class DesktopHelperRetention {
       this.install(sourceHash, record && record.sourceHash !== sourceHash ? record.grantedSourceHash : null);
     } catch (error) {
       this.log(`[instar] could not keep a Mac desktop helper copy: ${error instanceof Error ? error.message : String(error)}`);
-      return this.packaged('copy-failed');
+      return this.packaged('copy-failed'); // @silent-fallback-ok — logged above; diagnostics name copy-failed.
     }
     return this.safeToRun() ? { path: this.retainedPath, source: 'retained' } : this.packaged('retained-unsafe');
   }

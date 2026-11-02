@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "peer-homebase-per-message",
+  "sessionId": "bc2c60e9-701a-4ead-9298-ca496c62ebd0",
+  "timestamp": "2026-10-31T22:45:29.062Z",
+  "artifactPath": "upgrades/side-effects/peer-homebase-per-message.md",
+  "artifactSha256": "6b6bf166a334ad479139d8632b322aaec71fa01283470c987bb3facc437d76e1",
+  "specPath": "docs/specs/peer-conversation-homebase-topic.md",
+  "coveredFiles": [
+    "tests/e2e/threadline/collaboration-surfacing-wiring.test.ts",
+    "tests/e2e/threadline/peer-homebase-user-routing-alive.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Test-only: two wiring tests matched the literal 'collaborationSurfacer.surface({' and broke when the base PR's hub fallback became optional-chained.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "test-only change"
+  }
+}

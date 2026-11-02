@@ -18,22 +18,25 @@
  * look up → emergency stop → preflight → reserve → persist (fsync) → pause intercept → dispatch
  * → delivery event → done; lookups answer from the CURRENT delivery state.
  *
- * Origin: every app message is stored with the fields of its device signature (§4.6) so a later
- * increment can re-check it. Increment 1 stores no machine receipt and computes no verdict, so
- * history returns `originVerified: "unknown"` for an app message (never "verified") and "none"
- * for a message with no origin.
+ * Origin (§4.6, increment 2): every app message is stored with the fields of its device
+ * signature, the exact signed body (or, when an authority token was removed, only its hash plus
+ * this machine's signed redaction attestation) and this machine's signed receipt. History and
+ * sync responses carry `originVerified`, the verdict of verifyRecordedOrigin against this
+ * machine's device-key ledger and signing-key history: verified / redacted / failed / unknown /
+ * none. Only `verified` adds "📱 signed" to the session tag.
  */
 import crypto from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
-import { isMobileChatEnabled } from './mobilePairingRoutes.js';
+import { deviceAdmittedAt, isMobileChatEnabled } from './mobilePairingRoutes.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import { requestIdAgeOk, requestIdTime, type ChatLookup } from '../core/MobileChatRequests.js';
 import {
   cleanConversationTitle, derivedEventId, isAppConversationKey, newAppConversationKey, removeAuthorityTokens,
 } from '../core/appConversationText.js';
-import type { BrowsedMessage, DeviceSignedOrigin, MessageEvent } from '../core/AppConversationStore.js';
+import type { BrowsedMessage, DeviceSignedOrigin, MachineReceipt, MessageEvent } from '../core/AppConversationStore.js';
+import { signReceipt, signRedaction, type MachineSigner, type OriginVerdict } from '../core/AppRecordSignatures.js';
 import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { isExactStopMessage } from '../core/MessageSentinel.js';
 import { cleanText } from '../core/MobilePairing.js';
@@ -60,11 +63,11 @@ const SEND_RATE_PER_MIN = 20;
 const off = (res: Response) => res.status(503).json({ error: 'native-conversations-off', detail: 'App conversations are turned off on this agent.' });
 const hashOf = (...parts: string[]) => crypto.createHash('sha256').update(parts.join('\n')).digest('hex');
 
-/** History rows for the app: the stored fields plus the verdict (increment 1: never verified). */
-export function historyRow(m: BrowsedMessage): Record<string, unknown> {
+/** History rows for the app: the stored fields plus the verdict (§4.6). */
+export function historyRow(m: BrowsedMessage, verify: (m: BrowsedMessage) => OriginVerdict): Record<string, unknown> {
   return {
     eventId: m.eventId, messageId: m.messageId, role: m.role, text: m.text, at: m.at, machineId: m.machineId,
-    deliveryState: m.deliveryState, originVerified: m.origin ? 'unknown' : 'none',
+    deliveryState: m.deliveryState, originVerified: verify(m),
   };
 }
 
@@ -265,12 +268,16 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (r.kind === 'full') { res.status(429).json({ error: 'too-many-requests' }); return; }
     if (r.kind !== 'reserved') { answerLookup(res, r); return; }
 
-    const t = now();
-    const origin = buildOrigin(req, deps.pairing, deviceId, removed.kinds.length > 0 ? { kinds: removed.kinds, machineId: deps.machineId() } : undefined);
+    // `receivedAt` is when the device signature was accepted (the authenticator), so a request at
+    // the edge of the 60 s window is judged by the same clock that admitted it.
+    const t = deviceAdmittedAt(req) ?? now();
+    const receivedAt = new Date(t).toISOString();
+    const signed = buildSignedOrigin(req, deps.pairing, deviceId, delivered, removed.kinds, s.deps.signer ?? null, receivedAt,
+      (detail) => s.deps.reportDegradation?.('AppConversations.sign', detail));
     const msg: MessageEvent = {
       eventId, kind: 'message', conversationKey: key, messageId, role: 'operator', text: delivered,
-      at: new Date(t).toISOString(), machineId: deps.machineId(), receivedAt: new Date(t).toISOString(),
-      ...(origin ? { origin } : {}),
+      at: receivedAt, machineId: deps.machineId(), receivedAt,
+      ...(signed.origin ? { origin: signed.origin } : {}), ...(signed.receipt ? { receipt: signed.receipt } : {}),
     };
     try { s.store.append(msg); } catch (err) {
       requests.release(deviceId, requestId);
@@ -327,7 +334,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     }
     let outcome: 'delivered' | 'refused';
     try {
-      outcome = await dispatch({ conversationKey: key, alias, title: conv.title ?? 'Untitled', text: delivered, messageId, ownerName: s.ownerName(), originVerdict: 'unknown' });
+      outcome = await dispatch({ conversationKey: key, alias, title: conv.title ?? 'Untitled', text: delivered, messageId, ownerName: s.ownerName(), originVerdict: s.verify(msg) });
     } catch (err) {
       try { s.appendDelivery(key, messageId, 'unknown', seed); } catch { /* @silent-fallback-ok — the request itself is recorded outcome-unknown below */ }
       requests.markUnknown(deviceId, requestId);
@@ -346,7 +353,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (!svc!.liveConversation(key)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
     const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 100));
     const page = svc!.store.browseMessages(key, typeof req.query.before === 'string' ? req.query.before : null, limit);
-    res.json({ conversationKey: key, messages: page.messages.map(historyRow), nextBefore: page.nextBefore });
+    res.json({ conversationKey: key, messages: page.messages.map((m) => historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }))), nextBefore: page.nextBefore });
   });
 
   // ── Sync ──
@@ -359,8 +366,8 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     res.json({
       conversationKey: key,
       events: page.events.map((e) => {
-        const { origin, ingestSeq: _seq, ...rest } = e as typeof e & { origin?: DeviceSignedOrigin };
-        return { ...rest, ...(e.kind === 'message' ? { originVerified: origin ? 'unknown' : 'none' } : {}) };
+        const { origin: _origin, receipt: _receipt, ingestSeq: _seq, ...rest } = e as typeof e & { origin?: DeviceSignedOrigin; receipt?: MachineReceipt };
+        return { ...rest, ...(e.kind === 'message' ? { originVerified: svc!.verify(e) } : {}) };
       }),
       cursor: page.cursor,
     });
@@ -370,26 +377,83 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
 }
 
 /**
- * The signed-origin fields of this request (§4.6) from the device record and the raw request.
- * For a redacted message the original signed body is NOT stored anywhere — only its hash.
+ * The signed-origin fields of this request (§4.6) from the device record and the raw request,
+ * plus this machine's receipt and (when tokens were removed) its redaction attestation. For a
+ * redacted message the original signed body is NOT stored anywhere — only its hash.
+ *
+ * With no machine signer (no identity on this machine) the origin is still stored without a
+ * receipt, so the message reads `unknown`, never `verified`; the gap is reported.
  */
-export function buildOrigin(req: Request, pairing: MobilePairingService, deviceId: string, redaction?: { kinds: string[]; machineId: string }): DeviceSignedOrigin | undefined {
+export function buildSignedOrigin(
+  req: Request, pairing: MobilePairingService, deviceId: string, storedText: string, removedKinds: ReadonlyArray<string>,
+  signer: MachineSigner | null, receivedAt: string, report?: (detail: string) => void,
+): { origin?: DeviceSignedOrigin; receipt?: MachineReceipt } {
   const dev = pairing.devices.get(deviceId);
   const raw = (req as unknown as { rawBody?: Buffer }).rawBody ?? Buffer.alloc(0);
   const time = req.headers['x-instar-device-time'];
   const sig = req.headers['x-instar-device-sig'];
-  if (!dev?.publicKey || !dev.host || typeof time !== 'string' || typeof sig !== 'string') return undefined;
+  if (!dev?.publicKey || !dev.host || typeof time !== 'string' || typeof sig !== 'string') return {};
   let keyHash: string;
-  try { keyHash = crypto.createHash('sha256').update(Buffer.from(dev.publicKey, 'base64url')).digest('hex'); } catch { return undefined; } // @silent-fallback-ok — an unreadable key stores no origin (history reads 'none')
-  return {
-    kind: 'device-signed', v: 1, deviceId, keyHash, publicKey: dev.publicKey, host: dev.host,
-    method: req.method.toUpperCase(), pathWithQuery: req.originalUrl, timeMs: time,
-    ...(redaction ? { redaction: { kinds: redaction.kinds, machineId: redaction.machineId } } : { bodyB64: raw.toString('base64') }),
-    bodySha256: crypto.createHash('sha256').update(raw).digest('hex'), sig,
+  try { keyHash = crypto.createHash('sha256').update(Buffer.from(dev.publicKey, 'base64url')).digest('hex'); } catch { return {}; } // @silent-fallback-ok — an unreadable key stores no origin (history reads 'none')
+  const bodySha256 = crypto.createHash('sha256').update(raw).digest('hex');
+  const base = {
+    kind: 'device-signed' as const, v: 1 as const, deviceId, keyHash, publicKey: dev.publicKey, host: dev.host,
+    method: req.method.toUpperCase(), pathWithQuery: req.originalUrl, timeMs: time, bodySha256, sig,
   };
+  const redacted = removedKinds.length > 0;
+  let origin: DeviceSignedOrigin;
+  let receipt: MachineReceipt | undefined;
+  try {
+    origin = redacted
+      ? { ...base, redaction: signer ? signRedaction(signer, bodySha256, storedText, [...removedKinds]) : { kinds: [...removedKinds], machineId: 'unsigned' } }
+      : { ...base, bodyB64: raw.toString('base64') };
+    if (signer) receipt = signReceipt(signer, base, receivedAt);
+  } catch (err) {
+    // @silent-fallback-ok — reported; the message is still stored and delivered, and reads `unknown`
+    report?.(`this machine could not sign the receipt (${err instanceof Error ? err.message : String(err)}); the message reads "couldn't check"`);
+    origin = redacted ? { ...base, redaction: { kinds: [...removedKinds], machineId: 'unsigned' } } : { ...base, bodyB64: raw.toString('base64') };
+    receipt = undefined;
+  }
+  if (!signer) report?.('this machine has no identity key, so app messages are stored without a machine receipt and read "couldn\'t check"');
+  return { origin, ...(receipt ? { receipt } : {}) };
 }
 
 /** Owner name: `threadline.ownerName`, else "Operator" (§4.2). */
 export function appOwnerName(config: InstarConfig): string {
   return cleanText(config.threadline?.ownerName) || 'Operator';
+}
+
+/**
+ * The Telegram history join (§4.9), for a DEVICE reading GET /telegram/topics/:id/messages: each
+ * row that carries an `eventId` is joined to the app conversation store (`telegram:<topicId>`) and
+ * gets `originVerified` computed there; a row whose store event is missing reads `unknown`; a row
+ * with no eventId (typed in Telegram itself) reads `none`. App-sent messages whose Telegram row
+ * has rotated away are returned from the store, merged by eventId. Never throws.
+ */
+export function joinTelegramHistory(
+  app: AppConversationService, topicId: number, rows: ReadonlyArray<Record<string, unknown>>, limit: number,
+): Array<Record<string, unknown>> {
+  const key = `telegram:${topicId}`;
+  const out: Array<Record<string, unknown>> = rows.map((row) => {
+    const eventId = typeof row.eventId === 'string' && row.eventId ? row.eventId : null;
+    if (!eventId) return { ...row, originVerified: 'none' };
+    let ev: ReturnType<AppConversationService['store']['getEvent']> = null;
+    try { ev = app.store.getEvent(key, eventId); } catch { ev = null; } // @silent-fallback-ok — an unreadable store row reads "couldn't check"
+    if (!ev || ev.kind !== 'message') return { ...row, originVerified: 'unknown' };
+    // The verdict covers the STORED text; a Telegram row showing different text gets no verdict.
+    if (typeof row.text === 'string' && row.text !== ev.text) return { ...row, originVerified: 'unknown' };
+    return { ...row, originVerified: app.verify(ev) };
+  });
+  const seen = new Set(out.map((r) => (typeof r.eventId === 'string' ? r.eventId : '')).filter(Boolean));
+  let stored: BrowsedMessage[] = [];
+  try { stored = app.store.browseMessages(key, null, Math.max(1, Math.min(100, limit))).messages; } catch { stored = []; } // @silent-fallback-ok — the Telegram rows are still returned
+  for (const m of stored) {
+    // A message refused before it reached the agent, or still in flight, is not Telegram history.
+    if (seen.has(m.eventId) || m.role !== 'operator' || (m.deliveryState !== 'delivered' && m.deliveryState !== 'intercepted' && m.deliveryState !== 'unknown')) continue;
+    out.push({ deliveryState: m.deliveryState,
+      messageId: null, topicId, text: m.text, fromUser: m.role === 'operator', timestamp: m.at, sessionName: null,
+      via: 'mobile-device', eventId: m.eventId, fromStore: true, originVerified: app.verify({ ...m, conversationKey: key }),
+    });
+  }
+  return out.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp))).slice(-limit);
 }

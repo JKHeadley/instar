@@ -516,9 +516,20 @@ export class ThreadlineRouter {
    */
   setPeerUserTopicResolver(
     fn: ((q: { threadId: string; peers: string[] }) => { topicId: number | null; via: string }) | null,
+    opts: {
+      /**
+       * §2.7: true when the SERVER itself posts every user-meant message of this thread into
+       * the homebase (per-message judging on, conversation unbound). The prompt then tells the
+       * session not to repost them. Absent ⇒ false (the session is the only relay).
+       */
+      serverPostsUserMeant?: (threadId: string) => boolean;
+    } = {},
   ): void {
     this.peerUserTopic = fn;
+    this.serverPostsUserMeant = opts.serverPostsUserMeant ?? null;
   }
+
+  private serverPostsUserMeant: ((threadId: string) => boolean) | null = null;
 
   /** The §2.6 topic hint for a spawn prompt, or '' when there is none. Never throws. */
   private userTopicHint(threadId: string, remoteAgent: string, relayContext?: RelayMessageContext): string {
@@ -530,7 +541,15 @@ export class ThreadlineRouter {
         .filter((p): p is string => typeof p === 'string' && p.length > 0);
       const r = this.peerUserTopic({ threadId, peers });
       if (typeof r.topicId !== 'number' || r.via === 'existing') return '';
-      const where = r.via === 'homebase' ? `the topic for ${relayContext?.senderName ?? remoteAgent}` : 'the topic the operator bound this conversation to';
+      const name = relayContext?.senderName ?? remoteAgent;
+      const where = r.via === 'homebase' ? `the topic for ${name}` : 'the topic the operator bound this conversation to';
+      let serverPosts = false;
+      try { serverPosts = r.via === 'homebase' && this.serverPostsUserMeant?.(threadId) === true; } catch { serverPosts = false; /* @silent-fallback-ok — no claim the server posts */ }
+      if (serverPosts) {
+        // True by construction: the PeerHomebaseRelay judges every inbound message of this
+        // unbound conversation and posts each one meant for the user into this topic itself.
+        return `\n\nTelegram topic for this conversation: topic ${r.topicId} (${where}). The server already posts each message from ${name} that it judges meant for the user into that topic, so do not repost, forward or summarise ${name}'s messages there. If you have something of your own to tell the user about this conversation (including a point you think the user still needs), post it in your own words in topic ${r.topicId}, never in another topic.`;
+      }
       return `\n\nTelegram topic for this conversation: if you tell the user anything about it, or this agent's message needs the user, post in topic ${r.topicId} (${where}), never in another topic.`;
     } catch {
       return ''; // @silent-fallback-ok — no hint keeps the prompt as before

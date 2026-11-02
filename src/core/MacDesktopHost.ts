@@ -25,6 +25,9 @@ export const DEFAULT_MAC_DESKTOP_HELPER = path.basename(path.dirname(MODULE_DIR)
   ? path.resolve(MODULE_DIR, '..', '..', 'dist', 'native', 'instar-desktop-host')
   : path.resolve(MODULE_DIR, '..', 'native', 'instar-desktop-host');
 
+/** The helper's real path on this Mac, for the setup fallback's + step. */
+export function macDesktopHelperPath(): string { return fs.realpathSync(DEFAULT_MAC_DESKTOP_HELPER); }
+
 const validInput = validDesktopInput;
 
 export class MacDesktopHost implements DesktopHost {

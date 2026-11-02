@@ -191,7 +191,7 @@ describe('Restart window', () => {
     await (au as any).gatedRestart('0.9.9', true);
 
     // With bypassWindow=true, should proceed even though outside window
-    expect(requestSpy).toHaveBeenCalledWith('0.9.9');
+    expect(requestSpy).toHaveBeenCalledWith('0.9.9', false);
   });
 
   it('gatedRestart without bypass defers when outside window AND an active session is present', async () => {
@@ -242,6 +242,6 @@ describe('Restart window', () => {
     await (au as any).gatedRestart('0.9.9', false);
 
     // Restart should proceed now — NOT deferred to the window — because idle.
-    expect(requestSpy).toHaveBeenCalledWith('0.9.9');
+    expect(requestSpy).toHaveBeenCalledWith('0.9.9', false);
   });
 });

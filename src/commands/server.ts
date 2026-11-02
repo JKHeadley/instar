@@ -4238,6 +4238,9 @@ export async function startServer(options: StartOptions): Promise<void> {
   // The pool block later calls configureBounds AGAIN to add the resolver.
   notificationBatcher.configureBounds({ stateDir: config.stateDir });
 
+  // Mobile push hub-notice hook (docs/specs/mobile-push.md §2.3); reads the live adapter.
+  let _hubNoticeAdapter: { onHubPost?: ((t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => void) | null } | null = null;
+  const _hubNoticeHook = (t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => _hubNoticeAdapter?.onHubPost?.(t);
   // State reference — set once StateManager is created, used by notify()
   let _notifyState: { get<T>(key: string): T | null | undefined } | null = null;
 
@@ -4260,6 +4263,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         return;
       }
+    }
+    // Mobile push (docs/specs/mobile-push.md §2.3): a hub notice the filter admitted.
+    if ((!topicId || topicId === hubTopicId) && hubTopicId) {
+      try { _hubNoticeHook?.({ kind: 'notice', dedupeKey: `notice:${category}`, priority: tier === 'IMMEDIATE' ? 'URGENT' : undefined }); }
+      catch { /* @silent-fallback-ok — push is best-effort and never affects the notice */ }
     }
     // Telegram: via notification batcher
     const resolvedTopicId = topicId ?? hubTopicId;
@@ -5129,6 +5137,10 @@ export async function startServer(options: StartOptions): Promise<void> {
     // are on (no separate switch: for a native conversation the store is the only copy).
     const { APP_CONVERSATIONS_KIND_REGISTRATION } = await import('../core/AppConversationsReplicatedStore.js');
     replicatedKindRegistry.register(APP_CONVERSATIONS_KIND_REGISTRATION);
+    // mobile-native-conversations §4.8 — the `mobileDeviceKeyLedger` kind (inert registration; on
+    // whenever native app conversations are on, so a signed record can be checked on any machine).
+    const { DEVICE_KEY_LEDGER_KIND_REGISTRATION } = await import('../core/MobileDeviceKeyLedgerReplicatedStore.js');
+    replicatedKindRegistry.register(DEVICE_KEY_LEDGER_KIND_REGISTRATION);
 
     // WS2.3 (ws23-relationships-userregistry-security) — register the SECOND concrete
     // replicated kind, `relationship-record`, onto the registry: the FIRST PII kind.
@@ -5323,6 +5335,14 @@ export async function startServer(options: StartOptions): Promise<void> {
               _appConversationService?.ingestReplicated(entries.map((e) => appEventFromReplicatedData(e.data)));
             }).catch(() => { /* @silent-fallback-ok — a missed batch is re-read from the peer streams at the next boot */ });
           }
+          // Device-key ledger rows: each lands only when it verifies under the pinned key of the machine it names.
+          if (kind === 'mobile-device-key-ledger-row' && _appConversationService?.deps.keyLedger) {
+            const ledger = _appConversationService.deps.keyLedger;
+            for (const e of entries) {
+              const r = ledger.ingestReplicated(e.data);
+              if (r === 'bad-signature' || r === 'unverifiable') console.warn(`  [device-key-ledger] a replicated row was not accepted (${r})`);
+            }
+          }
         });
 
         // Author-side HLC clock — persisted under the journal dir (atomic temp+rename)
@@ -5438,7 +5458,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const _appNativeOn = _isMobileNativeEnabled(config);
     const _stateSyncStoresResolved: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined = (() => {
       let s = _stateSyncStoresBase ?? {};
-      if (_appNativeOn) s = { ...s, appConversations: { enabled: true } };
+      if (_appNativeOn) s = { ...s, appConversations: { enabled: true }, mobileDeviceKeyLedger: { enabled: true } };
       if (_accountFollowMeEnabled) s = { ...s, subscriptionAccountMeta: { enabled: true } };
       if (_pinReplicateEnabled) s = { ...s, topicPins: { enabled: true } };
       if (_staleOwnerReleaseResolved) s = { ...s, topicClaimAnnotations: { enabled: true } };
@@ -8277,6 +8297,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         config.stateDir,
       );
       armHolderForwardWait(telegram);
+      _hubNoticeAdapter = telegram;
       console.log(pc.green(`  Telegram send-only mode (${isStandbyTelegram ? 'standby' : lifelineOwnsPolling ? 'lifeline owns polling (lease detected)' : 'lifeline owns polling'})`));
       // Send-only still owns the attention store: run its hourly lifecycle
       // pass here too (start() is never called on this path). Idempotent.
@@ -8390,6 +8411,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         config.stateDir,
       );
       armHolderForwardWait(telegram);
+      _hubNoticeAdapter = telegram;
       telegram.intelligence = sharedIntelligence ?? null;
       await telegram.start();
       console.log(pc.green(`  Telegram connected (stall alerts: ${sharedIntelligence ? 'LLM-gated' : 'timer-only'})`));
@@ -9135,7 +9157,23 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (r.errors.length || r.degraded.length) console.warn(`  [app-conversations] reply relay: ${[...r.errors, ...r.degraded].join('; ')}`);
         }
         let appDispatch: import('../core/appInboundDispatch.js').AppInboundDispatch | null = null;
+        // Signed records (§4.6): this machine's identity signer, the signing-key history lookup and
+        // the device-key ledger. No identity ⇒ messages are still stored and delivered, read `unknown`.
+        const [sigMod, ledgerMod, ledgerReplMod] = await Promise.all([
+          import('../core/AppRecordSignatures.js'), import('../core/MobileDeviceKeyLedger.js'), import('../core/MobileDeviceKeyLedgerReplicatedStore.js'),
+        ]);
+        const appSigner = sigMod.loadMachineSigner(config.stateDir);
+        const appKeyLookup = sigMod.identityKeyLookup(config.stateDir);
+        if (!appSigner) console.warn('  [app-conversations] this machine has no identity key: app messages will read "couldn\'t check"');
+        const appKeyLedger = appSigner ? new ledgerMod.MobileDeviceKeyLedger({
+          stateDir: config.stateDir, signer: appSigner, keyLookup: appKeyLookup,
+          reportDegradation: (what, detail) => degradationReporter.report({
+            feature: what, primary: 'check signed app messages against the device-key ledger', fallback: 'messages read "couldn\'t check"',
+            reason: detail, impact: 'Signed app messages cannot be checked on this machine.',
+          }),
+        }) : null;
         const appSvc = new AppConversationService({
+          signer: appSigner, keyLookup: appKeyLookup, keyLedger: appKeyLedger,
           stateDir: config.stateDir,
           machineId: () => _meshSelfId ?? os.hostname(),
           registry: conversationRegistry,
@@ -9175,6 +9213,26 @@ export async function startServer(options: StartOptions): Promise<void> {
             replMod.deriveAppConversationRecordKey(ev.conversationKey, ev.eventId),
             replMod.buildAppConversationRecordData(ev),
           ));
+        }
+        if (replicatedRecordEmitter && appKeyLedger) {
+          const emitter = replicatedRecordEmitter;
+          appKeyLedger.setReplicationHook((row) => emitter.emit(
+            ledgerReplMod.DEVICE_KEY_LEDGER_STORE_KEY,
+            ledgerReplMod.deriveDeviceKeyLedgerRecordKey(row),
+            ledgerReplMod.buildDeviceKeyLedgerRecordData(row),
+          ));
+        }
+        if (replicatedPeerStreamReader && cjOwnMachineId && appKeyLedger) {
+          try {
+            const reader = replicatedPeerStreamReader;
+            let landed = 0;
+            for (const rk of reader.listRecordKeys(ledgerReplMod.DEVICE_KEY_LEDGER_STORE_KEY)) {
+              for (const r of reader.loadOriginRecords(ledgerReplMod.DEVICE_KEY_LEDGER_STORE_KEY, rk)) {
+                if (r.origin !== cjOwnMachineId && appKeyLedger.ingestReplicated(r.data) === 'accepted') landed++;
+              }
+            }
+            if (landed > 0) console.log(pc.dim(`  [device-key-ledger] landed ${landed} replicated row(s) at boot`));
+          } catch (err) { console.warn(`  [device-key-ledger] boot replication read failed: ${err instanceof Error ? err.message : String(err)}`); }
         }
         if (replicatedPeerStreamReader && cjOwnMachineId) {
           try {
@@ -18260,10 +18318,39 @@ export async function startServer(options: StartOptions): Promise<void> {
       profileFor: (peer) => _peerProfileFor?.(peer) ?? null,
       conversationFor: (threadId) => conversationStore.get(threadId) ?? null,
     });
+    // §2.7: "meant for the user?" is judged PER MESSAGE (Jev first, then the Codex fast tier,
+    // then the shared provider — so a Claude-only agent still judges; no verdict posts). Read
+    // live: `threadline.peerHomebase.perMessageClassification: false` restores first-only.
+    let peerUserMeantJudge: import('../threadline/PeerUserMeantJudge.js').PeerUserMeantJudge | null = null;
+    try {
+      const { buildPeerUserMeantJudge } = await import('../threadline/PeerUserMeantJudge.js');
+      const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+      const { SecretStore } = await import('../core/SecretStore.js');
+      let userMeantCodex: import('../core/types.js').IntelligenceProvider | null = null;
+      try {
+        const { LlmCircuitBreaker } = await import('../core/LlmCircuitBreaker.js');
+        const { buildIntelligenceProvider: buildUserMeantReferee } = await import('../core/intelligenceProviderFactory.js');
+        userMeantCodex = buildUserMeantReferee({ framework: 'codex-cli', breaker: new LlmCircuitBreaker() });
+      } catch { /* @silent-fallback-ok — no Codex CLI; the shared provider is the next referee */ }
+      peerUserMeantJudge = buildPeerUserMeantJudge({
+        readPeerHomebaseBlock: () => liveConfig.get<unknown>('threadline.peerHomebase', undefined),
+        readSecret: (name) => new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get(name),
+        referees: () => [
+          ...(userMeantCodex ? [{ name: 'codex', provider: userMeantCodex }] : []),
+          ...(sharedIntelligence ? [{ name: 'shared', provider: sharedIntelligence }] : []),
+        ],
+        stateDir: config.stateDir,
+        metrics: { record: (r) => getFeatureMetricsRecorder()?.record(r as never) },
+      });
+      console.log(pc.dim(`  Peer user-meant judge: constructed (referees: ${[userMeantCodex ? 'codex' : null, sharedIntelligence ? 'shared' : null].filter(Boolean).join(', ') || 'none'})`));
+    } catch (err) {
+      console.log(pc.yellow(`  Peer user-meant judge: not constructed (${(err as Error)?.message ?? 'unknown'}) — first-only rule applies`));
+    }
     const peerHomebaseRelay = telegram
       ? new PeerHomebaseRelay({
         resolve: peerUserTopic,
         salienceGate: new (await import('../threadline/SalienceGate.js')).SalienceGate(),
+        userMeantJudge: peerUserMeantJudge,
         sendToTopic: (topicId, text) => withThreadlineForwardedAuthor(telegramOriginBoot?.runtime.service, 'inbound', topicId, text,
           () => telegram.sendToTopic(topicId, text)),
         log: (m) => console.log(m),
@@ -18885,7 +18972,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     );
     const salienceGate = new SalienceGate(); // fallback-only for v1; spec §5.4
     // §2.6: tell a spawned thread session which topic to use for the user.
-    threadlineRouter.setPeerUserTopicResolver((q) => peerUserTopic({ threadId: q.threadId, peers: q.peers }));
+    threadlineRouter.setPeerUserTopicResolver((q) => peerUserTopic({ threadId: q.threadId, peers: q.peers }), {
+      // §2.7: only where the relay has actually taken this thread under per-message judging.
+      serverPostsUserMeant: (threadId) => peerHomebaseRelay?.postsUserMeantFor(threadId) === true
+        && conversationStore.get(threadId)?.boundTopicId == null,
+    });
     let topicLinkageHandler: import('../threadline/TopicLinkageHandler.js').TopicLinkageHandler | null = null;
     if (commitmentTracker) {
       topicLinkageHandler = new TopicLinkageHandler({
@@ -18937,6 +19028,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         resolveUserTopic: (q) => {
           const r = peerUserTopic({ threadId: q.threadId, peers: q.peers, existingTopicId: q.originTopicId });
           return r.topicId;
+        },
+        // §2.7: a reply redirected to the homebase is judged per message (null when switched off).
+        judgeUserMeant: async (q) => {
+          if (!peerUserMeantJudge || !peerUserMeantJudge.enabled()) return null;
+          const v = await peerUserMeantJudge.judge({ threadId: q.threadId, peer: q.peers[0] ?? '', senderName: q.senderName, text: q.text, deadlineMs: q.deadlineMs });
+          if (v.firstOnly) return null; // the judge's budget is spent: the SalienceGate (first-only) decides
+          return { verdict: v.userMeant ? 'user-visible' : 'agent-internal', reason: `per-message: ${v.decidedBy}/${v.reason}` };
         },
         onRemoteReplyEvent: (event) => {
           if (event === 'ask') a2aRelayForwardCtx.counters.replyAsks++;
@@ -19802,6 +19900,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   peers: [senderFingerprint],
                   senderName,
                   text: textContent,
+                  messageType: typeof msgType === 'string' ? msgType : null,
                 }).then((r) => { if (!r.posted) hubSurface(); }, () => hubSurface());
               } else {
                 hubSurface();
@@ -20138,10 +20237,10 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // notify-on-stop Layer B — surface a genuinely-stuck UNATTENDED stop to the
     // user (docs/specs/NOTIFY-ON-STOP-SPEC.md). The evaluate route feeds each
-    // decision to StopNotifier, which filters to the notify-worthy classes
-    // (shadow+continue / escalate), the attended-gate, and per-session dedup,
-    // then hands a coalesced one-liner to a dedicated SentinelNotifier sink
-    // (single lifeline topic, log-always — reuses the post-2026-05-22 discipline).
+    // decision to StopNotifier, which keeps only shadow+continue stops of a
+    // NAMED live autonomous run (attended-gate + per-session dedup), and sends
+    // the notice to that run's own topic so a reply reaches it. Everything else
+    // (`escalate`, unnamed runs) is log-only in logs/sentinel-events.jsonl.
     // Default ON (Justin's "tell me why it stopped"); requires telegram wired.
     let stopNotifier: import('../monitoring/StopNotifier.js').StopNotifier | null = null;
     {
@@ -20153,27 +20252,25 @@ export async function startServer(options: StartOptions): Promise<void> {
         const stopLog = (entry: { kind: string; sessionName: string; detail?: string }): void => {
           try { fs.appendFileSync(stopLogPath, JSON.stringify({ ...entry, sentinel: 'stop-notify', ts: new Date().toISOString() }) + '\n'); } catch { /* best-effort */ }
         };
-        const send = (text: string): Promise<boolean> =>
-          sendConsolidatedWithSelfHeal(
-            localTg,
-            text,
-            (line) => console.warn(pc.yellow(`  [stop-notify] ${line}`)),
-          );
-        const { SentinelNotifier } = await import('../monitoring/SentinelNotifier.js');
-        const stopSink = new SentinelNotifier(
-          { log: stopLog, sendConsolidated: send },
-          { telegramEscalation: true }, // notify-on-stop is default-on by design
-        );
         const { StopNotifier } = await import('../monitoring/StopNotifier.js');
         stopNotifier = new StopNotifier(
-          { escalate: (name, text) => stopSink.escalate('stop-gate', name, text) },
+          {
+            notifyTopic: (topicId, sessionId, text) => {
+              stopLog({ kind: 'escalated', sessionName: sessionId, detail: `topic ${topicId}: ${text}` });
+              localTg.sendToTopic(Number(topicId), text).then(
+                () => stopLog({ kind: 'escalation-sent', sessionName: sessionId, detail: `topic ${topicId}` }),
+                (err: unknown) => stopLog({ kind: 'notify-error', sessionName: sessionId, detail: `topic ${topicId}: ${err instanceof Error ? err.message : String(err)}` }),
+              );
+            },
+            log: (kind, sessionId, detail) => stopLog({ kind, sessionName: sessionId, detail }),
+          },
           {
             enabled: true,
             unattendedOnly: nosCfg.unattendedOnly !== false,
             ...(typeof nosCfg.cooldownMs === 'number' ? { cooldownMs: nosCfg.cooldownMs } : {}),
           },
         );
-        console.log(pc.green('  notify-on-stop Layer B: enabled (unjustified-stall heads-up — unattended-only, deduped, coalesced)'));
+        console.log(pc.green('  notify-on-stop Layer B: enabled (named-run stall notice in the run\'s topic — unattended-only, deduped)'));
       } else {
         console.log(pc.dim(`  notify-on-stop Layer B: ${nosEnabled ? 'idle (no telegram)' : 'disabled by config'}`));
       }
@@ -27234,10 +27331,27 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
               throw new Error(`deliverMessage rejected: ${res.status} ${res.reason ?? ''}`);
             },
-            spawnOnMachine: async (machineId, msg) => {
+            // The placement hop is a deliverMessage at the epoch the CAS just
+            // landed, read exactly like a forward. It used to send epoch 0 and
+            // discard the reply: a receiver holding an older record for the
+            // topic NACKed it stale and the router still logged 'spawned'.
+            spawnOnMachine: async (machineId, msg, ownershipEpoch) => {
               const url = peerUrl(machineId);
               if (!url) throw new Error(`no peer url for ${machineId}`);
-              await meshClient.send({ machineId, url }, { type: 'deliverMessage', session: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: 0 }, 0);
+              const res = await meshClient.send({ machineId, url }, { type: 'deliverMessage', session: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch, ...(msg.senderEnvelope ? { senderEnvelope: msg.senderEnvelope } : {}) } as import('../core/MeshRpc.js').MeshCommand, ownershipEpoch);
+              if (res.ok && res.result && typeof res.result === 'object' && 'accepted' in (res.result as object)) {
+                return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' };
+              }
+              throw new Error(`spawn deliverMessage rejected: ${res.status} ${res.reason ?? ''}`);
+            },
+            // Take back a placement whose spawn never landed (see SessionRouter):
+            // only the still-placing record this router put on `placedOn`.
+            reclaimPlacement: (sk, placedOn) => {
+              const cur = ownReg.read(sk);
+              if (!cur || cur.status !== 'placing' || cur.ownerMachineId !== placedOn) return false;
+              const r = ownReg.cas({ type: 'force-claim', machineId: meshSelfId }, { sessionKey: sk, sender: meshSelfId, nonce: `${meshSelfId}:rc:${++routerNonce}` });
+              emitPlacement(sk, r, 'failover', placedOn);
+              return r.ok;
             },
             handleLocally: async () => { /* inbound interception falls through to the existing local spawn */ },
             // Durable Inbound Message Queue §2.2: tri-state custody taking.

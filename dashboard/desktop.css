@@ -34,3 +34,9 @@ body.desktop-live #localCursor{display:block}
 .machine-notes{margin:.8rem 0 0;padding-left:1.1rem;font-size:.95rem;line-height:1.4}
 .machine-notes li{margin:.35rem 0}
 .machine-notes:empty{display:none}
+.setup-rows { list-style: none; margin: 0; padding: 0; }
+.setup-rows li { border-top: 1px solid currentColor; padding: 12px 0; }
+.setup-rows p { margin: 6px 0; overflow-wrap: anywhere; }
+.setup-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.setup-note:empty { display: none; }
+.setup-quiet { background: none; border: none; color: inherit; opacity: 0.7; text-decoration: underline; }
