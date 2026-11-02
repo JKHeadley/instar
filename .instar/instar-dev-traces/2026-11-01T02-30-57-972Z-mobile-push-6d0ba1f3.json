@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "mobile-push",
+  "sessionId": "162ffdb7-e254-42e8-8d0e-d1d170f9713d",
+  "timestamp": "2026-11-01T02:30:57.972Z",
+  "artifactPath": "upgrades/side-effects/mobile-push.md",
+  "artifactSha256": "c22cde0d02fa14145126ea918ba483d274de25618598bfcbc83af36c78f7f9bc",
+  "specPath": "docs/specs/mobile-push.md",
+  "coveredFiles": [
+    "src/core/MobilePush.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "upgrades/side-effects/mobile-push.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up: fallback markers on already-reported catches, comment-only",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "citation": "src/core/MobilePush.ts#dueFor"
+    }
+  }
+}

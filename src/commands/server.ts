@@ -4238,6 +4238,9 @@ export async function startServer(options: StartOptions): Promise<void> {
   // The pool block later calls configureBounds AGAIN to add the resolver.
   notificationBatcher.configureBounds({ stateDir: config.stateDir });
 
+  // Mobile push hub-notice hook (docs/specs/mobile-push.md §2.3); reads the live adapter.
+  let _hubNoticeAdapter: { onHubPost?: ((t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => void) | null } | null = null;
+  const _hubNoticeHook = (t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => _hubNoticeAdapter?.onHubPost?.(t);
   // State reference — set once StateManager is created, used by notify()
   let _notifyState: { get<T>(key: string): T | null | undefined } | null = null;
 
@@ -4260,6 +4263,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         return;
       }
+    }
+    // Mobile push (docs/specs/mobile-push.md §2.3): a hub notice the filter admitted.
+    if ((!topicId || topicId === hubTopicId) && hubTopicId) {
+      try { _hubNoticeHook?.({ kind: 'notice', dedupeKey: `notice:${category}`, priority: tier === 'IMMEDIATE' ? 'URGENT' : undefined }); }
+      catch { /* @silent-fallback-ok — push is best-effort and never affects the notice */ }
     }
     // Telegram: via notification batcher
     const resolvedTopicId = topicId ?? hubTopicId;
@@ -8289,6 +8297,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         config.stateDir,
       );
       armHolderForwardWait(telegram);
+      _hubNoticeAdapter = telegram;
       console.log(pc.green(`  Telegram send-only mode (${isStandbyTelegram ? 'standby' : lifelineOwnsPolling ? 'lifeline owns polling (lease detected)' : 'lifeline owns polling'})`));
       // Send-only still owns the attention store: run its hourly lifecycle
       // pass here too (start() is never called on this path). Idempotent.
@@ -8402,6 +8411,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         config.stateDir,
       );
       armHolderForwardWait(telegram);
+      _hubNoticeAdapter = telegram;
       telegram.intelligence = sharedIntelligence ?? null;
       await telegram.start();
       console.log(pc.green(`  Telegram connected (stall alerts: ${sharedIntelligence ? 'LLM-gated' : 'timer-only'})`));

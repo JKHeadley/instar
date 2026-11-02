@@ -3924,6 +3924,8 @@ export interface InstarConfig {
      * Read at boot.
      */
     multiRoute?: { enabled?: boolean };
+    /** Mobile push (docs/specs/mobile-push.md). `enabled` omitted ⇒ follows mobilePairing. */
+    push?: { enabled?: boolean; teamId?: string };
   };
   maturationBoard?: {
     enabled?: boolean;

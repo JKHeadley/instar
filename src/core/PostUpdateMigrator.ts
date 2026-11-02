@@ -968,6 +968,21 @@ A paired phone's signed request is accepted on any of this machine's own names: 
 `;
 }
 
+/**
+ * CLAUDE.md awareness block for mobile push (docs/specs/mobile-push.md).
+ * Unique content-sniff marker: `Mobile push notifications`.
+ */
+export function MOBILE_PUSH_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Mobile push notifications — the Instar iPhone app buzzes when something needs the operator
+
+When I post to the Attention topic (an item, or a hub notice such as lost messages), every paired phone that turned notifications on gets a push, sent straight from me to Apple with the operator's APNs key (vault \`apns_key_p8\`, \`apns_key_id\`; team id in \`mobilePairing.push.teamId\`). Apple only sees "Something needs you"; the phone fetches the title from me with a read-only token. A phone gets at most one notification every 2 minutes (the rest fold into one), hourly after 40 in a day, urgent items sooner; nothing is dropped. Other machines of this agent are told too, and the same condition does not buzz twice.
+- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/push\` → \`{ enabled, keyConfigured, pausedReason, devices: [{ sent24h, throttled, pending, lastSend }], fanout }\`. \`sent\` means Apple accepted it, not that the phone showed it.
+- \`keyConfigured: false\` → the APNs key is not in my vault yet; nothing is sent. \`pausedReason\` → Apple refused the key; it clears by itself when the key, key id or team id changes.
+- Gate: \`mobilePairing.push.enabled\` (omitted ⇒ follows \`mobilePairing\`).
+- **When to use** (PROACTIVE): "why didn't my phone buzz?" → read the status (no key, paused, throttled, or the item was held by the Attention hub filter, which logs every held post); "turn off phone notifications" → \`mobilePairing.push.enabled: false\`.
+`;
+}
+
 export function QUEUE_PACE_CLAUDEMD_SECTION(port: number): string {
   return `\n### Queue Pace — is every work pile shrinking or growing? (\`GET /queue-pace\`)
 
@@ -8612,6 +8627,13 @@ setTimeout(() => process.exit(0), 2000);
       content += MOBILE_ROUTES_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Mobile app routes section');
+    }
+
+    // Mobile push (docs/specs/mobile-push.md) — Agent Awareness + Migration Parity.
+    if (!content.includes('Mobile push notifications')) {
+      content += MOBILE_PUSH_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Mobile push notifications section');
     }
 
     // Queue pace (docs/specs/queue-pace.md) — Agent Awareness + Migration Parity.

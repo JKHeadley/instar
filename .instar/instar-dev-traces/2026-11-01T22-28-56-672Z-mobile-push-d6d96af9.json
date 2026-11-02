@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "mobile-push",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-01T22:28:56.672Z",
+  "artifactPath": "upgrades/side-effects/mobile-push.md",
+  "artifactSha256": "7cfe0cfe047f0926ee247d45ac155f725f0ce2605e126662d34a4334920956d8",
+  "coveredFiles": [
+    "docs/specs/mobile-push.eli16.md",
+    "src/server/AgentServer.ts",
+    "upgrades/next/mobile-push.md",
+    "upgrades/side-effects/mobile-push.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix moving one construction out of a guard; a revert fully undoes it.",
+  "eli16Path": "docs/specs/mobile-push.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mobile-push.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
