@@ -238,7 +238,9 @@ describe('promises page in a DOM', () => {
     const confirmGo = [...doc.querySelectorAll('.confirm-row button')].find((b) => b.textContent === 'I handled this') as HTMLButtonElement;
     confirmGo.click();
     for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 10));
-    expect(posted).toEqual(['/commitments/CMT-1/deliver']);
+    // The holding machine is always named: the same id can exist on several machines and a
+    // bare id is refused as ambiguous (the 2026-11-01 Approve bug).
+    expect(posted).toEqual(['/commitments/CMT-1/deliver?origin=m1']);
     expect(doc.querySelector('.action-status')!.textContent).toBe('Marked as done.');
     await new Promise((r) => setTimeout(r, 750));
     expect(dom.window.location.hash).toBe('#/work/promises');
