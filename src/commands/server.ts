@@ -202,6 +202,7 @@ import { PeerEndpointResolver } from '../core/PeerEndpointResolver.js';
 import {
   resolveMeshPeerUrl,
   resolveMeshPeerPreferredSelection,
+  resolveMeshPeerCandidates,
   type RopeRefusal,
 } from '../core/resolveMeshPeerUrl.js';
 import { RelayRefusedError, isRelayRefusal, relayOutbound } from '../core/TelegramRelay.js';
@@ -821,6 +822,8 @@ let _resolvePeerUrls:
       kind: PeerEndpointKind;
       /** Ropes the credential guard skipped before this one was chosen. */
       ropeRefusals: RopeRefusal[];
+      /** Every rope in priority order — the remote-desktop calls fall back across them. */
+      ropes?: Array<{ url: string; kind: PeerEndpointKind }>;
     }>)
   | null = null;
 /** The feedback arm of that same fix: reports each pool dial's outcome into the ONE
@@ -7821,6 +7824,20 @@ export async function startServer(options: StartOptions): Promise<void> {
 
           // Relay to messaging platform if adapter is available and session has a binding
           if (classification.action === 'relay' || classification.action === 'auto-approve') {
+            // Settle first: many prompts are answered without a person (account
+            // swap, permission floor, respawn). Relay only one still on screen.
+            const { settleBeforeRelay, DEFAULT_RELAY_SETTLE_MS } = await import('../monitoring/promptRelaySettle.js');
+            const settle = await settleBeforeRelay(prompt, {
+              settleMs: promptGateConfig.relaySettleMs ?? DEFAULT_RELAY_SETTLE_MS,
+              sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+              isAlive: (name) => sessionManager.isSessionAlive(name),
+              capture: (name) => sessionManager.captureOutput(name, 60),
+            });
+            if (!settle.relay) {
+              console.log(`[PromptGate] Not relaying ${prompt.type} prompt for ${prompt.sessionName}: ${settle.reason}`);
+              detector.onInputSent(prompt.sessionName);
+              return;
+            }
             let relayed = false;
 
             // Try Telegram first
@@ -8313,6 +8330,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Send-only still owns the attention store: run its hourly lifecycle
       // pass here too (start() is never called on this path). Idempotent.
       telegram.startSendOnlyMaintenance();
+      telegram.setMachineNameResolver((machineId) => _listPoolMachines?.().find((m) => m.machineId === machineId)?.nickname ?? null);
 
       // Resolve any topic names still using the fallback "topic-NNNN" pattern
       telegram.resolveUnknownTopicNames().catch(err => {
@@ -8431,6 +8449,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // When the user renames a Telegram forum topic, update the bound
       // session's display `name` ONLY (never tmuxSession or id). Fire-and-
       // forget; rename-display is non-critical.
+      telegram.setMachineNameResolver((machineId) => _listPoolMachines?.().find((m) => m.machineId === machineId)?.nickname ?? null);
       telegram.setTopicRenamedHandler((topicId, newName) => {
         const tmuxSession = telegram?.getSessionForTopic(topicId);
         if (!tmuxSession) return;
@@ -9157,7 +9176,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // its request store with the Telegram chat route).
     if (_appNativeOn) {
       try {
-        const [{ AppConversationService }, { createAppInboundDispatch }, { MobileChatRequestStore }, { appOwnerName }, relayMod, replMod] = await Promise.all([
+        const [{ AppConversationService, VOICE_TRANSCRIBE_DEADLINE_MS }, { createAppInboundDispatch }, { MobileChatRequestStore }, { appOwnerName }, relayMod, replMod] = await Promise.all([
           import('../core/AppConversationService.js'), import('../core/appInboundDispatch.js'), import('../core/MobileChatRequests.js'),
           import('../server/mobileConversationRoutes.js'), import('../core/AppReplyRelayInstaller.js'), import('../core/AppConversationsReplicatedStore.js'),
         ]);
@@ -9170,8 +9189,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         let appDispatch: import('../core/appInboundDispatch.js').AppInboundDispatch | null = null;
         // Signed records (§4.6): this machine's identity signer, the signing-key history lookup and
         // the device-key ledger. No identity ⇒ messages are still stored and delivered, read `unknown`.
-        const [sigMod, ledgerMod, ledgerReplMod] = await Promise.all([
+        const [sigMod, ledgerMod, ledgerReplMod, voiceMod] = await Promise.all([
           import('../core/AppRecordSignatures.js'), import('../core/MobileDeviceKeyLedger.js'), import('../core/MobileDeviceKeyLedgerReplicatedStore.js'),
+          import('../core/VoiceTranscription.js'),
         ]);
         const appSigner = sigMod.loadMachineSigner(config.stateDir);
         const appKeyLookup = sigMod.identityKeyLookup(config.stateDir);
@@ -9203,6 +9223,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             try { recordOperatorStop(alias); } catch { /* @silent-fallback-ok — the stop record is observability */ }
           },
           mediaMaxStoreBytes: () => config.mobilePairing?.native?.media?.maxStoreBytes,
+          // §4.5.1: voice notes the phone did not transcribe use Telegram's transcriber (same provider).
+          transcribeVoice: (filePath, mediaType) => voiceMod.transcribeAudioFile(filePath, { explicit: voiceMod.configuredVoiceProvider(config), mediaType, timeoutMs: VOICE_TRANSCRIBE_DEADLINE_MS }),
           raiseAttention: (item) => { void telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-media' }); },
           clearAttention: (conditionKey) => { telegram?.clearAttentionCondition({ conditionKey }, 'cleared: the app media store has room again'); },
           reportDegradation: (what, detail) => degradationReporter.report({
@@ -12471,7 +12493,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const slackChId = slackProxyChannelMap.get(topicId);
             if (slackChId && _slackAdapter) {
               const msgs = _slackAdapter.getChannelMessages(slackChId, limit);
-              return msgs.map(m => ({ text: m.text, fromUser: true, timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
+              return msgs.map(m => ({ text: m.text, fromUser: _slackAdapter!.isMessageFromUser(m), timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
             }
             if (telegram) {
               const entries = telegram.getTopicHistory(topicId, limit);
@@ -12555,7 +12577,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const slackChId = slackProxyChannelMap.get(topicId);
             if (slackChId && _slackAdapter) {
               const msgs = _slackAdapter.getChannelMessages(slackChId, limit);
-              return msgs.map(m => ({ text: m.text, fromUser: true, timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
+              return msgs.map(m => ({ text: m.text, fromUser: _slackAdapter!.isMessageFromUser(m), timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
             }
             if (telegram) {
               const entries = telegram.getTopicHistory(topicId, limit);
@@ -13025,7 +13047,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const slackChId = slackProxyChannelMap.get(topicId);
             if (slackChId && _slackAdapter) {
               const msgs = _slackAdapter.getChannelMessages(slackChId, limit);
-              return msgs.map(m => ({ text: m.text, fromUser: true, timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
+              return msgs.map(m => ({ text: m.text, fromUser: _slackAdapter!.isMessageFromUser(m), timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
             }
             if (telegram) {
               const history = telegram.getMessageLog?.();
@@ -13062,6 +13084,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           // (update-train churn) forgot which dead sessions were already
           // announced and re-posted the same death once per boot.
           statePath: path.join(config.stateDir, 'state', 'session-monitor-ctx-notified.json'),
+          // Same for "session has stopped": one notice per death, across restarts.
+          deadNoticeStatePath: path.join(config.stateDir, 'state', 'session-monitor-dead-notified.json'),
           // A topic an ONLINE peer actively owns is not this machine's to monitor:
           // route() forwards its inbound to that owner, so a stale local mapping
           // must never produce a "session has stopped" notice or a local triage
@@ -23303,7 +23327,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         greenPrAutoMerger?.attachLocalVerify({
           effectiveFloor: () => (rec ? rec.effectiveFloor() : null),
           mainHealth: () => svc.mainHealth().state,
-          hasRecord: (pr, head, base) => !!svc.getRecord(pr, head, base),
+          hasRecord: (pr, head, base) => wiring.hasPassingRecord(svc, pr, head, base),
           requestVerify: (pr) => svc.request(pr, { explicit: false }),
           // Dry-run posting also suppresses the watcher's actions→local disarm write.
           postStatuses: () => liveConfig.get<boolean>('monitoring.localVerify.postStatuses', false) === true,
@@ -26617,6 +26641,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                   // Which ropes the guard skipped on the way to this one — so a
                   // caller can report them instead of them vanishing.
                   ropeRefusals: selection?.refusals ?? [],
+                  // Every rope, in order: remote-desktop calls apply their own
+                  // gate and fall back to the next rope that carries traffic.
+                  ropes: resolveMeshPeerCandidates(meshResolver, m.machineId, entry?.endpoints, entry?.lastKnownUrl),
                 };
               })
               .filter(
@@ -26625,6 +26652,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   url: string;
                   kind: PeerEndpointKind;
                   ropeRefusals: RopeRefusal[];
+                  ropes: Array<{ url: string; kind: PeerEndpointKind }>;
                 } => m.url != null && m.kind != null,
               );
           // EVERY registered non-revoked machine — URL or not — so the /guards
@@ -28847,9 +28875,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const topicId = Number(row.destination.topicId);
                 heldAudit({ phase: 'expired', topicId: row.destination.topicId, operationId: row.operationId, lastAttempt: (row.holdDetail as { lastAttempt?: string } | null)?.lastAttempt ?? null });
                 if (Number.isSafeInteger(topicId)) heldCollapser.clear(topicId);
-                await telegram.createAttentionItem({ id: originForwardMod.heldExpiryItemId(row), category: 'telegram-origin', priority: 'HIGH',
-                  title: `Held reply to topic ${row.destination.topicId ?? '?'} expired`, summary: originForwardMod.expiredForwardWording(row),
-                  sourceContext: 'telegram-origin-forward-to-holder' }, { hubOnly: true });
+                await telegram.createAttentionItem(originForwardMod.heldExpiryItem(row), { hubOnly: true });
               };
             }
             telegram.outboundRelay = async (topicId, text, opts) => {

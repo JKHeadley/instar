@@ -126,6 +126,54 @@ describe('GreenPrAutoMerger — acting (post warm-up)', () => {
     expect(h.state.episodes[100]).toBeUndefined(); // reaped on success
   });
 
+  it('an oldest PR whose episode gave up does not block the next one (2026-11-02 head-of-line stall)', async () => {
+    const h = harness({
+      prs: [pr({ number: 100, headRefOid: 'sha100' }), pr({ number: 200, headRefOid: 'sha200' })],
+      refetch: (n) => ({ title: 'feat: x', labels: [], isDraft: false, headRefOid: `sha${n}`, state: 'OPEN' }),
+    });
+    prime(h);
+    h.state.episodes[100] = { pr: 100, headRefOid: 'sha100', attempts: 3, rearmEpisodes: 0, state: 'gave-up', lastOutcome: 'refused:body-checks' } as GreenPrState['episodes'][number];
+    const r = await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(r.acted).toBe(true);
+    expect(h.runCalls.map((c) => c.pr)).toEqual([200]);
+    expect(h.audits.some((a) => a.event === 'skipped:episode' && a.pr === 100)).toBe(true);
+  });
+
+  it('an oldest PR still backing off before a retry passes the turn too', async () => {
+    const h = harness({
+      prs: [pr({ number: 100, headRefOid: 'sha100' }), pr({ number: 200, headRefOid: 'sha200' })],
+      refetch: (n) => ({ title: 'feat: x', labels: [], isDraft: false, headRefOid: `sha${n}`, state: 'OPEN' }),
+    });
+    prime(h);
+    h.state.episodes[100] = { pr: 100, headRefOid: 'sha100', attempts: 1, rearmEpisodes: 0, state: 'active', lastOutcome: 'refused:verify-failed', nextEligibleAt: Number.MAX_SAFE_INTEGER } as GreenPrState['episodes'][number];
+    await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(h.runCalls.map((c) => c.pr)).toEqual([200]);
+  });
+
+  it('a real attempt on the oldest still ends the tick (one merge attempt per tick)', async () => {
+    const h = harness({
+      prs: [pr({ number: 100, headRefOid: 'sha100' }), pr({ number: 200, headRefOid: 'sha200' })],
+      refetch: (n) => ({ title: 'feat: x', labels: [], isDraft: false, headRefOid: `sha${n}`, state: 'OPEN' }),
+      runResult: { outcome: 'refused:body-checks', confirmedMerged: false },
+    });
+    prime(h);
+    await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(h.runCalls.map((c) => c.pr)).toEqual([100]);
+  });
+
+  it('a verified PR whose mergeability reads UNKNOWN is read directly so GitHub computes it (2026-11-02)', async () => {
+    const refetched: number[] = [];
+    const h = harness({
+      prs: [pr({ number: 100, mergeable: 'UNKNOWN' }), pr({ number: 200, mergeable: 'CONFLICTING' }), pr({ number: 300, mergeable: 'UNKNOWN', statusRollup: 'PENDING' })],
+      refetch: (n) => { refetched.push(n); return { title: 'feat: x', labels: [], isDraft: false, headRefOid: `sha${n}`, state: 'OPEN' }; },
+    });
+    prime(h);
+    await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(refetched).toEqual([100]); // UNKNOWN + green is nudged; a real conflict or unfinished checks are not
+    expect(h.audits.some((a) => a.event === 'waiting' && a.class === 'mergeability-unknown' && a.pr === 100)).toBe(true);
+    expect(h.runCalls).toHaveLength(0);
+  });
+
   it('dry-run observes but never spawns', async () => {
     const h = harness();
     prime(h);

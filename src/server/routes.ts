@@ -1130,6 +1130,8 @@ export interface RouteContext {
    *  the route 503s (governor not initialized on this build). */
   selfActionGovernor?: import('../monitoring/selfaction/governor.js').SelfActionGovernorCore | null;
   telegram: TelegramAdapter | null;
+  /** Attention list kept when there is no Telegram adapter (LocalAttentionItems). */
+  localAttention?: import('../core/LocalAttentionItems.js').LocalAttentionItems | null;
   relationships: RelationshipManager | null;
   feedback: FeedbackManager | null;
   dispatches: DispatchManager | null;
@@ -11371,7 +11373,10 @@ export function createRoutes(ctx: RouteContext): Router {
               ...s,
               name: sessionDisplayName(s.name, remotePlatform),
               machineId: s.machineId ?? p.machineId,
-              machineNickname: verifiedEntityName(p.machineId, s.machineNickname) ?? verifiedEntityName(p.machineId, nickname) ?? null,
+              // This machine's registry names the machine first, so one dashboard never shows
+              // the same machine under two names (2026-11-02: a peer called itself "Mac Lan"
+              // while the registry here said "Mac M5 Pro"). The peer's own name is the fallback.
+              machineNickname: verifiedEntityName(p.machineId, nickname) ?? verifiedEntityName(p.machineId, s.machineNickname) ?? null,
               remote: true,
             });
           }
@@ -17671,7 +17676,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             remote.push({
               ...j,
               machineId: j.machineId ?? p.machineId,
-              machineNickname: j.machineNickname ?? nickname ?? undefined,
+              machineNickname: nickname ?? j.machineNickname ?? undefined, // registry here first (see sessions)
               remote: true,
             });
           }
@@ -19800,7 +19805,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100);
-    const local = ctx.telegram.getTopicHistory(topicId, limit);
+    // E2E-PAIRING: EXEMPT — optional parameter on an existing route; covered end to end through createRoutes by tests/integration/topic-messages-before.test.ts.
+    // Scroll-back (`before`, an ISO time or epoch ms): entries logged strictly
+    // earlier, so History can reach past the current session's start.
+    let beforeMs: number | null = null;
+    if (req.query.before !== undefined) {
+      const raw = String(req.query.before);
+      beforeMs = /^\d+$/.test(raw) ? Number(raw) : Date.parse(raw);
+      if (!Number.isFinite(beforeMs)) { res.status(400).json({ error: '"before" must be an ISO time or epoch milliseconds' }); return; }
+    }
+    const local = beforeMs === null ? ctx.telegram.getTopicHistory(topicId, limit) : ctx.telegram.getTopicHistoryBefore(topicId, beforeMs, limit);
     // A phone (device principal) never receives token-derived view signatures (mobile-device-keys §2.3).
     const isDevice = (req as unknown as { instarPrincipal?: { kind: string } }).instarPrincipal?.kind === 'device';
     // Signed records (mobile-native-conversations §4.9): a device's read joins each row to the app
@@ -19822,7 +19836,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       try {
         const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
         if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allowlist).ok) { failed.push({ machineId: p.machineId, error: 'peer URL refused' }); return; }
-        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/telegram/topics/${topicId}/messages?limit=${limit}`, {
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/telegram/topics/${topicId}/messages?limit=${limit}${beforeMs === null ? '' : `&before=${beforeMs}`}`, {
           headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000), redirect: 'manual',
         });
         if (!r.ok) { failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` }); return; }
@@ -21630,10 +21644,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           const body = (await r.json()) as { items?: Array<Record<string, unknown>> };
           const nickname = cap?.nickname ?? null;
           for (const it of body.items ?? []) {
+            // Registry here names the machine first (see sessions). A title the peer prefixed
+            // with its own name ("Mac Lan: …") is re-prefixed with that name too.
+            const own = typeof it.machineNickname === 'string' ? it.machineNickname : null;
+            const name = nickname ?? own ?? undefined;
+            const title = typeof it.title === 'string' && own && nickname && own !== nickname && it.title.startsWith(`${own}: `)
+              ? `${nickname}: ${it.title.slice(own.length + 2)}`
+              : it.title;
             remote.push({
               ...it,
+              ...(title !== undefined ? { title } : {}),
               machineId: it.machineId ?? p.machineId,
-              machineNickname: it.machineNickname ?? nickname ?? undefined,
+              machineNickname: name,
               remote: true,
             });
           }
@@ -21684,6 +21706,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.get('/attention', async (req, res) => {
     if (!ctx.telegram) {
+      if (ctx.localAttention) {
+        // No Telegram: the local list (security items such as "a Mac may still be unlocked").
+        const requestedStatus = req.query.status as string | undefined;
+        const localStatus = requestedStatus ? (normalizeAttentionStatus(requestedStatus) ?? requestedStatus) : undefined;
+        const localLimit = parseAttentionLimit(req.query as Record<string, unknown>);
+        const all = ctx.localAttention.list(localStatus).map((it) => ({ ...it, machineId: ctx.meshSelfId ?? undefined }));
+        const items = localLimit === undefined ? all : all.slice(0, localLimit);
+        res.json({ items, count: items.length, surface: 'local' });
+        return;
+      }
       res.status(503).json({ error: 'Telegram not configured' });
       return;
     }
@@ -21794,6 +21826,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.get('/attention/:id', (req, res) => {
     if (!ctx.telegram) {
+      if (ctx.localAttention) {
+        const local = ctx.localAttention.get(req.params.id);
+        if (!local) { res.status(404).json({ error: 'Attention item not found' }); return; }
+        res.json(local);
+        return;
+      }
       res.status(503).json({ error: 'Telegram not configured' });
       return;
     }
@@ -21807,7 +21845,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   router.patch('/attention/:id', async (req, res) => {
-    if (!ctx.telegram) {
+    if (!ctx.telegram && !ctx.localAttention) {
       res.status(503).json({ error: 'Telegram not configured' });
       return;
     }
@@ -21825,6 +21863,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const resolution = typeof rawResolution === 'string' ? rawResolution.trim().slice(0, 2000) : undefined; // bounded-input-reviewed: stored display text on the attention item, never fed to a model
+
+    if (!ctx.telegram) {
+      // No Telegram: the local list. No topic to close, no relayed-ack precedence (single store).
+      if (refuseInadmissibleWrite(req, res)) return;
+      const updated = ctx.localAttention!.setStatus(req.params.id, status as import('../core/LocalAttentionItems.js').LocalAttentionStatus, resolution);
+      if (!updated) { res.status(404).json({ error: 'Attention item not found' }); return; }
+      res.json(updated);
+      return;
+    }
 
     // Standby-write reconciliation §3.4 (I1): admission first after validation.
     if (refuseInadmissibleWrite(req, res)) return;
@@ -27430,6 +27477,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           'Restart the lifeline to enable the Stage-B version handshake.'
         );
       }
+    }
+
+    // E2E-PAIRING: EXEMPT — optional fields on an existing internal route; covered through createRoutes by tests/integration/topic-operator-autobind-route.test.ts.
+    // Topic name from the lifeline (agents whose lifeline owns polling never
+    // see Telegram's topic-created/renamed service messages here). Only a
+    // lifeline-proven sender may name a topic: names are shown to the operator.
+    const forwardedTopicName = typeof req.body?.topicName === 'string' ? req.body.topicName : null;
+    if (forwardedTopicName && !trust && ingressDecision.senderTrusted && Number.isSafeInteger(Number(topicId))) {
+      ctx.telegram?.captureTopicName?.(Number(topicId), forwardedTopicName, req.body?.topicRenamed === true);
+    }
+    if (topicId && !text && forwardedTopicName && req.body?.nameOnly === true) {
+      res.json({ ok: true, nameOnly: true });
+      return;
     }
 
     if (!topicId || !text) {

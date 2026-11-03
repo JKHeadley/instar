@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-02T18:27:04.578Z",
+  "slug": "mobile-native-chat-media-voice",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 278,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-no-direct-llm-http.js",
+      "src/commands/server.ts",
+      "src/core/AppConversationService.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/VoiceTranscription.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 194,
+    "deletedLines": 84
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

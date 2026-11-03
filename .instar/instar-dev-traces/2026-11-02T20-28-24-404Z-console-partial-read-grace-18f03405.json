@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "console-partial-read-grace",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-02T20:28:24.404Z",
+  "artifactPath": "upgrades/side-effects/console-partial-read-grace.md",
+  "artifactSha256": "5afaff61fcdc29edbb4280cf99068ab23bab5bc5fd00ebdf551c5d59e4d3723c",
+  "coveredFiles": [
+    "dashboard/console/console.js",
+    "tests/e2e/console-home-lifecycle.test.ts",
+    "tests/unit/console-dom.test.ts",
+    "upgrades/next/console-partial-read-grace.md",
+    "upgrades/side-effects/console-partial-read-grace.eli16.md",
+    "upgrades/side-effects/console-partial-read-grace.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "console read narrowed to open items, which is all Home uses; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/console-partial-read-grace.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-partial-read-grace.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

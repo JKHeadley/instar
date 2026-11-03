@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-02T21:35:31.136Z",
+  "slug": "session-history-topic-backfill",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/TelegramAdapter.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

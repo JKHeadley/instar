@@ -57,6 +57,10 @@
   --ease: cubic-bezier(.4, 0, .2, 1);
   --dur: .18s;
   --nav-h: 64px;
+  /* The phone's bottom inset. Inside the Instar app this is the app's own tab
+     bar (about 68px), so everything that sits above the bottom nav adds it. */
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --nav-total: calc(var(--nav-h) + var(--safe-b));
   color-scheme: dark;
 }
 
@@ -131,14 +135,14 @@ button { font: inherit; color: inherit; }
 .chip:hover { border-color: var(--hairline-strong); color: var(--text); }
 .icon-btn { width: 34px; padding: 0; justify-content: center; }
 
-.main { padding: var(--s-5) var(--s-4) calc(var(--nav-h) + 32px); max-width: 1120px; width: 100%; margin: 0 auto; }
+.main { padding: var(--s-5) var(--s-4) calc(var(--nav-total) + 32px); max-width: 1120px; width: 100%; margin: 0 auto; }
 
 /* Bottom nav (phone) → sidebar (desktop) */
 .nav {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
   display: grid; grid-template-columns: repeat(5, 1fr);
-  height: calc(var(--nav-h) + env(safe-area-inset-bottom));
-  padding-bottom: env(safe-area-inset-bottom);
+  height: var(--nav-total);
+  padding-bottom: var(--safe-b);
   background: color-mix(in srgb, var(--surface-solid) 86%, transparent);
   backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
   border-top: 1px solid var(--hairline);
@@ -490,7 +494,7 @@ button.list-head { cursor: pointer; }
 .sheet { position: absolute; left: 0; right: 0; bottom: 0; height: 88dvh; max-height: 88vh; display: flex; flex-direction: column;
   background: var(--surface-solid); border: 1px solid var(--hairline-strong); border-bottom: 0; border-radius: var(--r-xl) var(--r-xl) 0 0;
   box-shadow: 0 -20px 60px rgb(0 0 0 / .45); transform: translateY(24px); opacity: 0;
-  transition: transform .22s var(--ease), opacity .22s var(--ease); padding-bottom: env(safe-area-inset-bottom); }
+  transition: transform .22s var(--ease), opacity .22s var(--ease); padding-bottom: var(--safe-b); }
 .sheet-root.open .scrim { opacity: 1; }
 .sheet-root.open .sheet { transform: none; opacity: 1; }
 .sheet-grab { width: 40px; height: 4px; border-radius: 4px; background: var(--hairline-strong); margin: 10px auto 2px; }
@@ -633,7 +637,7 @@ select.reason-input { height: 44px; }
 .switch.on::after { transform: translateX(18px); background: var(--accent); }
 .switch:disabled { opacity: .5; cursor: progress; }
 .switch:focus-visible, .seg-step:focus-visible, .feat-main:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.toast { position: fixed; left: 50%; bottom: calc(var(--nav-h) + 16px); transform: translateX(-50%); z-index: 60; display: flex; align-items: center; gap: 16px; max-width: calc(100vw - 32px);
+.toast { position: fixed; left: 50%; bottom: calc(var(--nav-total) + 16px); transform: translateX(-50%); z-index: 60; display: flex; align-items: center; gap: 16px; max-width: calc(100vw - 32px);
   padding: 12px 18px; border-radius: var(--r-md); border: 1px solid var(--hairline-strong); background: var(--surface-solid); color: var(--text-strong); font-size: 14px; box-shadow: 0 8px 30px rgb(0 0 0 / .35); }
 /* ── Plans (work.md: Projects + Initiatives + Blockers) ───────────────── */
 .fact.unknown { border-style: dashed; border-color: var(--unknown-line); } .fact.unknown .fact-n { color: var(--unknown); }
@@ -822,7 +826,7 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .agents-page .waiting-card { margin-bottom: var(--s-3); }
 .waiting-card.bad { border-color: var(--bad-line); background: var(--bad-wash); }
 .need-card.muted-card { border-color: var(--unknown-line); border-style: dashed; background: var(--surface); margin-top: var(--s-4); }
-.page-primary { position: sticky; bottom: calc(var(--nav-h) + 12px); display: flex; justify-content: center; margin-top: var(--s-4); z-index: 5; }
+.page-primary { position: sticky; bottom: calc(var(--nav-total) + 12px); display: flex; justify-content: center; margin-top: var(--s-4); z-index: 5; }
 @media (min-width: 900px) { .page-primary { position: static; justify-content: flex-start; } }
 .connect-btn { box-shadow: var(--accent-glow); }
 .select-input { height: 44px; appearance: auto; }
@@ -943,7 +947,7 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .hljs-comment, .hljs-quote { color: var(--text-faint); font-style: italic; }
 .hljs-number, .hljs-literal { color: #b48ead; }
 .hljs-title, .hljs-section, .hljs-name { color: var(--text-strong); font-weight: 600; }
-.files-edit-fab { position: fixed; right: var(--s-4); bottom: calc(var(--nav-h) + 16px + env(safe-area-inset-bottom)); z-index: 6; min-height: 48px; padding: 0 var(--s-6); border-radius: 999px; box-shadow: 0 8px 24px rgb(0 0 0 / .35); width: auto; }
+.files-edit-fab { position: fixed; right: var(--s-4); bottom: calc(var(--nav-total) + 16px); z-index: 6; min-height: 48px; padding: 0 var(--s-6); border-radius: 999px; box-shadow: 0 8px 24px rgb(0 0 0 / .35); width: auto; }
 .files-editor { width: 100%; min-height: calc(100vh - 220px); padding: var(--s-3); font-family: var(--font-mono); font-size: 16px; line-height: 1.5; color: var(--text-strong); background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-md); white-space: pre-wrap; overflow-wrap: anywhere; resize: vertical; }
 .files-kept { margin-bottom: var(--s-2); }
 .files-menu, .files-conflict { display: flex; flex-direction: column; align-items: stretch; gap: var(--s-2); }
@@ -976,6 +980,8 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .stale-banner { margin: var(--s-2) 0; padding: var(--s-2) var(--s-3); border: 1px dashed var(--unknown-line); border-radius: var(--r-md); color: var(--text-muted); font-size: 14px; }
 .machine-line { margin: var(--s-1) 0; padding: var(--s-2) var(--s-3); border: 1px solid var(--hairline); border-radius: var(--r-md); font-size: 14.5px; color: var(--text); overflow-wrap: anywhere; }
 .machine-line.dashed { border-style: dashed; border-color: var(--unknown-line); color: var(--text-muted); }
+a.machine-line-link { display: block; text-decoration: none; }
+a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .sess-pick { margin-top: var(--s-10); text-align: center; }
 .sess-open { display: flex; flex-direction: column; gap: var(--s-2); min-height: calc(100dvh - 140px); }
 .sess-bar { display: flex; align-items: center; gap: var(--s-2); }
@@ -1010,7 +1016,9 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .sess-h-tool { margin: 0; font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .sess-pre { margin: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.4; color: #d6dbe4; white-space: pre-wrap; overflow-wrap: anywhere; }
 .sess-resume { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 2; }
-.sess-composer { display: flex; gap: var(--s-2); align-items: flex-end; position: sticky; bottom: 0; padding: var(--s-2) 0; background: var(--bg); }
+/* Phone: the bottom nav is fixed over the last --nav-h of the screen, so the
+   composer sticks just above it, never underneath. Desktop resets it to static. */
+.sess-composer { display: flex; gap: var(--s-2); align-items: flex-end; position: sticky; bottom: var(--nav-total); z-index: 5; padding: var(--s-2) 0; background: var(--bg); }
 .sess-input { flex: 1; min-height: 44px; font-size: 16px; resize: none; }
 .sess-input::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sess-composer-btns { display: flex; gap: var(--s-2); }
@@ -1045,7 +1053,9 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .sess-default-box { border: 1px solid var(--hairline); border-radius: var(--r-md); padding: var(--s-3); margin: var(--s-2) 0; }
 .skeleton-row { pointer-events: none; }
 .sess-view, .sess-open, .sess-term-wrap, .sess-composer { min-width: 0; max-width: 100%; }
-.sess-view { overflow-x: hidden; }
+/* clip, not hidden: hidden makes .sess-view a scroll container, which pins the
+   sticky composer to a box that never scrolls (it then sat under the bottom nav). */
+.sess-view { overflow-x: clip; }
 .sess-input { min-width: 0; }
 .sess-term .xterm { max-width: 100%; }
 
@@ -1151,8 +1161,10 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 /* Queue pace card (docs/specs/queue-pace.md) */
 .pace-card { grid-column: 1 / -1; margin-top: var(--s-4, 16px); }
 .pace-lines { list-style: none; margin: var(--s-2, 8px) 0 0; padding: 0; display: grid; gap: 8px; }
-.pace-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 14px; color: var(--text); }
+.pace-line { display: grid; grid-template-columns: auto 1fr; align-items: baseline; column-gap: 8px; font-size: 14px; color: var(--text); }
 .pace-line .dot { position: relative; top: -1px; }
+.pace-line .pace-text { min-width: 0; }
+.pace-line .pace-prs { grid-column: 2; }
 .pace-line[data-tone="muted"] .pace-text { color: var(--text-muted); }
 .pace-prs { display: inline-flex; gap: 6px; flex-wrap: wrap; font-size: 13px; }
 .mb-pace { margin-top: 4px; }

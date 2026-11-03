@@ -131,6 +131,24 @@ export function historyUrl(s, before = null) {
   return `/sessions/${encodeURIComponent(s.tmuxSession)}/transcript?${q}`;
 }
 
+/** After a session's own record runs out, History continues into its topic's earlier
+ *  messages (earlier sessions of the same conversation), a page at a time. */
+export const TOPIC_HISTORY_PAGE = 50;
+export function topicOf(s) {
+  const n = Number(s && s.platform === 'telegram' ? s.platformId : NaN);
+  return Number.isSafeInteger(n) && n > 1 ? n : null;
+}
+export function topicHistoryUrl(topicId, beforeMs) {
+  const q = new URLSearchParams({ limit: String(TOPIC_HISTORY_PAGE), scope: 'pool', before: String(Math.floor(beforeMs)) });
+  return `/telegram/topics/${encodeURIComponent(topicId)}/messages?${q}`;
+}
+/** A topic message as a History entry: who, when, what. */
+export function topicHistoryEntry(m) {
+  if (!m || typeof m.text !== 'string' || !m.text.trim()) return null;
+  const at = Date.parse(m.timestamp);
+  return { role: m.fromUser ? 'user' : 'assistant', text: m.text, at: Number.isFinite(at) ? m.timestamp : null, atMs: Number.isFinite(at) ? at : null };
+}
+
 /** Words for a failed History read: never "no history" when the read failed. */
 export function historyErrorWords(res) {
   const d = (res && res.data) || {};

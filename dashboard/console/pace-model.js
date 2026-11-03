@@ -60,6 +60,11 @@ export function paceLine(q, showMachine = false) {
   if (person && q.verdict === 'falling-behind') verdict = 'waiting on you';
   if (q.verdict === 'catching-up' && typeof q.daysToClear === 'number' && !person) verdict += `, about ${fmtRate(q.daysToClear)} days to clear`;
   const inR = fmtRate(q.inflowPerDay), outR = fmtRate(q.outflowPerDay);
+  // Nothing in, nothing done, but items still open: that is a stalled pile, not "steady".
+  const open = Number(q.open);
+  if (!Number(q.inflowPerDay) && !Number(q.outflowPerDay) && open > 0) {
+    return `${label}${where}: nothing came in or got done this week; ${open} still open`;
+  }
   const rates = inR !== null && outR !== null ? `${inR} a day in, ${outR} done — ` : '';
   let line = `${label}${where}: ${rates}${verdict}`;
   if (q.verdict === 'falling-behind') {

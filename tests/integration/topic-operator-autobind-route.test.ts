@@ -151,3 +151,35 @@ describe('/internal/telegram-forward → topic-operator auto-bind (integration)'
     expect(store!.getOperator(19437)).toBeNull();
   });
 });
+
+describe('/internal/telegram-forward carries topic names from the lifeline', () => {
+  const named = () => {
+    const calls: Array<[number, string, boolean]> = [];
+    const a = { ...makeAdapter([7812716706]), captureTopicName: (id: number, n: string, r: boolean) => { calls.push([id, n, r]); } };
+    return { a, calls };
+  };
+  it('a name-only forward records the name and is acknowledged without being treated as a message', async () => {
+    const { a, calls } = named();
+    const app = mountForwardRoute(a, true);
+    const res = await request(app).post('/internal/telegram-forward').set('Authorization', 'Bearer test')
+      .send({ topicId: 135187, text: '', topicName: 'Max credits', topicRenamed: false, nameOnly: true });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, nameOnly: true });
+    expect(calls).toEqual([[135187, 'Max credits', false]]);
+  });
+  it('a normal message carrying its topic name records it and is still delivered', async () => {
+    const { a, calls } = named();
+    const app = mountForwardRoute(a, true);
+    const res = await request(app).post('/internal/telegram-forward').set('Authorization', 'Bearer test')
+      .send({ topicId: 135187, text: 'hello', fromUserId: 7812716706, fromFirstName: 'Justin', messageId: 800, topicName: 'Max credits' });
+    expect(res.status).toBe(200);
+    expect(calls).toEqual([[135187, 'Max credits', false]]);
+    expect(store!.getOperator(135187)?.uid).toBe('7812716706');
+  });
+  it('an empty text without nameOnly is still refused', async () => {
+    const { a } = named();
+    const app = mountForwardRoute(a, true);
+    const res = await request(app).post('/internal/telegram-forward').set('Authorization', 'Bearer test').send({ topicId: 1, text: '', topicName: 'x' });
+    expect(res.status).toBe(400);
+  });
+});

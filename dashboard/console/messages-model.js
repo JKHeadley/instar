@@ -82,7 +82,8 @@ export function buildMessagesPage(statusRes, healthRes, now = Date.now(), topicN
     const automatic = held.filter(h => h.producerKind === 'server-automation').length;
     headline = heldHeadline(held.length, replies, automatic, held.length - replies - automatic);
   } else if (expired) headline = `${expired} ${expired === 1 ? 'message' : 'messages'} expired before delivery.`;
-  else headline = 'No messages are held.';
+  // Held replies are a fault, never a feature to report on: with none, the page is just Messages.
+  else headline = 'Messages to you';
   const sub = [
     held.length ? 'I need to restore delivery. This is not a task for you.' : null,
     individual.length && individual[individual.length - 1].sinceTs ? `The oldest has waited ${ago(individual[individual.length - 1].sinceTs, now).replace(' ago', '')}.` : null,

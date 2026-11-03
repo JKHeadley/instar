@@ -115,6 +115,23 @@ export function needsOperator(item) {
   return /decision|approval|review|sign-?in|relogin/i.test(cat);
 }
 
+/**
+ * Where the operator acts on an item. Every row in "needs you" gets one: its
+ * own conversation; the Desktop page for that machine; the Accounts page for a
+ * sign-in; otherwise the Attention topic, where the item was posted and can be
+ * answered.
+ */
+export function needAction(item) {
+  if (item && item.topicId != null && Number.isFinite(Number(item.topicId))) return { kind: 'topic', topicId: Number(item.topicId) };
+  const cat = String((item && item.category) || '');
+  if (/^desktop$/i.test(cat)) {
+    const q = item.machineId ? `?machineId=${encodeURIComponent(item.machineId)}` : '';
+    return { kind: 'href', href: `/dashboard/desktop.html${q}` };
+  }
+  if (/sign-?in|relogin/i.test(cat)) return { kind: 'href', href: '#/capacity/accounts' };
+  return { kind: 'attention' };
+}
+
 export const STALE_DAYS = 14;
 const DAY = 86400000;
 
@@ -149,12 +166,15 @@ export function buildNeeds(res, now = Date.now(), names = {}) {
     return {
       key: groupKey(top), stale, last: g.last, prio: PRIORITY[top.priority] ?? 9,
       main: top.title || top.summary || 'Untitled item',
-      sub: [g.items.length > 1 ? `${g.items.length} copies` : null, [...g.machines].join(', ') || null, String(top.priority || '').toLowerCase()].filter(Boolean).join(' · '),
+      // The machine only when the title does not already start with it; the
+      // priority word is the queue's bookkeeping, not something to act on.
+      sub: [g.items.length > 1 ? `${g.items.length} copies` : null,
+        [...g.machines].filter((m) => !String(top.title || top.summary || '').startsWith(`${m}:`)).join(', ') || null].filter(Boolean).join(' · '),
       end: (ago(g.last, now) || '').replace(' ago', '') ? `${ago(g.last, now)}` : '',
       tone: stale ? 'unknown' : (top.priority === 'URGENT' ? 'bad' : 'attn'),
       detail: top.description || top.body || '',
       expandable: true,
-      action: Number.isFinite(Number(top.topicId)) ? { kind: 'topic', topicId: Number(top.topicId) } : null,
+      action: needAction(top),
     };
   }).sort((a, b) => Number(a.stale) - Number(b.stale) || a.prio - b.prio || b.last - a.last);
   const current = all.filter((g) => !g.stale);
@@ -555,4 +575,24 @@ export function headline(allCards) {
   }
   if (bad || otherAttn || blind) return { text: 'Nothing needs you.', tone: 'ok', sub: 'I’m handling the rest. It’s under “See agent status”.' };
   return { text: 'All quiet.', tone: 'ok', sub: 'Nothing needs you right now.' };
+}
+
+// ── Partial pooled reads ──────────────────────────────────────────────────
+/** How long a machine's last complete rows may stand in while it is retried. */
+export const PARTIAL_GRACE_MS = 2 * 60 * 1000;
+
+/**
+ * Merge a partial pooled answer (some machines did not answer) with the last
+ * complete one: fresh rows from the machines that answered, plus the missing
+ * machines' rows from the last complete answer, if it is recent. Returns null
+ * when that is not possible, so the partial answer is shown as it is.
+ */
+export function fillPartial(fresh, previous, listKey, now, at) {
+  const failed = fresh?.data?.pool?.failed;
+  if (!previous || !Array.isArray(failed) || !failed.length || now - at > PARTIAL_GRACE_MS) return null;
+  const missing = new Set(failed.map((f) => f && f.machineId).filter(Boolean));
+  if (missing.size !== failed.length) return null; // a failure we cannot attribute to a machine stays visible
+  const rows = (previous.data?.[listKey] || []).filter((r) => r && missing.has(r.machineId));
+  return { ...fresh, retrying: true, filledFrom: at,
+    data: { ...fresh.data, [listKey]: [...(fresh.data?.[listKey] || []), ...rows], pool: { ...fresh.data.pool, failed: [] } } };
 }

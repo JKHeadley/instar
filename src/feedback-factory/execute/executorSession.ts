@@ -123,7 +123,7 @@ export function shq(value: string): string {
 export function classifyBaseFailure(output: string, exitCode: number | null, changedSources: string[], importedNames: Record<string, string> = {}): { ok: true; kind: 'assertion' | 'missing-new-source' } | { ok: false; reason: string } {
   const text = output.replace(/\u001b\[[0-9;]*m/g, '');
   if (exitCode === 0) return { ok: false, reason: vitestPassedTestCount(text) > 0 ? 'test-passes-at-base' : 'test-not-found-at-base' };
-  if (/No test files found|no tests? (found|ran)|0 passed.*0 failed|Tests\s+no tests/i.test(text)) return { ok: false, reason: 'test-not-found-at-base' };
+  if (/No test files found/i.test(text)) return { ok: false, reason: 'test-not-found-at-base' };
   const missing = [...text.matchAll(/(?:Cannot find module|Failed to (?:load|resolve) (?:url|import)|does not provide an export named|is not exported by)\s+['"]?([^'"\s)]+)['"]?/g)].map((m) => m[1]);
   const exportMissing = [...text.matchAll(/(?:module|file)\s+['"]([^'"]+)['"]\s+does not provide an export named/g)].map((m) => m[1]);
   const referenced = [...missing, ...exportMissing];
@@ -135,6 +135,10 @@ export function classifyBaseFailure(output: string, exitCode: number | null, cha
     });
     return allNew ? { ok: true, kind: 'missing-new-source' } : { ok: false, reason: 'import-error-at-base' };
   }
+  // Vitest collects zero tests when a test imports a newly added source file that is
+  // absent at base. The spec allows that precise failure, so check it before this
+  // generic zero-test summary. A missing unrelated import was rejected above.
+  if (/no tests? (found|ran)|0 passed.*0 failed|Tests\s+no tests/i.test(text)) return { ok: false, reason: 'test-not-found-at-base' };
   // ESM through vitest reports a missing NAMED export as "<name> is not a function/constructor":
   // allowed only when every such name was imported by the changed tests from a changed source file.
   const notCallable = [...text.matchAll(/TypeError: (?:\(0 , \w+\.)?(\w+)\)? is not a (?:function|constructor)/g)].map((m) => m[1]);

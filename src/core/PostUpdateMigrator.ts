@@ -984,6 +984,9 @@ An agent with no Telegram owner can still add a phone. The pairing link works th
 export const APP_MEDIA_CLAUDEMD_MARKER = '### App conversation media';
 /** The section's last sentence before copies between machines shipped (refreshed in place on update). */
 export const APP_MEDIA_STALE_COPY_LINE = 'A file on another of my machines reads `not-here` until copies between machines ship.';
+/** The voice form before server-side transcription shipped (increment 2; refreshed in place on update). */
+export const APP_MEDIA_STALE_VOICE_LINE = '`[voice:<path>] <transcript>`.';
+export const APP_MEDIA_CURRENT_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here with the same provider as Telegram voice notes, `GROQ_API_KEY` or `OPENAI_API_KEY`; with none, or when it fails or takes over 60 s, the line reads `(transcription unavailable: <reason>; the audio file is at that path)` and I can still read the file).';
 export const APP_MEDIA_CURRENT_COPY_LINE = 'A file on another of my machines is copied here by itself, checked against its hash: while it copies, history reads `not-here` and a download answers 202 `fetching`. A message whose file has not arrived reads `[file still copying: <name>]`, and one `[file now available: <path>]` line follows when it lands. `/health?scope=pool` → `appMediaPool` shows every machine; `singleCopyBlobs` counts files only this machine holds (null when it cannot be measured, never a guessed 0).';
 
 /**
@@ -993,7 +996,7 @@ export const APP_MEDIA_CURRENT_COPY_LINE = 'A file on another of my machines is 
 export function APP_MEDIA_CLAUDEMD_SECTION(): string {
   return `\n${APP_MEDIA_CLAUDEMD_MARKER}
 
-App messages may carry files. Each arrives as one line before the caption, with a local path: \`[image:<path>]\`, \`[document:<path>] (<name>, <type>, <size>)\`, \`[video:<path>]\`, \`[voice:<path>] <transcript>\`. Read the file at that path; the copy is mine and a change to it never touches the stored file.
+App messages may carry files. Each arrives as one line before the caption, with a local path: \`[image:<path>]\`, \`[document:<path>] (<name>, <type>, <size>)\`, \`[video:<path>]\`, ${APP_MEDIA_CURRENT_VOICE_LINE} Read the file at that path; the copy is mine and a change to it never touches the stored file.
 - **Earlier files** are listed in the context file by name with an attachment id. Open one with \`.instar/scripts/app-media-path <attachment id>\`, which prints a path.
 - **Reply with files**: \`.instar/scripts/app-reply.sh --file <path> "Here it is"\` (up to 10 \`--file\`, before the text; the caption is the text argument or piped in, read with a bounded wait; 50 MiB each, 64 MiB per reply). Put a generated file in \`.instar/app-media/outbox/\`, the project or the temporary directory.
 - **Refused, and why:** files outside the project, the outbox and the temporary directory (403 \`path-not-allowed\`), key-material paths (403 \`key-material\`), hard links (403 \`hard-link\`), and any file holding a live credential in its text or a printable run (the non-overridable 422 credential wall). Compressed or encrypted contents cannot be inspected, so never attach an archive of credentials.
@@ -8772,6 +8775,15 @@ setTimeout(() => process.exit(0), 2000);
     // now false. Refresh that one line in place (content-sniffed; idempotent).
     // Copies between machines (media spec §4.12): the media section's "until copies ship" line is
     // now false. Refresh that one line in place (content-sniffed; idempotent).
+    // Server-side voice transcription (media spec §4.5.1, increment 2): refresh the voice form in place.
+    {
+      const staleVoice = `\`[video:<path>]\`, ${APP_MEDIA_STALE_VOICE_LINE} Read the file at that path`;
+      if (content.includes(staleVoice)) {
+        content = content.replace(staleVoice, `\`[video:<path>]\`, ${APP_MEDIA_CURRENT_VOICE_LINE} Read the file at that path`);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: updated the App conversation media voice line');
+      }
+    }
     if (content.includes(APP_MEDIA_STALE_COPY_LINE)) {
       content = content.replace(APP_MEDIA_STALE_COPY_LINE, APP_MEDIA_CURRENT_COPY_LINE);
       patched = true;
@@ -12736,6 +12748,18 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       else content = content.replace(/\*\*Attention Queue\*\*[^\n]*\n/, (m) => `${m}${lifecycleBullet}`);
       patched = true;
       result.upgraded.push('CLAUDE.md: added attention lifecycle (close-on-cause + expiry) bullet');
+    }
+
+    // Attention without Telegram (locked-security-item-no-telegram): deployed agents
+    // learn that an agent with no Telegram still has a local attention list.
+    // Sniff: 'local-attention-items.json'.
+    if (content.includes('**Attention Queue**') && !content.includes('local-attention-items.json')) {
+      const localBullet = `- **No Telegram?** An agent without Telegram still has an attention list: items it must show the owner (today the remote-desktop security items, such as "A Mac may still be unlocked") are kept on disk in \`state/local-attention-items.json\`, read with the same \`GET /attention\` / \`GET /attention/ATT-ID\` (the list carries \`surface: "local"\`), resolved with the same \`PATCH /attention/ATT-ID\`, shown in the iPhone app, and pushed to paired phones. **When to use** (PROACTIVE): on an agent without Telegram, the owner asks "is anything wrong / did a Mac stay unlocked?" → read \`GET /attention\`.\n`;
+      const proactive = /^- \*\*Proactive use\*\*: queue an item only[^\n]*\n/m;
+      if (proactive.test(content)) content = content.replace(proactive, (m) => `${m}${localBullet}`);
+      else content = content.replace(/\*\*Attention Queue\*\*[^\n]*\n/, (m) => `${m}${localBullet}`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added attention-without-Telegram bullet');
     }
 
     // WS4.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC) — pool-scope jobs awareness.
@@ -18610,6 +18634,29 @@ echo "=== END IDENTITY RECOVERY ==="
 // detected. Wrapped so a failure (e.g. 503 when the ledger ships dark, no auth, no
 // server) can NEVER alter the hook's existing stdout checklist behavior. Auth
 // mirrors hook-event-reporter.js (INSTAR_AUTH_TOKEN / INSTAR_SERVER_URL env).
+// The ledger entry is the MESSAGE, not the shell command that sent it: a reply is sent
+// as \`cat <<'EOF' | <reply script> N\` + text + \`EOF\`, and recording the whole command
+// put shell wrapping and signed links on the dashboard (2026-11-02). Take the heredoc
+// body when there is one and mask credential-looking query values.
+function blockerTextOf(command, isComm) {
+  const s = String(command || '');
+  const re = /^([^\\n]*<<-?\\s*['"]?(\\w+)['"]?[^\\n]*)\\n([\\s\\S]*?)(?:\\n[ \\t]*\\2[ \\t]*(?=\\n|$)|$)/gm;
+  let pick = null; let first = null; let m;
+  while ((m = re.exec(s))) {
+    if (first === null) first = m[3];
+    if (isComm && isComm(m[1])) { pick = m[3]; break; }
+  }
+  const body = pick !== null ? pick : (first !== null ? first : s);
+  return body.replace(/([?&](?:sig|signature|token|key|auth|access_token)[^=&\\s]*=)[^&\\s]+/gi, '$1…').trim();
+}
+
+// A command is a message only when the reply/send script is invoked OUTSIDE heredoc
+// bodies: a command that writes a file whose text mentions the script (code, docs,
+// tests) is not a message (2026-11-02: such commands opened "Just spotted" blockers).
+function withoutHeredocBodies(command) {
+  return String(command || '').replace(/(<<-?\\s*['"]?(\\w+)['"]?[^\\n]*)\\n[\\s\\S]*?\\n[ \\t]*\\2[ \\t]*(?=\\n|$)/g, '$1');
+}
+
 function autoOpenBlocker(detectedText, origin) {
   try {
     const authToken = process.env.INSTAR_AUTH_TOKEN || '';
@@ -18662,7 +18709,8 @@ process.stdin.on('end', () => {
       /telegram-reply/i, /send-email/i, /send-message/i,
       /POST.*\\/telegram\\/reply/i, /slack.*send/i
     ];
-    if (!commPatterns.some(p => p.test(command))) process.exit(0);
+    const isComm = (text) => commPatterns.some(p => p.test(text));
+    if (!isComm(withoutHeredocBodies(command))) process.exit(0);
 
     // Exempt: genuinely human-only actions
     if (/password|captcha|legal|billing|payment credential/i.test(command)) process.exit(0);
@@ -18842,7 +18890,7 @@ process.stdin.on('end', () => {
     // already been written. We hold the process open just long enough to flush the
     // fire-and-forget POST, then exit. A failure (503 dark / no server) is silent.
     if (inabilityMatches.length > 0) {
-      autoOpenBlocker(command, 'deferral-detector');
+      autoOpenBlocker(blockerTextOf(command, isComm), 'deferral-detector');
       setTimeout(() => process.exit(0), 200);
       return;
     }

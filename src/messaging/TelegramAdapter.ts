@@ -12,7 +12,7 @@ import { recordTelegramEditRejection, takeTelegramEditRejection } from './Telegr
  */
 
 import fs from 'node:fs';
-import { verifiedChannelIdentity } from './shared/channelIdentity.js';
+import { verifiedChannelIdentity, nameIdsInText } from './shared/channelIdentity.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
 import { telegramFetch } from './telegram-egress.js';
 import path from 'node:path';
@@ -41,6 +41,7 @@ import {
   recordFormatFallbackPlainRetry,
 } from './telegramFormatMetrics.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { transcribeAudioFile } from '../core/VoiceTranscription.js';
 import { pickDashboardPin } from '../core/dashboardPin.js';
 import { stopAutonomousTopic, type AutonomousJournalSeam } from '../core/AutonomousSessions.js';
 import { AttentionTopicGuard, TopicFloodBudgetError, type AttentionTopicGuardConfig } from './AttentionTopicGuard.js';
@@ -2910,6 +2911,41 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
+   * Record a topic's name from Telegram's own evidence (the creation or rename
+   * service message, or the creation message a topic message replies to).
+   * Used by the poller here and by the lifeline forward on agents whose
+   * lifeline owns polling, where the server never sees those service messages.
+   * A known name is replaced only by a rename.
+   */
+  captureTopicName(numericTopicId: number, detectedName: string, isEditEvent: boolean): void {
+    const name = String(detectedName).trim().slice(0, 128); // bounded-input-reviewed: display-name cap (Telegram allows 128), not a model prompt
+    if (!name || !Number.isSafeInteger(numericTopicId)) return;
+    const currentName = this.topicToName.get(numericTopicId);
+    if (!currentName || /^topic-\d+$/.test(currentName) || isEditEvent) {
+      const isRename = isEditEvent && currentName !== name;
+      if (currentName === name) return;
+      this.topicToName.set(numericTopicId, name);
+      this.saveRegistry();
+      console.log(`[telegram] Captured topic name: ${numericTopicId} → "${name}"`);
+      // UNIFIED-SESSION-LIFECYCLE bonus — fire on TRUE rename only (not on
+      // initial capture or topic creation). The handler updates the bound
+      // session's display `name` so the dashboard label tracks the user's
+      // rename. Fire-and-forget: rename-display is non-critical.
+      if (isRename && this.topicRenamedHandler) {
+        try {
+          void Promise.resolve(this.topicRenamedHandler(numericTopicId, name)).catch((err) => {
+            // @silent-fallback-ok: rename display is non-critical; the failure is logged
+            console.error(`[telegram] topicRenamedHandler failed for ${numericTopicId}:`, err);
+          });
+        } catch (err) {
+          // @silent-fallback-ok: rename display is non-critical; the failure is logged
+          console.error(`[telegram] topicRenamedHandler threw for ${numericTopicId}:`, err);
+        }
+      }
+    }
+  }
+
+  /**
    * Actively resolve a topic's name from Telegram by sending a temporary probe message
    * that replies to the topic's service message (whose message_id = topic_id).
    * The API response includes reply_to_message.forum_topic_created.name.
@@ -2955,6 +2991,8 @@ export class TelegramAdapter implements MessagingAdapter {
     } catch (err) {
       const errStr = String(err);
       console.log(`[telegram] Could not resolve topic name for ${topicId}: ${err}`);
+      // A definite refusal by Telegram (HTTP 400), not a transient failure.
+      if (/telegram-400|Bad Request|message thread not found|TOPIC_DELETED/i.test(errStr)) this.lastProbeRefused = topicId;
       // If the topic was deleted, mark it so we don't retry resolution on every startup
       if (errStr.includes('message thread not found') || errStr.includes('TOPIC_DELETED')) {
         this.topicToName.set(topicId, `[deleted] topic-${topicId}`);
@@ -2968,15 +3006,38 @@ export class TelegramAdapter implements MessagingAdapter {
    * Resolve all topic names that are still using the fallback "topic-NNNN" pattern.
    * Called on startup to backfill names for topics created before name tracking.
    */
+  private static readonly PROBE_REFUSAL_BACKOFF_MS = 7 * 24 * 60 * 60 * 1000;
+  private lastProbeRefused: number | null = null;
+  private probeRefusalsPath(): string { return path.join(this.stateDir, 'topic-name-probe-refusals.json'); }
+  private readProbeRefusals(): Record<number, number> {
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.probeRefusalsPath(), 'utf-8')) as Record<string, unknown>;
+      const out: Record<number, number> = {};
+      for (const [k, v] of Object.entries(raw)) if (Number.isSafeInteger(Number(k)) && typeof v === 'number') out[Number(k)] = v;
+      return out;
+    } catch { return {}; } // @silent-fallback-ok: no record yet means every topic may be probed
+  }
+  private writeProbeRefusals(r: Record<number, number>): void {
+    try { fs.writeFileSync(this.probeRefusalsPath(), JSON.stringify(r)); } catch { /* @silent-fallback-ok: worst case the topic is probed again next start */ }
+  }
+
   async resolveUnknownTopicNames(): Promise<void> {
     const unknowns: number[] = [];
     for (const topicId of this.topicToSession.keys()) {
       if (!this.getTopicName(topicId)) unknowns.push(topicId);
     }
-    if (unknowns.length === 0) return;
-    console.log(`[telegram] Resolving ${unknowns.length} unknown topic names...`);
-    for (const topicId of unknowns) {
-      await this.resolveTopicName(topicId);
+    // General (1) has no creation message to reply to, and a topic Telegram
+    // refused recently (deleted, or not in this chat) is not asked again every
+    // start: each refused probe is a real refused send (2026-11-02: ~190 a week).
+    const refused = this.readProbeRefusals();
+    const now = Date.now();
+    const toProbe = unknowns.filter((id) => id > 1 && !(now - (refused[id] ?? 0) < TelegramAdapter.PROBE_REFUSAL_BACKOFF_MS));
+    if (toProbe.length === 0) return;
+    console.log(`[telegram] Resolving ${toProbe.length} unknown topic names...`);
+    for (const topicId of toProbe) {
+      this.lastProbeRefused = null;
+      const ok = await this.resolveTopicName(topicId);
+      if (ok === null && this.lastProbeRefused === topicId) { refused[topicId] = Date.now(); this.writeProbeRefusals(refused); }
       // Small delay to avoid hitting rate limits
       await new Promise(r => setTimeout(r, 200));
     }
@@ -3617,82 +3678,15 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
-   * Resolve voice transcription provider from config or environment.
-   * Checks explicit config, then env vars, then auto-detects.
-   */
-  private resolveTranscriptionProvider(): { apiKey: string; baseUrl: string; model: string } | null {
-    const providers: Record<string, { envKey: string; baseUrl: string; model: string }> = {
-      groq: {
-        envKey: 'GROQ_API_KEY',
-        baseUrl: 'https://api.groq.com/openai/v1',
-        model: 'whisper-large-v3',
-      },
-      openai: {
-        envKey: 'OPENAI_API_KEY',
-        baseUrl: 'https://api.openai.com/v1',
-        model: 'whisper-1',
-      },
-    };
-
-    // Check explicit config
-    const explicit = this.config.voiceProvider?.toLowerCase();
-    if (explicit && providers[explicit]) {
-      const p = providers[explicit];
-      const apiKey = process.env[p.envKey];
-      if (!apiKey) {
-        console.warn(`[telegram] ${p.envKey} not set — required for ${explicit} voice transcription`);
-        return null;
-      }
-      return { apiKey, baseUrl: p.baseUrl, model: p.model };
-    }
-
-    // Auto-detect: try Groq first (cheaper), then OpenAI
-    for (const [name, p] of Object.entries(providers)) {
-      const apiKey = process.env[p.envKey];
-      if (apiKey) {
-        console.log(`[telegram] Auto-detected voice transcription provider: ${name}`);
-        return { apiKey, baseUrl: p.baseUrl, model: p.model };
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Transcribe a voice message using the configured provider.
+   * Transcribe a voice message with the shared provider (src/core/VoiceTranscription.ts):
+   * the explicit `voiceProvider` config first, then Groq, then OpenAI from the environment.
    */
   private async transcribeVoice(filePath: string): Promise<string> {
-    const provider = this.resolveTranscriptionProvider();
-    if (!provider) {
-      throw new Error('No voice transcription provider configured. Set GROQ_API_KEY or OPENAI_API_KEY.');
-    }
-
-    const formData = new FormData();
-    const fileBuffer = fs.readFileSync(filePath);
-    const blob = new Blob([fileBuffer], { type: 'audio/ogg' });
-    formData.append('file', blob, path.basename(filePath));
-    formData.append('model', provider.model);
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 60_000);
-    try {
-      const response = await fetch(`${provider.baseUrl}/audio/transcriptions`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${provider.apiKey}` },
-        body: formData,
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`Transcription API error (${response.status}): ${errText}`);
-      }
-
-      const data = await response.json() as { text: string };
-      return data.text;
-    } finally {
-      clearTimeout(timer);
-    }
+    return transcribeAudioFile(filePath, {
+      explicit: this.config.voiceProvider,
+      mediaType: 'audio/ogg',
+      log: (note) => console.log(`[telegram] ${note}`),
+    });
   }
 
   // ── Photo Handling ───────────────────────────────────────
@@ -4201,6 +4195,55 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /** Full JSONL scan for a topic's most recent entries (the cache seed / fallback path). */
+  /**
+   * Older history for scroll-back: up to `limit` entries for the topic logged
+   * strictly before `beforeMs`, oldest first. Reads the log directly (the tail
+   * cache only holds recent entries); bounded by the log's rotation cap.
+   */
+  getTopicHistoryBefore(topicId: number, beforeMs: number, limit: number = 20): LogEntry[] {
+    if (!fs.existsSync(this.messageLogPath)) return [];
+    const matching: LogEntry[] = [];
+    // Read backwards in 1 MB chunks and stop once the page is full: the log can
+    // be well over 100 MB, and a scroll-back page usually needs only its tail.
+    const CHUNK = 1024 * 1024;
+    const fd = fs.openSync(this.messageLogPath, 'r');
+    try {
+      let pos = fs.fstatSync(fd).size;
+      // The partial first line of each chunk is kept as bytes and joined to the
+      // previous chunk before decoding, so a character split across chunks survives.
+      let carry = Buffer.alloc(0);
+      while (pos > 0 && matching.length < limit) {
+        const size = Math.min(CHUNK, pos);
+        pos -= size;
+        const read = Buffer.alloc(size);
+        fs.readSync(fd, read, 0, size, pos);
+        let buf = Buffer.concat([read, carry]);
+        if (pos > 0) {
+          const nl = buf.indexOf(0x0a);
+          if (nl < 0) { carry = buf; continue; }
+          carry = buf.subarray(0, nl);
+          buf = buf.subarray(nl + 1);
+        } else {
+          carry = Buffer.alloc(0);
+        }
+        const lines = buf.toString('utf-8').split('\n');
+        for (let i = lines.length - 1; i >= 0 && matching.length < limit; i--) {
+          if (!lines[i]) continue;
+          try {
+            const entry: LogEntry = JSON.parse(lines[i]);
+            const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+            if (entryTopicId !== topicId) continue;
+            const at = Date.parse(String(entry.timestamp));
+            if (Number.isFinite(at) && at < beforeMs) matching.unshift(entry);
+          } catch { /* @silent-fallback-ok: a malformed log line is skipped; the page is built from the lines that parse */ }
+        }
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+    return this.authorshipJoin.join(matching);
+  }
+
   private scanLogForTopic(topicId: number, limit: number): LogEntry[] {
     if (!fs.existsSync(this.messageLogPath)) return [];
 
@@ -4409,7 +4452,23 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Create an attention item and its Telegram topic.
    */
-  async createAttentionItem(item: AttentionObservation, routing?: { hubOnly: true }): Promise<AttentionItem> {
+  /** Machine id → nickname, wired by the server once the pool registry exists. */
+  private machineNameResolver: ((machineId: string) => string | null | undefined) | null = null;
+  setMachineNameResolver(fn: (machineId: string) => string | null | undefined): void { this.machineNameResolver = fn; }
+
+  private nameAttentionString(text: string): string {
+    return nameIdsInText(text, { topicName: (id: number) => this.getTopicName(id), machineName: this.machineNameResolver ?? undefined });
+  }
+
+  /** Operator-facing attention text names topics and machines, never their ids. */
+  private nameAttentionText(item: AttentionObservation): AttentionObservation {
+    const fix = (v: unknown) => (typeof v === 'string' ? this.nameAttentionString(v) : v);
+    return { ...item, title: fix(item.title) as string, summary: fix(item.summary) as string,
+      ...(item.description !== undefined ? { description: fix(item.description) as string } : {}) };
+  }
+
+  async createAttentionItem(rawItem: AttentionObservation, routing?: { hubOnly: true }): Promise<AttentionItem> {
+    const item = this.nameAttentionText(rawItem);
     // One row per condition (attention-lifecycle-close-on-cause §3.1): an
     // observation that lands on an existing row refreshes/reopens it instead
     // of creating a sibling. Only a genuinely new condition reaches the
@@ -5137,8 +5196,15 @@ export class TelegramAdapter implements MessagingAdapter {
     // claiming "agent" must not keep reaching the hub through its old row.
     if (obs.sourceContext && obs.sourceContext !== row.sourceContext) row.sourceContext = obs.sourceContext;
 
-    const changed = row.title !== obs.title || row.summary !== obs.summary
-      || (row.description ?? '') !== (obs.description ?? '') || row.priority !== obs.priority;
+    // Compare with the stored text named the same way, so a row first stored
+    // with a raw id (or before its topic had a name) is not reposted as if the
+    // ask had changed. A naming-only difference refreshes the text quietly.
+    const named = (v: string | undefined) => this.nameAttentionString(v ?? '');
+    const changed = named(row.title) !== obs.title || named(row.summary) !== obs.summary
+      || named(row.description) !== (obs.description ?? '') || row.priority !== obs.priority;
+    if (!changed && (row.title !== obs.title || row.summary !== obs.summary || (row.description ?? '') !== (obs.description ?? ''))) {
+      Object.assign(row, { title: obs.title, summary: obs.summary, description: obs.description });
+    }
     if (isOpenAttentionStatus(row.status)) {
       if (changed) {
         // The required action changed (approve → tap the phone prompt now):
@@ -5687,28 +5753,7 @@ export class TelegramAdapter implements MessagingAdapter {
       msg.forum_topic_created?.name ??
       msg.forum_topic_edited?.name ??
       msg.reply_to_message?.forum_topic_created?.name;
-    if (detectedName) {
-      const currentName = this.topicToName.get(numericTopicId);
-      if (!currentName || /^topic-\d+$/.test(currentName) || msg.forum_topic_edited?.name) {
-        const isRename = !!msg.forum_topic_edited?.name && currentName !== detectedName;
-        this.topicToName.set(numericTopicId, detectedName);
-        this.saveRegistry();
-        console.log(`[telegram] Captured topic name: ${numericTopicId} → "${detectedName}"`);
-        // UNIFIED-SESSION-LIFECYCLE bonus — fire on TRUE rename only (not on
-        // initial capture or topic creation). The handler updates the bound
-        // session's display `name` so the dashboard label tracks the user's
-        // rename. Fire-and-forget: rename-display is non-critical.
-        if (isRename && this.topicRenamedHandler) {
-          try {
-            void Promise.resolve(this.topicRenamedHandler(numericTopicId, detectedName)).catch((err) => {
-              console.error(`[telegram] topicRenamedHandler failed for ${numericTopicId}:`, err);
-            });
-          } catch (err) {
-            console.error(`[telegram] topicRenamedHandler threw for ${numericTopicId}:`, err);
-          }
-        }
-      }
-    }
+    if (detectedName) this.captureTopicName(numericTopicId, detectedName, !!msg.forum_topic_edited?.name);
 
     // Service messages (topic created/edited) have no user content — skip further processing
     if (msg.forum_topic_created || msg.forum_topic_edited) {
@@ -6176,17 +6221,13 @@ export class TelegramAdapter implements MessagingAdapter {
    * Returns the Telegram message ID of the relay message.
    */
   async relayPrompt(topicId: number, prompt: DetectedPrompt): Promise<number> {
-    // First-use disclosure (once per topic)
-    if (!this.promptGateDisclosureSent.has(topicId)) {
-      await this.sendToTopic(topicId,
-        'Prompt Gate is now active for this topic. Session prompts will appear here ' +
-        'for you to respond to. Note: prompt text is sent through Telegram\'s servers. ' +
-        'Avoid including credentials or sensitive data in your replies.'
-      ).catch(() => {});
-      this.promptGateDisclosureSent.add(topicId);
-    }
-
-    const text = this.formatPromptMessage(prompt);
+    // First-use disclosure rides on the first relayed prompt instead of
+    // arriving as a separate message (operator report 2026-11-02).
+    const firstInTopic = !this.promptGateDisclosureSent.has(topicId);
+    this.promptGateDisclosureSent.add(topicId);
+    const text = this.formatPromptMessage(prompt) + (firstInTopic
+      ? '\n\n<i>Prompt text passes through Telegram. Avoid credentials in replies.</i>'
+      : '');
 
     let result: { message_id: number; chat?: { id: number } };
 

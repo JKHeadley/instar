@@ -69,3 +69,10 @@ describe('tone, links, summary', () => {
     expect(fmtRate(Number.NaN)).toBeNull();
   });
 });
+
+describe('a stalled pile is not "holding steady"', () => {
+  it('nothing in, nothing done, items open: says so with the open count', () => {
+    expect(paceLine({ id: 'evolution', label: 'Self-improvement items', machine: 'Laptop', verdict: 'holding', inflowPerDay: 0, outflowPerDay: 0, open: 1271 } as never, true))
+      .toBe('Self-improvement items (on Laptop): nothing came in or got done this week; 1271 still open');
+  });
+});

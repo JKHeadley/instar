@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "console-partial-survives-reload",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-03T00:30:58.409Z",
+  "artifactPath": "upgrades/side-effects/console-partial-survives-reload.md",
+  "artifactSha256": "8eaf97f4c14ea90fd204dc3eb0edfff4c622eec05dd8de19791cf4014610040b",
+  "coveredFiles": [
+    "dashboard/console/console.js",
+    "upgrades/next/console-partial-survives-reload.md",
+    "upgrades/side-effects/console-partial-survives-reload.eli16.md",
+    "upgrades/side-effects/console-partial-survives-reload.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "client-side display cache; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/console-partial-survives-reload.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-partial-survives-reload.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

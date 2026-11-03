@@ -17,7 +17,9 @@ export function paceCard(get) {
     const machines = new Set(queues.map((q) => q.machine));
     const anyBehind = queues.some((q) => toneOf(q) === 'attn');
     host.dataset.state = anyBehind ? 'attn' : 'ok';
-    const lines = queues.map((q) => {
+    // A queue with nothing coming in, nothing done and nothing open says nothing.
+    const idle = (q) => !Number(q.inflowPerDay) && !Number(q.outflowPerDay) && !Number(q.open);
+    const lines = queues.filter((q) => !idle(q)).map((q) => {
       const tone = toneOf(q);
       const li = el('li', { class: 'pace-line', 'data-tone': tone },
         el('span', { class: `dot ${DOT[tone] || ''}`.trim() }),

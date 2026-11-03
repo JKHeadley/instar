@@ -182,7 +182,8 @@ import { createQueuePaceRoutes } from './queuePaceRoutes.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { createMobileMediaRouter } from './mobileMediaRoutes.js';
-import { AppConversationService } from '../core/AppConversationService.js';
+import { AppConversationService, VOICE_TRANSCRIBE_DEADLINE_MS } from '../core/AppConversationService.js';
+import { transcribeAudioFile, configuredVoiceProvider } from '../core/VoiceTranscription.js';
 import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
 import { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
@@ -190,6 +191,7 @@ import { createAppFollowUpInjector, createAppInboundDispatch, type AppInboundDis
 import { appReplyRelayReadiness, ensureAppReplyRelay, packagedAppReplyRelayTemplate } from '../core/AppReplyRelayInstaller.js';
 import { defaultTailscaleExec } from '../core/MobileOwnNames.js';
 import { MobilePushService } from '../core/MobilePush.js';
+import { LocalAttentionItems } from '../core/LocalAttentionItems.js';
 import { QueuePaceLedger, QueuePaceTickLog, isQueuePaceEnabled } from '../monitoring/QueuePaceLedger.js';
 import { QueuePaceTuner } from '../monitoring/QueuePaceTuner.js';
 import { commitmentsAdapter, evolutionAdapter, feedbackFixAdapter, feedbackTriageAdapter, maturationAdapter, readExecutorFacts } from '../monitoring/QueuePaceAdapters.js';
@@ -203,7 +205,6 @@ import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
-import { poolPeerFetch } from './poolPeerFetch.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
 import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
 import { DesktopHelperRetention } from '../core/DesktopHelperRetention.js';
@@ -222,7 +223,7 @@ import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
 import { windowsDesktopLocalSend } from '../core/WindowsDesktopLocalTransport.js';
 import { discoverWindowsDesktopCompanion } from '../core/WindowsDesktopCompanionDiscovery.js';
 import { readWindowsDesktopBootstrapStatus } from '../core/WindowsDesktopBootstrapStatus.js';
-import { desktopPeerUrlAllowed } from './DesktopPeerUrlGate.js';
+import { desktopPeerRopes, fetchDesktopPeerOverRopes } from './desktopPeerRopeFetch.js';
 import { desktopRouteAccess } from './desktopRouteContext.js';
 import { parsePeerDesktopSetup, readBoundedText } from './desktopSetupRoutes.js';
 import type { DesktopHost } from '../core/DesktopHost.js';
@@ -466,6 +467,51 @@ export class AgentServer {
   private desktopStreamManager: DesktopStreamManager | null = null;
   private directDesktopAccess: DirectDesktopAccess | null = null;
   private desktopLockedController: DesktopLockedController | null = null;
+  /** Attention list for an agent with no Telegram adapter (security items only today). */
+  private localAttention: LocalAttentionItems | null = null;
+
+  /**
+   * The locked-screen security item ("a Mac may still be unlocked", "turned off").
+   * With Telegram it is an attention topic; without, it is stored on the local
+   * attention list and pushed to paired phones. Returns true only when the owner
+   * can now see it, so the controller retries otherwise.
+   */
+  private async raiseLockedSecurityItem(item: { key: string; title: string; body: string }): Promise<boolean> {
+    if (!this.telegramAdapter) {
+      // No Telegram: the item goes to the local attention list (GET /attention, the app)
+      // and buzzes paired phones. True only once the row is on disk, so a failed write
+      // is retried by the next sweep instead of being marked reported.
+      const id = `agent:${item.key}`;
+      const stored = this.localAttention?.raise({ id, title: item.title, summary: item.body,
+        description: item.body, priority: 'HIGH', category: 'security', source: 'agent',
+        sourceContext: 'desktop-locked' }) ?? false;
+      if (!stored) {
+        console.warn('[instar] locked-screen security item could not be stored; the next sweep tries again');
+        DegradationReporter.getInstance().report({ feature: 'DesktopLocked.securityItem',
+          primary: 'Locked-screen security item on the local attention list', fallback: 'Retried by the next locked-screen sweep',
+          reason: 'local attention list write failed', impact: 'The owner is not yet told about a locked-screen security event.' });
+        return false;
+      }
+      try {
+        this.mobilePairing?.push?.onHubPost({ kind: 'item', itemId: id, dedupeKey: `local-attention:${id}:${Date.now()}`, priority: 'HIGH' });
+      } catch { /* @silent-fallback-ok — the item is stored; the push is best-effort and reports its own degradation */ }
+      return true;
+    }
+    try {
+      await this.telegramAdapter.createAttentionItem({ id: `agent:${item.key}`, conditionKey: item.key,
+        title: item.title, summary: item.body, description: item.body, priority: 'HIGH', source: 'agent',
+        category: 'security', sourceContext: 'desktop-locked' } as never);
+      return true;
+    } catch (error) {
+      console.warn('[instar] locked-screen security item could not be raised; the next sweep tries again');
+      DegradationReporter.getInstance().report({ feature: 'DesktopLocked.securityItem',
+        primary: 'Locked-screen security item on the attention surface', fallback: 'Retried by the next locked-screen sweep',
+        reason: `attention item failed: ${error instanceof Error ? error.message : String(error)}`,
+        impact: 'The owner is not yet told about a locked-screen security event.' });
+      return false;
+    }
+  }
+
   private desktopLockedOsMajor: number | undefined;
   private desktopHelperNotice: DesktopHelperPermissionNotice | null = null;
   private macDesktopHost: MacDesktopHost | null = null;
@@ -1099,6 +1145,8 @@ export class AgentServer {
       url: string;
       kind: PeerEndpointKind;
       ropeRefusals?: Array<{ url: string; kind: PeerEndpointKind; reason?: string }>;
+      /** Every rope this peer advertises, in priority order (remote-desktop fallback). */
+      ropes?: Array<{ url: string; kind: PeerEndpointKind }>;
     }>;
     /** Rope-health feedback for pool dials — see RouteContext.recordRopeResult. */
     recordRopeResult?: import('./poolPeerFetch.js').RopeResultRecorder;
@@ -1398,6 +1446,7 @@ export class AgentServer {
     this.subscriptionEmailBarrier = options.subscriptionEmailBarrier ?? null;
     this.meshBindActive = options.meshBindActive ?? false;
     this.telegramAdapter = options.telegram ?? null;
+    this.localAttention = this.telegramAdapter ? null : new LocalAttentionItems(options.config.stateDir);
     this.slackAdapter = options.slack ?? null;
     this.startTime = new Date();
     this.sessionManager = options.sessionManager;
@@ -2937,22 +2986,7 @@ export class AgentServer {
               const lifecycle = options.tunnel?.lifecycleState;
               return lifecycle?.lastState === 'active' && String(lifecycle.activeProvider).startsWith('cloudflare');
             },
-            raiseSecurity: async item => {
-              if (!this.telegramAdapter) { console.warn('[instar] locked-screen security item has no attention surface'); return false; }
-              try {
-                await this.telegramAdapter.createAttentionItem({ id: `agent:${item.key}`, conditionKey: item.key,
-                  title: item.title, summary: item.body, description: item.body, priority: 'HIGH', source: 'agent',
-                  category: 'security', sourceContext: 'desktop-locked' } as never);
-                return true;
-              } catch (error) {
-                console.warn('[instar] locked-screen security item could not be raised; the next sweep tries again');
-                DegradationReporter.getInstance().report({ feature: 'DesktopLocked.securityItem',
-                  primary: 'Locked-screen security item on the attention surface', fallback: 'Retried by the next locked-screen sweep',
-                  reason: `attention item failed: ${error instanceof Error ? error.message : String(error)}`,
-                  impact: 'The owner is not yet told about a locked-screen security event.' });
-                return false;
-              }
-            },
+            raiseSecurity: item => this.raiseLockedSecurityItem(item),
           }) : null;
           if (macHost && this.desktopLockedController) macHost.setLockedRoot(this.desktopLockedController.root);
           const host: DesktopHost = macHost
@@ -5218,6 +5252,7 @@ export class AgentServer {
       // `initialized: false` honestly on a build that never wired it).
       selfActionGovernor: getSelfActionGovernor(),
       telegram: options.telegram ?? null,
+      localAttention: this.localAttention,
       telegramOrigin: options.telegramOrigin ?? null,
       relationships: options.relationships ?? null,
       feedback: options.feedback ?? null,
@@ -5487,15 +5522,21 @@ export class AgentServer {
       desktopMeshBroker: this.desktopMeshBroker,
       desktopSetupPeerCall: async (machineId, body) => {
         const peer = options.resolvePeerUrls?.().find(candidate => candidate.machineId === machineId);
-        if (!peer || !this.meshSelfId || !options.coordinator?.enabled || !await desktopPeerUrlAllowed(peer)) {
+        if (!peer || !this.meshSelfId || !options.coordinator?.enabled) {
           throw new Error('desktop-peer-unreachable');
         }
         const key = options.localSigningKeyPem || options.coordinator.managers.identityManager.loadSigningKey();
-        const response = await poolPeerFetch(options.recordRopeResult,
-          { ...peer, url: peer.url.replace(/\/+$/, '') }, '/api/desktop/setup', {
+        // Every rope in order: a dead first rope (e.g. a WSL-internal LAN
+        // address) no longer hides a live Tailscale rope. Signed once — a rope
+        // is only skipped when the request provably never reached a server.
+        const { response } = await fetchDesktopPeerOverRopes({
+          machineId, ropes: desktopPeerRopes(peer), path: '/api/desktop/setup',
+          init: {
             method: 'POST', headers: { 'Content-Type': 'application/json', ...signRequest(this.meshSelfId, key, body) },
-            body: JSON.stringify(body), redirect: 'manual', signal: AbortSignal.timeout(8_000),
-          });
+            body: JSON.stringify(body), redirect: 'manual',
+          },
+          budgetMs: 8_000, connectCheckCapMs: 2_000, record: options.recordRopeResult,
+        });
         const raw = await readBoundedText(response, 8_192);
         let parsed: unknown = null;
         try { parsed = JSON.parse(raw); } catch { /* @silent-fallback-ok — handled as an invalid reply just below. */ }
@@ -5517,16 +5558,18 @@ export class AgentServer {
       },
       desktopProbePeer: async machineId => {
         const peer = options.resolvePeerUrls?.().find(candidate => candidate.machineId === machineId);
-        if (!peer || !this.meshSelfId || !options.coordinator?.enabled
-          || !await desktopPeerUrlAllowed(peer)) {
+        if (!peer || !this.meshSelfId || !options.coordinator?.enabled) {
           throw new Error('desktop-peer-unreachable');
         }
         const key = options.localSigningKeyPem || options.coordinator.managers.identityManager.loadSigningKey();
         const body = {};
-        const response = await poolPeerFetch(options.recordRopeResult,
-          { ...peer, url: peer.url.replace(/\/+$/, '') }, '/api/desktop/availability', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', ...signRequest(this.meshSelfId, key, body) },
-          body: JSON.stringify(body), redirect: 'manual', signal: AbortSignal.timeout(3_000),
+        const { response } = await fetchDesktopPeerOverRopes({
+          machineId, ropes: desktopPeerRopes(peer), path: '/api/desktop/availability',
+          init: {
+            method: 'POST', headers: { 'Content-Type': 'application/json', ...signRequest(this.meshSelfId, key, body) },
+            body: JSON.stringify(body), redirect: 'manual',
+          },
+          budgetMs: 3_000, connectCheckCapMs: 1_000, record: options.recordRopeResult,
         });
         if (!response.ok) throw new Error('desktop-peer-unavailable');
         const reader = response.body?.getReader();
@@ -5796,6 +5839,8 @@ export class AgentServer {
               try { options.operatorStopRecorder?.(alias); } catch { /* @silent-fallback-ok — the stop record is observability */ }
             },
             mediaMaxStoreBytes: () => options.config.mobilePairing?.native?.media?.maxStoreBytes,
+            // §4.5.1: voice notes the phone did not transcribe use Telegram's transcriber (same provider).
+            transcribeVoice: (filePath, mediaType) => transcribeAudioFile(filePath, { explicit: configuredVoiceProvider(options.config), mediaType, timeoutMs: VOICE_TRANSCRIBE_DEADLINE_MS }),
             raiseAttention: (item) => { void options.telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-media' }); },
             clearAttention: (conditionKey) => { options.telegram?.clearAttentionCondition({ conditionKey }, 'cleared: the app media store has room again'); },
             reportDegradation: (what, detail) => DegradationReporter.getInstance().report({

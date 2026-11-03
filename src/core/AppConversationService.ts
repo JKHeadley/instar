@@ -21,7 +21,8 @@ import { appInjectionTag, type AppInboundDispatch } from './appInboundDispatch.j
 import { ledgerViewKey, verifyRecordedOrigin, type MachineKeyLookup, type MachineSigner, type OriginVerdict, type VerifiableRecord } from './AppRecordSignatures.js';
 import type { MobileDeviceKeyLedger } from './MobileDeviceKeyLedger.js';
 import { AppMediaStore, DEFAULT_MAX_STORE_BYTES } from './AppMediaStore.js';
-import { MAX_PURGE_BATCH, displayName, sessionLine, type AppAttachment } from './appMediaTypes.js';
+import { MAX_PURGE_BATCH, MAX_TRANSCRIPT_CHARS, displayName, sessionLine, type AppAttachment } from './appMediaTypes.js';
+import { TranscriptionUnavailableError } from './VoiceTranscription.js';
 import { AppMediaReplicator, OWNER_PULL_WAIT_MS, PENDING_DELIVERY_TTL_MS } from './AppMediaReplicator.js';
 import path from 'node:path';
 
@@ -70,6 +71,31 @@ export interface AppConversationServiceDeps {
   /** One notice per condition (absent ⇒ degradation reports only). */
   raiseAttention?: (item: { conditionKey: string; title: string; body: string }) => void;
   clearAttention?: (conditionKey: string) => void;
+  /**
+   * Server-side voice transcription (docs/specs/mobile-native-chat-media.md §4.5.1, increment 2):
+   * the shared `transcribeAudioFile` Telegram voice notes use. Rejects with
+   * `TranscriptionUnavailableError` when no provider is configured. Absent ⇒ every voice note
+   * without a phone transcript reads "transcription unavailable".
+   */
+  transcribeVoice?: (filePath: string, mediaType: string) => Promise<string>;
+  /** How long one dispatch waits for a server transcript (default 60 s, the spec's fixed deadline). */
+  transcribeDeadlineMs?: number;
+}
+
+/** §4.5.1: server transcription has a 60-second limit. */
+export const VOICE_TRANSCRIBE_DEADLINE_MS = 60_000;
+
+/**
+ * The session line for a voice note the phone did not transcribe: Telegram's form with the
+ * server transcript on one line, or an honest note when there is none.
+ */
+export function voiceLineWithTranscript(filePath: string, transcript: string): string {
+  const oneLine = transcript.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return `[voice:${filePath}] ${oneLine ? Array.from(oneLine).slice(0, MAX_TRANSCRIPT_CHARS).join('') : '(no speech recognized)'}`;
+}
+
+export function voiceLineUnavailable(filePath: string, reason: string): string {
+  return `[voice:${filePath}] (transcription unavailable: ${reason}; the audio file is at that path)`;
 }
 
 const MEDIA_SWEEP_MS = 60 * 60_000;
@@ -243,23 +269,50 @@ export class AppConversationService {
   async sessionLinesFor(conversationKey: string, messageId: string, attachments: ReadonlyArray<AppAttachment>, caption: string, waitMs = OWNER_PULL_WAIT_MS): Promise<string[]> {
     const missing = attachments.filter((a) => !this.media.locateBlob(a.sha256));
     if (missing.length > 0) await Promise.all(missing.map((a) => this.replicator.awaitBlob(a.sha256, waitMs)));
-    const lines: string[] = [];
+    // A voice note's server transcription runs in parallel with the other files (§4.5.1).
+    const lines: Array<string | Promise<string>> = [];
     for (const a of attachments) {
       const copy = await this.media.sessionCopy(messageId, a).catch((err: unknown) => { // @silent-fallback-ok — reported through deps.reportDegradation; the line says the file is unavailable
         this.report('session copy', err);
         return null;
       });
-      if (copy) { lines.push(sessionLine(a, copy)); continue; }
+      if (copy) { lines.push(a.kind === 'voice' && !a.transcript ? this.voiceLine(copy, a.mediaType) : sessionLine(a, copy)); continue; }
       // Held here but the copy failed: not a copying problem (reported above).
       if (this.media.locateBlob(a.sha256)) { lines.push(`[file unavailable: ${displayName(a.filename)}]`); continue; }
       lines.push(`[file still copying: ${displayName(a.filename)}]`);
       try {
         this.media.indexDb.prepare(`INSERT OR IGNORE INTO pending_deliveries (attachmentId, messageId, conversationKey, sha256, displayName, caption, createdAt, state, path) VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting', NULL)`)
           .run(a.attachmentId, messageId, conversationKey, a.sha256, displayName(a.filename), captionSnippet(caption), this.now());
-      } catch (err) { this.report('pending delivery', err); }
+      } catch (err) { this.report('pending delivery', err); } // @silent-fallback-ok — reported through deps.reportDegradation; the line already says the file is still copying
       this.replicator.want(a.sha256);
     }
-    return lines;
+    return Promise.all(lines);
+  }
+
+  /**
+   * Transcribe one voice note with the shared Telegram transcriber, bounded by the 60 s deadline.
+   * Never rejects: no provider, a failure or the deadline all become an honest line with the path.
+   */
+  private async voiceLine(copy: string, mediaType: string): Promise<string> {
+    const transcribe = this.deps.transcribeVoice;
+    if (!transcribe) return voiceLineUnavailable(copy, 'no voice transcription on this machine');
+    const deadlineMs = this.deps.transcribeDeadlineMs ?? VOICE_TRANSCRIBE_DEADLINE_MS;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const deadline = new Promise<'deadline'>((resolve) => { timer = setTimeout(() => resolve('deadline'), deadlineMs); });
+    try {
+      const out = await Promise.race([transcribe(copy, mediaType), deadline]);
+      if (out === 'deadline') {
+        this.report('voice transcription', new Error(`no transcript within ${Math.round(deadlineMs / 1000)} s`));
+        return voiceLineUnavailable(copy, 'transcription took too long');
+      }
+      return voiceLineWithTranscript(copy, out);
+    } catch (err) {
+      if (err instanceof TranscriptionUnavailableError) return voiceLineUnavailable(copy, 'no transcription provider is configured');
+      this.report('voice transcription', err);
+      return voiceLineUnavailable(copy, 'the transcription service failed');
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /** A blob landed: each waiting row gets its session copy and one follow-up line. */

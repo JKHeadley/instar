@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "locked-proof-driver",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T21:30:23.587Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-driver.md",
+  "artifactSha256": "2e124cdd11a55f32334a3ba29940ddeae4fcd9857a9263366a509c5fed51f06e",
+  "coveredFiles": [
+    "docs/specs/locked-proof-driver.eli16.md",
+    "scripts/locked-proof/configure-proof-agent.mjs",
+    "scripts/locked-proof/create-proof-user.sh",
+    "scripts/locked-proof/driver.mjs",
+    "scripts/locked-proof/lib.mjs",
+    "scripts/locked-proof/reset-attempts.py",
+    "scripts/locked-proof/stage-proof-agents.sh",
+    "tests/unit/locked-proof-driver.test.ts",
+    "upgrades/next/locked-proof-driver.md",
+    "upgrades/side-effects/locked-proof-driver.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Review follow-ups to maintainer scripts outside src; nothing runs without --execute.",
+  "eli16Path": "docs/specs/locked-proof-driver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-driver.md",
+  "secondPass": "true",
+  "reviewerConcurred": false
+}

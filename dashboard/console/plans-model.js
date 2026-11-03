@@ -162,9 +162,25 @@ function recheckText(e, now) {
   return { text: `rechecking ${new Date(t).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}`, overdue: false };
 }
 
+// The deferral detector recorded whole reply commands (`cat <<'EOF' | <reply script> N`
+// + the message + `EOF`), signed links included (2026-11-02). Show the message's first line,
+// with credential-looking query values masked; a command with no message text is named, not
+// printed.
+const SECRET_QUERY = /([?&](?:sig|signature|token|key|auth|access_token)[^=&\s]*=)[^&\s]+/gi;
+const SHELL_START = /^\s*(?:cd|cat|curl|echo|node|bash|sh|gh|git|python3?|npx)\b/;
+export function blockerText(raw) {
+  const s = String(raw || '');
+  const doc = /<<-?\s*['"]?(\w+)['"]?[^\n]*\n([\s\S]*?)(?:\n[ \t]*\1[ \t]*(?:\n|$)|$)/.exec(s);
+  let body = doc ? doc[2] : s;
+  if (!doc && SHELL_START.test(body)) return 'Flagged in a command I ran (no message text)';
+  body = body.replace(SECRET_QUERY, '$1…');
+  const line = body.split('\n').map((l) => l.trim()).find(Boolean) || '';
+  return line.length > 220 ? `${line.slice(0, 219)}…` : line;
+}
+
 /** A blocker as a row: { key, main, sub, end, tone, kind, record }. */
 export function blockerRow(e, now = Date.now()) {
-  const main = e.detectedText || e.origin || 'A blocker';
+  const main = blockerText(e.detectedText) || e.origin || 'A blocker';
   let sub; let tone = null; let kind;
   if (e.state === 'true-blocker') { const r = recheckText(e, now); sub = `Truly stuck for now · ${r.text}`; tone = 'bad'; kind = 'stuck'; }
   else if (e.state === 'access-requested') { sub = 'Waiting on you for access'; tone = 'attn'; kind = 'needs-you'; }

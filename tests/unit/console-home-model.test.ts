@@ -11,6 +11,8 @@ import {
   failure, ago, buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed,
   machineState, headline, needsOperator, isActiveCommitment, sessionLabel, MAX_ROWS,
   combineNeeds, machineNames, machineLabel,
+  needAction,
+  fillPartial, PARTIAL_GRACE_MS,
 } from '../../dashboard/console/home-model.js';
 import { topicNameMap } from '../../dashboard/console/topic-names.js';
 
@@ -360,9 +362,65 @@ describe('headline()', () => {
     ], pool: { failed: [] } }), NOW);
     const h = headline({ needs: n, promised: card('ok', '', 0) });
     expect(h.text).toBe('Approve the deploy');
-    expect(h.sub).toBe('2 more things need you, listed below.');
+    expect(h.sub).toBe('Tap to review and respond. 2 more things need you, listed below.');
   });
   it('all quiet only when everything is known and fine', () => {
     expect(headline({ needs: card('ok'), promised: card('ok'), reach: card('ok') }).text).toBe('All quiet.');
+  });
+});
+
+describe('every "needs you" row has somewhere to act', () => {
+  const open = (i: Record<string, unknown>) => ({ status: 'OPEN', source: 'agent', priority: 'HIGH', title: 'T', ...i });
+  it('a conversation item opens its conversation', () => {
+    expect(needAction(open({ topicId: 127504 }))).toEqual({ kind: 'topic', topicId: 127504 });
+  });
+  it('a desktop item opens the Desktop page for its machine', () => {
+    expect(needAction(open({ category: 'desktop', machineId: 'm_ab' }))).toEqual({ kind: 'href', href: '/dashboard/desktop.html?machineId=m_ab' });
+  });
+  it('a sign-in item opens Accounts', () => {
+    expect(needAction(open({ category: 'sign-in' }))).toEqual({ kind: 'href', href: '#/capacity/accounts' });
+  });
+  it('anything else opens the Attention topic, never nothing', () => {
+    expect(needAction(open({ category: 'general' }))).toEqual({ kind: 'attention' });
+  });
+  it('buildNeeds gives every row an action', () => {
+    const items = [open({ category: 'desktop', machineId: 'm1', title: 'A' }), open({ category: 'general', title: 'B' }), open({ topicId: 5, title: 'C' })];
+    const card = buildNeeds({ ok: true, data: { items } }, Date.now());
+    expect(card.all.every((r: { action: unknown }) => r.action)).toBe(true);
+  });
+});
+
+describe('a machine that misses one pooled read', () => {
+  const T = 1_000_000;
+  const prev = { ok: true, data: { items: [{ id: 'a1', machineId: 'A' }, { id: 'b1', machineId: 'B' }], pool: { failed: [] } } };
+  const fresh = { ok: true, data: { items: [{ id: 'a2', machineId: 'A' }], pool: { failed: [{ machineId: 'B', reason: 'peer-unreachable' }] } } };
+  it('keeps fresh rows from machines that answered and the missing machine\'s last rows, and stays retrying', () => {
+    const r = fillPartial(fresh, prev, 'items', T + 30_000, T)!;
+    expect(r.data.items.map((i: { id: string }) => i.id)).toEqual(['a2', 'b1']);
+    expect(r.data.pool.failed).toEqual([]);
+    expect(r.retrying).toBe(true);
+    // The merged answer is a full view: Home does not say part could not be checked.
+    expect(buildNeeds(r, T).state).not.toBe('partial');
+  });
+  it('shows the partial answer once the last complete one is older than the grace period', () => {
+    expect(fillPartial(fresh, prev, 'items', T + PARTIAL_GRACE_MS + 1, T)).toBeNull();
+  });
+  it('shows the partial answer when there is no earlier complete one, or a failure names no machine', () => {
+    expect(fillPartial(fresh, null, 'items', T, T)).toBeNull();
+    const anon = { ok: true, data: { items: [], pool: { failed: [{ reason: 'deadline' }] } } };
+    expect(fillPartial(anon, prev, 'items', T, T)).toBeNull();
+  });
+});
+
+describe('needs-you rows say each thing once', () => {
+  it('drops the machine when the title already names it, and never shows the priority word', () => {
+    const items = [
+      { id: 'a', status: 'OPEN', source: 'agent', priority: 'HIGH', title: 'Mac Lan: Remote Desktop needs its Mac permission again', machineNickname: 'Mac Lan', createdAt: new Date().toISOString() },
+      { id: 'b', status: 'OPEN', source: 'agent', priority: 'HIGH', title: 'Approve the schedule change', machineNickname: 'Laptop', createdAt: new Date().toISOString() },
+    ];
+    const card = buildNeeds({ ok: true, data: { items } }, Date.now());
+    const byTitle = Object.fromEntries(card.all.map((r: { main: string; sub: string }) => [r.main, r.sub]));
+    expect(byTitle['Mac Lan: Remote Desktop needs its Mac permission again']).toBe('');
+    expect(byTitle['Approve the schedule change']).toBe('Laptop');
   });
 });

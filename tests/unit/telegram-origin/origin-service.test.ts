@@ -9,6 +9,7 @@ import { compileOriginWorker, temporaryState } from '../../helpers/telegramOrigi
 import { PendingRelayStore } from '../../../src/messaging/pending-relay-store.js';
 import { OriginCapacityUnavailable } from '../../../src/messaging/telegram-origin/OriginEgressCapacity.js';
 import { fixtureOriginContentDedup } from '../../helpers/originContentDedup.js';
+import { isBootBeaconBody } from '../../../src/messaging/telegram-origin/OriginLegacy.js';
 
 const key = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 let worker: URL;
@@ -216,6 +217,40 @@ describe('origin service durable delivery', () => {
       expect(await h.store.recoverableAdmissions()).toEqual([]);
       expect(queue.selectClaimable(new Date().toISOString())).toEqual([]);
     } finally { queue.close(); }
+  });
+  it('a reply refused by the boot beacon (server still starting) is replayable; any other 503 stays uncertain', async () => {
+    const h = await harness(), queue = PendingRelayStore.open('echo', h.stateDir);
+    try {
+      const beacon = '{"status":"warming","phase":"booting"}';
+      queue.enqueue({ delivery_id: 'boot-refused', topic_id: 42, text_hash: 'h1', text: 'Sent while starting', http_code: 503, error_body: beacon });
+      queue.enqueue({ delivery_id: 'real-503', topic_id: 42, text_hash: 'h2', text: 'Handler failed', http_code: 503, error_body: '{"error":"origin-unavailable"}' });
+      queue.enqueue({ delivery_id: 'beacon-lookalike', topic_id: 42, text_hash: 'h3', text: 'Extra field', http_code: 503,
+        error_body: '{"status":"warming","phase":"booting","sent":true}' });
+      queue.enqueue({ delivery_id: 'beacon-body-wrong-code', topic_id: 42, text_hash: 'h4', text: 'Odd code', http_code: 502, error_body: beacon });
+      const byId = new Map((await h.store.legacyCandidates()).map(row => [row.deliveryId, row]));
+      expect(byId.get('boot-refused')?.replaySafe).toBe(true);
+      expect(byId.get('real-503')?.replaySafe).toBe(false);
+      expect(byId.get('beacon-lookalike')?.replaySafe).toBe(false);
+      expect(byId.get('beacon-body-wrong-code')?.replaySafe).toBe(false);
+      const safe = byId.get('boot-refused')!;
+      const operation = h.service.prepareImportedLegacy(safe, 'bot-1', '-100123');
+      expect(await h.store.importLegacy({ snapshot: safe, admission: operation.admission })).toBe(true);
+      expect((await h.store.getOrigin(operation.record.originId))?.operation?.state).not.toBe('outcome-unknown');
+      h.service.options.reviewLegacyRecovery = async () => true;
+      await h.service.executePreparedBot(operation, h.network);
+      expect(h.network).toHaveBeenCalledOnce();
+    } finally { queue.close(); }
+  });
+  it('isBootBeaconBody accepts only the beacon body', () => {
+    expect(isBootBeaconBody('{"status":"warming","phase":"booting"}')).toBe(true);
+    expect(isBootBeaconBody('{"phase":"booting","status":"warming"}')).toBe(true);
+    expect(isBootBeaconBody('{"status":"ok","phase":"booting"}')).toBe(false);
+    // A standby relaying the lease holder's booting answer adds a key: the send may
+    // have reached the holder path, so it stays uncertain.
+    expect(isBootBeaconBody('{"status":"warming","phase":"booting","relayedFromHolder":true}')).toBe(false);
+    expect(isBootBeaconBody(null)).toBe(false);
+    expect(isBootBeaconBody('not json')).toBe(false);
+    expect(isBootBeaconBody('[]')).toBe(false);
   });
   it('imports a claimed legacy row as uncertain and fences the old worker without granting a new attempt', async () => {
     const h = await harness(), queue = PendingRelayStore.open('echo', h.stateDir);

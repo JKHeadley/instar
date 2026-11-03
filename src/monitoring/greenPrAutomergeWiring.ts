@@ -107,6 +107,9 @@ export const GH_PR_JSON_FIELDS: readonly string[] = [
 /** The `refetchPr` projection (act-time pre-arm gate + armed-episode reconciliation read). */
 export const REFETCH_PR_JSON_FIELDS: readonly string[] = [
   'title', 'labels', 'isDraft', 'headRefOid', 'state', 'mergeCommit', 'autoMergeRequest',
+  // Belt-and-braces for the watcher's nudge of a verified PR listed as UNKNOWN: a direct
+  // read makes GitHub compute mergeability; requesting the field makes that explicit.
+  'mergeable',
 ];
 
 /** The `listOpenPrs` projection. */

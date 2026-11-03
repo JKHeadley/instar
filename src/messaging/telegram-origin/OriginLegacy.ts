@@ -16,12 +16,28 @@ export function snapshotLegacyOrigin(row: PendingRelayRow): OriginLegacySnapshot
   const preparedAt = Number.isFinite(times[0]) && times[0] >= 0 ? Math.min(...times.filter(value => Number.isFinite(value) && value >= 0)) : 0;
   const attempts = Number.isSafeInteger(row.attempts) && row.attempts >= 0 ? row.attempts : 9;
   // Authentication/path refusals precede the reply handler. 409/200, 5xx,
-  // HTTP 0 and claimed-only history cannot establish definite non-delivery.
+  // HTTP 0 and claimed-only history cannot establish definite non-delivery,
+  // with one exception: the boot beacon's 503 body. The beacon answers before
+  // the real server listens, so no reply handler ran and nothing was sent. The
+  // row keeps only the latest body, so only the latest attempt can prove it.
   const refused = (code: unknown) => code === 401 || code === 404;
+  const bootRefused = row.http_code === 503 && isBootBeaconBody(row.error_body);
+  const refusedAt = (item: { http_code?: unknown } | null | undefined, index: number) =>
+    !!item && (refused(item.http_code) || (bootRefused && index === history.length - 1 && item.http_code === 503));
   const replaySafe = row.state === 'queued' && row.claimed_by === null && !row.truncated &&
     rawText.equals(Buffer.from(text)) && text.length > 0 && preparedAt > 0 &&
-    (attempts === 0 || (refused(row.http_code) && history.length === attempts && history.every(item => item && refused(item.http_code))));
+    (attempts === 0 || ((refused(row.http_code) || bootRefused) && history.length === attempts && history.every(refusedAt)));
   return { deliveryId: row.delivery_id, topicId: row.topic_id, text, format: row.format,
     preparedAt, attempts, nextAttemptAt: row.next_attempt_at, state: row.state,
     snapshotDigest: originDigest({ ...row, text: rawText.toString('base64') }), replaySafe };
+}
+
+/** The exact body BootHealthBeacon sends for every non-health request. */
+export function isBootBeaconBody(body: unknown): boolean {
+  if (typeof body !== 'string' || body.length > 200) return false;
+  try {
+    const value = JSON.parse(body) as Record<string, unknown>;
+    return !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 2
+      && value.status === 'warming' && value.phase === 'booting';
+  } catch { return false; }
 }

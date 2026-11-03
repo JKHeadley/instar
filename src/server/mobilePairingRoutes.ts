@@ -90,7 +90,7 @@ export interface MobilePairingDeps {
   isWsl?: boolean;
 }
 
-type PoolCtx = Pick<RouteContext, 'config' | 'resolvePeerUrls' | 'recordRopeResult'> & Partial<Pick<RouteContext, 'mobileInbound' | 'telegram' | 'appConversations' | 'verifyDashboardOperatorSession'>>;
+type PoolCtx = Pick<RouteContext, 'config' | 'resolvePeerUrls' | 'recordRopeResult'> & Partial<Pick<RouteContext, 'mobileInbound' | 'telegram' | 'localAttention' | 'appConversations' | 'verifyDashboardOperatorSession'>>;
 const PEER_TIMEOUT_MS = 5000;
 const MAX_PEER_BYTES = 128 * 1024;
 
@@ -768,7 +768,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       return { title: cleanText(it.title, 160) ?? '', priority: typeof it.priority === 'string' ? it.priority : null };
     };
     if (!machine || machine === deps.selfMachineId) {
-      const item = poolCtx?.telegram?.getAttentionItem?.(id);
+      const item = poolCtx?.telegram?.getAttentionItem?.(id) ?? poolCtx?.localAttention?.get(id);
       if (!item) { res.status(404).json({ error: 'not-found' }); return; }
       res.json(view(item));
       return;
