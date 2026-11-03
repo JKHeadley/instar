@@ -1196,6 +1196,9 @@ export class SessionManager extends EventEmitter {
   /** Terminal child status sampled from a tmux pane retained by
    * `remain-on-exit failed`; consumed by the self-exit transition. */
   private readonly terminalExitCodes = new Map<string, number>();
+  /** Sessions whose `remain-on-exit failed` was set successfully. For these a FAILED exit keeps
+   * its pane (and its status), so a pane that vanished instead exited 0. */
+  private readonly failedExitRetained = new Set<string>();
 
   /** Per-session shim directory root (one subdir per session). Used for K9 mandatory shim. */
   private shimRoot: string | null = null;
@@ -3042,10 +3045,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
           const uptimeSeconds = fresh.startedAt
             ? Math.max(0, Math.round((Date.now() - new Date(fresh.startedAt).getTime()) / 1000))
             : undefined;
-          const duringStartup = uptimeSeconds !== undefined && uptimeSeconds * 1000 < STARTUP_TAIL_WINDOW_MS;
           const lastSample = this.startupTails.get(session.tmuxSession);
-          const exitCode = this.terminalExitCodes.get(session.tmuxSession) ?? 0;
+          const knownExitCode = this.terminalExitCodes.get(session.tmuxSession);
+          const exitCode = knownExitCode ?? 0;
           this.terminalExitCodes.delete(session.tmuxSession);
+          // A headless one-shot (`claude -p` / completionMode 'exit') finishes BY exiting, often well
+          // inside the startup window. Under `remain-on-exit failed` a failed exit keeps its pane and
+          // status, so one that vanished after the option was set exited 0: it finished its work, it
+          // did not die starting up (instar-proof-1, 2026-11-03: every short job was counted as a
+          // start failure and the machine dropped itself from placement). Interactive sessions keep
+          // the old rule: a clean exit at an update or trust prompt is still a failed start.
+          const finishedHeadless = knownExitCode === undefined
+            && fresh.launchLane === 'headless'
+            && fresh.completionMode !== 'pattern'
+            && this.failedExitRetained.has(session.tmuxSession);
+          this.failedExitRetained.delete(session.tmuxSession);
+          const duringStartup = !finishedHeadless && uptimeSeconds !== undefined && uptimeSeconds * 1000 < STARTUP_TAIL_WINDOW_MS;
           const midWork = exitCode !== 0;
           this.startupTails.delete(session.tmuxSession);
           fresh.status = 'completed';
@@ -5141,6 +5156,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       withSyncOp(() => execFileSync(this.config.tmuxPath, [
         'set-option', '-t', `=${tmuxSession}:`, 'remain-on-exit', 'failed',
       ], { encoding: 'utf-8', timeout: 5000 }));
+      this.failedExitRetained.add(tmuxSession);
     } catch (err) {
       // @silent-fallback-ok — logged; the only loss is the failed pane's exit code (tmux tears it down normally).
       console.warn(`[SessionManager] Could not retain failed exit status for "${tmuxSession}": ${err}`);
@@ -7113,6 +7129,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // it, and spawn fresh below (spec §3.2).
       this.logDeadPaneEvidence(tmuxSession, 'Spawn found a dead same-name session');
       this.terminalExitCodes.delete(tmuxSession);
+      this.failedExitRetained.delete(tmuxSession);
       try {
         const stale = this.listRunningSessions().find((r) => r.tmuxSession === tmuxSession);
         if (stale) {
@@ -7604,6 +7621,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (paneDead) {
       this.logDeadPaneEvidence(tmuxSession, options?.resumeSessionId ? 'Resumed session exited during startup' : 'Session exited during startup');
       this.terminalExitCodes.delete(tmuxSession);
+      this.failedExitRetained.delete(tmuxSession);
     }
     const stillAlive = sessionExists && !paneDead;
     if (!stillAlive && options?.resumeSessionId) {
