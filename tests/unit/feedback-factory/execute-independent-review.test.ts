@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CLAUDE_REVIEWER, REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, isSpecReviewHead, judgeIndependentReview, renderReviewComment, reviewRefusalIsAboutTheChange,
+  CLAUDE_REVIEWER, REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, feedbackReviewLead, isSpecReviewHead, judgeIndependentReview, judgeRoutedFeedbackReview, renderReviewComment, reviewRefusalIsAboutTheChange,
   toReviewerOutcome, type ReviewerOutcome,
 } from '../../../src/feedback-factory/execute/independentReview.js';
 
@@ -8,6 +8,34 @@ const ok = (family: string, verdict: ReviewerOutcome['verdict'], crossFamily = f
   ({ family, model: `${family}-model`, status: 'ok', verdict, crossFamily, reason: null, body: `Verdict: ${verdict}\n- a finding` });
 const away = (family: string, status: 'degraded' | 'unavailable', crossFamily = family !== CLAUDE_REVIEWER): ReviewerOutcome =>
   ({ family, model: null, status, verdict: null, crossFamily, reason: status === 'degraded' ? 'timeout' : 'no-supported-framework', body: null });
+
+describe('feedbackReviewLead', () => {
+  const simple = { severity: 'medium', effort: 's', needsSpec: false, changedPaths: ['src/ui/button.ts'] };
+  it('routes ordinary work to Opus', () => expect(feedbackReviewLead(simple)).toBe('opus'));
+  it('routes critical, design, large and security work to Astra', () => {
+    expect(feedbackReviewLead({ ...simple, severity: 'critical' })).toBe('astra');
+    expect(feedbackReviewLead({ ...simple, needsSpec: true })).toBe('astra');
+    expect(feedbackReviewLead({ ...simple, effort: 'xl' })).toBe('astra');
+    expect(feedbackReviewLead({ ...simple, changedPaths: ['src/security/keyBackup.ts'] })).toBe('astra');
+    expect(feedbackReviewLead({ ...simple, changedPaths: ['src/core/SecretStore.ts'] })).toBe('astra');
+    expect(feedbackReviewLead({ ...simple, changedPaths: ['src/core/DashboardPinManager.ts'] })).toBe('astra');
+  });
+  it('treats missing triage facts as complex', () => expect(feedbackReviewLead({ ...simple, effort: null })).toBe('astra'));
+});
+
+describe('judgeRoutedFeedbackReview', () => {
+  const opus = { ...ok('claude-code', 'CLEAN'), model: 'claude-opus-5-5' };
+  it('requires the selected Astra or Sol model even when Gemini and Opus pass', () => {
+    expect(judgeRoutedFeedbackReview([away('codex-cli', 'degraded'), ok('gemini-cli', 'CLEAN'), opus], 'astra').reason).toBe('required-codex-unavailable');
+    expect(judgeRoutedFeedbackReview([{ ...ok('codex-cli', 'CLEAN'), model: 'gpt-6-sol' }, opus], 'astra').reason).toBe('required-codex-model-mismatch');
+    expect(judgeRoutedFeedbackReview([away('codex-cli', 'unavailable'), ok('gemini-cli', 'CLEAN'), opus], 'opus').reason).toBe('required-codex-unavailable');
+  });
+  it('requires the actual Opus model and still honours serious vetoes', () => {
+    expect(judgeRoutedFeedbackReview([{ ...ok('codex-cli', 'CLEAN'), model: 'gpt-6-sol' }, { ...opus, model: 'claude-fable-5' }], 'opus').reason).toBe('required-opus-model-mismatch');
+    expect(judgeRoutedFeedbackReview([{ ...ok('codex-cli', 'CLEAN'), model: 'gpt-6-astra' }, opus, ok('gemini-cli', 'SERIOUS ISSUES')], 'astra').reason).toBe('serious:gemini-cli');
+    expect(judgeRoutedFeedbackReview([{ ...ok('codex-cli', 'CLEAN'), model: 'gpt-6-sol' }, opus], 'opus')).toEqual({ pass: true, reason: 'pass:feedback-routing-v1:opus:gpt-6-sol+claude-opus-5-5' });
+  });
+});
 
 describe('judgeIndependentReview', () => {
   it('passes when a cross-family reviewer and the Claude reviewer both say CLEAN or MINOR ISSUES', () => {

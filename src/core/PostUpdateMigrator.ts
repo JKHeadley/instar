@@ -9349,6 +9349,14 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Feedback executor section');
     }
+    // The feedback review model policy must reach existing agents as well as new installs.
+    if (content.includes('**Feedback executor (operated feedback factory)**') && !content.includes('**Feedback review model routing**')) {
+      const marker = '**Session Clock** —';
+      const section = '**Feedback review model routing** — Critical or complex feedback gets GPT-6 Astra as lead safety reviewer. Ordinary feedback gets Claude Opus 5.5 as lead reviewer and GPT-6 Sol as the other-family safety read. Both families must pass at the current PR head before the executor merges. Fable is stopped on Echo; a missing Opus pin leaves the PR open. Check actual models and verdicts in the executor audit before reporting a review as complete.\n\n';
+      content = content.includes(marker) ? content.replace(marker, section + marker) : content + '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added feedback review model routing');
+    }
     // 2026-10-01: a single timeout no longer demotes and same-machine restarts keep the approval.
     // 2026-10-02: one rejected answer no longer demotes either, and the status route names the failed check.
     const readinessBrakeOlds = ['(spend cap or model mismatch);', '(spend cap, model/schema mismatch, or three timeouts or provider errors in a row; a single timeout is just retried, and a restart on the same machine keeps the approval);'];

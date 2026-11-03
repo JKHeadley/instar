@@ -117,6 +117,14 @@ describe('resolveClaudeReviewerModel — pinned frontier, no silent fallback (§
     expect(res).toEqual({ ok: true, model: 'claude-fable-5' });
   });
 
+  it('accepts an explicit Opus 5.5 pin without changing the Fable default', () => {
+    const res = resolveClaudeReviewerModel({
+      specConverge: { reviewers: { anthropic: { model: 'claude-opus-5-5' } } },
+    });
+    expect(res).toEqual({ ok: true, model: 'claude-opus-5-5' });
+    expect(resolveClaudeReviewerModel(undefined)).toEqual({ ok: true, model: 'claude-fable-5' });
+  });
+
   it('REJECTS a tier word (override-not-concrete) — never a dead reviewer', () => {
     const res = resolveClaudeReviewerModel({
       specConverge: { reviewers: { anthropic: { model: 'capable' } } },
@@ -167,6 +175,18 @@ describe('claude reviewer invocation — hardened concrete-pin call (§1.4)', ()
       reviewerConfig: { specConverge: { reviewers: { anthropic: { model: 'claude-fable-5' } } } },
     });
     expect(provider.calls[0].options!.reviewerHardening?.model).toBe('claude-fable-5');
+  });
+
+  it('the operator-authorized Opus 5.5 override reaches the hardened invocation', async () => {
+    const provider = capturingProvider();
+    const r = await claudeEntry().review({
+      promptText: 'x', timeoutMs: 1000, providerOverride: provider,
+      hardeningSupportedOverride: true,
+      reviewerConfig: { specConverge: { reviewers: { anthropic: { model: 'claude-opus-5-5' } } } },
+    });
+    expect(r.status).toBe('ok');
+    expect(r.model).toBe('claude-opus-5-5');
+    expect(provider.calls[0].options!.reviewerHardening?.model).toBe('claude-opus-5-5');
   });
 
   it('a non-frontier override degrades LOUDLY (override-not-frontier), never runs opus', async () => {

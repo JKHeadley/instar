@@ -642,6 +642,7 @@ describe('verification and publication', () => {
     expect(h.execStore.latestFor(id)).toMatchObject({ state: 'spec-pr-open' });
     expect(Object.keys(h.pushes[0].files)).toContain(draft);
     expect(h.review.calls).toHaveLength(1);
+    expect(h.review.leads).toEqual(['astra']);
     expect(h.review.calls[0]).toContain('automated spec draft');
     expect(h.review.calls[0]).toContain('not expected to implement the fix or add executable regression tests yet');
     h.prs.get(100)!.headRefOid = 'e'.repeat(40);
@@ -745,8 +746,8 @@ describe('review gate and merge', () => {
   });
 
   const PASS = () => [
-    { family: 'codex-cli', model: 'gpt-5.5', status: 'ok' as const, verdict: 'CLEAN' as const, crossFamily: true, reason: null, body: 'Verdict: CLEAN' },
-    { family: 'claude-code', model: 'claude-fable-5', status: 'ok' as const, verdict: 'MINOR ISSUES' as const, crossFamily: false, reason: null, body: 'Verdict: MINOR ISSUES\n- a nit' },
+    { family: 'codex-cli', model: 'gpt-6-sol', status: 'ok' as const, verdict: 'CLEAN' as const, crossFamily: true, reason: null, body: 'Verdict: CLEAN' },
+    { family: 'claude-code', model: 'claude-opus-5-5', status: 'ok' as const, verdict: 'MINOR ISSUES' as const, crossFamily: false, reason: null, body: 'Verdict: MINOR ISSUES\n- a nit' },
   ];
   const HOUR = 60 * 60_000;
   // The review runs in the same tick that publishes the PR, so a test sets the reviewers' answers before `toPrOpen`.
@@ -756,16 +757,43 @@ describe('review gate and merge', () => {
     h.review.outcomes = PASS();
     const { initiativeId } = await toPrOpen();
     expect(h.review.calls).toHaveLength(1);
+    expect(h.review.leads).toEqual(['opus']);
     expect(h.review.calls[0]).toContain('--- DIFF (data) ---');
     expect(h.review.calls[0]).toContain('+++ b/src/thing.ts');
     expect(h.merges).toEqual([{ pr: 100, sha: HEAD_SHA }]);
     expect(h.prs.get(100)!.labels).not.toContain('hold');
-    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'merge-armed', approvedSha: HEAD_SHA, reviewSha: HEAD_SHA, reviewVerdict: 'pass', reviewReason: 'pass:codex-cli+claude-code' });
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'merge-armed', approvedSha: HEAD_SHA, reviewSha: HEAD_SHA, reviewVerdict: 'pass', reviewReason: 'pass:feedback-routing-v1:opus:gpt-6-sol+claude-opus-5-5' });
     expect(h.comments).toHaveLength(0);
     // Judged once per head: a later tick asks no reviewer again.
     await h.exec.tick();
     expect(h.review.calls).toHaveLength(1);
     expect(h.store.gradeCounts()).toEqual(expect.arrayContaining([expect.objectContaining({ grade: 'right', strength: 'weak' })]));
+  });
+
+  it('re-reviews a same-head pass recorded before the feedback model policy', async () => {
+    h = await createExecHarness();
+    const { initiativeId, row } = await toPrOpen();
+    expect(h.review.calls).toHaveLength(1);
+    h.execStore.patch(1, row.attemptId, { reviewSha: HEAD_SHA, reviewVerdict: 'pass', reviewReason: 'pass:codex-cli+claude-code', mergeRetryAt: null });
+    h.review.outcomes = PASS();
+    await h.exec.tick();
+    expect(h.review.calls).toHaveLength(2);
+    expect(h.merges).toEqual([{ pr: 100, sha: HEAD_SHA }]);
+    expect(h.execStore.latestFor(initiativeId)?.reviewReason).toBe('pass:feedback-routing-v1:opus:gpt-6-sol+claude-opus-5-5');
+  });
+
+  it('disarms a merge armed under an old review pass before applying the new model policy', async () => {
+    h = await createExecHarness();
+    h.review.outcomes = PASS();
+    const { initiativeId, row } = await toPrOpen();
+    expect(h.execStore.latestFor(initiativeId)?.state).toBe('merge-armed');
+    h.execStore.patch(1, row.attemptId, { reviewReason: 'pass:codex-cli+claude-code' });
+    await h.exec.tick();
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reason: 'disarmed:review-policy-changed', approvedSha: null });
+    expect(h.review.calls).toHaveLength(1);
+    await h.exec.tick();
+    expect(h.review.calls).toHaveLength(2);
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'merge-armed', reviewReason: 'pass:feedback-routing-v1:opus:gpt-6-sol+claude-opus-5-5' });
   });
 
   it('independent review: SERIOUS ISSUES from either reviewer refuses — a comment on the PR, the row stays open as review-failed, listed once, no merge; the owner\'s approval still merges it', async () => {

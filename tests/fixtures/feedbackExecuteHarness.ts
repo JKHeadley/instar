@@ -50,7 +50,7 @@ export interface ExecHarness extends Harness {
   closeFails: { value: number };
   commentFails: { value: number };
   /** The independent reviewers' outcomes (default: none installed → the owner-approval route alone, as before) and each prompt they were asked. */
-  review: { outcomes: ReviewerOutcome[] | null; calls: string[] };
+  review: { outcomes: ReviewerOutcome[] | null; calls: string[]; leads: Array<'astra' | 'opus' | undefined> };
   disarmed: number[];
   merges: Array<{ pr: number; sha: string }>;
   safeMergeExit: { code: number | null; stdout: string };
@@ -117,7 +117,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   h.closed = [];
   h.closeFails = { value: 0 };
   h.commentFails = { value: 0 };
-  h.review = { outcomes: [], calls: [] };
+  h.review = { outcomes: [], calls: [], leads: [] };
   h.disarmed = [];
   h.merges = [];
   h.safeMergeExit = { code: 5, stdout: 'safe-merge-result: {"result":"armed"}' };
@@ -247,7 +247,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   h.execStore = new FeedbackExecuteStore(h.drain, h.store, { clock: () => h.now.value });
   h.exec = new FeedbackExecutorService({
     triageStore: h.store, store: h.execStore, audit: h.audit,
-    review: { run: async ({ prompt }) => { h.review.calls.push(prompt); if (h.review.outcomes === null) throw new Error('reviewers-down'); return h.review.outcomes; } },
+    review: { run: async ({ prompt, lead }) => { h.review.calls.push(prompt); h.review.leads.push(lead); if (h.review.outcomes === null) throw new Error('reviewers-down'); return h.review.outcomes; } },
     processing: { activeClusters: () => [...h.clusters.values()], feedbackByCluster: () => new Map([...h.reports].map(([k, v]) => [k, v.map((r) => ({ ...r }))])) },
     initiatives: h.tracker, git, github, runner, deps: depsPort, sessions,
     admission: { spawnLimiterSaturated: () => h.admission.saturated, quotaShedding: () => h.admission.shedding, updatePending: () => h.admission.updatePending, rerouteSaturated: () => h.admission.rerouteSaturated === true },

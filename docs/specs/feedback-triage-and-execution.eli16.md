@@ -22,6 +22,7 @@ A ranked list of what is being worked on, and counts of what was held or ignored
 
 ## Tradeoffs
 
+- For feedback review, critical or complex changes lead with GPT-6 Astra; ordinary changes lead with Claude Opus 5.5 and receive a Codex Sol cross-read. Both actual model replies must pass before an automatic merge can be considered. A serious concern from another available reviewer still blocks the change. Echo's Fable review remains stopped. If Opus is unavailable, the change waits for review rather than silently switching models.
 - It costs usage: the sorter is capped at 150 model calls a day, and build sessions at 2 running and 6 started per day.
 - The sorter can be wrong. That is why ignoring is limited to low-risk items, every decision is logged, and a wrongly ignored problem that comes back gets counted as a mistake so we can see how accurate it is.
 - It runs first on a throwaway test agent, then on Echo. Everyone else gets it only after two weeks of measured results on Echo.
