@@ -29,7 +29,7 @@ import crypto from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
-import { deviceAdmittedAt, isMobileChatEnabled } from './mobilePairingRoutes.js';
+import { deviceAdmittedAt, deviceAdmittedHost, isMobileChatEnabled } from './mobilePairingRoutes.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import { requestIdAgeOk, requestIdTime, type ChatLookup } from '../core/MobileChatRequests.js';
 import {
@@ -796,7 +796,12 @@ export function buildSignedOrigin(
   try { keyHash = crypto.createHash('sha256').update(Buffer.from(dev.publicKey, 'base64url')).digest('hex'); } catch { return {}; } // @silent-fallback-ok — an unreadable key stores no origin (history reads 'none')
   const bodySha256 = crypto.createHash('sha256').update(raw).digest('hex');
   const base = {
-    kind: 'device-signed' as const, v: 1 as const, deviceId, keyHash, publicKey: dev.publicKey, host: dev.host,
+    // E2E-PAIRING: EXEMPT — no route added or changed; the stored Host is exercised end to end through the
+    // production authenticator in tests/integration/mobile-multi-route.test.ts, and tests/e2e/mobile-native-conversations-alive.test.ts
+    // still asserts `verified` on the paired route.
+    // The Host the signature was actually verified against (another of this machine's names over
+    // multi-route), so the stored record re-verifies; the paired host only when none was recorded.
+    kind: 'device-signed' as const, v: 1 as const, deviceId, keyHash, publicKey: dev.publicKey, host: deviceAdmittedHost(req) ?? dev.host,
     method: req.method.toUpperCase(), pathWithQuery: req.originalUrl, timeMs: time, bodySha256, sig,
   };
   const redacted = removedKinds.length > 0;

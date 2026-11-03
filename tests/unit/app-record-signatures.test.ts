@@ -43,7 +43,7 @@ const T0 = Date.parse('2026-10-31T12:00:00.000Z');
 
 function build(opts: {
   dev?: ReturnType<typeof makeDevice>; machine?: ReturnType<typeof fakeMachine>; text?: string; key?: string; receivedMs?: number;
-  phoneMs?: number; redact?: string[]; storedText?: string;
+  phoneMs?: number; redact?: string[]; storedText?: string; host?: string;
 } = {}) {
   const dev = opts.dev ?? makeDevice();
   const machine = opts.machine ?? fakeMachine();
@@ -53,11 +53,12 @@ function build(opts: {
   const p = `/mobile/chat/app/${key}`;
   const receivedMs = opts.receivedMs ?? T0 + 5_000;
   const time = String(opts.phoneMs ?? receivedMs);
-  const sig = dev.sign(canonicalString(DEVICE_ID, HOST, 'POST', p, time, raw));
+  const signedHost = opts.host ?? HOST;
+  const sig = dev.sign(canonicalString(DEVICE_ID, signedHost, 'POST', p, time, raw));
   const bodySha256 = crypto.createHash('sha256').update(raw).digest('hex');
   const receivedAt = new Date(receivedMs).toISOString();
   const storedText = opts.storedText ?? text;
-  const base = { kind: 'device-signed' as const, v: 1 as const, deviceId: DEVICE_ID, keyHash: deviceKeyHashOf(dev.publicKey), publicKey: dev.publicKey, host: HOST, method: 'POST', pathWithQuery: p, timeMs: time, bodySha256, sig };
+  const base = { kind: 'device-signed' as const, v: 1 as const, deviceId: DEVICE_ID, keyHash: deviceKeyHashOf(dev.publicKey), publicKey: dev.publicKey, host: signedHost, method: 'POST', pathWithQuery: p, timeMs: time, bodySha256, sig };
   const origin: StoredDeviceOrigin = opts.redact
     ? { ...base, redaction: signRedaction(machine.signer, bodySha256, storedText, opts.redact) }
     : { ...base, bodyB64: raw.toString('base64') };
@@ -68,6 +69,17 @@ function build(opts: {
 }
 
 describe('verifyRecordedOrigin — the five verdicts', () => {
+  it('another of the machine\'s routes (multi-route): verified only when this machine\'s receipt vouches for it', () => {
+    // The phone paired on HOST, then sent over the Tailscale name, signing the Host it used.
+    const b = build({ host: 'studio.tail1234.ts.net' });
+    expect(verifyRecordedOrigin(b.record, b.ledger, b.machine.lookup)).toBe('verified');
+    const { receipt: _r, ...noReceipt } = b.record;
+    expect(verifyRecordedOrigin(noReceipt, b.ledger, b.machine.lookup)).toBe('failed');
+    expect(verifyRecordedOrigin(b.record, b.ledger, () => ({ status: 'unknown' }))).toBe('unknown');
+    const other = fakeMachine();
+    expect(verifyRecordedOrigin({ ...b.record, receipt: { ...b.record.receipt!, sig: signReceipt(other.signer, b.record.origin!, b.record.receivedAt!).sig } }, b.ledger, b.machine.lookup)).toBe('failed');
+  });
+
   it('verified when every check passes; none without an origin', () => {
     const b = build();
     expect(verifyRecordedOrigin(b.record, b.ledger, b.machine.lookup)).toBe('verified');
