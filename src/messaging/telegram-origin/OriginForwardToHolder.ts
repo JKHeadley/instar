@@ -470,6 +470,23 @@ export function heldExpiryItemId(row: Pick<HeldOperationRow, 'operationId' | 'de
   return `telegram-origin-held:${row.destination.topicId ?? 'unknown'}:expired:${row.operationId}`;
 }
 
+/** The attention item for an expired hold. The id stays per operation (each expiry is
+ * reported once), but the conditionKey is per TOPIC, so further expiries for that topic
+ * land on the same open row (its count goes up) instead of a new row each time
+ * (2026-11-02: ~750 open rows, 109 for one topic, rode every pooled attention read). */
+export function heldExpiryItem(row: HeldOperationRow): { id: string; conditionKey: string; category: string; priority: 'HIGH'; title: string; summary: string; sourceContext: string } {
+  const topic = row.destination.topicId ?? 'unknown';
+  return {
+    id: heldExpiryItemId(row),
+    conditionKey: `telegram-origin-held:${topic}:expired`,
+    category: 'telegram-origin',
+    priority: 'HIGH',
+    title: `Held reply to topic ${row.destination.topicId ?? '?'} expired`,
+    summary: expiredForwardWording(row),
+    sourceContext: 'telegram-origin-forward-to-holder',
+  };
+}
+
 /** Honest expiry wording (§4.2): a definite non-delivery vs an unknown one. */
 export function expiredForwardWording(row: HeldOperationRow): string {
   const detail = row.holdDetail as Partial<HeldForwardDetail> | null;

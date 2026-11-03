@@ -28861,9 +28861,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const topicId = Number(row.destination.topicId);
                 heldAudit({ phase: 'expired', topicId: row.destination.topicId, operationId: row.operationId, lastAttempt: (row.holdDetail as { lastAttempt?: string } | null)?.lastAttempt ?? null });
                 if (Number.isSafeInteger(topicId)) heldCollapser.clear(topicId);
-                await telegram.createAttentionItem({ id: originForwardMod.heldExpiryItemId(row), category: 'telegram-origin', priority: 'HIGH',
-                  title: `Held reply to topic ${row.destination.topicId ?? '?'} expired`, summary: originForwardMod.expiredForwardWording(row),
-                  sourceContext: 'telegram-origin-forward-to-holder' }, { hubOnly: true });
+                await telegram.createAttentionItem(originForwardMod.heldExpiryItem(row), { hubOnly: true });
               };
             }
             telegram.outboundRelay = async (topicId, text, opts) => {
