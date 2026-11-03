@@ -6221,17 +6221,13 @@ export class TelegramAdapter implements MessagingAdapter {
    * Returns the Telegram message ID of the relay message.
    */
   async relayPrompt(topicId: number, prompt: DetectedPrompt): Promise<number> {
-    // First-use disclosure (once per topic)
-    if (!this.promptGateDisclosureSent.has(topicId)) {
-      await this.sendToTopic(topicId,
-        'Prompt Gate is now active for this topic. Session prompts will appear here ' +
-        'for you to respond to. Note: prompt text is sent through Telegram\'s servers. ' +
-        'Avoid including credentials or sensitive data in your replies.'
-      ).catch(() => {});
-      this.promptGateDisclosureSent.add(topicId);
-    }
-
-    const text = this.formatPromptMessage(prompt);
+    // First-use disclosure rides on the first relayed prompt instead of
+    // arriving as a separate message (operator report 2026-11-02).
+    const firstInTopic = !this.promptGateDisclosureSent.has(topicId);
+    this.promptGateDisclosureSent.add(topicId);
+    const text = this.formatPromptMessage(prompt) + (firstInTopic
+      ? '\n\n<i>Prompt text passes through Telegram. Avoid credentials in replies.</i>'
+      : '');
 
     let result: { message_id: number; chat?: { id: number } };
 

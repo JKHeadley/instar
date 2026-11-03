@@ -7824,6 +7824,20 @@ export async function startServer(options: StartOptions): Promise<void> {
 
           // Relay to messaging platform if adapter is available and session has a binding
           if (classification.action === 'relay' || classification.action === 'auto-approve') {
+            // Settle first: many prompts are answered without a person (account
+            // swap, permission floor, respawn). Relay only one still on screen.
+            const { settleBeforeRelay, DEFAULT_RELAY_SETTLE_MS } = await import('../monitoring/promptRelaySettle.js');
+            const settle = await settleBeforeRelay(prompt, {
+              settleMs: promptGateConfig.relaySettleMs ?? DEFAULT_RELAY_SETTLE_MS,
+              sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+              isAlive: (name) => sessionManager.isSessionAlive(name),
+              capture: (name) => sessionManager.captureOutput(name, 60),
+            });
+            if (!settle.relay) {
+              console.log(`[PromptGate] Not relaying ${prompt.type} prompt for ${prompt.sessionName}: ${settle.reason}`);
+              detector.onInputSent(prompt.sessionName);
+              return;
+            }
             let relayed = false;
 
             // Try Telegram first

@@ -8003,6 +8003,11 @@ export interface MonitoringConfig {
     ownerId?: number;
     /** Relay timeout in seconds (default: 300) */
     relayTimeoutSeconds?: number;
+    /**
+     * Wait this long after detecting a prompt, then relay it only if it is
+     * still on screen (default 45000; 0 relays immediately, as before).
+     */
+    relaySettleMs?: number;
   };
   /**
    * Episodic memory sentinel — periodic mid-session activity digestion.
