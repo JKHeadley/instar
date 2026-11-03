@@ -9,3 +9,12 @@
 Found on Justin's iPhone on 2026-11-03 at 09:54. A pasted HEIC screenshot reached the session, but the Telegram copy failed with `telegram-400`, and the sent row had no Delivered mark.
 - Unit: `telegramKindFor` both sides, and a HEIC photo goes up via `sendDocument`.
 - Integration: device history carries `deliveryState: 'delivered'`.
+
+## What to Tell Your User
+
+Photos you send from the Instar iPhone app into a Telegram chat now also show up in that Telegram chat, including iPhone screenshots, which used to fail silently. Messages you send there from the app now show "Delivered" once the agent has them.
+
+## Summary of New Capabilities
+
+- Telegram copies of app-sent HEIC photos and non-MP4 videos are sent as documents.
+- Telegram topic history read by the app carries `deliveryState` for app-sent messages.
