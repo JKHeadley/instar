@@ -28,7 +28,9 @@ export function desktopProbeUnavailableReason(probe: {
   loginDone?: boolean;
   screenLocked?: boolean;
   helperChange?: DesktopHelperPermissionChange;
+  linux?: { display: string | null; capturer: boolean; wayland?: boolean };
 }): string {
+  if (probe.linux) return linuxUnavailableReason(probe, probe.linux);
   const missing = [!probe.screenPermission && 'Screen Recording',
     !probe.inputPermission && 'Accessibility'].filter(Boolean).join(' and ');
   const permissionStep = missing && probe.helperChange
@@ -59,6 +61,27 @@ export function desktopProbeUnavailableReason(probe: {
   }
   if (!probe.inputPermission) {
     return `Remote input permission is unavailable to the desktop helper. Turn it on once at the Mac: ${PERMISSION_STEP} → Accessibility → instar-desktop-host, then tap Retry.`;
+  }
+  return 'Remote desktop is not ready on this machine.';
+}
+
+/** Native Linux reads its own X11 session; there are no per-app permissions to grant. */
+function linuxUnavailableReason(probe: { sessionActive: boolean; displayCount: number; screenLocked?: boolean },
+  linux: { display: string | null; capturer: boolean; wayland?: boolean }): string {
+  if (linux.wayland) {
+    return 'This Linux desktop runs Wayland, which does not let other programs see or control the screen. Choose an X11 (Xorg) session at the sign-in screen, then tap Retry. The Instar agent is online.';
+  }
+  if (!linux.display) {
+    return 'This Linux machine has no desktop session for remote desktop to show: no X display is running as the agent’s user. A server needs a virtual desktop (for example TigerVNC or Xvfb) started as that user. The Instar agent is online.';
+  }
+  if (probe.screenLocked === true) {
+    return 'This Linux desktop reports a locked screen. Unlock it at the machine, then tap Retry. The Instar agent is online.';
+  }
+  if (!probe.sessionActive) {
+    return `The X display ${linux.display} did not answer, so its desktop may have stopped. Start the desktop session again, then tap Retry. The Instar agent is online.`;
+  }
+  if (!linux.capturer) {
+    return 'The screen-capture tool is missing on this Linux machine. Install ImageMagick and xdotool (on Ubuntu: sudo apt install imagemagick xdotool), then tap Retry.';
   }
   return 'Remote desktop is not ready on this machine.';
 }

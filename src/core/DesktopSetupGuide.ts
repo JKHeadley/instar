@@ -106,7 +106,7 @@ function atTheMac(state: string, title: string, detail: string): DesktopSetupSte
 
 export function desktopSetupStep(s: DesktopSetupStatus, ctx: DesktopSetupContext): DesktopSetupStep {
   const { label } = ctx;
-  const place = s.platform === 'darwin' ? 'the Mac' : s.platform === 'linux' ? 'the PC' : 'the machine';
+  const place = s.platform === 'darwin' ? 'the Mac' : s.platform === 'linux' && s.wsl === true ? 'the PC' : 'the machine';
   const restartingStep: DesktopSetupStep = { state: 'restarting', ready: false, title: `Restarting ${label}`,
     detail: 'This usually takes about a minute, and a machine that is busy may finish its work first. This page updates by itself.',
     actions: [CHECK] };
@@ -131,10 +131,6 @@ export function desktopSetupStep(s: DesktopSetupStatus, ctx: DesktopSetupContext
       detail: `Remote Desktop on a Windows PC runs through a companion app, and its install stopped${s.bootstrapFailure.phase ? ` at: ${s.bootstrapFailure.phase}` : ''}. Sign in at the PC, then ask your agent to try the install again.`,
       actions: [CHECK] };
   }
-  if (s.platform === 'linux' && s.wsl !== true) {
-    return { state: 'not-supported', ready: false, title: `${label} can’t run Remote Desktop yet`,
-      detail: 'A Linux machine with no Windows underneath is not supported yet.', actions: [] };
-  }
   if (s.restartPending) return restartingStep;
   if (!s.configured) {
     if (ctx.frontNotReady) {
@@ -158,7 +154,7 @@ export function desktopSetupStep(s: DesktopSetupStatus, ctx: DesktopSetupContext
       actions: [{ id: 'turn-on', label: 'Restart now' }] };
   }
   if (!s.targetConstructed || s.status === 'target-unavailable') {
-    if (s.platform === 'linux') {
+    if (s.platform === 'linux' && s.wsl === true) {
       return { state: 'windows-companion', ready: false, title: `${label} needs its Windows companion`,
         detail: 'On a Windows PC, Remote Desktop runs through a companion app in the signed-in Windows session. Sign in at the PC, then press Check again.',
         actions: [CHECK] };

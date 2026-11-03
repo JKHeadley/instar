@@ -221,6 +221,7 @@ import { parseScreenLockPolicy } from '../core/DesktopLockState.js';
 import { verifyDesktopLockedAssertion, type DesktopLockedAssertion } from '../core/DesktopOperatorAssertion.js';
 import { DesktopSetupTarget } from '../core/DesktopSetupTarget.js';
 import { isWslHost } from '../core/wslPlatform.js';
+import { LinuxDesktopHost } from '../core/LinuxDesktopHost.js';
 import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
 import { windowsDesktopLocalSend } from '../core/WindowsDesktopLocalTransport.js';
 import { discoverWindowsDesktopCompanion } from '../core/WindowsDesktopCompanionDiscovery.js';
@@ -2946,7 +2947,8 @@ export class AgentServer {
     const desktopConfiguredAtBoot = options.config.remoteDesktop?.enabled === true;
     // Every host remains dark without explicit opt-in. WSL delegates to the
     // separately installed interactive Windows companion; it never captures
-    // the Linux guest display as a substitute for the Windows desktop.
+    // the Linux guest display as a substitute for the Windows desktop. Native
+    // Linux captures its own X11 session through LinuxDesktopHost.
     if (options.config.remoteDesktop?.enabled === true
       && (process.platform === 'darwin' || process.platform === 'linux')
       && this.meshSelfId && this.pinAttemptStore) {
@@ -2998,6 +3000,11 @@ export class AgentServer {
           }) : null;
           if (macHost && this.desktopLockedController) macHost.setLockedRoot(this.desktopLockedController.root);
           const host: DesktopHost = macHost
+            // Native Linux (not WSL) captures its own X11 session; a server with
+            // no X display reports an inactive session and admission refuses it.
+            ?? (process.platform === 'linux' && !isWslHost()
+              ? new LinuxDesktopHost({ display: options.config.remoteDesktop?.linuxDisplay ?? null })
+              : null)
             ?? (() => {
                 const companion = discoverWindowsDesktopCompanion();
                 // PowerShell interop can reach the Windows-local companion even

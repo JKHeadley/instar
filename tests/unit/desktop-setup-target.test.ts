@@ -171,9 +171,9 @@ describe('DesktopSetupTarget', () => {
     expect(file().remoteDesktop.frontMachineId).toBe(FRONT);
   });
 
-  it('refuses plain Linux but allows WSL', async () => {
+  it('allows native Linux (its own X11 desktop) and WSL', async () => {
     await expect(make({ platform: 'linux' }).target.run({ action: 'turn-on', frontMachineId: FRONT }, null))
-      .rejects.toMatchObject({ code: 'not-supported' });
+      .resolves.toEqual({ restartRequested: true });
     await expect(make({ platform: 'linux', wsl: true }).target.run({ action: 'turn-on', frontMachineId: FRONT }, null))
       .resolves.toEqual({ restartRequested: true });
   });
