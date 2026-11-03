@@ -657,6 +657,27 @@ function buildCredentialsMap(
 }
 
 /**
+ * Launch-time Anthropic credential fields for SessionManagerConfig (fb-7cb86d4b-1fd).
+ *
+ * Every claude-code spawn path builds its env from `anthropicApiKey`/`anthropicBaseUrl`. Feeding
+ * those from the SAME precedence as {@link buildCredentialsMap} (explicit
+ * `sessions.credentials.anthropic` wins, legacy `sessions.anthropicApiKey`/`anthropicBaseUrl`
+ * fill in) keeps one source of truth without touching each spawn site. A non-string value (for
+ * example an unmigrated `{ secret: true }` placeholder) is ignored rather than stringified.
+ */
+export function resolveAnthropicLaunchFields(
+  sessionsConfig: Record<string, unknown> | undefined,
+): { anthropicApiKey: string | undefined; anthropicBaseUrl: string | undefined } {
+  const legacyKey = typeof sessionsConfig?.['anthropicApiKey'] === 'string' ? (sessionsConfig['anthropicApiKey'] as string) : undefined;
+  const legacyBase = typeof sessionsConfig?.['anthropicBaseUrl'] === 'string' ? (sessionsConfig['anthropicBaseUrl'] as string) : undefined;
+  const map = sessionsConfig?.['credentials'] as Record<string, unknown> | undefined;
+  const cred = map && typeof map === 'object' ? (map['anthropic'] as Record<string, unknown> | undefined) : undefined;
+  const credValue = cred && typeof cred['value'] === 'string' && (cred['value'] as string).length > 0 ? (cred['value'] as string) : undefined;
+  const credBase = cred && typeof cred['baseUrl'] === 'string' && (cred['baseUrl'] as string).length > 0 ? (cred['baseUrl'] as string) : undefined;
+  return { anthropicApiKey: credValue ?? legacyKey, anthropicBaseUrl: credBase ?? legacyBase };
+}
+
+/**
  * Look up a provider's credential. Returns null when none is configured.
  *
  * Use this in any code path that previously read `config.anthropicApiKey`
@@ -1078,8 +1099,12 @@ export function loadConfig(projectDir?: string): InstarConfig {
     ],
     authToken: fileConfig.authToken as string | undefined,
     port: (fileConfig.port as number | undefined) ?? 4040,
-    anthropicApiKey: fileConfig.sessions?.anthropicApiKey as string | undefined,
-    anthropicBaseUrl: fileConfig.sessions?.anthropicBaseUrl as string | undefined,
+    // fb-7cb86d4b-1fd: session launch reads `anthropicApiKey`/`anthropicBaseUrl`. An install that
+    // configures only the documented `sessions.credentials.anthropic` used to launch every
+    // claude-code session with an EMPTY token ("Not logged in"). Resolve the launch credential
+    // from the same precedence getProviderCredential() uses: explicit credentials.anthropic
+    // first, the legacy fields as the fallback.
+    ...resolveAnthropicLaunchFields(fileConfig.sessions as Record<string, unknown> | undefined),
     ...(fileConfig.sessions?.resumeFollowsAccount &&
     typeof fileConfig.sessions.resumeFollowsAccount === 'object'
       ? { resumeFollowsAccount: fileConfig.sessions.resumeFollowsAccount as { enabled?: boolean } }
