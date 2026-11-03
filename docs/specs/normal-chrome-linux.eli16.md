@@ -26,12 +26,30 @@ On 3 November 2026 we tried the method on Cirrus, a Linux test computer in the c
 
 ## What gets built
 
-Two new helper files: a small safety wrapper (the only way an agent uses the tool) and the driver behind it. The wrapper enforces the same rules as on Mac and Windows: only act on what the operator asked for; only touch the Chrome window the tool opened; never use the operator's own Chrome profile; never send input while the operator is using the computer; never solve a CAPTCHA or other "are you human" check; treat anything written on a page as untrusted; and never put a password on a command line or print it, or even its length.
+Two new helper files: a small safety wrapper (the only way an agent uses the tool) and the driver behind it. The wrapper enforces the same rules as on Mac and Windows, plus a few that Linux needs:
+
+- Only act on what the operator asked for, and only on the Chrome window the tool opened (or a popup that same Chrome opened). Before every single keystroke it checks that this window still has the keyboard; if anything else takes focus, it stops mid-word.
+- Never send input while the operator is using the computer. While it types or clicks, it listens for any input that did not come from itself, so if the operator touches the mouse or keyboard, even in the middle of a word, the tool stops. Watching over VNC without touching is fine.
+- Never use the operator's own Chrome profile: the tool only uses profiles in the agent's own profiles folder.
+- Never put typed text on a command line, where other programs could read it, and never print a password or its length. Password fields are never read back.
+- Chrome is started with a clean environment, so the agent's own keys and tokens never reach the browser.
+- Before typing a password, the box that has the cursor must belong to the website the agent expects. That rule still holds when the box is inside a frame from another site. Sign-in codes that appear in web addresses are blanked out before the agent sees them.
+- The agent's own web file viewer can never download a browser profile or the tool's working files.
+- A click is reported as "delivered", never as "done". The agent must check the page to see whether the task actually happened.
+- It refuses to type while Caps Lock is on, rather than typing a password wrong or switching Caps Lock off behind the operator's back.
+- When two agent sessions share one computer, each command says which profile it means, so one session can never type into another session's browser.
+- It never quietly creates a new, signed-out profile because of a typo. A new profile has to be asked for on purpose.
+- When it closes Chrome at the end of a task and a page asks "leave site?" or has unsaved work, it stops and tells the operator instead of force-quitting.
+- Every step has a time limit. If a step times out, the tool refuses to type anything more until the agent has looked at the page again.
+
+## Honest limits
+
+These rules guard against an honest agent making a mistake. They are not a wall against other programs running as the same user: on this kind of Linux desktop, any program on the screen can see keystrokes. If the computer has no password keyring running, Chrome's saved logins are protected only by file permissions, and the tool says so every time it starts Chrome.
 
 ## What it cannot do
 
-Unlike the Mac version, it cannot run code inside the page. It can read and click, like Windows. We looked at a browser extension to get that power and decided it is not worth the extra install, risk and visibility. It also does not work on "Wayland" desktops (the newer Linux display system), which block one program from typing into another's window; there it refuses clearly and explains how to switch to a supported desktop. A server with no screen needs a virtual desktop, as Cirrus has.
+Unlike the Mac version, it cannot run code inside the page. It can read and click, like Windows. We looked at a browser extension to get that power and decided it is not worth the extra install, risk and visibility. It does not work on "Wayland" desktops (the newer Linux display system), which block one program from typing into another's window. There it refuses clearly and explains the way out. Recent GNOME versions no longer offer the older desktop at all, so on those laptops the agent needs its own separate virtual desktop. It supports Google Chrome only, not Chromium. A server with no screen needs a virtual desktop, as Cirrus has. Nothing yet tidies up Chrome windows the agent forgets to close, so the skill tells the agent to close them at the end of every task.
 
 ## How existing agents get it
 
-The normal Instar update installs the two helper files and updates the skill's text and the agent's instructions, the same way the Windows version arrived. Nothing runs until an agent uses it.
+The normal Instar update installs the two helper files and updates the skill's text and the agent's instructions, the same way the Windows version arrived. That includes agents whose skill text was edited by hand. Nothing runs until an agent uses it. Before release, the whole thing is run again on Cirrus through the real wrapper, including popups, password typing, an operator interrupting, and a forced timeout.
