@@ -410,10 +410,24 @@ export class FeedbackExecutorService {
     const acted = new Set<string>();
     const sourceRepo = this.opts.config().sourceRepoPath;
     const slug = knownSlug ?? (sourceRepo ? (await this.opts.git.githubRemote(sourceRepo))?.slug ?? null : null);
+    // A crash after parking the execution row but before holding triage still must not
+    // offer another attempt. Repair the operator-visible hold and alert on every tick.
+    for (const row of this.opts.store.inStates('held')) {
+      if (row.reason === 'publish-outcome-unknown') await this.repairPublishUnknown(row, epoch);
+    }
     for (const row of this.opts.store.inStates('claimed', 'running', 'verifying')) {
       const triage = this.opts.triageStore.get(row.initiativeId);
       const awayFromWork = !triage || triage.state === 'hold' || triage.state === 'ignored';
-      const adoptable = row.sessionMachine === this.opts.selfMachineId && row.state === 'running' && Boolean(row.workspace && fs.existsSync(row.workspace));
+      // An external push or PR create may have completed before its DB receipt. Never replay it.
+      if (row.state === 'verifying' && row.reason === 'publishing' && row.ownerEpoch < epoch) {
+        await this.parkPublishUnknown(row, epoch);
+        acted.add(row.attemptId);
+        continue;
+      }
+      const reviewDir = this.attemptPaths(row).reviewDir;
+      const adoptable = row.sessionMachine === this.opts.selfMachineId &&
+        ((row.state === 'running' && Boolean(row.workspace && fs.existsSync(row.workspace))) ||
+          (row.state === 'verifying' && Boolean(((row.workspace && fs.existsSync(row.workspace)) || fs.existsSync(reviewDir)) && row.publishClone && fs.existsSync(row.publishClone))));
       if (row.ownerEpoch < epoch && !adoptable) {
         await this.stopSession(row);
         this.endAttempt(row, epoch, 'stopped', 'stale-epoch');
@@ -525,6 +539,7 @@ export class FeedbackExecutorService {
       // Two review-failed closes in the current recovery episode: the item is parked, never offered (the tick's repair writes the hold).
       if (this.needsReviewFailedPark(item.initiativeId)) continue;
       const latest = this.opts.store.latestFor(item.initiativeId);
+      if (latest?.state === 'held' && latest.reason === 'publish-outcome-unknown') continue;
       // A merged fix that regressed (new report after release, or a failed live proof) was re-triaged; a new attempt may start.
       const reopened = latest?.state === 'merged' && (latest.reason === 'reopened-new-report' || latest.reason === 'live-proof-failed');
       if (latest && busy.has(latest.state) && !reopened) continue;
@@ -885,11 +900,18 @@ export class FeedbackExecutorService {
 
   private async reconcileLive(rowIn: ExecutionRow, epoch: number, slug: string, approver: string): Promise<void> {
     let row = rowIn;
+    if (row.state === 'verifying' && row.reason === 'publishing') {
+      await this.parkPublishUnknown(row, epoch);
+      return;
+    }
     if (row.ownerEpoch < epoch) {
       // Same machine re-acquired the lease with the session still alive (or already finished with its
       // workspace intact): adopt it under the current epoch instead of killing a healthy build.
       const sameMachine = row.sessionMachine === this.opts.selfMachineId;
-      if (sameMachine && row.state === 'running' && row.workspace && fs.existsSync(row.workspace)) {
+      const reviewDir = this.attemptPaths(row).reviewDir;
+      if (sameMachine && (row.state === 'running' || row.state === 'verifying') &&
+        ((row.workspace && fs.existsSync(row.workspace)) || (row.state === 'verifying' && fs.existsSync(reviewDir))) &&
+        (row.state !== 'verifying' || (row.publishClone && fs.existsSync(row.publishClone)))) {
         row = this.opts.store.adopt(epoch, row.attemptId);
         this.opts.audit.append('execute:adopted', { attemptId: row.attemptId, epoch });
       } else {
@@ -938,6 +960,21 @@ export class FeedbackExecutorService {
     this.opts.audit.append('execute:ended', { attemptId: row.attemptId, state, reason });
     if (!keepClones) this.cleanup(row);
     return updated;
+  }
+
+  /** External publication may have succeeded without its DB receipt; preserve evidence and refuse an automatic retry. */
+  private async parkPublishUnknown(row: ExecutionRow, epoch: number): Promise<void> {
+    const held = this.endAttempt(row, epoch, 'held', 'publish-outcome-unknown', true);
+    await this.repairPublishUnknown(held, epoch);
+  }
+
+  private async repairPublishUnknown(row: ExecutionRow, epoch: number): Promise<void> {
+    const decision = this.opts.triageStore.latestDecisionFor(row.initiativeId)?.sequence ?? null;
+    await this.holdItem(epoch, row.initiativeId, 'publish-outcome-unknown', decision);
+    await this.attention({ id: `feedback-execute:publish-outcome-unknown:${row.attemptId}`,
+      title: `Feedback publication needs reconciliation for ${row.attemptId}`,
+      summary: `The executor may have pushed branch ${row.branch} or opened its PR before the owner changed. Check the fork and repository for that exact branch before retrying this item.`,
+      category: 'monitoring', priority: 'HIGH', sourceContext: 'feedback-execute:publish-outcome-unknown' });
   }
 
   private cleanup(row: Pick<ExecutionRow, 'initiativeId' | 'attempt' | 'attemptId'>): void {
@@ -1329,11 +1366,14 @@ export class FeedbackExecutorService {
       this.endAttempt(row, epoch, 'stopped', 'publish-fork-unset');
       return false;
     }
+    let externalStarted = false;
     try {
       applyChangeSet(p.publishClone, entries, { removeFile: (full) => removeAttemptTree(full, this.trashRoot(), 'feedback-execute publish clone delete') });
       let codeowners: string | null = null;
       try { codeowners = fs.readFileSync(path.join(p.publishClone, '.github', 'CODEOWNERS'), 'utf8'); } catch { codeowners = null; } // @silent-fallback-ok: no CODEOWNERS file → no owner note
       const outside = codeownersOutsideApprover(codeowners, entries.map((e) => e.path), approver);
+      if (row.state === 'verifying') this.opts.store.patch(epoch, row.attemptId, { reason: 'publishing' });
+      externalStarted = true;
       const headSha = await this.opts.git.commitAndPush(p.publishClone, { branch: row.branch, message: text.message, remoteUrl: `https://github.com/${fork.slug}.git`,
         authorName: identity.name, authorEmail: identity.email, credentialHelper: this.opts.ghCredentialHelper });
       const pr = await this.opts.github.createPr({ slug, head: `${fork.owner}:${row.branch}`, base: 'main', title: text.title, body: text.body, label: HOLD_LABEL });
@@ -1348,6 +1388,11 @@ export class FeedbackExecutorService {
       return true;
     } catch (error) {
       this.opts.audit.append('execute:publish-failed', { attemptId: row.attemptId, error: error instanceof Error ? error.message.slice(0, 120) : 'unknown' });
+      if (externalStarted) {
+        try { await this.parkPublishUnknown(row, epoch); }
+        catch (parkError) { if (!(parkError instanceof DrainConflictError)) throw parkError; /* The new owner parks the durable publishing marker. */ }
+        return false;
+      }
       this.endAttempt(row, epoch, 'failed', 'publish-failed');
       await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
       return false;

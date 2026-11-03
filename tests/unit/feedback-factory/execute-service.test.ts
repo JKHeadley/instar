@@ -1305,6 +1305,112 @@ describe('second-pass review regressions', () => {
     expect(h.store.get(b.initiativeId)!.state).toBe('work');
   });
 
+  it('a same-machine owner epoch change adopts an intact verifying fix and re-verifies it', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    const row = h.execStore.latestFor(initiativeId)!;
+    expect(row.publishClone && fs.existsSync(row.publishClone)).toBe(true);
+    h.execStore.patch(1, row.attemptId, { state: 'verifying' });
+    finishSessions(h);
+    const reviewDir = h.exec.attemptPaths(row).reviewDir;
+    fs.renameSync(row.workspace!, reviewDir); // the normal verification path moves the worker tree first
+    expect(fs.existsSync(row.workspace!)).toBe(false);
+    h.epoch.value = 2;
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.execStore.get(row.attemptId)).toMatchObject({ state: 'running', reason: 'reverify-after-restart', ownerEpoch: 2 });
+    expect(h.sessions.stopped).toHaveLength(0);
+    await h.exec.tick();
+    expect(h.execStore.get(row.attemptId)).toMatchObject({ state: 'pr-open', ownerEpoch: 2 });
+    expect(h.execStore.attemptsFor(initiativeId)).toHaveLength(1);
+
+    h.cleanup();
+    h = await createExecHarness();
+    const missing = await startOne();
+    const bad = h.execStore.latestFor(missing.initiativeId)!;
+    h.execStore.patch(1, bad.attemptId, { state: 'verifying', publishClone: path.join(h.agentHome, 'missing-publish-clone') });
+    h.epoch.value = 2;
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.execStore.get(bad.attemptId)).toMatchObject({ state: 'stopped', reason: 'stale-epoch' });
+  });
+
+  it('parks an uncertain publication across owner changes without repeating the push or PR create', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    const row = h.execStore.latestFor(initiativeId)!;
+    h.execStore.patch(1, row.attemptId, { state: 'verifying', reason: 'publishing' });
+    finishSessions(h);
+    const reviewDir = h.exec.attemptPaths(row).reviewDir;
+    fs.renameSync(row.workspace!, reviewDir);
+    h.epoch.value = 2;
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.execStore.get(row.attemptId)).toMatchObject({ state: 'held', reason: 'publish-outcome-unknown' });
+    expect(h.store.get(initiativeId)).toMatchObject({ state: 'hold', reason: 'publish-outcome-unknown' });
+    expect(fs.existsSync(reviewDir)).toBe(true);
+    expect(h.execStore.attemptsFor(initiativeId)).toHaveLength(1);
+    expect(h.attentionExec.some((a) => a.id.includes('publish-outcome-unknown'))).toBe(true);
+  });
+
+  it('a same-epoch restart also parks a publication marker without replaying it', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    const row = h.execStore.latestFor(initiativeId)!;
+    h.execStore.patch(1, row.attemptId, { state: 'verifying', reason: 'publishing' });
+    await h.exec.tick();
+    expect(h.execStore.get(row.attemptId)).toMatchObject({ state: 'held', reason: 'publish-outcome-unknown' });
+    expect(h.execStore.attemptsFor(initiativeId)).toHaveLength(1);
+  });
+
+  it('parking uncertain publication preserves a newer operator hold or ignore decision', async () => {
+    for (const state of ['hold', 'ignored'] as const) {
+      h = await createExecHarness();
+      const { initiativeId } = await startOne();
+      const row = h.execStore.latestFor(initiativeId)!;
+      h.execStore.patch(1, row.attemptId, { state: 'verifying', reason: 'publishing' });
+      h.drain.sharedDatabase().prepare('UPDATE triage SET state=?, reason=? WHERE initiative_id=?')
+        .run(state, `operator-${state}`, initiativeId);
+      h.epoch.value = 2;
+      h.now.value += 60_000;
+      await h.exec.tick();
+      expect(h.execStore.get(row.attemptId)).toMatchObject({ state: 'held', reason: 'publish-outcome-unknown' });
+      expect(h.store.get(initiativeId)).toMatchObject({ state, reason: `operator-${state}` });
+      h.cleanup();
+    }
+  });
+
+  it('a crash between execution hold and triage hold cannot start another publication', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    const row = h.execStore.latestFor(initiativeId)!;
+    h.execStore.patch(1, row.attemptId, { state: 'held', reason: 'publish-outcome-unknown' });
+    expect(h.store.get(initiativeId)).toMatchObject({ state: 'work' });
+    expect(h.exec.candidates().map((item) => item.initiativeId)).not.toContain(initiativeId);
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.store.get(initiativeId)).toMatchObject({ state: 'hold', reason: 'publish-outcome-unknown' });
+    expect(h.attentionExec.some((a) => a.id === `feedback-execute:publish-outcome-unknown:${row.attemptId}`)).toBe(true);
+    expect(h.execStore.attemptsFor(initiativeId)).toHaveLength(1);
+  });
+
+  it('a lost PR-create response after GitHub accepted the PR parks the attempt without a second PR', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    const gateway = (h.exec as unknown as { opts: { github: { createPr: (input: unknown) => Promise<unknown> } } }).opts.github;
+    const createPr = gateway.createPr.bind(gateway);
+    gateway.createPr = async (input) => { await createPr(input); throw new Error('response lost after PR creation'); };
+    finishSessions(h);
+    await h.exec.tick();
+    const row = h.execStore.latestFor(initiativeId)!;
+    expect(row).toMatchObject({ state: 'held', reason: 'publish-outcome-unknown' });
+    expect(h.prs.size).toBe(1);
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.prs.size).toBe(1);
+    expect(h.execStore.attemptsFor(initiativeId)).toHaveLength(1);
+  });
+
   it('the operator\'s stop and PIN publication never race a running tick', async () => {
     h = await createExecHarness();
     await h.workItem('c1');
