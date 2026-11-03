@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "mobile-pairing-word-code",
+  "sessionId": "38c6bab8-117f-4db9-906f-c4fe9b22996e",
+  "timestamp": "2026-11-03T13:27:24.775Z",
+  "artifactPath": "upgrades/side-effects/mobile-pairing-word-code.md",
+  "artifactSha256": "740726a25a3e691bd59063a01202a8915da8fbcf2694eba5e25bc2e08cd87663",
+  "specPath": "docs/specs/mobile-pairing-word-code.md",
+  "coveredFiles": [
+    "dashboard/phones.js",
+    "docs/specs/carriers/mobile-pairing-word-code.json",
+    "docs/specs/mobile-pairing-word-code.eli16.md",
+    "docs/specs/mobile-pairing-word-code.md",
+    "docs/specs/reports/mobile-pairing-word-code-convergence.md",
+    "src/core/MobileDeviceKeys.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/pairingWords.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/mobile-telegram-free-alive.test.ts",
+    "tests/integration/mobile-dashboard-pairing.test.ts",
+    "tests/integration/mobile-pairing-routes.test.ts",
+    "tests/unit/mobile-pairing-word-code.test.ts",
+    "upgrades/next/mobile-pairing-word-code.md",
+    "upgrades/side-effects/mobile-pairing-word-code.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Pairing confirmation is an auth admission path",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -96,9 +96,9 @@ describe('pairing and push without Telegram — production wiring', () => {
     const m = await auth(request(app).post('/mobile/pairing-codes')).send({});
     expect(m.status).toBe(200);
     const dev = makeDevice();
-    const r = await request(app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code: m.body.code, deviceName: 'e2e phone', devicePublicKey: dev.publicKey });
+    const r = await request(app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code: m.body.code, deviceName: 'e2e phone', devicePublicKey: dev.publicKey, codeFormats: ['word'] });
     expect(r.status).toBe(200);
-    expect(r.body).toMatchObject({ status: 'pending', approval: 'dashboard' });
+    expect(r.body).toMatchObject({ status: 'pending', approval: 'dashboard', codeFormat: 'word' });
     const deviceId = r.body.deviceId as string;
 
     // 3. The code is on the dashboard only behind the operator session.
@@ -107,7 +107,7 @@ describe('pairing and push without Telegram — production wiring', () => {
     expect(approvals.status).toBe(200);
     expect(approvals.body.approvals).toHaveLength(1);
     const code = approvals.body.approvals[0].code as string;
-    expect(code).toMatch(/^\d{6}$/);
+    expect(code).toMatch(/^[A-Z]{4,6}-\d{4}$/); // mobile-pairing-word-code: the opted-in phone gets a word code
 
     let lastTime = 0;
     const send = (method: 'GET' | 'POST', p: string, body?: unknown) => {
@@ -119,7 +119,7 @@ describe('pairing and push without Telegram — production wiring', () => {
       q.set('X-Instar-Device', deviceId).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', sig);
       return raw ? q.send(raw.toString()) : q;
     };
-    expect((await send('POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
+    expect((await send('POST', '/mobile/device/confirm', { code: code.toLowerCase() })).body.status).toBe('active');
     expect(mp.devices.get(deviceId)!.approvedVia).toBe('dashboard-pin');
     expect(mp.keyLedger!.rows().find((row) => row.type === 'activation')).toMatchObject({ approvedVia: 'dashboard-pin' });
 

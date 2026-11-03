@@ -10,6 +10,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { PAIRING_WORDS, PAIRING_WORD_SET } from './pairingWords.js';
 
 export const DEVICE_SIG_VERSION = 'instar-device-v1';
 export const DEVICE_TIME_WINDOW_MS = 60_000;
@@ -405,25 +406,70 @@ export function codeHmac(code: string): string {
   return crypto.createHmac('sha256', CODE_KEY).update(code).digest('hex');
 }
 
+export type CodeFormat = 'digits' | 'word';
+
+/**
+ * mobile-pairing-word-code §3.3 — the one word-code form, shared by check() (anchored) and the
+ * leak scan (unanchored): 4–6 ASCII letters, at most 3 separators, 4 ASCII digits. Separators are
+ * whitespace, - – — _ : and . (no Unicode letter matching: e.g. the Kelvin sign is not a K).
+ */
+export const WORD_CODE_SEP = '[\\s\\-\\u2013\\u2014_:.]';
+export const WORD_CODE_FRAGMENT = `([A-Za-z]{4,6})${WORD_CODE_SEP}{0,3}([0-9]{4})`;
+const WORD_CODE_ANCHORED = new RegExp(`^\\s*${WORD_CODE_FRAGMENT}\\s*$`);
+const WORD_CODE_SCAN = new RegExp(`(?<![A-Za-z])${WORD_CODE_FRAGMENT}(?![0-9])`, 'g');
+
+/** ASCII-only uppercasing (no locale or Unicode case folding). */
+function asciiUpper(s: string): string { return s.replace(/[a-z]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 32)); }
+
+/** `KITE4172` for a word-code form, null for anything else (a PIN, digits, spaced letters, non-string). */
+export function parseWordCode(input: unknown): string | null {
+  if (typeof input !== 'string') return null;
+  const m = WORD_CODE_ANCHORED.exec(input);
+  return m ? asciiUpper(m[1]!) + m[2]! : null;
+}
+
+/** Display form: `KITE-4172` for a word code, `NNN NNN` for a digit code. */
+export function displayCode(code: string): string {
+  const m = /^([A-Z]{4,6})(\d{4})$/.exec(code);
+  if (m) return `${m[1]}-${m[2]}`;
+  return /^\d{6}$/.test(code) ? `${code.slice(0, 3)} ${code.slice(3)}` : code;
+}
+
 /** Live codes per pending device, in memory: a restart voids them all. */
 export class ConfirmationCodes {
-  private codes = new Map<string, { hmac: string; expiresAt: number }>();
+  private codes = new Map<string, { hmac: string; expiresAt: number; format: CodeFormat }>();
   constructor(private readonly now: () => number = Date.now) {}
 
-  issue(deviceId: string, expiresAt: number): string {
-    const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
-    this.codes.set(deviceId, { hmac: codeHmac(code), expiresAt });
+  /** Returns the code in its normalized form (`KITE4172` or `123456`); format it with displayCode(). */
+  issue(deviceId: string, expiresAt: number, format: CodeFormat = 'digits'): string {
+    const code = format === 'word'
+      ? PAIRING_WORDS[crypto.randomInt(0, PAIRING_WORDS.length)]! + String(crypto.randomInt(0, 10_000)).padStart(4, '0')
+      : String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+    this.codes.set(deviceId, { hmac: codeHmac(code), expiresAt, format });
     return code;
   }
 
-  /** 'ok' | 'wrong' (with its hmac) | 'none' (no live code for this device). */
-  check(deviceId: string, code: unknown): { result: 'ok' } | { result: 'wrong'; hmac: string } | { result: 'none' } {
+  formatOf(deviceId: string): CodeFormat | null { return this.codes.get(deviceId)?.format ?? null; }
+
+  /**
+   * 'ok' | 'wrong' (with its hmac) | 'wrong-format' (a word device given something that is not a
+   * word-code form: no HMAC, no strike) | 'none' (no live code for this device).
+   */
+  check(deviceId: string, code: unknown): { result: 'ok' } | { result: 'wrong'; hmac: string } | { result: 'wrong-format' } | { result: 'none' } {
     const e = this.codes.get(deviceId);
     if (!e || e.expiresAt <= this.now()) return { result: 'none' };
-    const normalized = typeof code === 'string' ? code.replace(/\D/g, '') : '';
+    let normalized: string;
+    if (e.format === 'word') {
+      const parsed = parseWordCode(code);
+      if (parsed === null) return { result: 'wrong-format' };
+      normalized = parsed;
+    } else {
+      // Digits device: today's rule exactly.
+      normalized = typeof code === 'string' ? code.replace(/\D/g, '') : '';
+    }
     const h = codeHmac(normalized);
     // Compare only: the caller consumes the code (drop) after the activation is written.
-    if (normalized.length === 6 && crypto.timingSafeEqual(Buffer.from(h), Buffer.from(e.hmac))) return { result: 'ok' };
+    if ((e.format === 'word' || normalized.length === 6) && crypto.timingSafeEqual(Buffer.from(h), Buffer.from(e.hmac))) return { result: 'ok' };
     return { result: 'wrong', hmac: h };
   }
 
@@ -444,6 +490,12 @@ export class ConfirmationCodes {
     const t = this.now();
     const candidates = new Set<string>();
     for (const m of text.matchAll(/(?<!\d)(\d{3})[\s-]?(\d{3})(?!\d)/g)) candidates.add(m[1]! + m[2]!);
+    // Word codes (mobile-pairing-word-code §3.5): the same form check() accepts, only listed words,
+    // de-duplicated; no cap, so nothing in a message can push a real code out of the scan.
+    for (const m of text.matchAll(WORD_CODE_SCAN)) {
+      const word = asciiUpper(m[1]!);
+      if (PAIRING_WORD_SET.has(word)) candidates.add(word + m[2]!);
+    }
     const hits: string[] = [];
     for (const c of candidates) {
       const h = codeHmac(c);

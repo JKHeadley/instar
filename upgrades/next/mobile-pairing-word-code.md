@@ -1,0 +1,19 @@
+# Phone-pairing confirmation code can be a word plus four digits
+
+<!-- bump: patch -->
+
+## What Changed
+
+The confirmation code that pairs the Instar iPhone app was always 6 digits, the same shape as the dashboard PIN. An app that sends `codeFormats: ["word"]` at redeem now gets a `WORD-NNNN` code (for example `KITE-4172`), from a fixed list of 256 short, distinct words. The redeem response names the format (`codeFormat`). On such a device, input that is not a word-code form (a PIN, plain digits) gets `422 wrong-format` with a hint and costs no wrong-guess strike, because it can never match. Apps that do not opt in keep today's 6-digit code exactly. The leak scan that cancels a pairing whose code is pasted into a chat now also catches word codes. `GET /mobile/pairing-approvals` returns codes in display form with `codeFormat`. The agent's CLAUDE.md pairing sentences no longer say "6-digit", and existing agents are rewritten once.
+
+## What to Tell Your User
+
+Once your Instar app is updated, the code it asks for when you add an agent looks like KITE-4172, so it can't be mixed up with your dashboard PIN. Capitals, spaces and the dash don't matter. If you type the PIN by mistake, the app tells you what the code looks like, and that doesn't count as a wrong try.
+
+## Summary of New Capabilities
+
+None. This changes the shape of an existing confirmation code for apps that ask for it.
+
+## Evidence
+
+On 2026-11-02 the operator typed the 6-digit dashboard PIN where the 6-digit pairing code belonged while pairing a cloud agent. Tests: `tests/unit/mobile-pairing-word-code.test.ts` (word-list rules, every accepted form, wrong-format, leak scan after 200 decoys, four-line migration and its composition with the older rewrite), integration word-code cases on the Telegram and dashboard paths, and the no-Telegram production-path e2e pairing with a word code.

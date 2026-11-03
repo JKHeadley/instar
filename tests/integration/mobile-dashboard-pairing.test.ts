@@ -99,7 +99,7 @@ describe('pairing without Telegram (dashboard path)', () => {
     const ctx = setup();
     const { dev, r, deviceId } = await redeemNew(ctx.app);
     expect(r.status).toBe(200);
-    expect(r.body).toEqual({ deviceId, agentName: 'echo', status: 'pending', approval: 'dashboard' });
+    expect(r.body).toEqual({ deviceId, agentName: 'echo', status: 'pending', approval: 'dashboard', codeFormat: 'digits' });
     expect(ctx.dms).toHaveLength(0);
 
     // Bearer alone: refused. A wrong session: refused. A device: not on its allowlist.
@@ -117,7 +117,8 @@ describe('pairing without Telegram (dashboard path)', () => {
     expect(a.body.approvals).toHaveLength(1);
     const row = a.body.approvals[0];
     expect(row).toMatchObject({ deviceId, deviceName: 'iPhone', label: 'mine' });
-    expect(row.code).toMatch(/^\d{6}$/);
+    expect(row.code).toMatch(/^\d{3} \d{3}$/); // display form (mobile-pairing-word-code §3.4)
+    expect(row.codeFormat).toBe("digits");
     expect(row.fingerprint).toBe(ctx.svc.devices.get(deviceId)!.fingerprint);
     // The plaintext is never written to disk.
     for (const f of fs.readdirSync(ctx.dir, { recursive: true }) as string[]) {
@@ -231,5 +232,22 @@ describe('push trigger for app replies (peer route)', () => {
     expect(bad.status).toBe(400);
     const none = await bearer(request(ctx.app).post('/mobile/push/notify')).send({ kind: 'reply', dedupeKey: 'app-reply:m3', sourceMachine: 'peer' });
     expect(none.status).toBe(400);
+  });
+});
+
+describe('word codes on the dashboard path (mobile-pairing-word-code)', () => {
+  it('an opted-in phone gets a WORD-NNNN code shown only to an operator session, and confirms with any casing', async () => {
+    const ctx = setup();
+    const m = await bearer(request(ctx.app).post('/mobile/pairing-codes')).send({ label: 'mine' });
+    const dev = makeDevice();
+    const r = await request(ctx.app).post('/mobile/pairing-codes/redeem').set('Host', HOST)
+      .send({ code: m.body.code, deviceName: 'iPhone', devicePublicKey: dev.publicKey, codeFormats: ['word'] });
+    expect(r.body).toMatchObject({ status: 'pending', approval: 'dashboard', codeFormat: 'word' });
+    expect((await approvals(ctx.app)).status).toBe(403);
+    const shown = (await approvals(ctx.app, SESSION)).body.approvals[0].code as string;
+    expect(shown).toMatch(/^[A-Z]{4,6}-\d{4}$/);
+    const typed = shown.toLowerCase().replace('-', ' ');
+    const ok = await signed(ctx.app, dev, r.body.deviceId, 'POST', '/mobile/device/confirm', { code: typed });
+    expect(ok.body.status).toBe('active');
   });
 });

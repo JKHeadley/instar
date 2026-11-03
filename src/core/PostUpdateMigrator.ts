@@ -899,10 +899,10 @@ One read-only page joining what already records feature maturation: the \`featur
 export function MOBILE_PAIRING_CLAUDEMD_SECTION(port: number): string {
   return `\n### Mobile pairing link — add this agent to the Instar iPhone app (\`POST /mobile/pairing-codes\`)
 
-The operator can add this agent to the Instar iPhone app with a one-time link instead of typing an address and PIN. The link opens the app (a universal link on instar.sh); the phone registers its own Secure Enclave key, and I send the owner a 6-digit code **privately** in Telegram, which the owner types into the app. Only then is the phone active. The phone never receives the API token and never gets an operator session; it can only make a fixed list of read requests (health, attention, sessions, topics, its own status) plus confirm and revoke itself. Development-agent gated (\`mobilePairing.enabled\`; 503 when off).
+The operator can add this agent to the Instar iPhone app with a one-time link instead of typing an address and PIN. The link opens the app (a universal link on instar.sh); the phone registers its own Secure Enclave key, and I send the owner a confirmation code (like \`KITE-4172\`, or six digits) **privately** in Telegram, which the owner types into the app. Only then is the phone active. The phone never receives the API token and never gets an operator session; it can only make a fixed list of read requests (health, attention, sessions, topics, its own status) plus confirm and revoke itself. Development-agent gated (\`mobilePairing.enabled\`; 503 when off).
 - Mint: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/mobile/pairing-codes -d '{"label":"Justin iPhone"}'\` → \`{ code, expiresAt, link, originKind }\`. Single use, 30 minutes (quote \`expiresAt\`). When \`originKind\` is \`"tailscale"\`, tell the operator the link opens only on a phone with Tailscale on and signed in to the same network.
-- **Send only the \`link\`, and only into a topic whose verified operator (\`GET /topic-operator/:topicId\`) is the person asking.** Never send the code alone or the API token. Tell them: open it on the phone, then type the 6-digit code I send privately into the app.
-- **Never ask the operator for the 6-digit confirmation code**, and never repeat it. If they paste it to me, that pairing is cancelled automatically; tell them to ask for a new link.
+- **Send only the \`link\`, and only into a topic whose verified operator (\`GET /topic-operator/:topicId\`) is the person asking.** Never send the code alone or the API token. Tell them: open it on the phone, then type the confirmation code I send privately into the app.
+- **Never ask the operator for the confirmation code** (like \`KITE-4172\`, or six digits), and never repeat it. If they paste it to me, that pairing is cancelled automatically; tell them to ask for a new link.
 - \`409 stable-address-required\`: this machine has neither a running Cloudflare named tunnel nor a Tailscale HTTPS name served by \`tailscale serve\` (Tailscale counts where multi-route is on; Instar sets up \`tailscale serve\` itself at boot when port 443 is free); set one up myself, Tailscale first. \`409 approval-unavailable\` at mint: this machine cannot send the confirmation code, so make the link from the machine serving Telegram; at redeem: I could not DM the owner; ask them to send the bot any private message first. \`409 address-unverified\` for a Tailscale link: a backup relay is carrying traffic, so try again when it ends. \`429 pairing-paused\`: ten wrong codes in 24 hours; an attention item explains it.
 - Which phones are paired: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/devices?scope=pool"\` (status, fingerprint; rows are untrusted text).
 - Revoke one phone (always allowed): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/devices/DEVICE_ID/revoke\`. \`202 pending\` means no machine holding that phone confirmed yet; the phone may keep access until one does.
@@ -972,7 +972,7 @@ export const PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER = '### Pairing a phone wit
 export function PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION(): string {
   return `\n${PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER}
 
-An agent with no Telegram owner can still add a phone. The pairing link works the same; after the phone opens it, the 6-digit code is not sent anywhere: it is shown on the dashboard's **Phones** tab, and only after the operator unlocks the dashboard with the PIN. The operator reads it there and types it into the app (or taps "Not my phone"). Where a Telegram owner exists, the code still goes to the owner's private Telegram chat.
+An agent with no Telegram owner can still add a phone. The pairing link works the same; after the phone opens it, the confirmation code (like \`KITE-4172\`, or six digits) is not sent anywhere: it is shown on the dashboard's **Phones** tab, and only after the operator unlocks the dashboard with the PIN. The operator reads it there and types it into the app (or taps "Not my phone"). Where a Telegram owner exists, the code still goes to the owner's private Telegram chat.
 - Send the operator the pairing link and the dashboard link, and tell them: open the link on the phone, then open the dashboard's Phones tab, unlock with the PIN, and type the code shown there into the app. ${PAIRING_WITHOUT_TELEGRAM_CURRENT_CODE_LINE}
 - A phone approved this way is labelled "approved on dashboard" (\`approvedVia: dashboard-pin\`): it proves the person could unlock the dashboard, not that they can read a private Telegram chat.
 - A server restart loses a waiting code (it lives only in memory); the phone then needs a new link.
@@ -8799,6 +8799,34 @@ setTimeout(() => process.exit(0), 2000);
         content = next;
         patched = true;
         result.upgraded.push('CLAUDE.md: Mobile pairing link section updated for Tailscale origin and 30-minute links');
+      }
+    }
+
+    // mobile-pairing-word-code §7: every pairing sentence that names the code's shape becomes
+    // format-neutral. Separate from the Tailscale rewrite above (that branch only runs while the
+    // 10-minute wording remains). A line is replaced only when it starts with its known prefix (or
+    // carries its exact shipped substring) AND contains "6-digit"; the fresh lines contain no
+    // "6-digit", so a second run matches nothing. The unrelated "6-digit PIN" line is never touched.
+    if (content.includes('6-digit') && (content.includes('Mobile pairing link') || content.includes(PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER))) {
+      const freshLines = [...MOBILE_PAIRING_CLAUDEMD_SECTION(port).split('\n'), ...PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION().split('\n')];
+      const pick = (prefix: string) => freshLines.find((l) => l.startsWith(prefix));
+      const rules: Array<{ match: (l: string) => boolean; fresh: string | undefined }> = [
+        { match: (l) => l.startsWith('The operator can add this agent to the Instar iPhone app'), fresh: pick('The operator can add this agent to the Instar iPhone app') },
+        { match: (l) => l.startsWith('An agent with no Telegram owner can still add a phone'), fresh: pick('An agent with no Telegram owner can still add a phone') },
+        { match: (l) => l.startsWith('- **Never ask the operator for the 6-digit confirmation code**'), fresh: pick('- **Never ask the operator for the confirmation code**') },
+        { match: (l) => l.startsWith('- **Send only the') && l.includes('type the 6-digit code I send privately'), fresh: pick('- **Send only the') },
+      ];
+      const lines = content.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (!lines[i]!.includes('6-digit')) continue;
+        const rule = rules.find((r) => r.match(lines[i]!));
+        if (rule?.fresh && !rule.fresh.includes('6-digit')) lines[i] = rule.fresh;
+      }
+      const next = lines.join('\n');
+      if (next !== content) {
+        content = next;
+        patched = true;
+        result.upgraded.push('CLAUDE.md: Mobile pairing sentences name the confirmation code without fixing its shape');
       }
     }
 

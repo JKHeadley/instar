@@ -28,9 +28,11 @@ export function phonesGlanceSpec({ waiting = null, paired = null, locked = false
 
 const STATUS = { pending: 'Waiting to confirm', active: 'Paired', revoked: 'Removed', declined: 'Declined', expired: 'Expired' };
 
-/** "123 456" — easier to read off a screen. */
+/** "123 456" — easier to read off a screen. A word code ("KITE-4172") is shown as the server sent it. */
 export function prettyCode(code) {
-  const c = String(code ?? '').replace(/\D/g, '');
+  const raw = String(code ?? '');
+  if (/[A-Za-z]/.test(raw)) return raw;
+  const c = raw.replace(/\D/g, '');
   return c.length === 6 ? `${c.slice(0, 3)} ${c.slice(3)}` : c;
 }
 
