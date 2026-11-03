@@ -196,6 +196,8 @@ async function voiceMessage(svc: AppConversationService, opts: { key?: string; c
 }
 
 const lines = (svc: AppConversationService, ev: MediaMessageEvent) => svc.sessionLinesFor(ev.conversationKey, ev.messageId, ev.attachments, ev.text, 50);
+// Waits after a slow (50-60 ms) fake transcription are generous: the suite runs under full-suite load,
+// where a 100 ms wait was not always enough (seen on a peer verifier, 2026-11-03).
 const settle = (ms = 40) => new Promise((r) => setTimeout(r, ms));
 
 describe('storing the server transcript', () => {
@@ -285,7 +287,7 @@ describe('late transcripts', () => {
     const [line] = await lines(svc, ev);
     expect(line).toContain('transcript not ready after 60 s; it follows in a separate line');
     expect(followUps).toEqual([]);
-    await settle(120);
+    await settle(600);
     const stored = svc.store.transcriptFor(ev.attachments[0]!.attachmentId)!;
     expect(stored).toMatchObject({ text: 'arrived late', late: true });
     expect(followUps).toHaveLength(1);
@@ -300,7 +302,7 @@ describe('late transcripts', () => {
     const { svc, followUps } = service({ transcribe: () => new Promise<string>((_r, rej) => setTimeout(() => rej(new Error('API error (500)')), 50)), deadlineMs: 10 });
     const ev = await voiceMessage(svc);
     await lines(svc, ev);
-    await settle(100);
+    await settle(600);
     expect(followUps).toHaveLength(1);
     expect(followUps[0]![1]).toContain('[voice transcript unavailable: ');
     expect(followUps[0]![1]).toContain('(transcription unavailable: the transcription service failed;');
@@ -311,7 +313,7 @@ describe('late transcripts', () => {
     setFollowUpOk(false);
     const ev = await voiceMessage(svc);
     await lines(svc, ev);
-    await settle(100);
+    await settle(600);
     const ctx = svc.pendingContext(KEY);
     expect(ctx.lines.some((l) => /^\[voice transcript ready: .+\] for later$/.test(l))).toBe(true);
     ctx.ack();
@@ -323,7 +325,7 @@ describe('late transcripts', () => {
     const ev = await voiceMessage(svc, { key: 'telegram:4242' });
     const [line] = await lines(svc, ev);
     expect(line).toContain('saved with the message if it finishes');
-    await settle(100);
+    await settle(600);
     expect(svc.store.transcriptFor(ev.attachments[0]!.attachmentId)).toMatchObject({ conversationKey: 'telegram:4242', text: 'platform words', late: true });
     expect(followUps).toEqual([]);
     expect(svc.pendingContext('telegram:4242').lines).toEqual([]);
@@ -334,7 +336,7 @@ describe('late transcripts', () => {
     const { svc, followUps } = service({ transcribe: () => { calls++; return slow('shared', 60)(); }, deadlineMs: 10 });
     const ev = await voiceMessage(svc);
     await Promise.all([lines(svc, ev), lines(svc, ev)]);
-    await settle(120);
+    await settle(600);
     expect(calls).toBe(1);
     expect(followUps).toHaveLength(1);
   });
@@ -483,7 +485,7 @@ describe('finding 3: a transcript reaches the session once', () => {
     const ev = await voiceMessage(svc, { bytes });
     waitingRow(svc, ev, bytes);
     await svc.resolvePending(sha(bytes));
-    await settle(100);
+    await settle(600);
     const ctx = svc.pendingContext(KEY).lines;
     expect(ctx.filter((l) => l.includes('said once'))).toHaveLength(1);
     expect(ctx.some((l) => l.startsWith('[file now available: ') && l.endsWith('said once'))).toBe(true);
@@ -498,7 +500,7 @@ describe('finding 3: a transcript reaches the session once', () => {
     waitingRow(svc, ev, bytes);
     await svc.resolvePending(sha(bytes)); // no live session: the row stays for the next delivery
     setFollowUpOk(true); // a session is live when the late transcript lands
-    await settle(100);
+    await settle(600);
     expect(followUps.filter(([, l]) => l.includes('only in the late line'))).toHaveLength(1);
     const ctx = svc.pendingContext(KEY).lines;
     expect(ctx.some((l) => l.startsWith('[file now available: '))).toBe(true);
