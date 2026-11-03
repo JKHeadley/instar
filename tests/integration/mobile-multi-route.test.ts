@@ -12,6 +12,14 @@ import type { TailscaleExec } from '../../src/core/MobileOwnNames.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { buildSignedOrigin } from '../../src/server/mobileConversationRoutes.js';
+import { verifyRecordedOrigin, signerKeyHashOf, deviceKeyHashOf, type MachineKeyLookup, type MachineSigner } from '../../src/core/AppRecordSignatures.js';
+import { generateSigningKeyPair, sign as edSign } from '../../src/core/MachineIdentity.js';
+
+const machineKp = generateSigningKeyPair();
+const machineHash = signerKeyHashOf(machineKp.publicKey);
+const signer: MachineSigner = { machineId: () => 'm_self', signerKeyHash: () => machineHash, sign: (payload) => ({ machineId: 'm_self', signerKeyHash: machineHash, sig: edSign(payload, machineKp.privateKey) }) };
+const machineLookup: MachineKeyLookup = (mid, h) => (mid === 'm_self' && h === machineHash ? { status: 'ok', publicKeyPem: machineKp.publicKey } : { status: 'unknown' });
 
 const CF = 'echo.example.dev';
 const TS = 'studio.tail1234.ts.net';
@@ -50,6 +58,13 @@ function setup() {
   services.push(svc);
   mountPublicMobilePairingRoutes(app, svc);
   app.use(authMiddleware(() => config.authToken, 'echo', undefined, deviceAuthenticator(svc)));
+  // Mounted before the pairing router (which owns this path in production).
+  // A signed send's stored origin, built exactly as the app send routes build it (POST /mobile/chat/:topicId is allowlisted).
+  app.post('/mobile/chat/:topicId', (req, res) => {
+    const deviceId = (req as unknown as { instarPrincipal: { deviceId: string } }).instarPrincipal.deviceId;
+    const receivedAt = new Date().toISOString();
+    res.json({ ...buildSignedOrigin(req, svc, deviceId, String((req.body as { text?: string }).text ?? '').trim(), [], signer, receivedAt), receivedAt });
+  });
   app.use(createMobilePairingRouter(svc, deps));
   app.get('/sessions', (_req, res) => { res.json([]); });
   return { app, svc, dms };
@@ -107,6 +122,19 @@ describe('mobile multi-route', () => {
     expect((await signed(ctx.app, dev, id, 'GET', '/sessions', TS)).status).toBe(200);
     expect((await signed(ctx.app, dev, id, 'GET', '/sessions', CF)).status).toBe(200);
     expect((await signed(ctx.app, dev, id, 'GET', '/sessions', TS, undefined, `${TS}:443`)).status).toBe(200);
+  });
+
+  it('a message sent over the Tailscale name is stored with that Host and re-verifies (cloud-agent finding 1)', async () => {
+    const ctx = setup();
+    const { dev, id } = await pairActive(ctx);
+    for (const host of [TS, CF]) {
+      const r = await signed(ctx.app, dev, id, 'POST', '/mobile/chat/7', host, { text: 'hello', requestId: `${Date.now()}-x` });
+      expect(r.status).toBe(200);
+      expect(r.body.origin.host).toBe(host);
+      const d = ctx.svc.devices.get(id)!;
+      const ledger = new Map([[`${deviceKeyHashOf(d.publicKey!)}|${id}`, { keyHash: deviceKeyHashOf(d.publicKey!), publicKey: d.publicKey!, deviceId: id, host: CF, approvedVia: 'telegram-dm', activatedAt: new Date(Date.now() - 60_000).toISOString(), revokedAt: null }]]);
+      expect(verifyRecordedOrigin({ conversationKey: 'telegram:7', text: 'hello', origin: r.body.origin, receipt: r.body.receipt, receivedAt: r.body.receivedAt }, ledger, machineLookup)).toBe('verified');
+    }
   });
 
   it('a foreign host is refused', async () => {

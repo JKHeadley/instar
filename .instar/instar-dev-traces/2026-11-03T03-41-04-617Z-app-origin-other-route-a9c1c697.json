@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "app-origin-other-route",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T03:41:04.617Z",
+  "artifactPath": "upgrades/side-effects/app-origin-other-route.md",
+  "artifactSha256": "2edeece27481b083232b4be568f61f0fc5d831e51644fcee3eed98c8850b6e25",
+  "coveredFiles": [
+    "src/core/AppRecordSignatures.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/integration/mobile-multi-route.test.ts",
+    "tests/unit/app-record-signatures.test.ts",
+    "upgrades/next/app-origin-other-route.md",
+    "upgrades/side-effects/app-origin-other-route.eli16.md",
+    "upgrades/side-effects/app-origin-other-route.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "signed-record host fix: a display verdict; revert restores the old marks; no state",
+  "eli16Path": "upgrades/side-effects/app-origin-other-route.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/app-origin-other-route.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
