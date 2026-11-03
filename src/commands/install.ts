@@ -111,7 +111,9 @@ export function gitWorks(): boolean {
   if (!detectGitPath()) return false;
   try {
     if (process.platform === 'darwin') execFileSync('xcode-select', ['-p'], { stdio: 'ignore', timeout: 5000 });
-    SafeGitExecutor.readSync(['--version'], { stdio: 'pipe', timeout: 5000, operation: 'src/commands/install.ts:gitWorks' });
+    // `git version`, not `--version`: SafeGitExecutor refuses unknown pre-verb flags, which made
+    // this false on every machine (found on a fresh Ubuntu container, 2026-11-03).
+    SafeGitExecutor.readSync(['version'], { cwd: os.tmpdir(), stdio: 'pipe', timeout: 5000, operation: 'src/commands/install.ts:gitWorks' });
     return true;
   } catch {
     return false;
@@ -222,7 +224,10 @@ export function describeInstallPlan(answers: WizardAnswers): string[] {
   }
   const sqlite = sqliteInstallCommand();
   if (sqlite) lines.push(`Install sqlite3 by running: ${sqlite.join(' ')}`);
-  if (!gitWorks()) lines.push('Stop and ask you to install git');
+  if (!gitWorks()) {
+    const git = process.platform === 'linux' ? packageInstallCommand(['git']) : null;
+    lines.push(git ? `Install git by running: ${git.join(' ')}` : 'Stop and ask you to install git');
+  }
   if (answers.door && !detectDoorPath(answers.door)) {
     lines.push(`Install ${INSTALL_DOOR_LABELS[answers.door]} from npm (${DOOR_NPM_PACKAGE[answers.door]})`);
   } else if (answers.door) {
@@ -295,6 +300,15 @@ export function ensureViewingPin(configFile: string): string {
   return pin;
 }
 
+/** Makes a file readable only by its owner. Best effort: a filesystem without modes is left alone. */
+export function restrictToOwner(file: string): void {
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    // @silent-fallback-ok: missing file or no POSIX modes; nothing more this step can do
+  }
+}
+
 /** A Claude token from `claude setup-token`. Checked by shape only: it lasts a year and is used at the first session. */
 export function looksLikeClaudeToken(value: string): boolean {
   return /^sk-ant-oat\d*-[A-Za-z0-9_-]{20,}$/.test(value.trim());
@@ -338,10 +352,15 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
     },
 
     'install-tools': async () => {
+      // A fresh Linux image can lack git (Ubuntu 24.04 container, 2026-11-03): install it like tmux.
+      const gitCommand = !gitWorks() && process.platform === 'linux' ? packageInstallCommand(['git']) : null;
+      if (gitCommand && (env.interactive || env.sudoReady())) {
+        env.runLogged(gitCommand[0], gitCommand.slice(1), PACKAGE_INSTALL_TIMEOUT_MS);
+      }
       if (!gitWorks()) {
         const how = process.platform === 'darwin'
           ? 'Run xcode-select --install and finish its window.'
-          : 'Install it from https://git-scm.com/downloads.';
+          : gitCommand ? `Run ${gitCommand.join(' ')}.` : 'Install it from https://git-scm.com/downloads.';
         return { kind: 'failed', message: 'Your agent needs git, which isn\'t ready on this computer.', nextStep: `${how} ${resume}` };
       }
       // Optional: the sqlite3 command. Failing to add it never stops the install.
@@ -452,6 +471,9 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
     },
 
     'owner-slot': async (answers) => {
+      // The config holds the agent's tokens (and any pasted Claude token). With a 002 umask
+      // (Ubuntu's default) it was readable by every user on the machine (2026-11-03).
+      restrictToOwner(agentConfigFile(answers));
       if (!env.interactive) {
         return {
           kind: 'awaiting-person',
