@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import { verifiedChannelIdentity, nameIdsInText } from './shared/channelIdentity.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
 import { telegramFetch } from './telegram-egress.js';
+import { multipartFileName, multipartMediaType, telegramGroupTypes, telegramMethodFor, type TelegramMediaKind } from './telegramMedia.js';
 import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -1649,6 +1650,58 @@ export class TelegramAdapter implements MessagingAdapter {
         provenance: provenance ?? 'automation',
       });
     } catch { /* history is best-effort here; the send outcome is already decided */ }
+  }
+
+  /**
+   * Send files into a topic (docs/specs/mobile-native-chat-media.md §4.9: the mirror of a photo or
+   * file the operator sent from the Instar app). One file goes up as sendPhoto / sendVideo /
+   * sendVoice / sendDocument by its kind; several go up as one sendMediaGroup, captioned on the
+   * first item. The request is multipart through the same egress door as every send, so with the
+   * origin outbox active the bytes are captured, sealed and recorded before dispatch. An operator
+   * mirror: no history row, no stall or promise tracking. Throws on any failure (the caller
+   * reports `mirror: "failed"`); never relayed through another machine, because the bytes would
+   * not travel with the relay.
+   */
+  async sendMediaToTopic(
+    topicId: number,
+    files: ReadonlyArray<{ data: Uint8Array; filename: string; mediaType: string; kind: TelegramMediaKind }>,
+    caption: string | null,
+    options?: { silent?: boolean },
+  ): Promise<{ messageIds: number[] }> {
+    if (files.length < 1 || files.length > 10) throw new Error('telegram media send: between 1 and 10 files');
+    if (typeof this.config.token !== 'string' || this.config.token.length === 0) {
+      throw new Error('telegram media send: this machine has no usable bot token');
+    }
+    const base: Record<string, unknown> = { chat_id: this.config.chatId };
+    if (!isGeneralTopic(topicId)) base.message_thread_id = topicId;
+    if (options?.silent) base.disable_notification = true;
+    const params = toWireParams(base, this.topicSpace());
+    const form = new FormData();
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null) form.append(k, String(v));
+    const blob = (f: { data: Uint8Array; mediaType: string }) => new Blob([new Uint8Array(f.data)], { type: multipartMediaType(f.mediaType) });
+    let method: string;
+    if (files.length === 1) {
+      const one = files[0]!;
+      const m = telegramMethodFor(one.kind);
+      method = m.method;
+      if (caption) form.append('caption', caption);
+      form.append(m.field, blob(one), multipartFileName(one.filename));
+    } else {
+      method = 'sendMediaGroup';
+      const types = telegramGroupTypes(files.map((f) => f.kind));
+      form.append('media', JSON.stringify(files.map((_f, i) => ({ type: types[i], media: `attach://file${i}`, ...(i === 0 && caption ? { caption } : {}) }))));
+      files.forEach((f, i) => form.append(`file${i}`, blob(f), multipartFileName(f.filename)));
+    }
+    const safeUrl = `https://api.telegram.org/bot[REDACTED]/${method}`;
+    // Files take longer than a text send; the clock starts after origin review/storage/capacity.
+    const response = await telegramFetch(`https://api.telegram.org/bot${this.config.token}/${method}`, {
+      method: 'POST', body: form, networkTimeoutMs: 120_000,
+    });
+    if (!response.ok) throw new Error(`Telegram API error ${safeUrl} (${response.status}): ${(await response.text()).slice(0, 300)}`);
+    const data = await response.json() as { ok: boolean; result: unknown };
+    if (!data.ok) throw new Error(`Telegram API returned not ok for ${method}`);
+    const results = Array.isArray(data.result) ? data.result : [data.result];
+    return { messageIds: results.map((r) => Number((r as { message_id?: unknown })?.message_id)).filter((n) => Number.isSafeInteger(n)) };
   }
 
   async sendToTopic(

@@ -30,7 +30,7 @@ import { DP_SLACK_STALL_CONFIRM } from '../../data/provenanceCoverage.js';
 import { SlackApiClient, SlackApiError } from './SlackApiClient.js';
 import { SocketModeClient, type SocketModeHandlers } from './SocketModeClient.js';
 import { ChannelManager } from './ChannelManager.js';
-import { FileHandler } from './FileHandler.js';
+import { FileHandler, type SlackUploadOptions } from './FileHandler.js';
 import { RingBuffer } from './RingBuffer.js';
 import { MessageLogger, type LogEntry } from '../shared/MessageLogger.js';
 import { verifiedChannelIdentity } from '../shared/channelIdentity.js';
@@ -753,8 +753,8 @@ export class SlackAdapter implements MessagingAdapter {
   }
 
   /** Upload a file. */
-  async uploadFile(channelId: string, filePath: string, title?: string): Promise<void> {
-    return this.fileHandler.uploadFile(channelId, filePath, title);
+  async uploadFile(channelId: string, filePath: string, title?: string, options?: SlackUploadOptions): Promise<void> {
+    return this.fileHandler.uploadFile(channelId, filePath, title, options);
   }
 
   /** Download a file. */

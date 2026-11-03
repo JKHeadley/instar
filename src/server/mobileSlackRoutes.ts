@@ -30,11 +30,15 @@ import crypto from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
-import { deviceAdmittedAt, isMobileChatEnabled } from './mobilePairingRoutes.js';
+import { deviceAdmittedAt, isMobileChatEnabled, isMobileMediaEnabled } from './mobilePairingRoutes.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import { requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
 import { derivedEventId, hideCredentialSpans, removeAuthorityTokens } from '../core/appConversationText.js';
-import type { MessageEvent } from '../core/AppConversationStore.js';
+import type { MediaMessageEvent, MessageEvent } from '../core/AppConversationStore.js';
+import { mediaPreview, displayName, type AppAttachment } from '../core/appMediaTypes.js';
+import {
+  checkSignedFiles, claimMediaUploads, mediaRecordTooLarge, preflightMediaAttachments, publishMediaMessage, signedFileHashParts, type SignedAttachment,
+} from './mobileMediaSend.js';
 import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { isExactStopMessage } from '../core/MessageSentinel.js';
 import { appOwnerName, attachmentRows, buildSignedOrigin, historyRow } from './mobileConversationRoutes.js';
@@ -83,6 +87,11 @@ export interface MobileSlackBridge {
   dispatch(input: { conv: SlackAppConversation; text: string; ownerName: string; ownerUserId: string; messageId: string; originVerdict: OriginVerdict }): Promise<SlackDispatchOutcome>;
   /** Post the mirror line into the channel or thread. */
   post(conv: SlackAppConversation, text: string): Promise<void>;
+  /**
+   * Upload one file into the channel or thread (the mirror of a file sent from the app, chat-media
+   * §4.9), with an optional message beside it. Absent when the adapter cannot upload.
+   */
+  uploadFile?(conv: SlackAppConversation, filePath: string, opts: { filename: string; initialComment?: string }): Promise<void>;
   /** The app message's copy in slack-messages.jsonl (carries the store eventId). */
   logAppMessage(conv: SlackAppConversation, row: { messageId: string; text: string; senderName: string; ownerUserId: string; eventId: string; deviceId: string }): void;
   /** Emergency stop (every session, as a Slack stop does) and pause (Escape to this conversation's session). */
@@ -237,12 +246,23 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     if (id === null) { res.status(400).json({ error: 'bad-conversation' }); return; }
     const body = (req.body ?? {}) as Record<string, unknown>;
     if (!rightMachine(res, body.machine)) return;
-    if (body.attachments !== undefined) { res.status(400).json({ error: 'media-target-unsupported', detail: 'Files can be sent in app conversations. Sending them into Slack is not available yet.' }); return; }
+    // Files (chat-media §4.3, §4.9): with media on, a body with attachments becomes a
+    // `media-message` stored under the conversation's canonical key. With media off it is refused
+    // as before: a message is never stored without its files. An exact stop never waits on files.
+    // The media flag is read live per request, as on the Telegram send route.
+    const mediaOn = deps.pairing.nativeOn && isMobileMediaEnabled(deps.config);
+    if (body.attachments !== undefined && !mediaOn) { res.status(400).json({ error: 'media-target-unsupported', detail: 'Files can be sent in app conversations. Sending them into Slack is not available yet.' }); return; }
     const text = typeof body.text === 'string' ? body.text.trim() : '';
-    if (text.length < 1 || text.length > 4000) { res.status(400).json({ error: 'text must be 1-4000 characters' }); return; }
+    let signedFiles: SignedAttachment[] | null = null;
+    if (body.attachments !== undefined && !isExactStopMessage(text)) {
+      const checked = checkSignedFiles(body.attachments);
+      if ('status' in checked) { res.status(checked.status).json(checked.body); return; }
+      signedFiles = checked.files;
+    }
+    if ((text.length < 1 && !signedFiles) || text.length > 4000) { res.status(400).json({ error: 'text must be 1-4000 characters' }); return; }
     const requestId = body.requestId;
     if (typeof requestId !== 'string' || requestIdTime(requestId) === null) { res.status(400).json({ error: 'bad-request-id' }); return; }
-    const hash = hashOf('slack-send', raw, text);
+    const hash = signedFiles ? hashOf('slack-send-media', raw, text, ...signedFileHashParts(signedFiles)) : hashOf('slack-send', raw, text);
     // The payload hash is part of the seed: an early refusal releases the request id, and a retry
     // with the same id but different text must be a different stored message.
     const seed = `${deviceId}\u0000${requestId}\u0000${hash}`;
@@ -290,20 +310,37 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     if (!bridge.holdsLease()) { res.status(409).json({ error: 'not-serving', detail: 'This machine is not receiving messages right now. Try again shortly.' }); return; }
     const removed = removeAuthorityTokens(text);
     const delivered = removed.text;
-    const credentialShaped = detectOutboundCredential(text).detected;
+    const removedKinds: string[] = [...removed.kinds];
+    // Media preflight (chat-media §4.3): each upload is this device's finished upload for THIS
+    // conversation (its canonical key), with exactly the signed fields.
+    let uploadIds: string[] = [];
+    let stored: AppAttachment[] = [];
+    if (signedFiles) {
+      const pre = preflightMediaAttachments(s, { deviceId, conversationRef: conv.key, messageId, files: signedFiles, scanInbound: (x) => deps.pairing.scanInbound(x) });
+      if (!pre.ok) { res.status(pre.status).json(pre.body); return; }
+      uploadIds = pre.uploadIds;
+      stored = pre.stored;
+      for (const k of pre.removedKinds) if (!removedKinds.includes(k)) removedKinds.push(k);
+    }
+    const credentialShaped = detectOutboundCredential([text, ...(signedFiles ?? []).map((a) => a.transcript ?? '')].join('\n')).detected;
     const extras = {
-      ...(removed.kinds.length > 0 ? { redacted: true, removed: removed.kinds } : {}),
+      ...(removedKinds.length > 0 ? { redacted: true, removed: removedKinds } : {}),
       ...(credentialShaped ? { credentialShaped: true } : {}),
     };
 
     const receivedAt = new Date(deviceAdmittedAt(req) ?? now()).toISOString();
-    const signed = buildSignedOrigin(req, deps.pairing, deviceId, delivered, removed.kinds, s.deps.signer ?? null, receivedAt,
-      (detail) => s.deps.reportDegradation?.('MobileSlack.sign', detail), undefined, conv.key);
-    const msg: MessageEvent = {
-      eventId, kind: 'message', conversationKey: conv.key, messageId, role: 'operator', text: delivered,
+    const signed = buildSignedOrigin(req, deps.pairing, deviceId, delivered, removedKinds, s.deps.signer ?? null, receivedAt,
+      (detail) => s.deps.reportDegradation?.('MobileSlack.sign', detail), stored.length > 0 ? stored : undefined, conv.key);
+    const base = {
+      eventId, conversationKey: conv.key, messageId, role: 'operator' as const, text: delivered,
       at: receivedAt, machineId: s.deps.machineId(), receivedAt,
       ...(signed.origin ? { origin: signed.origin } : {}), ...(signed.receipt ? { receipt: signed.receipt } : {}),
     };
+    const msg: MessageEvent | MediaMessageEvent = stored.length > 0 ? { ...base, kind: 'media-message', attachments: stored } : { ...base, kind: 'message' };
+    if (msg.kind === 'media-message' && mediaRecordTooLarge(msg, signed.origin, s.deps.machineId())) {
+      res.status(413).json({ error: 'message-too-large', detail: 'This message is too long to store. Shorten the text or send fewer files.' });
+      return;
+    }
 
     // Step 4 — reserve, then persist (fsync) BEFORE dispatch.
     let r: ReturnType<typeof requests.reserve>;
@@ -318,7 +355,14 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
       else res.status(409).json({ error: r.kind === 'request-id-reused' ? 'payload-conflict' : 'outcome-unknown' });
       return;
     }
-    try { s.store.append(msg); } catch (err) {
+    if (msg.kind === 'media-message') {
+      const refused = await claimMediaUploads(s, uploadIds, messageId, (detail) => s.deps.reportDegradation?.('AppMedia.publish', detail));
+      if (refused) { requests.release(deviceId, requestId); res.status(refused.status).json(refused.body); return; }
+    }
+    try {
+      if (msg.kind === 'media-message') publishMediaMessage(s, uploadIds, msg);
+      else s.store.append(msg);
+    } catch (err) {
       requests.release(deviceId, requestId);
       s.deps.reportDegradation?.('MobileSlack.persist', err instanceof Error ? err.message : String(err));
       res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' });
@@ -326,7 +370,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     }
     const ownerName = appOwnerName(deps.config);
     // The copy for the Slack history view (best-effort: the store above is the evidence).
-    try { bridge.logAppMessage(conv, { messageId: `app-${messageId}`, text: delivered, senderName: ownerName, ownerUserId: owner, eventId, deviceId }); } catch (err) {
+    try { bridge.logAppMessage(conv, { messageId: `app-${messageId}`, text: stored.length > 0 ? mediaPreview(stored, delivered) : delivered, senderName: ownerName, ownerUserId: owner, eventId, deviceId }); } catch (err) {
       s.deps.reportDegradation?.('MobileSlack.log', err instanceof Error ? err.message : String(err));
     }
     const delivery = (state: 'delivered' | 'refused' | 'intercepted' | 'unknown'): void => {
@@ -339,7 +383,8 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     const mirror = async (): Promise<'sent' | 'failed'> => {
       try {
         // A copy for people reading the channel: credential-shaped spans always hidden (§4.9).
-        await bridge.post(conv, `📱 ${ownerName} (from the app): ${hideCredentialSpans(delivered)}`);
+        if (stored.length > 0) await mirrorMediaToSlack(bridge, conv, ownerName, stored, hideCredentialSpans(delivered), (sha) => s.media.locateBlob(sha));
+        else await bridge.post(conv, `📱 ${ownerName} (from the app): ${hideCredentialSpans(delivered)}`);
         return 'sent';
       } catch (err) {
         s.deps.reportDegradation?.('MobileSlack.mirror', err instanceof Error ? err.message : String(err));
@@ -353,9 +398,11 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
       finish(200, { ok: true, outcome: 'sentinel-kill', stopped: stop.stopped, conversationId: id, eventId, messageId, deliveryState: 'intercepted', ...extras });
       return;
     }
-    if (deps.sentinel && delivered) {
+    // Transcripts are classified with the caption, as in app conversations (§4.3).
+    const classifiedText = [delivered, ...stored.map((a) => a.transcript ?? '')].filter(Boolean).join('\n');
+    if (deps.sentinel && classifiedText) {
       try {
-        const d = await deps.sentinel.decideInboundDisposition(delivered, id);
+        const d = await deps.sentinel.decideInboundDisposition(classifiedText, id);
         if (d.disposition === 'kill' || d.disposition === 'pause') {
           const out = d.disposition === 'kill' ? { outcome: 'sentinel-kill', stopped: bridge.emergencyStop().stopped } : { outcome: 'sentinel-pause', paused: bridge.pause(conv) };
           delivery('intercepted');
@@ -365,9 +412,16 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
       } catch { /* @silent-fallback-ok — FAIL-OPEN: a classifier error routes the message normally, as on the Slack path */ }
     }
 
+    // Files (chat-media §4.5): one line per file before the caption, with a server-chosen path to a
+    // private copy (the blobs were just published on this machine).
+    let sessionText = delivered;
+    if (stored.length > 0) {
+      const lines = await s.sessionLinesFor(conv.key, messageId, stored, delivered);
+      sessionText = [...lines, ...(delivered ? [delivered] : [])].join('\n');
+    }
     let outcome: 'delivered' | 'queued' | 'refused';
     try {
-      outcome = await bridge.dispatch({ conv, text: delivered, ownerName, ownerUserId: owner, messageId, originVerdict: s.verify(msg) });
+      outcome = await bridge.dispatch({ conv, text: sessionText, ownerName, ownerUserId: owner, messageId, originVerdict: s.verify(msg) });
     } catch (err) {
       delivery('unknown');
       requests.markUnknown(deviceId, requestId);
@@ -399,6 +453,8 @@ export interface SlackAdapterLike {
   getLogPath(): string;
   logMessage(entry: { messageId: string; channelId: string; threadTs?: string | null; text: string; fromUser: boolean; senderName?: string; platformUserId?: string; eventId?: string; deviceId?: string }): void;
   sendToChannel(channelId: string, text: string, options?: { thread_ts?: string }): Promise<string>;
+  /** Slack's v2 file upload (FileHandler.uploadFile), with the bot token the adapter already holds. */
+  uploadFile?(channelId: string, filePath: string, title?: string, options?: { threadTs?: string; initialComment?: string; filename?: string }): Promise<void>;
   getSessionForChannel(routingKey: string): string | null;
   isAuthorized(userId: string): boolean;
 }
@@ -529,6 +585,13 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
     async post(conv, text) {
       await d.adapter.sendToChannel(conv.channelId, text, conv.threadTs ? { thread_ts: conv.threadTs } : undefined);
     },
+    ...(typeof d.adapter.uploadFile === 'function' ? {
+      async uploadFile(conv: SlackAppConversation, filePath: string, opts: { filename: string; initialComment?: string }) {
+        await d.adapter.uploadFile!(conv.channelId, filePath, opts.filename, {
+          filename: opts.filename, ...(conv.threadTs ? { threadTs: conv.threadTs } : {}), ...(opts.initialComment ? { initialComment: opts.initialComment } : {}),
+        });
+      },
+    } : {}),
     logAppMessage(conv, row) {
       d.adapter.logMessage({ messageId: row.messageId, channelId: conv.channelId, threadTs: conv.threadTs, text: row.text, fromUser: true, senderName: row.senderName, platformUserId: row.ownerUserId, eventId: row.eventId, deviceId: row.deviceId });
       activityCache = null;
@@ -553,4 +616,28 @@ export function slackListRows(bridge: MobileSlackBridge): Array<{ id: number; ti
     const a = act.get(routingKeyOf(c.channelId, c.threadTs));
     return { id: c.id, title: slackConversationTitle(c), lastActivity: a?.at ?? c.mintedAt, lastPreview: a ? slackDeviceText(a.preview).slice(0, 140) : null };
   });
+}
+
+/**
+ * Mirror an app-sent media message into its Slack channel or thread (chat-media §4.9): each file
+ * goes up through Slack's v2 upload, the first carrying "📱 <owner> (from the app): <caption>"
+ * beside it. A file whose blob is not on this machine is named in a text line instead. Throws on
+ * the first failure; the route reports `mirror: "failed"` and never repeats the dispatch.
+ */
+export async function mirrorMediaToSlack(
+  bridge: MobileSlackBridge, conv: SlackAppConversation, ownerName: string, attachments: ReadonlyArray<AppAttachment>, caption: string,
+  locate: (sha256: string) => string | null,
+): Promise<void> {
+  if (typeof bridge.uploadFile !== 'function') throw new Error('this Slack adapter cannot upload files');
+  const line = caption ? `📱 ${ownerName} (from the app): ${caption}` : `📱 ${ownerName} (from the app)`;
+  let commented = false;
+  const missing: string[] = [];
+  for (const a of attachments) {
+    const p = locate(a.sha256);
+    if (!p) { missing.push(`📱 ${ownerName} sent ${displayName(a.filename)} (open it in the app)`); continue; }
+    await bridge.uploadFile(conv, p, { filename: displayName(a.filename), ...(!commented ? { initialComment: line } : {}) });
+    commented = true;
+  }
+  if (!commented) await bridge.post(conv, line);
+  for (const m of missing) await bridge.post(conv, m);
 }

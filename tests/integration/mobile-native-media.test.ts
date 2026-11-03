@@ -309,8 +309,16 @@ describe('sending media', () => {
     expect(e.svc.media.getUpload(uploads[0]!.uploadId as string)!.state).toBe('complete');
   });
 
-  it('a Telegram send with attachments is refused, never stored without its files', async () => {
+  it('a Telegram send with an empty file list is refused, never stored without its files', async () => {
+    // Files into Telegram topics are covered end to end in mobile-media-to-platform.test.ts.
     const e = await setup();
+    const r = await signed(e, 'POST', '/mobile/chat/77', { text: 'x', requestId: rid(), attachments: [] });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toBe('bad-attachments');
+  });
+
+  it('with media off, a Telegram send with files is refused as media-target-unsupported', async () => {
+    const e = await setup({ mediaEnabled: false });
     const r = await signed(e, 'POST', '/mobile/chat/77', { text: 'x', requestId: rid(), attachments: [] });
     expect(r.status).toBe(400);
     expect(r.body.error).toBe('media-target-unsupported');

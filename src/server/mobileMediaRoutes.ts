@@ -5,6 +5,8 @@
  * switching off never strands a copy).
  *
  *   POST /mobile/media/uploads                      start   {conversationRef, size, sha256, …}
+ *        conversationRef is app:<uuid>, telegram:<topicId> (a topic this machine knows) or a Slack
+ *        conversation's canonical key held by THIS machine (§4.9: app → Telegram / Slack sends)
  *   PUT  /mobile/media/uploads/:uploadId/chunks/:i  one signed chunk (application/octet-stream)
  *   GET  /mobile/media/uploads/:uploadId            resume  {received, state, expiresAt}
  *   GET  /mobile/media/:sha256?ref=<conversationRef> download (Range honored, never executable);
@@ -34,6 +36,11 @@ export interface MobileMediaRouteDeps {
    * current canonical key of a conversation this machine's registry minted. Absent = no Slack.
    */
   slackHeld?: (canonicalKey: string) => boolean;
+  /**
+   * Whether this machine knows the Telegram topic an upload names (§4.9: files sent from the app
+   * into a Telegram topic upload under `telegram:<topicId>`). Absent = no Telegram here.
+   */
+  telegramTopicExists?: (topicId: number) => boolean;
   now?: () => number;
 }
 
@@ -56,6 +63,14 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     const p = principalOf(req);
     if (p.kind !== 'device') { res.status(403).json({ error: 'operator-device-required' }); return null; }
     return p.deviceId;
+  };
+
+  const uploadTargetKnown = (ref: string): boolean => {
+    const appKey = parseAppCanonicalKey(ref);
+    if (appKey) return !!svc!.liveConversation(appKey);
+    const tg = /^telegram:([1-9][0-9]{0,15})$/.exec(ref);
+    if (tg) return deps.telegramTopicExists?.(Number(tg[1])) === true;
+    return /^slack:/.test(ref) && ref.length <= 128 && deps.slackHeld?.(ref) === true;
   };
 
   const uploadView = (u: UploadRow) => ({ uploadId: u.uploadId, chunkSize: CHUNK_BYTES, received: svc!.media!.receivedChunks(u.uploadId), expiresAt: new Date(u.expiresAt).toISOString() });
@@ -86,9 +101,12 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     if (prior.kind === 'in-progress') { res.status(202).json({ state: 'in-progress' }); return; }
     if (prior.kind === 'outcome-unknown') { res.status(409).json({ error: 'outcome-unknown', detail: 'Start the upload again with a new request id.' }); return; }
     if (!requestIdAgeOk(requestId as string, now())) { res.status(400).json({ error: 'request-id-too-old' }); return; }
-    // Increment 1 stores native conversations; Telegram and Slack targets arrive with increment 3.
-    const key = parseAppCanonicalKey(conversationRef);
-    if (!key || !svc!.liveConversation(key)) { res.status(404).json({ error: 'unknown-conversation', detail: 'That conversation does not exist or cannot take files yet.' }); return; }
+    // The upload names the conversation its file will be sent into (§4.2, §4.9): a live native app
+    // conversation, a Telegram topic this machine knows (`telegram:<topicId>`), or a Slack
+    // conversation by the canonical key this machine's registry minted (the `conversationKey` of
+    // its history read). The send route checks the same ref again, so an upload for one
+    // conversation can never be sent into another.
+    if (!uploadTargetKnown(conversationRef)) { res.status(404).json({ error: 'unknown-conversation', detail: 'That conversation does not exist or cannot take files yet.' }); return; }
     const started = media.startUpload({ deviceId, conversationRef, size, sha256, declaredKind: declaredKind as MediaKind, declaredType, filename });
     if ('status' in started) { res.status(started.status).json({ error: started.error, detail: started.detail }); return; }
     const body = uploadView(started);

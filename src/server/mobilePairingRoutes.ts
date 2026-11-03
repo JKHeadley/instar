@@ -47,6 +47,13 @@ import { APP_CONVERSATION_KEY_PATTERN, derivedEventId, hideCredentialSpans, remo
 import type { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
 import { buildSignedOrigin } from './mobileConversationRoutes.js';
+import {
+  checkSignedFiles, claimMediaUploads, mediaRecordTooLarge, mirrorMediaToTelegram, preflightMediaAttachments, publishMediaMessage, signedFileHashParts,
+  type SignedAttachment, type TelegramMediaMirrorTarget,
+} from './mobileMediaSend.js';
+import { isExactStopMessage } from '../core/MessageSentinel.js';
+import type { AppAttachment } from '../core/appMediaTypes.js';
+import type { MediaMessageEvent, MessageEvent } from '../core/AppConversationStore.js';
 
 export const MOBILE_REDEEM_PATH = '/mobile/pairing-codes/redeem';
 export const MOBILE_PING_PATH = '/mobile/pairing-codes/ping';
@@ -896,13 +903,24 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const text = typeof body.text === 'string' ? body.text.trim() : '';
     const requestId = body.requestId;
     if (!Number.isSafeInteger(topicId) || topicId <= 0) { res.status(400).json({ error: 'bad-topic' }); return; }
-    // A message with files needs the media path (increment 3); never store it without them.
-    if (body.attachments !== undefined) { res.status(400).json({ error: 'media-target-unsupported', detail: 'Files can be sent in app conversations. Sending them into a Telegram topic is not available yet.' }); return; }
-    if (text.length < 1 || text.length > 4000) { res.status(400).json({ error: 'text must be 1-4000 characters' }); return; }
+    // Files (mobile-native-chat-media §4.3, §4.9): with media on (which needs native conversations
+    // and their store), a body with attachments becomes a `media-message` stored under
+    // `telegram:<topicId>`. With media off, a body with files is refused as before: a message is
+    // never stored without its files. An exact emergency stop never waits on its files.
+    const mediaOn = svc.nativeOn && isMobileMediaEnabled(deps.config) && !!poolCtx?.appConversations;
+    if (body.attachments !== undefined && !mediaOn) { res.status(400).json({ error: 'media-target-unsupported', detail: 'Files can be sent in app conversations. Sending them into a Telegram topic is not available yet.' }); return; }
+    let signedFiles: SignedAttachment[] | null = null;
+    if (body.attachments !== undefined && !isExactStopMessage(text)) {
+      const checked = checkSignedFiles(body.attachments);
+      if ('status' in checked) { res.status(checked.status).json(checked.body); return; }
+      signedFiles = checked.files;
+    }
+    if ((text.length < 1 && !signedFiles) || text.length > 4000) { res.status(400).json({ error: 'text must be 1-4000 characters' }); return; }
     if (typeof requestId !== 'string' || requestIdTime(requestId) === null) { res.status(400).json({ error: 'bad-request-id' }); return; }
     const store = chatStoreOf();
     if (!store) { res.status(503).json({ error: 'chat-unavailable', detail: 'The message record could not be read on this machine.' }); return; }
-    const hash = payloadHash(topicId, text);
+    // The idempotency hash covers the text and, with files, each file's signed fields (§4.3).
+    const hash = signedFiles ? payloadHash(topicId, ['\u0000media', text, ...signedFileHashParts(signedFiles)].join('\n')) : payloadHash(topicId, text);
     const answer = (l: ReturnType<MobileChatRequestStore['lookup']>): boolean => {
       if (l.kind === 'done') { res.status(l.status).json(l.body); return true; }
       if (l.kind === 'in-progress') { res.status(202).json({ state: 'in-progress' }); return true; }
@@ -946,11 +964,6 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
         return;
       }
     }
-    const extras = {
-      ...(removedKinds.length > 0 ? { redacted: true, removed: removedKinds } : {}),
-      ...(credentialShaped ? { credentialShaped: true } : {}),
-    };
-
     // Signed records (mobile-native-conversations §4.9): with native conversations on, the message
     // is ALSO kept in the app conversation store under `telegram:<topicId>` with its signed origin
     // and this machine's receipt, persisted BEFORE dispatch; the Telegram history row carries the
@@ -965,6 +978,52 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const storeMessageId = derivedEventId('msg', seed);
     const storeEventId = derivedEventId('op', seed);
 
+    // Media preflight (chat-media §4.3, §4.9): each named upload is this device's finished upload
+    // for THIS topic, with exactly the signed fields; filenames and transcripts get the caption's
+    // treatment. Transcripts join the text for the credential signal, as in app conversations.
+    let uploadIds: string[] = [];
+    let stored: AppAttachment[] = [];
+    // A retry of a request the inbound core refused early (its id was released AFTER the message
+    // and its files were saved): the uploads are already sent into THIS message, so the saved
+    // record is reused as it is, never claimed or written twice.
+    const saved = signedFiles && app ? app.store.getEvent(storeKey, storeEventId) : null;
+    const resent = saved?.kind === 'media-message' && saved.messageId === storeMessageId ? saved : null;
+    if (resent) {
+      stored = resent.attachments;
+      for (const k of resent.origin?.redaction?.kinds ?? []) if (!removedKinds.includes(k)) removedKinds = [...removedKinds, k];
+      credentialShaped = detectOutboundCredential([text, ...signedFiles!.map((a) => a.transcript ?? '')].join('\n')).detected;
+    } else if (signedFiles && app) {
+      const pre = preflightMediaAttachments(app, { deviceId: p.deviceId, conversationRef: storeKey, messageId: storeMessageId, files: signedFiles, scanInbound: (x) => svc.scanInbound(x) });
+      if (!pre.ok) { res.status(pre.status).json(pre.body); return; }
+      uploadIds = pre.uploadIds;
+      stored = pre.stored;
+      for (const k of pre.removedKinds) if (!removedKinds.includes(k)) removedKinds = [...removedKinds, k];
+      credentialShaped = detectOutboundCredential([text, ...signedFiles.map((a) => a.transcript ?? '')].join('\n')).detected;
+    }
+    const extras = {
+      ...(removedKinds.length > 0 ? { redacted: true, removed: removedKinds } : {}),
+      ...(credentialShaped ? { credentialShaped: true } : {}),
+    };
+
+    // The record, built before the reservation so a media record that would not fit is refused
+    // before any upload is claimed (chat-media §4.1). Signing has no side effect.
+    let record: MessageEvent | MediaMessageEvent | null = null;
+    if (app) {
+      const receivedAt = new Date(deviceAdmittedAt(req) ?? Date.now()).toISOString();
+      const signed = buildSignedOrigin(req, svc, p.deviceId, delivered, removedKinds, app.deps.signer ?? null, receivedAt,
+        (detail) => app.deps.reportDegradation?.('MobileChat.sign', detail), stored.length > 0 ? stored : undefined);
+      const base = {
+        eventId: storeEventId, conversationKey: storeKey, messageId: storeMessageId, role: 'operator' as const, text: delivered,
+        at: receivedAt, machineId: app.deps.machineId(), receivedAt,
+        ...(signed.origin ? { origin: signed.origin } : {}), ...(signed.receipt ? { receipt: signed.receipt } : {}),
+      };
+      record = stored.length > 0 ? { ...base, kind: 'media-message', attachments: stored } : { ...base, kind: 'message' };
+      if (record.kind === 'media-message' && mediaRecordTooLarge(record, signed.origin, app.deps.machineId())) {
+        res.status(413).json({ error: 'message-too-large', detail: 'This message is too long to store. Shorten the text or send fewer files.' });
+        return;
+      }
+    }
+
     // Reserve (synchronous with the decisive lookup).
     let r: ReturnType<MobileChatRequestStore['reserve']>;
     try { r = store.reserve(p.deviceId, requestId, hash, topicId, app ? { op: 'send', conversationKey: storeKey, messageId: storeMessageId } : undefined); } catch (err) {
@@ -975,16 +1034,15 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (r.kind === 'full') { res.status(429).json({ error: 'too-many-requests' }); return; }
     if (r.kind !== 'reserved') { answer(r); return; }
 
-    if (app) {
-      const receivedAt = new Date(deviceAdmittedAt(req) ?? Date.now()).toISOString();
-      const signed = buildSignedOrigin(req, svc, p.deviceId, delivered, removedKinds, app.deps.signer ?? null, receivedAt,
-        (detail) => app.deps.reportDegradation?.('MobileChat.sign', detail));
+    if (app && record && !resent) {
+      // Media: claim every upload at once and make the bytes durable before the event (§4.3).
+      if (record.kind === 'media-message') {
+        const refused = await claimMediaUploads(app, uploadIds, storeMessageId, (detail) => app.deps.reportDegradation?.('AppMedia.publish', detail));
+        if (refused) { store.release(p.deviceId, requestId); res.status(refused.status).json(refused.body); return; }
+      }
       try {
-        app.store.append({
-          eventId: storeEventId, kind: 'message', conversationKey: storeKey, messageId: storeMessageId, role: 'operator', text: delivered,
-          at: receivedAt, machineId: app.deps.machineId(), receivedAt,
-          ...(signed.origin ? { origin: signed.origin } : {}), ...(signed.receipt ? { receipt: signed.receipt } : {}),
-        });
+        if (record.kind === 'media-message') publishMediaMessage(app, uploadIds, record);
+        else app.store.append(record);
       } catch (err) {
         store.release(p.deviceId, requestId);
         deps.reportDegradation?.('MobileChat.persist', err);
@@ -1006,10 +1064,17 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       json(b: unknown) { captured.body = (b && typeof b === 'object' ? b : {}) as Record<string, unknown>; return fakeRes; },
       setHeader() { return fakeRes; },
     };
+    // Files (chat-media §4.5): one line per file before the caption, in Telegram's forms, with a
+    // server-chosen path to a private copy (the blobs were just published on this machine).
+    let sessionText = delivered;
+    if (app && stored.length > 0) {
+      const lines = await app.sessionLinesFor(storeKey, storeMessageId, stored, delivered);
+      sessionText = [...lines, ...(delivered ? [delivered] : [])].join('\n');
+    }
     const fakeReq = {
       headers: {},
       body: {
-        topicId, text: delivered, messageId: 2 ** 52 + crypto.randomInt(0, 2 ** 47), timestamp: new Date(t).toISOString(),
+        topicId, text: sessionText, messageId: 2 ** 52 + crypto.randomInt(0, 2 ** 47), timestamp: new Date(t).toISOString(),
         fromUserId: ownerId, fromFirstName: ownerName, forwarded: false,
       },
     };
@@ -1052,13 +1117,17 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       // The mirror is a copy for people reading the topic: credential-shaped spans always show
       // as "[credential hidden]", even when the operator sent them as written (§4.9).
       const mirrorText = svc.nativeOn ? hideCredentialSpans(delivered) : text;
-      await tg.sendToTopic(topicId, `📱 ${ownerName} (from the app): ${mirrorText}`, { silent: true, skipStallClear: true, operatorMirror: true });
+      if (app && stored.length > 0) {
+        await mirrorMediaToTelegram(tg as unknown as TelegramMediaMirrorTarget, topicId, ownerName, stored, mirrorText, (sha) => app.media.locateBlob(sha));
+      } else {
+        await tg.sendToTopic(topicId, `📱 ${ownerName} (from the app): ${mirrorText}`, { silent: true, skipStallClear: true, operatorMirror: true });
+      }
       mirrored = true;
     } catch (err) {
       deps.reportDegradation?.('MobileChat.mirror', err);
     }
     const response = {
-      ok: true, outcome, eventId, mirrored, ...extras,
+      ok: true, outcome, eventId, mirrored, ...(stored.length > 0 ? { mirror: mirrored ? 'sent' : 'failed', messageId: storeMessageId } : {}), ...extras,
       ...(b.killed !== undefined ? { stopped: b.killed } : {}),
       ...(b.paused !== undefined ? { paused: b.paused } : {}),
     };

@@ -14,6 +14,9 @@ import path from 'node:path';
 import type { SlackApiClient } from './SlackApiClient.js';
 import { validateSlackHostname } from './sanitize.js';
 
+/** Optional extras for an upload: a thread to post into, a message beside the file, and the file's name. */
+export interface SlackUploadOptions { threadTs?: string; initialComment?: string; filename?: string }
+
 export class FileHandler {
   private api: SlackApiClient;
   private botToken: string;
@@ -30,9 +33,10 @@ export class FileHandler {
    * Upload a file to a Slack channel using the v2 three-step flow.
    * files.upload is deprecated and unavailable for new apps.
    */
-  async uploadFile(channelId: string, filePath: string, title?: string): Promise<void> {
+  async uploadFile(channelId: string, filePath: string, title?: string, options?: SlackUploadOptions): Promise<void> {
     const stats = await fs.promises.stat(filePath);
-    const fileName = path.basename(filePath);
+    // A caller may name the file (the app's display name for a stored blob, whose path is a hash).
+    const fileName = options?.filename ? options.filename.replace(/[\x00-\x1f\x7f/\\]/g, '').trim().slice(0, 200) || path.basename(filePath) : path.basename(filePath);
 
     // Step 1: Get upload URL
     const urlResponse = await this.api.call('files.getUploadURLExternal', {
@@ -62,6 +66,9 @@ export class FileHandler {
     await this.api.call('files.completeUploadExternal', {
       files: [{ id: urlResponse.file_id as string, title: title || fileName }],
       channel_id: channelId,
+      // Into a thread, and with a message beside the file, when the caller asks (both optional).
+      ...(options?.threadTs ? { thread_ts: options.threadTs } : {}),
+      ...(options?.initialComment ? { initial_comment: options.initialComment } : {}),
     });
   }
 

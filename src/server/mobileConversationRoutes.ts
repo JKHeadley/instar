@@ -37,9 +37,8 @@ import {
 } from '../core/appConversationText.js';
 import type { BrowsedMessage, DeviceSignedOrigin, MachineReceipt, MediaMessageEvent, MessageEvent } from '../core/AppConversationStore.js';
 import { signReceipt, signRedaction, signRedactionV2, sha256Hex, type MachineSigner, type OriginVerdict } from '../core/AppRecordSignatures.js';
-import { buildAppConversationRecordData } from '../core/AppConversationsReplicatedStore.js';
 import {
-  MAX_ATTACHMENTS, MAX_MESSAGE_BYTES, MAX_TRANSCRIPT_CHARS, attachmentIdFor, effectiveKind, pushPreviewBody, type AppAttachment,
+  MAX_ATTACHMENTS, pushPreviewBody, type AppAttachment,
 } from '../core/appMediaTypes.js';
 import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { isExactStopMessage } from '../core/MessageSentinel.js';
@@ -48,6 +47,10 @@ import type { RouteContext } from './routes.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { deviceTextForRow } from '../core/appPlatformMedia.js';
+import {
+  checkSignedFiles, claimMediaUploads, mediaRecordTooLarge, preflightMediaAttachments, publishMediaMessage, signedFileHashParts,
+  type SignedAttachment,
+} from './mobileMediaSend.js';
 
 /**
  * One row of the unified conversation list. The list order is total and the same on every
@@ -220,9 +223,6 @@ function principalOf(req: Request): Principal {
 const SEND_RATE_PER_MIN = 20;
 const off = (res: Response) => res.status(503).json({ error: 'native-conversations-off', detail: 'App conversations are turned off on this agent.' });
 const hashOf = (...parts: string[]) => crypto.createHash('sha256').update(parts.join('\n')).digest('hex');
-/** The serialized-record ceiling of media spec §4.1 (fits the 80 KiB journal entry and the 256 KiB line). */
-const MAX_RECORD_BYTES = 72 * 1024;
-const MAX_ORIGIN_BODY_B64 = 64 * 1024;
 
 /** Attachment rows for the app: the stored fields plus the per-file byte fact (§4.13). Never a server path. */
 export function attachmentRows(attachments: ReadonlyArray<AppAttachment>, svc: AppConversationService): Array<Record<string, unknown>> {
@@ -239,27 +239,6 @@ export function historyRow(m: BrowsedMessage, verify: (m: BrowsedMessage) => Ori
     deliveryState: m.deliveryState, originVerified: verdict, ...(approvedVia ? { originApprovedVia: approvedVia } : {}),
     ...(m.attachments && svc ? { attachments: attachmentRows(m.attachments, svc) } : {}),
   };
-}
-
-/** One attachment of a send body, as signed by the phone. */
-interface SignedAttachment { uploadId: string; sha256: string; size: number; declaredKind: string; declaredType: string; filename: string; transcript?: string; durationMs?: number; width?: number; height?: number }
-
-function parseSignedAttachments(raw: unknown): SignedAttachment[] | null {
-  if (!Array.isArray(raw)) return null;
-  const out: SignedAttachment[] = [];
-  for (const r of raw) {
-    const a = r as Record<string, unknown> | null;
-    if (!a || typeof a.uploadId !== 'string' || typeof a.sha256 !== 'string' || typeof a.size !== 'number' || typeof a.declaredKind !== 'string'
-      || typeof a.declaredType !== 'string' || typeof a.filename !== 'string') return null;
-    if (a.transcript !== undefined && typeof a.transcript !== 'string') return null;
-    const hint = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
-    out.push({
-      uploadId: a.uploadId, sha256: a.sha256, size: a.size, declaredKind: a.declaredKind, declaredType: a.declaredType, filename: a.filename,
-      ...(typeof a.transcript === 'string' ? { transcript: a.transcript } : {}),
-      ...(hint(a.durationMs) !== undefined ? { durationMs: hint(a.durationMs) } : {}), ...(hint(a.width) !== undefined ? { width: hint(a.width) } : {}), ...(hint(a.height) !== undefined ? { height: hint(a.height) } : {}),
-    });
-  }
-  return out;
 }
 
 export function createMobileConversationRouter(deps: MobileConversationRouteDeps): Router {
@@ -467,17 +446,17 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const requestId = body.requestId;
     // Media (§4.3): a body with attachments creates a `media-message`. An exact emergency stop
     // never waits on its files: it is handled as the text it is and the uploads simply expire.
-    const hasAttachments = body.attachments !== undefined;
-    const signedFiles = hasAttachments && !isExactStopMessage(text) ? parseSignedAttachments(body.attachments) : null;
-    const wantsMedia = hasAttachments && !isExactStopMessage(text);
+    const wantsMedia = body.attachments !== undefined && !isExactStopMessage(text);
     if (wantsMedia && !deps.mediaEnabled) { res.status(400).json({ error: 'media-off', detail: 'Files in app conversations are turned off on this agent.' }); return; }
-    if (wantsMedia && (!signedFiles || signedFiles.length < 1)) { res.status(400).json({ error: 'bad-attachments' }); return; }
-    if (wantsMedia && signedFiles!.length > MAX_ATTACHMENTS) { res.status(413).json({ error: 'too-many-attachments', detail: `A message can carry at most ${MAX_ATTACHMENTS} files.` }); return; }
+    let signedFiles: SignedAttachment[] | null = null;
+    if (wantsMedia) {
+      const checked = checkSignedFiles(body.attachments);
+      if ('status' in checked) { res.status(checked.status).json(checked.body); return; }
+      signedFiles = checked.files;
+    }
     if ((text.length < 1 && !wantsMedia) || text.length > 4000) { res.status(400).json({ error: 'text must be 1-4000 characters' }); return; }
     // The idempotency hash covers the text and each file's signed fields (§4.3).
-    const hash = signedFiles
-      ? hashOf('app-send', key, text, ...signedFiles.map((a) => `${a.sha256}:${a.size}:${a.declaredKind}:${a.declaredType}:${a.filename}:${sha256Hex(a.transcript ?? '')}`))
-      : hashOf('app-send', key, text);
+    const hash = signedFiles ? hashOf('app-send', key, text, ...signedFileHashParts(signedFiles)) : hashOf('app-send', key, text);
     const seed = `${deviceId}\u0000${requestId}`;
     const messageId = derivedEventId('msg', seed);
     const eventId = derivedEventId('op', seed);
@@ -513,35 +492,14 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // conversation, with exactly the signed fields. Transcripts and filenames get the caption's
     // treatment, so a dictated code or a named invite never reaches a session or the store.
     const removedKinds = new Set<string>(removed.kinds);
-    const uploadIds: string[] = [];
-    const stored: AppAttachment[] = [];
+    let uploadIds: string[] = [];
+    let stored: AppAttachment[] = [];
     if (signedFiles) {
-      const media = s.media;
-      let total = 0;
-      for (let i = 0; i < signedFiles.length; i++) {
-        const a = signedFiles[i]!;
-        const u = media.getUpload(a.uploadId);
-        const mismatch = () => res.status(409).json({ error: 'attachment-mismatch', index: i, detail: `Attachment ${i + 1} does not match its upload.` });
-        if (!u || u.deviceId !== deviceId || u.conversationRef !== `app:${key}`) { mismatch(); return; }
-        if (u.state === 'claimed' || u.state === 'sent') { res.status(409).json({ error: 'upload-already-sent', index: i, detail: 'This file was already sent.' }); return; }
-        if (u.sha256 !== a.sha256 || u.size !== a.size || u.declaredKind !== a.declaredKind || u.declaredType !== a.declaredType || u.filename !== a.filename) { mismatch(); return; }
-        if (u.state !== 'complete' || !u.mediaType) { mismatch(); return; }
-        if ((a.transcript?.length ?? 0) > MAX_TRANSCRIPT_CHARS) { res.status(413).json({ error: 'message-too-large', detail: 'A transcript can be at most 4000 characters.' }); return; }
-        total += a.size;
-        uploadIds.push(u.uploadId);
-        deps.pairing.scanInbound(a.filename);
-        if (a.transcript) deps.pairing.scanInbound(a.transcript);
-        const f = removeAuthorityTokens(a.filename);
-        const tr = a.transcript !== undefined ? removeAuthorityTokens(a.transcript) : null;
-        for (const k of [...f.kinds, ...(tr?.kinds ?? [])]) removedKinds.add(k);
-        stored.push({
-          attachmentId: attachmentIdFor(messageId, i), index: i, sha256: a.sha256, size: a.size,
-          declaredKind: u.declaredKind, kind: effectiveKind(u.declaredKind, u.mediaType), mediaType: u.mediaType, declaredType: a.declaredType,
-          filename: f.text.slice(0, 255), ...(tr ? { transcript: tr.text } : {}),
-          ...(a.durationMs !== undefined ? { durationMs: a.durationMs } : {}), ...(a.width !== undefined ? { width: a.width } : {}), ...(a.height !== undefined ? { height: a.height } : {}),
-        });
-      }
-      if (total > MAX_MESSAGE_BYTES) { res.status(413).json({ error: 'message-too-large', detail: 'A message can carry at most 64 MiB.' }); return; }
+      const pre = preflightMediaAttachments(s, { deviceId, conversationRef: `app:${key}`, messageId, files: signedFiles, scanInbound: (t) => deps.pairing.scanInbound(t) });
+      if (!pre.ok) { res.status(pre.status).json(pre.body); return; }
+      uploadIds = pre.uploadIds;
+      stored = pre.stored;
+      for (const k of pre.removedKinds) removedKinds.add(k);
     }
     const classifiedText = [delivered, ...stored.map((a) => a.transcript ?? '')].filter(Boolean).join('\n');
     const credentialShaped = detectOutboundCredential([text, ...(signedFiles ?? []).map((a) => a.transcript ?? '')].join('\n')).detected;
@@ -559,13 +517,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     };
     const msg: MessageEvent | MediaMessageEvent = signedFiles ? { ...base, kind: 'media-message', attachments: stored } : { ...base, kind: 'message' };
     // §4.1: the record exactly as stored and as journaled must fit, before any upload is claimed.
-    if (signedFiles) {
-      const asStored = Buffer.byteLength(JSON.stringify({ ...msg, ingestSeq: 0 }));
-      const asJournaled = Buffer.byteLength(JSON.stringify(buildAppConversationRecordData(msg)({ physical: 0, logical: 0, node: deps.machineId() } as never, deps.machineId())));
-      if (Math.max(asStored, asJournaled) > MAX_RECORD_BYTES || (signed.origin?.bodyB64?.length ?? 0) > MAX_ORIGIN_BODY_B64) {
-        res.status(413).json({ error: 'message-too-large', detail: 'This message is too long to store. Shorten the text or send fewer files.' });
-        return;
-      }
+    if (msg.kind === 'media-message' && mediaRecordTooLarge(msg, signed.origin, deps.machineId())) {
+      res.status(413).json({ error: 'message-too-large', detail: 'This message is too long to store. Shorten the text or send fewer files.' });
+      return;
     }
 
     // Step 4 — reserve, then persist the message with its signed origin (fsync) BEFORE dispatch.
@@ -578,33 +532,21 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (r.kind !== 'reserved') { answerLookup(res, r); return; }
 
     // Media (§4.3): claim every upload at once, make the bytes durable, and only then the event.
-    if (signedFiles) {
-      if (!s.media.claimUploads(uploadIds, messageId)) {
-        requests.release(deviceId, requestId);
-        res.status(409).json({ error: 'upload-already-sent', detail: 'One of these files was already sent.' });
-        return;
-      }
-      try { await s.media.verifyClaimed(uploadIds); } catch (err) {
-        s.media.releaseClaim(uploadIds, messageId);
-        requests.release(deviceId, requestId);
-        s.deps.reportDegradation?.('AppMedia.publish', err instanceof Error ? err.message : String(err));
-        res.status(503).json({ error: 'chat-unavailable', detail: 'The files could not be saved, so the message was not sent. Try again.' });
-        return;
-      }
+    if (msg.kind === 'media-message') {
+      const refused = await claimMediaUploads(s, uploadIds, messageId, (detail) => s.deps.reportDegradation?.('AppMedia.publish', detail));
+      if (refused) { requests.release(deviceId, requestId); res.status(refused.status).json(refused.body); return; }
     }
     // Publish and append with no await between them (media review finding 1): nothing can remove
     // a blob after it is published and before the event that references it is stored.
     try {
-      if (signedFiles) s.media.publishVerified(uploadIds);
-      s.store.append(msg);
+      if (msg.kind === 'media-message') publishMediaMessage(s, uploadIds, msg);
+      else s.store.append(msg);
     } catch (err) {
-      if (signedFiles) s.media.releaseClaim(uploadIds, messageId);
       requests.release(deviceId, requestId);
       s.deps.reportDegradation?.('AppConversations.persist', err instanceof Error ? err.message : String(err));
       res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' });
       return;
     }
-    if (signedFiles) s.media.markSent(uploadIds, messageId);
     const reclassified = stored.filter((a) => a.kind !== a.declaredKind).map((a) => a.index);
     const extras = {
       ...(removedKinds.size > 0 ? { redacted: true, removed: [...removedKinds] } : {}),
@@ -845,7 +787,15 @@ export function joinTelegramHistory(
     if (!eventId) return { ...row, originVerified: 'none' };
     let ev: ReturnType<AppConversationService['store']['getEvent']> = null;
     try { ev = app.store.getEvent(key, eventId); } catch { ev = null; } // @silent-fallback-ok — an unreadable store row reads "couldn't check"
-    if (!ev || ev.kind !== 'message') return { ...row, originVerified: 'unknown' };
+    if (!ev || (ev.kind !== 'message' && ev.kind !== 'media-message')) return { ...row, originVerified: 'unknown' };
+    if (ev.kind === 'media-message') {
+      // Files sent from the app (chat-media §4.9): the Telegram row holds the session's text
+      // (file lines with server paths, then the caption). The device gets the STORED caption and
+      // the attachments instead, so the verdict covers exactly what it shows and no path leaks.
+      const verdict = app.verify(ev);
+      const via = app.originApprovedVia(ev, verdict);
+      return { ...row, text: ev.text, attachments: attachmentRows(ev.attachments, app), originVerified: verdict, ...(via ? { originApprovedVia: via } : {}) };
+    }
     // The verdict covers the STORED text; a Telegram row showing different text gets no verdict.
     if (typeof row.text === 'string' && row.text !== ev.text) return { ...row, originVerified: 'unknown' };
     const verdict = app.verify(ev);
@@ -861,6 +811,7 @@ export function joinTelegramHistory(
     out.push({ deliveryState: m.deliveryState,
       messageId: null, topicId, text: m.text, fromUser: m.role === 'operator', timestamp: m.at, sessionName: null,
       via: 'mobile-device', eventId: m.eventId, fromStore: true,
+      ...(m.attachments ? { attachments: attachmentRows(m.attachments, app) } : {}),
       ...(() => {
         const rec = { ...m, conversationKey: key };
         const verdict = app.verify(rec);

@@ -6322,6 +6322,8 @@ export class AgentServer {
         // A Slack file downloads only through the machine whose registry minted the conversation (§4.9).
         // Same gate as the Slack history route: nothing is served until the owner's Slack id is set.
         ...(slackRegistry ? { slackHeld: (key: string) => slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, key) } : {}),
+        // Files sent from the app into a Telegram topic upload under `telegram:<topicId>` (§4.9).
+        ...(options.telegram ? { telegramTopicExists: (topicId: number) => options.telegram!.getAllTopicMappings().some((m) => m.topicId === topicId) } : {}),
       }));
       // Telegram media in the app's history (media spec §4.9): each file a Telegram topic receives is
       // also copied into the blob store as a replicated `platform-media` event. Media on only.

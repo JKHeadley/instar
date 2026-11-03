@@ -30,6 +30,7 @@ import { AppMediaStore } from '../../src/core/AppMediaStore.js';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { SlackAdapter } from '../../src/messaging/slack/SlackAdapter.js';
 import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
+import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
 
 const HOST = 'echo-media-e2e.example.dev';
 const servers: AgentServer[] = [];
@@ -288,6 +289,82 @@ describe('media in app conversations — production wiring', () => {
     const dl = await send('GET', `/mobile/media/${sha(photo)}?ref=${encodeURIComponent(key)}`);
     expect(dl.status).toBe(200);
     expect(Buffer.from(dl.body as Buffer).equals(photo)).toBe(true);
+  });
+
+  it('app → Telegram (§4.9): a photo sent from the app into a topic is stored, delivered, mirrored as sendPhoto and downloadable', async () => {
+    // The Bot API is stubbed: the real adapter builds the multipart request, nothing leaves.
+    const botCalls: Array<{ method: string; body: unknown }> = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string, init: { body: unknown }) => {
+      botCalls.push({ method: String(url).split('/').pop() ?? '', body: init?.body });
+      return { ok: true, status: 200, json: async () => ({ ok: true, result: { message_id: 77 } }), text: async () => '' };
+    }));
+    // The inbound core answers 503 server-boot-incomplete until the running version is known (as at boot).
+    ProcessIntegrity.reset();
+    ProcessIntegrity.initialize('1.2.36', null);
+    try {
+      const { server, telegram, spawned } = await boot(true, (stateDir) => {
+        const tg = new TelegramAdapter({ token: 'test-token-123', chatId: '-100123', ownerUserId: 4242, authorizedUserIds: [4242], pollIntervalMs: 100 } as never, stateDir);
+        tg.registerTopicSession(42, 'tg-session', 'Trip');
+        return tg;
+      });
+      const app = server.getApp();
+      // Wiring integrity: the real adapter carries the media send the route mirrors through.
+      expect(typeof telegram!.sendMediaToTopic).toBe('function');
+      server.mobilePairing!.deps.fetchFn = (async (url: string) => {
+        const u = new URL(url);
+        const r = await request(app).get(u.pathname + u.search).set('Host', HOST);
+        return { ok: r.status === 200, status: r.status, json: async () => r.body } as unknown as Response;
+      }) as unknown as typeof fetch;
+      const m = await request(app).post('/mobile/pairing-codes').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'media-e2e').send({});
+      const dms: string[] = [];
+      server.mobilePairing!.deps.ownerDM = async (text) => { dms.push(text); return 1; };
+      server.mobilePairing!.deps.telegramOwnerPresent = () => true;
+      const dev = makeDevice();
+      const r = await request(app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code: m.body.code, deviceName: 'e2e phone', devicePublicKey: dev.publicKey });
+      const deviceId = r.body.deviceId as string;
+      const code = /is (\d{3}) (\d{3})\./.exec(dms[0]!)!.slice(1).join('');
+      let tick = 0;
+      const send = (method: 'GET' | 'POST' | 'PUT', p: string, body?: unknown, rawBytes?: Buffer) => {
+        const raw = rawBytes ?? (body === undefined ? undefined : Buffer.from(JSON.stringify(body)));
+        const time = String(Date.now() + (tick++ % 500));
+        const sig = dev.sign(canonicalString(deviceId, HOST, method, p, time, raw));
+        const q = method === 'GET' ? request(app).get(p) : method === 'PUT' ? request(app).put(p) : request(app).post(p);
+        q.set('X-Instar-Device', deviceId).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', sig);
+        if (rawBytes) return q.set('Content-Type', 'application/octet-stream').send(rawBytes);
+        return raw ? q.set('Content-Type', 'application/json').send(raw.toString()) : q;
+      };
+      expect((await send('POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
+
+      const photo = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), crypto.randomBytes(3000)]);
+      const d = { size: photo.length, sha256: sha(photo), declaredKind: 'photo', declaredType: 'image/jpeg', filename: 'pier.jpg' };
+      const start = await send('POST', '/mobile/media/uploads', { conversationRef: 'telegram:42', ...d, requestId: rid() });
+      expect(start.status).toBe(200);
+      expect((await send('PUT', `/mobile/media/uploads/${start.body.uploadId}/chunks/0`, undefined, photo)).status).toBe(200);
+      const sent = await send('POST', '/mobile/chat/42', { text: 'From the pier', requestId: rid(), attachments: [{ uploadId: start.body.uploadId, ...d }] });
+      expect({ status: sent.status, body: sent.body }).toMatchObject({ status: 200, body: { ok: true, mirror: 'sent' } });
+
+      // Stored under telegram:42 as a media-message; the session got the file as a readable path.
+      expect(server.appConversations!.store.getEvent('telegram:42', sent.body.eventId as string)).toMatchObject({ kind: 'media-message', text: 'From the pier' });
+      // The inbound core logs the delivered text in the topic's history (and hands it to the session).
+      const fromHistory = (telegram!.getTopicHistory(42, 10) as Array<{ text?: string }>).map((x) => x.text ?? '').join('\n');
+      const pathMatch = /\[image:([^\]]+)\]/.exec(fromHistory) ?? /\[image:([^\]"]+)\]/.exec(JSON.stringify(spawned));
+      expect(pathMatch).not.toBeNull();
+      expect(fs.readFileSync(pathMatch![1]!).equals(photo)).toBe(true);
+      // The mirror went out as sendPhoto through the production adapter.
+      expect(botCalls.map((c) => c.method)).toContain('sendPhoto');
+
+      // The paired phone sees the file in the topic's history and downloads it by the topic ref.
+      const hist = await send('GET', '/telegram/topics/42/messages');
+      const row = (hist.body.messages as Array<Record<string, any>>).find((x) => x.eventId === sent.body.eventId)!;
+      expect(row).toMatchObject({ text: 'From the pier', originVerified: 'verified' });
+      expect(row.attachments[0]).toMatchObject({ sha256: sha(photo), bytes: 'verified' });
+      const dl = await send('GET', `/mobile/media/${sha(photo)}?ref=telegram:42`);
+      expect(dl.status).toBe(200);
+      expect(Buffer.from(dl.body as Buffer).equals(photo)).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+      ProcessIntegrity.reset();
+    }
   });
 
   it('a fleet agent sets no Slack media hook', async () => {
