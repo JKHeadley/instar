@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { addSystemdKillModeProcess } from '../../src/core/PostUpdateMigrator.js';
-import { SYSTEMD_KILL_MODE_LINE } from '../../src/commands/setup.js';
+import { buildLinuxSystemdUnit, SYSTEMD_KILL_MODE_LINE } from '../../src/commands/setup.js';
 
 const OLD_UNIT = `[Unit]
 Description=Instar Agent - echo
@@ -34,10 +34,9 @@ describe('systemd KillMode', () => {
   });
 
   it('new units carry it inside [Service]', () => {
-    const src = fs.readFileSync(path.join(__dirname, '../../src/commands/setup.ts'), 'utf-8');
-    const body = src.slice(src.indexOf('function installLinuxSystemdService('));
-    const service = body.slice(body.indexOf('[Service]'), body.indexOf('[Install]'));
-    expect(service).toContain('${SYSTEMD_KILL_MODE_LINE}');
+    const unit = buildLinuxSystemdUnit({ projectName: 'a', projectDir: '/d', hasTelegram: false, bootWrapper: '/d/.instar/instar-boot.sh', envPath: '/usr/bin' });
+    const service = unit.slice(unit.indexOf('[Service]'), unit.indexOf('[Install]'));
+    expect(service).toContain(SYSTEMD_KILL_MODE_LINE);
   });
 
   it('`instar server restart` stops the server tmux session, not just the unit', () => {

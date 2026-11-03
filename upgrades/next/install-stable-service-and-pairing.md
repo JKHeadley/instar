@@ -1,0 +1,21 @@
+<!-- bump: patch -->
+
+## What Changed
+
+On Linux, the agent's start-up service now starts the agent through its boot wrapper and its own copy of Instar, the same way macOS already does. An install through `npx` used to write a service that ran a bare `instar` from npm's temporary cache, which failed from the first second, so the agent didn't come back after a reboot. The wrapper now also passes stop signals on to the agent, so a service restart really restarts it. Existing Linux agents whose service has that broken start get it rewritten on update; a copy of the old one is kept.
+
+The installer now hands the agent over to the service and waits until the service's copy answers, instead of assuming it works. Agents the installer creates have phone pairing turned on. The install ends with a one-time link that adds the agent to the Instar app, and the dashboard on an address the phone can reach. On a server that has no such address, it asks for Tailscale.
+
+## What to Tell Your User
+
+If I run on a Linux server that was set up with the one-line install, I now come back by myself after the server restarts. New agents can be added to the Instar iPhone app straight away, and setup ends with the link to do it.
+
+## Summary of New Capabilities
+
+- Linux agents installed through npx survive a reboot.
+- The installer checks that the start-up service actually runs the agent.
+- New agents can pair with the iPhone app, and the installer gives the pairing link.
+
+## Evidence
+
+Live on a fresh Ubuntu 24.04 server through `npx`: the service ran the agent through its wrapper, a service restart replaced the server cleanly, and after a real reboot the agent answered before anyone logged in. Unit tests cover the unit file, the signal pass-on with a real process, the update rewrite, the handover, and each install ending.

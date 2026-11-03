@@ -123,7 +123,7 @@ import { installBuiltinSkills, installBrowserScripts } from '../commands/init.js
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { recordInstallProvenanceIfAbsent, hasInstallProvenanceRecord } from './ApprenticeshipStallGate.js';
 import { IdentityManager } from '../threadline/client/IdentityManager.js';
-import { installAutoStart, installBootWrapper, SYSTEMD_KILL_MODE_LINE } from '../commands/setup.js';
+import { installAutoStart, installBootWrapper, SYSTEMD_KILL_MODE_LINE, systemdUnitNeedsStableStart } from '../commands/setup.js';
 import { autoStartRefusalReason, takeLastAutoStartRefusal } from './ThrowawayAgentGuard.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 import { jobsMigrate } from '../commands/jobMigrate.js';
@@ -2392,6 +2392,7 @@ export class PostUpdateMigrator {
     this.migrateBootWrapperToCjs(result);
     this.migrateLaunchdProcessCeiling(result);
     this.migrateSystemdKillMode(result);
+    this.migrateSystemdStableStart(result);
     this.migrateBootWrapperAbiCheck(result);
     this.migrateStaleLifelineSignal(result);
     this.migrateThreadlineConversationStore(result);
@@ -4571,6 +4572,51 @@ export class PostUpdateMigrator {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       result.errors.push(`launchd process ceiling: ${msg}`);
+    }
+  }
+
+  /**
+   * A Linux unit written by an install through npx started a bare `instar` (systemd refuses it:
+   * 203/EXEC on every boot) with the npx cache on PATH (Cirrus, 2026-11-03). Rewrite such a unit
+   * through installAutoStart, which now starts the agent's own copy of instar through the boot
+   * wrapper. A unit with an absolute ExecStart outside the npx cache is left alone.
+   */
+  private migrateSystemdStableStart(result: MigrationResult): void {
+    if (process.platform !== 'linux') {
+      result.skipped.push('systemd stable start: non-linux, no unit');
+      return;
+    }
+    const unitPath = path.join(
+      process.env.HOME ?? os.homedir(),
+      '.config', 'systemd', 'user',
+      `instar-${this.config.projectName}.service`,
+    );
+    let content: string;
+    try {
+      content = fs.readFileSync(unitPath, 'utf-8');
+    } catch {
+      result.skipped.push('systemd stable start: no systemd unit present');
+      return;
+    }
+    if (!systemdUnitNeedsStableStart(content)) {
+      result.skipped.push('systemd stable start: unit already starts a stable path');
+      return;
+    }
+    try {
+      fs.writeFileSync(`${unitPath}.bak-${Date.now()}`, content, 'utf-8');
+      // Never start it here: this agent is running, so the service would lose the lock and loop.
+      // It takes over at the next reboot or service restart.
+      const installed = installAutoStart(this.config.projectName, this.config.projectDir, this.config.hasTelegram, { noStart: true });
+      const refusal = takeLastAutoStartRefusal();
+      if (installed) {
+        result.upgraded.push('systemd stable start: the unit now starts the agent through its boot wrapper (it could not start after a reboot)');
+      } else if (refusal) {
+        result.skipped.push(`systemd stable start: ${refusal}`);
+      } else {
+        result.errors.push('systemd stable start: installAutoStart returned false');
+      }
+    } catch (err) {
+      result.errors.push(`systemd stable start: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
