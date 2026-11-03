@@ -9,6 +9,13 @@ import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
 import { getActiveDrainRehearsal } from '../monitoring/machineMaintenance/DrainRehearsal.js';
 import { getActiveBrowserCare } from '../monitoring/machineMaintenance/BrowserCare.js';
 import { getActiveMachineLockStateReader } from '../core/MachineLockStateReader.js';
+import {
+  fetchMaintenancePool,
+  mergeMaintenancePool,
+  type MaintenancePoolFailureReason,
+  type MaintenancePoolPart,
+  type MaintenancePoolView,
+} from './machineMaintenancePool.js';
 import { getActiveSessionPriorityLowerer } from '../core/sessionPriority.js';
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
 import { resolveSessionPlatform, sessionDisplayName, type SessionPlatformInfo } from './sessionPlatform.js';
@@ -14091,7 +14098,47 @@ export function createRoutes(ctx: RouteContext): Router {
   // Registry First: what a nightly restart would have done on this machine, which
   // delays and safety holds read true, and the evidence so far. Served from the last
   // sample, so a read runs no process. 503 when dark here.
-  router.get('/machine-maintenance', (_req, res) => {
+  // `?scope=pool` (CMT-1199): every online machine's state, machine-tagged, dark/old/unreachable
+  // peers listed under pool.failed with a normalized reason. Read-only (authority 'none').
+  const maintenancePoolCache = new Map<MaintenancePoolPart, { at: number; view: MaintenancePoolView }>();
+  const MAINTENANCE_POOL_CACHE_MS = 5_000;
+  async function maintenancePoolView(
+    part: MaintenancePoolPart,
+    self: () => Promise<{ body: Record<string, unknown> } | { reason: MaintenancePoolFailureReason }>,
+  ): Promise<MaintenancePoolView> {
+    const hit = maintenancePoolCache.get(part);
+    if (hit && Date.now() - hit.at < MAINTENANCE_POOL_CACHE_MS) return hit.view;
+    const getCapacity = (id: string) => ctx.machinePoolRegistry?.getCapacity(id) ?? null;
+    const [selfAnswer, fan] = await Promise.all([
+      self(),
+      fetchMaintenancePool({
+        peers: ctx.resolvePeerUrls?.() ?? [],
+        authToken: ctx.config.authToken ?? '',
+        getCapacity,
+        recordRopeResult: ctx.recordRopeResult ?? undefined,
+        poolPollCache: ctx.poolPollCache ?? null,
+      }, part),
+    ]);
+    const selfMachineId = ctx.meshSelfId ?? null;
+    const view = mergeMaintenancePool({
+      part, selfMachineId, selfNickname: selfMachineId ? getCapacity(selfMachineId)?.nickname : null,
+      self: selfAnswer, results: fan.results, failed: fan.failed, queried: fan.queried, stale: fan.stale,
+      nicknameOf: (id) => getCapacity(id)?.nickname,
+    });
+    maintenancePoolCache.set(part, { at: Date.now(), view });
+    return view;
+  }
+
+  router.get('/machine-maintenance', async (req, res) => {
+    if (req.query.scope === 'pool') {
+      res.json(await maintenancePoolView('status', async () => {
+        const local = getActiveDrainRehearsal();
+        return local
+          ? { body: { ...local.status(), browserCare: getActiveBrowserCare()?.status() ?? null } as Record<string, unknown> }
+          : { reason: 'not-enabled' };
+      }));
+      return;
+    }
     const r = getActiveDrainRehearsal();
     if (!r) {
       res.status(503).json({ enabled: false, error: 'machine maintenance not enabled on this agent (machineMaintenance — dev-agent gated)' });
@@ -14103,7 +14150,20 @@ export function createRoutes(ctx: RouteContext): Router {
 
   // Honest lock reading (Part A): the verdict from the spec's table with every input beside
   // it. `unknown` means unknown, never locked. Reads the session on demand (cached 5 s).
-  router.get('/machine-maintenance/lock-state', async (_req, res) => {
+  router.get('/machine-maintenance/lock-state', async (req, res) => {
+    if (req.query.scope === 'pool') {
+      res.json(await maintenancePoolView('lock-state', async () => {
+        const local = getActiveMachineLockStateReader();
+        if (!local) return { reason: 'not-enabled' };
+        try {
+          return { body: (await local.read()) as unknown as Record<string, unknown> };
+        } catch {
+          // @silent-fallback-ok — this machine's failed reading is listed in pool.failed as read-failed
+          return { reason: 'read-failed' };
+        }
+      }));
+      return;
+    }
     const reader = getActiveMachineLockStateReader();
     if (!reader) {
       res.status(503).json({ enabled: false, error: 'machine maintenance not enabled on this agent (machineMaintenance — dev-agent gated)' });
