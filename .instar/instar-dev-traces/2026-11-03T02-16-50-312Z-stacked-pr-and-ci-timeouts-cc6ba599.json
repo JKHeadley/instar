@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "stacked-pr-and-ci-timeouts",
+  "sessionId": "047c3829-64cc-45a1-a0fa-0e1638203083",
+  "timestamp": "2026-11-03T02:16:50.312Z",
+  "artifactPath": "upgrades/side-effects/stacked-pr-and-ci-timeouts.md",
+  "artifactSha256": "56390bd0ce94098e78158ec7adecc966ddb6ee1bdd0bb508efeb6d77996da1c6",
+  "coveredFiles": [
+    "docs/eli16/stacked-pr-and-ci-timeouts.eli16.md",
+    "scripts/standards-coverage.mjs",
+    "tests/unit/standards-coverage-ratchet.test.ts",
+    "upgrades/side-effects/stacked-pr-and-ci-timeouts.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Lets the standards-coverage pin accept the CI timeout this PR adds; one revert undoes it; no state, config or migration.",
+  "eli16Path": "docs/eli16/stacked-pr-and-ci-timeouts.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/stacked-pr-and-ci-timeouts.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

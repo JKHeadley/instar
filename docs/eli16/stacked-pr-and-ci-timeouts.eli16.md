@@ -14,6 +14,8 @@
 
 **What changes, part two.** Every CI job now has a time limit, set to about twice its slowest real run over the last 79 runs: unit test shards 60 minutes (slowest was 30), integration 50 (slowest 24), end-to-end 70 (slowest 35), and the small checks 15 (slowest under 4). A stuck job now fails within about an hour and can be re-run.
 
+One check that guards the standards-coverage job expected that job to have an exact set of settings. It now also expects the time limit, and refuses one that is missing or over 60 minutes.
+
 **Safeguards.** Everything here can only say "do not merge yet" or "stop a stuck job sooner". Nothing can make a merge happen that would not have happened before. Undoing it is reverting one commit.
 
 **What you need to decide.** Nothing.

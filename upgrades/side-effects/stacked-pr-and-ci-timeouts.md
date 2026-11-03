@@ -106,3 +106,15 @@ Option (c) closes the hole at zero CI cost; time limits close the 6-hour hang. S
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable (a CI/merge-path defect; the new tests are the regression guard).
+
+## Addendum: the standards-coverage CI job pin
+
+The first full local verify of this change failed one unit test, `tests/unit/standards-coverage-ratchet.test.ts` ("the live registry closes all six family audits"). `scripts/standards-coverage.mjs` pins the `standards-coverage` job in ci.yml to exactly the keys `name`, `runs-on`, `permissions`, `steps`. Adding `timeout-minutes: 15` to that job broke the pin, so the ratchet reported its own CI wiring as invalid.
+
+Fix: the pin now expects `timeout-minutes` as part of the job's exact shape, and requires it to be a whole number from 1 to 60. The ratchet test fixture carries the key, and two new negative cases prove the check fails when the timeout is removed or set to 360.
+
+- **Over-block:** a future change that raises this job above 60 minutes must also edit the pin. The job runs in about 2 minutes, so this is a visible, declared edit, as the pin intends.
+- **Under-block:** none added. Every key the pin checked before is still checked.
+- **Interactions:** `tests/unit/ci-workflow-timeouts.test.ts` checks the same key (1 to 120 minutes for every job). The tighter 60-minute cap here applies only to this one job and agrees with the value in ci.yml.
+- **Rollback:** revert the commit.
+- **Second-pass review (2026-11-03):** an independent reviewer concurred. A missing, fractional, zero, negative or over-60 timeout fails; no existing condition is weaker; `node scripts/standards-coverage.mjs --check` passes on the live ci.yml.
