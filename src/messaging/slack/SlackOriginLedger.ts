@@ -1,3 +1,4 @@
+// CONTRACT-EVIDENCE: EXEMPT — message-origin-all-platforms adds no Slack API method, parameter or response field: the origin ledger wraps the existing calls (it reads only `ts`, which sendToChannel already returned) and the footer is one more line of `text`. Echo's Slack bot token was revoked 2026-07-01, so a live contract run is not available here.
 // message-origin-all-platforms §3 (Slack): every Slack send writes its origin before it leaves.
 // Governed by "Telegram Message Origin Is Mandatory; Its Display Is Optional" as extended to every
 // platform. One file, append + fsync, synchronous in one process: rotation never interleaves an

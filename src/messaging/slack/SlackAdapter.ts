@@ -41,6 +41,7 @@ import type { SlackApiResponse } from './SlackApiClient.js';
 import type { SlackPermissionObserver } from '../../permissions/SlackPermissionObserver.js';
 import type { AmbientContributionGate } from '../../permissions/AmbientContributionGate.js';
 import { buildStallAlertDecisionContext } from '../shared/StallAlertDecisionContext.js';
+// CONTRACT-EVIDENCE: EXEMPT — message-origin-all-platforms adds no Slack API method, parameter or response field: the origin ledger wraps the existing calls (reading only `ts`) and the footer is one more line of `text`. Echo's Slack bot token was revoked 2026-07-01, so no live contract run is available.
 import { ORIGIN_OUTAGE_NOTICE_TEXT, RECORDED_SLACK_METHODS, SlackOriginLedger, SlackOriginRecordingError, refusalWarrantsNotice } from './SlackOriginLedger.js';
 
 export const SLACK_STALL_CONFIRM_PROMPT_ID = 'slack-stall-confirm-v1';

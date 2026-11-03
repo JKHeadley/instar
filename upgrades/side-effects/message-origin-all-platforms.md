@@ -88,3 +88,5 @@ Notes raised and handled: (1) the credential lookup was unbounded and the app ro
 ## Found in testing
 
 The integration test caught one defect before push: `detectOutboundCredential` returns `{ detected }`, and the footer check treated the object as truthy, so the Slack footer was always dropped. Fixed to read `.detected`; the integration test asserts the footer reaches the adapter.
+
+Live Slack contract tests were not run: Echo's Slack bot token was revoked on 2026-07-01. The changed adapter files carry CONTRACT-EVIDENCE: EXEMPT markers stating that no Slack API method, parameter or response field changed.

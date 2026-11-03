@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "message-origin-all-platforms",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T21:38:44.707Z",
+  "artifactPath": "upgrades/side-effects/message-origin-all-platforms.md",
+  "artifactSha256": "9675ca17a04705780fba1bbae0c4ec9f044e4dd66c5adf7f62e69967c0d3f5bd",
+  "specPath": "docs/specs/message-origin-all-platforms.md",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-11-03T21-38-44-582Z-message-origin-all-platforms-7a41003f.json",
+    "src/messaging/slack/FileHandler.ts",
+    "src/messaging/slack/SlackAdapter.ts",
+    "src/messaging/slack/SlackOriginLedger.ts",
+    "upgrades/side-effects/message-origin-all-platforms.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Contract-evidence exemption markers for the same change; no API contract surface changed.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -9,6 +9,7 @@
  * Download validates paths to prevent traversal attacks.
  */
 
+// CONTRACT-EVIDENCE: EXEMPT — message-origin-all-platforms adds no Slack API method, parameter or response field: the origin ledger wraps the existing calls (reading only `ts`) and the footer is one more line of `text`. Echo's Slack bot token was revoked 2026-07-01, so no live contract run is available.
 import type { SlackOriginLedger } from './SlackOriginLedger.js';
 import fs from 'node:fs';
 import path from 'node:path';
