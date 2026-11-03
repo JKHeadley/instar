@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "sybil-test-epoch-flake",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T05:59:26.333Z",
+  "artifactPath": "upgrades/side-effects/sybil-test-epoch-flake.md",
+  "artifactSha256": "caf46d022f4eafffadbf53d87ec5f7dc7d923a4969b429eff5def5bd659fc358",
+  "coveredFiles": [
+    "tests/unit/threadline/relay/SybilProtection.test.ts",
+    "upgrades/side-effects/sybil-test-epoch-flake.eli16.md",
+    "upgrades/side-effects/sybil-test-epoch-flake.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test-only difficulty change",
+  "eli16Path": "upgrades/side-effects/sybil-test-epoch-flake.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sybil-test-epoch-flake.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

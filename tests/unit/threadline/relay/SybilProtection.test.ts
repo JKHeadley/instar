@@ -27,7 +27,9 @@ describe('SybilProtection', () => {
     });
 
     it('rejects solution for wrong IP', () => {
-      const challenge = generateChallenge('127.0.0.1', 8);
+      // 16 bits, not 8: the nonce search is deterministic within a 10-minute epoch, so at 8 bits about
+      // 1 epoch in 256 also satisfied the wrong IP and every run in that window failed (2026-11-03 05:50Z).
+      const challenge = generateChallenge('127.0.0.1', 16);
       const solution = solveChallenge(challenge, '127.0.0.1');
       // Verify with different IP
       const result = verifySolution(solution, '10.0.0.1');
