@@ -235,7 +235,8 @@ export type FrameworkBinary =
  *   2. Standard system paths (`/usr/local/bin`, `/opt/homebrew/bin`)
  *   3. npm global bin (where `npm install -g` lands)
  *   4. nvm-managed bin directories
- *   5. asdf shims (`$ASDF_DATA_DIR/shims` or `~/.asdf/shims`) + `asdf which`
+ *   5. asdf shims (`$ASDF_DATA_DIR/shims` or `~/.asdf/shims`) + `asdf which`, and mise shims
+ *      (`$MISE_DATA_DIR/shims` or `~/.local/share/mise/shims`)
  *   6. System PATH (via `which`)
  *
  * Returns the absolute path or null if not found.
@@ -383,11 +384,19 @@ function detectFrameworkBinaryUncached(name: FrameworkBinary): string | null {
   const asdfDataDir = process.env.ASDF_DATA_DIR || path.join(home, '.asdf');
   candidates.push(path.join(asdfDataDir, 'shims', name));
 
-  // The per-user bin, LAST, so an agent that already finds a copy anywhere else keeps using it (a Mac can hold both, with only the system one on PATH). Claude Code's own native
+  // The per-user bin, after the rest, so an agent that already finds a copy anywhere else keeps using it (a Mac can hold both, with only the system one on PATH). Claude Code's own native
   // installer puts `claude` here, and `instar install` puts an npm CLI here when the global npm
   // folder isn't writable; a login shell adds it to PATH only if it existed at login, so a binary
   // installed during this session would otherwise read as missing (fresh Ubuntu, 2026-11-03).
   if (home) candidates.push(path.join(home, '.local', 'bin', name));
+
+  // mise shims, which a service PATH also misses. Omarchy 4.0 keeps node there and launchers for claude and
+  // codex in ~/.local/bin (searched just above); its 4.5 release candidates move those to mise shims
+  // that route each launch to the person's active subscription, so the shim, not the resolved
+  // install, is what their terminal runs.
+  const miseDataDir = process.env.MISE_DATA_DIR
+    || path.join(process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'mise');
+  candidates.push(path.join(miseDataDir, 'shims', name));
 
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) return candidate;

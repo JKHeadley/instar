@@ -129,6 +129,40 @@ describe('detectFrameworkBinary', () => {
     }
   });
 
+  it('finds a mise shim in ~/.local/share/mise/shims (where Omarchy 4.5 puts claude and codex)', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'mise-shim-home-test-'));
+    const saved = { HOME: process.env.HOME, MISE_DATA_DIR: process.env.MISE_DATA_DIR, XDG_DATA_HOME: process.env.XDG_DATA_HOME };
+    try {
+      const shimDir = path.join(tmpHome, '.local', 'share', 'mise', 'shims');
+      fs.mkdirSync(shimDir, { recursive: true });
+      const bin = path.join(shimDir, 'plandex');
+      fs.writeFileSync(bin, '#!/bin/sh\necho stub\n', { mode: 0o755 });
+      process.env.HOME = tmpHome;
+      delete process.env.MISE_DATA_DIR;
+      delete process.env.XDG_DATA_HOME;
+      _resetFrameworkBinaryCache();
+      expect(detectFrameworkBinary('plandex')).toBe(bin);
+
+      // MISE_DATA_DIR wins when set.
+      const custom = fs.mkdtempSync(path.join(os.tmpdir(), 'mise-data-dir-test-'));
+      fs.mkdirSync(path.join(custom, 'shims'));
+      fs.renameSync(bin, path.join(custom, 'shims', 'plandex'));
+      process.env.MISE_DATA_DIR = custom;
+      _resetFrameworkBinaryCache();
+      expect(detectFrameworkBinary('plandex')).toBe(path.join(custom, 'shims', 'plandex'));
+      fs.rmSync(custom, { recursive: true, force: true });
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+      _resetFrameworkBinaryCache();
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
   it('source MUST search nvm version dirs (regression guard for bug #10)', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');

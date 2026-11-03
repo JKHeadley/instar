@@ -50,6 +50,7 @@ import { CANONICAL_FEEDBACK_URL } from '../core/canonicalFeedback.js';
 import { recordInstallProvenanceIfAbsent } from '../core/ApprenticeshipStallGate.js';
 import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT, SUBSCRIPTION_SIGNIN_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
+import { packageInstallCommand } from '../core/packageInstall.js';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS, INSTAR_WILDCARD_PRETOOLUSE_HOOKS, ensureInstarWildcardPreToolUseHooks, type SettingsMatcherEntry } from '../core/instarSettingsHooks.js';
@@ -1560,9 +1561,11 @@ async function autoInstallPackage(pkg: string): Promise<string | null> {
         console.log(pc.dim('  Homebrew not found. Install it first: https://brew.sh'));
       }
     } else if (platform === 'linux') {
-      // Linux — try apt
-      console.log(pc.dim(`  Running: sudo apt install -y ${pkg}`));
-      execFileSync('sudo', ['apt', 'install', '-y', pkg], { stdio: 'inherit' });
+      // Linux — whichever package manager this computer has (apt, dnf, yum or pacman).
+      const command = packageInstallCommand([pkg]);
+      if (!command) return null;
+      console.log(pc.dim(`  Running: ${command.join(' ')}`));
+      execFileSync(command[0], command.slice(1), { stdio: 'inherit' });
       const installed = execFileSync('which', [pkg], { encoding: 'utf-8', stdio: 'pipe' }).trim();
       if (installed) {
         console.log(`  ${pc.green('✓')} Installed ${pkg}`);

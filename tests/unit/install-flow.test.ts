@@ -22,7 +22,7 @@ import {
   writeInstallProgress,
   type InstallProgress,
 } from '../../src/commands/install/progress.js';
-import { gitWorks, INSTALLED_AGENT_MOBILE_PAIRING, pairingLinkOrigin, restrictToOwner, looksLikeClaudeToken, writeClaudeToken, answersFileProblem, buildInstallHandlers, sqliteInstallCommand, tailscaleOperatorCommand, ensureViewingPin, finishAgentConfig, INSTALL_EXIT_CODES, installInitOptions, reportedStatus, tmuxInstallCommand, type InstallEnv, MIN_FREE_BYTES, preflightRefusal, presetFromAnswers } from '../../src/commands/install.js';
+import { gitWorks, packageInstallCommand, INSTALLED_AGENT_MOBILE_PAIRING, pairingLinkOrigin, restrictToOwner, looksLikeClaudeToken, writeClaudeToken, answersFileProblem, buildInstallHandlers, sqliteInstallCommand, tailscaleOperatorCommand, ensureViewingPin, finishAgentConfig, INSTALL_EXIT_CODES, installInitOptions, reportedStatus, tmuxInstallCommand, type InstallEnv, MIN_FREE_BYTES, preflightRefusal, presetFromAnswers } from '../../src/commands/install.js';
 
 const ALL_ACTIONS: WizardActionKind[] = [
   'install-preflight', 'install-tools', 'install-tailscale-operator', 'door-install', 'door-sign-in', 'agent-init',
@@ -322,12 +322,17 @@ describe('tmux install command', () => {
     expect(tmuxInstallCommand('linux', having('sudo', 'apt-get'))).toEqual(['sudo', 'apt-get', 'install', '-y', 'tmux']);
     expect(tmuxInstallCommand('linux', having('sudo', 'dnf'))).toEqual(['sudo', 'dnf', 'install', '-y', 'tmux']);
     expect(tmuxInstallCommand('linux', having('apt-get'))).toBeNull();
+    // Arch / Omarchy: pacman, no prompt, skipping what is installed; -y since a fresh Omarchy has no package databases.
+    expect(tmuxInstallCommand('linux', having('sudo', 'pacman'))).toEqual(['sudo', 'pacman', '-Sy', '--needed', '--noconfirm', 'tmux']);
+    // Arch names the GitHub CLI github-cli.
+    expect(packageInstallCommand(['git', 'gh'], 'linux', having('sudo', 'pacman'))).toEqual(['sudo', 'pacman', '-Sy', '--needed', '--noconfirm', 'git', 'github-cli']);
   });
 
   it('adds sqlite3 on Linux by its own command, named for the package manager', () => {
     expect(sqliteInstallCommand('linux', having('sudo', 'apt-get'))).toEqual(['sudo', 'apt-get', 'install', '-y', 'sqlite3']);
     // Fedora and RHEL call it sqlite; bundling an unknown name would fail the tmux install too.
     expect(sqliteInstallCommand('linux', having('sudo', 'dnf'))).toEqual(['sudo', 'dnf', 'install', '-y', 'sqlite']);
+    expect(sqliteInstallCommand('linux', having('sudo', 'pacman'))).toEqual(['sudo', 'pacman', '-Sy', '--needed', '--noconfirm', 'sqlite']);
     expect(sqliteInstallCommand('linux', having('sudo', 'apt-get', 'sqlite3'))).toBeNull();
     expect(sqliteInstallCommand('darwin', having('sudo', 'brew'))).toBeNull();
     expect(tmuxInstallCommand('linux', having('sudo', 'dnf'))).toEqual(['sudo', 'dnf', 'install', '-y', 'tmux']);

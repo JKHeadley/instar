@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "arch-omarchy-install",
+  "sessionId": "4e5e5104-02d9-4c0b-b652-0b72d3323032",
+  "timestamp": "2026-11-03T22:29:24.791Z",
+  "artifactPath": "upgrades/side-effects/arch-omarchy-install.md",
+  "artifactSha256": "00ad203e426652be36f77e0c850e18a7160516286c94c9c9de6372d1279cc66b",
+  "coveredFiles": [
+    "package-lock.json",
+    "package.json",
+    "pnpm-lock.yaml",
+    "src/commands/init.ts",
+    "src/commands/install.ts",
+    "src/core/Config.ts",
+    "src/core/Prerequisites.ts",
+    "src/core/packageInstall.ts",
+    "tests/unit/detectFrameworkBinary.test.ts",
+    "tests/unit/install-flow.test.ts",
+    "upgrades/next/arch-omarchy-install.md",
+    "upgrades/side-effects/arch-omarchy-install.eli16.md",
+    "upgrades/side-effects/arch-omarchy-install.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Install-path compatibility plus a dependency bump measured to give identical embeddings; no gate or state change, a revert restores everything",
+  "eli16Path": "upgrades/side-effects/arch-omarchy-install.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/arch-omarchy-install.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
