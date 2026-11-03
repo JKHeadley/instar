@@ -96,6 +96,7 @@ import {
   type ProfileSpawnFailureClass,
   type TopicProfileOrchestratorDeps,
 } from '../core/TopicProfileOrchestrator.js';
+import { TopicSpawnBriefStore, formatCarriedBriefBlock } from '../core/TopicSpawnBriefStore.js';
 import { CodexResumeMap, type CodexSpawnFence } from '../core/CodexResumeMap.js';
 import { resolveStageBProductionActivation } from '../core/StageBActivationGate.js';
 import { createInboundDeliveryTransferHandler, createInboundDeliveryTransferStep, writeStageCActivationLease } from '../core/CodexLifecycleProductionComposition.js';
@@ -1005,6 +1006,10 @@ let _topicProfileCarrier: import('../core/TopicProfileTransferCarrier.js').Topic
  *  respawn phase — the spawn chokepoint must not double-report the failure to
  *  the §10.4 breaker (the orchestrator records its own spawn outcome). */
 const _orchestratorSpawnInFlight = new Set<string>();
+/** Direct-spawn brief store (set at server boot). spawnSessionForTopic clears
+ *  a topic's brief on any spawn the orchestrator did not start, so an old
+ *  task never reaches a later session that reuses the same tmux name. */
+let _topicSpawnBriefsRef: TopicSpawnBriefStore | null = null;
 /** §5.3 "possibly stale" read disclosure — once per (topic, process). */
 const _pendingPullStaleDisclosed = new Set<string>();
 /** Default framework for sessions when no per-topic override is set. */
@@ -1266,9 +1271,19 @@ export async function spawnSessionForTopic(
      *  relay block) and no initial message, exactly what the raw
      *  spawnInteractiveSession(undefined, …) path injected before. */
     silentStart?: boolean;
+    /** The prompt the replaced session was originally started with (direct
+     *  spawn route). It is not in the thread history, so a CONTINUATION
+     *  respawn (topic-profile re-apply) includes it — otherwise the new
+     *  session sees nothing in flight and idles. Ignored when a user message
+     *  drives the spawn. */
+    carriedBrief?: string;
   },
 ): Promise<string> {
   const silentStart = spawnOpts?.silentStart === true;
+  const carriedBriefBlock = !silentStart && typeof spawnOpts?.carriedBrief === 'string' && spawnOpts.carriedBrief.length > 0
+    && !(typeof latestMessage === 'string' && latestMessage.length > 0)
+    ? formatCarriedBriefBlock(spawnOpts.carriedBrief)
+    : null;
   const hasLatestMessage = typeof latestMessage === 'string' && latestMessage.length > 0;
   const msg = hasLatestMessage ? latestMessage : 'Session started — send a message to continue.';
 
@@ -1449,6 +1464,9 @@ export async function spawnSessionForTopic(
       } else {
         console.warn(`[telegram→session] Open commitments for topic ${topicId} unavailable for the handoff instruction (tracker not wired)`);
       }
+      if (carriedBriefBlock) {
+        parts.push(carriedBriefBlock, ``);
+      }
       parts.push(buildHandoffContinuationInstruction(openCommitments));
     }
 
@@ -1465,13 +1483,9 @@ export async function spawnSessionForTopic(
       newSessionParts.push(userContextBlock);
       newSessionParts.push(``);
     }
-    newSessionParts.push(`[telegram:${topicId}] ${msg}`);
+    newSessionParts.push(carriedBriefBlock ? `[telegram:${topicId}]\n${carriedBriefBlock}` : `[telegram:${topicId}] ${msg}`);
 
-    if (newSessionParts.length > 1) {
-      bootstrapMessage = newSessionParts.join('\n');
-    } else {
-      bootstrapMessage = `[telegram:${topicId}] ${msg}`;
-    }
+    bootstrapMessage = newSessionParts.join('\n');
   }
 
   // Resolve the FULL topic profile EARLY (Topic Profile §5.2 — the single
@@ -1610,6 +1624,15 @@ export async function spawnSessionForTopic(
   // Clear the resume entry after successful spawn to prevent stale reuse
   if (resumeSessionId) {
     _topicResumeMap?.remove(topicId);
+  }
+
+  // A spawn the orchestrator did not start is a new session taking over the
+  // topic (a natural or user-driven spawn): the previous session's direct-spawn
+  // brief no longer applies. Clearing it here is what keeps a later profile
+  // respawn of THIS session (same tmux name) from carrying a finished task.
+  if (_topicSpawnBriefsRef && !_orchestratorSpawnInFlight.has(String(topicId))) {
+    try { _topicSpawnBriefsRef.clear(topicId); }
+    catch (err) { console.warn(`[spawnSessionForTopic] could not clear spawn brief for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`); }
   }
 
   // TOPIC-PROFILE-SPEC §10.4 — record the successful spawn so the §10.4 breaker
@@ -29254,6 +29277,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     // into AgentServer → routes, so the orchestrator + carrier (which late-bind
     // off the just-constructed AgentServer's governors / the mesh block) are
     // attached to THIS object after construction and reach the routes live.
+    // Direct-spawn briefs (POST /sessions/spawn with a topic): carried into a
+    // CONTINUATION profile respawn of the same session, since the brief is
+    // not in the topic's chat history.
+    const _topicSpawnBriefs = new TopicSpawnBriefStore(config.stateDir);
+    _topicSpawnBriefsRef = _topicSpawnBriefs;
     const _topicProfileCtx: {
       store: import('../core/TopicProfileStore.js').TopicProfileStore;
       resolver: import('../core/TopicProfileResolver.js').TopicProfileResolver;
@@ -29262,7 +29290,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       orchestrator: TopicProfileOrchestrator | null;
       carrier: import('../core/TopicProfileTransferCarrier.js').TopicProfileTransferCarrier | null;
     } & Pick<NonNullable<import('../server/routes.js').RouteContext['topicProfile']>,
-      'newTopicDefault' | 'audit' | 'discloseCreationSeed' | 'spawnForTopic' | 'sessionPoolLocalClaim' | 'startTopicOnMachine' | 'pinReplicationLive' | 'startSeamWired' | 'probeMachineReachable'> | null =
+      'newTopicDefault' | 'audit' | 'discloseCreationSeed' | 'spawnForTopic' | 'sessionPoolLocalClaim' | 'startTopicOnMachine' | 'pinReplicationLive' | 'startSeamWired' | 'probeMachineReachable' | 'spawnBriefs'> | null =
       (_topicProfileStore && _topicProfileResolver && _topicProfileWriteSurface && _topicProfileConfirmSlots)
         ? {
             store: _topicProfileStore,
@@ -29273,6 +29301,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             carrier: _topicProfileCarrier,
             // dashboard-door-model-controls (§3.2/§3.3) — the dashboard create path.
             newTopicDefault: new NewTopicDefaultStore(config.stateDir),
+            spawnBriefs: _topicSpawnBriefs,
             audit: (event) => { appendTopicProfileAudit(config.stateDir, event); },
             discloseCreationSeed: async (topicKey, text) => {
               if (!telegram) return undefined;
@@ -30922,7 +30951,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               // supposed to be a no-op.
               return sessionManager.killSessionByTmuxName(sessionName);
             },
-            spawn: async (topicKey, _resolved, _directive) => {
+            spawn: async (topicKey, _resolved, directive) => {
               // The orchestrator already killed; respawn re-resolves the (now
               // updated) pin via spawnSessionForTopic and picks up the resume id
               // from the resume map. We mark the spawn in-flight so the spawn-path
@@ -30930,6 +30959,16 @@ export async function startServer(options: StartOptions): Promise<void> {
               const n = Number(topicKey);
               if (!Number.isFinite(n) || !telegram) return { ok: false, failureClass: 'unknown' };
               const topicName = telegram.getTopicName(n) || `topic-${n}`;
+              // A CONTINUATION respawn rebuilds context from the thread history,
+              // which does not hold a direct-spawn brief — carry the replaced
+              // session's brief so the new session keeps its task. A resume
+              // respawn keeps the whole conversation, so it needs no carry.
+              let carriedBrief: string | undefined;
+              try {
+                carriedBrief = directive.method === 'continuation'
+                  ? (_topicSpawnBriefs.getForSession(n, directive.replacedSessionName)?.prompt ?? undefined)
+                  : undefined;
+              } catch { /* @silent-fallback-ok: an unreadable brief degrades to today's history-only continuation; the respawn itself must not fail on it */ carriedBrief = undefined; }
               _orchestratorSpawnInFlight.add(topicKey);
               try {
                 const spawnedName = await spawnSessionForTopic(
@@ -30942,8 +30981,15 @@ export async function startServer(options: StartOptions): Promise<void> {
                   undefined,
                   undefined,
                   undefined,
-                  { awaitInitialInjection: true },
+                  { awaitInitialInjection: true, ...(carriedBrief ? { carriedBrief } : {}) },
                 );
+                if (directive.replacedSessionName) {
+                  try { _topicSpawnBriefs.rebind(n, directive.replacedSessionName, spawnedName); }
+                  catch { /* @silent-fallback-ok: a failed re-key only means a LATER profile respawn of the new session will not carry the brief again */ }
+                }
+                if (carriedBrief) {
+                  appendTopicProfileAudit(config.stateDir, { type: 'respawn-brief-carried', topic: topicKey, chars: carriedBrief.length });
+                }
                 const spawned = sessionManager.listRunningSessions()
                   .find((session) => session.tmuxSession === spawnedName);
                 return {

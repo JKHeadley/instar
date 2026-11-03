@@ -282,7 +282,7 @@ import { GUARD_MANIFEST } from '../monitoring/guardManifest.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
-import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding } from './sessionSpawnTopicBinding.js';
+import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding, resolveTopicSpawnProfile } from './sessionSpawnTopicBinding.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
 import { formatLivenessLine } from '../core/machineLiveness.js';
 import { decorateWithRopeCondition } from './poolRopeCondition.js';
@@ -1297,6 +1297,9 @@ export interface RouteContext {
     /** dashboard-door-model-controls §3.2 — the "default for dashboard-created
      *  topics" record (state/new-topic-default-profile.json). */
     newTopicDefault?: import('../core/dashboardTopicProfile.js').NewTopicDefaultStore;
+    /** Direct-spawn briefs: POST /sessions/spawn records a topic-bound
+     *  session's prompt so a later CONTINUATION profile respawn can carry it. */
+    spawnBriefs?: import('../core/TopicSpawnBriefStore.js').TopicSpawnBriefStore;
     /** §3.2 — the seed's audit sink (logs/topic-profile-changes.jsonl). */
     audit?: (event: Record<string, unknown>) => void;
     /** §3.2 — the seed's one disclosure line, sent with the deterministic
@@ -12174,18 +12177,6 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: '"ultracode" must be a boolean' });
       return;
     }
-    // Match SessionManager's omitted-framework resolution. A Codex-default
-    // agent must not pass this guard merely because the request omitted the
-    // explicit framework and then receive a cosmetic keyword on a Codex turn.
-    const effectiveSpawnFramework = framework
-      ?? ctx.config.sessions?.framework
-      ?? ctx.config.enabledFrameworks?.[0]
-      ?? 'claude-code';
-    if (ultracode === true && effectiveSpawnFramework !== 'claude-code') {
-      res.status(400).json({ error: '"ultracode" is supported only for framework "claude-code"' });
-      return;
-    }
-
     const topicBindingResult = resolveSessionSpawnTopicBinding({ name, topicId, topicName, requireTopicBinding, spawnRole });
     if (!topicBindingResult.ok) {
       res.status(400).json({ error: topicBindingResult.error });
@@ -12193,6 +12184,32 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     const parsedTopicId = topicBindingResult.binding.topicId;
     const cleanTopicName = topicBindingResult.binding.topicName;
+
+    // A topic-bound spawn honours the topic's profile AT SPAWN TIME (the same
+    // single resolution point spawnSessionForTopic uses) for every axis the
+    // request leaves unset, then records what it launched with. Before this,
+    // the route ignored the profile and recorded nothing, so the profile
+    // orchestrator later restarted the fresh session to "apply" the pin — and
+    // the restart rebuilt context from chat history, which never held this
+    // prompt, so the task was lost.
+    const topicSpawnProfile = resolveTopicSpawnProfile({
+      resolver: parsedTopicId !== undefined ? ctx.topicProfile?.resolver : undefined,
+      topicId: parsedTopicId,
+      requestedFramework: framework,
+      requestedModel: model,
+    });
+
+    // Match SessionManager's omitted-framework resolution. A Codex-default
+    // agent must not pass this guard merely because the request omitted the
+    // explicit framework and then receive a cosmetic keyword on a Codex turn.
+    const effectiveSpawnFramework = topicSpawnProfile.framework
+      ?? ctx.config.sessions?.framework
+      ?? ctx.config.enabledFrameworks?.[0]
+      ?? 'claude-code';
+    if (ultracode === true && effectiveSpawnFramework !== 'claude-code') {
+      res.status(400).json({ error: '"ultracode" is supported only for framework "claude-code"' });
+      return;
+    }
 
     const persistTopicBinding = (boundTopicId: number, tmuxSession: string): void => {
       if (ctx.telegram?.registerTopicSession) {
@@ -12208,9 +12225,36 @@ export function createRoutes(ctx: RouteContext): Router {
     };
 
     try {
-      const session = await ctx.sessionManager.spawnSession({ name, prompt, model, jobSlug, framework, ultracode, topicId: parsedTopicId });
+      const session = await ctx.sessionManager.spawnSession({
+        name,
+        prompt,
+        model: topicSpawnProfile.model,
+        jobSlug,
+        framework: topicSpawnProfile.framework,
+        ultracode,
+        topicId: parsedTopicId,
+      });
       if (parsedTopicId !== undefined) {
         persistTopicBinding(parsedTopicId, session.tmuxSession);
+        try {
+          ctx.topicProfile?.spawnBriefs?.record(parsedTopicId, session.tmuxSession, prompt);
+        } catch (err) {
+          // @silent-fallback-ok: the brief only feeds a later profile respawn's
+          // continuation; the spawn itself already succeeded.
+          console.warn(`[sessions/spawn] could not record spawn brief for topic ${parsedTopicId}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        if (topicSpawnProfile.applied) {
+          try {
+            ctx.topicProfile?.orchestrator?.recordSpawnSuccess(parsedTopicId, {
+              ...topicSpawnProfile.applied,
+              framework: (session.framework ?? topicSpawnProfile.applied.framework) as typeof topicSpawnProfile.applied.framework,
+            });
+          } catch (err) {
+            // @silent-fallback-ok: without the record the boot sweep leaves the
+            // session alone (unknown launch profile is not divergence).
+            console.warn(`[sessions/spawn] could not record launched profile for topic ${parsedTopicId}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
       }
       res.status(201).json({
         ...session,

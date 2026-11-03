@@ -735,7 +735,14 @@ inbound message arriving during THAT queues (never spawns a second session).
   topic-bound session's last-applied profile is compared against the store; divergence arms the
   normal debounced, idle-gated respawn (or defers to next natural spawn) with the same disclosure as
   the rate-trip path. §11 tests: write a pin, kill the server before the timer fires, reboot, assert
-  the divergence is detected and reconciled.
+  the divergence is detected and reconciled. A session with **no** last-applied record is not
+  divergence (nothing says what it launched with) — it is audited (`boot-sweep-unknown-applied`) and
+  left to its next natural spawn. Every topic spawn path records what it launched with: the
+  Telegram topic spawn, the orchestrator's own respawn, and the direct spawn route
+  (`POST /sessions/spawn` with a topic), which also resolves the topic profile at spawn time for
+  every axis the request leaves unset. The direct route additionally keeps the spawn prompt (it is
+  not in the topic's chat history), and a CONTINUATION profile respawn of that same session carries
+  it into the new session's bootstrap.
 - **Busy-abort re-arms — "apply at idle" has a real carrier** (round-3 adversarial — an unbacked
   promise is not a mechanism): a busy-abort re-arms the pending slot, and the idle re-check
   **piggybacks an existing periodic tick** (the reaper/watchdog cadence — no per-topic pollers, no

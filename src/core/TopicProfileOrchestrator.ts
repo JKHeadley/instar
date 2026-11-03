@@ -194,7 +194,14 @@ export interface OrchestratorSessionPort {
   spawn(
     topicKey: string,
     resolved: ResolvedTopicProfile,
-    directive: { method: SwapMethod; resumeId?: string },
+    directive: {
+      method: SwapMethod;
+      resumeId?: string;
+      /** The tmux session this respawn replaces — lets the spawn port carry
+       *  that session's original spawn brief into a CONTINUATION respawn
+       *  (the brief is not in the topic's chat history). */
+      replacedSessionName?: string;
+    },
   ): Promise<RespawnSpawnOutcome>;
 }
 
@@ -1080,7 +1087,11 @@ export class TopicProfileOrchestrator {
       return;
     }
 
-    const outcome = await this.deps.sessions.spawn(key, resolved, { method, resumeId });
+    const outcome = await this.deps.sessions.spawn(key, resolved, {
+      method,
+      resumeId,
+      replacedSessionName: session.sessionName,
+    });
     if (outcome.ok) {
       const applied = outcome.applied ?? resolvedToApplied(resolved);
       this.recordApplied(key, applied);
@@ -1480,6 +1491,15 @@ export class TopicProfileOrchestrator {
     for (const { topicKey } of live) {
       const resolved = this.deps.resolveProfile(topicKey);
       const lastApplied = this.durable.lastApplied[topicKey]?.profile ?? null;
+      if (!lastApplied) {
+        // No record of what this session launched with (it was started by a
+        // path that never reported its profile). That is NOT evidence of
+        // divergence: restarting on it killed freshly spawned sessions and
+        // lost their in-flight prompt. Leave it alone — the profile applies
+        // at the session's next natural spawn, which records what it used.
+        this.audit_({ type: 'boot-sweep-unknown-applied', topic: topicKey });
+        continue;
+      }
       if (!this.matchesExpectedLive(topicKey, lastApplied, resolved)) {
         divergent.push(topicKey);
       }
