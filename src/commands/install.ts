@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import readline from 'node:readline';
 import pc from 'picocolors';
 import { detectGitPath, detectTmuxPath, standaloneAgentsDir } from '../core/Config.js';
 import { validateAgentName } from '../core/AgentRegistry.js';
@@ -73,7 +74,10 @@ export function preflightRefusal(facts: PreflightFacts): { message: string; next
   if (major < NODE_MINIMUM[0] || (major === NODE_MINIMUM[0] && minor < NODE_MINIMUM[1])) {
     return {
       message: `Instar needs Node ${NODE_MINIMUM.join('.')} or newer, and this computer has ${facts.nodeVersion}.`,
-      nextStep: 'Install a newer Node, or use the one-line installer, then run instar install --resume.',
+      // A fresh Ubuntu server ships Node 18 (Cirrus, 2026-11-02): name the exact way to Node 22.
+      nextStep: facts.platform === 'linux'
+        ? 'Install Node 22. On Ubuntu or Debian: curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs. Then run instar install --resume.'
+        : 'Install a newer Node, or use the one-line installer, then run instar install --resume.',
     };
   }
   if (facts.freeBytes !== null && facts.freeBytes < MIN_FREE_BYTES) {
@@ -118,17 +122,80 @@ function commandExists(command: string): boolean {
   return spawnSync('which', [command], { stdio: 'ignore' }).status === 0;
 }
 
+/** How this computer can install these packages, or null when the person has to. Names any sudo it needs. */
+export function packageInstallCommand(
+  packages: string[],
+  platform: NodeJS.Platform = process.platform,
+  exists: (command: string) => boolean = commandExists,
+): string[] | null {
+  if (packages.length === 0) return null;
+  if (platform === 'darwin') return exists('brew') ? ['brew', 'install', ...packages] : null;
+  if (platform !== 'linux' || !exists('sudo')) return null;
+  if (exists('apt-get')) return ['sudo', 'apt-get', 'install', '-y', ...packages];
+  if (exists('dnf')) return ['sudo', 'dnf', 'install', '-y', ...packages];
+  if (exists('yum')) return ['sudo', 'yum', 'install', '-y', ...packages];
+  return null;
+}
+
 /** How this computer can install tmux, or null when the person has to. Names any sudo it needs. */
 export function tmuxInstallCommand(
   platform: NodeJS.Platform = process.platform,
   exists: (command: string) => boolean = commandExists,
 ): string[] | null {
-  if (platform === 'darwin') return exists('brew') ? ['brew', 'install', 'tmux'] : null;
-  if (platform !== 'linux' || !exists('sudo')) return null;
-  if (exists('apt-get')) return ['sudo', 'apt-get', 'install', '-y', 'tmux'];
-  if (exists('dnf')) return ['sudo', 'dnf', 'install', '-y', 'tmux'];
-  if (exists('yum')) return ['sudo', 'yum', 'install', '-y', 'tmux'];
+  return packageInstallCommand(['tmux'], platform, exists);
+}
+
+/**
+ * How to add the sqlite3 command on Linux, or null. The message queue falls back to it, and a
+ * fresh server (Cirrus, 2026-11-02) had none. Always its own command, never bundled with tmux:
+ * Fedora and RHEL name the package `sqlite`, and one unknown name fails a whole dnf command.
+ */
+export function sqliteInstallCommand(
+  platform: NodeJS.Platform = process.platform,
+  exists: (command: string) => boolean = commandExists,
+): string[] | null {
+  if (platform !== 'linux' || exists('sqlite3') || !exists('sudo')) return null;
+  if (exists('apt-get')) return ['sudo', 'apt-get', 'install', '-y', 'sqlite3'];
+  if (exists('dnf')) return ['sudo', 'dnf', 'install', '-y', 'sqlite'];
+  if (exists('yum')) return ['sudo', 'yum', 'install', '-y', 'sqlite'];
   return null;
+}
+
+/**
+ * Whether this Linux user needs Tailscale operator rights, and the command that grants them.
+ * Without them, setting up the agent's private Tailscale address for the phone app fails
+ * (fresh server, 2026-11-02). Null when Tailscale is absent, the user is root, the rights are
+ * already granted, or the answer can't be read.
+ */
+export function tailscaleOperatorCommand(
+  user: string,
+  readPrefs: () => string | null,
+  platform: NodeJS.Platform = process.platform,
+  uid: number | null = typeof process.getuid === 'function' ? process.getuid() : null,
+): string[] | null {
+  if (platform !== 'linux' || uid === 0 || !user) return null;
+  const raw = readPrefs();
+  if (raw === null) return null;
+  let prefs: unknown;
+  try {
+    prefs = JSON.parse(raw);
+  } catch {
+    // @silent-fallback-ok: unreadable prefs mean we can't tell, so we leave Tailscale alone
+    return null;
+  }
+  if (!prefs || typeof prefs !== 'object') return null;
+  if ((prefs as { OperatorUser?: unknown }).OperatorUser === user) return null;
+  return ['sudo', 'tailscale', 'set', `--operator=${user}`];
+}
+
+function readTailscalePrefs(): string | null {
+  if (!commandExists('tailscale')) return null;
+  try {
+    return execFileSync('tailscale', ['debug', 'prefs'], { encoding: 'utf-8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    // @silent-fallback-ok: Tailscale not running or not readable; nothing to set up
+    return null;
+  }
 }
 
 /** Where a door can install when the global npm folder isn't writable. Its bin folder is one detection checks. */
@@ -153,6 +220,8 @@ export function describeInstallPlan(answers: WizardAnswers): string[] {
     const command = tmuxInstallCommand();
     lines.push(command ? `Install tmux by running: ${command.join(' ')}` : 'Stop and ask you to install tmux');
   }
+  const sqlite = sqliteInstallCommand();
+  if (sqlite) lines.push(`Install sqlite3 by running: ${sqlite.join(' ')}`);
   if (!gitWorks()) lines.push('Stop and ask you to install git');
   if (answers.door && !detectDoorPath(answers.door)) {
     lines.push(`Install ${INSTALL_DOOR_LABELS[answers.door]} from npm (${DOOR_NPM_PACKAGE[answers.door]})`);
@@ -187,6 +256,8 @@ export interface InstallEnv {
   serverHealthy: (port: number) => Promise<boolean>;
   installAutostart: (agentDir: string) => { installed: boolean; detail?: string };
   print: (text: string) => void;
+  /** Reads one line without echoing it. Absent where no terminal can ask. */
+  askSecret?: (prompt: string) => Promise<string>;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
 }
@@ -224,8 +295,31 @@ export function ensureViewingPin(configFile: string): string {
   return pin;
 }
 
+/** A Claude token from `claude setup-token`. Checked by shape only: it lasts a year and is used at the first session. */
+export function looksLikeClaudeToken(value: string): boolean {
+  return /^sk-ant-oat\d*-[A-Za-z0-9_-]{20,}$/.test(value.trim());
+}
+
+/**
+ * Writes the server sign-in token where sessions read it: `sessions.credentials.anthropic`
+ * as an oauth-token (fb-7cb86d4b-1fd, read since 1.3.1615). Never the legacy field.
+ */
+export function writeClaudeToken(configFile: string, token: string): void {
+  const config = JSON.parse(fs.readFileSync(configFile, 'utf-8')) as Record<string, unknown>;
+  const sessions = (config.sessions && typeof config.sessions === 'object' ? config.sessions : {}) as Record<string, unknown>;
+  const credentials = (sessions.credentials && typeof sessions.credentials === 'object' ? sessions.credentials : {}) as Record<string, unknown>;
+  credentials.anthropic = { kind: 'oauth-token', value: token.trim() };
+  sessions.credentials = credentials;
+  config.sessions = sessions;
+  const tmp = `${configFile}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(config, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, configFile);
+}
+
 export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./setup-wizard/state-machine.js').WizardActionKind, StepHandler>> {
   const resume = 'Then run instar install --resume.';
+  // A pasted Claude token lives only in memory until the agent's config exists.
+  const claudeToken: { value: string | null } = { value: null };
   return {
     'install-preflight': async () => {
       let freeBytes: number | null = null;
@@ -250,7 +344,17 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
           : 'Install it from https://git-scm.com/downloads.';
         return { kind: 'failed', message: 'Your agent needs git, which isn\'t ready on this computer.', nextStep: `${how} ${resume}` };
       }
-      if (detectTmuxPath()) return { kind: 'done' };
+      // Optional: the sqlite3 command. Failing to add it never stops the install.
+      const sqlite = sqliteInstallCommand();
+      let sqliteNote: string | undefined;
+      if (sqlite) {
+        if (env.interactive || env.sudoReady()) env.runLogged(sqlite[0], sqlite.slice(1), PACKAGE_INSTALL_TIMEOUT_MS);
+        if (!commandExists('sqlite3')) {
+          sqliteNote = `Your agent works without the sqlite3 command, but it is safer with it. Run ${sqlite.join(' ')} when you can.`;
+        }
+      }
+      const done = sqliteNote ? { kind: 'done' as const, note: sqliteNote } : { kind: 'done' as const };
+      if (detectTmuxPath()) return done;
       const yourself = { kind: 'failed' as const, message: 'Your agent needs tmux, and I couldn\'t install it.' };
       const command = tmuxInstallCommand();
       if (!command) {
@@ -267,8 +371,23 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
         };
       }
       env.runLogged(command[0], command.slice(1), PACKAGE_INSTALL_TIMEOUT_MS);
-      if (detectTmuxPath()) return { kind: 'done' };
+      if (detectTmuxPath()) return done;
       return { ...yourself, nextStep: `Run ${command.join(' ')} yourself. Details are in ${env.logFile}. ${resume}` };
+    },
+
+    // Optional: Tailscale operator rights on Linux, so the agent can give the phone app its
+    // private address. Never stops the install.
+    'install-tailscale-operator': async () => {
+      const command = tailscaleOperatorCommand(os.userInfo().username, readTailscalePrefs);
+      if (!command) return { kind: 'done' };
+      if (env.interactive || env.sudoReady()) {
+        env.runLogged(command[0], command.slice(1), 60_000);
+        if (tailscaleOperatorCommand(os.userInfo().username, readTailscalePrefs) === null) return { kind: 'done' };
+      }
+      return {
+        kind: 'done',
+        note: `To let the phone app reach your agent over Tailscale, run ${command.join(' ')} once.`,
+      };
     },
 
     'door-install': async (answers) => {
@@ -287,7 +406,7 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
       };
     },
 
-    'door-sign-in': async (answers, progress) => signInStep(env, answers.door!, progress),
+    'door-sign-in': async (answers, progress) => signInStep(env, answers.door!, progress, claudeToken),
 
     'agent-init': async (answers) => {
       const file = agentConfigFile(answers);
@@ -302,6 +421,12 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
         return { kind: 'failed', message: `Your agent's files weren't created. Details are in ${env.logFile}.`, nextStep: resume };
       }
       finishAgentConfig(file);
+      if (answers.door === 'claude-code' && !claudeToken.value && env.interactive && !env.browser
+        && (await env.proveSignedIn('claude-code')) === 'signed-out') {
+        // A resume after sign-in lost the pasted token, which lives only in memory: ask again.
+        await askClaudeToken(env, claudeToken);
+      }
+      if (claudeToken.value && answers.door === 'claude-code') writeClaudeToken(file, claudeToken.value);
       return { kind: 'done' };
     },
 
@@ -345,10 +470,38 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
   };
 }
 
-async function signInStep(env: InstallEnv, door: InstallDoor, progress: InstallProgress): Promise<StepResult> {
+/** On a computer with no browser, asks for a `claude setup-token` token. True when one was given. */
+async function askClaudeToken(env: InstallEnv, claudeToken: { value: string | null }): Promise<boolean> {
+  if (!env.interactive || env.browser || !env.askSecret) return false;
+  env.print('  This computer has no browser. On any computer that has one, run claude setup-token,');
+  env.print('  sign in there, and paste the token it prints here. It stays on this computer.');
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const pasted = (await env.askSecret('  Token (or press Enter to sign in here instead): ')).trim();
+    if (!pasted) return false;
+    if (looksLikeClaudeToken(pasted)) {
+      claudeToken.value = pasted;
+      return true;
+    }
+    env.print('  That doesn\'t look like a token from claude setup-token. It starts with sk-ant-oat.');
+  }
+  return false;
+}
+
+async function signInStep(
+  env: InstallEnv,
+  door: InstallDoor,
+  progress: InstallProgress,
+  claudeToken: { value: string | null } = { value: null },
+): Promise<StepResult> {
   const label = INSTALL_DOOR_LABELS[door];
+  if (door === 'claude-code' && claudeToken.value) return { kind: 'done' };
   const verdict = await env.proveSignedIn(door);
   if (verdict === 'signed-in') return { kind: 'done' };
+  // A server has no browser, and Claude's sign-in page can show a puzzle to data-centre
+  // addresses (Cirrus, 2026-11-02). A token made on any computer with a browser avoids both.
+  if (door === 'claude-code' && verdict === 'signed-out' && (await askClaudeToken(env, claudeToken))) {
+    return { kind: 'done', note: 'Claude will use the token you pasted.' };
+  }
   if (verdict === 'unknown') {
     return { kind: 'done', note: `I can't tell whether ${label} is signed in, so I'm leaving it as it is. If it asks you to sign in later, do that then.` };
   }
@@ -418,6 +571,23 @@ function appendingLog(file: string): number {
   return fs.openSync(file, 'a', 0o600);
 }
 
+/** Reads one line from the terminal without echoing it. */
+function askHidden(prompt: string): Promise<string> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    const out = rl as unknown as { _writeToOutput?: (s: string) => void; output: NodeJS.WriteStream };
+    let prompted = false;
+    out._writeToOutput = (text: string) => {
+      if (!prompted) { prompted = true; process.stdout.write(text); }
+    };
+    rl.question(prompt, (answer) => {
+      rl.close();
+      process.stdout.write('\n');
+      resolve(answer);
+    });
+  });
+}
+
 function defaultEnv(interactive: boolean): InstallEnv {
   const logFile = path.join(os.homedir(), '.instar', 'logs', 'install.log');
   return {
@@ -481,6 +651,7 @@ function defaultEnv(interactive: boolean): InstallEnv {
       return { installed: false, detail: refused };
     },
     print: (text) => console.log(text),
+    askSecret: (prompt) => askHidden(prompt),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: Date.now,
   };

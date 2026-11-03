@@ -22,10 +22,10 @@ import {
   writeInstallProgress,
   type InstallProgress,
 } from '../../src/commands/install/progress.js';
-import { answersFileProblem, buildInstallHandlers, ensureViewingPin, finishAgentConfig, INSTALL_EXIT_CODES, installInitOptions, reportedStatus, tmuxInstallCommand, type InstallEnv, MIN_FREE_BYTES, preflightRefusal, presetFromAnswers } from '../../src/commands/install.js';
+import { looksLikeClaudeToken, writeClaudeToken, answersFileProblem, buildInstallHandlers, sqliteInstallCommand, tailscaleOperatorCommand, ensureViewingPin, finishAgentConfig, INSTALL_EXIT_CODES, installInitOptions, reportedStatus, tmuxInstallCommand, type InstallEnv, MIN_FREE_BYTES, preflightRefusal, presetFromAnswers } from '../../src/commands/install.js';
 
 const ALL_ACTIONS: WizardActionKind[] = [
-  'install-preflight', 'install-tools', 'door-install', 'door-sign-in', 'agent-init',
+  'install-preflight', 'install-tools', 'install-tailscale-operator', 'door-install', 'door-sign-in', 'agent-init',
   'start-server', 'install-autostart', 'owner-slot',
 ];
 
@@ -281,6 +281,11 @@ describe('preflight', () => {
     expect(preflightRefusal({ ...ok, freeBytes: MIN_FREE_BYTES - 1 })?.message).toContain('free disk space');
     expect(preflightRefusal({ ...ok, platform: 'win32' })?.message).toContain('WSL');
   });
+
+  it('names the exact Node 22 install on Linux, and stays general on a Mac', () => {
+    expect(preflightRefusal({ ...ok, nodeVersion: 'v18.19.1' })?.nextStep).toContain('setup_22.x');
+    expect(preflightRefusal({ ...ok, platform: 'darwin', nodeVersion: 'v18.19.1' })?.nextStep).not.toContain('apt-get');
+  });
 });
 
 describe('answers file', () => {
@@ -317,6 +322,28 @@ describe('tmux install command', () => {
     expect(tmuxInstallCommand('linux', having('sudo', 'apt-get'))).toEqual(['sudo', 'apt-get', 'install', '-y', 'tmux']);
     expect(tmuxInstallCommand('linux', having('sudo', 'dnf'))).toEqual(['sudo', 'dnf', 'install', '-y', 'tmux']);
     expect(tmuxInstallCommand('linux', having('apt-get'))).toBeNull();
+  });
+
+  it('adds sqlite3 on Linux by its own command, named for the package manager', () => {
+    expect(sqliteInstallCommand('linux', having('sudo', 'apt-get'))).toEqual(['sudo', 'apt-get', 'install', '-y', 'sqlite3']);
+    // Fedora and RHEL call it sqlite; bundling an unknown name would fail the tmux install too.
+    expect(sqliteInstallCommand('linux', having('sudo', 'dnf'))).toEqual(['sudo', 'dnf', 'install', '-y', 'sqlite']);
+    expect(sqliteInstallCommand('linux', having('sudo', 'apt-get', 'sqlite3'))).toBeNull();
+    expect(sqliteInstallCommand('darwin', having('sudo', 'brew'))).toBeNull();
+    expect(tmuxInstallCommand('linux', having('sudo', 'dnf'))).toEqual(['sudo', 'dnf', 'install', '-y', 'tmux']);
+  });
+});
+
+describe('tailscale operator', () => {
+  const prefs = (operator: string) => () => JSON.stringify({ OperatorUser: operator });
+
+  it('asks for operator rights only when this Linux user lacks them', () => {
+    expect(tailscaleOperatorCommand('instar', prefs(''), 'linux', 1000)).toEqual(['sudo', 'tailscale', 'set', '--operator=instar']);
+    expect(tailscaleOperatorCommand('instar', prefs('instar'), 'linux', 1000)).toBeNull();
+    expect(tailscaleOperatorCommand('instar', prefs(''), 'linux', 0)).toBeNull();
+    expect(tailscaleOperatorCommand('instar', prefs(''), 'darwin', 501)).toBeNull();
+    expect(tailscaleOperatorCommand('instar', () => null, 'linux', 1000)).toBeNull();
+    expect(tailscaleOperatorCommand('instar', () => 'not json', 'linux', 1000)).toBeNull();
   });
 });
 
@@ -355,6 +382,26 @@ describe('door sign-in step', () => {
     const result = await run(stub({ browser: false, startDetached: () => { throw new Error('must not start'); } }));
     expect(result).toMatchObject({ kind: 'awaiting-person' });
     expect((result as { instruction: string }).instruction).toContain('your own terminal');
+  });
+
+  it('on a computer with no browser, takes a pasted setup token instead of a sign-in', async () => {
+    const token = 'sk-ant-oat01-' + 'a'.repeat(40);
+    const asked: string[] = [];
+    const env = stub({
+      interactive: true,
+      browser: false,
+      runAttached: () => { throw new Error('must not sign in'); },
+      askSecret: async (prompt) => { asked.push(prompt); return asked.length === 1 ? 'not a token' : token; },
+    });
+    expect(await run(env)).toMatchObject({ kind: 'done' });
+    expect(asked).toHaveLength(2);
+  });
+
+  it('pressing Enter at the token prompt falls back to signing in here', async () => {
+    let signIns = 0;
+    const env = stub({ interactive: true, browser: false, askSecret: async () => '', runAttached: () => { signIns++; return 0; } });
+    await run(env);
+    expect(signIns).toBe(1);
   });
 
   it('starts one sign-in and keeps the same one across resumes', async () => {
@@ -435,5 +482,67 @@ describe('viewing PIN', () => {
     expect(pin).toMatch(/^\d{6}$/);
     expect(ensureViewingPin(file)).toBe(pin);
     expect(JSON.parse(fs.readFileSync(file, 'utf-8'))).toEqual({ port: 4040, dashboardPin: pin });
+  });
+});
+
+describe('server sign-in token', () => {
+  it('recognises a setup token by its shape', () => {
+    expect(looksLikeClaudeToken('sk-ant-oat01-' + 'x'.repeat(30))).toBe(true);
+    expect(looksLikeClaudeToken('sk-ant-api03-' + 'x'.repeat(30))).toBe(false);
+    expect(looksLikeClaudeToken('sk-ant-oat01-short')).toBe(false);
+  });
+
+  it('writes only sessions.credentials.anthropic, keeping the rest of the config', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'install-token-'));
+    const file = path.join(dir, 'config.json');
+    fs.writeFileSync(file, JSON.stringify({ port: 4040, sessions: { maxSessions: 3 } }));
+    const token = 'sk-ant-oat01-' + 'b'.repeat(40);
+    writeClaudeToken(file, token);
+    const config = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    expect(config.port).toBe(4040);
+    expect(config.sessions.maxSessions).toBe(3);
+    expect(config.sessions.credentials.anthropic).toEqual({ kind: 'oauth-token', value: token });
+    expect(config.sessions.anthropicApiKey).toBeUndefined();
+    expect(fs.statSync(file).mode & 0o077).toBe(0);
+  });
+});
+
+describe('server sign-in token reaches the agent', () => {
+  it('a token pasted at sign-in is written when the agent is created', async () => {
+    const realHome = process.env.HOME;
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'install-wiring-'));
+    process.env.HOME = home;
+    try {
+      const token = 'sk-ant-oat01-' + 'c'.repeat(40);
+      const env = {
+        logFile: path.join(home, 'install.log'), interactive: true, browser: false,
+        proveSignedIn: async () => 'signed-out', doorPath: () => '/bin/claude',
+        runAttached: () => { throw new Error('must not sign in'); },
+        askSecret: async () => token,
+        initAgent: async () => {
+          const dir = path.join(home, '.instar', 'agents', 'cirrus', '.instar');
+          fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ port: 4040 }));
+        },
+        print: () => {}, sleep: async () => {}, now: () => 0,
+      } as unknown as InstallEnv;
+      const handlers = buildInstallHandlers(env);
+      const answers = { door: 'claude-code' as const, agentName: 'cirrus' };
+      expect(await handlers['door-sign-in']!(answers, newInstallProgress('do-door-sign-in'))).toMatchObject({ kind: 'done' });
+      expect(await handlers['agent-init']!(answers, newInstallProgress('do-init'))).toMatchObject({ kind: 'done' });
+      const config = JSON.parse(fs.readFileSync(path.join(home, '.instar', 'agents', 'cirrus', '.instar', 'config.json'), 'utf-8'));
+      expect(config.sessions.credentials.anthropic).toEqual({ kind: 'oauth-token', value: token });
+
+      // A resume that skips sign-in lost the in-memory token: agent creation asks again.
+      const fresh = buildInstallHandlers(env);
+      fs.writeFileSync(path.join(home, '.instar', 'agents', 'cirrus', '.instar', 'config.json'), '{}');
+      const dir = path.join(home, '.instar', 'agents', 'cirrus');
+      fs.renameSync(dir, `${dir}.old`);
+      expect(await fresh['agent-init']!(answers, newInstallProgress('do-init'))).toMatchObject({ kind: 'done' });
+      const resumed = JSON.parse(fs.readFileSync(path.join(dir, '.instar', 'config.json'), 'utf-8'));
+      expect(resumed.sessions.credentials.anthropic.value).toBe(token);
+    } finally {
+      process.env.HOME = realHome;
+    }
   });
 });

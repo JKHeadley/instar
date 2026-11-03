@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import pc from 'picocolors';
+import { isTelegramSkip, TELEGRAM_APP_ONLY_NOTE, TELEGRAM_BOT_LIMIT_HINT } from './telegram-bot-limit.js';
 import {
   buildFreshProjectInstall,
   INITIAL_STATE,
@@ -356,6 +357,7 @@ async function runAction(
   switch (action.kind) {
     case 'install-preflight':
     case 'install-tools':
+    case 'install-tailscale-operator':
     case 'door-install':
     case 'door-sign-in':
     case 'agent-init':
@@ -518,12 +520,17 @@ async function runTelegramSetup(options: GeminiDriverOptions): Promise<Partial<W
   console.log('      – Display name (e.g. "Instar Codey")');
   console.log('      – Username (must end with "bot", e.g. "instar_codey_bot")');
   console.log('  • BotFather will reply with a token like 1234567890:AAH...');
+  console.log(pc.dim(`  ${TELEGRAM_BOT_LIMIT_HINT}`));
   console.log();
 
   let token = '';
   let botUsername = '';
   for (let attempt = 0; attempt < 5; attempt++) {
     const input = (await askUser('  Paste the bot token here: ')).trim();
+    if (isTelegramSkip(input)) {
+      console.log(pc.yellow(`  ${TELEGRAM_APP_ONLY_NOTE}`));
+      return { telegramConfigured: false };
+    }
     if (!input) {
       console.log(pc.yellow('  That looked blank — paste the token from BotFather (the long string).'));
       continue;

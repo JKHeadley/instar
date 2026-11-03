@@ -37,6 +37,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import pc from 'picocolors';
+import { ensureClaudeFirstRunAnswered } from '../core/ensureInteractiveReady.js';
 import {
   assertNotTccProtected,
   describeTccProtectedPath,
@@ -5547,6 +5548,14 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   // MCP Servers: Register Playwright in the correct locations
   // Claude Code reads MCP servers from ~/.claude.json and .mcp.json, NOT .claude/settings.json
   registerPlaywrightMcp(projectDir);
+
+  // Pre-answer Claude Code's first-run screens (welcome, folder trust, project
+  // MCP picker, bypass-permissions warning) for the login this agent will use.
+  // On a machine that never ran Claude Code they otherwise end every session.
+  const firstRun = ensureClaudeFirstRunAnswered(process.env.CLAUDE_CONFIG_DIR || null, path.resolve(projectDir));
+  if (!firstRun.patched && firstRun.reason !== 'already interactive-ready') {
+    console.log(pc.yellow(`  Could not pre-answer Claude Code's first-run screens: ${firstRun.reason}`));
+  }
 }
 
 /**

@@ -56,6 +56,7 @@ export type WizardActionKind =
   | 'send-greeting'         // greet via lifeline topic
   | 'install-preflight'     // disk, platform and tool checks; read-only
   | 'install-tools'         // tools the agent needs, such as tmux
+  | 'install-tailscale-operator' // Linux: Tailscale operator rights; optional, never fails
   | 'door-install'          // install the chosen AI door
   | 'door-sign-in'          // prove the door is signed in, or send the person to sign in
   | 'agent-init'            // create the agent in its default home
@@ -531,7 +532,8 @@ export function buildInstallFlow(context: InstallFlowContext): Record<string, Wi
           : { state: 'declined', updates: { installConsent: false } },
     },
 
-    'do-install-tools': action('do-install-tools', 'install-tools', 'Install the tools your agent needs', 'do-door-install'),
+    'do-install-tools': action('do-install-tools', 'install-tools', 'Install the tools your agent needs', 'do-tailscale-operator'),
+    'do-tailscale-operator': action('do-tailscale-operator', 'install-tailscale-operator', 'Let your agent use Tailscale', 'do-door-install'),
     'do-door-install': action('do-door-install', 'door-install', 'Install your AI', 'do-door-sign-in'),
     'do-door-sign-in': action('do-door-sign-in', 'door-sign-in', 'Check your AI is signed in', 'do-init'),
     'do-init': action('do-init', 'agent-init', 'Create your agent', 'do-start-server'),
