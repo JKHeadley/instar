@@ -380,7 +380,7 @@ export function freshState(): GreenPrState {
 }
 
 /** Outcomes that rule out only THIS PR this tick, so the next-oldest gets a turn. */
-const PASS_ON = new Set(['episode-not-eligible', 'gave-up-rearm-exhausted']);
+const PASS_ON = new Set(['episode-not-eligible', 'gave-up-rearm-exhausted', 'deferred:checks-pending']);
 
 /** Oldest (lowest number) first, as `selectOldest` picks. */
 export function orderOldestFirst<T extends { number: number }>(prs: T[]): T[] {
@@ -1149,6 +1149,16 @@ export class GreenPrAutoMerger extends EventEmitter {
   }
 
   private recordOutcome(state: GreenPrState, target: PrSummary, outcome: string, armedHead?: string): void {
+    // A queued CI floor is ordinary backpressure, not a failed merge attempt.
+    // The next watcher tick rechecks this immutable head.
+    if (outcome === 'deferred:checks-pending') {
+      const ep: Episode = state.episodes[target.number] ?? { pr: target.number, headRefOid: target.headRefOid, attempts: 0, rearmEpisodes: 0, state: 'active' };
+      ep.lastOutcome = outcome;
+      ep.nextEligibleAt = this.deps.now() + 5 * 60_000;
+      state.episodes[target.number] = ep;
+      this.deps.audit({ kind: 'green-pr-automerge', event: outcome, pr: target.number });
+      return;
+    }
     // An earlier attempt's safe-merge may still be alive and its identity could
     // not be confirmed, so the runner refused to start a second one. Not this
     // PR's failure: no ladder attempt, no breaker feed. ONE attention line

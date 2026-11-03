@@ -65,6 +65,7 @@ function executorEdge(root: string, clock: { now: number }) {
     reviews: [] as Array<{ login: string; state: string; commitId: string; submittedAt: string }>,
     merges: [] as Array<{ pr: number; sha: string }>, pushes: 0, pushedTo: [] as string[], prHeads: [] as string[], spawned: [] as string[], alive: new Set<string>(),
     confinedGuardChecks: 0,
+    mergeChecksPending: false,
     release: 'none' as { tag: string; taggedAt: number } | 'none',
   };
   const source = path.join(root, 'source');
@@ -88,7 +89,13 @@ function executorEdge(root: string, clock: { now: number }) {
       reviews: async () => state.reviews,
       removeLabel: async () => { state.pr!.labels = []; return true; },
       disableAuto: async () => true,
-      safeMerge: async (_slug: string, pr: number, sha: string) => { state.merges.push({ pr, sha }); return { exitCode: 5, stdout: 'safe-merge-result: {"result":"armed"}' }; },
+      safeMerge: async (_slug: string, pr: number, sha: string) => {
+        state.merges.push({ pr, sha });
+        if (state.mergeChecksPending) return { exitCode: 1, stdout: 'safe-merge-result: {"result":"deferred:checks-pending"}' };
+        state.pr!.mergedAt = new Date(clock.now).toISOString();
+        state.pr!.mergeCommit = 'c'.repeat(40);
+        return { exitCode: 0, stdout: 'safe-merge-result: {"result":"merged"}' };
+      },
     },
     runner: {
       available: () => ({ ok: true as const, version: '0.0.77' }),
@@ -272,13 +279,18 @@ describe('feedback executor — production lifecycle (live on a development agen
     expect(edge.state.prHeads[0]).toMatch(/^echo-bot:feedback\//);
     expect(edge.state.pr!.labels).toEqual(['hold']);
 
-    // The repository owner approves the exact head → safe-merge --auto pinned to it → merged.
+    // The owner approves the exact head. Queued CI defers without consuming
+    // the one refusal retry; the next tick after CI clears merges that head.
     edge.state.reviews = [{ login: 'Owner', state: 'APPROVED', commitId: HEAD_SHA, submittedAt: new Date(clock.now).toISOString() }];
+    edge.state.mergeChecksPending = true;
     status = await executeTick(app, clock);
     expect(edge.state.merges).toEqual([{ pr: 7, sha: HEAD_SHA }]);
-    edge.state.pr!.mergedAt = new Date(clock.now).toISOString();
-    edge.state.pr!.mergeCommit = 'c'.repeat(40);
+    expect(status.counts).toMatchObject({ 'pr-open': 1 });
+    expect((await request(app).get('/feedback-factory/execute/status').set(H)).body.counts).toMatchObject({ 'pr-open': 1 });
+    edge.state.mergeChecksPending = false;
+    clock.now += 5 * 60_000 + 1;
     status = await executeTick(app, clock);
+    expect(edge.state.merges).toEqual([{ pr: 7, sha: HEAD_SHA }, { pr: 7, sha: HEAD_SHA }]);
     expect(status.counts).toMatchObject({ merged: 1 });
     expect(tracker.get(initiative.id)!.phases.find((p) => p.id === 'build')!.status).toBe('done');
     expect(tracker.get(initiative.id)!.status).not.toBe('completed');

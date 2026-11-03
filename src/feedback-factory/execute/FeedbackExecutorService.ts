@@ -3,7 +3,7 @@
  *
  * Runs only on the drain owner and only where a source checkout of the repository the feedback
  * is about exists. Each tick: refuses to run when the approver is not independent of the agent
- * (unless a PIN-bound acceptance exists) or the repository disallows auto-merge; reconciles live
+ * (unless a PIN-bound acceptance exists); reconciles live
  * attempts (lease, disk cap, finished sessions → verification and publication); drives open PRs
  * through the review gate (approval of the exact head by the approver → `safe-merge --auto
  * --match-head-commit`, `--disable-auto` on every stop path); follows merged fixes through
@@ -313,7 +313,6 @@ export class FeedbackExecutorService {
     if (!remote) return out('no-source-repo');
     const repo = await this.opts.github.repoInfo(remote.slug);
     if (!repo) return out('github-unavailable', { slug: remote.slug });
-    if (!repo.allowAutoMerge) return out('auto-merge-disabled', { slug: remote.slug });
     const approver = deriveApprover(repo, this.metaJson<{ login: string }>('exec:org_approver')?.login ?? null);
     if ('error' in approver) return out('approver-unset', { slug: remote.slug });
     const facts: AgentIdentityFacts = { ...this.opts.identityFacts(), agentGithubLogin: await this.opts.github.viewerLogin(), agentGithubAccounts: await this.opts.github.authAccounts() };
@@ -1537,6 +1536,18 @@ export class FeedbackExecutorService {
     }
     if (merge.state === 'merge-armed') {
       this.opts.store.patch(epoch, row.attemptId, { state: 'merge-armed', approvedSha: pr.headRefOid, approvedAt: this.now(), mergeDeadlineAt: this.now() + MERGE_ARMED_DEADLINE_MS, reason: 'merge-armed' });
+      return;
+    }
+    // CI queueing is not a failed merge attempt. Keep the reviewed PR open and
+    // retry on the executor cadence without consuming the one refusal retry.
+    // A durable deadline prevents a missing workflow from retrying forever.
+    if (merge.reason === 'deferred:checks-pending') {
+      if (row.mergeDeadlineAt !== null && this.now() > row.mergeDeadlineAt) {
+        await this.mergeRefused(this.opts.store.get(row.attemptId)!, epoch, 'checks-timeout');
+        return;
+      }
+      this.opts.store.patch(epoch, row.attemptId, { state: 'pr-open', reason: 'merge-deferred:checks-pending', mergeRetryAt: this.now() + 5 * 60_000,
+        mergeDeadlineAt: row.mergeDeadlineAt ?? this.now() + 3 * 60 * 60_000 });
       return;
     }
     await this.mergeRefused(this.opts.store.get(row.attemptId)!, epoch, merge.reason);
