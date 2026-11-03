@@ -1,0 +1,18 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Remote desktop now works on Hyprland, the Wayland desktop that Omarchy uses. When the agent's user has a Hyprland session, the Desktop page shows and controls it with tools Omarchy already ships, with nothing to install and no root. Other Linux machines keep using X11 as before, and a configured X display always means X11. If nobody is signed in to the desktop, the page now says that instead of suggesting a virtual X server. Hyprland's own Super-key shortcuts do not work from a viewer, so those need the mouse.
+
+## What to Tell Your User
+
+If I run on Omarchy, you can now see and control my desktop from the Desktop page, once someone is signed in there or automatic sign-in is on.
+
+## Summary of New Capabilities
+
+- Remote desktop on Hyprland and Omarchy, with mouse, typing and screen choice.
+- Clear wording when nobody is signed in to the desktop.
+
+## Evidence
+
+On Omarchy 4.0.6 (Hyprland 0.56.2), limited to the size of a Hetzner cx23, through the real Desktop page with the PIN: the live desktop streamed, a click opened Omarchy's menu, typing and Ctrl+L reached a terminal, the wheel scrolled, a drag selected text, Stop ended the session cleanly and reconnect worked, with 0 failed captures out of 1,397. A display turned off before or during a session came back on its own. Typing through this path unlocked the real lock screen. Multiple monitors are covered by unit tests only.

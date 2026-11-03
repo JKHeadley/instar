@@ -5,8 +5,9 @@
  * input travel only over the existing signed, encrypted desktop stream.
  *
  * A machine with no X display of its own (a plain server) reports an inactive
- * session, so admission refuses it truthfully instead of pretending. Wayland is
- * not supported: its compositors do not allow this kind of capture or input. */
+ * session, so admission refuses it truthfully instead of pretending. Wayland
+ * compositors do not allow this kind of capture or input; Hyprland has its own
+ * host (HyprlandDesktopHost), and other Wayland desktops are not supported. */
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -22,12 +23,13 @@ const HEARTBEAT_MS = 2_000;
 const SCROLL_STEP = 40;
 const DISPLAY_NAME = /^:\d{1,4}(\.\d{1,2})?$/;
 
-export type LinuxRunner = (file: string, args: string[], options: { env: NodeJS.ProcessEnv; limit: number; timeoutMs: number })
+export type LinuxRunner = (file: string, args: string[], options: { env: NodeJS.ProcessEnv; limit: number; timeoutMs: number; input?: string })
   => Promise<Buffer>;
 
-export const defaultLinuxRunner: LinuxRunner = (file, args, { env, limit, timeoutMs }) => new Promise((resolve, reject) => {
-  execFile(file, args, { env, encoding: 'buffer', maxBuffer: limit, timeout: timeoutMs, windowsHide: true },
+export const defaultLinuxRunner: LinuxRunner = (file, args, { env, limit, timeoutMs, input }) => new Promise((resolve, reject) => {
+  const child = execFile(file, args, { env, encoding: 'buffer', maxBuffer: limit, timeout: timeoutMs, windowsHide: true },
     (error, stdout) => (error ? reject(error) : resolve(stdout as Buffer)));
+  if (input !== undefined) child.stdin?.end(input);
 });
 
 export interface LinuxDesktopHostOptions {
