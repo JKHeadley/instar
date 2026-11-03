@@ -4,10 +4,11 @@ An Instar agent often runs several sessions at once, each tied to its own chat t
 
 The desk used the chat because nothing else worked. Instar has a message route for one session to write to another, but for two sessions of the same agent it saved the message and never delivered it. The message sat at "sent" forever, because the retry loop only looks at "queued" messages. So a session that needed another session reached for the one route that did arrive: the user's topic.
 
-This change fixes that at three points:
+This change fixes that at two points:
 
 1. **The route now delivers.** A same-agent message to a named session is typed straight into that session, but only if the target is one of the agent's own running sessions. A wrong name is refused and nothing is typed anywhere. Delivery then uses the same checks other agent messages already go through: the session must be alive and showing a safe program. If the session can't take the message right now, it is marked "queued", and the existing retry loop tries every 30 seconds for about five minutes. The delivered block says where to send the reply: back to the sender's session, never into a user topic.
 2. **Agents are told about it.** Every agent's CLAUDE.md gains a short section saying that chat topics are the user's conversation, never a channel between its own sessions, with the exact call to use instead. Existing agents receive it on update.
-3. **A backstop on outgoing messages.** The outgoing-message reviewer, which already reads every chat message before it is sent, gains one more question: is this written to the user, or to another agent? A message written to an agent ("please own X, report slot status") is handed back to the agent with that reason. A progress note that only mentions agents ("I asked the throughput session to measure X") passes. This check is advisory everywhere: the agent can still send with a recorded reason, for example when the user asked to see the internal message. It never becomes a hard wall.
 
-What to decide: nothing beyond the normal review. If something goes wrong, a revert removes all three parts. No stored data changes.
+A third piece, a check in the outgoing-message reviewer that hands back any chat message written to another agent, is a separate change. Adding it changes the reviewer's benchmarked prompt, so the benchmark must be re-run first. That work is tracked in the feedback queue (fb-245d23bf-1e2).
+
+What to decide: nothing beyond the normal review. If something goes wrong, a revert removes both parts. No stored data changes.

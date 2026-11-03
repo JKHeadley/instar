@@ -419,7 +419,7 @@ export interface ToneReviewResult {
    * decision-quality meter — a signal, never authority. Set by the route seam.
    */
   advisoryOverridden?: boolean;
-  /** True if the LLM's rule citation was invalid (not in B1..B22) — gate failed open. */
+  /** True if the LLM's rule citation was invalid (not in B1..B21) — gate failed open. */
   invalidRule?: boolean;
   /**
    * True if the gate review exceeded the outbound route's hard budget and the
@@ -512,7 +512,6 @@ export const VALID_RULES = new Set([
   'B19_PARKED_ON_USER',
   'B20_INTERNAL_ID_LEAK',
   'B21_USER_TASK_SUBSTITUTION',
-  'B22_AGENT_COORDINATION_TO_USER',
 ]);
 
 /**
@@ -570,9 +569,6 @@ export const RULE_CLASSES: Record<string, GateRuleClass> = {
   // agent-doable work) — meaning-judged like B15–B18, no deterministic detector.
   // Origin: operator correction 2026-07-18 (correction-derived-hardening spec).
   B21_USER_TASK_SUBSTITUTION: 'behavioral-judgment',
-  // B22: the ADDRESSEE is an agent, not the user — an intent judged by meaning
-  // (bug 2026-11-03, Echo Bugs topic 10000001474). No deterministic detector.
-  B22_AGENT_COORDINATION_TO_USER: 'behavioral-judgment',
 };
 
 /**
@@ -626,11 +622,6 @@ export const RULE_DISPOSITIONS: Record<string, GateRuleDisposition> = {
   B19_PARKED_ON_USER: 'blocking',
   B20_INTERNAL_ID_LEAK: 'blocking',
   B21_USER_TASK_SUBSTITUTION: 'advisory',
-  // B22 ships advisory on every agent, like B21: it hands the message back to
-  // the agent with the reason, and the agent may resend unchanged with a
-  // RECORDED reason (e.g. the user asked to see the internal message). A new
-  // meaning-judged rule never becomes a hard wall on the fleet by default.
-  B22_AGENT_COORDINATION_TO_USER: 'advisory',
 };
 
 /**
@@ -1931,18 +1922,6 @@ These rules only fire when the producer has explicitly marked the candidate as a
   RELATIONSHIP TO B17/B19 (de-confliction): B17 fires on DEFERRING a task claiming a person is required; B19 on passively PARKING follow-through; B21 on actively SUPPLYING the human a procedure for agent-doable work. B21 exists for the shape that survives B17's carve-outs — a message whose escalation is otherwise legitimate (credential path offered, inventory shown) but which ALSO hands over a click list. Citation precedence when more than one of B15/B16/B17/B18/B21 would independently block: B15 > B16 > B17 > B18 > B21.
 
   Severity: favor FALSE-NEGATIVES over false-positives, exactly like B15–B18. A genuinely human-only walkthrough, a requested how-to, and a one-tap ask MUST pass. Block only the clear pattern: agent-doable work handed to the human as steps to execute. When you block, name the procedure and suggest the agent perform it itself and ask only for the credential/approval it actually lacks.
-
-## AUDIENCE rule — always evaluated (no signal/kind precondition):
-
-- **B22_AGENT_COORDINATION_TO_USER** — JUDGE BY MEANING, NOT BY LITERAL PHRASE. Every candidate here is posted into a conversation the USER reads. Apply B22 when the candidate's intended READER is another agent, session, job, desk, worker or "owner" rather than the user: it assigns work or ownership to an agent role ("please own …", "throughput owner: …", "desk owns …, observer verifies …"), relays review dispositions or task instructions for an agent to act on, or asks an agent for slot, owner or queue status. That is internal coordination using the user's topic as a message bus; it belongs on the session-to-session channel, and the user should never see it (operator correction 2026-11-03: an internal "please own a bounded preflight experiment" request reached the user).
-
-  LEGITIMATE — do NOT apply B22 if ANY of these holds:
-  - It is a PROGRESS UPDATE for the user that mentions agents or sessions in the third person: "I asked the throughput session to measure X", "the desk is fixing Y; next check at 10:00", "two reviewers agreed, so I'm doing Z". Describing coordination to the user is fine; addressing the coordination itself to an agent is not.
-  - The user asked to see the internal message, or asked for that wording, or asked the agent to relay something to another agent THROUGH this topic.
-  - The message is addressed to the user and asks the user something, even if it names agents.
-  - The topic is plainly an agent-to-agent room the user set up for that purpose, as shown by the recent conversation.
-
-  Severity: favor FALSE-NEGATIVES. Block only the clear pattern: the text is written TO an agent (imperatives or questions aimed at an agent role, owner assignments, handoff instructions) and nothing in it is written to the user. When you block, suggest sending it to the other session directly and, if the user would care, posting a one-line plain progress note instead. When uncertain, PASS.
 
 ## STYLE rule — applies ONLY when a TARGET STYLE is configured below:
 

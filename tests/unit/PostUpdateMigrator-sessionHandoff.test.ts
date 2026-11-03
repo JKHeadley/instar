@@ -27,7 +27,7 @@ describe('Talking to my other sessions — agent awareness', () => {
     expect(fresh).toContain('http://localhost:4042/messages/send');
     expect(fresh).toContain('"type":"handoff"');
     expect(fresh).toContain("It is never a channel between my own sessions, jobs or desks");
-    expect(fresh).toContain('the outbound check (B22) holds it');
+    expect(fresh).toContain('send it to that session, never to the topic');
   });
 
   it('migrateClaudeMd adds it once to an existing agent (content-sniffed, idempotent)', () => {
