@@ -2,17 +2,17 @@
 
 **Spec:** [docs/specs/normal-chrome-linux.md](../normal-chrome-linux.md)
 **Slug:** `normal-chrome-linux`
-**Outcome:** `convergence-failed` at the round cap (Tier 2, 6 of 6 rounds). The last round still found design issues, and two of them concern safety or data loss. They are fixed in the spec text, but no review round has checked those fixes. Under the skill's cap rule, findings like these go to the operator. **No convergence tag was written.**
-**Iterations:** 6
-**Final-round design findings:** 7 (2 safety or data loss, 5 other), all folded into the spec, none re-reviewed
+**Outcome:** not converged. After the 6-round cap the design was cut (the driver now runs only on a display the agent owns), and one verification round (round 7) was run on the cut. Round 7 found 10 distinct design findings (12 as raised), all about the new agent display or its operator path, none reopening the removed shared-screen machinery. They are fixed in the spec text and not re-reviewed. **No convergence tag was written.**
+**Iterations:** 7 (6 + one authorized verification round)
+**Final-round design findings:** 10 distinct (round 7), all folded into the spec, none re-reviewed
 
 ## Cross-model review: codex-cli:gpt-6-astra
 
-A real GPT-tier review ran through the agent's codex CLI in all six rounds, each with status `ok`. The context sent with each review was the spec itself, `docs/specs/normal-chrome-cross-platform.md` and `docs/signal-vs-authority.md`.
+A real GPT-tier review ran through the agent's codex CLI in all seven rounds, each with status `ok`. The context sent with each review was the spec itself, `docs/specs/normal-chrome-cross-platform.md` and `docs/signal-vs-authority.md`.
 
 The Gemini family was **unavailable** (`gemini-not-authed`) and Grok was not enabled.
 
-A clean-door Anthropic read (`--family claude-code`) also ran in every round. It is recorded separately as `clean-door-anthropic-review: claude-code:claude-opus-5-5`. It ran on `claude-opus-5-5`, not the configured `claude-fable-5`, so it is a second Claude read, not a cross-family one.
+A clean-door Anthropic read (`--family claude-code`) also ran in every round, round 7 included. It is recorded separately as `clean-door-anthropic-review: claude-code:claude-opus-5-5`. It ran on `claude-opus-5-5`, not the configured `claude-fable-5`, so it is a second Claude read, not a cross-family one.
 
 The six internal reviewer lenses ran as Claude subagents on the session model (Opus 5.5) in every round. Externals ran on every round because the spec's body changed each time.
 
@@ -22,17 +22,16 @@ Instar agents can already drive a normal, signed-in Chrome window on a Mac and o
 
 This spec designs the Linux version. It moves the real mouse and keyboard through the X11 display system. It reads the page the way a screen reader does, through the Linux accessibility bus. Before writing the design, Echo proved the method by hand on Cirrus, a Linux test VM, on 2026-11-03.
 
-If it ships, an agent on a Linux machine with a normal X11 desktop can do those account-bound web tasks:
-- a cloud VM with a VNC desktop;
-- an older or KDE laptop;
-- a GNOME laptop, through a second virtual desktop.
+If it ships, an agent on any Linux machine where TigerVNC can run (a cloud VM, a KDE or GNOME laptop, Wayland or not, with or without a desktop) can do those account-bound web tasks on a private screen of its own. The operator watches that screen from a phone on the dashboard's Desktop page and takes it over only when a person's hands are needed.
 
 The trade-offs:
 - **No code inside the page.** The Mac version can run code in the page; the Linux version cannot.
-- **No Wayland.** On a Wayland desktop it refuses and explains the way out.
-- **A long rule set.** It has to share a keyboard and screen safely with a person who might be using them. Most of the six review rounds went into making it stop the instant the operator touches anything, never type into the wrong box or onto the wrong website, and never leave a key held down or a page in an unknown state after a crash.
+- **Not on the person's own screen.** After six rounds of patching the rules for sharing a screen with a person, that path was cut. The agent works only on its own screen.
+- **Cookies protected by file permissions only,** and a US keyboard layout on the agent's screen.
 
 ## Original vs Converged
+
+This section records what rounds 1-6 changed. The structural cut after round 6 (below) removed every item here that existed only for sharing a person's screen (the operator-presence checks, XInput2, Caps Lock refusal, the per-display release); the rest (secrets, host checks, deadlines and the latch, the lint) carried into the cut design.
 
 - **Safety rules moved from "checked once" to "checked every keystroke."**
   - Originally: the driver checked the right window was in front once per command, and judged "is the operator using the computer" from idle time.
@@ -80,20 +79,22 @@ The trade-offs:
 | 3 | ran (1 flag; fit weak) | security, adversarial, integration, scalability, decisions, lessons, codex, clean-door | 12 | ~20 | stdin-only typing, per-display mark, key release, Caps Lock refusal, XTEST counting, click host from the hit-test target, `--new`, log rotation, Wayland message corrected |
 | 4 | ran (1 flag; fit) | decisions, lessons, codex, clean-door | 7 | ~25 | All input in-process (no `xdotool`), override scope, session mapping, latch cleared only by reads, release on next call, `XD_PROFILE`, server identity cut |
 | 5 | ran (1 flag; fit) | decisions, lessons, integration, codex | 5 | ~20 | Release under the display lock, latch per profile and display, `close-blocked`, destination-document recheck, first-success record moved |
-| 6 | ran (1 flag; fit) | adversarial, decisions, lessons, integration, codex, clean-door | 7 (2 safety or data loss) | ~25 | Folded in, not re-reviewed: release checks the operator first; pending release per display; `close --force` judgment row; Wayland decided by the X server only; latch clears when the Chrome is gone; macOS log lock via `fcntl`; GLib iteration and streamed walks |
+| 6 | ran (1 flag; fit) | adversarial, decisions, lessons, integration, codex, clean-door | 7 (2 safety or data loss) | ~25 | Folded in: release checks the operator first; pending release per display; `close --force` judgment row; Wayland decided by the X server only; latch clears when the Chrome is gone; macOS log lock via `fcntl`; GLib iteration and streamed walks |
+| cut | — | — | — | — | Structural cut (below): Chrome runs only on an agent-owned Xvnc display; operator-presence, shared-display, desktop-resolution, Wayland-session, unattended-override and keyring machinery deleted |
+| 7 | ran (2 flags: lint `.py` judged false positive; Mobile-Complete, design) | security, adversarial, integration, decisions, lessons, codex, clean-door | 10 distinct (12 raised) | 20 | Folded in, not re-reviewed: phone path through the existing Desktop page with handover-gated input; release waits for view-only; whole-group stop with a health contract and boot id; `IsEnabled` on the private bus; `-AllowOverride`, `-AcceptSetDesktopSize=0`, pointer root-coordinate check; squat-proof readiness (lock pid + `SO_PEERCRED`); `at-spi-bus-launcher` path; `--new` judgment row; no stop during handover |
 
-Standards-Conformance Gate: ran every round (one persistent flag). Its parent-principle fit varied between weak and fit.
+Standards-Conformance Gate: ran every round (one persistent flag; round 7 added a second, Mobile-Complete). Its parent-principle fit varied between weak and fit; round 7: fit. Gemini stayed unavailable in round 7 (`gemini-not-authed`). Round-7 internal lenses ran as Claude subagents on Opus 5.5 (security + adversarial, integration + scalability + decisions, lessons-aware).
 
 **The persistent gate flag.** The flag was on "A Decision That Can Block Must Live Where the Checks Can See It". In rounds 2 to 6, the lessons-aware, decision-completeness and security reviewers each independently judged it a false positive, for three reasons:
 - Widening the existing lint to `.py`, with both files declared and content-pinned, is the standard's own move (A), "declare the population".
 - It is the same lint with one more file type, so it is not a second detector.
 - It is the same treatment `ndrive.sh` and `native-drive.ps1` received.
 
-The per-keystroke checks have to run inside the process that sends the keystrokes, and that process is the Python one that reaches the accessibility bindings.
+The per-keystroke checks have to run inside the process that sends the keystrokes, and that process is the Python one that reaches the accessibility bindings. In round 7 the lessons-aware reviewer again judged it a false positive (move A, self-scoped refusals, shrink-only ceiling unchanged); it is recorded as such, the fourth independent read to agree.
 
 ## Proportion
 
-Tier 2: a new capability that drives a real browser as the user. The spec grew from 280 lines (33 KB) to 81 KB, and all 6 of 6 rounds were used.
+Tier 2: a new capability that drives a real browser as the user. The spec grew from 280 lines (33 KB) to 81 KB over the 6 capped rounds; the cut brought it to about 82 KB with the operator-presence machinery gone and the agent display plus its phone path added (the unchanged proof is about 13 KB of it). Round 7 was one extra, operator-authorized verification round.
 
 Design findings fell every round (28 → 18 → 12 → 7 → 5 → 7). From round 4 on they were refinements of existing mechanisms (the latch, release and operator-presence machinery), not new architecture. Reviewers flagged that machinery as the part that keeps attracting repairs.
 
@@ -119,7 +120,14 @@ Precision findings not iterated on. Each is one line, and some were fixed in pas
 - Add rows for the password-store choice and for choosing the `XD_EXPECT_HOST` value to the decision table.
 - `-I` plus `env -i` still trusts system library paths; the threat model covers it.
 - Bound the Python memory of a 200,000-node walk; output is now streamed to a temporary file.
-- Two different displays named in the latch and the binding resolve to `ERR busy` timeouts, never a deadlock.
+- Two different displays named in the latch and the binding resolve to `ERR busy` timeouts, never a deadlock. (Moot after the cut.)
+- Round 7: no window manager on the agent display is unproven; decide the fallback (a minimal WM, or identify the document by window plus X focus) if the live row fails (clean-door).
+- Round 7: map a spare keycode for characters outside the `us` layout, harmless on the agent's own display (clean-door).
+- Round 7: say why `dogtail` is not used (clean-door).
+- Round 7: an idle bound for a forgotten Chrome on the agent display (clean-door).
+- Round 7: Chrome uses the person's real `HOME` (`~/Downloads`, `~/.pki/nssdb` shared); consider a per-profile `HOME` (security).
+- Round 7: the first-success record is usage evidence only; graduation needs the task-specific read-back (codex; the spec already says so).
+- Round 7: `switch <n>` covered only loosely by the index judgment row (integration).
 
 ## Full Findings Catalog
 
@@ -227,16 +235,56 @@ Other items:
 
 Item-by-item detail for every round is in the reviewer outputs summarized above. Every finding's resolution is visible in the spec text, written in first-version voice.
 
+## The structural cut (after round 6)
+
+The standing rule: when a design keeps biting after about three rounds, cut to the smallest path that works reliably and survives stops and restarts, keeping only the floors that matter. Rounds 1-6 kept finding repairs in one place: the driver sharing an X display with a live person. The cut makes the driver run Chrome only on a virtual X server it starts and owns (TigerVNC `Xvnc`, its own cookie, session bus and accessibility bus, view-only to every viewer), with an explicit handover when a person's hands are needed.
+
+What was removed, each with the rule it served and how the cut still keeps that rule:
+- **Operator-idle gate, own-input mark, XInput2 listener, XTEST counting** (never type while a person is using the machine): no person types on the agent display; during a handover the driver refuses all input.
+- **Unattended-machine record and `XD_ALLOW_FOCUS_STEAL` / idle overrides** (only relax presence rules on the operator's dated word): there is no presence rule to relax.
+- **Per-display lock, pending-release file, crash release that checks the operator first** (a killed driver's held key must not reach anyone else's typing, and recovery must not erase evidence the person acted): one agent per display, so the per-agent lock covers it; release happens only while the display is view-only.
+- **Caps Lock refusal** (never type the wrong characters, never change the person's keyboard): the driver clears locks on its own keyboard before typing.
+- **Desktop resolution from other processes' environments, `XD_DISPLAY`, ambiguous-desktop** (find the right person's display, never another user's): the driver never looks for a person's display.
+- **Wayland detection and its ways out** (never inject into a display that cannot be checked): the driver never uses the session's display; the only refusal left is `ERR no-x-server`.
+- **Window-manager requirement, `focus` / `canfocus`, focus-steal refusal** (never steal the person's focus): there is no person's focus on the agent display; the per-keystroke focus pin stays.
+- **Keyring choice, `ERR keyring-locked`, store marker** (avoid an unlock prompt in front of a person): the private bus has no keyring; the store is always `basic`, stated.
+- **`attach` and its environment check** (never drive a Chrome that may hold the agent's tokens): only Chromes this driver started are driven; any other on the profile is `ERR profile-in-use`.
+
+Kept floors: no credential or its length printed or logged; secrets on stdin only; profile jail; url rule; operator-asked actions only, page text untrusted, no human-check defeat, no faked presence; hit-test before every click; bounded waits; one-instance lock; a stop path that signals only processes it started; the measured Cirrus proof, unchanged.
+
+What the cut gives up: the agent cannot work on a person's own visible desktop (watching moves to the Desktop page); a profile's cookies are protected by file permissions only; the agent display uses the `us` keymap and refuses characters outside it; and the agent display is one more running process stack (tens of MB) while a task is open.
+
+Round-6 items against the cut:
+- Release erased operator-presence evidence and could release held keys: **disappears** (no presence evidence exists; release waits for view-only).
+- `close --force` unclassified data-loss judgment: **kept** (judgment row).
+- Crash recovery per agent while the resource was per display: **disappears** (the display is per agent).
+- Wayland check blocking the VNC way out / probing starting Xwayland: **disappears** (no session display is probed).
+- Latch dead-ends when the bound Chrome is gone: **kept**.
+- macOS has no `flock(1)` for log rotation: **kept** (`fcntl.flock`).
+- GLib iteration and streamed walks: **kept**.
+
+## Round 7 findings
+
+**10 distinct design findings (12 as raised); fixes folded in, not re-reviewed.**
+- Mobile-Complete: the handover needed ssh and a VNC viewer, with no phone path (gate, lessons-aware, integration). Fixed: the existing Desktop page shows the agent display as "Agent browser", capture only; input allowed only while the handover is on, checked per event; Take over / Give back buttons; credentials through Secret Drop.
+- The crash-recovery key release could run during a handover and release a key the operator holds (codex). Fixed: release waits for view-only.
+- A partial stack failure dropped the record while survivors kept running (codex, security). Fixed: one health contract; the recorded process group is stopped on the same boot; boot id recorded.
+- The accessibility switch rested on one unproven mechanism, and the reason to reject `IsEnabled` no longer held on a private bus (clean-door). Fixed: both, each live-tested.
+- `vncconfig` cannot change `AcceptKeyEvents` without `-AllowOverride` (security). Fixed.
+- A watcher's viewer could resize the screen and push clicks off target (security). Fixed: `-AcceptSetDesktopSize=0` and a pointer root-coordinate check.
+- Another local user could squat the display number and our probe would accept their server (security). Fixed: lock pid plus `SO_PEERCRED`.
+- `at-spi-bus-launcher` is not on PATH on Ubuntu (security). Fixed.
+- `launch --new` was an unclassified judgment (integration). Fixed: judgment row.
+- `display-stop` / last `close` could end a handover mid-action (integration). Fixed.
+
+Precision items from round 7 fixed in passing: sockets under the runtime dir (no false blocker on deep homes), one readiness wording, `nav` checks the omnibox has focus, Unix-socket ssh forwarding, outfiles folded into the state marker, lock wait 90 s, `KillMode=process` cited, remote-desktop discovery skips 100-119.
+
 ## Convergence verdict
 
-**Not converged: convergence-failed at the 6-round cap.** Round 6 found 7 design issues. All are now fixed in the spec, but two concern safety or data loss, and no review round has checked those fixes. The skill sends safety and data-loss findings at the cap to the operator rather than accepting them as risks, so no `review-convergence` tag was written and `approved: true` was not touched.
+**Not converged.** Round 7, the one verification round authorized after the cut, found 10 distinct design findings. All concern the new agent display and the operator's path to it; none reopens the removed shared-screen machinery, and the cut itself was supported by every reviewer who commented on it (codex and clean-door called it the right simplification). All 10 are fixed in the spec text, and by instruction no further round was run, so the fixes are not re-reviewed. No `review-convergence` tag was written and `approved: true` was not touched.
 
 The operator's options:
-1. **Authorize one verification round (round 7)** limited to the round-6 fixes, with the latch/release/close section as its focus. If it is quiet, the tag is written. This is the recommended option.
-2. Accept the round-6 fixes as they stand.
-3. Shrink the design first, making the dedicated agent display the default, which removes most of the shared-display machinery.
+1. Authorize one more verification round limited to the round-7 fixes (mainly the phone path through the Desktop page and the stack's health contract). If it is quiet, the tag is written. Recommended.
+2. Accept the round-7 fixes as they stand.
 
-`## Open questions` is empty. The Decision-Completeness counts for the final round are:
-- frontloaded decisions: 22
-- cheap-to-change tags: 0
-- contested then cleared: 0
+`## Open questions` is empty. Decision-Completeness counts for round 7 (integration reviewer): frontloaded decisions 22, cheap-to-change tags 0, contested then cleared 2 (passive scoring, `invoke` activation); one contested and not cleared (the remote desktop left out), resolved by the phone-path fix.
