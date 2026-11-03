@@ -28,6 +28,7 @@ import fs from 'node:fs';
 import type { IntelligenceProvider, MessagingAdapter, Message, OutgoingMessage } from '../../core/types.js';
 import { DP_SLACK_STALL_CONFIRM } from '../../data/provenanceCoverage.js';
 import { SlackApiClient, SlackApiError } from './SlackApiClient.js';
+import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
 import { SocketModeClient, type SocketModeHandlers } from './SocketModeClient.js';
 import { ChannelManager } from './ChannelManager.js';
 import { FileHandler, type SlackUploadOptions } from './FileHandler.js';
@@ -369,6 +370,7 @@ export class SlackAdapter implements MessagingAdapter {
       this.connectedTeamId = typeof authResult.team_id === 'string' ? authResult.team_id : null;
       if (this.botUserId) {
         console.log(`[slack] Bot user ID: ${this.botUserId}${this.connectedTeamId ? ` (team ${this.connectedTeamId})` : ''}`);
+        reportBotOnlyAuthorization(this.config.authorizedUserIds, this.botUserId);
       }
     } catch {
       console.warn('[slack] Could not fetch bot user ID — mention detection may not work');
@@ -2605,3 +2607,24 @@ export class SlackAdapter implements MessagingAdapter {
     return chunks;
   }
 }
+
+/**
+ * Signal only: `instar add slack` before 1.3.1633 stored the BOT's own user id as the only
+ * authorized user, so every person's message is ignored and nothing says why. Says it loudly at
+ * start; never changes who is authorized. True when the condition was found.
+ */
+export function reportBotOnlyAuthorization(authorizedUserIds: readonly string[], botUserId: string): boolean {
+  const people = authorizedUserIds.filter((id) => id !== botUserId);
+  if (people.length > 0 || authorizedUserIds.length === 0) return false;
+  const reason = `the only authorized Slack user is this agent's own bot (${botUserId}), so every person's message is ignored`;
+  console.warn(`[slack] ${reason}. Run instar add slack again and name the people it should answer.`);
+  DegradationReporter.getInstance().report({
+    feature: 'SlackAdapter.authorizedUsers',
+    primary: 'Answer the Slack people named in authorizedUserIds',
+    fallback: 'Ignore every inbound Slack message (fail-closed)',
+    reason,
+    impact: 'Nobody can talk to the agent over Slack until a person is authorized (instar add slack).',
+  });
+  return true;
+}
+

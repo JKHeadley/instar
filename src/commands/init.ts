@@ -4164,7 +4164,7 @@ function refreshScripts(projectDir: string, stateDir: string): void {
  * of bugs where scaffold-time and migration-time versions drift out of sync.
  * PostUpdateMigrator.getTelegramReplyScript() uses the same loading pattern.
  */
-function loadRelayTemplate(filename: string, port: number): string {
+export function loadRelayTemplate(filename: string, port: number): string {
   const modDir = __dirname;
   const candidates = [
     // dev: src/commands → ../templates/scripts
