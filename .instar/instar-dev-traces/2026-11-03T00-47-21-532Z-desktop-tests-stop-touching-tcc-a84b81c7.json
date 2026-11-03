@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "desktop-tests-stop-touching-tcc",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T00:47:21.532Z",
+  "artifactPath": "upgrades/side-effects/desktop-tests-stop-touching-tcc.md",
+  "artifactSha256": "f2e14862baeee508966bf461808845e7bbf701865bd1f613c0e9ec15dea13193",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "tests/e2e/desktop-locked-lifecycle.test.ts",
+    "upgrades/side-effects/desktop-tests-stop-touching-tcc.eli16.md",
+    "upgrades/side-effects/desktop-tests-stop-touching-tcc.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "503 instead of a hung request on an unreadable helper state, plus test gating; a revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/desktop-tests-stop-touching-tcc.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-tests-stop-touching-tcc.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

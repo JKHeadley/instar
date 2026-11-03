@@ -145,6 +145,19 @@ export interface OriginConfig {
 }
 export type BotParameters = { [key: string]: OriginJson };
 
+/** This process could not read its current messaging config (a failed, timed-out
+ * or stale observation; e.g. a starved event loop past the reader's deadline), so
+ * it cannot choose a destination or sender display. Raised while a send is being
+ * prepared, before admission or any network call: nothing was sent, and the send
+ * may be retried once config reads again. Never a claim that config is missing.
+ * The message stays `origin-display-authority-unavailable` for existing callers. */
+export class OriginConfigUnavailableError extends Error {
+  readonly retryable = true;
+  constructor(readonly reason: string) {
+    super('origin-display-authority-unavailable');
+    this.name = 'OriginConfigUnavailableError';
+  }
+}
 export class TelegramOriginHoldError extends Error {
   readonly terminalForCallerRetry = true;
   constructor(readonly reason: string, readonly operationId: string | null = null,

@@ -8,7 +8,11 @@ import { DesktopHelperRetention, helperManifestPath } from '../../src/core/Deskt
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const built = path.resolve('dist/native/instar-desktop-host');
-const skip = process.platform !== 'darwin' || !fs.existsSync(built);
+// Runs the real helper, which registers a new entry in this Mac's privacy
+// lists (and request-permission shows real pop-ups) on every run. Opt in only
+// on a Mac set aside for it: INSTAR_REAL_DESKTOP_HELPER_TESTS=1.
+const skip = process.platform !== 'darwin' || !fs.existsSync(built)
+  || process.env.INSTAR_REAL_DESKTOP_HELPER_TESTS !== '1';
 const arch = process.arch === 'arm64' ? 'arm64' : 'x86_64';
 const HASH_A = 'a'.repeat(64);
 const HASH_B = 'b'.repeat(64);

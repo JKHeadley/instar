@@ -13,7 +13,7 @@
 // RULE 3: EXEMPT — reads the macOS console session from Instar's own desktop helper and sysadminctl; it parses no agent-framework or provider output.
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
-import { DEFAULT_MAC_DESKTOP_HELPER } from './MacDesktopHost.js';
+import { DEFAULT_MAC_DESKTOP_HELPER, realHelperBlockedUnderTest } from './MacDesktopHost.js';
 import { isWslHost } from './wslPlatform.js';
 import {
   EMPTY_LOCK_INPUTS, decideLockState, parsePasswordRequired,
@@ -46,6 +46,8 @@ const HELPER_ENV = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', INSTAR_DESKTOP_LOCKE
 function defaultProbe(): Promise<string | null> {
   return new Promise((resolve) => {
     if (!fs.existsSync(DEFAULT_MAC_DESKTOP_HELPER)) { resolve(null); return; }
+    // Same rule as MacDesktopHost: a test run never starts the real helper.
+    if (realHelperBlockedUnderTest(DEFAULT_MAC_DESKTOP_HELPER, DEFAULT_MAC_DESKTOP_HELPER)) { resolve(null); return; }
     execFile(DEFAULT_MAC_DESKTOP_HELPER, ['probe'], { timeout: 3_000, maxBuffer: 16_384, env: HELPER_ENV },
       (err, stdout) => resolve(err ? null : stdout));
   });

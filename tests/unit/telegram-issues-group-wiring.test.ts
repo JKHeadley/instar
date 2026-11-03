@@ -49,7 +49,10 @@ describe('issues group wiring', () => {
 
   it('origin boot passes the translator and admits the issues chat', () => {
     const boot = read('src/messaging/telegram-origin/TelegramOriginBoot.ts');
-    expect(boot).toMatch(/wireParams: params => toWireParams\(params, \{ mainChatId: snapshot\?\.chatId, issuesChatId: snapshot\?\.issuesChatId \}\)/);
+    expect(boot).toMatch(/wireParams: params => \{/);
+    expect(boot).toMatch(/return toWireParams\(params, \{ mainChatId: snapshot\?\.chatId, issuesChatId: snapshot\?\.issuesChatId \}\)/);
+    // An unreadable config refuses issues sends as unknown, never as "no issues group".
+    expect(boot).toMatch(/if \(!snapshot && isIssuesTopicId\(params\.message_thread_id as number\)\) throw new OriginConfigUnavailableError/);
     expect(boot).toMatch(/request\.destination\.chatId === snapshot!\.issuesChatId/);
     const runtime = read('src/messaging/telegram-origin/TelegramOriginRuntime.ts');
     expect(runtime).toMatch(/wireParams: options\.wireParams/);

@@ -981,6 +981,21 @@ An agent with no Telegram owner can still add a phone. The pairing link works th
 `;
 }
 
+export const SLACK_FROM_APP_CLAUDEMD_MARKER = '### Slack conversations from the Instar app';
+/**
+ * CLAUDE.md awareness block for continuing Slack conversations from the iPhone app
+ * (docs/specs/mobile-native-conversations.md §4.9 — increment 4). Sniffed by its exact heading.
+ */
+export function SLACK_FROM_APP_CLAUDEMD_SECTION(port: number): string {
+  return `\n${SLACK_FROM_APP_CLAUDEMD_MARKER}
+
+Where Slack is set up, the app's conversation list also shows Slack channels and threads (\`platform: "slack"\`, id = the negative durable conversation id), and the operator can read and write them from the phone. A message the operator types in the app reaches my Slack session exactly like a Slack message from them, tagged \`[slack:<channel> from <owner> (uid:<U…>) (📱 signed)]\` ("📱 signed" only when the phone's signature checked out), and a copy "📱 <owner> (from the app): …" is posted in the channel (credential-shaped text shown as \`[credential hidden]\`). I answer it with \`slack-reply.sh\` as usual.
+- **The operator's Slack user id is a setting I propose, never infer.** Until \`mobilePairing.slackOwnerUserId\` is set the app shows no Slack rows and its Slack routes answer 503 \`slack-owner-unset\`. When the operator asks to use Slack from the app, read the Slack channel's verified operator (\`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic-operator\`), propose that \`U…\` id to the operator, and set it only after they say yes.
+- History an agent can read: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/chat/slack/CONVERSATION_ID/messages?machine=MACHINE"\`, with MACHINE the \`machine\` on that conversation's row in \`GET /mobile/conversations\` (a Slack id is local to one machine; another machine's id answers 409 \`wrong-machine\`, a missing machine 400 \`machine-required\`). App-sent rows carry \`originVerified\`; rows typed in Slack read \`none\`.
+- **When to use** (PROACTIVE): "can I use Slack from the app?" → check the setting above and offer to set it; "did my app message reach Slack?" → read that message's \`deliveryState\`, \`mirror\` and \`originVerified\`, never infer it from the text.
+`;
+}
+
 export const APP_MEDIA_CLAUDEMD_MARKER = '### App conversation media';
 /** The section's last sentence before copies between machines shipped (refreshed in place on update). */
 export const APP_MEDIA_STALE_COPY_LINE = 'A file on another of my machines reads `not-here` until copies between machines ship.';
@@ -8765,6 +8780,12 @@ setTimeout(() => process.exit(0), 2000);
       content += PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION();
       patched = true;
       result.upgraded.push('CLAUDE.md: added Pairing a phone without Telegram section');
+    }
+    // Increment 4 (Slack from the app): its own section, by exact heading.
+    if (!content.includes(SLACK_FROM_APP_CLAUDEMD_MARKER)) {
+      content += SLACK_FROM_APP_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Slack conversations from the Instar app section');
     }
     if (!content.includes('Native app conversations')) {
       content += APP_CONVERSATIONS_CLAUDEMD_SECTION(port);

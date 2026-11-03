@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "desktop-tests-stop-touching-tcc",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T20:37:08.069Z",
+  "artifactPath": "upgrades/side-effects/desktop-tests-stop-touching-tcc.md",
+  "artifactSha256": "21fe4d2443d7fead156737d1e55c1d093afe3432d2f06fedcb72879a88e76fb0",
+  "coveredFiles": [
+    "src/core/MacDesktopHost.ts",
+    "src/core/MachineLockStateReader.ts",
+    "tests/e2e/desktop-boot-lifecycle.test.ts",
+    "tests/e2e/desktop-helper-retention-lifecycle.test.ts",
+    "tests/e2e/desktop-own-identity.test.ts",
+    "tests/unit/desktop-helper-state-op.test.ts",
+    "tests/unit/desktop-real-helper-test-guard.test.ts",
+    "upgrades/side-effects/desktop-tests-stop-touching-tcc.eli16.md",
+    "upgrades/side-effects/desktop-tests-stop-touching-tcc.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test-only guard plus opt-in gating; production unchanged outside VITEST; a revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/desktop-tests-stop-touching-tcc.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-tests-stop-touching-tcc.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

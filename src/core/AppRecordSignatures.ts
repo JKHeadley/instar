@@ -30,6 +30,13 @@ export interface MachineSignature { machineId: string; signerKeyHash: string; si
 
 export interface SignedMachinePayload extends MachineSignature {}
 
+/**
+ * A machine receipt. `v: 2` (Slack, mobile-native-conversations §4.9) also signs the canonical
+ * conversation key: a Slack send path names a machine-local negative alias, so the receipt is
+ * what binds the signed request to the conversation it was stored under.
+ */
+export interface ReceiptSignature extends MachineSignature { v?: 2; conversationKey?: string }
+
 /** This machine's identity signer. `sign` reads the identity fresh, so a key rotation is picked up. */
 export interface MachineSigner {
   machineId(): string;
@@ -69,6 +76,11 @@ export function canonicalStringFromHash(deviceId: string, host: string, method: 
 
 export function receiptPayload(canonicalSha256: string, receivedAt: string, machineId: string): string {
   return `instar-app-receipt-v1\n${canonicalSha256}\n${receivedAt}\n${machineId}`;
+}
+
+/** The v2 receipt (§4.9): v1's fields plus the canonical conversation key the message was stored under. */
+export function receiptPayloadV2(canonicalSha256: string, receivedAt: string, machineId: string, conversationKey: string): string {
+  return `instar-app-receipt-v2\n${canonicalSha256}\n${receivedAt}\n${machineId}\n${conversationKey}`;
 }
 
 export function redactionPayload(bodySha256: string, storedTextSha256: string, kinds: ReadonlyArray<string>): string {
@@ -167,7 +179,7 @@ export interface VerifiableRecord {
   text: string;
   origin?: StoredDeviceOrigin;
   receivedAt?: string;
-  receipt?: MachineSignature;
+  receipt?: ReceiptSignature;
   /** A `media-message`: the stored attachments (absent on a plain message). */
   attachments?: ReadonlyArray<AttachmentProjection>;
 }
@@ -197,11 +209,25 @@ export function sendPathFor(conversationKey: string): string | null {
   return null;
 }
 
+/**
+ * A Slack conversation's store key (`slack:<team>:<channel>[:<thread>]`, the registry's canonical
+ * key). Its send path names a machine-local alias (`/mobile/chat/slack/-N`), so the path alone
+ * cannot name the conversation: the v2 receipt carries the binding (§4.9).
+ */
+export const SLACK_STORE_KEY_RE = /^slack:(?:_|T[A-Z0-9]+):[CDG][A-Z0-9]+(?::\d{10}\.\d{6})?$/;
+export const SLACK_SEND_PATH_RE = /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}$/;
+export function isSlackStoreKey(conversationKey: string): boolean { return SLACK_STORE_KEY_RE.test(conversationKey); }
+
 /** Build the receipt for an accepted request (signed by this machine). */
-export function signReceipt(signer: MachineSigner, origin: Pick<StoredDeviceOrigin, 'deviceId' | 'host' | 'method' | 'pathWithQuery' | 'timeMs' | 'bodySha256'>, receivedAt: string): MachineSignature {
+export function signReceipt(
+  signer: MachineSigner, origin: Pick<StoredDeviceOrigin, 'deviceId' | 'host' | 'method' | 'pathWithQuery' | 'timeMs' | 'bodySha256'>, receivedAt: string,
+  /** Given ⇒ a v2 receipt that also signs this canonical conversation key (Slack, §4.9). */
+  conversationKey?: string,
+): ReceiptSignature {
   const canonical = canonicalStringFromHash(origin.deviceId, origin.host, origin.method, origin.pathWithQuery, origin.timeMs, origin.bodySha256);
   const machineId = signer.machineId();
-  return signer.sign(receiptPayload(sha256Hex(canonical), receivedAt, machineId));
+  if (conversationKey === undefined) return signer.sign(receiptPayload(sha256Hex(canonical), receivedAt, machineId));
+  return { v: 2, conversationKey, ...signer.sign(receiptPayloadV2(sha256Hex(canonical), receivedAt, machineId, conversationKey)) };
 }
 
 /** Build the redaction attestation (signed by this machine) over what was kept. */
@@ -248,8 +274,11 @@ export function verifyRecordedOrigin(record: VerifiableRecord, ledger: LedgerVie
   let sigOk = false;
   try { sigOk = crypto.verify('sha256', Buffer.from(canonical), { key, dsaEncoding: 'der' }, sigBytes); } catch { sigOk = false; } // @silent-fallback-ok — an unverifiable signature is a failed check
   if (!sigOk) return 'failed';
-  const expectedPath = sendPathFor(record.conversationKey);
-  if (!expectedPath || o.method.toUpperCase() !== 'POST' || o.pathWithQuery !== expectedPath) return 'failed';
+  // A Slack record's path names a machine-local alias; its receipt (v2) binds the stored key below.
+  const slack = isSlackStoreKey(record.conversationKey);
+  const expectedPath = slack ? null : sendPathFor(record.conversationKey);
+  if (o.method.toUpperCase() !== 'POST') return 'failed';
+  if (slack ? !SLACK_SEND_PATH_RE.test(o.pathWithQuery) : (!expectedPath || o.pathWithQuery !== expectedPath)) return 'failed';
   const receivedMs = record.receivedAt ? Date.parse(record.receivedAt) : NaN;
   if (!Number.isFinite(receivedMs)) return 'failed';
   const activated = Date.parse(entry.activatedAt);
@@ -282,7 +311,13 @@ export function verifyRecordedOrigin(record: VerifiableRecord, ledger: LedgerVie
 
   // ── Machine signatures (unknown key ⇒ unknown; a wrong signature under a known key ⇒ failed) ──
   if (!record.receipt) return 'unknown';
-  const receipt = verifyMachineSignature(machineKey, record.receipt, receiptPayload(sha256Hex(canonical), record.receivedAt!, record.receipt.machineId), receivedMs);
+  const rc = record.receipt;
+  // A v2 receipt must name this record's conversation; a Slack record needs one (its path cannot).
+  if (rc.v === 2 ? rc.conversationKey !== record.conversationKey : slack) return 'failed';
+  const receiptBytes = rc.v === 2
+    ? receiptPayloadV2(sha256Hex(canonical), record.receivedAt!, rc.machineId, record.conversationKey)
+    : receiptPayload(sha256Hex(canonical), record.receivedAt!, rc.machineId);
+  const receipt = verifyMachineSignature(machineKey, rc, receiptBytes, receivedMs);
   if (receipt === 'bad') return 'failed';
   let redaction: 'ok' | 'bad' | 'unknown' = 'ok';
   if (mode === 'redacted') {
