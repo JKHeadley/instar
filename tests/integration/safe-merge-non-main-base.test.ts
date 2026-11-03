@@ -71,9 +71,9 @@ process.stdout.write('[]');
   it('--auto: a PR into main passes the base check (it reaches the check-run read)', () => {
     const { calls, resultObj } = run('main', '--auto');
     expect(resultObj?.result).not.toBe('refused:non-main-base');
-    // With no Actions checks the fake reports, the next gate refuses — proof the
+    // With no Actions checks the fake reports, the next gate defers — proof the
     // base check let it through rather than refusing it.
-    expect(resultObj?.result).toBe('refused:no-checks-ran');
+    expect(resultObj?.result).toBe('deferred:checks-pending');
     expect(calls.length).toBeGreaterThan(1);
     expect(calls.some((c) => c[0] === 'pr' && c[1] === 'merge')).toBe(false);
   });
