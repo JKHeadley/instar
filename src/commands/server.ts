@@ -87,6 +87,7 @@ import { slackReplyRelayReadiness } from '../core/SlackReplyRelayInstaller.js';
 import { claimSuspensionExcludesPin } from '../core/TopicClaimAnnotationStore.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
 import { NewTopicDefaultStore, evaluateSessionPoolLocalClaim, createSpawnForTopic, createDashboardPoolClaimOps, seedTopicProfileAtCreation } from '../core/dashboardTopicProfile.js';
+import { movedMachinesMidStepNotice, SESSION_RESTARTING_NOTICE, SESSION_BACK_NOTICE } from '../messaging/userNotices.js';
 import { parseDashboardCreatePayload, safeMachineLabel, createDashboardCreateStartRunner, type DashboardCreateStart } from '../core/dashboardMachineChoice.js';
 import { slugifyChannelName } from '../messaging/slack/sanitize.js';
 import {
@@ -1706,7 +1707,7 @@ async function respawnSessionForTopic(
   topicMemory?: TopicMemory,
   userProfile?: UserProfile,
   recoveryPrompt?: string,
-  options?: { silent?: boolean; configHome?: string; accountId?: string; awaitInitialInjection?: boolean },
+  options?: { silent?: boolean; quietAfterRespawn?: boolean; configHome?: string; accountId?: string; awaitInitialInjection?: boolean },
 ): Promise<void> {
   console.log(`[telegram→session] Session "${targetSession}" needs respawn for topic ${topicId}`);
 
@@ -1768,11 +1769,15 @@ async function respawnSessionForTopic(
   );
 
   telegram.registerTopicSession(topicId, newSessionName, topicName);
-  if (!options?.silent) {
+  // `quietAfterRespawn`: the caller already told the person a restart is under way
+  // for their message (the dead-session and too-long paths), and the reply itself
+  // confirms it — a second "back" note is lifecycle narration (Near-Silent
+  // Notifications; UX standard Rule 8). Every other caller confirms once.
+  if (!options?.silent && !options?.quietAfterRespawn) {
     // The respawn already succeeded. A held or failed notice must not turn it
     // into a reported failure (the caller would respawn again: a duplicate session).
-    try { await telegram.sendToTopic(topicId, `Session respawned.`); }
-    catch (err) { console.warn(`[telegram→session] Respawned for topic ${topicId}, but the "Session respawned." notice was not sent: ${err instanceof Error ? err.message : String(err)}`); }
+    try { await telegram.sendToTopic(topicId, SESSION_BACK_NOTICE); }
+    catch (err) { console.warn(`[telegram→session] Respawned for topic ${topicId}, but the back-up notice was not sent: ${err instanceof Error ? err.message : String(err)}`); }
   }
   console.log(`[telegram→session] Respawned "${newSessionName}" for topic ${topicId}`);
 }
@@ -3114,7 +3119,7 @@ export function wireTelegramRouting(
           if (_topicResumeMap) {
             _topicResumeMap.remove(topicId);
           }
-          respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined)
+          respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined, undefined, { quietAfterRespawn: true })
             .then(() => confirmLocalSessionPoolClaim())
             .catch(err => {
               console.error(`[telegram→session] Context exhaustion respawn failed:`, err);
@@ -3136,7 +3141,7 @@ export function wireTelegramRouting(
             return;
           }
           const _spawnTokB = spawningTopics.add(topicId);
-          sendDeterministicTelegramNotice(telegram, 'session-lifecycle', topicId, `🔄 Session restarting — message queued.`).catch(() => {
+          sendDeterministicTelegramNotice(telegram, 'session-lifecycle', topicId, SESSION_RESTARTING_NOTICE).catch(() => {
             DegradationReporter.getInstance().report({
               feature: 'telegram-session-lifecycle-notice',
               primary: 'Confirm delivery of the recorded session lifecycle notice',
@@ -3145,7 +3150,7 @@ export function wireTelegramRouting(
               impact: 'The notice may be held or uncertain; no replacement send is authorized',
             });
           });
-          respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined)
+          respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined, undefined, { quietAfterRespawn: true })
             .then(() => confirmLocalSessionPoolClaim())
             .catch(err => {
               console.error(`[telegram→session] Respawn failed:`, err);
@@ -25803,11 +25808,19 @@ export async function startServer(options: StartOptions): Promise<void> {
               });
             },
             markInterrupted: (topic) => { autoMod.markAutonomousInterruptedMidTask(config.stateDir, topic); },
-            notifyInterrupted: (topic, target, detail) => {
+            notifyInterrupted: (topic, target) => {
               const topicNum = Number(topic);
               if (!telegram || !Number.isFinite(topicNum)) return;
+              // Sent even when the session announced the move itself: that note is
+              // optional and written BEFORE the cut, so this is the only record that
+              // the last step was cut off. The person sees the machine's nickname
+              // (never its id — Rule 7); the bound and timings stay in the audit row.
+              let targetName: string | null = null;
+              try {
+                targetName = meshIdMgr.getActiveMachines().find((m) => m.machineId === target)?.entry.nickname ?? null;
+              } catch { /* @silent-fallback-ok — unresolved name is stated plainly ("another machine"), per Rule 7 */ }
               void telegram
-                .sendToTopic(topicNum, `This conversation moved machines mid-task (${detail}). Work resumes on the new machine — the final turn before the move may be partial.`)
+                .sendToTopic(topicNum, movedMachinesMidStepNotice(targetName))
                 .catch(() => { /* @silent-fallback-ok — ONE best-effort notice; the audit row is the durable record */ });
             },
             transferDeliveryLedger: createInboundDeliveryTransferStep({

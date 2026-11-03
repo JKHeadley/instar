@@ -90,6 +90,16 @@ describe('SessionDrainRunner — WS1.2 owner-side bounded drain', () => {
     expect(h.casCalls.at(-1)).toEqual({ type: 'claim', machineId: 'm_mini' });
   });
 
+  it('the forced-close notice carries no internal reason text; the bound stays in the audit row (Rule 8)', async () => {
+    const h = harness({ quietAfterPolls: Infinity });
+    await h.runner.run({ sessionKey: '13481', target: 'm_mini', senderObservedEpoch: 4 });
+    // Only the topic and the target cross the seam — the 2026-11-03 notice pasted
+    // "drain bound (30000ms) reached — final turn may be partial" into user text.
+    expect(h.notifyInterrupted.mock.calls[0]).toEqual(['13481', 'm_mini']);
+    const done = h.audits.find((a: Record<string, unknown>) => a.event === 'drain-completed-interrupted' || a.type === 'drain-completed-interrupted' || JSON.stringify(a).includes('drain-completed-interrupted'));
+    expect(JSON.stringify(done)).toContain('drainBoundMs');
+  });
+
   it('requires encrypted ledger custody before closing or claiming and restores custody on refusal', async () => {
     let rec = activeRec();
     const transferDeliveryLedger = vi.fn(async () => ({ ok: false, reason: 'target-storage-full' }));

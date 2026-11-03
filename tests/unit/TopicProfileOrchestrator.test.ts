@@ -957,7 +957,7 @@ describe('boot reconcile sweep', () => {
     });
     await h.store.mutate('7', { model: 'claude-fable-5', updatedBy: OP.updatedBy }, { shiftPrevious: true });
     h.orch.bootReconcileSweep();
-    expect(h.disclosures.some((d) => d.text.includes("wasn't applied before my last restart"))).toBe(true);
+    expect(h.disclosures.some((d) => d.text.includes("didn't take effect when I last restarted"))).toBe(true);
     await waitUntil(() => h.spawns.length === 1);
     expect(h.spawns[0].model).toBe('claude-fable-5');
   });
@@ -971,7 +971,7 @@ describe('boot reconcile sweep', () => {
     await h.store.mutate('7', { model: 'claude-fable-5', updatedBy: OP.updatedBy }, { shiftPrevious: true });
     h.orch.bootReconcileSweep();
     await sleep(120);
-    expect(h.disclosures.some((d) => d.text.includes("wasn't applied before my last restart"))).toBe(false);
+    expect(h.disclosures.some((d) => d.text.includes("didn't take effect when I last restarted"))).toBe(false);
     expect(h.spawns.length).toBe(0);
     expect(h.kills.length).toBe(0);
     expect(h.audits.some((a) => a.type === 'boot-sweep-unknown-applied' && a.topic === '7')).toBe(true);
