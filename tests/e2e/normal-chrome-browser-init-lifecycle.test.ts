@@ -37,7 +37,11 @@ describe('fresh init delivers the normal-Chrome browser method', () => {
     expect(skill).toContain('# /normal-chrome-browser');
     expect(skill).toContain('### macOS: Apple Events tools');
     expect(skill).toContain('### Windows: `native-drive.ps1` through `ndrive.sh`');
-    const md = fs.readFileSync(path.join(agentDir, 'CLAUDE.md'), 'utf-8');
+    // CLAUDE.md reference layout: init writes the small core; the feature
+    // section lives in .instar/reference/.
+    const refDir = path.join(agentDir, '.instar', 'reference');
+    const md = [path.join(agentDir, 'CLAUDE.md'), ...fs.readdirSync(refDir).map(f => path.join(refDir, f))]
+      .map(p => fs.readFileSync(p, 'utf-8')).join('\n');
     expect(md).toContain('### Normal-Chrome browser (account-bound web tasks, macOS + Windows)');
     expect(md).not.toContain('### Normal-Chrome browser (account-bound web tasks, macOS)\n');
 

@@ -13196,7 +13196,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       stateDir: config.stateDir,
       projectDir: config.projectDir,
       port: config.port,
-      hasTelegram: config.messaging.some(m => m.type === 'telegram' && m.enabled),
+      // Same derivation as the boot migration and `instar migrate`: the CLAUDE.md
+      // core block is regenerated from it, so two paths must not disagree.
+      hasTelegram: config.messaging.some(m => m.type === 'telegram'),
       projectName: config.projectName,
       claudeCodePath: config.sessions?.frameworkBinaryPaths?.['claude-code'] ?? config.sessions?.claudePath ?? null,
       host: config.host,

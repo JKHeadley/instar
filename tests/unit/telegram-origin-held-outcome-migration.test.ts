@@ -16,7 +16,7 @@ describe('held-reply outcome awareness installation parity', () => {
   it('existing agents receive it once, in CLAUDE.md and the framework shadow', () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'held-outcome-migration-'));
     const stateDir = path.join(projectDir, '.instar'), md = path.join(projectDir, 'CLAUDE.md');
-    fs.mkdirSync(stateDir); fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ projectName: 'echo', port: 4042 }));
+    fs.mkdirSync(stateDir); fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ projectName: 'echo', port: 4042 , claudeMd: { layout: 'full' } /* tests the legacy append chain; the reference-layout conversion is covered in claude-md-reference-layout.test.ts */ }));
     fs.writeFileSync(md, '# Existing custom instructions\n');
     fs.writeFileSync(path.join(projectDir, 'AGENTS.md'), '# Custom framework instructions\n');
     try {
