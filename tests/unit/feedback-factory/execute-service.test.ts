@@ -8,7 +8,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { BASE_SHA, HEAD_SHA, createExecHarness, defaultRun, finishSessions, isBaseState, type ExecHarness } from '../../fixtures/feedbackExecuteHarness.js';
 import { DrainConflictError } from '../../../src/feedback-factory/drain/FeedbackDrainStore.js';
-import { CANARY_PROBE_DETAIL_BUDGET, CANARY_VERSION, EVIDENCE_FILE, RESULT_FILE, pathSlug } from '../../../src/feedback-factory/execute/executePolicy.js';
+import { CANARY_PROBE_DETAIL_BUDGET, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, CONFINED_RELATED_TIMEOUT_MS, EVIDENCE_FILE, RESULT_FILE, pathSlug } from '../../../src/feedback-factory/execute/executePolicy.js';
 import { PROBE_TAIL_CHARS } from '../../../src/feedback-factory/execute/confinementCanary.js';
 
 const DAY = 24 * 60 * 60_000;
@@ -1614,6 +1614,8 @@ describe('focused review round regressions', () => {
     expect(where(/^npx vitest run/)).toEqual(['base', 'head']);
     expect(where(/^npm run lint$/)).toEqual(['gate']);
     expect(where(/vitest related/)).toEqual(['gate']);
+    expect(verify.filter((r) => /vitest related/.test(r.command)).map((r) => r.timeoutMs)).toEqual([CONFINED_RELATED_TIMEOUT_MS]);
+    expect(verify.filter((r) => !/vitest related/.test(r.command)).every((r) => r.timeoutMs === CONFINED_COMMAND_TIMEOUT_MS)).toBe(true);
     const tmps = new Set(verify.map((r) => r.env.TMPDIR));
     expect(tmps.size).toBe(verify.length);
     const clones = [...new Set(verify.map((r) => r.cwd))];

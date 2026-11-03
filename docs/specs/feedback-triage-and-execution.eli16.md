@@ -30,3 +30,7 @@ A ranked list of what is being worked on, and counts of what was held or ignored
 ## Why this matters
 
 Instar has a rule that anything it accepts must reach a deliberate end. Feedback reports were being accepted and then left to pile up. This design gives every work item an end: worked on, held with a reason, or set aside with a reason.
+
+## November 2026 timeout amendment
+
+For a fix that changes a central source file, the worker's related-test check can touch much of Instar. That one check may now run for up to 45 minutes; other individual test and gate commands still have a 20-minute limit. A command that reaches its limit records a failure promptly, even if a child process keeps an output pipe open. This avoids a worker sitting indefinitely in verification. The full attempt still has a six-hour lease, and a timed-out check cannot publish a fix.

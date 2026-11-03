@@ -64,6 +64,7 @@ export class SandboxRuntimeRunner implements ConfinedRunner {
   }
 
   async run(command: ConfinedCommand): Promise<ConfinedResult> {
+    if (process.platform !== 'darwin' && process.platform !== 'linux') throw new Error(`profile-unenforceable: unsupported-platform:${process.platform}`);
     const resolved = (this.opts.resolve ?? resolveSandboxRuntime)();
     if ('error' in resolved) throw new Error(`profile-unenforceable: ${resolved.error}`);
     fs.mkdirSync(this.opts.settingsDir, { recursive: true, mode: 0o700 });
@@ -93,31 +94,56 @@ export function shortTmpDir(): string {
   return os.tmpdir();
 }
 
-/** Spawn with a wall-clock timeout (SIGKILL on expiry) and an output cap. Never throws on a non-zero exit. */
+/** Spawn with a wall-clock timeout and an output cap. Never throws on a non-zero exit.
+ * A descendant can retain stdout/stderr after the direct child exits, even if it leaves
+ * the original process group. Limit paths settle independently of the `close` event.
+ */
 export function runCapped(bin: string, args: string[], command: Pick<ConfinedCommand, 'cwd' | 'env' | 'timeoutMs'>): Promise<ConfinedResult> {
   return new Promise((resolve) => {
-    const child = spawn(bin, args, { cwd: command.cwd, env: command.env, stdio: ['ignore', 'pipe', 'pipe'], detached: false });
+    const group = process.platform !== 'win32';
+    const child = spawn(bin, args, { cwd: command.cwd, env: command.env, stdio: ['ignore', 'pipe', 'pipe'], detached: group });
+    const killTree = () => {
+      if (group && child.pid) {
+        try { process.kill(-child.pid, 'SIGKILL'); return; } catch { /* @silent-fallback-ok: group may have exited; try direct child */ }
+      }
+      child.kill('SIGKILL');
+    };
     let stdout = '';
     let stderr = '';
     let size = 0;
     let capped = false;
     let timedOut = false;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const settle = (exitCode: number | null, signal: string | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ exitCode, signal, stdout, stderr, timedOut, outputCapped: capped });
+    };
+    const stopAtLimit = () => {
+      killTree();
+      // A detached descendant may have escaped the direct child's process group while
+      // retaining these pipes. Do not wait for its exit to return a bounded result.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      settle(null, 'SIGKILL');
+    };
     const take = (which: 'out' | 'err') => (chunk: Buffer) => {
       if (capped) return;
       size += chunk.length;
-      if (size > CONFINED_OUTPUT_CAP_BYTES) { capped = true; child.kill('SIGKILL'); return; }
+      if (size > CONFINED_OUTPUT_CAP_BYTES) { capped = true; stopAtLimit(); return; }
       if (which === 'out') stdout += chunk.toString('utf8'); else stderr += chunk.toString('utf8');
     };
     child.stdout?.on('data', take('out'));
     child.stderr?.on('data', take('err'));
-    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, Math.max(1, command.timeoutMs));
+    timer = setTimeout(() => { timedOut = true; stopAtLimit(); }, Math.max(1, command.timeoutMs));
     child.on('error', (error) => {
-      clearTimeout(timer);
-      resolve({ exitCode: null, signal: null, stdout, stderr: `${stderr}\n[spawn error: ${error.message}]`, timedOut, outputCapped: capped });
+      stderr += `\n[spawn error: ${error.message}]`;
+      settle(null, null);
     });
     child.on('close', (code, signal) => {
-      clearTimeout(timer);
-      resolve({ exitCode: code, signal: signal ?? null, stdout, stderr, timedOut, outputCapped: capped });
+      settle(code, signal ?? null);
     });
   });
 }
