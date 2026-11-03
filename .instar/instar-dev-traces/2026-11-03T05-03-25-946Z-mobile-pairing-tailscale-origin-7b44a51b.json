@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "mobile-pairing-tailscale-origin",
+  "sessionId": "38c6bab8-117f-4db9-906f-c4fe9b22996e",
+  "timestamp": "2026-11-03T05:03:25.946Z",
+  "artifactPath": "upgrades/side-effects/mobile-pairing-tailscale-origin.md",
+  "artifactSha256": "ebcb578a28cc5bb7256ab24b27544ada036783463686b7015707153affb56da6",
+  "specPath": "docs/specs/mobile-pairing-tailscale-origin.md",
+  "coveredFiles": [
+    "src/core/MobileDeviceKeys.ts",
+    "src/core/MobilePairing.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/integration/mobile-pairing-tailscale-origin.test.ts",
+    "tests/unit/mobile-pairing-tailscale-origin-awareness.test.ts",
+    "tests/unit/mobile-pairing.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Auth admission path for phone pairing; converged + approved spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

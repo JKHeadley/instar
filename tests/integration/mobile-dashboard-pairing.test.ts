@@ -212,11 +212,11 @@ describe('pairing path selection', () => {
     expect(ctx.dms).toHaveLength(0);
   });
 
-  it('native conversations off and no Telegram: the old 409 approval-unavailable', async () => {
+  it('native conversations off and no Telegram: 409 approval-unavailable, now already at mint (mobile-pairing-tailscale-origin §3.1)', async () => {
     const ctx = setup({ nativeOn: false });
-    const { r } = await redeemNew(ctx.app);
-    expect(r.status).toBe(409);
-    expect(r.body.error).toBe('approval-unavailable');
+    const m = await bearer(request(ctx.app).post('/mobile/pairing-codes')).send({ label: 'mine' });
+    expect(m.status).toBe(409);
+    expect(m.body.error).toBe('approval-unavailable');
     expect(ctx.svc.devices.list()).toHaveLength(0);
   });
 });

@@ -359,6 +359,46 @@ export class MobilePairingService {
   private cfg(): MobilePairingConfig | undefined { return this.deps.config.mobilePairing; }
   origin(): string | null { return stableOrigin(this.deps.config.tunnel as { type?: string; hostname?: string } | undefined); }
 
+  /**
+   * The origin a new pairing link carries (mobile-pairing-tailscale-origin §3.1): the running
+   * Cloudflare named tunnel when there is one (preferred, unchanged); otherwise a Tailscale own
+   * name this machine's own configuration still names (`ownNames.accepts`). Probe health is a
+   * preference among several, never a gate; mint's self-check decides. Chosen only from local
+   * configuration and proven names, never from anything a request carries. Null → mint 409.
+   */
+  pairingOrigin(): { origin: string; host: string; kind: 'cloudflare' | 'tailscale' } | null {
+    const named = this.origin();
+    if (named && this.namedTunnelActive()) return { origin: named, host: new URL(named).host, kind: 'cloudflare' };
+    if (!this.ownNames) return null;
+    const own = this.ownNames;
+    const ts = own.routes()
+      .filter((r) => r.kind === 'tailscale' && own.accepts(new URL(r.origin).host))
+      .sort((a, b) => (Number(b.lastProbeOk === true) - Number(a.lastProbeOk === true))
+        || String(b.lastProbeAt ?? '').localeCompare(String(a.lastProbeAt ?? ''))
+        || a.firstVerifiedAt.localeCompare(b.firstVerifiedAt))[0];
+    return ts ? { origin: ts.origin, host: new URL(ts.origin).host, kind: 'tailscale' } : null;
+  }
+
+  /** A consent-gated backup relay is, or may still be, carrying traffic (§3.1 relay check). */
+  relayMayBeActive(): boolean {
+    const l = this.deps.tunnel?.()?.lifecycleState;
+    return !!l && (l.lastState === 'relay-active' || l.lastState === 'self-healing');
+  }
+
+  /**
+   * §3.2 step 1: is this request Host one a pairing link can currently be redeemed on? The
+   * configured named-tunnel host while that tunnel runs, or a Tailscale own name this machine
+   * still names while no relay may be carrying traffic. Never outbound probe health.
+   */
+  redeemHostEligible(host: string | null): { kind: 'cloudflare' | 'tailscale' } | null {
+    if (!host) return null;
+    const named = this.origin();
+    if (named && new URL(named).host === host && this.namedTunnelActive()) return { kind: 'cloudflare' };
+    if (!this.ownNames || this.relayMayBeActive()) return null;
+    const isTailscale = this.ownNames.listed().some((n) => n.kind === 'tailscale' && n.host === host);
+    return isTailscale && this.ownNames.accepts(host) ? { kind: 'tailscale' } : null;
+  }
+
   namedTunnelActive(): boolean {
     const t = this.deps.tunnel?.();
     if (!t) return false;
@@ -462,9 +502,12 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     if (!svc.enabled()) { json503(res); return; }
     const token = svc.deps.config.authToken;
     if (!token) { res.status(503).json({ error: 'Pairing is not available yet. Try again shortly.' }); return; }
-    const origin = svc.origin();
-    const hostOk = !!origin && typeof req.headers.host === 'string' && req.headers.host.toLowerCase() === new URL(origin).host;
-    if (!arrivedOverLocalTls(req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']) || !hostOk || !svc.namedTunnelActive()) {
+    // §3.2 step 1 (before the code is taken, so a stray request cannot burn a real link): the
+    // request arrived over local TLS on a host a link can currently be redeemed on. Step 3 below
+    // then requires it to be the very host the code was minted for.
+    const reqHost = normalizeRequestHost(req.headers.host);
+    const eligible = svc.redeemHostEligible(reqHost);
+    if (!arrivedOverLocalTls(req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']) || !eligible) {
       res.status(403).json({ error: 'Pairing only works over this agent\'s secure address.' });
       return;
     }
@@ -488,9 +531,15 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       res.status(403).json({ error: 'That link has expired or was already used.' });
       return;
     }
+    // §3.2 step 3: an honest phone sends to the link's own origin. A code with no bound origin
+    // (minted before this change, in this process) keeps the old rule: the eligible host.
+    if (r.bound && (r.bound.host !== reqHost || r.bound.kind !== eligible.kind)) {
+      res.status(403).json({ error: 'That link has expired or was already used.' });
+      return;
+    }
     let created: ReturnType<DeviceRegistry['createPending']>;
     try {
-      created = svc.devices.createPending({ deviceName: cleanText(body.deviceName), label: r.label, publicKey, host: new URL(origin!).host });
+      created = svc.devices.createPending({ deviceName: cleanText(body.deviceName), label: r.label, publicKey, host: reqHost! });
     } catch (err) {
       svc.deps.reportDegradation?.('MobilePairing.registryWrite', err);
       res.status(500).json({ error: 'Could not record the device. Ask for a new link.' });
@@ -543,16 +592,28 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
   router.post('/mobile/pairing-codes', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!svc.enabled()) { json503(res); return; }
-    const t = deps.config.tunnel as { type?: string; hostname?: string } | undefined;
-    if (t?.type === 'named' && !t.hostname) {
-      res.status(409).json({ error: 'stable-address-required', detail: 'The named tunnel has no configured hostname.' });
+    const chosen = svc.pairingOrigin();
+    if (!chosen) {
+      const t = deps.config.tunnel as { type?: string; hostname?: string } | undefined;
+      const detail = t?.type === 'named' && !t.hostname
+        ? 'The named tunnel has no configured hostname, and this machine has no Tailscale HTTPS name served by `tailscale serve`.'
+        : 'The phone app needs a permanent address on this machine: a running Cloudflare named tunnel, or this machine\'s Tailscale HTTPS name served by `tailscale serve`.';
+      res.status(409).json({ error: 'stable-address-required', detail });
       return;
     }
-    const origin = svc.origin();
-    if (!origin || !svc.namedTunnelActive()) {
-      res.status(409).json({ error: 'stable-address-required', detail: 'The phone app needs a permanent address: a named tunnel with a hostname, currently running on this machine.' });
+    // §3.1: before this change only the named-tunnel machine could mint; with a Tailscale fallback
+    // any machine can, so refuse here (not after the operator opened the link) when this machine
+    // cannot deliver the confirmation code.
+    const approval = svc.approvalPath();
+    if (!approval || (approval === 'telegram' && !svc.holdsLease())) {
+      res.status(409).json({ error: 'approval-unavailable', detail: 'This machine cannot send the confirmation code. Make the link from the machine serving Telegram.' });
       return;
     }
+    if (chosen.kind === 'tailscale' && svc.relayMayBeActive()) {
+      res.status(409).json({ error: 'address-unverified', detail: 'A backup relay is carrying this agent\'s traffic; pairing over Tailscale waits until it ends.' });
+      return;
+    }
+    const origin = chosen.origin;
     const sole = await svc.verifySoleServer(origin);
     if (!sole.ok) { res.status(409).json({ error: sole.error, detail: sole.detail }); return; }
     // Multi-route: prove the tunnel name as an own name now, so the phone paired on it is
@@ -561,9 +622,10 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       try { await svc.ownNames.proveNow(new URL(origin).host); } catch (err) { deps.reportDegradation?.('MobileRoutes.probe', err); }
     }
     const label = cleanText((req.body as Record<string, unknown> | undefined)?.label);
-    const m = svc.codes.mint(codeTtlMs(deps.config.mobilePairing), label, deps.config.authToken ?? '');
+    const m = svc.codes.mint(codeTtlMs(deps.config.mobilePairing), label, deps.config.authToken ?? '', { host: chosen.host, kind: chosen.kind });
     if (!m.ok) { res.status(429).json({ error: m.reason }); return; }
-    res.json({ code: m.code, expiresAt: new Date(m.expiresAt).toISOString(), link: buildPairLink(origin, m.code, deps.config.projectName) });
+    // originKind lets the agent tell the operator a Tailscale link opens only with Tailscale on.
+    res.json({ code: m.code, expiresAt: new Date(m.expiresAt).toISOString(), link: buildPairLink(origin, m.code, deps.config.projectName), originKind: chosen.kind });
   });
 
   router.get('/mobile/devices', async (req: Request, res: Response) => {
