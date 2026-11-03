@@ -1002,6 +1002,11 @@ export const APP_MEDIA_STALE_COPY_LINE = 'A file on another of my machines reads
 /** The voice form before server-side transcription shipped (increment 2; refreshed in place on update). */
 export const APP_MEDIA_STALE_VOICE_LINE = '`[voice:<path>] <transcript>`.';
 export const APP_MEDIA_CURRENT_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here with the same provider as Telegram voice notes, `GROQ_API_KEY` or `OPENAI_API_KEY`; with none, or when it fails or takes over 60 s, the line reads `(transcription unavailable: <reason>; the audio file is at that path)` and I can still read the file).';
+/**
+ * Files sent from the app into a Telegram topic or a Slack conversation (chat-media §4.9,
+ * increment 3). Inserted after the "Reply with files" bullet on update (content-sniffed).
+ */
+export const APP_MEDIA_TO_PLATFORM_LINE = '- **Files from the app into Telegram and Slack:** the operator can also send photos and files from the app into a Telegram topic or a Slack conversation. They reach me in that topic or channel in the same line forms with a local path (the stored copy is kept under `telegram:<topicId>` or the Slack conversation key), and a copy goes into Telegram ("📱 <owner> (from the app): …", a file above 50,000,000 bytes as "📱 <owner> sent <name> (too large for Telegram; open it in the app)") or Slack (the file uploaded into the channel or thread). A failed copy answers `mirror: "failed"` and the message still reached me. "Did my photo reach the topic?" → read that message\'s `deliveryState` and `mirror`; the app\'s history for the topic or channel shows the files with their `bytes` state.';
 export const APP_MEDIA_CURRENT_COPY_LINE = 'A file on another of my machines is copied here by itself, checked against its hash: while it copies, history reads `not-here` and a download answers 202 `fetching`. A message whose file has not arrived reads `[file still copying: <name>]`, and one `[file now available: <path>]` line follows when it lands. `/health?scope=pool` → `appMediaPool` shows every machine; `singleCopyBlobs` counts files only this machine holds (null when it cannot be measured, never a guessed 0).';
 
 /**
@@ -1014,6 +1019,7 @@ export function APP_MEDIA_CLAUDEMD_SECTION(): string {
 App messages may carry files. Each arrives as one line before the caption, with a local path: \`[image:<path>]\`, \`[document:<path>] (<name>, <type>, <size>)\`, \`[video:<path>]\`, ${APP_MEDIA_CURRENT_VOICE_LINE} Read the file at that path; the copy is mine and a change to it never touches the stored file.
 - **Earlier files** are listed in the context file by name with an attachment id. Open one with \`.instar/scripts/app-media-path <attachment id>\`, which prints a path.
 - **Reply with files**: \`.instar/scripts/app-reply.sh --file <path> "Here it is"\` (up to 10 \`--file\`, before the text; the caption is the text argument or piped in, read with a bounded wait; 50 MiB each, 64 MiB per reply). Put a generated file in \`.instar/app-media/outbox/\`, the project or the temporary directory.
+${APP_MEDIA_TO_PLATFORM_LINE}
 - **Refused, and why:** files outside the project, the outbox and the temporary directory (403 \`path-not-allowed\`), key-material paths (403 \`key-material\`), hard links (403 \`hard-link\`), and any file holding a live credential in its text or a printable run (the non-overridable 422 credential wall). Compressed or encrypted contents cannot be inspected, so never attach an archive of credentials.
 - Sizes and counts are in the authenticated \`/health\` → \`appMedia\`; a count reading null has not been measured yet. Gate: \`mobilePairing.native.media.enabled\` (omitted ⇒ the development-agent gate; needs \`mobilePairing.native.enabled\`); \`mobilePairing.native.media.maxStoreBytes\` caps the store (default 20 GiB).
 - **When to use** (PROACTIVE): the operator asks for a file, a document or an image in an app conversation → send it with \`--file\` rather than describing it. "Is my file intact?" → history shows each file's \`bytes\` (\`verified\`, \`not-here\`, \`mismatch\`, \`removed\`). A file on another of my machines is copied here by itself, checked against its hash: while it copies, history reads \`not-here\` and a download answers 202 \`fetching\`. A message whose file has not arrived reads \`[file still copying: <name>]\`, and one \`[file now available: <path>]\` line follows when it lands. \`/health?scope=pool\` → \`appMediaPool\` shows every machine; \`singleCopyBlobs\` counts files only this machine holds (null when it cannot be measured, never a guessed 0).
@@ -8820,6 +8826,19 @@ setTimeout(() => process.exit(0), 2000);
         content = content.replace(staleVoice, `\`[video:<path>]\`, ${APP_MEDIA_CURRENT_VOICE_LINE} Read the file at that path`);
         patched = true;
         result.upgraded.push('CLAUDE.md: updated the App conversation media voice line');
+      }
+    }
+    // Files from the app into Telegram and Slack (media spec §4.9, increment 3): one new bullet,
+    // inserted after the media section's "Reply with files" bullet (content-sniffed; idempotent).
+    if (content.includes(APP_MEDIA_CLAUDEMD_MARKER) && !content.includes(APP_MEDIA_TO_PLATFORM_LINE)) {
+      const lines = content.split('\n');
+      const start = lines.findIndex((l) => l.startsWith(APP_MEDIA_CLAUDEMD_MARKER));
+      const at = start >= 0 ? lines.findIndex((l, i) => i > start && l.startsWith('- **Reply with files**')) : -1;
+      if (at >= 0) {
+        lines.splice(at + 1, 0, APP_MEDIA_TO_PLATFORM_LINE);
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added the App conversation media Telegram/Slack line');
       }
     }
     if (content.includes(APP_MEDIA_STALE_COPY_LINE)) {

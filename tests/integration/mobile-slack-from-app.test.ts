@@ -315,11 +315,14 @@ describe('Slack from the app — send', () => {
     expect(hist.body.messages[0]).toMatchObject({ text: 'pair with [pairing invite removed] now', originVerified: 'redacted' });
   });
 
-  it('the device allowlist: a Bearer send is refused, a malformed id is not a device route, files are refused', async () => {
+  it('the device allowlist: a Bearer send is refused, a malformed id is not a device route, an empty file list is refused', async () => {
     const e = await setup();
     expect((await bearer(e, 'post', `/mobile/chat/slack/${e.channelId}`).send({ machine: 'm1', text: 'x', requestId: rid() })).status).toBe(403);
     expect((await signed(e, 'POST', '/mobile/chat/slack/042', { machine: 'm1', text: 'x', requestId: rid() })).status).toBeGreaterThanOrEqual(400);
     const f = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm1', text: 'x', requestId: rid(), attachments: [] });
-    expect(f.body.error).toBe('media-target-unsupported');
+    // Media is read live and this development agent has it on, so an empty list is malformed; the
+    // media-off refusal (media-target-unsupported) is covered in mobile-media-to-platform.test.ts.
+    expect(f.status).toBe(400);
+    expect(f.body.error).toBe('bad-attachments');
   });
 });
