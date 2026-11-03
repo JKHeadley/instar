@@ -33,6 +33,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 
 const TEMPLATE_PATH = path.resolve(
@@ -152,12 +153,12 @@ function hermeticEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function runScript(topicId: number, message: string): Promise<RunResult> {
+function runScript(topicId: number, message: string, extraEnv: NodeJS.ProcessEnv = {}): Promise<RunResult> {
   const scriptPath = path.join(projectDir, '.claude', 'scripts', 'telegram-reply.sh');
   return new Promise((resolve) => {
     const child = spawn('bash', [scriptPath, String(topicId), message], {
       cwd: projectDir,
-      env: hermeticEnv(),
+      env: { ...hermeticEnv(), ...extraEnv },
     });
     let stdout = '';
     let stderr = '';
@@ -198,6 +199,28 @@ describe('telegram-reply.sh — recoverable-class detection', () => {
     const parsed = JSON.parse(eventReqs[0].body);
     expect(parsed.http_code).toBe(503);
     expect(parsed.attempted_port).toBe(fake.port);
+  });
+
+  it('a reply refused during boot keeps the session credential digest (never the credential) for recovery labelling', async () => {
+    const fake = await startFakeServer({ replyStatus: 503, replyBody: '{"status":"warming","phase":"booting"}' });
+    writeConfig(fake.port);
+    const token = 'ior1_' + 'A'.repeat(43);
+    const res = await runScript(51, 'sent while booting', { INSTAR_ORIGIN_TOKEN: token });
+    const plain = await runScript(52, 'sent without a session credential');
+    await fake.close();
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain('Queued for recovery');
+    const dbPath = path.join(projectDir, '.instar', 'state', 'pending-relay.echo.sqlite');
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      const rows = db.prepare('SELECT topic_id, origin_session_digest FROM entries ORDER BY topic_id').all() as Array<{ topic_id: number; origin_session_digest: string | null }>;
+      expect(plain.exitCode).toBe(1);
+      expect(rows).toEqual([
+        { topic_id: 51, origin_session_digest: createHash('sha256').update(token).digest('hex') },
+        { topic_id: 52, origin_session_digest: null },
+      ]);
+    } finally { db.close(); }
+    expect(fs.readFileSync(dbPath).includes(Buffer.from(token))).toBe(false);
   });
 
   it('502 → enqueues', async () => {

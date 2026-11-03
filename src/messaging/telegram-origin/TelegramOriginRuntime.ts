@@ -578,7 +578,11 @@ export class TelegramOriginRuntime {
         // One row that cannot be prepared (e.g. an issues-group topic on a machine
         // without issuesChatId) must not block the rest of the queue.
         let operation: ReturnType<TelegramOriginService['prepareImportedLegacy']>;
-        try { operation = this.service.prepareImportedLegacy(snapshot, this.options.bot.accountId, this.options.bot.chatId); }
+        // Label the row with what this machine can truthfully say about its
+        // author (always its own machine; the session when the reply script
+        // recorded its credential digest). A failed lookup degrades to unknown.
+        const attribution = await this.service.attributeLegacy(snapshot).catch(() => undefined);
+        try { operation = this.service.prepareImportedLegacy(snapshot, this.options.bot.accountId, this.options.bot.chatId, attribution); }
         catch (error) { console.warn(`[telegram-origin] legacy row not imported: ${error instanceof Error ? error.message : String(error)}`); continue; }
         if (await this.store.importLegacy({ snapshot, admission: operation.admission })) imported++;
       }

@@ -20536,6 +20536,10 @@ process.stdin.on('end', async () => {
     // printed a 409 telegram-origin-held as a plain failure, so a session
     // resent a message Telegram had already delivered (Echo Bugs 10000000967).
     '539bf9b3d8d76136bc5e9041c09e914cfcc8e463807a715775eae93f1ac702d3',
+    // Held-reply outcome version shipped before the queued-row origin digest.
+    // A reply queued while the server booted carried no session identity, so
+    // recovery sent it labelled "unknown · unknown · unknown".
+    '4b19226d06a99514cf53e92b0aa764705289002a0fd183990cbf4f5d827a4a8c',
   ]);
 
   /**

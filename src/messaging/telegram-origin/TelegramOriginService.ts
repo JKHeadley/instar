@@ -12,7 +12,7 @@ import { randomUUID, randomBytes, createHash, createPublicKey } from 'node:crypt
 import { unknownAutomationAuthor } from './OriginAutomationAuthor.js';
 import { formatForTelegram } from '../TelegramMarkdownFormatter.js';
 import { redact } from '../secret-patterns.js';
-import type { OriginLegacySnapshot } from './OriginLegacy.js';
+import type { OriginLegacyAttribution, OriginLegacySnapshot } from './OriginLegacy.js';
 import type { OriginAutomationAuthor } from './OriginAutomationAuthor.js';
 import { bindBotCompanion } from './OriginBotCompanion.js';
 import { nextOriginKnownFailure, nextOriginLocalRefusal } from './OriginRetry.js';
@@ -25,7 +25,7 @@ import { planBotOrigin } from './OriginBotPlanner.js';
 import { resolveOriginDisplay } from './OriginPresentation.js';
 import { attestOrigin, verifyOriginAttestation } from './OriginAttestation.js';
 import { DEFAULT_ORIGIN_LIMITS, TelegramOriginHoldError } from './types.js';
-import type { BotParameters, OriginDisplaySettings, OriginLimits, OriginPlatformReceipt, SealedBotRequest, TelegramOriginProducer, TelegramOriginRecord } from './types.js';
+import type { BotParameters, OriginDisplaySettings, OriginEvidence, OriginLimits, OriginPlatformReceipt, SealedBotRequest, TelegramOriginProducer, TelegramOriginRecord } from './types.js';
 import type { OriginSessionRegistry } from './OriginSessionRegistry.js';
 import type { OriginUnrecordedReceipts } from './OriginUnrecordedReceipts.js';
 import type { RuntimeOriginObserver } from './RuntimeOriginObserver.js';
@@ -294,13 +294,42 @@ export class TelegramOriginService {
     return structuredClone(p);
   }
   currentOperationIds(): string[] { return [...(this.#scope.getStore()?.operations ?? [])]; }
-  prepareImportedLegacy(snapshot: OriginLegacySnapshot, accountId: string, chatId: string): OriginPreparedBotOperation {
+  /** What this machine can truthfully say about who wrote a queued legacy row.
+   * The queue lives in this agent's local state, so the machine is always this
+   * one. When the reply script recorded the digest of its session credential
+   * and that session is still live here (its current credential, or one it held
+   * before a restart re-issue), the session's harness and model are observed
+   * exactly as a direct session send would observe them. Attribution only: the
+   * row still recovers through the legacy path with its own review. */
+  async attributeLegacy(snapshot: OriginLegacySnapshot): Promise<OriginLegacyAttribution> {
+    const now = this.#now();
+    const machine: OriginEvidence = { value: this.options.identity.originMachineName, status: 'observed',
+      sourceEventRef: 'legacy-queue-custody', observedAt: now, reason: null };
+    const unattributed: OriginLegacyAttribution = { machine, session: null };
+    if (!snapshot.originSessionDigest) return unattributed;
+    let binding: ReturnType<OriginSessionRegistry['attributeVerifier']>;
+    try { binding = this.options.sessions.attributeVerifier(snapshot.originSessionDigest); } catch { return unattributed; }
+    if (!binding) return unattributed;
+    try { await this.options.observer.refresh(binding.sessionId); } catch { /* A stale or missing observation leaves the model unknown. */ }
+    const observation = this.options.observer.get(binding.sessionId);
+    const current = observation && observation.sessionIncarnation === binding.sessionIncarnation ? observation : null;
+    return { machine, session: { sessionId: binding.sessionId, sessionIncarnation: binding.sessionIncarnation,
+      turnId: current?.turnId ?? null, harnessId: binding.harnessId, harnessName: harnessNames[binding.harnessId] ?? binding.harnessId,
+      harness: { value: binding.harnessId, status: 'observed', sourceEventRef: `session:${binding.sessionId}`, observedAt: now, reason: null },
+      model: current ? normalizedModel(current.model)
+        : { value: null, status: 'unknown', sourceEventRef: null, observedAt: null, reason: 'origin-observer-not-bound' } } };
+  }
+  prepareImportedLegacy(snapshot: OriginLegacySnapshot, accountId: string, chatId: string,
+    attribution?: OriginLegacyAttribution): OriginPreparedBotOperation {
     const unknown = { value: null, status: 'unknown' as const, sourceEventRef: null, observedAt: null, reason: 'legacy-unattributed' };
+    const session = attribution?.session ?? null;
     const producer: TelegramOriginProducer = { ...this.options.identity,
-      originMachineId: 'legacy-unattributed', originMachineName: 'Unknown (legacy)',
-      sessionId: null, sessionIncarnation: null, turnId: null, producerKind: 'imported-legacy',
-      producerId: 'legacy-pending-relay', harnessId: null, harnessName: null,
-      machine: { ...unknown }, harness: { ...unknown }, model: { ...unknown } };
+      originMachineId: 'legacy-unattributed', originMachineName: attribution ? this.options.identity.originMachineName : 'Unknown (legacy)',
+      sessionId: session?.sessionId ?? null, sessionIncarnation: session?.sessionIncarnation ?? null, turnId: session?.turnId ?? null,
+      producerKind: 'imported-legacy',
+      producerId: 'legacy-pending-relay', harnessId: session?.harnessId ?? null, harnessName: session?.harnessName ?? null,
+      machine: attribution ? { ...attribution.machine } : { ...unknown },
+      harness: session ? { ...session.harness } : { ...unknown }, model: session ? { ...session.model } : { ...unknown } };
     const safeText = redact(snapshot.text);
     const formatted = snapshot.format === 'HTML' ? { text: safeText, parseMode: 'HTML' }
       : formatForTelegram(safeText, snapshot.format === 'plain' ? 'plain' : 'markdown');

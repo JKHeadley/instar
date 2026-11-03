@@ -575,15 +575,23 @@ function tile(t, withIcon = true) {
 
 function renderGroup(main, g) {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  const extras = [
+    ...groupExtras(g, { get }), // the Development tile (Work, maintainer mode only) and the developer-tools switch (Settings)
+    ...(g.id === 'work' ? [maturationTile(get)] : []), // shown only when /maturation/board answers
+    ...(g.id === 'work' ? [ideasTile(get)] : []), // shown only when /ecosystem-ideas answers
+  ];
+  // A conditional tile arrives in its own `.tiles` wrapper (shown or hidden after its
+  // probe). Put the wrappers inside the one grid and let a shown wrapper's tile take a
+  // cell there, so every tile lines up (2026-11-02: each sat alone in its own row).
+  const tileHosts = extras.filter((n) => n && n.classList && n.classList.contains('tiles'));
+  for (const h of tileHosts) h.classList.add('tiles-inline');
   const parts = [
     el('section', { class: 'group-head' },
       el('div', { class: 'eyebrow', text: g.label }),
       el('h1', { text: g.question }),
     ),
-    el('div', { class: 'tiles' }, g.tabs.map((t) => tile(t))),
-    ...groupExtras(g, { get }), // the Development tile (Work, maintainer mode only) and the developer-tools switch (Settings)
-    ...(g.id === 'work' ? [maturationTile(get)] : []), // shown only when /maturation/board answers
-    ...(g.id === 'work' ? [ideasTile(get)] : []), // shown only when /ecosystem-ideas answers
+    el('div', { class: 'tiles' }, [...g.tabs.map((t) => tile(t)), ...tileHosts]),
+    ...extras.filter((n) => !tileHosts.includes(n)),
     ...(g.id === 'work' ? [paceCard(get)] : []), // the Pace card: shown only when /queue-pace answers
   ];
   if (g.hood && g.hood.length) {

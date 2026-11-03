@@ -266,7 +266,13 @@ export function verifyRecordedOrigin(record: VerifiableRecord, ledger: LedgerVie
 
   // ── Device-side checks (any failure ⇒ failed) ──
   if (o.publicKey !== entry.publicKey) return 'failed';
-  if (o.deviceId !== entry.deviceId || o.host.toLowerCase() !== entry.host.toLowerCase()) return 'failed';
+  if (o.deviceId !== entry.deviceId) return 'failed';
+  // Multi-route (mobile-multi-route §4.2): after pairing the phone may reach this agent on another
+  // of its own names (its Tailscale name before the paired tunnel host), and it signs the Host it
+  // actually used. That Host is not in the ledger, so it is accepted only when this machine's own
+  // signed receipt covers the request: the receipt signs the canonical string, Host included, and a
+  // machine signs a receipt only for a request it admitted on one of its own verified names.
+  const otherRoute = o.host.toLowerCase() !== entry.host.toLowerCase();
   const key = parseDevicePublicKey(entry.publicKey);
   const sigBytes = typeof o.sig === 'string' && /^[A-Za-z0-9_-]+$/.test(o.sig) ? Buffer.from(o.sig, 'base64url') : null;
   if (!key || !sigBytes || !isStrictLowSDer(sigBytes)) return 'failed';
@@ -310,7 +316,7 @@ export function verifyRecordedOrigin(record: VerifiableRecord, ledger: LedgerVie
   }
 
   // ── Machine signatures (unknown key ⇒ unknown; a wrong signature under a known key ⇒ failed) ──
-  if (!record.receipt) return 'unknown';
+  if (!record.receipt) return otherRoute ? 'failed' : 'unknown';
   const rc = record.receipt;
   // A v2 receipt must name this record's conversation; a Slack record needs one (its path cannot).
   if (rc.v === 2 ? rc.conversationKey !== record.conversationKey : slack) return 'failed';
@@ -319,6 +325,8 @@ export function verifyRecordedOrigin(record: VerifiableRecord, ledger: LedgerVie
     : receiptPayload(sha256Hex(canonical), record.receivedAt!, rc.machineId);
   const receipt = verifyMachineSignature(machineKey, rc, receiptBytes, receivedMs);
   if (receipt === 'bad') return 'failed';
+  // Another route is only as good as the receipt that vouches for it.
+  if (otherRoute && receipt !== 'ok') return receipt === 'unknown' ? 'unknown' : 'failed';
   let redaction: 'ok' | 'bad' | 'unknown' = 'ok';
   if (mode === 'redacted') {
     const r = o.redaction!;

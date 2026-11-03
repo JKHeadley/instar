@@ -1163,8 +1163,17 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device', deviceId: v.deviceId };
     // The moment the device signature was accepted: the signed records' `receivedAt` (§4.6).
     (req as unknown as { instarDeviceAdmittedAt: number }).instarDeviceAdmittedAt = Date.now();
+    // The Host the signature was checked against (multi-route: one of this machine's own names;
+    // otherwise the paired host). Signed records store THIS host, never the paired one.
+    (req as unknown as { instarDeviceHost: string }).instarDeviceHost = host ?? svc.devices.get(v.deviceId)?.host ?? '';
     return 'ok';
   };
+}
+
+/** The Host this request's device signature was verified against, or null. */
+export function deviceAdmittedHost(req: Request): string | null {
+  const h = (req as unknown as { instarDeviceHost?: unknown }).instarDeviceHost;
+  return typeof h === 'string' && h.length > 0 ? h : null;
 }
 
 /** When the device authenticator accepted this request's signature (ms), or null. */

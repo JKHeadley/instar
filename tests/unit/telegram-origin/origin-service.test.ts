@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { OriginStore } from '../../../src/messaging/telegram-origin/OriginStore.js';
 import { OriginSessionRegistry } from '../../../src/messaging/telegram-origin/OriginSessionRegistry.js';
 import { RuntimeOriginObserver } from '../../../src/messaging/telegram-origin/RuntimeOriginObserver.js';
@@ -272,6 +272,64 @@ describe('origin service durable delivery', () => {
       expect(queue.findByDeliveryId('refused-unknown')?.state).not.toBe('delivered-ambiguous');
       await h.service.executePreparedBot(operation, h.network);
       expect(h.network).toHaveBeenCalledOnce();
+    } finally { queue.close(); }
+  });
+  it('a reply queued during boot recovers with its real session label, even after the restart re-issued the credential', async () => {
+    const h = await harness(), queue = PendingRelayStore.open('echo', h.stateDir);
+    try {
+      const launch = { sessionId: 'instar-app', harnessId: 'claude-code' as const, projectDir: h.stateDir, configuredModel: 'claude-opus-5-5' };
+      const before = await h.service.options.sessions.issue(launch);
+      // The server restart re-enrolls the surviving session with a NEW credential.
+      await h.service.options.sessions.issue(launch);
+      h.service.options.observer.track(h.service.options.sessions.getBinding('instar-app')!);
+      const digest = createHash('sha256').update(before).digest('hex');
+      const beacon = '{"status":"warming","phase":"booting"}';
+      queue.enqueue({ delivery_id: 'boot-session', topic_id: 42, text_hash: 'h1', text: 'Sent while starting', http_code: 503,
+        error_body: beacon, origin_session_digest: digest });
+      queue.enqueue({ delivery_id: 'boot-no-session', topic_id: 42, text_hash: 'h2', text: 'Old script row', http_code: 503, error_body: beacon });
+      queue.enqueue({ delivery_id: 'boot-foreign', topic_id: 42, text_hash: 'h3', text: 'Unknown credential', http_code: 503,
+        error_body: beacon, origin_session_digest: 'f'.repeat(64) });
+      const byId = new Map((await h.store.legacyCandidates()).map(row => [row.deliveryId, row]));
+      expect(byId.get('boot-session')?.originSessionDigest).toBe(digest);
+
+      const attributed = await h.service.attributeLegacy(byId.get('boot-session')!);
+      const operation = h.service.prepareImportedLegacy(byId.get('boot-session')!, 'bot-1', '-100123', attributed);
+      expect(operation.record).toMatchObject({ producerKind: 'imported-legacy', originMachineId: 'legacy-unattributed', sessionId: 'instar-app',
+        originMachineName: 'Mac Studio', machine: { status: 'observed', value: 'Mac Studio' },
+        harness: { status: 'observed', value: 'claude-code' }, model: { status: 'configured', value: 'claude-opus-5-5' } });
+      expect(operation.admission.children[0].materializations[0].requestJson).toContain('Echo · Mac Studio · Claude Code · claude-opus-5-5 (configured)');
+      expect(await h.store.importLegacy({ snapshot: byId.get('boot-session')!, admission: operation.admission })).toBe(true);
+      await h.service.executePreparedBot(operation, h.network);
+      expect(h.network).toHaveBeenCalledOnce();
+
+      // No digest (older script) and an unmatched digest: the machine is still known.
+      for (const id of ['boot-no-session', 'boot-foreign']) {
+        const snapshot = byId.get(id)!;
+        const machineOnly = h.service.prepareImportedLegacy(snapshot, 'bot-1', '-100123', await h.service.attributeLegacy(snapshot));
+        expect(machineOnly.record).toMatchObject({ sessionId: null, machine: { status: 'observed', value: 'Mac Studio' },
+          harness: { status: 'unknown' }, model: { status: 'unknown' } });
+        expect(machineOnly.admission.children[0].materializations[0].requestJson).toContain('Echo · Mac Studio · unknown · unknown');
+        expect(await h.store.importLegacy({ snapshot, admission: machineOnly.admission })).toBe(true);
+      }
+    } finally { queue.close(); }
+  });
+  it('an ended session no longer attributes, and harness/model are never claimed without a session', async () => {
+    const h = await harness(), queue = PendingRelayStore.open('echo', h.stateDir);
+    try {
+      const token = await h.service.options.sessions.issue({ sessionId: 'gone', harnessId: 'codex-cli', projectDir: h.stateDir });
+      await h.service.options.sessions.revoke('gone');
+      queue.enqueue({ delivery_id: 'ended', topic_id: 42, text_hash: 'h1', text: 'After the session ended', http_code: 401,
+        origin_session_digest: createHash('sha256').update(token).digest('hex') });
+      const snapshot = (await h.store.legacyCandidates())[0];
+      expect((await h.service.attributeLegacy(snapshot)).session).toBeNull();
+      // A forged record claiming a harness without a session is refused by the import fence.
+      const forged = h.service.prepareImportedLegacy(snapshot, 'bot-1', '-100123', { machine: (await h.service.attributeLegacy(snapshot)).machine,
+        session: null });
+      const record = JSON.parse(forged.admission.record.envelopeJson);
+      record.harness = { value: 'codex-cli', status: 'observed', sourceEventRef: null, observedAt: null, reason: null };
+      const envelopeJson = JSON.stringify(record);
+      await expect(h.store.importLegacy({ snapshot, admission: { ...forged.admission, record: { ...forged.admission.record, envelopeJson } } }))
+        .rejects.toThrow(/legacy-origin-required/);
     } finally { queue.close(); }
   });
   it('isBootBeaconBody accepts only the beacon body', () => {
