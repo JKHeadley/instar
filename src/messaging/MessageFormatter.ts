@@ -58,7 +58,13 @@ export class MessageFormatter {
 
     // Footer with reply/ack instructions
     lines.push(DELIMITER);
-    lines.push(`Reply: Use the threadline_send MCP tool with the sender's agentId and threadId to reply.`);
+    if (message.from.agent === message.to.agent) {
+      // Same agent (another of my own sessions): reply session-to-session, never
+      // through a user topic (bug 2026-11-03, Echo Bugs topic 10000001474).
+      lines.push(`Reply: POST /messages/send to session "${message.from.session}" (type handoff). Never answer an agent message in a user topic.`);
+    } else {
+      lines.push(`Reply: Use the threadline_send MCP tool with the sender's agentId and threadId to reply.`);
+    }
     lines.push(`Message ID: ${message.id}`);
     lines.push(DELIMITER);
 

@@ -18527,6 +18527,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Threadline identity (not the machine identity). It reads the identity
       // at each sign, so one created later by the Threadline bootstrap is used.
       envelopeSigner: createAgentLocalEnvelopeSigner(config.projectName, config.stateDir),
+      // Same-agent /messages/send types only into a running session THIS agent
+      // owns (never another agent's or the operator's tmux session).
+      isOwnSession: (tmuxSession: string) =>
+        sessionManager.listRunningSessions().some((s) => s.tmuxSession === tmuxSession),
     }, crossMachineDeps);
     // Generate/persist agent token for cross-agent auth (idempotent — reuses existing token)
     const agentToken = generateAgentToken(config.projectName);

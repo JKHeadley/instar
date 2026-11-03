@@ -262,6 +262,26 @@ Seventeen existing built-in jobs can run as small scripts with NO Claude session
 `;
 }
 
+/**
+ * Session-to-session handoffs (bug 2026-11-03, Echo Bugs topic 10000001474): a
+ * desk session posted an agent-to-agent task request into the user's Telegram
+ * topic because Telegram was the only path that reached the other session, and
+ * the user saw it. SHARED by `generateClaudeMd` (new installs) and
+ * `migrateClaudeMd` (existing agents). Content-sniff marker: the heading.
+ */
+export const SESSION_HANDOFF_CLAUDEMD_MARKER = '### Talking to my other sessions (never through a user topic)';
+export function SESSION_HANDOFF_CLAUDEMD_SECTION(port: number): string {
+  return `
+${SESSION_HANDOFF_CLAUDEMD_MARKER}
+
+A Telegram, Slack or app topic is the user's conversation. It is never a channel between my own sessions, jobs or desks: the user reads everything posted there. When one of my sessions needs another of my sessions to do something (an owner assignment, a review disposition, a status question), send it straight into that session:
+- \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/messages/send -d '{"from":{"agent":"<my agent name>","session":"<my tmux session>","machine":"local"},"to":{"agent":"<my agent name>","session":"<their tmux session>","machine":"local"},"type":"handoff","priority":"medium","subject":"<one line>","body":"<the request>"}'\` — it is typed into the target session as an \`[AGENT MESSAGE]\` block. \`phase: "delivered"\` means it landed; \`queued\` means the session could not take it yet and the server retries for about 5 minutes; \`failed\` means no running session of mine has that name (nothing was typed anywhere). \`GET /sessions\` lists my tmux session names. Use \`handoff\` or \`info\`: \`request\` and \`query\` expect an acknowledgement and raise an escalation if none comes.
+- To reply to such a message, send one back the same way to the sender's session.
+- The user topic still gets real progress: "I asked the throughput session to measure X" is a progress update for the user. "Please own X and report slot status" is a message to an agent: send it to that session, never to the topic.
+- **When to use** (PROACTIVE): any time I am about to send a topic message whose reader is another session, job, desk or worker rather than the user.
+`;
+}
+
 export const JOB_RESULT_SUPERVISION_CLAUDEMD_MARKER = '### Script result supervision records';
 export function JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION(port: number): string {
   return `
@@ -8619,6 +8639,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Scheduled jobs run as scripts section');
     } else {
       result.skipped.push('CLAUDE.md: Scheduled jobs run as scripts section already present');
+    }
+
+    // Session-to-session handoffs (bug 2026-11-03): content-sniffed on the heading.
+    if (!content.includes(SESSION_HANDOFF_CLAUDEMD_MARKER)) {
+      content += SESSION_HANDOFF_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Talking to my other sessions section');
     }
 
     if (!content.includes(JOB_RESULT_SUPERVISION_CLAUDEMD_MARKER)) {
