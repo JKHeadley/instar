@@ -330,6 +330,55 @@ describe('monitorTick — a session that ended on its own leaves a reason and an
     expect(n).toBe(0);
   });
 
+  describe('a headless one-shot that finished inside the startup window (instar-proof-1, 2026-11-03)', () => {
+    function headless(id: string, ageMs: number, retained: boolean): void {
+      state.saveSession({
+        id, name: id, status: 'running', tmuxSession: id, framework: 'claude-code',
+        launchLane: 'headless', completionMode: 'exit',
+        startedAt: new Date(Date.now() - ageMs).toISOString(), prompt: 'p',
+      } as Session);
+      if (retained) {
+        opHandlers = { 'set-option': () => ({ ok: '' }) };
+        (manager as unknown as { retainFailedExitStatus(t: string): void }).retainFailedExitStatus(id);
+      }
+    }
+
+    it("a clean exit (pane gone under remain-on-exit failed) is 'process-exited' with outcome completed", async () => {
+      headless('job-done', 20_000, true);
+      const exited: Array<{ reason: string; outcome: string; exitCode: number }> = [];
+      manager.on('sessionExited', (e) => exited.push(e));
+      opHandlers = { 'has-session': () => ({ reject: absentErr() }), 'capture-pane': () => ({ ok: '' }) };
+      await maintenanceTicks.get(manager)!();
+      expect(state.getSession('job-done')!.endedReason).toBe('process-exited');
+      expect(exited[0]).toMatchObject({ reason: 'process-exited', outcome: 'completed', exitCode: 0 });
+    });
+
+    it('a failed exit (pane kept with a non-zero status) is still a startup death', async () => {
+      headless('job-failed', 20_000, true);
+      const exited: Array<{ reason: string; exitCode: number }> = [];
+      manager.on('sessionExited', (e) => exited.push(e));
+      opHandlers = { 'has-session': () => ({ ok: '' }), 'display-message': () => ({ ok: 'bash||claude -p||1||1' }), 'capture-pane': () => ({ ok: 'Not logged in' }) };
+      await maintenanceTicks.get(manager)!();
+      expect(exited[0]).toMatchObject({ reason: 'process-exited-during-startup', exitCode: 1 });
+    });
+
+    it('when remain-on-exit could not be set, a vanish stays a startup death (no evidence it exited cleanly)', async () => {
+      headless('job-unretained', 20_000, false);
+      opHandlers = { 'has-session': () => ({ reject: absentErr() }), 'capture-pane': () => ({ ok: '' }) };
+      await maintenanceTicks.get(manager)!();
+      expect(state.getSession('job-unretained')!.endedReason).toBe('process-exited-during-startup');
+    });
+
+    it('an INTERACTIVE session that vanished cleanly at a prompt is still a startup death', async () => {
+      startupSession('codex-menu', 20_000);
+      opHandlers = { 'set-option': () => ({ ok: '' }) };
+      (manager as unknown as { retainFailedExitStatus(t: string): void }).retainFailedExitStatus('codex-menu');
+      opHandlers = { 'has-session': () => ({ reject: absentErr() }), 'capture-pane': () => ({ ok: '' }) };
+      await maintenanceTicks.get(manager)!();
+      expect(state.getSession('codex-menu')!.endedReason).toBe('process-exited-during-startup');
+    });
+  });
+
   it('sessionComplete STILL fires on a vanish — existing listeners are unchanged', async () => {
     startupSession('compat', 20_000);
     opHandlers = { 'has-session': () => ({ reject: absentErr() }), 'capture-pane': () => ({ ok: '' }) };
