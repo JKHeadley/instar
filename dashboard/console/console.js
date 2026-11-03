@@ -440,13 +440,25 @@ function paintHeadline(models) {
 // should not turn Home into "part could not be checked". While it is retried,
 // its rows from the last complete answer stand in, for up to two minutes; the
 // machines that did answer always show their fresh rows.
+// Kept in session storage too, so reopening the app or reloading the page while a
+// machine is slow still has it (page memory alone is lost on reload). Storage can be
+// absent or full; then it is page memory only, as before.
 const lastComplete = {};
 const ROW_LISTS = { attention: 'items', sessions: 'sessions' };
+const LAST_COMPLETE_STORE = 'console.lastComplete.';
 function rememberComplete(key, result) {
-  if (ROW_LISTS[key]) lastComplete[key] = { result, at: Date.now() };
+  if (!ROW_LISTS[key]) return;
+  lastComplete[key] = { result, at: Date.now() };
+  try { sessionStorage.setItem(LAST_COMPLETE_STORE + key, JSON.stringify(lastComplete[key])); } catch { /* @silent-fallback-ok: storage unavailable or full; page memory only, as before */ }
+}
+function storedComplete(key) {
+  try {
+    const v = JSON.parse(sessionStorage.getItem(LAST_COMPLETE_STORE + key) || 'null');
+    return v && typeof v.at === 'number' && v.result ? v : null;
+  } catch { return null; } // @silent-fallback-ok: unreadable storage means no stored answer
 }
 function fillFromLastComplete(key, fresh) {
-  const prev = lastComplete[key];
+  const prev = lastComplete[key] || (lastComplete[key] = storedComplete(key) || undefined);
   return ROW_LISTS[key] && prev ? fillPartial(fresh, prev.result, ROW_LISTS[key], Date.now(), prev.at) : null;
 }
 
