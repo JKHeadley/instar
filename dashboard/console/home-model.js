@@ -267,6 +267,14 @@ export function isMissed(c, now = Date.now()) {
   return Number.isFinite(hard) && hard < now && isActiveCommitment(c, now);
 }
 
+/** How close to its due date a promise waiting on the operator must be to reach Home. */
+export const PROMISE_DUE_SOON_MS = 24 * 60 * 60 * 1000;
+/** Due within a day, or already past due. No recorded due date is never "soon". */
+export function promiseDueSoon(c, now = Date.now()) {
+  const due = Date.parse(c && c.hardDeadlineAt);
+  return Number.isFinite(due) && due - now <= PROMISE_DUE_SOON_MS;
+}
+
 /** A failed verification without a passed deadline needs review, not an invented due date. */
 export function needsPromiseReview(c, now = Date.now()) {
   return !!c && c.status === 'violated' && !isMissed(c, now);
@@ -281,7 +289,10 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
   const open = list.filter((c) => isActiveCommitment(c, now));
   const fresh = (c) => now - lastTouched(c) <= STALE_DAYS * DAY;
   const yoursAll = open.filter(waitsOnOperator).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-  const yours = yoursAll;
+  // Home puts a promise in front of the operator only when it is close to its
+  // recorded due date or past it (Justin, 2026-11-02). One with no due date, or
+  // a date further out, stays on the Promises page under "Waiting on you".
+  const yours = yoursAll.filter((c) => promiseDueSoon(c, now));
   // Echo-owned missed dates and failed checks are Echo's follow-up queue. A
   // deadline alone never makes the operator responsible for chasing the work.
   const violated = [];
@@ -318,7 +329,7 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
     : "Only this machine's promises are visible.";
   const line = [
     yours.length ? `${plural(yours.length, 'promise')} waiting on you.` : null,
-    !yours.length ? (rest > 0 ? 'I’m handling the open work.' : 'Nothing open.') : null,
+    !yours.length ? (rest > 0 || yoursAll.length > 0 ? 'I’m handling the open work.' : 'Nothing open.') : null,
   ].filter(Boolean).join(' ');
   // Only a blind read makes the operator's list partial: no other machine's
   // promises arrived at all while other machines exist. One machine that is

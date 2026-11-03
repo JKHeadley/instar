@@ -175,14 +175,22 @@ describe('What I have promised', () => {
     expect(m.rows.some((r: { tone: string }) => r.tone === 'bad')).toBe(false);
   });
   it('a genuine operator dependency remains visible after 14 days', () => {
-    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ blockedOn: 'user-input', createdAt: minsAgo(60 * 24 * 30) })] }), NOW, 0);
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ blockedOn: 'user-input', createdAt: minsAgo(60 * 24 * 30), hardDeadlineAt: minsAgo(60) })] }), NOW, 0);
     expect(m.count).toBe(1);
     expect(m.line).toBe('1 promise waiting on you.');
   });
   it('promises waiting on the operator lead', () => {
-    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({}), c({ blockedOn: 'user-authorization' }), c({ owner: 'user', blockedOn: 'user-input' })] }), NOW);
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({}), c({ blockedOn: 'user-authorization', hardDeadlineAt: minsAgo(-60 * 12) }), c({ owner: 'user', blockedOn: 'user-input', hardDeadlineAt: minsAgo(30) })] }), NOW);
     expect(m.state).toBe('attn');
     expect(m.value).toBe('2 waiting on you');
+  });
+  it('a promise waiting on the operator reaches Home only near or past its due date (Justin 2026-11-02)', () => {
+    const noDate = c({ owner: 'user', blockedOn: 'user-authorization' });
+    const later = c({ owner: 'user', blockedOn: 'user-input', hardDeadlineAt: minsAgo(-60 * 24 * 3) });
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [noDate, later] }), NOW, 0);
+    expect(m.count).toBe(0);
+    expect(m.line).toBe('I’m handling the open work.');
+    expect(buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [later, c({ owner: 'user', blockedOn: 'user-input', hardDeadlineAt: minsAgo(-60 * 23) })] }), NOW, 0).count).toBe(1);
   });
   it('without replica rows it says only this machine is visible', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ viewSource: 'own' })] }), NOW);

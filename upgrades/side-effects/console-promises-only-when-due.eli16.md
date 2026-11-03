@@ -1,0 +1,5 @@
+# Promises only interrupt you when they are almost due, and no puzzling Approve button
+
+When the agent promises to do something but needs something from you first, that promise is "waiting on you". Until now every such promise was put in front of you on the dashboard's home page, under "what needs you", with Approve and Decline buttons. Justin saw one about setting up a test server once he had created an account: there was nothing to approve, it was already being handled, and it had no due date. It was noise, and the Approve button had no clear meaning.
+
+Now a promise waiting on you appears on the home page only when its due date is less than a day away or has passed. A promise with no due date, or one due later, is still listed on the Promises page under "Waiting on you", so nothing is hidden; it just stops interrupting. The Approve and Decline buttons are gone from promises. A promise shows what it is waiting for and lets you reply in the conversation, say you handled it, or drop it, which are the actions that always mean the same thing.

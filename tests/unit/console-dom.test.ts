@@ -93,7 +93,7 @@ describe('console shell (jsdom)', () => {
     ROUTES['/attention?scope=pool&status=OPEN'] = { items: [], pool: { failed: [] } };
     ROUTES['/commitments?scope=mesh'] = { enabled: true, scope: 'mesh', commitments: [{
       id: 'CMT-1043', status: 'pending', owner: 'user', blockedOn: 'user-authorization',
-      createdAt: NOW, originMachineId: 'm1', userRequest: 'Approve rulebook changes',
+      createdAt: NOW, hardDeadlineAt: NOW, originMachineId: 'm1', userRequest: 'Approve rulebook changes',
       agentResponse: 'I will merge after approval.', topicId: 95267,
     }] };
     try {
@@ -119,7 +119,7 @@ describe('console shell (jsdom)', () => {
     ROUTES['/attention?scope=pool&status=OPEN'] = { items: [], pool: { failed: [] } };
     ROUTES['/commitments?scope=mesh'] = { enabled: true, scope: 'mesh', commitments: [{
       id: 'CMT-MISS', status: 'violated', owner: 'agent', blockedOn: 'none', hardDeadlineAt: new Date(Date.parse(NOW) - 60_000).toISOString(),
-      createdAt: NOW, originMachineId: 'm1', userRequest: 'Please change the schedule',
+      createdAt: NOW, hardDeadlineAt: NOW, originMachineId: 'm1', userRequest: 'Please change the schedule',
       agentResponse: 'Changing the schedule now', topicId: 95267,
     }] };
     try {
@@ -140,7 +140,7 @@ describe('console shell (jsdom)', () => {
     let reads = 0;
     Object.defineProperty(ROUTES, '/commitments?scope=mesh', { configurable: true, get: () => ++reads === 1 ? null : {
       enabled: true, scope: 'mesh', commitments: [{ id: 'CMT-RETRY', status: 'pending', owner: 'user',
-        blockedOn: 'user-input', createdAt: NOW, originMachineId: 'm1', userRequest: 'Choose a time' }],
+        blockedOn: 'user-input', createdAt: NOW, hardDeadlineAt: NOW, originMachineId: 'm1', userRequest: 'Choose a time' }],
     } });
     try {
       const doc = await boot('t');
@@ -160,7 +160,7 @@ describe('console shell (jsdom)', () => {
     let reads = 0;
     Object.defineProperty(ROUTES, '/commitments?scope=mesh', { configurable: true, get: () => ++reads < 4 ? null : {
       enabled: true, scope: 'mesh', commitments: [{ id: 'CMT-LATE-ANSWER', status: 'pending', owner: 'user',
-        blockedOn: 'user-input', createdAt: NOW, originMachineId: 'm1', userRequest: 'Choose a time' }],
+        blockedOn: 'user-input', createdAt: NOW, hardDeadlineAt: NOW, originMachineId: 'm1', userRequest: 'Choose a time' }],
     } });
     try {
       const doc = await boot('t');
@@ -198,7 +198,7 @@ describe('console shell (jsdom)', () => {
     ROUTES['/attention?scope=pool&status=OPEN'] = { items: [], pool: { failed: [] } };
     ROUTES['/commitments?scope=mesh'] = { enabled: true, scope: 'mesh', commitments: [{
       id: 'CMT-LAST', status: 'pending', owner: 'user', blockedOn: 'user-input',
-      createdAt: NOW, originMachineId: 'm1', userRequest: 'Choose a time',
+      createdAt: NOW, hardDeadlineAt: NOW, originMachineId: 'm1', userRequest: 'Choose a time',
     }] };
     try {
       const doc = await boot('t');

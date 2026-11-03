@@ -25,7 +25,8 @@ const minsAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
 const RAW_ID = 'm_a804869356b259820b3236e7c5a2ae7d';
 
 const item = (over: Record<string, unknown> = {}) => ({ id: Math.random().toString(36), title: 'Approve the deploy', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(5), ...over });
-const promise = (over: Record<string, unknown> = {}) => ({ id: Math.random().toString(36), status: 'pending', createdAt: minsAgo(30), agentResponse: 'Merge each PR as soon as you approve it.', ...over });
+// Due within the hour: a promise waiting on the operator reaches Home only near or past its due date.
+const promise = (over: Record<string, unknown> = {}) => ({ id: Math.random().toString(36), status: 'pending', createdAt: minsAgo(30), hardDeadlineAt: minsAgo(-60), agentResponse: 'Merge each PR as soon as you approve it.', ...over });
 
 describe('one answer to "what needs you"', () => {
   it('the reported case: a promise waits on the operator and the queue is empty — card and headline agree', () => {
@@ -199,7 +200,7 @@ describe('the same ask is never listed twice (the PR 2380 double)', () => {
     const NOW = Date.now();
     const needs = buildNeeds({ ok: true, data: { items: [{ id: 'a', title: 'Approve PR 2380 on GitHub', status: 'OPEN', priority: 'HIGH', category: 'approval', source: 'agent', createdAt: new Date(NOW - 60_000).toISOString() }], pool: { failed: [] } } } as never, NOW);
     const promised = buildPromised({ ok: true, data: { enabled: true, scope: 'mesh', commitments: [
-      { id: 'c1', status: 'pending', createdAt: new Date(NOW - 3600_000).toISOString(), blockedOn: 'user-authorization', owner: 'user', userRequest: 'Approve PR 2380', agentResponse: 'Merge PR 2380 as soon as you approve it.', viewSource: 'replica', originMachineId: 'm2', stalenessMs: 1000 },
+      { id: 'c1', status: 'pending', createdAt: new Date(NOW - 3600_000).toISOString(), hardDeadlineAt: new Date(NOW + 3600_000).toISOString(), blockedOn: 'user-authorization', owner: 'user', userRequest: 'Approve PR 2380', agentResponse: 'Merge PR 2380 as soon as you approve it.', viewSource: 'replica', originMachineId: 'm2', stalenessMs: 1000 },
     ] } } as never, NOW, 1);
     const card = combineNeeds(needs, promised);
     expect(card.count).toBe(1);

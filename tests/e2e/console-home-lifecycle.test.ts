@@ -117,7 +117,8 @@ describe('Console Home E2E (feature is alive)', () => {
 
   it('every Home source answers through the real stack and maps to an honest card', async () => {
     tracker.record({ userRequest: 'approve the plan', agentResponse: 'waiting for your yes', type: 'one-time-action',
-      verificationMethod: 'manual', owner: 'user', blockedOn: 'user-input' } as never);
+      verificationMethod: 'manual', owner: 'user', blockedOn: 'user-input',
+      hardDeadlineAt: new Date(Date.now() + 3600_000).toISOString() } as never); // due soon: only then on Home
 
     const read = async (p: string) => {
       const r = await request(server.getApp()).get(p).set(auth);

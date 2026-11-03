@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { buildPromisesPage, storyOf, backstoryOf, updateQuestionOf, nextStepOf, actionsFor, until, nextDue, canDecide, decideResultWords } from '../../dashboard/console/promises-model.js';
+import { buildPromisesPage, storyOf, backstoryOf, updateQuestionOf, nextStepOf, actionsFor, until, nextDue } from '../../dashboard/console/promises-model.js';
 import { buildPromised } from '../../dashboard/console/home-model.js';
 import { topicLink, renderPromises } from '../../dashboard/console/promises.js';
 import { promiseActionLinks } from '../../dashboard/console/promise-actions.js';
@@ -69,8 +69,10 @@ describe('promises page model', () => {
   });
 
   it('agrees with Home on what is waiting on the operator', () => {
-    const rows = [c({ blockedOn: 'user-input' }), c({ owner: 'user', blockedOn: 'user-authorization', actionClass: 'deploy' }), c({ blockedOn: 'user-input', createdAt: minsAgo(60 * 24 * 20) })];
-    expect(buildPromisesPage(mesh(rows), NOW, { expectedPeers: 0 }).counts.waiting).toBe(buildPromised(mesh(rows), NOW, 0).count);
+    // The Promises page lists everything waiting on the operator; Home shows only those near or past due.
+    const rows = [c({ blockedOn: 'user-input', hardDeadlineAt: minsAgo(10) }), c({ owner: 'user', blockedOn: 'user-authorization', actionClass: 'deploy' }), c({ blockedOn: 'user-input', createdAt: minsAgo(60 * 24 * 20) })];
+    expect(buildPromisesPage(mesh(rows), NOW, { expectedPeers: 0 }).counts.waiting).toBe(3);
+    expect(buildPromised(mesh(rows), NOW, 0).count).toBe(1);
   });
 
   it('says when other machines are not covered', () => {
@@ -279,17 +281,9 @@ describe('a machine that sent no promises is named, without claiming it failed',
   });
 });
 
-describe('Approve / Decline on a promise waiting for the operator\'s yes', () => {
-  it('only a pending promise blocked on the operator\'s authorization offers the buttons', () => {
-    expect(canDecide({ status: 'pending', blockedOn: 'user-authorization' })).toBe(true);
-    expect(canDecide({ status: 'pending', blockedOn: 'user-input' })).toBe(false);
-    expect(canDecide({ status: 'pending', blockedOn: 'none' })).toBe(false);
-    expect(canDecide({ status: 'delivered', blockedOn: 'user-authorization' })).toBe(false);
-    expect(nextStepOf({ status: 'pending', blockedOn: 'user-authorization', owner: 'user' }, Date.now())).toContain('Approve or decline it here');
-  });
-  it('the answer is said plainly, including a failure in the server\'s words', () => {
-    expect(decideResultWords('approve', { ok: true, data: { postedInConversation: true } }).text).toBe('Approved. I will go ahead.');
-    expect(decideResultWords('decline', { ok: true, data: { postedInConversation: false } }).text).toContain('could not post it');
-    expect(decideResultWords('approve', { ok: false, reason: 'This promise is already delivered' })).toEqual({ ok: false, text: 'That did not go through: This promise is already delivered.' });
+describe('a promise waiting on the operator offers no Approve / Decline (Justin 2026-11-02)', () => {
+  it('points to the conversation instead', () => {
+    expect(nextStepOf({ status: 'pending', blockedOn: 'user-authorization', owner: 'user' }, Date.now())).toBe('This is waiting on you. Reply in the conversation when you can.');
   });
 });
+
