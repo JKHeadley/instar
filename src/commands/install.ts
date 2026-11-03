@@ -13,7 +13,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import readline from 'node:readline';
 import pc from 'picocolors';
-import { detectGitPath, detectTmuxPath, standaloneAgentsDir } from '../core/Config.js';
+import { detectGitPath, detectTmuxPath, getInstarVersion, standaloneAgentsDir } from '../core/Config.js';
 import { validateAgentName } from '../core/AgentRegistry.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
@@ -52,6 +52,9 @@ import {
 export const MIN_FREE_BYTES = 1.5 * 1024 ** 3;
 const NODE_MINIMUM: [number, number] = [20, 12];
 const SERVER_READY_TIMEOUT_MS = 60_000;
+/** The service's first start runs the agent's own copy cold, which takes longer than a warm start. */
+const HANDOVER_TIMEOUT_MS = 120_000;
+const PAIRING_READY_TIMEOUT_MS = 60_000;
 const PACKAGE_INSTALL_TIMEOUT_MS = 10 * 60_000;
 /** Long enough for a sign-in that can't start, with no display or opener, to have already exited. */
 const LOGIN_STARTUP_CHECK_MS = 2000;
@@ -260,6 +263,13 @@ export interface InstallEnv {
   initAgent: (answers: WizardAnswers) => Promise<void>;
   serverHealthy: (port: number) => Promise<boolean>;
   installAutostart: (agentDir: string) => { installed: boolean; detail?: string };
+  /**
+   * Gives the agent its own copy of this instar version (.instar/shadow-install), which the
+   * auto-start service runs. True when it is there. Absent where nothing can be installed.
+   */
+  seedOwnCopy?: (agentDir: string) => boolean;
+  /** Asks the running agent for a one-time phone pairing link. */
+  mintPairingLink?: (port: number, authToken: string) => Promise<PairingLinkResult>;
   print: (text: string) => void;
   /** Reads one line without echoing it. Absent where no terminal can ask. */
   askSecret?: (prompt: string) => Promise<string>;
@@ -279,9 +289,36 @@ function readAgentConfig(answers: WizardAnswers): Record<string, unknown> {
  * What the installer changes in a new agent's config. Addresses come when wanted (spec 4.1), and
  * `init` defaults to a public Cloudflare quick tunnel, which nobody here agreed to.
  */
+export const INSTALLED_AGENT_MOBILE_PAIRING = {
+  enabled: true,
+  multiRoute: { enabled: true },
+  native: { enabled: true, media: { enabled: true } },
+};
+
+export type PairingLinkResult =
+  | { ok: true; link: string; origin: string; tailscale: boolean }
+  | { ok: false; reason: 'no-address' | 'off' | 'unavailable' };
+
+/** The agent's https address carried in a pairing link (`o=`), or null. */
+export function pairingLinkOrigin(link: string): string | null {
+  const hash = link.split('#')[1] ?? '';
+  const o = new URLSearchParams(hash).get('o');
+  if (!o) return null;
+  try {
+    const url = new URL(o);
+    return url.protocol === 'https:' ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
 export function finishAgentConfig(configFile: string): void {
   const config = JSON.parse(fs.readFileSync(configFile, 'utf-8')) as Record<string, unknown>;
   config.tunnel = { ...(config.tunnel as Record<string, unknown> | undefined), enabled: false };
+  // The phone app is how a person without Telegram reaches an agent on a server, so an agent this
+  // installer creates has pairing on (Cirrus, 2026-11-03: it was off, and the only way in was SSH).
+  // A setting already present is the person's and is kept.
+  if (config.mobilePairing === undefined) config.mobilePairing = INSTALLED_AGENT_MOBILE_PAIRING;
   const tmp = `${configFile}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   fs.renameSync(tmp, configFile);
@@ -465,9 +502,31 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
       if (answers.autostartConsent === false) {
         return { kind: 'done', note: 'Your agent won\'t restart by itself after a reboot, as you chose.' };
       }
-      const result = env.installAutostart(agentDirFor(answers.agentName!));
-      if (result.installed) return { kind: 'done', ...(result.detail ? { note: result.detail } : {}) };
-      return { kind: 'done', note: `Your agent is running, but it won't restart by itself after a reboot. ${result.detail ?? ''}`.trim() };
+      const agentDir = agentDirFor(answers.agentName!);
+      // The service runs the agent's own copy of instar. Through npx this installer runs from
+      // npm's cache, which npm may clear, so the copy is made now rather than at the first boot.
+      // If it can't be made (no network, a version not on npm), the service's boot wrapper
+      // installs one when it starts, and the handover below shows whether that worked.
+      env.seedOwnCopy?.(agentDir);
+      const result = env.installAutostart(agentDir);
+      if (!result.installed) {
+        return { kind: 'done', note: `Your agent is running, but it won't restart by itself after a reboot. ${result.detail ?? ''}`.trim() };
+      }
+      // Hand the agent to the service, and see it answer. While the installer's own server runs,
+      // it holds the agent's single-instance lock, so a service that can't start looks the same
+      // as one that works until the next reboot (Cirrus, 2026-11-03).
+      const port = Number(readAgentConfig(answers).port);
+      env.runLogged(env.cli[0], [...env.cli.slice(1), 'server', 'stop', '--dir', agentDir]);
+      const deadline = env.now() + HANDOVER_TIMEOUT_MS;
+      while (env.now() < deadline) {
+        if (await env.serverHealthy(port)) return { kind: 'done', ...(result.detail ? { note: result.detail } : {}) };
+        await env.sleep(2000);
+      }
+      // Take the service out before starting our own server again, so the two never fight over
+      // the agent's lock, and the note below stays true.
+      env.runLogged(env.cli[0], [...env.cli.slice(1), 'autostart', 'uninstall', '--dir', agentDir]);
+      env.runLogged(env.cli[0], [...env.cli.slice(1), 'server', 'start', '--dir', agentDir]);
+      return { kind: 'done', note: `Your agent is running, but its automatic start didn't work, so it won't come back after a reboot. Details are in ${env.logFile}.` };
     },
 
     'owner-slot': async (answers) => {
@@ -481,15 +540,66 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
         };
       }
       const config = readAgentConfig(answers);
+      const port = Number(config.port);
       const pin = ensureViewingPin(agentConfigFile(answers));
+      const telegram = hasTelegramOwner(config);
+      const pairingOff = (config.mobilePairing as { enabled?: unknown } | undefined)?.enabled === false;
+      let pairing: PairingLinkResult | null = null;
+      if (env.mintPairingLink && !pairingOff && typeof config.authToken === 'string' && config.authToken) {
+        env.print('  Getting the link for your phone...');
+        pairing = await mintWithRetry(env, port, config.authToken);
+      }
+      if (pairing && !pairing.ok && pairing.reason === 'no-address' && !env.browser && !telegram) {
+        // A server with no address a phone can reach: localhost is no use, and the only way in
+        // would be SSH. Ask for the one thing that fixes it. The PIN is shown now, since the
+        // dashboard will need it once the phone can reach it.
+        env.print(`  Your PIN: ${pin}`);
+        env.print('  Keep this PIN somewhere safe. Your agent can tell you again later.');
+        return {
+          kind: 'awaiting-person',
+          instruction: [
+            'Your agent is running, but your phone can\'t reach this computer yet.',
+            '  Install Tailscale on this computer and on your phone, signed in to the same account: https://tailscale.com/download',
+            '  Then run instar install --resume to get the link that adds your agent to the Instar app.',
+          ].join('\n'),
+        };
+      }
+      const origin = pairing?.ok ? pairing.origin : null;
       env.print('');
-      env.print(`  Your dashboard: http://localhost:${Number(config.port)}/dashboard`);
+      env.print(`  Your dashboard: ${origin ? `${origin}/dashboard` : `http://localhost:${port}/dashboard`}`);
       env.print(`  Your PIN: ${pin}`);
-      env.print('  This is the only time the installer shows this PIN. Your agent can tell you again later.');
+      env.print('  Keep this PIN somewhere safe. Your agent can tell you again later.');
+      if (pairing?.ok) {
+        env.print('');
+        env.print('  To use your agent from the Instar app, open this link on your iPhone. It works once, for 30 minutes:');
+        env.print(`  ${pairing.link}`);
+        if (pairing.tailscale) env.print('  Your iPhone needs Tailscale on, signed in to the same account as this computer.');
+        env.print(telegram
+          ? '  The app then asks for a code. Your agent sends it to you privately in Telegram.'
+          : `  The app then asks for a code. To see it, open ${origin}/dashboard on your phone, enter your PIN, and open Phones.`);
+      }
       env.print('');
       return { kind: 'done' };
     },
   };
+}
+
+/** A server that just started may still be setting up its Tailscale address; ask for a short while. */
+async function mintWithRetry(env: InstallEnv, port: number, authToken: string): Promise<PairingLinkResult> {
+  const deadline = env.now() + PAIRING_READY_TIMEOUT_MS;
+  let last: PairingLinkResult = { ok: false, reason: 'unavailable' };
+  do {
+    last = await env.mintPairingLink!(port, authToken);
+    // Pairing is off on this agent: asking again won't change that.
+    if (last.ok || last.reason === 'off') return last;
+    await env.sleep(3000);
+  } while (env.now() < deadline);
+  return last;
+}
+
+function hasTelegramOwner(config: Record<string, unknown>): boolean {
+  const messaging = config.messaging;
+  return Array.isArray(messaging) && messaging.some((m) => (m as { type?: unknown } | null)?.type === 'telegram');
 }
 
 /** On a computer with no browser, asks for a `claude setup-token` token. True when one was given. */
@@ -610,6 +720,35 @@ function askHidden(prompt: string): Promise<string> {
   });
 }
 
+/**
+ * Installs this same instar version into the agent's .instar/shadow-install, the copy its boot
+ * wrapper runs and the auto-updater keeps current. Mirrors UpdateChecker: scripts off, then the
+ * one native module rebuilt. An existing copy is kept.
+ */
+export function seedOwnCopy(agentDir: string, logFile: string): boolean {
+  const shadowDir = path.join(agentDir, '.instar', 'shadow-install');
+  const cli = path.join(shadowDir, 'node_modules', 'instar', 'dist', 'cli.js');
+  if (fs.existsSync(cli)) return true;
+  fs.mkdirSync(shadowDir, { recursive: true });
+  const pkg = path.join(shadowDir, 'package.json');
+  if (!fs.existsSync(pkg)) fs.writeFileSync(pkg, JSON.stringify({ name: 'instar-shadow', private: true }, null, 2));
+  const besideNode = path.join(path.dirname(process.execPath), 'npm');
+  const npm = fs.existsSync(besideNode) ? besideNode : 'npm';
+  const env = { ...process.env, PATH: `${path.dirname(process.execPath)}:${process.env.PATH ?? ''}` };
+  const log = appendingLog(logFile);
+  try {
+    const installed = spawnSync(npm, ['install', `instar@${getInstarVersion()}`, '--ignore-scripts', '--no-audit', '--no-fund', '--prefix', shadowDir], {
+      stdio: ['ignore', log, log], env, timeout: PACKAGE_INSTALL_TIMEOUT_MS,
+    });
+    if (installed.status !== 0) return false;
+    // Without it the agent's memory search falls back to slower files; not a reason to fail.
+    spawnSync(npm, ['rebuild', 'better-sqlite3', '--prefix', shadowDir], { stdio: ['ignore', log, log], env, timeout: PACKAGE_INSTALL_TIMEOUT_MS });
+  } finally {
+    fs.closeSync(log);
+  }
+  return fs.existsSync(cli);
+}
+
 function defaultEnv(interactive: boolean): InstallEnv {
   const logFile = path.join(os.homedir(), '.instar', 'logs', 'install.log');
   return {
@@ -671,6 +810,30 @@ function defaultEnv(interactive: boolean): InstallEnv {
       if (result.status === 0 && /Auto-start installed/.test(result.stdout ?? '')) return { installed: true };
       const refused = /Auto-start not installed: (.*)/.exec(result.stdout ?? '')?.[1];
       return { installed: false, detail: refused };
+    },
+    seedOwnCopy: (agentDir) => seedOwnCopy(agentDir, logFile),
+    mintPairingLink: async (port, authToken) => {
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/mobile/pairing-codes`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${authToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label: 'Set up by the installer' }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        const body = await res.json().catch(() => ({})) as { link?: unknown; originKind?: unknown; error?: unknown };
+        if (res.ok && typeof body.link === 'string') {
+          const origin = pairingLinkOrigin(body.link);
+          if (origin) return { ok: true, link: body.link, origin, tailscale: body.originKind === 'tailscale' };
+        }
+        if (body.error === 'stable-address-required') return { ok: false, reason: 'no-address' };
+        // 503: pairing is turned off on this agent; 404: this version has no pairing.
+        if (res.status === 503 || res.status === 404) return { ok: false, reason: 'off' };
+        return { ok: false, reason: 'unavailable' };
+      } catch {
+        // @silent-fallback-ok: the server isn't answering yet; the caller asks again, then
+        // finishes with the local dashboard address
+        return { ok: false, reason: 'unavailable' };
+      }
     },
     print: (text) => console.log(text),
     askSecret: (prompt) => askHidden(prompt),

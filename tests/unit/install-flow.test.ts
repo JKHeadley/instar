@@ -22,7 +22,7 @@ import {
   writeInstallProgress,
   type InstallProgress,
 } from '../../src/commands/install/progress.js';
-import { gitWorks, restrictToOwner, looksLikeClaudeToken, writeClaudeToken, answersFileProblem, buildInstallHandlers, sqliteInstallCommand, tailscaleOperatorCommand, ensureViewingPin, finishAgentConfig, INSTALL_EXIT_CODES, installInitOptions, reportedStatus, tmuxInstallCommand, type InstallEnv, MIN_FREE_BYTES, preflightRefusal, presetFromAnswers } from '../../src/commands/install.js';
+import { gitWorks, INSTALLED_AGENT_MOBILE_PAIRING, pairingLinkOrigin, restrictToOwner, looksLikeClaudeToken, writeClaudeToken, answersFileProblem, buildInstallHandlers, sqliteInstallCommand, tailscaleOperatorCommand, ensureViewingPin, finishAgentConfig, INSTALL_EXIT_CODES, installInitOptions, reportedStatus, tmuxInstallCommand, type InstallEnv, MIN_FREE_BYTES, preflightRefusal, presetFromAnswers } from '../../src/commands/install.js';
 
 const ALL_ACTIONS: WizardActionKind[] = [
   'install-preflight', 'install-tools', 'install-tailscale-operator', 'door-install', 'door-sign-in', 'agent-init',
@@ -564,5 +564,147 @@ describe('agent config privacy', () => {
     restrictToOwner(file);
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
     expect(() => restrictToOwner(path.join(dir, 'missing.json'))).not.toThrow();
+  });
+});
+
+describe('auto-start handover and phone pairing', () => {
+  const setup = (overrides: Partial<InstallEnv>, config: Record<string, unknown> = { port: 4040, authToken: 'tok' }) => {
+    const realHome = process.env.HOME;
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'install-handover-'));
+    process.env.HOME = home;
+    const dir = path.join(home, '.instar', 'agents', 'cirrus', '.instar');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config));
+    let clock = 0;
+    const printed: string[] = [];
+    const ran: string[][] = [];
+    const env = {
+      logFile: path.join(home, 'install.log'), cli: ['node', 'cli.js'], interactive: true, browser: false,
+      runLogged: (_c: string, args: string[]) => { ran.push(args); return 0; },
+      installAutostart: () => ({ installed: true }),
+      serverHealthy: async () => false,
+      print: (t: string) => printed.push(t), sleep: async (ms: number) => { clock += ms; }, now: () => clock,
+      ...overrides,
+    } as unknown as InstallEnv;
+    return { env, printed, ran, restore: () => { process.env.HOME = realHome; } };
+  };
+  const answers = { agentName: 'cirrus', autostartConsent: true };
+
+  it('hands the agent to the service and sees it answer', async () => {
+    const { env, ran, restore } = setup({ serverHealthy: async () => true });
+    try {
+      const r = await buildInstallHandlers(env)['install-autostart']!(answers, newInstallProgress('do-autostart'));
+      expect(r).toEqual({ kind: 'done' });
+      expect(ran.map((a) => a.slice(1, 3).join(' '))).toEqual(['server stop']);
+    } finally { restore(); }
+  });
+
+  it('says so when the service never answers, and starts the agent again itself', async () => {
+    const { env, ran, restore } = setup({});
+    try {
+      const r = await buildInstallHandlers(env)['install-autostart']!(answers, newInstallProgress('do-autostart'));
+      expect(r.kind).toBe('done');
+      expect((r as { note?: string }).note).toMatch(/won't come back after a reboot/);
+      // The service is taken out first, so it can't fight the installer's own server for the lock.
+      expect(ran.map((a) => a.slice(1, 3).join(' '))).toEqual(['server stop', 'autostart uninstall', 'server start']);
+    } finally { restore(); }
+  });
+
+  it('still installs the service when its own copy could not be made, and checks it answers', async () => {
+    // The boot wrapper makes the copy at its first start; the handover shows whether that worked.
+    let installs = 0;
+    const { env, ran, restore } = setup({ seedOwnCopy: () => false, installAutostart: () => { installs++; return { installed: true }; }, serverHealthy: async () => true });
+    try {
+      expect(await buildInstallHandlers(env)['install-autostart']!(answers, newInstallProgress('do-autostart'))).toEqual({ kind: 'done' });
+      expect(installs).toBe(1);
+      expect(ran.map((a) => a.slice(1, 3).join(' '))).toEqual(['server stop']);
+    } finally { restore(); }
+  });
+
+  it('ends with a phone link and a dashboard the phone can open', async () => {
+    const link = 'https://instar.sh/pair#v=1&o=https%3A%2F%2Fcirrus.tail1234.ts.net&c=ABC&n=cirrus';
+    const { env, printed, restore } = setup({ mintPairingLink: async () => ({ ok: true, link, origin: 'https://cirrus.tail1234.ts.net', tailscale: true }) });
+    try {
+      const r = await buildInstallHandlers(env)['owner-slot']!(answers, newInstallProgress('do-owner'));
+      expect(r).toEqual({ kind: 'done' });
+      const out = printed.join('\n');
+      expect(out).toContain('Your dashboard: https://cirrus.tail1234.ts.net/dashboard');
+      expect(out).not.toContain('localhost');
+      expect(out).toContain(link);
+      expect(out).toMatch(/open Phones/);
+    } finally { restore(); }
+  });
+
+  it('on a server no phone can reach, asks for Tailscale instead of printing localhost', async () => {
+    const { env, printed, restore } = setup({ mintPairingLink: async () => ({ ok: false, reason: 'no-address' }) });
+    try {
+      const r = await buildInstallHandlers(env)['owner-slot']!(answers, newInstallProgress('do-owner'));
+      expect(r.kind).toBe('awaiting-person');
+      expect((r as { instruction: string }).instruction).toMatch(/Tailscale/);
+      expect(printed.join('\n')).not.toContain('localhost');
+    } finally { restore(); }
+  });
+
+  it('a server with Telegram finishes without asking for Tailscale', async () => {
+    const { env, printed, restore } = setup(
+      { mintPairingLink: async () => ({ ok: false, reason: 'no-address' }) },
+      { port: 4040, authToken: 'tok', messaging: [{ type: 'telegram' }] },
+    );
+    try {
+      expect(await buildInstallHandlers(env)['owner-slot']!(answers, newInstallProgress('do-owner'))).toEqual({ kind: 'done' });
+      expect(printed.join('\n')).toMatch(/Your PIN: \d{6}/);
+    } finally { restore(); }
+  });
+
+  it('shows the PIN even while it waits for Tailscale', async () => {
+    const { env, printed, restore } = setup({ mintPairingLink: async () => ({ ok: false, reason: 'no-address' }) });
+    try {
+      await buildInstallHandlers(env)['owner-slot']!(answers, newInstallProgress('do-owner'));
+      expect(printed.join('\n')).toMatch(/Your PIN: \d{6}/);
+    } finally { restore(); }
+  });
+
+  it('asks once when pairing is off, and not at all when the config turns it off', async () => {
+    let asks = 0;
+    const off = setup({ browser: true, mintPairingLink: async () => { asks++; return { ok: false, reason: 'off' }; } });
+    try {
+      expect(await buildInstallHandlers(off.env)['owner-slot']!(answers, newInstallProgress('do-owner'))).toEqual({ kind: 'done' });
+      expect(asks).toBe(1);
+    } finally { off.restore(); }
+    const disabled = setup(
+      { mintPairingLink: async () => { asks++; return { ok: false, reason: 'off' }; } },
+      { port: 4040, authToken: 'tok', mobilePairing: { enabled: false } },
+    );
+    try {
+      expect(await buildInstallHandlers(disabled.env)['owner-slot']!(answers, newInstallProgress('do-owner'))).toEqual({ kind: 'done' });
+      expect(asks).toBe(1);
+    } finally { disabled.restore(); }
+  });
+
+  it('on a desktop with no phone address, still ends at the local dashboard', async () => {
+    const { env, printed, restore } = setup({ browser: true, mintPairingLink: async () => ({ ok: false, reason: 'no-address' }) });
+    try {
+      expect(await buildInstallHandlers(env)['owner-slot']!(answers, newInstallProgress('do-owner'))).toEqual({ kind: 'done' });
+      expect(printed.join('\n')).toContain('http://localhost:4040/dashboard');
+    } finally { restore(); }
+  });
+});
+
+describe('new agents can pair a phone', () => {
+  it('turns pairing on, and keeps a setting already there', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'install-pairing-'));
+    const file = path.join(dir, 'config.json');
+    fs.writeFileSync(file, JSON.stringify({ port: 4040 }));
+    finishAgentConfig(file);
+    expect(JSON.parse(fs.readFileSync(file, 'utf-8')).mobilePairing).toEqual(INSTALLED_AGENT_MOBILE_PAIRING);
+    fs.writeFileSync(file, JSON.stringify({ port: 4040, mobilePairing: { enabled: false } }));
+    finishAgentConfig(file);
+    expect(JSON.parse(fs.readFileSync(file, 'utf-8')).mobilePairing).toEqual({ enabled: false });
+  });
+
+  it('reads the agent address out of a pairing link', () => {
+    expect(pairingLinkOrigin('https://instar.sh/pair#v=1&o=https%3A%2F%2Fa.ts.net&c=X')).toBe('https://a.ts.net');
+    expect(pairingLinkOrigin('https://instar.sh/pair#v=1&o=http%3A%2F%2Fa&c=X')).toBeNull();
+    expect(pairingLinkOrigin('https://instar.sh/pair')).toBeNull();
   });
 });

@@ -803,7 +803,7 @@ export function installAutoStart(
   projectName: string,
   projectDir: string,
   hasTelegram: boolean,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; noStart?: boolean } = {},
 ): boolean {
   const platform = process.platform;
 
@@ -823,7 +823,7 @@ export function installAutoStart(
     if (platform === 'darwin') {
       return installMacOSLaunchAgent(projectName, projectDir, hasTelegram);
     } else if (platform === 'linux') {
-      return installLinuxSystemdService(projectName, projectDir, hasTelegram);
+      return installLinuxSystemdService(projectName, projectDir, hasTelegram, opts.noStart === true);
     }
     // Windows or other — no auto-start support yet
     return false;
@@ -1106,52 +1106,6 @@ export function ensureStableNodeSymlink(projectDir: string): string {
   return symlinkPath;
 }
 
-function findInstarCli(): string {
-  // Find the actual instar CLI entry point
-  // CRITICAL: Never resolve to an npx cache path. When users run `npx instar setup`,
-  // import.meta.url points to the npx cache. If we bake that path into the launchd
-  // plist, `npm install -g` updates won't reach the running binary (the npx cache
-  // is a separate copy). This caused an infinite update→notify→restart loop (v0.12.12).
-  try {
-    const globalPath = execFileSync('which', ['instar'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-    if (globalPath && !globalPath.includes('.npm/_npx')) {
-      return globalPath;
-    }
-  } catch { /* not global */ }
-
-  // Try resolving from npm's global prefix (works even when `which` fails)
-  try {
-    const prefix = execFileSync('npm', ['prefix', '-g'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-    const globalCli = path.join(prefix, 'lib', 'node_modules', 'instar', 'dist', 'cli.js');
-    if (fs.existsSync(globalCli)) {
-      return globalCli;
-    }
-  } catch { /* npm prefix failed */ }
-
-  // Fallback: use the dist/cli.js from the npm package — but ONLY if not in npx cache
-  const cliPath = path.resolve(__dirname, '../cli.js');
-  if (fs.existsSync(cliPath) && !cliPath.includes('.npm/_npx')) {
-    return cliPath;
-  }
-
-  // Last resort: if everything points to npx cache, warn and use bare command name.
-  // The plist will need PATH to resolve it, but at least it won't be pinned to a stale cache.
-  if (cliPath.includes('.npm/_npx')) {
-    console.warn(
-      '[setup] WARNING: Running from npx cache. The launchd plist will use bare "instar" command.\n' +
-      '  Auto-updates are handled via shadow installs — no global install needed.'
-    );
-  }
-
-  return 'instar';
-}
-
 function escapeXml(str: string): string {
   return str
     .replace(/&/g, '&amp;')
@@ -1230,8 +1184,9 @@ if [ ! -f "$SHADOW" ]; then
     echo "[instar-boot] Shadow install missing — attempting one-shot reinstall" >&2
 
     # Resolve absolute node + npm (PATH may be empty under launchd).
-    NODE_BIN=""
-    for cand in /opt/homebrew/bin/node /usr/local/bin/node; do
+    NODE_BIN="$(command -v node 2>/dev/null || true)"
+    [ -n "$NODE_BIN" ] && [ ! -x "$NODE_BIN" ] && NODE_BIN=""
+    [ -z "$NODE_BIN" ] && for cand in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
       [ -x "$cand" ] && NODE_BIN="$cand" && break
     done
     NPM_BIN=""
@@ -1290,8 +1245,21 @@ fi
 # Crash loop protection: if node fails rapidly, back off before exiting.
 # Prevents launchd KeepAlive from spinning at max speed on persistent errors.
 mkdir -p "$(dirname "$CRASH_FILE")" 2>/dev/null
-node "$SHADOW" "$@"
+# Run node as a child and pass stop signals on. Under systemd this bash is the
+# unit's main process, and with KillMode=process a stop or restart signals it
+# alone: without the trap, bash exits and node keeps the port and the agent's
+# single-instance lock, so "restart" leaves the old server serving.
+node "$SHADOW" "$@" &
+CHILD=$!
+trap 'kill -TERM "$CHILD" 2>/dev/null' TERM INT HUP
+wait "$CHILD"
 EXIT_CODE=$?
+# A trapped signal interrupts wait early; wait again for node's own exit.
+while kill -0 "$CHILD" 2>/dev/null; do
+  wait "$CHILD"
+  EXIT_CODE=$?
+done
+trap - TERM INT HUP
 
 if [ $EXIT_CODE -ne 0 ]; then
   echo "$(date -u +%s)" >> "$CRASH_FILE"
@@ -2030,37 +1998,77 @@ export function describeLingerOutcome(outcome: LingerOutcome, user: string): str
  */
 export const SYSTEMD_KILL_MODE_LINE = 'KillMode=process';
 
-function installLinuxSystemdService(projectName: string, projectDir: string, hasTelegram: boolean): boolean {
-  const serviceName = `instar-${projectName}.service`;
-  const serviceDir = path.join(os.homedir(), '.config', 'systemd', 'user');
-  const servicePath = path.join(serviceDir, serviceName);
-  const nodePath = findNodePath();
-  const instarCli = findInstarCli();
+/**
+ * PATH entries that only make sense while `npx` runs: its cache, which npm may clear at any
+ * time, and the folders `npm exec` adds (`node_modules/.bin` up the tree, `node-gyp-bin`).
+ */
+export function withoutNpxCache(envPath: string): string {
+  return envPath.split(':')
+    .filter((dir) => dir && !/[\\/]_npx[\\/]/.test(dir) && !/(^|[\\/])node_modules[\\/]\.bin$/.test(dir) && !/[\\/]node-gyp-bin$/.test(dir))
+    .join(':');
+}
 
-  const command = hasTelegram ? 'lifeline' : 'server';
-  const args = hasTelegram
-    ? `${instarCli} lifeline start --dir ${projectDir}`
-    : `${instarCli} server start --foreground --dir ${projectDir}`;
+/**
+ * True when a systemd unit cannot start the agent on its own: its ExecStart is not an absolute
+ * path (systemd refuses a bare name with 203/EXEC), or it or its PATH points into the npx cache.
+ * Found on Cirrus, 2026-11-03: an install through npx wrote `ExecStart=instar server start ...`.
+ */
+export function systemdUnitNeedsStableStart(unit: string): boolean {
+  // systemd allows `-`, `@`, `+`, `!` and `:` before the path; they don't make it relative.
+  const exec = /^\s*ExecStart\s*=\s*[-@+!:]*(\S+)/m.exec(unit)?.[1];
+  if (!exec) return false;
+  if (!exec.startsWith('/')) return true;
+  if (/[\\/]_npx[\\/]/.test(exec)) return true;
+  const envPath = /^\s*Environment\s*=\s*"?PATH=([^"\n]*)/m.exec(unit)?.[1] ?? '';
+  return /[\\/]_npx[\\/]/.test(envPath);
+}
 
-  const isNodeScript = instarCli.endsWith('.js') || instarCli.endsWith('.mjs');
-  const execStart = isNodeScript ? `${nodePath} ${args}` : args;
-
-  const service = `[Unit]
-Description=Instar Agent - ${projectName}
+export function buildLinuxSystemdUnit(opts: {
+  projectName: string;
+  projectDir: string;
+  hasTelegram: boolean;
+  /** The agent's boot wrapper, which runs its own copy of instar (.instar/shadow-install). */
+  bootWrapper: string;
+  envPath: string;
+}): string {
+  const args = opts.hasTelegram
+    ? `lifeline start --dir ${opts.projectDir}`
+    : `server start --foreground --dir ${opts.projectDir}`;
+  // The same start as macOS: the boot wrapper runs the agent's own copy of instar, which the
+  // auto-updater keeps current, and reinstalls it if it is missing. Never a bare `instar` or a
+  // path in the npx cache (203/EXEC on every boot, Cirrus 2026-11-03).
+  return `[Unit]
+Description=Instar Agent - ${opts.projectName}
 After=network.target
 
 [Service]
 Type=simple
 ${SYSTEMD_KILL_MODE_LINE}
-ExecStart=${execStart}
-WorkingDirectory=${projectDir}
+ExecStart=/bin/bash ${opts.bootWrapper} ${args}
+WorkingDirectory=${opts.projectDir}
 Restart=always
 RestartSec=10
-Environment=PATH=${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}
+Environment=PATH=${withoutNpxCache(opts.envPath) || '/usr/local/bin:/usr/bin:/bin'}
 
 [Install]
 WantedBy=default.target
 `;
+}
+
+function installLinuxSystemdService(projectName: string, projectDir: string, hasTelegram: boolean, noStart = false): boolean {
+  const serviceName = `instar-${projectName}.service`;
+  const serviceDir = path.join(os.homedir(), '.config', 'systemd', 'user');
+  const servicePath = path.join(serviceDir, serviceName);
+  const nodeDir = path.dirname(process.execPath);
+  const envPath = process.env.PATH || '/usr/local/bin:/usr/bin:/bin';
+  const service = buildLinuxSystemdUnit({
+    projectName,
+    projectDir,
+    hasTelegram,
+    bootWrapper: installBootWrapper(projectDir).sh,
+    // The node running setup goes first, so the wrapper's `node` is one that exists.
+    envPath: envPath.split(':').includes(nodeDir) ? envPath : `${nodeDir}:${envPath}`,
+  });
 
   try {
     fs.mkdirSync(serviceDir, { recursive: true });
@@ -2068,7 +2076,9 @@ WantedBy=default.target
 
     execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
     execFileSync('systemctl', ['--user', 'enable', serviceName], { stdio: 'ignore' });
-    execFileSync('systemctl', ['--user', 'start', serviceName], { stdio: 'ignore' });
+    // noStart: the caller knows the agent is already running some other way, and a second
+    // start would only lose the single-instance lock and loop (PostUpdateMigrator).
+    if (!noStart) execFileSync('systemctl', ['--user', 'start', serviceName], { stdio: 'ignore' });
     // Enabling the unit is not enough on Linux: without lingering, the user's
     // systemd manager exits at logout and an "enabled" service never starts at
     // boot. Attempted here; the OUTCOME is reported by the caller (see
