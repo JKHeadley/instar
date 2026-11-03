@@ -424,7 +424,11 @@ describe('finding 1: a per-process limit on provider calls', () => {
     });
     const first = await voiceMessage(svc);
     const second = await voiceMessage(svc);
-    const [[a], [b]] = await Promise.all([lines(svc, first), lines(svc, second)]);
+    // Start the first note and wait until it holds the slot: each line awaits an async session copy
+    // before queueing, so under Promise.all the second note could claim the slot first (a CI flake).
+    const pa = lines(svc, first);
+    for (let i = 0; i < 200 && timeouts.length === 0; i++) await settle(1);
+    const [[a], [b]] = await Promise.all([pa, lines(svc, second)]);
     expect(a).toMatch(/\(transcription unavailable: the transcription service timed out; /);
     expect(b).toMatch(/\(transcription unavailable: timed out waiting; /);
     expect(timeouts).toHaveLength(1); // the queued call never reached the provider
