@@ -53,3 +53,5 @@ Revert. Phones fall back to "New reply". No state.
 ## Second-pass review
 
 Independent reviewer — Concur with the review. The read token reaches only the two anchored GET paths; a messageId from another conversation is refused (lookup is by the conversation's own key); operator messages and deleted conversations 404; messageId is pattern-checked on payload build and on peer notify. Its one note (the payload and notify checks allowed capitals the route refuses) is fixed: all three use the same lowercase pattern.
+
+Follow-up: the integration test caught that a signed device request to the preview was refused by the device allowlist; the allowlist now names the preview path for active devices.
