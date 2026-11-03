@@ -15,6 +15,8 @@ import { reconcileRelayFile, type SlackRelayInstallResult } from './SlackReplyRe
 /** Every historical shipped app-reply.sh before the current one. Append-only. */
 export const PRIOR_SHIPPED_APP_RELAY_SHA256: ReadonlySet<string> = new Set<string>([
   'a2070b6941b1eb59111fa44345c5dbaf25ed08bbeaae4f79a22543c9fa8241a0',
+  // Before message-origin-all-platforms added the origin credential header.
+  'a61c426218ecbc4d4d2080c8a5fccdf79360cb544ca678ab8f42b5c578d9d50c',
 ]);
 
 /** Every historical shipped app-media-path before the current one. Append-only. */

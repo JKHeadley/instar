@@ -25,6 +25,9 @@
  * machine's device-key ledger and signing-key history: verified / redacted / failed / unknown /
  * none. Only `verified` adds "📱 signed" to the session tag.
  */
+import { DEFAULT_ORIGIN_DISPLAY } from '../messaging/telegram-origin/OriginPresentation.js';
+import type { OriginDisplaySettings } from '../messaging/telegram-origin/types.js';
+import { deviceOriginRow, validateDeviceOriginRow, type DeviceOriginRow } from '../messaging/messageOrigin.js';
 import crypto from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
@@ -139,7 +142,7 @@ function sanitizePeerConversation(raw: unknown, machine: string): ConversationLi
 }
 
 /** A peer's browse row, re-validated. Its verdict is never trusted (§4.8): recomputed or `unknown`. */
-function sanitizePeerMessage(raw: unknown, machine: string): Record<string, unknown> | null {
+function sanitizePeerMessage(raw: unknown, machine: string, display?: OriginDisplaySettings): Record<string, unknown> | null {
   const m = raw as Record<string, unknown> | null;
   if (!m || typeof m !== 'object') return null;
   if (typeof m.eventId !== 'string' || !m.eventId || m.eventId.length > 80 || typeof m.messageId !== 'string' || m.messageId.length > 80) return null;
@@ -157,6 +160,8 @@ function sanitizePeerMessage(raw: unknown, machine: string): Record<string, unkn
     ...(files > 0 ? { filesOnOtherMachine: files } : {}),
     ...(typeof m.senderName === 'string' && m.senderName.length > 0 ? { senderName: m.senderName.slice(0, 128) } : {}),
     ...(m.senderRole === 'owner' || m.senderRole === 'msp' ? { senderRole: m.senderRole } : {}),
+    // A peer's origin row is re-checked; its display bits are replaced by this machine's (§4).
+    ...(m.role === 'agent' && display ? { origin: validateDeviceOriginRow(m.origin, display) ?? deviceOriginRow(null, display, 'other-machine') } : {}),
   };
 }
 
@@ -218,6 +223,8 @@ export interface MobileConversationRouteDeps {
   sentinel?: { decideInboundDisposition(message: string, topicId?: number): Promise<{ disposition: string }> } | null;
   /** The pool fan-out (`?scope=pool`, §4.8). Absent ⇒ a pool read is this machine alone. */
   pool?: PoolReadCtx | null;
+  /** The agent's current origin display bits (message-origin-all-platforms §5). Absent ⇒ all on. */
+  originDisplay?: () => OriginDisplaySettings;
   now?: () => number;
 }
 
@@ -247,7 +254,18 @@ export function attachmentRows(attachments: ReadonlyArray<AppAttachment>, svc: A
 }
 
 /** History rows for the app: the stored fields plus the verdict (§4.6). */
-export function historyRow(m: BrowsedMessage, verify: (m: BrowsedMessage) => OriginVerdict, svc?: AppConversationService): Record<string, unknown> {
+/**
+ * message-origin-all-platforms §4: what the phone gets on an agent row. A missing record is a claim
+ * (`false`) only for an event this machine wrote; another machine's event may have lost its record
+ * to an older peer, so it reads `null` (`other-machine`).
+ */
+export function agentOriginRow(m: Pick<BrowsedMessage, 'agentOrigin' | 'machineId'>, ctx: { display: OriginDisplaySettings; selfMachineId: string }): DeviceOriginRow {
+  if (m.agentOrigin) return deviceOriginRow(m.agentOrigin, ctx.display);
+  return deviceOriginRow(null, ctx.display, m.machineId === ctx.selfMachineId ? 'not-recorded' : 'other-machine');
+}
+
+export function historyRow(m: BrowsedMessage, verify: (m: BrowsedMessage) => OriginVerdict, svc?: AppConversationService,
+  originCtx?: { display: OriginDisplaySettings; selfMachineId: string }): Record<string, unknown> {
   const verdict = verify(m);
   // How the signing phone was approved (§4.6 display: "approved on dashboard"), only with a good verdict.
   const approvedVia = svc ? svc.originApprovedVia(m, verdict) : null;
@@ -257,6 +275,7 @@ export function historyRow(m: BrowsedMessage, verify: (m: BrowsedMessage) => Ori
     // People and roles §3.3: who sent an operator message, as recorded when it was accepted.
     ...(m.senderName ? { senderName: m.senderName } : {}), ...(m.senderRole ? { senderRole: m.senderRole } : {}),
     ...(m.attachments && svc ? { attachments: attachmentRows(m.attachments, svc) } : {}),
+    ...(m.role === 'agent' && originCtx ? { origin: agentOriginRow(m, originCtx) } : {}),
   };
 }
 
@@ -685,7 +704,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 100));
     const before = typeof req.query.before === 'string' ? req.query.before : null;
     const page = live ? svc!.store.browseMessages(key, before, limit) : { messages: [], nextBefore: null };
-    const rows = page.messages.map((m) => historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!));
+    const display = deps.originDisplay?.() ?? { ...DEFAULT_ORIGIN_DISPLAY };
+    const originCtx = { display, selfMachineId: deps.machineId() };
+    const rows = page.messages.map((m) => historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!, originCtx));
     if (!pool) { res.json({ conversationKey: key, messages: rows, nextBefore: page.nextBefore }); return; }
     // Pool read (§4.5/§4.8): each machine's page before the same boundary, merged by eventId
     // (this machine's row wins). A row only a peer holds is not yet replicated here, so this
@@ -698,14 +719,20 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const peers = deps.pool
       ? await fetchPeers(deps.pool, q, MAX_POOL_BROWSE_BYTES, (body, machineId) => ({
         rows: (Array.isArray(body.messages) ? body.messages.slice(0, limit) : [])
-          .map((r) => sanitizePeerMessage(r, machineId))
+          .map((r) => sanitizePeerMessage(r, machineId, display))
           .filter((r): r is Record<string, unknown> => r !== null && isBefore(String(r.at), String(r.eventId))),
         more: typeof body.nextBefore === 'string' && body.nextBefore.length > 0,
       }))
       : { results: [], failed: [] };
     const byId = new Map<string, Record<string, unknown>>();
     for (const r of rows) byId.set(String(r.eventId), { ...r, machine: self });
-    for (const p of peers.results) for (const r of p.rows) if (!byId.has(String(r.eventId))) byId.set(String(r.eventId), r);
+    for (const p of peers.results) for (const r of p.rows) {
+      const mine = byId.get(String(r.eventId));
+      if (!mine) { byId.set(String(r.eventId), r); continue; }
+      // §4: on a collision this machine's row wins, except that a peer's recorded origin fills in one this machine cannot tell.
+      const mineOrigin = mine.origin as { recorded?: unknown } | undefined, theirs = r.origin as { recorded?: unknown } | undefined;
+      if (mineOrigin && mineOrigin.recorded !== true && theirs?.recorded === true) mine.origin = theirs;
+    }
     // Not on this machine and no peer has it either: still unknown (unless a machine did not answer).
     if (!live && peers.results.length === 0 && peers.failed.length === 0) { res.status(404).json({ error: 'unknown-conversation' }); return; }
     const desc = [...byId.values()].sort((x, y) => strCmp(String(y.at), String(x.at)) || strCmp(String(y.eventId), String(x.eventId)));

@@ -6,7 +6,7 @@ import type { OriginStoreOptions } from './StoreTypes.js';
 const data = workerData as { options: OriginStoreOptions; mode?: 'spool' };
 let backend: OriginStoreBackend | null = null;
 const methods = new Set([
-  'putEvidence', 'putVerifiedEvidence', 'admit', 'getOrigin', 'getChild', 'getOperation', 'listOrigins', 'getMetrics',
+  'putEvidence', 'putVerifiedEvidence', 'admit', 'getOrigin', 'getChild', 'getOperation', 'listOrigins', 'lookupOriginEvidence', 'getMetrics',
   'claim', 'markDispatched', 'releaseUndispatchedClaim', 'renewClaim', 'recordOutcome', 'reapAbandoned', 'addMaterialization',
   'recordOperationState', 'reserveNotice', 'recordNoticeOutcome', 'archive', 'compactArchives', 'purgeArchived', 'foldMetricEvents', 'expireAudit', 'cleanupPayloads', 'diagnostics', 'getPayload', 'consumeAuditAssertion',
   'retireNoticeOwner', 'reconcileReceipt',

@@ -9480,6 +9480,24 @@ export async function startServer(options: StartOptions): Promise<void> {
       try {
         const { SlackAdapter } = await import('../messaging/slack/index.js');
         slackAdapter = new SlackAdapter(slackConfig.config as Record<string, unknown>, config.stateDir);
+        // message-origin-all-platforms §3: the Slack origin ledger's machine identity, the live
+        // fail-closed switch (operator exception) and the degradation reporter.
+        {
+          const { localMachineIdentity } = await import('../server/replyOrigin.js');
+          const originMachine = localMachineIdentity(config.stateDir);
+          slackAdapter.setOriginContext({
+            machine: () => {
+              const local = originMachine();
+              return { id: local.id, name: telegramOriginBoot?.runtime.options.identity.originMachineName ?? local.name };
+            },
+            failClosed: () => liveConfig.get<unknown>('messageOrigin.recording.slackFailClosed', true) !== false,
+            report: (feature, detail) => DegradationReporter.getInstance().report({
+              feature, primary: 'Every Slack message records which machine, harness and model wrote it before it is sent',
+              fallback: 'The send is refused (or, with messageOrigin.recording.slackFailClosed false, sent unrecorded)',
+              reason: detail, impact: 'Slack messages may not be delivered until the origin ledger can be written.',
+            }),
+          });
+        }
 
         // ── Slack org permission gate (Slice 0) — DARK by default ──────────
         // Attached only when `permissionGate.observeOnly` (or `.enforce`) is set in

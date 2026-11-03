@@ -58,7 +58,7 @@
     },
     {
       "path": "src/templates/scripts/slack-reply.sh",
-      "decision": "blocks send on malformed delivery id, absent binding, or tone-gate denial"
+      "decision": "blocks send on malformed delivery id, absent binding, or tone-gate denial; reports NOT SENT when the server could not record the message origin"
     },
     {
       "path": "src/templates/scripts/telegram-reply.sh",
@@ -72,8 +72,8 @@
   "nonBlocking": [
     {
       "path": "src/templates/scripts/app-reply.sh",
-      "sha256": "a61c426218ecbc4d4d2080c8a5fccdf79360cb544ca678ab8f42b5c578d9d50c",
-      "reason": "Declared 2026-11-01 (mobile-native-conversations inc 1): a thin relay. Every send decision (bind token, ownership, tone gate, duplicate suppression) is made by POST /app/session-reply in TypeScript; the script only reads stdin, JSON-escapes, posts, and reports the server answer. It refuses nothing on its own (a missing binding or malformed delivery id is passed through for the server to refuse or replace). Re-declared 2026-11-01 (mobile-native-chat-media inc 1): --file only turns paths into absolute paths for the JSON body; which files may be sent (confinement, key material, hard links, the credential wall) is decided by the server route. The only local exits are usage errors (--file with no path, no text and no file)."
+      "sha256": "4aaa5d366db94eb2282fa1e4bce4e717c0c84618aec8f4c653d56c8c5bb39a39",
+      "reason": "Declared 2026-11-01 (mobile-native-conversations inc 1): a thin relay. Every send decision (bind token, ownership, tone gate, duplicate suppression) is made by POST /app/session-reply in TypeScript; the script only reads stdin, JSON-escapes, posts, and reports the server answer. It refuses nothing on its own (a missing binding or malformed delivery id is passed through for the server to refuse or replace). Re-declared 2026-11-01 (mobile-native-chat-media inc 1): --file only turns paths into absolute paths for the JSON body; which files may be sent (confinement, key material, hard links, the credential wall) is decided by the server route. The only local exits are usage errors (--file with no path, no text and no file). Re-declared 2026-11-03 (message-origin-all-platforms): the script now also forwards the session's origin credential header (read from its own tmux environment when present, dropped unless it carries the ior1_ prefix); it refuses nothing on that basis, and the server records unknown evidence when the header is absent."
     },
     {
       "path": "src/templates/hooks/compaction-recovery.sh",

@@ -32,7 +32,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
 import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
-import { refreshHeldNoticeAwareness, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
@@ -8408,6 +8408,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Telegram origin recording and hold awareness');
     }
 
+    // message-origin-all-platforms: app and Slack recording + the phone row + the setting.
+    if (!content.includes(MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING)) {
+      content += '\n' + messageOriginAllPlatformsAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added message origin on app and Slack awareness');
+    }
+
     if (!content.includes('messageOrigin.outageNotice.enabled')) {
       content += '\n' + telegramOriginNoticeAwareness();
       patched = true;
@@ -14484,6 +14491,8 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     const markers = [
       '### Feature switches apply their setting (read `effective` before saying a feature is on)',
       '### Telegram message origin',
+      // message-origin-all-platforms: server-side and framework-neutral (app + Slack recording).
+      '### Message origin on app and Slack',
       '### Quota-enforcement scheduler pause',
       // peer-credential-guard-tailscale-coherence: a pool read's failure reasons
       // are server-side and framework-neutral — a Codex/Gemini agent runs the
