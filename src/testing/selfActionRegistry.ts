@@ -3555,6 +3555,67 @@ function preparingRunWatchdogModel(f: PressureFixture, sink: ActionSink): { tick
   } };
 }
 
+/**
+ * machine-wedge-notice — the wedge dry-run operator notice (machine-self-maintenance
+ * Part E rung 7; WedgeMonitor + MachineWedgeNotice). Off by default (its own flag);
+ * modelled here with the flag ON, the worst case. The pressure: two evidence families
+ * positive at every 2-minute sample, forever. Convergence shape: the judge and the
+ * notice are keyed on a durable wedge CONDITION held in the host store, which closes
+ * only on a real negative observation of one of its families or a new boot. A server
+ * restart starts a fresh in-memory window, so the candidate re-forms 20 minutes later
+ * as a new episode, but it is the same condition: no second notice. Across conditions
+ * (a flapping machine, not this fixture) it is also capped at one ordinary and one
+ * breaker notice per 24 hours.
+ */
+const machineWedgeNotice: SelfActionController = {
+  id: 'machine-wedge-notice',
+  actionVerb: 'wedge-notify',
+  models: 'src/monitoring/machineMaintenance/WedgeMonitor.ts (considerCandidate + sendNotice: durable condition latch, 24 h notice cap) via src/monitoring/MachineWedgeNotice.ts',
+  modelsPath: 'src/monitoring/MachineWedgeNotice.ts',
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 720,
+  tickMs: 2 * 60_000, // 2-minute sampling while evidence is positive — 24 h of a wedge that never clears
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeMachineWedgeNotice(f, sink),
+  },
+  makeUnderPressure(f, sink) {
+    return makeMachineWedgeNotice(f, sink);
+  },
+};
+
+function makeMachineWedgeNotice(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const WINDOW_MS = 20 * 60_000;
+  const MIN_OBS = 3;
+  const DAY_MS = 24 * 60 * 60_000;
+  // In-memory: the evidence window (lost on restart, as in the real monitor).
+  let run: { startAt: number; observations: number } | null = null;
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      // The pressure: both families positive at every sample (targetAlwaysRejects — the wedge never clears).
+      const bothPositive = f.targetAlwaysRejects();
+      if (!bothPositive) {
+        // A real negative closes the durable condition (never reached under this fixture).
+        f.durableState.delete('machine-wedge:condition');
+        run = null;
+        return;
+      }
+      run = run ? { startAt: run.startAt, observations: run.observations + 1 } : { startAt: now, observations: 1 };
+      if (run.observations < MIN_OBS || now - run.startAt < WINDOW_MS) return;
+      const condition = f.durableState.get('machine-wedge:condition') as { judged: boolean } | undefined;
+      if (condition?.judged) return; // the same condition after a restart: no second notice
+      f.durableState.set('machine-wedge:condition', { judged: true });
+      const sent = ((f.durableState.get('machine-wedge:notices') as number[] | undefined) ?? []).filter((t) => now - t < DAY_MS);
+      if (sent.length > 0) return;
+      sink.emit({ verb: 'wedge-notify', target: 'machine:self' });
+      f.durableState.set('machine-wedge:notices', [...sent, now]);
+    },
+  };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   desktopRelockGuardReplacement,
   desktopLockedHelperRespawn,
@@ -3634,4 +3695,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   deviceLimitSessionMove,
   replicatedStoreReconcilerRetry,
   preparingRunWatchdog,
+  machineWedgeNotice,
 ];

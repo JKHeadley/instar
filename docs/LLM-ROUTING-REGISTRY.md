@@ -148,6 +148,7 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | CompletionEvaluator (goal-met, P13) | src/core/CompletionEvaluator.ts:124/211 | is autonomous goal met? / blocker honesty | **B** (gates a stop) | OC(fast) | ✅ nature-B — keep reasoning |
 | InputGuard / InputDetector | src/core/InputGuard.ts:321 | prompt-injection / stuck-session | **B** safety | OC(fast) | ✅ |
 | TemporalCoherenceChecker | src/core/TemporalCoherenceChecker.ts:182 | time-claim contradiction | A | OC(fast) | ⚠ small fits |
+| MachineWedgeJudge | src/monitoring/MachineWedgeJudge.ts | is this machine wedged and what would the ladder do (leave/gentle/restart-next-window/restart-now)? Dry-run: recorded only | A | OC(balanced) | ✅ at most one call per wedge condition and 6 per 24 h; structured readings only; the deterministic fallback covers no answer |
 | TopicIntentArcCheck | src/core/TopicIntentArcCheck.ts:262 | intent drift | A/B | OC(fast) | ~ |
 | ProjectDriftChecker | src/core/ProjectDriftChecker.ts:351 | project/topic drift | B | OC(balanced) | ✅ |
 | PresenceProxy | src/monitoring/PresenceProxy.ts:1809 | standby status / tier message | A | OC(fast/balanced) | ⚠ |

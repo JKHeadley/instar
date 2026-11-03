@@ -1,0 +1,53 @@
+{
+  "ts": "2026-11-03T08:52:29.570Z",
+  "slug": "machine-wedge-dryrun",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 20,
+  "loc": 1445,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/componentCategories.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/data/llmBenchCoverage.ts",
+      "src/data/provenanceCoverage.ts",
+      "src/monitoring/MachineWedgeJudge.ts",
+      "src/monitoring/MachineWedgeNotice.ts",
+      "src/monitoring/guardManifest.ts",
+      "src/monitoring/machineMaintenance/DrainRehearsal.ts",
+      "src/monitoring/machineMaintenance/HostMaintenanceStore.ts",
+      "src/monitoring/machineMaintenance/WedgeMonitor.ts",
+      "src/monitoring/machineMaintenance/readings.ts",
+      "src/monitoring/machineMaintenance/wedgeEvidence.ts",
+      "src/monitoring/machineMaintenance/wedgeWindow.ts",
+      "src/monitoring/selfaction/policies.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 1431,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "notice keyed on a durable wedge condition closed only by a negative observation or new boot: boundK 1 per 24h; governor 1/machine, 3 total per 24h; sampler single-flight with hard-capped probes"
+    }
+  },
+  "verdict": "pass"
+}

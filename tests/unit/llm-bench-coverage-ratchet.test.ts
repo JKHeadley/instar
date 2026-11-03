@@ -40,6 +40,8 @@ const PENDING_BASELINE = [
   'FeedbackTriageArbiter', 'FeedbackTriageSecondOpinion',
   // ecosystem-idea-pipeline (2026-11-01): advisory review graded by its monthly audit and adoption predictions.
   'EcosystemIdeaReview',
+  // machine-self-maintenance Part E (CMT-1202): dry-run wedge proposal; the spec requires a 30-fixture benchmark before restart-now graduates.
+  'MachineWedgeJudge',
   // job-cost-reduction §5.6.5 (2026-10-26): the daily script-job review; graded by its must-flag canary until a bench task lands.
   'ScriptJobSupervisor',
   'JobTriageBackupCheck', // outage-only sampled classifier pending a dedicated bench task

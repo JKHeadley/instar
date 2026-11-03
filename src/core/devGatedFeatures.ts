@@ -59,7 +59,7 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     name: 'machineMaintenance',
     configPath: 'machineMaintenance.enabled',
     description: 'Machine self-maintenance, watch-only (docs/specs/machine-self-maintenance.md): a nightly paper drain records what a scheduled restart would have done and how long work takes to yield.',
-    justification: 'Cannot act: it holds no restart path and no yield method, its OS commands are an allowlist of readers, and a source lint fails the build if that changes. No LLM, no spend, no notice. It writes its own audit log and one host-level rehearsal record.',
+    justification: 'Cannot act: it holds no restart path and no yield method, its OS commands are an allowlist of fixed probes, and a source lint fails the build if that changes. It writes its own audit logs and host-level rehearsal and wedge records. The wedge sampler (Part E, dry-run) adds one bounded judge call per wedge condition (at most 6 per 24 h, host maintainer only) and an operator notice that is OFF unless machineMaintenance.wedgeRestart.dryRunNotice is true.',
   },
   {
     name: 'workAdmission',
