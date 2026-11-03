@@ -27,6 +27,7 @@ import { createConversationBindAuth } from '../../src/core/conversationBindToken
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { AppMediaStore } from '../../src/core/AppMediaStore.js';
+import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 
 const HOST = 'echo-media-e2e.example.dev';
 const servers: AgentServer[] = [];
@@ -41,7 +42,7 @@ afterAll(async () => {
 const sha = (b: Buffer) => crypto.createHash('sha256').update(b).digest('hex');
 const rid = () => `${Date.now()}-${crypto.randomUUID()}`;
 
-async function boot(developmentAgent: boolean) {
+async function boot(developmentAgent: boolean, telegramFactory?: (stateDir: string) => TelegramAdapter) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'media-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -65,9 +66,10 @@ async function boot(developmentAgent: boolean) {
   };
   sessionManager.injectMessage = () => true;
   const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, on: () => undefined } as any;
-  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel });
+  const telegram = telegramFactory?.(stateDir);
+  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, ...(telegram ? { telegram } : {}) });
   servers.push(server);
-  return { server, stateDir, dir, spawned };
+  return { server, stateDir, dir, spawned, telegram };
 }
 
 describe('media in app conversations — production wiring', () => {
@@ -171,6 +173,61 @@ describe('media in app conversations — production wiring', () => {
     }
     const health = await auth(request(app).get('/health'));
     expect(health.body.appMedia).toMatchObject({ liveBytes: photo.length + voice.length + voice2.length + fs.statSync(itinerary).size, openUploads: 0 });
+  });
+
+  it('Telegram media (§4.9): a photo a Telegram topic receives is recorded on the production path and served to the paired phone', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => ({ ok: true, json: async () => ({ ok: true, result: { message_id: 1 } }) })));
+    const { server, telegram } = await boot(true, (stateDir) => new TelegramAdapter({ token: 'test-token-123', chatId: '-100123', pollIntervalMs: 100 }, stateDir));
+    const app = server.getApp();
+    // Wiring integrity: the hook is set on the real adapter and delegates to the real store.
+    expect((telegram as unknown as { inboundMediaHook: unknown }).inboundMediaHook).toBeTypeOf('function');
+    const photo = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), crypto.randomBytes(2000)]);
+    (telegram as unknown as { downloadFile: (id: string, dest: string) => Promise<void> }).downloadFile = async (_id, dest) => { fs.writeFileSync(dest, photo); };
+    await (telegram as unknown as { handlePhotoMessage: (m: unknown, t: number) => Promise<void> }).handlePhotoMessage({
+      message_id: 9001, date: Math.floor(Date.now() / 1000), from: { id: 5, first_name: 'J', is_bot: false }, chat: { id: -100123, type: 'supergroup' },
+      message_thread_id: 42, caption: 'the view', photo: [{ file_id: 'p', file_unique_id: 'u', width: 800, height: 600 }],
+    }, 42);
+    let pm = null;
+    for (let i = 0; i < 50 && !pm; i++) { pm = server.appConversations!.store.getPlatformMedia('telegram:42', '9001'); if (!pm) await new Promise((r) => setTimeout(r, 20)); }
+    expect(pm?.attachments[0]).toMatchObject({ sha256: sha(photo), kind: 'photo' });
+
+    // A phone paired through the production path reads the topic and downloads the photo.
+    server.mobilePairing!.deps.fetchFn = (async (url: string) => {
+      const u = new URL(url);
+      const r = await request(app).get(u.pathname + u.search).set('Host', HOST);
+      return { ok: r.status === 200, status: r.status, json: async () => r.body } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const m = await request(app).post('/mobile/pairing-codes').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'media-e2e').send({});
+    const dms: string[] = [];
+    server.mobilePairing!.deps.ownerDM = async (text) => { dms.push(text); return 1; };
+    server.mobilePairing!.deps.telegramOwnerPresent = () => true;
+    const dev = makeDevice();
+    const r = await request(app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code: m.body.code, deviceName: 'e2e phone', devicePublicKey: dev.publicKey });
+    const deviceId = r.body.deviceId as string;
+    const code = /is (\d{3}) (\d{3})\./.exec(dms[0]!)!.slice(1).join('');
+    let tick = 0;
+    const send = (method: 'GET' | 'POST', p: string, body?: unknown) => {
+      const raw = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
+      const time = String(Date.now() + (tick++ % 500));
+      const sig = dev.sign(canonicalString(deviceId, HOST, method, p, time, raw));
+      const q = (method === 'GET' ? request(app).get(p) : request(app).post(p)).set('X-Instar-Device', deviceId).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', sig);
+      return raw ? q.set('Content-Type', 'application/json').send(raw.toString()) : q;
+    };
+    expect((await send('POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
+    const hist = await send('GET', '/telegram/topics/42/messages');
+    expect(hist.status).toBe(200);
+    const row = (hist.body.messages as Array<Record<string, any>>).find((x) => x.messageId === 9001)!;
+    expect(row.text).toBe('[photo] the view');
+    expect(row.attachments[0]).toMatchObject({ sha256: sha(photo), bytes: 'verified' });
+    const dl = await send('GET', `/mobile/media/${sha(photo)}?ref=telegram:42`);
+    expect(dl.status).toBe(200);
+    expect(Buffer.from(dl.body as Buffer).equals(photo)).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it('a fleet agent sets no Telegram media hook', async () => {
+    const { telegram } = await boot(false, (stateDir) => new TelegramAdapter({ token: 'test-token-123', chatId: '-100123', pollIntervalMs: 100 }, stateDir));
+    expect((telegram as unknown as { inboundMediaHook: unknown }).inboundMediaHook).toBeNull();
   });
 
   it('is off on a fleet agent: the media routes answer 503', async () => {

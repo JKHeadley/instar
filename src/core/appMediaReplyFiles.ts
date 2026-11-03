@@ -69,6 +69,43 @@ export async function prepareReplyFiles(
   neverServed: (projectRelative: string) => boolean,
   detect: (text: string) => { detected: boolean; kind?: string },
 ): Promise<PreparedReplyFiles | Refusal> {
+  const admitted = await admitFileSnapshots(media, files, (requested) => confineReplyPath(requested, roots, neverServed));
+  if ('status' in admitted) return admitted;
+  const prepared = admitted;
+  const abandon = (r: Refusal): Refusal => {
+    discardPrepared(media, prepared);
+    return r;
+  };
+  // The names reach the phone too: a credential in a file name is refused like one in the text.
+  const named = detect(prepared.snapshots.map((s) => s.filename).join('\n'));
+  if (named.detected) return abandon({ status: 422, error: 'credential-exposure-guard', detail: `A file name holds a live credential (${named.kind ?? 'credential'}) and was not sent. Rename the file and send it again.` });
+  // Step 5: the live-credential wall over every snapshot.
+  for (const s of prepared.snapshots) {
+    let hit: string | null = null;
+    await scanPrintableRuns(s.snapshotPath, { minRun: 16, batchChars: 512 * 1024, overlap: 1024 }, (batch) => {
+      if (hit) return;
+      const d = detect(batch);
+      if (d.detected) hit = d.kind ?? 'credential';
+    });
+    if (hit) {
+      return abandon({ status: 422, error: 'credential-exposure-guard', detail: `${path.basename(s.requested)} holds a live credential (${hit}) and was not sent. Remove it and send the file again.` });
+    }
+  }
+  return prepared;
+}
+
+/**
+ * Steps 2-4 of §4.6, shared by every path that admits a local file into the blob store (an agent
+ * reply, a Telegram or Slack inbound copy, §4.7): resolve the path (the caller's confinement), one
+ * open with no symlink and the descriptor checked against what was resolved, the size limits, a
+ * reservation (disk floor and store cap) before any byte is copied, then a hashed snapshot. On any
+ * refusal every snapshot and reservation made so far is released. No content scan here.
+ */
+export async function admitFileSnapshots(
+  media: AppMediaStore,
+  files: ReadonlyArray<string>,
+  resolve: (requested: string) => { real: string } | Refusal,
+): Promise<PreparedReplyFiles | Refusal> {
   if (files.length < 1 || files.length > MAX_ATTACHMENTS) return { status: 413, error: 'too-many-files', detail: `A reply can carry at most ${MAX_ATTACHMENTS} files.` };
   const prepared: PreparedReplyFiles = { snapshots: [], reservationIds: [] };
   const handles: Array<{ fd: number; requested: string; size: number }> = [];
@@ -80,7 +117,7 @@ export async function prepareReplyFiles(
   };
   let total = 0;
   for (const requested of files) {
-    const c = confineReplyPath(requested, roots, neverServed);
+    const c = resolve(requested);
     if ('status' in c) return abandon(c);
     // Step 2: one open, no symlink, and the descriptor must be the file that was checked.
     let st: fs.Stats;
@@ -116,21 +153,6 @@ export async function prepareReplyFiles(
     prepared.snapshots.push({ requested: h.requested, snapshotPath, hashed: copied, filename: name });
   }
   closeAll();
-  // The names reach the phone too: a credential in a file name is refused like one in the text.
-  const named = detect(prepared.snapshots.map((s) => s.filename).join('\n'));
-  if (named.detected) return abandon({ status: 422, error: 'credential-exposure-guard', detail: `A file name holds a live credential (${named.kind ?? 'credential'}) and was not sent. Rename the file and send it again.` });
-  // Step 5: the live-credential wall over every snapshot.
-  for (const s of prepared.snapshots) {
-    let hit: string | null = null;
-    await scanPrintableRuns(s.snapshotPath, { minRun: 16, batchChars: 512 * 1024, overlap: 1024 }, (batch) => {
-      if (hit) return;
-      const d = detect(batch);
-      if (d.detected) hit = d.kind ?? 'credential';
-    });
-    if (hit) {
-      return abandon({ status: 422, error: 'credential-exposure-guard', detail: `${path.basename(s.requested)} holds a live credential (${hit}) and was not sent. Remove it and send the file again.` });
-    }
-  }
   return prepared;
 }
 

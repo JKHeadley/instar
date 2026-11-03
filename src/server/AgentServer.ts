@@ -179,6 +179,7 @@ import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
+import { recordPlatformMedia, deviceTextForRow } from '../core/appPlatformMedia.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
@@ -6312,10 +6313,25 @@ export class AgentServer {
         pool: routeCtx,
         telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => {
           const last = options.telegram!.getTopicHistory(m.topicId, 1)[0];
-          return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? last.text.slice(0, 140) : null };
+          return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
         }) : undefined,
       }));
       this.app.use(createMobileMediaRouter({ pairing: this.mobilePairing, service: this.appConversations, mediaEnabled: isMobileMediaEnabled(options.config) }));
+      // Telegram media in the app's history (media spec §4.9): each file a Telegram topic receives is
+      // also copied into the blob store as a replicated `platform-media` event. Media on only.
+      const appSvc = this.appConversations;
+      if (appSvc && options.telegram && isMobileMediaEnabled(options.config) && typeof options.telegram.setInboundMediaHook === 'function') {
+        options.telegram.setInboundMediaHook(async (info) => {
+          const r = await recordPlatformMedia(appSvc, {
+            conversationKey: `telegram:${info.topicId}`, platformMessageId: String(info.platformMessageId), filePath: info.filePath,
+            declaredKind: info.declaredKind, filename: info.filename, declaredType: info.declaredType, at: info.at,
+            durationMs: info.durationMs, width: info.width, height: info.height,
+          });
+          if (!r.recorded && r.reason !== 'duplicate') {
+            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (topic ${info.topicId}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. The session still received it.`);
+          }
+        });
+      }
       this.mobilePairing.pushPoolCtx = routeCtx;
       this.app.use(createMobilePairingRouter(this.mobilePairing, this.mobilePairing.deps, routeCtx));
     }

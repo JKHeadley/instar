@@ -8,6 +8,9 @@
  *   message  {messageId, role, text, origin?, receivedAt?, receipt?}
  *   delivery {messageId, state}
  *   media-message {…message fields, attachments}      purge {attachmentIds}
+ *   platform-media {messageId, platformMessageId, attachments}
+ *     (§4.9: files that arrived in a Telegram topic or Slack conversation, copied into the blob
+ *     store; the reference that authorizes downloads and drives pulls. Never a chat message.)
  *     (docs/specs/mobile-native-chat-media.md §4.1, §4.7: a new kind on purpose, so a version that
  *     does not know it refuses the event instead of storing a message with no files)
  * plus, on each row, this machine's `ingestSeq` for that file (a replicated row gets the next
@@ -34,10 +37,10 @@ import Database from 'better-sqlite3';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { registerSqliteHandle } from './SqliteRegistry.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
-import { canonicalConversationKey, cleanConversationTitle } from './appConversationText.js';
+import { canonicalConversationKey, cleanConversationTitle, derivedEventId } from './appConversationText.js';
 import { type AppAttachment, validateAttachments, MAX_PURGE_BATCH, mediaPreview } from './appMediaTypes.js';
 
-export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge';
+export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media';
 export type DeliveryEventState = 'delivered' | 'refused' | 'intercepted' | 'unknown';
 export type ReducedDeliveryState = DeliveryEventState | 'pending';
 
@@ -91,7 +94,21 @@ export interface DeliveryEvent extends AppEventBase { kind: 'delivery'; messageI
 export interface MediaMessageEvent extends Omit<MessageEvent, 'kind'> { kind: 'media-message'; attachments: AppAttachment[] }
 /** The operator's permanent removal of these exact attachments' bytes (media spec §4.7). */
 export interface PurgeEvent extends AppEventBase { kind: 'purge'; attachmentIds: string[] }
-export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent | MediaMessageEvent | PurgeEvent;
+/**
+ * Files that arrived in a Telegram topic or Slack conversation (media spec §4.9), copied into the
+ * blob store. `messageId` is derived from the platform message id (so the same platform message
+ * appends once); it is NOT a chat message: browse, previews and delivery states ignore it.
+ */
+export interface PlatformMediaEvent extends AppEventBase { kind: 'platform-media'; messageId: string; platformMessageId: string; attachments: AppAttachment[] }
+export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent | MediaMessageEvent | PurgeEvent | PlatformMediaEvent;
+
+/** A platform conversation's canonical key (the same shapes the purge route accepts). */
+export const PLATFORM_CONVERSATION_KEY_RE = /^(telegram:\d+|slack:[A-Za-z0-9]+:[A-Za-z0-9]+(:[0-9.]+)?)$/;
+
+/** The stable message id (and event id) of the platform-media event for one platform message. */
+export function platformMediaMessageId(conversationKey: string, platformMessageId: string): string {
+  return derivedEventId('pm', canonicalConversationKey(conversationKey), platformMessageId);
+}
 export type StoredAppEvent = AppEvent & { ingestSeq: number };
 
 export interface ConversationSummary {
@@ -216,6 +233,14 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       const s = r.state;
       if (!messageId || (s !== 'delivered' && s !== 'refused' && s !== 'intercepted' && s !== 'unknown')) return null;
       return { ...base, kind: 'delivery', messageId, state: s };
+    }
+    case 'platform-media': {
+      const messageId = str(r.messageId, 128);
+      const platformMessageId = typeof r.platformMessageId === 'string' && /^[0-9A-Za-z._:-]{1,64}$/.test(r.platformMessageId) ? r.platformMessageId : null;
+      // The event id IS the message id, so a media reference resolves to its event by one lookup.
+      if (!messageId || messageId !== eventId || !platformMessageId || !PLATFORM_CONVERSATION_KEY_RE.test(conversationKey)) return null;
+      const attachments = validateAttachments(r.attachments, messageId);
+      return attachments ? { ...base, kind: 'platform-media', messageId, platformMessageId, attachments } : null;
     }
     case 'purge': {
       const ids = r.attachmentIds;
@@ -535,6 +560,10 @@ export class AppConversationStore {
       case 'purge':
         for (const id of ev.attachmentIds) this.purgeMediaRef(id);
         return;
+      case 'platform-media':
+        // A reference only (§4.9): never a chat message, so no messages row and no preview.
+        this.indexMediaRefs(canonicalKey, ev);
+        return;
       case 'message':
       case 'media-message': {
         const state = this.reduceFor(ev.messageId);
@@ -574,7 +603,7 @@ export class AppConversationStore {
     if (cur.liveRefs > 0 && nextLive === 0) this.db.prepare('UPDATE media_totals SET liveBytes = MAX(0, liveBytes - ?) WHERE id = 1').run(cur.size);
   }
 
-  private indexMediaRefs(canonicalKey: string, ev: MediaMessageEvent): void {
+  private indexMediaRefs(canonicalKey: string, ev: MediaMessageEvent | PlatformMediaEvent): void {
     const tombstoned = this.isTombstoned(canonicalKey);
     for (const a of ev.attachments) {
       const purged = !!this.db.prepare('SELECT 1 FROM media_purged WHERE attachmentId = ?').get(a.attachmentId);
@@ -658,6 +687,23 @@ export class AppConversationStore {
   getMessageEvent(conversationKey: string, messageId: string): StoredAppEvent | null {
     const row = this.db.prepare('SELECT eventId FROM messages WHERE messageId = ?').get(messageId) as { eventId: string } | undefined;
     return row ? this.getEvent(conversationKey, row.eventId) : null;
+  }
+
+  /**
+   * The attachments recorded under a media reference's message id: a `media-message` (through the
+   * messages table) or a `platform-media` event (whose event id IS its message id). Null otherwise.
+   */
+  getMediaAttachments(conversationKey: string, messageId: string): AppAttachment[] | null {
+    const msg = this.getMessageEvent(conversationKey, messageId);
+    if (msg && msg.kind === 'media-message') return msg.attachments;
+    const pm = this.getEvent(conversationKey, messageId);
+    return pm && pm.kind === 'platform-media' && pm.messageId === messageId ? pm.attachments : null;
+  }
+
+  /** The platform-media event recorded for one platform message (§4.9), or null. */
+  getPlatformMedia(conversationKey: string, platformMessageId: string): (PlatformMediaEvent & { ingestSeq: number }) | null {
+    const ev = this.getEvent(conversationKey, platformMediaMessageId(conversationKey, platformMessageId));
+    return ev && ev.kind === 'platform-media' && ev.platformMessageId === platformMessageId ? ev : null;
   }
 
   private reduceFor(messageId: string): ReducedDeliveryState {

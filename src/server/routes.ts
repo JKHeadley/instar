@@ -196,7 +196,7 @@ import { discardPrepared, prepareReplyFiles } from '../core/appMediaReplyFiles.j
 import { MEDIA_PATH_WAIT_MS } from '../core/AppMediaReplicator.js';
 import { isNeverServed } from './fileRoutes.js';
 import { isMobileMediaEnabled } from './mobilePairingRoutes.js';
-import { joinTelegramHistory } from './mobileConversationRoutes.js';
+import { joinTelegramHistory, withTelegramMediaForDevice } from './mobileConversationRoutes.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
 import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
 import { PROPOSABLE_FLOOR_ACTIONS, renderAuthorizationCard } from '../core/AuthorizationRequestStore.js';
@@ -19776,8 +19776,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const isDevice = (req as unknown as { instarPrincipal?: { kind: string } }).instarPrincipal?.kind === 'device';
     // Signed records (mobile-native-conversations §4.9): a device's read joins each row to the app
     // conversation store by eventId and returns `originVerified` computed there.
+    // Telegram media (mobile-native-chat-media §4.9): a device gets each recorded file as
+    // `attachments`, and never a server path in the text.
     const joinForDevice = (rows: ReadonlyArray<Record<string, unknown>>) =>
-      (isDevice && ctx.appConversations ? joinTelegramHistory(ctx.appConversations, topicId, rows, limit) : rows);
+      (isDevice ? withTelegramMediaForDevice(ctx.appConversations ?? null, topicId, ctx.appConversations ? joinTelegramHistory(ctx.appConversations, topicId, rows, limit) : rows) : rows);
     if (req.query.scope !== 'pool') {
       const joined = joinForDevice(local as unknown as Array<Record<string, unknown>>);
       res.json({ topicId, messages: isDevice ? stripViewSignatures(joined) : joined });
