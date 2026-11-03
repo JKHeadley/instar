@@ -60,3 +60,5 @@ A source revert restores the prior admission order. No data migration or row rew
 ## Verification
 
 The focused regression failed on the old source with `decided=0`; after the change, all 52 triage service unit tests pass, including the verified-account path. Build and lint pass. The independent reviewer concurred after checking the 49-to-50 and 50-of-50 boundaries, shared counter, and both reservation paths. Existing integration and E2E lifecycle tests, exact-head full suite, and CI remain to be recorded before release.
+
+The first GitHub Docs Coverage check failed at 54% class coverage against its 55% floor. I added accurate component responsibilities to the feedback factory documentation for `FeedbackManager`, `FeedbackAnomalyDetector`, and `TriageOrigin`. The local coverage check now passes at 55% class coverage. The remaining GitHub checks still need to run on the revised head.
