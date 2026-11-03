@@ -82,5 +82,8 @@ describe('console blockerText (rows recorded before the hook fix)', () => {
     expect(blockerText('cd /a; curl -s -X POST http://localhost:4042/commitments')).toBe('Flagged in a command I ran (no message text)');
     expect(blockerText('We cannot reach the laptop')).toBe('We cannot reach the laptop');
     expect(blockerText('x'.repeat(300))).toHaveLength(220);
+    // Names, never ids: a quoted topic number reads as the conversation's name when known.
+    expect(blockerText('Request from topic 136110 (cloud server test)', { '136110': 'Cloud VM trial' })).toBe('Request from “Cloud VM trial” (cloud server test)');
+    expect(blockerText('Request from topic 999 here', { '136110': 'Cloud VM trial' })).toBe('Request from topic 999 here');
   });
 });
