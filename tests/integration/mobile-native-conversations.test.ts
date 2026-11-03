@@ -265,6 +265,35 @@ describe('native app conversations — routes', () => {
     expect(hist.body.messages).toEqual([expect.objectContaining({ role: 'agent', originVerified: 'none' })]);
   });
 
+  it('reply notification preview: the reply text for the device, its notification read token and the agent; nothing else', async () => {
+    const e = setup();
+    const key = await create(e);
+    const alias = e.registry.appAliasFor(key)!;
+    e.svc.leaseTick();
+    const token = e.bindAuth.mint('sess-app', [alias]);
+    const text = 'Here is the plan for Saturday: we leave at nine, stop for breakfast, and are at the lake by noon. Bring a jacket.';
+    const r = await bearer(e, 'post', '/app/session-reply').set('X-Instar-Bind-Token', token).send({ conversationId: alias, text });
+    expect(r.status).toBe(200);
+    const path = `/mobile/chat/app/${key}/preview/${r.body.messageId as string}`;
+    const dev = await signed(e, 'GET', path);
+    expect(dev.status).toBe(200);
+    expect(dev.body.title).toBe('Echo');
+    expect(dev.body.body).toBe(`${text.slice(0, 99)}…`);
+    // The notification extension has only the read token, never the signing key.
+    const read = crypto.randomBytes(32).toString('hex');
+    expect(e.pairing.devices.setPush(e.deviceId, { token: 'a'.repeat(64), environment: 'sandbox', notifyTokenHash: crypto.createHash('sha256').update(read).digest('hex'), revision: 1 }).ok).toBe(true);
+    const viaRead = await request(e.app).get(path).set('X-Instar-Device', e.deviceId).set('X-Instar-Notify-Token', read);
+    expect(viaRead.status).toBe(200);
+    expect(viaRead.body.body).toBe(dev.body.body);
+    expect((await request(e.app).get(path).set('X-Instar-Device', e.deviceId).set('X-Instar-Notify-Token', 'nope')).status).toBe(401);
+    // The read token opens no history and no other conversation route.
+    expect((await request(e.app).get(`/mobile/chat/app/${key}/messages`).set('X-Instar-Device', e.deviceId).set('X-Instar-Notify-Token', read)).status).toBe(403);
+    expect((await bearer(e, 'get', path)).status).toBe(200);
+    // An operator message, an unknown id, a bad key: no preview (the phone keeps "New reply").
+    expect((await signed(e, 'GET', `/mobile/chat/app/${key}/preview/am-0000`)).status).toBe(404);
+    expect((await bearer(e, 'get', `/mobile/chat/app/not-a-key/preview/am-1`)).status).toBe(400);
+  });
+
   it('is 503 everywhere when native conversations are off, and the Telegram chat route is untouched', async () => {
     const e = setup({ nativeOff: true });
     expect((await signed(e, 'GET', '/mobile/conversations')).status).toBe(503);

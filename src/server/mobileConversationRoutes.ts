@@ -39,7 +39,7 @@ import type { BrowsedMessage, DeviceSignedOrigin, MachineReceipt, MediaMessageEv
 import { signReceipt, signRedaction, signRedactionV2, sha256Hex, type MachineSigner, type OriginVerdict } from '../core/AppRecordSignatures.js';
 import { buildAppConversationRecordData } from '../core/AppConversationsReplicatedStore.js';
 import {
-  MAX_ATTACHMENTS, MAX_MESSAGE_BYTES, MAX_TRANSCRIPT_CHARS, attachmentIdFor, effectiveKind, type AppAttachment,
+  MAX_ATTACHMENTS, MAX_MESSAGE_BYTES, MAX_TRANSCRIPT_CHARS, attachmentIdFor, effectiveKind, pushPreviewBody, type AppAttachment,
 } from '../core/appMediaTypes.js';
 import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { isExactStopMessage } from '../core/MessageSentinel.js';
@@ -201,7 +201,7 @@ export interface MobileConversationRouteDeps {
   now?: () => number;
 }
 
-type Principal = { kind: 'device'; deviceId: string } | { kind: 'token' };
+type Principal = { kind: 'device'; deviceId: string } | { kind: 'device-notify'; deviceId: string } | { kind: 'token' };
 function principalOf(req: Request): Principal {
   return ((req as unknown as { instarPrincipal?: Principal }).instarPrincipal) ?? { kind: 'token' };
 }
@@ -693,6 +693,25 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       conversationKey: key, messages: pageRows.reverse(),
       nextBefore: more && oldest ? `${String(oldest.at)},${String(oldest.eventId)}` : null, pool: { failed: peers.failed },
     });
+  });
+
+  // ── Reply notification preview (chat-media spec §4.11) ──
+  // The phone's notification extension asks for the text to show; Apple only ever carries
+  // "New reply". Open to the device, its notification read token, or the agent's token.
+  router.get('/mobile/chat/app/:key/preview/:messageId', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!deps.pairing.enabled() || !svc) { off(res); return; }
+    const p = principalOf(req);
+    if (p.kind !== 'device' && p.kind !== 'device-notify' && p.kind !== 'token') { res.status(403).json({ error: 'device-required' }); return; }
+    const key = String(req.params.key);
+    const messageId = String(req.params.messageId);
+    if (!isAppConversationKey(key) || !/^[a-z0-9._:-]{1,128}$/.test(messageId)) { res.status(400).json({ error: 'bad-request' }); return; }
+    // A deleted conversation, or a reply not replicated to this machine yet: the phone keeps the generic text.
+    const ev = svc.liveConversation(key) ? svc.store.getMessageEvent(key, messageId) : null;
+    const m = ev as unknown as { role?: string; text?: unknown; attachments?: AppAttachment[] } | null;
+    if (!m || m.role !== 'agent') { res.status(404).json({ error: 'not-found' }); return; }
+    const name = deps.config.projectName ?? 'agent';
+    res.json({ title: name.charAt(0).toUpperCase() + name.slice(1), body: pushPreviewBody(m.attachments ?? [], typeof m.text === 'string' ? m.text : '') });
   });
 
   // ── Sync ──

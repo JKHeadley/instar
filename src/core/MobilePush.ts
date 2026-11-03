@@ -31,6 +31,8 @@ export interface PushTrigger {
   itemId?: string;
   /** For `reply`: the app conversation's UUID, so the phone can open it. Never the reply's text. */
   conversationKey?: string;
+  /** For `reply`: the reply's message id, so the phone can ask for its preview (chat-media §4.11). */
+  messageId?: string;
   dedupeKey: string;
   priority?: string;
   sourceMachine: string;
@@ -144,7 +146,7 @@ export class MobilePushService {
    * phone paired on another machine hears it too. Needs no Telegram.
    */
   onAppReply(conversationKey: string, messageId: string): void {
-    this.onHubPost({ kind: 'reply', conversationKey, dedupeKey: `app-reply:${messageId}` });
+    this.onHubPost({ kind: 'reply', conversationKey, messageId, dedupeKey: `app-reply:${messageId}` });
   }
 
   /** A trigger from this machine or a peer. Returns 'deduped' or 'accepted'. */
@@ -163,7 +165,7 @@ export class MobilePushService {
       const ds = this.dev(st, d.id);
       prune(ds, t0);
       if (!ds.pending && this.dueFor(ds, urgent) <= t0) {
-        await this.send(d.id, { kind: t.kind, itemId: t.kind === 'item' ? t.itemId : undefined, conversationKey: t.kind === 'reply' ? t.conversationKey : undefined, machine: t.sourceMachine, count: 1 }, urgent && this.throttled(ds));
+        await this.send(d.id, { kind: t.kind, itemId: t.kind === 'item' ? t.itemId : undefined, conversationKey: t.kind === 'reply' ? t.conversationKey : undefined, messageId: t.kind === 'reply' ? t.messageId : undefined, machine: t.sourceMachine, count: 1 }, urgent && this.throttled(ds));
       } else {
         ds.pending = { count: (ds.pending?.count ?? 0) + 1, hasUrgent: (ds.pending?.hasUrgent ?? false) || urgent };
         ds.dueAt = this.dueFor(ds, ds.pending.hasUrgent);
@@ -308,7 +310,7 @@ function prune(ds: DeviceState, t0: number): void {
   if (ds.backoffUntil && ds.backoffUntil <= t0) ds.backoffUntil = null;
 }
 
-export interface PushPayloadInput { kind: 'item' | 'notice' | 'reply' | 'aggregate'; itemId?: string; conversationKey?: string; machine?: string; count: number }
+export interface PushPayloadInput { kind: 'item' | 'notice' | 'reply' | 'aggregate'; itemId?: string; conversationKey?: string; messageId?: string; machine?: string; count: number }
 
 export function buildPayload(agentName: string, agentId: string, deviceId: string, p: PushPayloadInput): Record<string, unknown> {
   const body = p.kind === 'aggregate' ? `${p.count} more ${p.count === 1 ? 'thing needs' : 'things need'} you`
@@ -316,7 +318,11 @@ export function buildPayload(agentName: string, agentId: string, deviceId: strin
   const instar: Record<string, unknown> = { kind: p.kind, agentId, deviceId, count: p.count };
   if (p.kind === 'item' && p.itemId) { instar.itemId = p.itemId; instar.machine = p.machine; }
   // The conversation to open; never the reply's text (the phone fetches it itself).
-  if (p.kind === 'reply' && p.conversationKey) instar.conversationKey = p.conversationKey;
+  if (p.kind === 'reply' && p.conversationKey) {
+    instar.conversationKey = p.conversationKey;
+    // Lets the phone fetch the preview from the agent; the text itself never goes through Apple.
+    if (p.messageId && /^[a-z0-9._:-]{1,128}$/.test(p.messageId)) { instar.messageId = p.messageId; instar.machine = p.machine; }
+  }
   return {
     aps: { alert: { title: agentName, body }, sound: 'default', 'mutable-content': 1, 'thread-id': agentName },
     instar,
