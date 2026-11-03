@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-`scripts/safe-merge.mjs` now defers its `--auto` route until the full producer-bound Actions floor is green and then calls the immediate head-pinned merge. `FeedbackExecutorService` retries pending checks under a durable deadline and removes the obsolete native auto-merge prerequisite. The CLAUDE.md template and migration both explain the revised behavior. `GreenPrAutoMerger` treats the same deferral as backpressure, not a failed ladder attempt. Tests cover all three layers.
+`scripts/safe-merge.mjs` now defers its `--auto` route until the full producer-bound Actions floor is green and then calls the immediate head-pinned merge. `FeedbackExecutorService` retries pending checks under a durable deadline and removes the obsolete native auto-merge prerequisite. The CLAUDE.md template and migration both explain the revised behavior. `GreenPrAutoMerger` treats the same deferral as backpressure, not a failed ladder attempt. Tests cover all three layers. The site delivery-checks guide explains the waiting states and restores the documentation coverage floor after the repository's recent class growth.
 
 ## Decision-point inventory
 
@@ -74,6 +74,7 @@ Concur with the review. The reviewer found and cleared the durable auto-arm, CI-
 - `tests/unit/feedback-factory/execute-service.test.ts`
 - `tests/unit/green-pr-automerger.test.ts`
 - `tests/e2e/feedback-execute-lifecycle.test.ts`
+- `site/src/content/docs/features/feedback-delivery-checks.md`
 
 ## Class-Closure Declaration (display-only mirror)
 

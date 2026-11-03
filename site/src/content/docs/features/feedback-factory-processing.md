@@ -112,6 +112,8 @@ names identify the code responsible for each observation when a stage stops adva
 
 A healthy intake count only proves reports arrived. For an end-to-end pace claim, inspect
 the triage decisions, reviewed fixes merged, and their rate against new high-priority work.
+The [delivery checks](./feedback-delivery-checks/) show where to look when a report or fix
+is waiting between those stages.
 
 ## How it is gated
 
