@@ -2911,6 +2911,41 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
+   * Record a topic's name from Telegram's own evidence (the creation or rename
+   * service message, or the creation message a topic message replies to).
+   * Used by the poller here and by the lifeline forward on agents whose
+   * lifeline owns polling, where the server never sees those service messages.
+   * A known name is replaced only by a rename.
+   */
+  captureTopicName(numericTopicId: number, detectedName: string, isEditEvent: boolean): void {
+    const name = String(detectedName).trim().slice(0, 128); // bounded-input-reviewed: display-name cap (Telegram allows 128), not a model prompt
+    if (!name || !Number.isSafeInteger(numericTopicId)) return;
+    const currentName = this.topicToName.get(numericTopicId);
+    if (!currentName || /^topic-\d+$/.test(currentName) || isEditEvent) {
+      const isRename = isEditEvent && currentName !== name;
+      if (currentName === name) return;
+      this.topicToName.set(numericTopicId, name);
+      this.saveRegistry();
+      console.log(`[telegram] Captured topic name: ${numericTopicId} → "${name}"`);
+      // UNIFIED-SESSION-LIFECYCLE bonus — fire on TRUE rename only (not on
+      // initial capture or topic creation). The handler updates the bound
+      // session's display `name` so the dashboard label tracks the user's
+      // rename. Fire-and-forget: rename-display is non-critical.
+      if (isRename && this.topicRenamedHandler) {
+        try {
+          void Promise.resolve(this.topicRenamedHandler(numericTopicId, name)).catch((err) => {
+            // @silent-fallback-ok: rename display is non-critical; the failure is logged
+            console.error(`[telegram] topicRenamedHandler failed for ${numericTopicId}:`, err);
+          });
+        } catch (err) {
+          // @silent-fallback-ok: rename display is non-critical; the failure is logged
+          console.error(`[telegram] topicRenamedHandler threw for ${numericTopicId}:`, err);
+        }
+      }
+    }
+  }
+
+  /**
    * Actively resolve a topic's name from Telegram by sending a temporary probe message
    * that replies to the topic's service message (whose message_id = topic_id).
    * The API response includes reply_to_message.forum_topic_created.name.
@@ -5718,28 +5753,7 @@ export class TelegramAdapter implements MessagingAdapter {
       msg.forum_topic_created?.name ??
       msg.forum_topic_edited?.name ??
       msg.reply_to_message?.forum_topic_created?.name;
-    if (detectedName) {
-      const currentName = this.topicToName.get(numericTopicId);
-      if (!currentName || /^topic-\d+$/.test(currentName) || msg.forum_topic_edited?.name) {
-        const isRename = !!msg.forum_topic_edited?.name && currentName !== detectedName;
-        this.topicToName.set(numericTopicId, detectedName);
-        this.saveRegistry();
-        console.log(`[telegram] Captured topic name: ${numericTopicId} → "${detectedName}"`);
-        // UNIFIED-SESSION-LIFECYCLE bonus — fire on TRUE rename only (not on
-        // initial capture or topic creation). The handler updates the bound
-        // session's display `name` so the dashboard label tracks the user's
-        // rename. Fire-and-forget: rename-display is non-critical.
-        if (isRename && this.topicRenamedHandler) {
-          try {
-            void Promise.resolve(this.topicRenamedHandler(numericTopicId, detectedName)).catch((err) => {
-              console.error(`[telegram] topicRenamedHandler failed for ${numericTopicId}:`, err);
-            });
-          } catch (err) {
-            console.error(`[telegram] topicRenamedHandler threw for ${numericTopicId}:`, err);
-          }
-        }
-      }
-    }
+    if (detectedName) this.captureTopicName(numericTopicId, detectedName, !!msg.forum_topic_edited?.name);
 
     // Service messages (topic created/edited) have no user content — skip further processing
     if (msg.forum_topic_created || msg.forum_topic_edited) {

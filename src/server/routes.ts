@@ -27392,6 +27392,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
 
+    // E2E-PAIRING: EXEMPT — optional fields on an existing internal route; covered through createRoutes by tests/integration/topic-operator-autobind-route.test.ts.
+    // Topic name from the lifeline (agents whose lifeline owns polling never
+    // see Telegram's topic-created/renamed service messages here). Only a
+    // lifeline-proven sender may name a topic: names are shown to the operator.
+    const forwardedTopicName = typeof req.body?.topicName === 'string' ? req.body.topicName : null;
+    if (forwardedTopicName && !trust && ingressDecision.senderTrusted && Number.isSafeInteger(Number(topicId))) {
+      ctx.telegram?.captureTopicName?.(Number(topicId), forwardedTopicName, req.body?.topicRenamed === true);
+    }
+    if (topicId && !text && forwardedTopicName && req.body?.nameOnly === true) {
+      res.json({ ok: true, nameOnly: true });
+      return;
+    }
+
     if (!topicId || !text) {
       res.status(400).json({ error: 'topicId and text required' });
       return;
