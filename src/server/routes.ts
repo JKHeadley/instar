@@ -13370,7 +13370,14 @@ export function createRoutes(ctx: RouteContext): Router {
   router.get('/desktop/locked/status', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.desktopLocked) { res.status(503).json({ error: 'Locked-screen access is not available on this machine' }); return; }
-    const local = { machineId: ctx.desktopLocked.machineId, ...await ctx.desktopLocked.status() };
+    let local: Record<string, unknown>;
+    try { local = { machineId: ctx.desktopLocked.machineId, ...await ctx.desktopLocked.status() }; }
+    catch (error) {
+      // @silent-fallback-ok — the helper's state could not be read; answer 503 with the reason instead of hanging the request.
+      const code = error instanceof Error && /^mac-desktop-host-[a-z-]+$/.test(error.message) ? error.message : 'locked-state-unreadable';
+      res.status(503).json({ error: 'Locked-screen state could not be read on this machine', code });
+      return;
+    }
     if (req.query.scope !== 'pool') { res.json(local); return; }
     const machines: Array<Record<string, unknown>> = [local];
     const failed: Array<{ machineId: string; reason: string }> = [];

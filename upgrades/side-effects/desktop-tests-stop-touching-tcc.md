@@ -16,6 +16,8 @@ Changes:
 5. `src/core/MachineLockStateReader.ts`: its default probe, the one other direct spawn of the real helper, applies the same rule and reports "cannot run" (null) under a test runner.
 4. `tests/unit/desktop-real-helper-test-guard.test.ts`: both sides of the guard.
 
+6. `src/server/routes.ts` `GET /desktop/locked/status`: when the helper's locked state cannot be read (helper missing, refused, invalid), it answers 503 with a reason code instead of leaving the request hanging. Found by Local Verify: with the guard, the e2e test's request hung for 30 s (408). The real-helper case of `desktop-locked-lifecycle` is now opt-in; a new non-opt-in case checks the route answers.
+
 ## Decision-point inventory
 
 - `realHelperBlockedUnderTest` — add — invariant: a test runner never starts the real packaged helper without an explicit opt-in. Deterministic by design: the harm (a permanent privacy-list row on the operator's Mac, real pop-ups) lands the moment the binary runs.
@@ -59,3 +61,5 @@ Revert the commit. Rows would start appearing again on test-running Macs; no dat
 **Reviewer:** independent reviewer subagent (two rounds, 2026-11-02)
 
 Round 1 raised a concern: the guard resolved the default helper path on disk, so every fake-helper test failed on a Mac without a built helper (43 of 70), and `desktop-helper-state-op.test.ts` plus `MachineLockStateReader`'s default probe still ran the real helper. All three were fixed. Round 2: "Concur with the review" — fake-helper and guard tests 70/70 with and without a built helper; state-op, lock-state and watch-only tests 27 passed, 6 skipped (opt-in). Noted, no action: a symlink at the default path pointing to another name would pass the guard; nothing creates one.
+
+Follow-up (route fix, item 6): independent reviewer — Concur with the review. Only `status()` is inside the try; the error passes through only when it matches the `mac-desktop-host-*` code shape, else a fixed code; success and pool paths unchanged; the test split is sound (the new case proves the route answers, not that a 503 happens, which is its job).

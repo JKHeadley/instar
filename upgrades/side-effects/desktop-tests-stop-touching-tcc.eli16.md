@@ -9,3 +9,5 @@ The fix has two parts. First, the code that starts the helper now refuses to sta
 Nothing changes for an agent running normally: the check only applies inside the test tool. The old lines already on a Mac stay until someone removes them with the minus button. The one at ~/.instar/desktop-helper/instar-desktop-host must stay on.
 
 The decision for a reader: whether real-helper tests should ever run on an operator's everyday Mac. This change says no, by default.
+
+One small fix came with it: the page that reports whether locked-screen access is set up now answers "cannot read it here" straight away when the helper cannot be checked, instead of waiting until the request times out.
