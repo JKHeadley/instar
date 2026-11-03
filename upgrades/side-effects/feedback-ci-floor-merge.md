@@ -66,7 +66,7 @@ The change prevents merges based on a weaker GitHub rule and bounds delayed CI r
 
 **Reviewer:** feedback_gate_review
 
-Concur with the review. The reviewer found and cleared the durable auto-arm, CI-registration, head-of-line, and rollback-description gaps after revisions. The final diff requires its exact-head tests and CI.
+Concur with the review. The reviewer found and cleared the durable auto-arm, CI-registration, head-of-line, and rollback-description gaps after revisions. A later release-summary wording concern was corrected to say the three-hour window is per attempt and a retry precedes a hold; the reviewer reconfirmed concurrence. The final diff requires its exact-head tests and CI.
 
 ## Evidence pointers
 
@@ -75,6 +75,7 @@ Concur with the review. The reviewer found and cleared the durable auto-arm, CI-
 - `tests/unit/green-pr-automerger.test.ts`
 - `tests/e2e/feedback-execute-lifecycle.test.ts`
 - `site/src/content/docs/features/feedback-delivery-checks.md`
+- `upgrades/next/feedback-ci-floor-merge.md`
 
 ## Class-Closure Declaration (display-only mirror)
 

@@ -9,3 +9,8 @@ A feedback PR stays open while CI is queued. When the full suite is green, Echo 
 ## Evidence
 
 Focused unit, integration, and E2E tests cover pending checks, a Vercel-first registration window, the full producer-bound floor, head-pinned merging, and the bounded executor retry.
+
+## Summary of New Capabilities
+
+- Feedback pull requests wait for all relevant GitHub checks and merge only the reviewed head after those checks pass.
+- Queued checks are retried for up to three hours per attempt; the executor allows its existing retry before reporting a merge hold.
