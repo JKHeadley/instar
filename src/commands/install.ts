@@ -18,6 +18,9 @@ import { validateAgentName } from '../core/AgentRegistry.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { checkPrerequisites } from '../core/Prerequisites.js';
+import { packageInstallCommand } from '../core/packageInstall.js';
+
+export { packageInstallCommand };
 import {
   buildInstallFlow,
   INSTALL_DOOR_LABELS,
@@ -127,21 +130,6 @@ function commandExists(command: string): boolean {
   return spawnSync('which', [command], { stdio: 'ignore' }).status === 0;
 }
 
-/** How this computer can install these packages, or null when the person has to. Names any sudo it needs. */
-export function packageInstallCommand(
-  packages: string[],
-  platform: NodeJS.Platform = process.platform,
-  exists: (command: string) => boolean = commandExists,
-): string[] | null {
-  if (packages.length === 0) return null;
-  if (platform === 'darwin') return exists('brew') ? ['brew', 'install', ...packages] : null;
-  if (platform !== 'linux' || !exists('sudo')) return null;
-  if (exists('apt-get')) return ['sudo', 'apt-get', 'install', '-y', ...packages];
-  if (exists('dnf')) return ['sudo', 'dnf', 'install', '-y', ...packages];
-  if (exists('yum')) return ['sudo', 'yum', 'install', '-y', ...packages];
-  return null;
-}
-
 /** How this computer can install tmux, or null when the person has to. Names any sudo it needs. */
 export function tmuxInstallCommand(
   platform: NodeJS.Platform = process.platform,
@@ -153,7 +141,7 @@ export function tmuxInstallCommand(
 /**
  * How to add the sqlite3 command on Linux, or null. The message queue falls back to it, and a
  * fresh server (Cirrus, 2026-11-02) had none. Always its own command, never bundled with tmux:
- * Fedora and RHEL name the package `sqlite`, and one unknown name fails a whole dnf command.
+ * Fedora, RHEL and Arch name the package `sqlite`, and one unknown name fails a whole dnf command.
  */
 export function sqliteInstallCommand(
   platform: NodeJS.Platform = process.platform,
@@ -163,6 +151,7 @@ export function sqliteInstallCommand(
   if (exists('apt-get')) return ['sudo', 'apt-get', 'install', '-y', 'sqlite3'];
   if (exists('dnf')) return ['sudo', 'dnf', 'install', '-y', 'sqlite'];
   if (exists('yum')) return ['sudo', 'yum', 'install', '-y', 'sqlite'];
+  if (exists('pacman')) return ['sudo', 'pacman', '-Sy', '--needed', '--noconfirm', 'sqlite'];
   return null;
 }
 
