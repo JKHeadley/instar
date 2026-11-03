@@ -30,7 +30,7 @@ import crypto from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
-import { deviceAdmittedAt, isMobileChatEnabled, isMobileMediaEnabled } from './mobilePairingRoutes.js';
+import { deviceAdmittedAt, deviceMayUse, devicePersonOf, isMobileChatEnabled, isMobileMediaEnabled } from './mobilePairingRoutes.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import { requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
 import { derivedEventId, hideCredentialSpans, removeAuthorityTokens } from '../core/appConversationText.js';
@@ -139,6 +139,11 @@ export function slackConversationTitle(c: SlackAppConversation): string {
 const SEND_RATE_PER_MIN = 20;
 const hashOf = (...parts: string[]) => crypto.createHash('sha256').update(parts.join('\n')).digest('hex');
 
+/** People and roles §3.4: Slack speaks as the owner's Slack identity, so only the owner's phone may use it. */
+function ownerOnly(res: Response): void {
+  res.status(403).json({ error: 'owner-only', detail: 'Only the agent\'s owner can use Slack from the app, unless the owner turns it on for you.' });
+}
+
 export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
   const router = Router();
   const now = deps.now ?? Date.now;
@@ -178,6 +183,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
   router.get('/mobile/chat/slack/:conversationId/messages', (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!deps.pairing.enabled() || !svc) { res.status(503).json({ error: 'native-conversations-off', detail: 'App conversations are turned off on this agent.' }); return; }
+    if (!deviceMayUse(deps.pairing, req, 'slack:')) { ownerOnly(res); return; }
     const id = parseSlackConversationId(String(req.params.conversationId));
     if (id === null) { res.status(400).json({ error: 'bad-conversation' }); return; }
     if (!rightMachine(res, req.query.machine)) return;
@@ -194,7 +200,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     let stored: ReturnType<typeof svc.store.browseMessages>['messages'] = [];
     try { stored = svc.store.browseMessages(conv.key, before ? before.join(',') : null, limit).messages; } catch { stored = []; } // @silent-fallback-ok — the Slack rows are still returned
     for (const m of stored) {
-      byId.set(m.eventId, { ...historyRow(m, (x) => svc.verify({ ...x, conversationKey: conv.key }), svc), fromUser: m.role === 'operator', senderName: m.role === 'operator' ? appOwnerName(deps.config) : null, via: 'mobile-device' });
+      byId.set(m.eventId, { ...historyRow(m, (x) => svc.verify({ ...x, conversationKey: conv.key }), svc), fromUser: m.role === 'operator', senderName: m.role === 'operator' ? (m.senderName ?? appOwnerName(deps.config)) : null, via: 'mobile-device' });
     }
     // Slack rows: a row carrying an app eventId is the copy of a stored message (already above);
     // everything else was typed in Slack itself (`none`) or is the agent's reply.
@@ -239,6 +245,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     if (!deps.pairing.enabled() || !svc) { res.status(503).json({ error: 'native-conversations-off', detail: 'App conversations are turned off on this agent.' }); return; }
     const deviceId = principalDevice(req);
     if (!deviceId) { res.status(403).json({ error: 'operator-device-required' }); return; }
+    if (!deviceMayUse(deps.pairing, req, 'slack:')) { ownerOnly(res); return; }
     const s = svc;
     const requests = s.deps.requests;
     const raw = String(req.params.conversationId);
@@ -328,13 +335,16 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
       ...(credentialShaped ? { credentialShaped: true } : {}),
     };
 
+    const sendPerson = devicePersonOf(req);
     const receivedAt = new Date(deviceAdmittedAt(req) ?? now()).toISOString();
     const signed = buildSignedOrigin(req, deps.pairing, deviceId, delivered, removedKinds, s.deps.signer ?? null, receivedAt,
       (detail) => s.deps.reportDegradation?.('MobileSlack.sign', detail), stored.length > 0 ? stored : undefined, conv.key);
     const base = {
       eventId, conversationKey: conv.key, messageId, role: 'operator' as const, text: delivered,
       at: receivedAt, machineId: s.deps.machineId(), receivedAt,
-      ...(signed.origin ? { origin: signed.origin } : {}), ...(signed.receipt ? { receipt: signed.receipt } : {}),
+      ...(signed.origin ? { origin: signed.origin } : {}), ...(signed.receipt ? { receipt: signed.receipt } : {}),      // People and roles §3.3: who sent it, recorded at accept time.
+      ...(sendPerson ? { senderName: sendPerson.name, senderRole: sendPerson.role } : {}),
+      ...(sendPerson && sendPerson.role === 'msp' && sendPerson.userId ? { senderPerson: { machineId: deps.pairing.machineId(), userId: sendPerson.userId } } : {}),
     };
     const msg: MessageEvent | MediaMessageEvent = stored.length > 0 ? { ...base, kind: 'media-message', attachments: stored } : { ...base, kind: 'message' };
     if (msg.kind === 'media-message' && mediaRecordTooLarge(msg, signed.origin, s.deps.machineId())) {
@@ -368,9 +378,16 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
       res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' });
       return;
     }
-    const ownerName = appOwnerName(deps.config);
+    // People and roles §3.3/§3.5: the sender is the phone's person. An MSP the owner let use Slack
+    // speaks with its own name and its own registered Slack id (or a placeholder that resolves to
+    // no one) — never the owner's Slack identity, so the Slack permission gate applies the MSP's
+    // own standing, not the owner's.
+    const sender = devicePersonOf(req);
+    const ownerName = sender?.name ?? appOwnerName(deps.config);
+    const mspSlackId = sender && sender.role !== 'owner' && sender.slackUserId && sender.slackUserId !== owner ? sender.slackUserId : null;
+    const speakAs = !sender || sender.role === 'owner' ? owner : (mspSlackId ?? `app-msp:${sender.userId ?? 'unknown'}`);
     // The copy for the Slack history view (best-effort: the store above is the evidence).
-    try { bridge.logAppMessage(conv, { messageId: `app-${messageId}`, text: stored.length > 0 ? mediaPreview(stored, delivered) : delivered, senderName: ownerName, ownerUserId: owner, eventId, deviceId }); } catch (err) {
+    try { bridge.logAppMessage(conv, { messageId: `app-${messageId}`, text: stored.length > 0 ? mediaPreview(stored, delivered) : delivered, senderName: ownerName, ownerUserId: speakAs, eventId, deviceId }); } catch (err) {
       s.deps.reportDegradation?.('MobileSlack.log', err instanceof Error ? err.message : String(err));
     }
     const delivery = (state: 'delivered' | 'refused' | 'intercepted' | 'unknown'): void => {
@@ -421,7 +438,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     }
     let outcome: 'delivered' | 'queued' | 'refused';
     try {
-      outcome = await bridge.dispatch({ conv, text: sessionText, ownerName, ownerUserId: owner, messageId, originVerdict: s.verify(msg) });
+      outcome = await bridge.dispatch({ conv, text: sessionText, ownerName, ownerUserId: speakAs, messageId, originVerdict: s.verify(msg) });
     } catch (err) {
       delivery('unknown');
       requests.markUnknown(deviceId, requestId);

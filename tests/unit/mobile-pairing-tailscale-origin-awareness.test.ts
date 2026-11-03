@@ -63,6 +63,6 @@ describe('pairing awareness for Tailscale origin and 30-minute links', () => {
     const m = store.mint(codeTtlMs(undefined), 'phone', 'tok', { host: 'a.ts.net', kind: 'tailscale' });
     expect(m.ok).toBe(true);
     const r = store.redeem(m.ok ? m.code : '', 'tok');
-    expect(r).toEqual({ ok: true, label: 'phone', bound: { host: 'a.ts.net', kind: 'tailscale' } });
+    expect(r).toEqual({ ok: true, label: 'phone', bound: { host: 'a.ts.net', kind: 'tailscale' }, person: null });
   });
 });

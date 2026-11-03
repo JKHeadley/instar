@@ -957,7 +957,7 @@ The operator can add this agent to the Instar iPhone app with a one-time link in
 export function MOBILE_CHAT_CLAUDEMD_SECTION(port: number): string {
   return `\n### Mobile operator chat — messages typed in the Instar iPhone app
 
-An active paired phone can send a message into a topic (\`POST /mobile/chat/:topicId\`, device-signed only; a Bearer token gets 403). It reaches me exactly like the owner's Telegram message: same emergency-stop/pause intercepts, same session, the owner's name. A copy is posted into the Telegram topic as "📱 <owner> (from the app): …". The message metadata carries \`viaMobileDevice: true\` and the history row \`via: "mobile-device"\`.
+An active paired phone can send a message into a topic (\`POST /mobile/chat/:topicId\`, device-signed only; a Bearer token gets 403). It reaches me like a Telegram message: same emergency-stop/pause intercepts, same session, with the phone's person's name (the owner's phone: the owner's name and Telegram id; an MSP phone: the MSP's name and no Telegram id). A copy is posted into the Telegram topic as "📱 <name> (from the app): …". The message metadata carries \`viaMobileDevice: true\` and the history row \`via: "mobile-device"\`.
 - An app message never binds the topic operator and never counts as standing-authorization evidence; topic-profile confirmations from the app work only where an operator is already bound.
 ${MOBILE_CHAT_CONTENT_LINE}
 - Accepted only on the machine holding the serving lease (\`409 not-serving\` elsewhere). A retried request answers its recorded result; \`409 outcome-unknown\` means the message may or may not have reached me (check the conversation).
@@ -1110,6 +1110,27 @@ When I post to the Attention topic (an item, or a hub notice such as lost messag
 - \`keyConfigured: false\` → the APNs key is not in my vault yet; nothing is sent. \`pausedReason\` → Apple refused the key; it clears by itself when the key, key id or team id changes.
 - Gate: \`mobilePairing.push.enabled\` (omitted ⇒ follows \`mobilePairing\`).
 - **When to use** (PROACTIVE): "why didn't my phone buzz?" → read the status (no key, paused, throttled, or the item was held by the Attention hub filter, which logs every held post); "turn off phone notifications" → \`mobilePairing.push.enabled: false\`.
+`;
+}
+
+/** The mobile-chat sender sentence before people and roles, replaced in place on update. */
+export const MOBILE_CHAT_STALE_SENDER_SENTENCE = `It reaches me exactly like the owner's Telegram message: same emergency-stop/pause intercepts, same session, the owner's name. A copy is posted into the Telegram topic as "📱 <owner> (from the app): …".`;
+export const MOBILE_CHAT_SENDER_SENTENCE = `It reaches me like a Telegram message: same emergency-stop/pause intercepts, same session, with the phone's person's name (the owner's phone: the owner's name and Telegram id; an MSP phone: the MSP's name and no Telegram id). A copy is posted into the Telegram topic as "📱 <name> (from the app): …".`;
+
+/**
+ * CLAUDE.md awareness block for people and roles (docs/specs/mobile-app-people-and-roles.md).
+ * Unique content-sniff marker: `Phones belong to people`.
+ */
+export function MOBILE_PEOPLE_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Phones belong to people — owner and MSP phones in the Instar app
+
+Each paired phone belongs to one person from my user list (\`users.json\`, \`instar user list\`) and has a role: \`owner\` or \`msp\` (the person who runs this agent for the owner). Phones paired before roles existed are the owner's. The owner still receives every pairing code, and the code message says whose phone it is.
+- Pair a phone for the MSP: the person must be in my user list first (\`instar user add --id justin --name "Justin"\`), then \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/mobile/pairing-codes -d '{"userId":"justin","role":"msp"}'\`. No \`userId\`/\`role\` = the owner's phone, as before. 400 \`bad-person\` = not in the list, or that person is the owner.
+- Make an existing phone an MSP's: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/mobile/devices/DEVICE_ID/person -d '{"userId":"justin","role":"msp"}'\`. A phone becomes an owner phone only by pairing it again (400 \`owner-needs-pairing\`).
+- Who has which phone: \`GET /mobile/devices?scope=pool\` rows carry \`role\` and \`personName\` (\`unassigned: true\` = that person was removed; the phone is refused until re-paired or revoked).
+- An MSP phone's messages carry the MSP's name and never the owner's identity. The MSP can use every Telegram topic, sessions, alerts, its own app conversations and emergency stop. The owner's app conversations and Slack are owner-only by default (404 / 403 \`owner-only\`). The owner sees every app conversation, the MSP's too.
+- The owner can open either one for an MSP, **only from the owner's own phone** in the app (\`POST /mobile/people/USER_ID/grants\`; my Bearer token gets 403, so never try to flip it for anyone). To answer "can my MSP see my chats?", read \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/people\`.
+- **When to use** (PROACTIVE): the operator says someone else (an MSP, an assistant) should use the app with this agent → add the person if missing, then mint the link for them, never an owner link.
 `;
 }
 
@@ -9281,6 +9302,18 @@ setTimeout(() => process.exit(0), 2000);
       content += ECOSYSTEM_IDEAS_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Ideas from similar projects section');
+    }
+
+    // People and roles (docs/specs/mobile-app-people-and-roles.md) — Agent Awareness + Migration Parity.
+    if (content.includes(MOBILE_CHAT_STALE_SENDER_SENTENCE)) {
+      content = content.replace(MOBILE_CHAT_STALE_SENDER_SENTENCE, MOBILE_CHAT_SENDER_SENTENCE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated the Mobile operator chat sender sentence');
+    }
+    if (!content.includes('Phones belong to people')) {
+      content += MOBILE_PEOPLE_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Phones belong to people section');
     }
 
     // Mobile push (docs/specs/mobile-push.md) — Agent Awareness + Migration Parity.

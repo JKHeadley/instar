@@ -20,7 +20,7 @@ describe('PairingCodeStore', () => {
     expect(m.ok).toBe(true);
     if (!m.ok) return;
     expect(CODE_PATTERN.test(m.code)).toBe(true);
-    expect(s.redeem(m.code, TOKEN)).toEqual({ ok: true, label: 'phone', bound: null });
+    expect(s.redeem(m.code, TOKEN)).toEqual({ ok: true, label: 'phone', bound: null, person: null });
     expect(s.redeem(m.code, TOKEN)).toEqual({ ok: false, reason: 'invalid' });
   });
 

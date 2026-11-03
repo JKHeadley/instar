@@ -29,7 +29,8 @@ import crypto from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
-import { deviceAdmittedAt, deviceAdmittedHost, isMobileChatEnabled } from './mobilePairingRoutes.js';
+import { deviceAdmittedAt, deviceAdmittedHost, deviceMayUse, devicePersonOf, isMobileChatEnabled } from './mobilePairingRoutes.js';
+import { conversationOwnerFor, validConversationOwner, type ConversationOwner } from '../core/MobilePeople.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import { transcriptForDelivery } from '../core/AppConversationService.js';
 import { requestIdAgeOk, requestIdTime, type ChatLookup } from '../core/MobileChatRequests.js';
@@ -66,6 +67,8 @@ export interface ConversationListRow {
   lastActivity: string | null;
   lastPreview: string | null;
   machine?: string | null;
+  /** People and roles: an app conversation an MSP phone created (its person, machine-namespaced). */
+  ownerPerson?: ConversationOwner | null;
 }
 
 export function conversationSortKey(r: Pick<ConversationListRow, 'id' | 'platform'>): string { return `${r.platform}:${r.id}`; }
@@ -123,7 +126,7 @@ function sanitizePeerConversation(raw: unknown, machine: string): ConversationLi
   const lastActivity = r.lastActivity === null || r.lastActivity === undefined ? null : strictIso(r.lastActivity);
   if (lastActivity === undefined) return null;
   if (r.platform === 'app' && isAppConversationKey(r.id)) {
-    return { id: r.id, platform: 'app', title: s(r.title, 80), lastActivity, lastPreview: s(r.lastPreview, 140), machine };
+    return { id: r.id, platform: 'app', title: s(r.title, 80), lastActivity, lastPreview: s(r.lastPreview, 140), machine, ownerPerson: validConversationOwner(r.ownerPerson) };
   }
   if (r.platform === 'telegram' && typeof r.id === 'number' && Number.isSafeInteger(r.id) && r.id > 0) {
     return { id: r.id, platform: 'telegram', title: s(r.title, 128), lastActivity, lastPreview: s(r.lastPreview, 140), machine };
@@ -152,6 +155,8 @@ function sanitizePeerMessage(raw: unknown, machine: string): Record<string, unkn
     deliveryState: typeof m.deliveryState === 'string' && /^(pending|delivered|refused|intercepted|unknown)$/.test(m.deliveryState) ? m.deliveryState : 'unknown',
     originVerified: 'unknown', machine,
     ...(files > 0 ? { filesOnOtherMachine: files } : {}),
+    ...(typeof m.senderName === 'string' && m.senderName.length > 0 ? { senderName: m.senderName.slice(0, 128) } : {}),
+    ...(m.senderRole === 'owner' || m.senderRole === 'msp' ? { senderRole: m.senderRole } : {}),
   };
 }
 
@@ -249,6 +254,8 @@ export function historyRow(m: BrowsedMessage, verify: (m: BrowsedMessage) => Ori
   return {
     eventId: m.eventId, messageId: m.messageId, role: m.role, text: m.text, at: m.at, machineId: m.machineId,
     deliveryState: m.deliveryState, originVerified: verdict, ...(approvedVia ? { originApprovedVia: approvedVia } : {}),
+    // People and roles §3.3: who sent an operator message, as recorded when it was accepted.
+    ...(m.senderName ? { senderName: m.senderName } : {}), ...(m.senderRole ? { senderRole: m.senderRole } : {}),
     ...(m.attachments && svc ? { attachments: attachmentRows(m.attachments, svc) } : {}),
   };
 }
@@ -286,6 +293,16 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     res.setHeader('Cache-Control', 'no-store');
     if (!deps.pairing.enabled() || !svc) { off(res); return false; }
     return true;
+  };
+
+  /**
+   * People and roles §3.4: the one shared conversation check. An MSP phone gets the same 404 a
+   * missing conversation gets, so it cannot probe for the owner's conversation ids.
+   */
+  const allowed = (req: Request, res: Response, key: string): boolean => {
+    if (deviceMayUse(deps.pairing, req, key)) return true;
+    res.status(404).json({ error: 'unknown-conversation' });
+    return false;
   };
 
   const answerLookup = (res: Response, l: ChatLookup): boolean => {
@@ -340,8 +357,12 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (!title) { res.status(400).json({ error: 'bad-title', detail: 'A title of 1-80 characters is required.' }); return; }
     // The new UUID is chosen and written into the reservation BEFORE the store or registry is touched.
     const conversationKey = newAppConversationKey();
-    mutation(res, deviceId, body.requestId, hashOf('create', title), { op: 'create', conversationKey, title },
-      () => svc!.applyCreate(deviceId, body.requestId as string, conversationKey, title));
+    // People and roles §3.4: a conversation an MSP phone creates is theirs (machine-namespaced).
+    const creator = devicePersonOf(req);
+    const ownerPerson = creator ? conversationOwnerFor(creator, deps.pairing.machineId()) : null;
+    mutation(res, deviceId, body.requestId, hashOf('create', title),
+      { op: 'create', conversationKey, title, ...(ownerPerson ? { ownerMachine: ownerPerson.machineId, ownerUser: ownerPerson.userId } : {}) },
+      () => svc!.applyCreate(deviceId, body.requestId as string, conversationKey, title, ownerPerson));
   });
 
   // ── List ──
@@ -355,6 +376,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const page = svc!.store.listConversations({ limit, cursor: c ? cursor : null });
     const appRows: ConversationListRow[] = page.conversations.map((x) => ({
       id: x.conversationKey, platform: 'app', title: x.title, lastActivity: x.lastActivity ?? x.createdAt, lastPreview: x.lastPreview,
+      ...(x.ownerPerson ? { ownerPerson: x.ownerPerson } : {}),
     }));
     let tgRows: ConversationListRow[] = [];
     if (deps.telegramTopics) {
@@ -387,10 +409,17 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
     const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
     const local = localListPage(limit, cursor);
-    const ownerNote = local.slackOwnerUnset ? { slackOwnerUnset: true } : {};
+    const ownerNote = local.slackOwnerUnset && deviceMayUse(deps.pairing, req, 'slack:') ? { slackOwnerUnset: true } : {};
+    // People and roles §3.4: an MSP phone sees Telegram topics and its own app conversations only
+    // (filtered after the merge, so the cursor still advances over rows it does not see).
+    const visible = (rows: ConversationListRow[]): ConversationListRow[] => rows.filter((r) => {
+      if (r.platform === 'telegram') return true;
+      if (r.platform === 'slack') return deviceMayUse(deps.pairing, req, 'slack:');
+      return deviceMayUse(deps.pairing, req, String(r.id));
+    });
     if (req.query.scope !== 'pool') {
       const m = mergeConversationPages([local], limit);
-      res.json({ conversations: m.rows, nextCursor: m.nextCursor, ...ownerNote });
+      res.json({ conversations: visible(m.rows), nextCursor: m.nextCursor, ...ownerNote });
       return;
     }
     // Pool read (§4.8): every answering machine's own page after the same cursor, merged on the
@@ -411,13 +440,16 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // machine's row of the same id). Only this machine's own Slack rows are listed.
     const peerPages = peers.results.map((p) => ({ ...p, rows: p.rows.filter((r) => r.platform !== 'slack') }));
     const m = mergeConversationPages([{ rows: local.rows.map((r) => ({ ...r, machine: self })), more: local.more }, ...peerPages], limit);
-    res.json({ conversations: m.rows, nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed } });
+    // A peer's app row is checked against THIS machine's copy of the conversation: one not
+    // replicated here yet is not shown to an MSP phone (fail closed).
+    res.json({ conversations: visible(m.rows), nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed } });
   });
 
   // ── Rename ──
   router.patch('/mobile/conversations/:key', (req: Request, res: Response) => {
     const deviceId = gate(req, res); if (!deviceId) return;
     const key = String(req.params.key);
+    if (!allowed(req, res, key)) return;
     const body = (req.body ?? {}) as Record<string, unknown>;
     if (!validRequestId(res, body.requestId)) return;
     const title = cleanConversationTitle(body.title);
@@ -435,6 +467,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   router.delete('/mobile/conversations/:key', (req: Request, res: Response) => {
     const deviceId = gate(req, res); if (!deviceId) return;
     const key = String(req.params.key);
+    if (!allowed(req, res, key)) return;
     const body = (req.body ?? {}) as Record<string, unknown>;
     if (!validRequestId(res, body.requestId)) return;
     const hash = hashOf('delete', key);
@@ -452,6 +485,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const s = svc!;
     const requests = s.deps.requests;
     const key = String(req.params.key);
+    if (!allowed(req, res, key)) return;
+    const sender = devicePersonOf(req);
+    const senderPerson = sender ? conversationOwnerFor(sender, deps.pairing.machineId()) : null;
     const body = (req.body ?? {}) as Record<string, unknown>;
     const text = typeof body.text === 'string' ? body.text.trim() : '';
     if (!validRequestId(res, body.requestId)) return;
@@ -526,6 +562,8 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       eventId, conversationKey: key, messageId, role: 'operator' as const, text: delivered,
       at: receivedAt, machineId: deps.machineId(), receivedAt,
       ...(signed.origin ? { origin: signed.origin } : {}), ...(signed.receipt ? { receipt: signed.receipt } : {}),
+      // People and roles §3.3: who sent it, recorded at accept time.
+      ...(sender ? { senderName: sender.name, senderRole: sender.role } : {}), ...(senderPerson ? { senderPerson } : {}),
     };
     const msg: MessageEvent | MediaMessageEvent = signedFiles ? { ...base, kind: 'media-message', attachments: stored } : { ...base, kind: 'message' };
     // §4.1: the record exactly as stored and as journaled must fit, before any upload is claimed.
@@ -619,7 +657,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const pending = s.pendingContext(key);
     let outcome: 'delivered' | 'refused';
     try {
-      outcome = await dispatch({ conversationKey: key, alias, title: conv.title ?? 'Untitled', text: sessionText, messageId, ownerName: s.ownerName(), originVerdict: s.verify(msg), ...(pending.lines.length > 0 ? { notes: pending.lines } : {}) });
+      outcome = await dispatch({ conversationKey: key, alias, title: conv.title ?? 'Untitled', text: sessionText, messageId, ownerName: sender?.name ?? s.ownerName(), originVerdict: s.verify(msg), ...(pending.lines.length > 0 ? { notes: pending.lines } : {}) });
       if (outcome === 'delivered') pending.ack();
     } catch (err) {
       try { s.appendDelivery(key, messageId, 'unknown', seed); } catch { /* @silent-fallback-ok — the request itself is recorded outcome-unknown below */ }
@@ -637,6 +675,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (!readGate(req, res)) return;
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
     const key = String(req.params.key);
+    if (!allowed(req, res, key)) return;
     const pool = req.query.scope === 'pool';
     const live = svc!.liveConversation(key);
     // §4.8: a pool read also covers what has not replicated here yet, so a conversation this
@@ -690,6 +729,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const key = String(req.params.key);
     const messageId = String(req.params.messageId);
     if (!isAppConversationKey(key) || !/^[a-z0-9._:-]{1,128}$/.test(messageId)) { res.status(400).json({ error: 'bad-request' }); return; }
+    if (!deviceMayUse(deps.pairing, req, key)) { res.status(404).json({ error: 'not-found' }); return; }
     // A deleted conversation, or a reply not replicated to this machine yet: the phone keeps the generic text.
     const ev = svc.liveConversation(key) ? svc.store.getMessageEvent(key, messageId) : null;
     const m = ev as unknown as { role?: string; text?: unknown; attachments?: AppAttachment[] } | null;
@@ -702,6 +742,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   router.get('/mobile/chat/app/:key/events', (req: Request, res: Response) => {
     if (!readGate(req, res)) return;
     const key = String(req.params.key);
+    if (!allowed(req, res, key)) return;
     if (!isAppConversationKey(key) || !svc!.store.getConversation(key)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
     const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 100));
     const page = svc!.store.syncEvents(key, typeof req.query.cursor === 'string' ? req.query.cursor : null, limit);

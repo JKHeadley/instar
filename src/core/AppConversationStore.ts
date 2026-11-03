@@ -39,6 +39,7 @@ import { registerSqliteHandle } from './SqliteRegistry.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { canonicalConversationKey, cleanConversationTitle, derivedEventId } from './appConversationText.js';
 import { type AppAttachment, validateAttachments, MAX_PURGE_BATCH, mediaPreview } from './appMediaTypes.js';
+import { validConversationOwner, type ConversationOwner } from './MobilePeople.js';
 
 export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media' | 'transcript';
 export type DeliveryEventState = 'delivered' | 'refused' | 'intercepted' | 'unknown';
@@ -77,7 +78,11 @@ export interface AppEventBase {
   at: string;
   machineId: string;
 }
-export interface CreatedEvent extends AppEventBase { kind: 'created'; title: string }
+/**
+ * `ownerPerson` (people and roles §3.4): set when an MSP phone created the conversation, namespaced
+ * by the machine whose user registry the id belongs to. Absent ⇒ the owner's conversation.
+ */
+export interface CreatedEvent extends AppEventBase { kind: 'created'; title: string; ownerPerson?: ConversationOwner }
 export interface LabelEvent extends AppEventBase { kind: 'label'; title: string; setAt: string }
 export interface TombstoneEvent extends AppEventBase { kind: 'tombstone' }
 export interface MessageEvent extends AppEventBase {
@@ -88,6 +93,13 @@ export interface MessageEvent extends AppEventBase {
   origin?: DeviceSignedOrigin;
   receivedAt?: string;
   receipt?: MachineReceipt;
+  /**
+   * People and roles §3.3: who sent an operator message, recorded at accept time. Absent on older
+   * events, which were necessarily sent by an owner phone (no other kind existed).
+   */
+  senderName?: string;
+  senderRole?: 'owner' | 'msp';
+  senderPerson?: ConversationOwner;
 }
 export interface DeliveryEvent extends AppEventBase { kind: 'delivery'; messageId: string; state: DeliveryEventState }
 /** A message with files (media spec §4.1): every field of `message` plus 1-10 attachments. */
@@ -136,6 +148,8 @@ export interface ConversationSummary {
   lastActivity: string | null;
   lastPreview: string | null;
   tombstoned: boolean;
+  /** People and roles: the MSP who created it; null ⇒ the owner's conversation. */
+  ownerPerson: ConversationOwner | null;
 }
 
 export interface BrowsedMessage {
@@ -150,6 +164,8 @@ export interface BrowsedMessage {
   receivedAt?: string;
   receipt?: MachineReceipt;
   attachments?: AppAttachment[];
+  senderName?: string;
+  senderRole?: 'owner' | 'msp';
 }
 
 /** One attachment reference as the index holds it. */
@@ -216,7 +232,9 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
   switch (r.kind) {
     case 'created': {
       const title = cleanConversationTitle(r.title);
-      return title ? { ...base, kind: 'created', title } : null;
+      if (!title) return null;
+      const ownerPerson = validConversationOwner(r.ownerPerson);
+      return { ...base, kind: 'created', title, ...(ownerPerson ? { ownerPerson } : {}) };
     }
     case 'label': {
       const title = cleanConversationTitle(r.title);
@@ -245,6 +263,11 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       if (receivedAt) out.receivedAt = receivedAt;
       const receipt = validateReceipt(r.receipt);
       if (receipt) out.receipt = receipt;
+      const senderName = typeof r.senderName === 'string' && r.senderName.length > 0 && r.senderName.length <= 128 ? r.senderName : null;
+      if (senderName) out.senderName = senderName;
+      if (r.senderRole === 'owner' || r.senderRole === 'msp') out.senderRole = r.senderRole;
+      const senderPerson = validConversationOwner(r.senderPerson);
+      if (senderPerson) out.senderPerson = senderPerson;
       return out;
     }
     case 'delivery': {
@@ -367,6 +390,11 @@ export class AppConversationStore {
       db.pragma('synchronous = NORMAL');
       db.pragma('busy_timeout = 5000');
       for (const ddl of SCHEMA) db.exec(ddl);
+      // People and roles: the conversation's MSP owner (added in place; an index built before this
+      // column existed held only owner conversations, so NULL is the truthful value for its rows).
+      const cols = new Set((db.prepare('PRAGMA table_info(conversations)').all() as Array<{ name: string }>).map((c) => c.name));
+      if (!cols.has('ownerMachine')) db.exec('ALTER TABLE conversations ADD COLUMN ownerMachine TEXT');
+      if (!cols.has('ownerUser')) db.exec('ALTER TABLE conversations ADD COLUMN ownerUser TEXT');
       const ok = db.pragma('quick_check', { simple: true });
       if (ok !== 'ok') throw new Error(`index quick_check: ${String(ok)}`);
       return db;
@@ -578,7 +606,9 @@ export class AppConversationStore {
           this.db.prepare('UPDATE conversations SET title = ?, titleAt = ?, titleMachine = ? WHERE canonicalKey = ?').run(ev.title, setAt, ev.machineId, canonicalKey);
         }
         if (ev.kind === 'created' && (!cur.createdAt || ev.at < cur.createdAt)) {
-          this.db.prepare('UPDATE conversations SET createdAt = ? WHERE canonicalKey = ?').run(ev.at, canonicalKey);
+          // The earliest `created` decides both the creation time and the owner (one rule, any arrival order).
+          this.db.prepare('UPDATE conversations SET createdAt = ?, ownerMachine = ?, ownerUser = ? WHERE canonicalKey = ?')
+            .run(ev.at, ev.ownerPerson?.machineId ?? null, ev.ownerPerson?.userId ?? null, canonicalKey);
         }
         return;
       }
@@ -881,6 +911,7 @@ export class AppConversationStore {
         ...(ev.origin ? { origin: ev.origin } : {}), ...(ev.receivedAt ? { receivedAt: ev.receivedAt } : {}),
         ...(ev.receipt ? { receipt: ev.receipt } : {}),
         ...(ev.kind === 'media-message' ? { attachments: ev.attachments } : {}),
+        ...(ev.senderName ? { senderName: ev.senderName } : {}), ...(ev.senderRole ? { senderRole: ev.senderRole } : {}),
       });
     }
     out.reverse();
@@ -909,5 +940,6 @@ function toSummary(r: Record<string, unknown>): ConversationSummary {
     title: (r.title as string | null) ?? null, createdAt: (r.createdAt as string | null) ?? null,
     lastActivity: (r.lastActivity as string | null) ?? null, lastPreview: (r.lastPreview as string | null) ?? null,
     tombstoned: r.tombstoned === 1,
+    ownerPerson: typeof r.ownerMachine === 'string' && typeof r.ownerUser === 'string' ? { machineId: r.ownerMachine, userId: r.ownerUser } : null,
   };
 }

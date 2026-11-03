@@ -16,6 +16,7 @@ import type { ConversationRegistry } from './ConversationRegistry.js';
 import type { MobileChatRequestStore } from './MobileChatRequests.js';
 import { SessionChannelRegistry } from '../messaging/shared/SessionChannelRegistry.js';
 import { AppConversationStore, MAX_STORED_TEXT, transcriptEventId, type AppEvent } from './AppConversationStore.js';
+import type { ConversationOwner } from './MobilePeople.js';
 import { derivedEventId, isAppConversationKey, removeAuthorityTokens } from './appConversationText.js';
 import { appInjectionTag, type AppInboundDispatch } from './appInboundDispatch.js';
 import { ledgerViewKey, verifyRecordedOrigin, type MachineKeyLookup, type MachineSigner, type OriginVerdict, type VerifiableRecord } from './AppRecordSignatures.js';
@@ -791,7 +792,8 @@ export class AppConversationService {
         continue;
       }
       if (x.op === 'create') {
-        const r = this.applyCreate(rec.deviceId, rec.requestId, key, x.title ?? 'Untitled');
+        const owner = x.ownerMachine && x.ownerUser ? { machineId: x.ownerMachine, userId: x.ownerUser } : null;
+        const r = this.applyCreate(rec.deviceId, rec.requestId, key, x.title ?? 'Untitled', owner);
         this.deps.requests.finish(rec.deviceId, rec.requestId, r);
       } else if (x.op === 'rename' && x.title) {
         this.applyRename(rec.deviceId, rec.requestId, key, x.title);
@@ -804,7 +806,8 @@ export class AppConversationService {
   }
 
   /** Create: alias first (a refusal leaves no store event), then the `created` event, then bind. */
-  applyCreate(deviceId: string, requestId: string, conversationKey: string, title: string): { status: number; body: Record<string, unknown> } {
+  /** `ownerPerson`: the MSP phone's person that creates it (people and roles §3.4); null ⇒ the owner's. */
+  applyCreate(deviceId: string, requestId: string, conversationKey: string, title: string, ownerPerson: ConversationOwner | null = null): { status: number; body: Record<string, unknown> } {
     const mint = this.deps.registry.mintAppAlias(conversationKey);
     if (!mint.ok) {
       if (mint.error === 'conversation-recording-disabled') {
@@ -815,6 +818,7 @@ export class AppConversationService {
     this.store.append({
       eventId: derivedEventId('cr', deviceId, requestId), kind: 'created', conversationKey, title,
       at: new Date(this.now()).toISOString(), machineId: this.deps.machineId(),
+      ...(ownerPerson ? { ownerPerson } : {}),
     });
     if (this.deps.holdsLease()) this.deps.registry.bindApp(mint.id);
     const c = this.store.getConversation(conversationKey);

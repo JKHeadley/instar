@@ -207,6 +207,13 @@ export interface DeviceRecord {
   pushRevision?: number;
   pushVersion?: number;
   pushUpdatedAt?: string;
+  /**
+   * The person this phone belongs to (docs/specs/mobile-app-people-and-roles.md): a `UserProfile.id`
+   * from the agent's user registry, and this phone's role with the agent. Absent ⇒ the owner's phone
+   * (every phone paired before people and roles was approved by the owner alone as the owner's).
+   */
+  userId?: string;
+  role?: 'owner' | 'msp';
 }
 
 export interface PushRegistration {
@@ -281,7 +288,7 @@ export class DeviceRegistry {
   pairingPaused(): boolean { return (this.normalize(this.read()).wrongCodeTimes ?? []).length >= WRONG_BUDGET; }
 
   /** Adds a pending device. Refuses a duplicate key, too many pending, or a paused budget. */
-  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string }):
+  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string; userId?: string | null; role?: 'owner' | 'msp' }):
     { ok: true; device: DeviceRecord } | { ok: false; reason: 'duplicate-key' | 'too-many-pending' | 'pairing-paused' } {
     const f = this.normalize(this.read());
     if ((f.wrongCodeTimes ?? []).length >= WRONG_BUDGET) return { ok: false, reason: 'pairing-paused' };
@@ -292,10 +299,29 @@ export class DeviceRegistry {
       id: crypto.randomUUID(), deviceName: row.deviceName, label: row.label, pairedAt: new Date(t).toISOString(),
       status: 'pending', publicKey: row.publicKey, fingerprint: deviceFingerprint(row.publicKey), host: row.host,
       expiresAt: new Date(t + PENDING_TTL_MS).toISOString(), wrongCodes: [],
+      ...(row.userId ? { userId: row.userId } : {}),
+      // Only a non-owner role is written: absent already means owner, so an owner phone's record
+      // stays byte-identical to the shape older builds read.
+      ...(row.role && row.role !== 'owner' ? { role: row.role } : {}),
     };
     f.devices.unshift(device);
     this.write(f);
     return { ok: true, device };
+  }
+
+  /**
+   * Assign a phone to a person (people and roles §3.2). Owner with no userId clears both fields
+   * (the absent-means-owner shape). Returns null when this machine holds no such device; a revoked
+   * device is never reassigned.
+   */
+  setPerson(id: string, person: { userId: string | null; role: 'owner' | 'msp' }): DeviceRecord | null {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || d.status === 'revoked') return null;
+    if (person.userId) d.userId = person.userId; else delete d.userId;
+    if (person.role === 'owner') delete d.role; else d.role = person.role;
+    this.write(f);
+    return d;
   }
 
   remove(id: string): void {
