@@ -62,6 +62,11 @@ export interface DrainRehearsalDeps {
   resumeQueue: () => ResumeQueueReading | null;
   coResidentAgents: () => string[];
   holdsLease: () => boolean | null;
+  /**
+   * Part E: a wedge candidate, or one family positive for 2 hours, marks the next window
+   * due early. Read only; absent where the wedge sampler is not wired.
+   */
+  forcedDueAt?: () => number | null;
   ownUser: string;
   platform?: NodeJS.Platform;
   now?: () => number;
@@ -250,7 +255,7 @@ export class DrainRehearsal {
       generation: reserved.plan.generation,
       originalRestartAt: reserved.plan.originalRestartAt,
       windowEnd: reserved.plan.windowEnd,
-      due: lastBootAt !== null && isDue(now, lastBootAt, cfg),
+      due: (lastBootAt !== null && isDue(now, lastBootAt, cfg)) || this.forcedDue(now),
       final: reserved.plan.final,
       openedLate: now > phaseTime(reserved.plan.originalRestartAt, 60),
       phasesDone: [],
@@ -490,6 +495,11 @@ export class DrainRehearsal {
     };
   }
 
+  private forcedDue(now: number): boolean {
+    const at = this.deps.forcedDueAt?.() ?? null;
+    return at !== null && now >= at - 2 * 60 * MIN;
+  }
+
   status(): Record<string, unknown> {
     const now = this.now();
     const cfg = this.deps.settings();
@@ -504,7 +514,8 @@ export class DrainRehearsal {
       settings: cfg,
       lastBootAt,
       uptimeDays: lastBootAt !== null ? Math.round(uptimeDays(now, lastBootAt) * 10) / 10 : null,
-      due: lastBootAt !== null ? isDue(now, lastBootAt, cfg) : null,
+      due: lastBootAt !== null ? isDue(now, lastBootAt, cfg) || this.forcedDue(now) : this.forcedDue(now) ? true : null,
+      forcedDueAt: this.deps.forcedDueAt?.() ?? null,
       finalNight: lastBootAt !== null ? isFinalNight(now, lastBootAt, cfg) : null,
       nextWindow: window,
       phase: plan ? currentPhase(now, plan.originalRestartAt) : null,

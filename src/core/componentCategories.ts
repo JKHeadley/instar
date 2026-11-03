@@ -82,6 +82,7 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   FeedbackReadinessArbiter: 'gate',
   FeedbackTriageArbiter: 'gate',
   EcosystemIdeaReview: 'reflector',
+  MachineWedgeJudge: 'sentinel', // machine self-maintenance Part E: dry-run wedge proposal over structured probe readings
   FeedbackTriageSecondOpinion: 'gate',
   'subscription-relogin-supervisor': 'gate', // closed-action validator over provider browser state
 

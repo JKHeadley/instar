@@ -23845,6 +23845,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       const throwaway = classifyLocation({ projectDir, record: readThrowawayRecord(projectDir) }).throwaway;
       if (mmEnabled() && !throwaway) {
         const { DrainRehearsal, readHostCensus, setActiveDrainRehearsal } = await import('../monitoring/machineMaintenance/DrainRehearsal.js');
+        const { getActiveWedgeMonitor: getActiveWedgeMonitorRef } = await import('../monitoring/machineMaintenance/WedgeMonitor.js');
         const { HostMaintenanceStore } = await import('../monitoring/machineMaintenance/HostMaintenanceStore.js');
         const { normalizeSettings } = await import('../monitoring/machineMaintenance/planner.js');
         const { makeReadOnlyRunner, readMachineSignals } = await import('../monitoring/machineMaintenance/readings.js');
@@ -23899,10 +23900,63 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           coResidentAgents: () => readHostCensus(path.join(os.homedir(), '.instar', 'registry.json'), Date.now()),
           holdsLease: () => (coordinator.enabled ? coordinator.holdsLease() : null),
+          forcedDueAt: () => getActiveWedgeMonitorRef()?.forcedDueAt() ?? null,
           ownUser: os.userInfo().username,
           log: (line) => console.log(pc.yellow(`  [machine-maintenance] ${line}`)),
         });
         setActiveDrainRehearsal(rehearsal);
+
+        // Wedge detection, dry-run (Part E, CMT-1202): samples the evidence families on the
+        // host maintainer only, records candidates and the judge's proposal, and marks the next
+        // window due early. No rung exists in this build. The operator notice is off unless
+        // machineMaintenance.wedgeRestart.dryRunNotice is true.
+        const { WedgeMonitor, normalizeWedgeSettings, setActiveWedgeMonitor } = await import('../monitoring/machineMaintenance/WedgeMonitor.js');
+        const { makeProbeRunner, parseBootTime } = await import('../monitoring/machineMaintenance/readings.js');
+        const { windowFor } = await import('../monitoring/machineMaintenance/planner.js');
+        const { makeMachineWedgeJudge } = await import('../monitoring/MachineWedgeJudge.js');
+        const { makeWedgeNoticeSender } = await import('../monitoring/MachineWedgeNotice.js');
+        const wedgeRead = makeReadOnlyRunner(config.sessions.tmuxPath);
+        const wedgeMachineId = () => coordinator.identity?.machineId ?? `m_host_${os.hostname()}`;
+        const wedgeMonitor = new WedgeMonitor({
+          agentName: config.projectName,
+          machineId: wedgeMachineId,
+          platform: process.platform === 'darwin' ? 'darwin' : isWslHost() ? 'wsl' : process.platform === 'linux' ? 'linux' : 'other',
+          logPath: path.join(config.stateDir, '..', 'logs', 'machine-maintenance.jsonl'),
+          store: new HostMaintenanceStore(),
+          enabled: mmEnabled,
+          settings: () => normalizeWedgeSettings(liveConfig.get<unknown>('machineMaintenance.wedgeRestart', undefined)),
+          probe: makeProbeRunner(),
+          readBootAt: async () => {
+            if (process.platform !== 'darwin') return Math.round(Date.now() - os.uptime() * 1000);
+            const out = await wedgeRead('bootTime');
+            return out === null ? null : parseBootTime(out);
+          },
+          lockState: async () => {
+            const { getActiveMachineLockStateReader } = await import('../core/MachineLockStateReader.js');
+            const reader = getActiveMachineLockStateReader();
+            return reader ? (await reader.read()).lockState : null;
+          },
+          loadReading: () => {
+            const r = _machineLoadSampler?.read() ?? null;
+            return r ? { verdict: r.verdict, cpuIdlePct: r.cpuIdlePct, eventLoopLagP99Ms: r.eventLoopLagP99Ms, sampleAgeMs: r.sampleAgeMs } : null;
+          },
+          // No counter of system-reason spawn failures exists yet: unknown, never zero.
+          spawnSystemFailures30m: () => null,
+          sessionsCount: () => { try { return sessionManager.getCachedRunningSessions().sessions.length; } catch { return null; } }, // @silent-fallback-ok — null reads as unknown in the judge's evidence
+          nextWindowRestartAt: (now) => {
+            const cfg = normalizeSettings(liveConfig.get<Record<string, never> | undefined>('machineMaintenance', undefined));
+            const w = windowFor(now, cfg.window);
+            return w.restartAt > now ? w.restartAt : windowFor(w.end + 1, cfg.window).restartAt;
+          },
+          judge: makeMachineWedgeJudge(sharedIntelligence),
+          raiseNotice: makeWedgeNoticeSender({
+            createAttentionItem: telegram ? async (item) => telegram!.createAttentionItem(item) : null,
+            machineLabel: () => coordinator.identity?.name || os.hostname(),
+          }),
+          log: (line) => console.log(pc.yellow(`  [machine-maintenance] ${line}`)),
+        });
+        setActiveWedgeMonitor(wedgeMonitor);
+        wedgeMonitor.start();
         rehearsal.start();
 
         // Honest lock reading (Part A): a read of the session, never the flag alone.

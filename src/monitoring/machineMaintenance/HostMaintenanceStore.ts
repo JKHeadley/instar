@@ -9,6 +9,12 @@
  * Increment 1 writes only rehearsal records. `watchOnly` is the literal `true` in
  * the type: no reader may treat this record as a live drain, and no path in this
  * build can write one that is not watch-only.
+ *
+ * The wedge sampler (Part E, dry-run) adds two host files under the same lock: the
+ * maintainer heartbeat, so only one agent per login samples and calls the judge,
+ * and the sampler's durable state, so a takeover inherits its budgets and episodes.
+ * Enrolment is not built, so the maintainer is whichever gated agent claims first;
+ * a heartbeat older than 10 minutes lets another take over.
  */
 
 import fs from 'node:fs';
@@ -66,6 +72,16 @@ export function defaultHostMaintenanceDir(): string {
 }
 
 const AGENT_FILE = /^[A-Za-z0-9._-]{1,120}$/;
+
+/** A maintainer heartbeat older than this lets a co-resident agent take over. */
+export const WEDGE_MAINTAINER_STALE_MS = 10 * 60_000;
+
+export interface WedgeMaintainerRecord { agent: string; heartbeatAt: number; generation: number }
+
+export type WedgeMaintainerClaim =
+  | { self: true; maintainer: string; generation: number; tookOver: boolean }
+  | { self: false; maintainer: string; heartbeatAt: number }
+  | null;
 
 export class HostMaintenanceStore {
   private readonly dir: string;
@@ -169,6 +185,54 @@ export class HostMaintenanceStore {
       } catch { /* @silent-fallback-ok — an unreadable ack counts as no ack */ }
     }
     return out;
+  }
+
+  private get wedgeMaintainerPath(): string { return path.join(this.dir, 'wedge-maintainer.json'); }
+  private get wedgeStatePath(): string { return path.join(this.dir, 'wedge-state.json'); }
+
+  /**
+   * The wedge maintainer heartbeat. Holds or renews the role for `agent`, or takes it
+   * over from a heartbeat older than 10 minutes. Null when the lock cannot be taken,
+   * which the caller treats as "not the maintainer this tick".
+   */
+  claimWedgeMaintainer(agent: string): WedgeMaintainerClaim {
+    if (!AGENT_FILE.test(agent)) return null;
+    return this.withLock(() => {
+      const now = this.now();
+      const current = this.readJsonFile<WedgeMaintainerRecord>(this.wedgeMaintainerPath);
+      const valid = current && typeof current.agent === 'string' && Number.isFinite(current.heartbeatAt) && Number.isFinite(current.generation);
+      if (valid && current!.agent !== agent && now - current!.heartbeatAt <= WEDGE_MAINTAINER_STALE_MS) {
+        return { self: false as const, maintainer: current!.agent, heartbeatAt: current!.heartbeatAt };
+      }
+      const tookOver = !valid || current!.agent !== agent;
+      const generation = valid ? (tookOver ? current!.generation + 1 : current!.generation) : 1;
+      atomicWriteFileSync(this.wedgeMaintainerPath, JSON.stringify({ agent, heartbeatAt: now, generation }), { mode: 0o644, operation: 'HostMaintenanceStore.claimWedgeMaintainer' });
+      return { self: true as const, maintainer: agent, generation, tookOver };
+    });
+  }
+
+  /** The maintainer's last published wedge state. Any agent, no lock. */
+  readWedgeState<T>(): T | null {
+    return this.readJsonFile<T>(this.wedgeStatePath);
+  }
+
+  /** Written only by the current maintainer generation; refused otherwise. */
+  writeWedgeState(agent: string, generation: number, state: unknown): boolean {
+    return this.withLock(() => {
+      const current = this.readJsonFile<WedgeMaintainerRecord>(this.wedgeMaintainerPath);
+      if (!current || current.agent !== agent || current.generation !== generation) return false;
+      atomicWriteFileSync(this.wedgeStatePath, JSON.stringify(state), { mode: 0o644, operation: 'HostMaintenanceStore.writeWedgeState' });
+      return true;
+    }) === true;
+  }
+
+  private readJsonFile<T>(file: string): T | null {
+    try {
+      return JSON.parse(fs.readFileSync(file, 'utf-8')) as T;
+    } catch {
+      // @silent-fallback-ok — an absent or unreadable host file reads as no record.
+      return null;
+    }
   }
 
   private writePlan(plan: DrainRecord): void {

@@ -27,21 +27,103 @@ const READ_ONLY_CALLS = {
   chromeProcesses: { command: 'ps', args: ['-axo', 'pid=,lstart=,args='] },
   battery: { command: 'pmset', args: ['-g', 'batt'] },
   tmuxSessions: { command: 'tmux', args: ['list-sessions', '-F', '#{session_name}'] },
+  // Wedge evidence (Part E). The process table's state column, timed: a hung or
+  // refused `ps` is itself the F2 evidence.
+  processStates: { command: 'ps', args: ['-axo', 'stat='] },
+  // F1 on Linux: a no-op run through the user service manager. It starts one transient
+  // unit that runs `/bin/true` and is collected; it observes whether that path works.
+  userUnitProbe: { command: 'systemd-run', args: ['--user', '--quiet', '--wait', '--collect', '/bin/true'] },
+  // F1 on WSL: one no-op Windows command through interop.
+  interopProbe: { command: 'cmd.exe', args: ['/c', 'exit', '0'] },
+  // F2 on WSL: the Windows process table, timed.
+  windowsTasks: { command: 'tasklist.exe', args: ['/NH', '/FO', 'CSV'] },
 } as const;
 
 export type ReadingName = keyof typeof READ_ONLY_CALLS;
 export type ReadOnlyRunner = (name: ReadingName) => Promise<string | null>;
 
+/** One bounded run of a table entry: the output, how long it took, and how it ended. */
+export interface ProbeResult {
+  ok: boolean;
+  stdout: string | null;
+  ms: number;
+  /** The hard timeout ended it. A completed result for the family that ran it, never "missing". */
+  timedOut: boolean;
+  /** The error code when it did not succeed: `ENOENT`, `EAGAIN`, an exit code, or null. */
+  code: string | number | null;
+}
+
+export type ProbeRunner = (name: ReadingName, timeoutMs: number) => Promise<ProbeResult>;
+
+/** The process-spawning seam: execFile in production, a fake in tests. */
+export type ExecLike = (
+  command: string,
+  args: string[],
+  options: { timeout: number; killSignal: NodeJS.Signals; maxBuffer: number; env: NodeJS.ProcessEnv },
+  callback: (err: Error | null, stdout: string) => void,
+) => unknown;
+
+const defaultExec: ExecLike = (command, args, options, callback) => execFile(command, args, options, (err, stdout) => callback(err, String(stdout)));
+
+/**
+ * A child stuck in the kernel (uninterruptible sleep) ignores every signal, so
+ * execFile's own timeout never fires its callback. This guard settles the call
+ * anyway, a short grace after the timeout, as `timedOut` with code `no-exit`.
+ */
+export const PROBE_EXIT_GRACE_MS = 500;
+
+function runCall(name: ReadingName, timeoutMs: number, tmuxPath?: string, runChild: ExecLike = defaultExec, outstanding?: Set<ReadingName>): Promise<ProbeResult> {
+  const call = READ_ONLY_CALLS[name];
+  if (!call) return Promise.reject(new Error(`not a read-only call: ${String(name)}`));
+  // A child of this probe that never exited is still out there. Starting another
+  // would pile up stuck children on a wedged machine, so the stuck one IS the answer.
+  if (outstanding?.has(name)) return Promise.resolve({ ok: false, stdout: null, ms: 0, timedOut: true, code: 'previous-still-running' });
+  const command = name === 'tmuxSessions' && tmuxPath ? tmuxPath : call.command;
+  const started = Date.now();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (r: ProbeResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(guard);
+      resolve(r);
+    };
+    const guard = setTimeout(() => {
+      outstanding?.add(name);
+      finish({ ok: false, stdout: null, ms: Date.now() - started, timedOut: true, code: 'no-exit' });
+    }, timeoutMs + PROBE_EXIT_GRACE_MS);
+    guard.unref?.();
+    try {
+      runChild(command, [...call.args], { timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } }, (err, stdout) => {
+        outstanding?.delete(name);
+        const ms = Date.now() - started;
+        if (!err) { finish({ ok: true, stdout, ms, timedOut: false, code: null }); return; }
+        const e = err as NodeJS.ErrnoException & { killed?: boolean };
+        finish({ ok: false, stdout: null, ms, timedOut: e.killed === true, code: e.code ?? null });
+      });
+    } catch (err) {
+      // A spawn that throws synchronously (EAGAIN on some platforms) is a completed failure, not a hang.
+      finish({ ok: false, stdout: null, ms: Date.now() - started, timedOut: false, code: (err as NodeJS.ErrnoException)?.code ?? 'spawn-error' });
+    }
+  });
+}
+
 /** `tmuxPath` replaces only the tmux executable, so a configured install is found. */
 export function makeReadOnlyRunner(tmuxPath?: string): ReadOnlyRunner {
-  return (name) => {
-    const call = READ_ONLY_CALLS[name];
-    if (!call) return Promise.reject(new Error(`not a read-only call: ${String(name)}`));
-    const command = name === 'tmuxSessions' && tmuxPath ? tmuxPath : call.command;
-    return new Promise((resolve) => {
-      execFile(command, [...call.args], { timeout: 3000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } }, (err, stdout) => resolve(err ? null : stdout));
-    });
+  return async (name) => {
+    const r = await runCall(name, 3000, tmuxPath);
+    return r.ok ? r.stdout : null;
   };
+}
+
+/**
+ * The wedge sampler's runner: same table, its own timeout, the outcome kept, and a
+ * result guaranteed within the timeout plus a short grace even if the child never exits.
+ * At most one stuck child per probe name.
+ */
+export function makeProbeRunner(runChild: ExecLike = defaultExec): ProbeRunner {
+  const outstanding = new Set<ReadingName>();
+  return (name, timeoutMs) => runCall(name, timeoutMs, undefined, runChild, outstanding);
 }
 
 export interface MachineSignals {

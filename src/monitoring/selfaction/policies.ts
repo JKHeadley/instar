@@ -224,6 +224,21 @@ export const GOVERNOR_DEFAULT_POLICIES: readonly ControllerPolicy[] = [
     ...COMMON,
   },
   {
+    // Wedge dry-run operator notice (machine-self-maintenance Part E, rung 7). Off by
+    // default (its own flag). One per machine per 24 h, three in all; the WedgeMonitor
+    // upstream also sends at most one per candidate episode.
+    controllerId: 'machine-wedge-notice',
+    actionVerb: 'wedge-notify',
+    direction: 'neutral',
+    resource: 'hardware-bound',
+    failDirection: 'open-coalesce',
+    perTargetCountCeiling: 1,
+    totalCountCeiling: 3,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 3, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
     // Overload shed (trustworthy-machine-load D3): moving existing conversations off a
     // machine that stayed overloaded. Telemetry first: the planner's own breaker
     // (2 moves/hour, one live move at a time, 30 min per-topic cooldown) binds it in code.
