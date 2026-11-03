@@ -10,7 +10,7 @@ import crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { PostUpdateMigrator, APP_MEDIA_CLAUDEMD_MARKER, APP_MEDIA_CLAUDEMD_SECTION, APP_CONVERSATIONS_CLAUDEMD_SECTION, APP_MEDIA_STALE_COPY_LINE, APP_MEDIA_CURRENT_COPY_LINE, APP_MEDIA_STALE_VOICE_LINE, APP_MEDIA_CURRENT_VOICE_LINE, APP_MEDIA_TO_PLATFORM_LINE } from '../../src/core/PostUpdateMigrator.js';
+import { PostUpdateMigrator, APP_MEDIA_CLAUDEMD_MARKER, APP_MEDIA_CLAUDEMD_SECTION, APP_CONVERSATIONS_CLAUDEMD_SECTION, APP_MEDIA_STALE_COPY_LINE, APP_MEDIA_CURRENT_COPY_LINE, APP_MEDIA_STALE_VOICE_LINE, APP_MEDIA_PREVIOUS_VOICE_LINE, APP_MEDIA_CURRENT_VOICE_LINE, APP_MEDIA_TO_PLATFORM_LINE } from '../../src/core/PostUpdateMigrator.js';
 import { ensureAppReplyRelay, packagedAppReplyRelayTemplate, PRIOR_SHIPPED_APP_RELAY_SHA256 } from '../../src/core/AppReplyRelayInstaller.js';
 import { ReplayGuard, MAX_REPLAY_PER_DEVICE, REPLAY_SEND_RESERVE } from '../../src/core/MobileDeviceKeys.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -94,6 +94,22 @@ describe('PostUpdateMigrator — app conversation media', () => {
     const after = fs.readFileSync(file, 'utf-8');
     expect(after).toContain(APP_MEDIA_CURRENT_VOICE_LINE);
     expect(after.split(APP_MEDIA_CLAUDEMD_MARKER).length - 1).toBe(1);
+    expect(run().upgraded).not.toContain(UPDATED);
+  });
+
+  it('the section describes stored server transcripts and late lines; the increment-2 voice form is refreshed once', () => {
+    const section = APP_MEDIA_CLAUDEMD_SECTION();
+    for (const phrase of ['serverTranscript', 'never changes `originVerified`', '[voice transcript ready: <path>]', 'transcript not ready after 60 s', '[file now available: <path>]']) expect(section).toContain(phrase);
+    const prior = section.replace(APP_MEDIA_CURRENT_VOICE_LINE, APP_MEDIA_PREVIOUS_VOICE_LINE);
+    expect(prior).not.toContain('serverTranscript');
+    const file = path.join(projectDir, 'CLAUDE.md');
+    fs.writeFileSync(file, `# CLAUDE.md\n${APP_CONVERSATIONS_CLAUDEMD_SECTION(4321)}${prior}`);
+    const UPDATED = 'CLAUDE.md: updated the App conversation media voice line';
+    const run = () => { const r: MigrationResult = { upgraded: [], skipped: [], errors: [] }; (migrator() as unknown as { migrateClaudeMd(r: MigrationResult): void }).migrateClaudeMd(r); return r; };
+    expect(run().upgraded).toContain(UPDATED);
+    const after = fs.readFileSync(file, 'utf-8');
+    expect(after).toContain(APP_MEDIA_CURRENT_VOICE_LINE);
+    expect(after).not.toContain(APP_MEDIA_PREVIOUS_VOICE_LINE);
     expect(run().upgraded).not.toContain(UPDATED);
   });
 

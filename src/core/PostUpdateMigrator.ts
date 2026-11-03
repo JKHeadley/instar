@@ -1001,7 +1001,9 @@ export const APP_MEDIA_CLAUDEMD_MARKER = '### App conversation media';
 export const APP_MEDIA_STALE_COPY_LINE = 'A file on another of my machines reads `not-here` until copies between machines ship.';
 /** The voice form before server-side transcription shipped (increment 2; refreshed in place on update). */
 export const APP_MEDIA_STALE_VOICE_LINE = '`[voice:<path>] <transcript>`.';
-export const APP_MEDIA_CURRENT_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here with the same provider as Telegram voice notes, `GROQ_API_KEY` or `OPENAI_API_KEY`; with none, or when it fails or takes over 60 s, the line reads `(transcription unavailable: <reason>; the audio file is at that path)` and I can still read the file).';
+/** The voice form of increment 2 before server transcripts were stored (refreshed in place on update). */
+export const APP_MEDIA_PREVIOUS_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here with the same provider as Telegram voice notes, `GROQ_API_KEY` or `OPENAI_API_KEY`; with none, or when it fails or takes over 60 s, the line reads `(transcription unavailable: <reason>; the audio file is at that path)` and I can still read the file).';
+export const APP_MEDIA_CURRENT_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here, once, with the same provider as Telegram voice notes, `GROQ_API_KEY` or `OPENAI_API_KEY`, and saved with the message as an unsigned server transcript (history: `serverTranscript` on the file, never `transcript`, and it never changes `originVerified`); invites and desktop codes in it are removed. With no provider or a failure the line reads `(transcription unavailable: <reason>; the audio file is at that path)`. Past 60 s it reads `(transcript not ready after 60 s; …)` and in an app conversation one `[voice transcript ready: <path>] <text>` (or `[voice transcript unavailable: <path>]`) line follows; a voice note that arrives later as `[file now available: <path>]` carries its transcript on that line. I can always read the file).';
 /**
  * Files sent from the app into a Telegram topic or a Slack conversation (chat-media §4.9,
  * increment 3). Inserted after the "Reply with files" bullet on update (content-sniffed).
@@ -8837,11 +8839,15 @@ setTimeout(() => process.exit(0), 2000);
     // now false. Refresh that one line in place (content-sniffed; idempotent).
     // Server-side voice transcription (media spec §4.5.1, increment 2): refresh the voice form in place.
     {
-      const staleVoice = `\`[video:<path>]\`, ${APP_MEDIA_STALE_VOICE_LINE} Read the file at that path`;
-      if (content.includes(staleVoice)) {
-        content = content.replace(staleVoice, `\`[video:<path>]\`, ${APP_MEDIA_CURRENT_VOICE_LINE} Read the file at that path`);
-        patched = true;
-        result.upgraded.push('CLAUDE.md: updated the App conversation media voice line');
+      // Two older forms: increment 1 (phone transcripts only) and increment 2 before server
+      // transcripts were stored and followed up late (§4.5.1). Each is refreshed once, in place.
+      for (const prior of [APP_MEDIA_STALE_VOICE_LINE, APP_MEDIA_PREVIOUS_VOICE_LINE]) {
+        const staleVoice = `\`[video:<path>]\`, ${prior} Read the file at that path`;
+        if (content.includes(staleVoice)) {
+          content = content.replace(staleVoice, `\`[video:<path>]\`, ${APP_MEDIA_CURRENT_VOICE_LINE} Read the file at that path`);
+          patched = true;
+          result.upgraded.push('CLAUDE.md: updated the App conversation media voice line');
+        }
       }
     }
     // Files from the app into Telegram and Slack (media spec §4.9, increment 3): one new bullet,

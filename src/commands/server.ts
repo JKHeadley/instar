@@ -9178,7 +9178,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // its request store with the Telegram chat route).
     if (_appNativeOn) {
       try {
-        const [{ AppConversationService, VOICE_TRANSCRIBE_DEADLINE_MS }, { createAppInboundDispatch }, { MobileChatRequestStore }, { appOwnerName }, relayMod, replMod] = await Promise.all([
+        const [{ AppConversationService, VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }, { createAppInboundDispatch }, { MobileChatRequestStore }, { appOwnerName }, relayMod, replMod] = await Promise.all([
           import('../core/AppConversationService.js'), import('../core/appInboundDispatch.js'), import('../core/MobileChatRequests.js'),
           import('../server/mobileConversationRoutes.js'), import('../core/AppReplyRelayInstaller.js'), import('../core/AppConversationsReplicatedStore.js'),
         ]);
@@ -9226,7 +9226,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           mediaMaxStoreBytes: () => config.mobilePairing?.native?.media?.maxStoreBytes,
           // §4.5.1: voice notes the phone did not transcribe use Telegram's transcriber (same provider).
-          transcribeVoice: (filePath, mediaType) => voiceMod.transcribeAudioFile(filePath, { explicit: voiceMod.configuredVoiceProvider(config), mediaType, timeoutMs: VOICE_TRANSCRIBE_DEADLINE_MS }),
+          // The dispatch waits 60 s; the provider call itself may run longer (a late transcript).
+          transcribeVoice: (filePath, mediaType, timeoutMs) => voiceMod.transcribeAudioFile(filePath, { explicit: voiceMod.configuredVoiceProvider(config), mediaType, timeoutMs: timeoutMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }),
+          voiceProviderName: () => voiceMod.resolveTranscriptionProvider({ explicit: voiceMod.configuredVoiceProvider(config) })?.name,
           raiseAttention: (item) => { void telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-media' }); },
           clearAttention: (conditionKey) => { telegram?.clearAttentionCondition({ conditionKey }, 'cleared: the app media store has room again'); },
           reportDegradation: (what, detail) => degradationReporter.report({

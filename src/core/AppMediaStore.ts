@@ -79,6 +79,13 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS pulls (sha256 TEXT PRIMARY KEY, firstWantedAt INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, nextAttemptAt INTEGER NOT NULL DEFAULT 0, lastServedAt INTEGER, unrecoverable INTEGER NOT NULL DEFAULT 0, lastError TEXT)`,
   `CREATE TABLE IF NOT EXISTS pull_peers (machineId TEXT PRIMARY KEY, failures INTEGER NOT NULL DEFAULT 0, openUntil INTEGER NOT NULL DEFAULT 0, opensDay TEXT, opens INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS pending_deliveries (attachmentId TEXT PRIMARY KEY, messageId TEXT NOT NULL, conversationKey TEXT NOT NULL, sha256 TEXT NOT NULL, displayName TEXT NOT NULL, caption TEXT NOT NULL, createdAt INTEGER NOT NULL, state TEXT NOT NULL, path TEXT)`,
+  // Server voice transcription (§4.5.1): one attempt per attachment on this machine, ever (the
+  // row is the bound: a failure is recorded with its reason and never retried), and the late
+  // transcript lines that found no live session to tell, kept for the next delivery's context.
+  // `delivered` = the transcript already reached the session on a line of its own or on a "now
+  // available" line, so no later line repeats it.
+  `CREATE TABLE IF NOT EXISTS voice_transcriptions (attachmentId TEXT PRIMARY KEY, state TEXT NOT NULL, reason TEXT, startedAt INTEGER NOT NULL, finishedAt INTEGER, delivered INTEGER NOT NULL DEFAULT 0)`,
+  `CREATE TABLE IF NOT EXISTS transcript_notes (attachmentId TEXT PRIMARY KEY, conversationKey TEXT NOT NULL, line TEXT NOT NULL, createdAt INTEGER NOT NULL)`,
 ];
 
 export class AppMediaStore {

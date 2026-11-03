@@ -40,7 +40,7 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { canonicalConversationKey, cleanConversationTitle, derivedEventId } from './appConversationText.js';
 import { type AppAttachment, validateAttachments, MAX_PURGE_BATCH, mediaPreview } from './appMediaTypes.js';
 
-export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media';
+export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media' | 'transcript';
 export type DeliveryEventState = 'delivered' | 'refused' | 'intercepted' | 'unknown';
 export type ReducedDeliveryState = DeliveryEventState | 'pending';
 
@@ -100,7 +100,19 @@ export interface PurgeEvent extends AppEventBase { kind: 'purge'; attachmentIds:
  * appends once); it is NOT a chat message: browse, previews and delivery states ignore it.
  */
 export interface PlatformMediaEvent extends AppEventBase { kind: 'platform-media'; messageId: string; platformMessageId: string; attachments: AppAttachment[] }
-export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent | MediaMessageEvent | PurgeEvent | PlatformMediaEvent;
+/**
+ * A server-made transcript of one voice attachment (media spec §4.5.1): machine-produced and
+ * UNSIGNED (the phone never saw it), so it is its own event and never part of the signed
+ * `media-message`. `late` marks a transcript that finished after the 60 s dispatch deadline.
+ */
+export interface TranscriptEvent extends AppEventBase { kind: 'transcript'; messageId: string; attachmentId: string; text: string; provider: string; late?: true }
+export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent | MediaMessageEvent | PurgeEvent | PlatformMediaEvent | TranscriptEvent;
+
+/** A transcript event's id: one per attachment per machine (the index picks one winner, §4.5.1). */
+export function transcriptEventId(attachmentId: string, machineId: string): string {
+  return derivedEventId('tr', attachmentId, machineId);
+}
+const PROVIDER_RE = /^[a-z0-9][a-z0-9._-]{0,31}$/;
 
 /** A platform conversation's canonical key (the same shapes the purge route accepts). */
 /**
@@ -169,6 +181,8 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS media_blobs (sha256 TEXT PRIMARY KEY, size INTEGER NOT NULL, liveRefs INTEGER NOT NULL DEFAULT 0, allRefs INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS media_purged (attachmentId TEXT PRIMARY KEY)`,
   `CREATE TABLE IF NOT EXISTS media_totals (id INTEGER PRIMARY KEY CHECK (id = 1), liveBytes INTEGER NOT NULL DEFAULT 0)`,
+  // Server transcripts (media spec §4.5.1): the one winning transcript event per attachment.
+  `CREATE TABLE IF NOT EXISTS transcripts (attachmentId TEXT PRIMARY KEY, canonicalKey TEXT NOT NULL, eventId TEXT NOT NULL, at TEXT NOT NULL, machineId TEXT NOT NULL)`,
 ];
 
 /**
@@ -246,6 +260,15 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       if (!messageId || messageId !== eventId || !platformMessageId || !PLATFORM_CONVERSATION_KEY_RE.test(conversationKey)) return null;
       const attachments = validateAttachments(r.attachments, messageId);
       return attachments ? { ...base, kind: 'platform-media', messageId, platformMessageId, attachments } : null;
+    }
+    case 'transcript': {
+      const messageId = str(r.messageId, 128);
+      const attachmentId = typeof r.attachmentId === 'string' && /^[0-9a-f]{64}$/.test(r.attachmentId) ? r.attachmentId : null;
+      const text = typeof r.text === 'string' && r.text.length <= MAX_STORED_TEXT ? r.text : null;
+      const provider = typeof r.provider === 'string' && PROVIDER_RE.test(r.provider) ? r.provider : null;
+      if (!messageId || !attachmentId || text === null || !provider) return null;
+      if (r.late !== undefined && r.late !== true) return null;
+      return { ...base, kind: 'transcript', messageId, attachmentId, text, provider, ...(r.late === true ? { late: true as const } : {}) };
     }
     case 'purge': {
       const ids = r.attachmentIds;
@@ -363,7 +386,7 @@ export class AppConversationStore {
 
   /** Drop the index and rebuild it from the files (tests and the operator's repair path). */
   rebuildIndex(): void {
-    this.db.exec('DELETE FROM files; DELETE FROM events; DELETE FROM messages; DELETE FROM deliveries; DELETE FROM conversations; DELETE FROM media_refs; DELETE FROM media_blobs; DELETE FROM media_purged; DELETE FROM media_totals;');
+    this.db.exec('DELETE FROM files; DELETE FROM events; DELETE FROM messages; DELETE FROM deliveries; DELETE FROM conversations; DELETE FROM media_refs; DELETE FROM media_blobs; DELETE FROM media_purged; DELETE FROM media_totals; DELETE FROM transcripts;');
     this.catchUp();
   }
 
@@ -386,6 +409,7 @@ export class AppConversationStore {
     if (row && from > size) {
       // The file is shorter than what was indexed (should not happen): re-index it from the start.
       this.dropMediaRefsOf(row.canonicalKey); // re-derived with the events
+      this.db.prepare('DELETE FROM transcripts WHERE canonicalKey = ?').run(row.canonicalKey);
       this.db.prepare('DELETE FROM events WHERE canonicalKey = ?').run(row.canonicalKey);
       from = 0;
     }
@@ -569,6 +593,15 @@ export class AppConversationStore {
         // A reference only (§4.9): never a chat message, so no messages row and no preview.
         this.indexMediaRefs(canonicalKey, ev);
         return;
+      case 'transcript': {
+        // Never a chat message either. One winner per attachment, independent of arrival order:
+        // the earliest `at`, then the lowest machine id (two machines can each transcribe once).
+        const cur = this.db.prepare('SELECT at, machineId FROM transcripts WHERE attachmentId = ?').get(ev.attachmentId) as { at: string; machineId: string } | undefined;
+        if (!cur || ev.at < cur.at || (ev.at === cur.at && ev.machineId < cur.machineId)) {
+          this.db.prepare('INSERT OR REPLACE INTO transcripts (attachmentId, canonicalKey, eventId, at, machineId) VALUES (?, ?, ?, ?, ?)').run(ev.attachmentId, canonicalKey, ev.eventId, ev.at, ev.machineId);
+        }
+        return;
+      }
       case 'message':
       case 'media-message': {
         const state = this.reduceFor(ev.messageId);
@@ -703,6 +736,15 @@ export class AppConversationStore {
     if (msg && msg.kind === 'media-message') return msg.attachments;
     const pm = this.getEvent(conversationKey, messageId);
     return pm && pm.kind === 'platform-media' && pm.messageId === messageId ? pm.attachments : null;
+  }
+
+  /** The stored server transcript of one attachment (§4.5.1), or null. */
+  transcriptFor(attachmentId: string): (TranscriptEvent & { ingestSeq: number }) | null {
+    const row = this.db.prepare('SELECT canonicalKey, eventId FROM transcripts WHERE attachmentId = ?').get(attachmentId) as { canonicalKey: string; eventId: string } | undefined;
+    if (!row) return null;
+    const loc = this.db.prepare('SELECT byteOffset, byteLength FROM events WHERE canonicalKey = ? AND eventId = ?').get(row.canonicalKey, row.eventId) as { byteOffset: number; byteLength: number } | undefined;
+    const ev = loc ? this.readEventAt(row.canonicalKey, loc.byteOffset, loc.byteLength) : null;
+    return ev && ev.kind === 'transcript' ? ev : null;
   }
 
   /** The platform-media event recorded for one platform message (§4.9), or null. */
