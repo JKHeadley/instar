@@ -18,6 +18,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { Router, type Request, type Response } from 'express';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
+import { deviceMayUse } from './mobilePairingRoutes.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import { requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
 import { CHUNK_BYTES, CONTROL_CHARS, MEDIA_KINDS, isInlineSafe, isSha256Hex, safeFileName, type AppAttachment, type MediaKind } from '../core/appMediaTypes.js';
@@ -107,6 +108,8 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     // its history read). The send route checks the same ref again, so an upload for one
     // conversation can never be sent into another.
     if (!uploadTargetKnown(conversationRef)) { res.status(404).json({ error: 'unknown-conversation', detail: 'That conversation does not exist or cannot take files yet.' }); return; }
+    // People and roles §3.4: an MSP phone uploads only into conversations it may use.
+    if (!deviceMayUse(deps.pairing, req, conversationRef)) { res.status(404).json({ error: 'unknown-conversation', detail: 'That conversation does not exist or cannot take files yet.' }); return; }
     const started = media.startUpload({ deviceId, conversationRef, size, sha256, declaredKind: declaredKind as MediaKind, declaredType, filename });
     if ('status' in started) { res.status(started.status).json({ error: started.error, detail: started.detail }); return; }
     const body = uploadView(started);
@@ -173,6 +176,8 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     const slackKey = /^slack:/.test(ref) && ref.length <= 128 && deps.slackHeld?.(ref) === true ? ref : null;
     const key = appKey ?? telegramKey ?? slackKey;
     if (!isSha256Hex(sha) || !key || (appKey && !svc!.liveConversation(appKey))) { notFound(); return; }
+    // People and roles §3.4: an MSP phone downloads only from conversations it may use.
+    if (!deviceMayUse(deps.pairing, req, appKey ?? key)) { notFound(); return; }
     // A Slack file may sit under the conversation's earlier placeholder-workspace key.
     let att: ReturnType<AppConversationService["store"]["mediaRefInConversation"]> = null;
     let refKey = key;
@@ -242,6 +247,8 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     if (typeof requestId !== 'string' || requestIdTime(requestId) === null) { res.status(400).json({ error: 'bad-request-id' }); return; }
     const keys = b.conversationKeys;
     if (!Array.isArray(keys) || keys.length < 1 || keys.length > 100 || !keys.every((k) => typeof k === 'string' && k.length <= 256)) { res.status(400).json({ error: 'bad-conversation-keys' }); return; }
+    // People and roles §3.4: any key this phone may not use refuses the whole batch.
+    if ((keys as string[]).some((k) => !deviceMayUse(deps.pairing, req, k))) { res.status(404).json({ error: 'unknown-conversation' }); return; }
     const hash = hashOf('purge', ...(keys as string[]));
     const prior = requests.lookup(deviceId, requestId, hash);
     if (prior.kind === 'done') { res.status(prior.status).json(prior.body); return; }

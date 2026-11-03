@@ -324,6 +324,9 @@ interface LogEntry {
   via?: 'mobile-device';
   deviceId?: string;
   eventId?: string;
+  /** People and roles: the app sender's role and registry person (MSP only; namespaced by machine). */
+  senderRole?: 'owner' | 'msp';
+  senderPerson?: { machineId: string; userId: string };
   /** Structural origin, stamped at the send/receive seam. */
   provenance: MessageProvenance;
   /** Joined at read time from the ASP classification authority. */
@@ -1610,6 +1613,8 @@ export class TelegramAdapter implements MessagingAdapter {
     via?: 'mobile-device';
     deviceId?: string;
     eventId?: string;
+    senderRole?: 'owner' | 'msp';
+    senderPerson?: { machineId: string; userId: string };
   }): void {
     const fromApp = entry.via === 'mobile-device';
     this.appendToLog({
@@ -1624,6 +1629,8 @@ export class TelegramAdapter implements MessagingAdapter {
       telegramUserId: entry.telegramUserId,
       forwarded: fromApp ? undefined : entry.forwarded === true,
       ...(fromApp ? { via: 'mobile-device' as const, deviceId: entry.deviceId, eventId: entry.eventId } : {}),
+      ...(fromApp && entry.senderRole ? { senderRole: entry.senderRole } : {}),
+      ...(fromApp && entry.senderPerson ? { senderPerson: entry.senderPerson } : {}),
       provenance: 'user',
     });
   }

@@ -213,6 +213,24 @@ describe('MobilePushService — app conversation replies', () => {
     expect(p.instar).toEqual({ kind: 'reply', agentId: 'echo', deviceId: 'd1', count: 1, conversationKey: KEY_A });
   });
 
+  it('people and roles: a reply push skips a phone that may not use the conversation (no buzz, no fold, no id)', async () => {
+    const c = setup();
+    const asked: Array<[string, string]> = [];
+    const mk = (allow: boolean) => new MobilePushService({
+      stateDir: c.dir, registry: c.reg, agentId: 'echo', agentName: 'Echo', machineId: 'm1',
+      enabled: () => true, credentials: () => ({ keyPem: KEY, keyId: 'KEY1', teamId: 'T' }),
+      transport: async (_e, _t, headers, body) => { c.sent.push({ headers, body: JSON.parse(body) }); return { status: 200 }; },
+      now: () => c.clock.t, mayNotify: (d, k) => { asked.push([d, k]); return allow; },
+    });
+    await mk(false).receive({ kind: 'reply', conversationKey: KEY_A, messageId: 'm-x', dedupeKey: 'app-reply:m-x', sourceMachine: 'm1' }, false);
+    expect(c.sent).toHaveLength(0);
+    expect(asked.map((x) => x[1])).toEqual([KEY_A]);
+    // An attention item is shared: the check is never asked for it.
+    await mk(false).receive({ kind: 'item', itemId: 'ATT-1', dedupeKey: 'item:ATT-1', sourceMachine: 'm1' }, false);
+    expect(c.sent).toHaveLength(1);
+    expect(asked).toHaveLength(1);
+  });
+
   it('onAppReply sends one push per reply, fans out, and a repeat of the same message is deduped', async () => {
     const c = setup();
     const fanned: unknown[] = [];

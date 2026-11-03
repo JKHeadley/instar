@@ -1055,6 +1055,11 @@ export function createDeliveryFailedHandler(opts: {
 export interface MobileInboundTrust {
   deviceId: string;
   eventId: string;
+  /**
+   * People and roles (docs/specs/mobile-app-people-and-roles.md): the authenticated phone's role and
+   * registry person (MSP only, namespaced by machine). Absent ⇒ an owner phone (older callers).
+   */
+  sender?: { role: 'owner' | 'msp'; person?: { machineId: string; userId: string } };
 }
 
 export interface RouteContext {
@@ -27729,6 +27734,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // reader (standing authorization, verified-operator approvals) counts it.
         forwarded: trust ? undefined : req.body.forwarded === true,
         ...(trust ? { via: 'mobile-device' as const, deviceId: trust.deviceId, eventId: trust.eventId } : {}),
+        ...(trust?.sender ? { senderRole: trust.sender.role, ...(trust.sender.person ? { senderPerson: trust.sender.person } : {}) } : {}),
       });
     }
 

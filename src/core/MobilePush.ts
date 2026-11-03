@@ -70,6 +70,12 @@ export interface MobilePushDeps {
   fanOut?: (t: PushTrigger) => void;
   reportDegradation?: (what: string, err: unknown) => void;
   now?: () => number;
+  /**
+   * People and roles §3.4: may this phone hear about a reply in this conversation? A phone that may
+   * not use the conversation gets no push for it at all (not even "New reply" with its id).
+   * Absent ⇒ every phone, as before.
+   */
+  mayNotify?: (deviceId: string, conversationKey: string) => boolean;
 }
 
 const emptyDevice = (): DeviceState => ({ sendLog: [], urgentLog: [], lastSendAt: null, pending: null, dueAt: null, backoffUntil: null, lastSend: null });
@@ -162,6 +168,11 @@ export class MobilePushService {
     this.save();
     const urgent = (t.priority ?? '').toUpperCase() === 'URGENT';
     for (const d of this.pushDevices()) {
+      if (t.kind === 'reply' && t.conversationKey && this.deps.mayNotify) {
+        let may = false;
+        try { may = this.deps.mayNotify(d.id, t.conversationKey); } catch { may = false; } // @silent-fallback-ok — fail closed: an unanswerable check sends nothing to that phone
+        if (!may) continue;
+      }
       const ds = this.dev(st, d.id);
       prune(ds, t0);
       if (!ds.pending && this.dueFor(ds, urgent) <= t0) {

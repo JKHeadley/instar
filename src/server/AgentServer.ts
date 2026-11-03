@@ -1692,6 +1692,10 @@ export class AgentServer {
       },
       // Without a Telegram owner, pairing codes are confirmed on the dashboard (mobile-native-conversations §4.4).
       telegramOwnerPresent: () => !!options.telegram?.getOwnerUserId?.(),
+      // People and roles: the Telegram owner id decides which registry profile is the owner.
+      telegramOwnerId: () => { const id = options.telegram?.getOwnerUserId?.(); return typeof id === 'number' ? id : null; },
+      // The same namespace the app conversation store stamps (people and roles §5).
+      peopleMachineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
       holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
       // Multi-route: the real Tailscale CLI only outside a test run (a test injects its own).
       tailscaleExec: options.mobileRoutes && 'tailscaleExec' in options.mobileRoutes
@@ -1726,6 +1730,8 @@ export class AgentServer {
         agentName: agentId.charAt(0).toUpperCase() + agentId.slice(1),
         machineId: options.coordinator?.identity?.machineId ?? 'local',
         enabled: () => isMobilePushEnabled(this.config),
+        // People and roles: a reply push goes only to phones that may use that conversation.
+        mayNotify: (deviceId, conversationKey) => mp.deviceMayUseConversation(deviceId, conversationKey),
         credentials: () => {
           const keyPem = pushKeys.get('apns_key_p8');
           const keyId = pushKeys.get('apns_key_id');
@@ -5887,6 +5893,8 @@ export class AgentServer {
         // reconciled against the device registry in both directions (a crash between the writes).
         const keyLedger = svc.deps.keyLedger ?? null;
         this.mobilePairing.keyLedger = keyLedger;
+        // People and roles §3.4: who owns each app conversation (undefined ⇒ no such conversation).
+        this.mobilePairing.useAppConversationStore(svc.store);
         if (keyLedger) {
           try {
             const rec = keyLedger.reconcile(this.mobilePairing.devices);

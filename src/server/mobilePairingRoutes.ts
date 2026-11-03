@@ -54,6 +54,12 @@ import {
 import { isExactStopMessage } from '../core/MessageSentinel.js';
 import type { AppAttachment } from '../core/appMediaTypes.js';
 import type { MediaMessageEvent, MessageEvent } from '../core/AppConversationStore.js';
+import { UserManager } from '../users/UserManager.js';
+import { MspGrantStore } from '../core/MobileMspGrants.js';
+import {
+  choosePerson, devicePerson, mayUseConversation, personLabel,
+  type ConversationOwner, type DevicePerson, type OwnerIdentity, type PeopleLookup, type PersonProfile, type ResolvedPerson,
+} from '../core/MobilePeople.js';
 
 export const MOBILE_REDEEM_PATH = '/mobile/pairing-codes/redeem';
 export const MOBILE_PING_PATH = '/mobile/pairing-codes/ping';
@@ -95,6 +101,28 @@ export interface MobilePairingDeps {
   tailscaleExec?: TailscaleExec | null;
   /** Multi-route: this process runs under WSL (Tailscale is the Windows side, tailscale.exe). */
   isWsl?: boolean;
+  /**
+   * People and roles (docs/specs/mobile-app-people-and-roles.md): the agent's user registry, read
+   * only. Absent ⇒ read `users.json` under the state dir (plus `config.users`) on each lookup.
+   */
+  people?: () => PeopleLookup | null;
+  /** The Telegram owner's numeric id, when the agent has one. */
+  telegramOwnerId?: () => number | null;
+  /**
+   * The id that namespaces stored person references: the SAME id the app conversation store
+   * stamps on its events (`meshSelfId ?? coordinator id ?? 'local'`). Absent ⇒ `selfMachineId`.
+   */
+  peopleMachineId?: () => string;
+}
+
+/** The default people lookup: the registry on disk (read-only, no writes) plus `config.users`. */
+export function registryPeople(stateDir: string, configUsers: PersonProfile[] | undefined): PeopleLookup {
+  const byId = new Map<string, PersonProfile>();
+  for (const u of configUsers ?? []) if (u && typeof u.id === 'string') byId.set(u.id, u);
+  try {
+    for (const u of UserManager.readProfilesFromDisk(stateDir).profiles) byId.set(u.id, u);
+  } catch { /* @silent-fallback-ok — an unreadable users.json resolves no MSP person: their phones are refused person-unknown (fail closed), owner phones are unaffected */ }
+  return { getUser: (id) => byId.get(id) ?? null };
 }
 
 type PoolCtx = Pick<RouteContext, 'config' | 'resolvePeerUrls' | 'recordRopeResult'> & Partial<Pick<RouteContext, 'mobileInbound' | 'telegram' | 'localAttention' | 'appConversations' | 'verifyDashboardOperatorSession'>>;
@@ -106,7 +134,12 @@ function sanitizePeerDevice(raw: unknown, machineId: string): Record<string, unk
   if (!raw || typeof raw !== 'object') return null;
   const d = raw as Record<string, unknown>;
   if (typeof d.id !== 'string' || typeof d.pairedAt !== 'string' || Number.isNaN(Date.parse(d.pairedAt))) return null;
-  return { id: d.id.slice(0, 64), deviceName: cleanText(d.deviceName), pairedAt: new Date(Date.parse(d.pairedAt)).toISOString(), label: cleanText(d.label), machine: machineId };
+  return {
+    id: d.id.slice(0, 64), deviceName: cleanText(d.deviceName), pairedAt: new Date(Date.parse(d.pairedAt)).toISOString(), label: cleanText(d.label), machine: machineId,
+    // People and roles: a peer's person fields, re-validated (an unknown role reads as unassigned).
+    role: d.role === 'msp' ? 'msp' : 'owner', personName: cleanText(d.personName),
+    ...(d.unassigned === true || (d.role !== undefined && d.role !== 'owner' && d.role !== 'msp') ? { unassigned: true } : {}),
+  };
 }
 
 async function fetchPoolDevices(ctx: PoolCtx): Promise<{ rows: Array<Record<string, unknown>>; failed: Array<{ machineId: string; reason: string }> }> {
@@ -209,6 +242,7 @@ export class MobilePairingService {
   constructor(readonly deps: MobilePairingDeps, now: () => number = Date.now) {
     this.codes = new PairingCodeStore(now);
     this.devices = new DeviceRegistry(deps.stateDir, now);
+    this.grants = new MspGrantStore(deps.stateDir, now);
     this.confirm = new ConfirmationCodes(now);
     this.replay = new ReplayGuard(now);
     this.now = now;
@@ -297,6 +331,69 @@ export class MobilePairingService {
   }
 
   stop(): void { if (this.leaseTimer) clearInterval(this.leaseTimer); this.leaseTimer = null; this.ownNames?.stop(); }
+
+  // ── People and roles (docs/specs/mobile-app-people-and-roles.md) ──
+
+  /**
+   * The app conversation owner lookup (`CreatedEvent.ownerPerson`), set by AgentServer when the app
+   * conversation store exists. `undefined` ⇒ no such conversation; `null` ⇒ an owner conversation.
+   */
+  appConversationOwner: ((key: string) => ConversationOwner | null | undefined) | null = null;
+
+  /** Owner grants for MSP persons (§3.5), off by default. */
+  readonly grants: MspGrantStore;
+
+  /** Wire the app conversation store as the owner lookup (AgentServer; tests use the same call). */
+  useAppConversationStore(store: { getConversation(key: string): { ownerPerson: ConversationOwner | null } | null }): void {
+    this.appConversationOwner = (key) => {
+      const c = store.getConversation(key);
+      return c ? c.ownerPerson : undefined;
+    };
+  }
+
+  /** This machine's id, the namespace of every stored person reference. */
+  machineId(): string { return this.deps.peopleMachineId?.() ?? this.deps.selfMachineId ?? 'local'; }
+
+  ownerIdentity(): OwnerIdentity {
+    let telegramOwnerId: number | null = null;
+    try { telegramOwnerId = this.deps.telegramOwnerId?.() ?? null; } catch { telegramOwnerId = null; } // @silent-fallback-ok — no Telegram owner id only means no profile matches by it
+    const slackOwner = (this.deps.config.mobilePairing as { slackOwnerUserId?: unknown } | undefined)?.slackOwnerUserId;
+    return {
+      ownerName: cleanText(this.deps.config.threadline?.ownerName) ?? '', telegramOwnerId: typeof telegramOwnerId === 'number' ? telegramOwnerId : null,
+      slackOwnerUserId: typeof slackOwner === 'string' && slackOwner ? slackOwner : null,
+    };
+  }
+
+  people(): PeopleLookup | null {
+    if (this.deps.people) return this.deps.people();
+    return registryPeople(this.deps.stateDir, this.deps.config.users as PersonProfile[] | undefined);
+  }
+
+  /** Resolve a device record to its person (absent role ⇒ owner; a removed MSP person ⇒ person-unknown). */
+  personOfDevice(d: DeviceRecord): DevicePerson {
+    // The registry is read only for an MSP phone or an owner phone with a named profile.
+    const needsRegistry = d.role === 'msp' || !!d.userId;
+    return devicePerson(d, needsRegistry ? this.people() : null, this.ownerIdentity(), (id) => this.grants.get(id));
+  }
+
+  /** May this phone's person use this conversation? (one shared check, spec §3.4) */
+  mayUse(person: ResolvedPerson, ref: string): boolean {
+    return mayUseConversation(person, ref, this.machineId(), this.appConversationOwner);
+  }
+
+  /** The shared check by device id (push recipients): an unknown device or person ⇒ no. */
+  deviceMayUseConversation(deviceId: string, ref: string): boolean {
+    const d = this.devices.get(deviceId);
+    if (!d) return false;
+    const p = this.personOfDevice(d);
+    return p.ok && this.mayUse(p, ref);
+  }
+
+  /** Validate a requested person for a pairing link or a reassignment (spec §3.2). */
+  choosePerson(userId: unknown, role: unknown): ReturnType<typeof choosePerson> {
+    const needsRegistry = (userId !== undefined && userId !== null);
+    return choosePerson(userId, role, needsRegistry ? this.people() : null, this.ownerIdentity());
+  }
 
   holdsLease(): boolean { return this.deps.holdsLease?.() ?? true; }
 
@@ -546,7 +643,7 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     }
     let created: ReturnType<DeviceRegistry['createPending']>;
     try {
-      created = svc.devices.createPending({ deviceName: cleanText(body.deviceName), label: r.label, publicKey, host: reqHost! });
+      created = svc.devices.createPending({ deviceName: cleanText(body.deviceName), label: r.label, publicKey, host: reqHost!, userId: r.person?.userId ?? null, role: r.person?.role ?? 'owner' });
     } catch (err) {
       svc.deps.reportDegradation?.('MobilePairing.registryWrite', err);
       res.status(500).json({ error: 'Could not record the device. Ask for a new link.' });
@@ -572,8 +669,12 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     const nonce = crypto.randomBytes(12).toString('hex');
     svc.declineNonces.set(nonce, device.id);
     const pretty = displayCode(code);
+    // People and roles §3.2: the owner approves every phone, so the message says whose phone it is.
+    const forWhom = device.role === 'msp' ? svc.personOfDevice(device) : null;
     const text = [
-      `Your code to pair a phone with ${svc.deps.config.projectName} is ${pretty}.`,
+      forWhom
+        ? `Your code to pair a phone for ${forWhom.ok ? personLabel(forWhom.name, 'msp') : 'someone no longer in your user list'} with ${svc.deps.config.projectName} is ${pretty}. Give it to them only if you want them to use the Instar app with this agent.`
+        : `Your code to pair a phone with ${svc.deps.config.projectName} is ${pretty}.`,
       `Type it into the Instar app only if you are pairing a phone right now. If you did not start this, tap Decline. Don't send or show this message to anyone, including me.`,
       `Phone name: ${device.deviceName ?? '(none given)'}`,
     ].join('\n\n');
@@ -602,6 +703,10 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
   router.post('/mobile/pairing-codes', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!svc.enabled()) { json503(res); return; }
+    const mintBody = (req.body ?? {}) as Record<string, unknown>;
+    // People and roles §3.2: whose phone this link is for (neither field ⇒ the owner, as before).
+    const chosenPerson = svc.choosePerson(mintBody.userId, mintBody.role);
+    if (!chosenPerson.ok) { res.status(400).json({ error: chosenPerson.error, detail: chosenPerson.detail }); return; }
     const chosen = svc.pairingOrigin();
     if (!chosen) {
       const t = deps.config.tunnel as { type?: string; hostname?: string } | undefined;
@@ -631,17 +736,25 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (svc.ownNames) {
       try { await svc.ownNames.proveNow(new URL(origin).host); } catch (err) { deps.reportDegradation?.('MobileRoutes.probe', err); }
     }
-    const label = cleanText((req.body as Record<string, unknown> | undefined)?.label);
-    const m = svc.codes.mint(codeTtlMs(deps.config.mobilePairing), label, deps.config.authToken ?? '', { host: chosen.host, kind: chosen.kind });
+    const label = cleanText(mintBody.label);
+    const m = svc.codes.mint(codeTtlMs(deps.config.mobilePairing), label, deps.config.authToken ?? '', { host: chosen.host, kind: chosen.kind },
+      { userId: chosenPerson.userId, role: chosenPerson.role });
     if (!m.ok) { res.status(429).json({ error: m.reason }); return; }
     // originKind lets the agent tell the operator a Tailscale link opens only with Tailscale on.
-    res.json({ code: m.code, expiresAt: new Date(m.expiresAt).toISOString(), link: buildPairLink(origin, m.code, deps.config.projectName), originKind: chosen.kind });
+    res.json({ code: m.code, expiresAt: new Date(m.expiresAt).toISOString(), link: buildPairLink(origin, m.code, deps.config.projectName), originKind: chosen.kind,
+      person: { name: chosenPerson.name, role: chosenPerson.role, userId: chosenPerson.userId } });
   });
 
   router.get('/mobile/devices', async (req: Request, res: Response) => {
     if (!svc.enabled()) { json503(res); return; }
     const machine = deps.selfMachineId ?? null;
-    const local = svc.devices.list().map((d) => publicDeviceView(d, machine));
+    // People and roles §3.4: an MSP phone sees only its own phone (local and pool).
+    if (isMspRequest(req)) {
+      const own = principalOf(req).kind === 'device' ? svc.devices.get((principalOf(req) as { deviceId: string }).deviceId) : null;
+      res.json({ devices: own ? [publicDeviceView(own, machine, svc)] : [] });
+      return;
+    }
+    const local = svc.devices.list().map((d) => publicDeviceView(d, machine, svc));
     if (req.query.scope !== 'pool' || !poolCtx) { res.json({ devices: local }); return; }
     const pool = await fetchPoolDevices(poolCtx);
     const devices = [...local, ...pool.rows].sort((a, b) => String(b.pairedAt).localeCompare(String(a.pairedAt)));
@@ -667,7 +780,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
   router.get('/mobile/pairing-approvals', (req: Request, res: Response) => {
     if (!operatorOnly(req, res)) return;
     const approvals = svc.dashboardApprovals().map(({ device, code, expiresAt }) => ({
-      deviceId: device.id, deviceName: device.deviceName, label: device.label, fingerprint: device.fingerprint ?? null,
+      deviceId: device.id, deviceName: device.deviceName, label: device.label, fingerprint: device.fingerprint ?? null, ...personFields(device, svc),
       // Display form for both formats (mobile-pairing-word-code §3.4): `KITE-4172` or `123 456`.
       code: displayCode(code), codeFormat: /^\d{6}$/.test(code) ? 'digits' : 'word', pairedAt: device.pairedAt, expiresAt: new Date(expiresAt).toISOString(),
     }));
@@ -713,7 +826,99 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       // A pending dashboard-path phone (§4.4) tells the operator where the code is.
       ...(d.status === 'pending' && svc.isDashboardPending(d.id) ? { approval: 'dashboard' } : {}),
       ...(d.approvedVia ? { approvedVia: d.approvedVia } : {}),
+      // People and roles §3.1: whose phone this is (`unassigned` when the person was removed).
+      person: personView(svc.personOfDevice(d)),
     });
+  });
+
+  // ── Owner grants for MSP persons (people and roles §3.5) ──
+  // Only an OWNER phone may change a grant: its device signature proves the owner (the owner alone
+  // received its pairing code). The Bearer token is refused, so nothing that talks to the agent —
+  // including an MSP asking the agent — can open the owner's chats or Slack.
+  const ownerPhone = (req: Request, res: Response): string | null => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!svc.enabled()) { json503(res); return null; }
+    const p = principalOf(req);
+    const person = devicePersonOf(req);
+    if (p.kind !== 'device' || !person || person.role !== 'owner') {
+      res.status(403).json({ error: 'owner-phone-required', detail: 'Only the owner\'s phone can change what an MSP may use.' });
+      return null;
+    }
+    return p.deviceId;
+  };
+  /** MSP persons with at least one phone on this machine, and what the owner opened to each. */
+  const mspPeople = (): Array<Record<string, unknown>> => {
+    const byUser = new Map<string, { name: string; phones: number }>();
+    for (const d of svc.devices.list()) {
+      if (d.role !== 'msp' || !d.userId || d.status === 'revoked') continue;
+      const p = svc.personOfDevice(d);
+      const cur = byUser.get(d.userId) ?? { name: p.ok ? p.name : d.userId, phones: 0 };
+      cur.phones++;
+      byUser.set(d.userId, cur);
+    }
+    return [...byUser.entries()].map(([userId, v]) => ({ userId, name: v.name, role: 'msp', phones: v.phones, grants: svc.grants.get(userId) }));
+  };
+  router.get('/mobile/people', (req: Request, res: Response) => {
+    if (principalOf(req).kind === 'token') {
+      // The agent may READ the switches (to answer "can my MSP see my chats?"); never change them.
+      res.setHeader('Cache-Control', 'no-store');
+      if (!svc.enabled()) { json503(res); return; }
+      res.json({ people: mspPeople() });
+      return;
+    }
+    if (!ownerPhone(req, res)) return;
+    res.json({ people: mspPeople() });
+  });
+  router.post('/mobile/people/:userId/grants', (req: Request, res: Response) => {
+    const deviceId = ownerPhone(req, res); if (!deviceId) return;
+    const userId = String(req.params.userId);
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const change: { ownerConversations?: boolean; slack?: boolean } = {};
+    for (const k of ['ownerConversations', 'slack'] as const) {
+      if (b[k] === undefined) continue;
+      if (typeof b[k] !== 'boolean') { res.status(400).json({ error: 'bad-grant', detail: `${k} must be true or false.` }); return; }
+      change[k] = b[k] as boolean;
+    }
+    if (Object.keys(change).length === 0) { res.status(400).json({ error: 'bad-grant', detail: 'Send ownerConversations and/or slack.' }); return; }
+    // Only a registered MSP person (not the owner) can hold a grant.
+    const choice = svc.choosePerson(userId, 'msp');
+    if (!choice.ok) { res.status(400).json({ error: choice.error, detail: choice.detail }); return; }
+    let g: ReturnType<typeof svc.grants.set>;
+    try { g = svc.grants.set(userId, change, deviceId); } catch (err) {
+      deps.reportDegradation?.('MobilePeople.grantWrite', err);
+      res.status(500).json({ error: 'Could not record the change. Try again.' });
+      return;
+    }
+    res.json({ userId, name: choice.name, grants: { ownerConversations: g.ownerConversations, slack: g.slack } });
+  });
+
+  // Assign a phone to a person (people and roles §3.2): bearer only, MSP only — a phone is raised
+  // to owner only by being paired again as one (the owner alone receives that code).
+  router.post('/mobile/devices/:id/person', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!svc.enabled()) { json503(res); return; }
+    if (principalOf(req).kind !== 'token') { res.status(403).json({ error: 'bearer-required' }); return; }
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    if (b.role === 'owner') { res.status(400).json({ error: 'owner-needs-pairing', detail: 'A phone becomes an owner phone only by pairing it again as the owner\'s phone.' }); return; }
+    if (b.role !== 'msp') { res.status(400).json({ error: 'bad-role', detail: 'role must be "msp".' }); return; }
+    const choice = svc.choosePerson(b.userId, 'msp');
+    if (!choice.ok) { res.status(400).json({ error: choice.error, detail: choice.detail }); return; }
+    // Only a true lowering: an OWNER phone may become an MSP's. An MSP (or unassigned) phone is never
+    // moved to another person by the bearer token — that person may hold owner grants (§3.5), so
+    // the move could raise access without the owner. Pair the phone again for the new person.
+    const current = svc.devices.get(String(req.params.id));
+    if (current && current.role !== undefined && current.role !== 'owner') {
+      res.status(409).json({ error: 'repair-needed', detail: 'This phone already belongs to an MSP. To give it to someone else, revoke it and pair it again for them.' });
+      return;
+    }
+    let d: DeviceRecord | null;
+    try { d = svc.devices.setPerson(String(req.params.id), { userId: choice.userId, role: 'msp' }); } catch (err) {
+      deps.reportDegradation?.('MobilePairing.registryWrite', err);
+      res.status(500).json({ error: 'Could not record the assignment. Try again.' });
+      return;
+    }
+    if (!d) { res.status(404).json({ error: 'unknown-device' }); return; }
+    res.json({ deviceId: d.id, person: personView(svc.personOfDevice(d)) });
   });
 
   // Confirm with the code from the owner's private chat (device-signed; pending or active).
@@ -907,6 +1112,10 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (!svc.enabled()) { json503(res); return; }
     const p = principalOf(req);
     if (p.kind !== 'device') { res.status(403).json({ error: 'operator-device-required' }); return; }
+    const sender = devicePersonOf(req);
+    if (!sender) { res.status(403).json({ error: 'person-unknown' }); return; }
+    const senderPerson = sender.role === 'msp' && sender.userId ? { machineId: svc.machineId(), userId: sender.userId } : null;
+    const senderTrust = { role: sender.role, ...(senderPerson ? { person: senderPerson } : {}) };
     const body = (req.body ?? {}) as Record<string, unknown>;
     const topicId = Number(req.params.topicId);
     const text = typeof body.text === 'string' ? body.text.trim() : '';
@@ -1024,6 +1233,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       const base = {
         eventId: storeEventId, conversationKey: storeKey, messageId: storeMessageId, role: 'operator' as const, text: delivered,
         at: receivedAt, machineId: app.deps.machineId(), receivedAt,
+        senderName: sender.name, senderRole: sender.role, ...(senderPerson ? { senderPerson } : {}),
         ...(signed.origin ? { origin: signed.origin } : {}), ...(signed.receipt ? { receipt: signed.receipt } : {}),
       };
       record = stored.length > 0 ? { ...base, kind: 'media-message', attachments: stored } : { ...base, kind: 'message' };
@@ -1066,7 +1276,10 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
 
     // Core: the same inbound steps a Telegram message takes.
     const eventId = app ? storeEventId : `mobile:${p.deviceId}:${requestId}`;
-    const ownerName = cleanText(deps.config.threadline?.ownerName) || 'Operator';
+    // People and roles §3.3: the message carries the phone's person. Only an owner phone speaks with
+    // the owner's Telegram id; an MSP phone carries NO Telegram id (the device path is senderTrusted,
+    // so any id would count as proven Telegram authority) and is named in the sender tag only.
+    const senderName = sender.name;
     const captured: { status: number; body: Record<string, unknown> } = { status: 200, body: {} };
     const fakeRes = {
       status(code: number) { captured.status = code; return fakeRes; },
@@ -1084,11 +1297,11 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       headers: {},
       body: {
         topicId, text: sessionText, messageId: 2 ** 52 + crypto.randomInt(0, 2 ** 47), timestamp: new Date(t).toISOString(),
-        fromUserId: ownerId, fromFirstName: ownerName, forwarded: false,
+        ...(sender.role === 'owner' ? { fromUserId: ownerId } : {}), fromFirstName: senderName, forwarded: false,
       },
     };
     try {
-      await ingest(fakeReq, fakeRes, { deviceId: p.deviceId, eventId });
+      await ingest(fakeReq, fakeRes, { deviceId: p.deviceId, eventId, sender: senderTrust });
     } catch (err) {
       delivery('unknown');
       store.markUnknown(p.deviceId, requestId);
@@ -1127,9 +1340,9 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       // as "[credential hidden]", even when the operator sent them as written (§4.9).
       const mirrorText = svc.nativeOn ? hideCredentialSpans(delivered) : text;
       if (app && stored.length > 0) {
-        await mirrorMediaToTelegram(tg as unknown as TelegramMediaMirrorTarget, topicId, ownerName, stored, mirrorText, (sha) => app.media.locateBlob(sha));
+        await mirrorMediaToTelegram(tg as unknown as TelegramMediaMirrorTarget, topicId, senderName, stored, mirrorText, (sha) => app.media.locateBlob(sha));
       } else {
-        await tg.sendToTopic(topicId, `📱 ${ownerName} (from the app): ${mirrorText}`, { silent: true, skipStallClear: true, operatorMirror: true });
+        await tg.sendToTopic(topicId, `📱 ${senderName} (from the app): ${mirrorText}`, { silent: true, skipStallClear: true, operatorMirror: true });
       }
       mirrored = true;
     } catch (err) {
@@ -1154,10 +1367,21 @@ function principalOf(req: Request): Principal {
   return ((req as unknown as { instarPrincipal?: Principal }).instarPrincipal) ?? { kind: 'token' };
 }
 
-function publicDeviceView(d: DeviceRecord, machine: string | null): Record<string, unknown> {
+/** `{ name, role }` for a resolved person; `{ role, unassigned: true }` for a removed one. */
+function personView(p: DevicePerson): Record<string, unknown> {
+  return p.ok ? { name: p.name, role: p.role } : { role: p.role, unassigned: true };
+}
+
+/** The person fields of a device row (people and roles §3.2). */
+function personFields(d: DeviceRecord, svc: MobilePairingService): Record<string, unknown> {
+  const p = svc.personOfDevice(d);
+  return { role: p.role, personName: p.ok ? p.name : null, ...(p.ok ? {} : { unassigned: true }) };
+}
+
+function publicDeviceView(d: DeviceRecord, machine: string | null, svc?: MobilePairingService): Record<string, unknown> {
   const showFingerprint = d.status === 'active' || d.status === 'revoked';
   return {
-    id: d.id, deviceName: d.deviceName, label: d.label, pairedAt: d.pairedAt, status: d.status,
+    id: d.id, deviceName: d.deviceName, label: d.label, pairedAt: d.pairedAt, status: d.status, ...(svc ? personFields(d, svc) : {}),
     ...(showFingerprint && d.fingerprint ? { fingerprint: d.fingerprint } : {}),
     ...(d.approvedAt ? { approvedAt: d.approvedAt } : {}), ...(d.revokedAt ? { revokedAt: d.revokedAt } : {}),
     machine,
@@ -1191,7 +1415,10 @@ const UUID = APP_CONVERSATION_KEY_PATTERN;
 // `body`: the request body this rule accepts ('json' when absent, as for every older rule, which
 // also allows no body). `ownBucket`: requests per minute in the rule's own bucket instead of the
 // shared read allowance (media chunks, mobile-native-chat-media §4.10).
-const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySet<DeviceStatus>; sendRoute?: boolean; body?: 'json' | 'octet' | 'none'; ownBucket?: number }> = (() => {
+// `unassignedOk`: the route answers a phone whose person is no longer in the registry (people and
+// roles §3.4): only its own status, confirm and self-revoke. `conversationRef`: the route names a
+// conversation, so it must call the shared `mayUse` check (the coverage test reads this flag).
+export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySet<DeviceStatus>; sendRoute?: boolean; body?: 'json' | 'octet' | 'none'; ownBucket?: number; unassignedOk?: boolean; conversationRef?: boolean }> = (() => {
   const active: ReadonlySet<DeviceStatus> = new Set(['active']);
   return [
     { method: 'GET', re: /^\/health$/, statuses: active },
@@ -1203,32 +1430,35 @@ const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySe
     { method: 'GET', re: /^\/telegram\/topics\/[^/]+\/messages$/, statuses: active },
     { method: 'GET', re: /^\/mobile\/devices$/, statuses: active },
     { method: 'GET', re: /^\/mobile\/routes$/, statuses: active },
-    { method: 'GET', re: /^\/mobile\/device$/, statuses: new Set(['pending', 'active', 'declined', 'expired']) },
-    { method: 'POST', re: /^\/mobile\/device\/confirm$/, statuses: new Set(['pending', 'active']) },
+    { method: 'GET', re: /^\/mobile\/device$/, statuses: new Set(['pending', 'active', 'declined', 'expired']), unassignedOk: true },
+    { method: 'POST', re: /^\/mobile\/device\/confirm$/, statuses: new Set(['pending', 'active']), unassignedOk: true },
     // Every POST, PATCH and DELETE below is idempotent through MobileChatRequestStore (requestId).
     { method: 'POST', re: /^\/mobile\/chat\/\d+$/, statuses: active, sendRoute: true },
     // Native app conversations (mobile-native-conversations §4.10), strict lowercase UUIDs.
-    { method: 'GET', re: /^\/mobile\/conversations$/, statuses: active },
+    { method: 'GET', re: /^\/mobile\/conversations$/, statuses: active, conversationRef: true },
     { method: 'POST', re: /^\/mobile\/conversations$/, statuses: active },
-    { method: 'PATCH', re: new RegExp(`^/mobile/conversations/${UUID}$`), statuses: active },
-    { method: 'DELETE', re: new RegExp(`^/mobile/conversations/${UUID}$`), statuses: active },
-    { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}$`), statuses: active, sendRoute: true },
-    { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/messages$`), statuses: active },
-    { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/events$`), statuses: active },
+    { method: 'PATCH', re: new RegExp(`^/mobile/conversations/${UUID}$`), statuses: active, conversationRef: true },
+    { method: 'DELETE', re: new RegExp(`^/mobile/conversations/${UUID}$`), statuses: active, conversationRef: true },
+    { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}$`), statuses: active, sendRoute: true, conversationRef: true },
+    { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/messages$`), statuses: active, conversationRef: true },
+    { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/events$`), statuses: active, conversationRef: true },
     // Slack conversations from the app (§4.9): the machine-local negative durable id.
-    { method: 'POST', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}$/, statuses: active, sendRoute: true },
-    { method: 'GET', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/messages$/, statuses: active },
+    { method: 'POST', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}$/, statuses: active, sendRoute: true, conversationRef: true },
+    { method: 'GET', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/messages$/, statuses: active, conversationRef: true },
     // Reply notification preview (chat-media §4.11); the read token opens it too (NOTIFY_TOKEN_PATHS).
-    { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/preview/[a-z0-9._:-]{1,128}$`), statuses: active },
+    { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/preview/[a-z0-9._:-]{1,128}$`), statuses: active, conversationRef: true },
     { method: 'POST', re: /^\/mobile\/device\/push$/, statuses: active },
+    // People and roles §3.5: the owner's grant switches (owner phones only, checked in the route).
+    { method: 'GET', re: /^\/mobile\/people$/, statuses: active },
+    { method: 'POST', re: /^\/mobile\/people\/[^/]{1,128}\/grants$/, statuses: active },
     { method: 'GET', re: /^\/mobile\/attention\/[^/]+$/, statuses: active },
     // Media in app conversations (mobile-native-chat-media §4.10).
-    { method: 'POST', re: /^\/mobile\/media\/uploads$/, statuses: active, body: 'json' },
+    { method: 'POST', re: /^\/mobile\/media\/uploads$/, statuses: active, body: 'json', conversationRef: true },
     { method: 'PUT', re: new RegExp(`^/mobile/media/uploads/${UUID}/chunks/(0|[1-9][0-9]{0,5})$`), statuses: active, body: 'octet', ownBucket: 240 },
     { method: 'GET', re: new RegExp(`^/mobile/media/uploads/${UUID}$`), statuses: active, body: 'none' },
-    { method: 'GET', re: /^\/mobile\/media\/[0-9a-f]{64}$/, statuses: active, body: 'none' },
-    { method: 'POST', re: /^\/mobile\/media\/purge$/, statuses: active, body: 'json' },
-    { method: 'POST', re: /^\/mobile\/devices\/[^/]+\/revoke$/, statuses: new Set(['pending', 'active', 'declined', 'expired']) },
+    { method: 'GET', re: /^\/mobile\/media\/[0-9a-f]{64}$/, statuses: active, body: 'none', conversationRef: true },
+    { method: 'POST', re: /^\/mobile\/media\/purge$/, statuses: active, body: 'json', conversationRef: true },
+    { method: 'POST', re: /^\/mobile\/devices\/[^/]+\/revoke$/, statuses: new Set(['pending', 'active', 'declined', 'expired']), unassignedOk: true },
   ];
 })();
 
@@ -1260,7 +1490,10 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       const stored = d?.notifyTokenHash ? Buffer.from(d.notifyTokenHash, 'hex') : null;
       if (!d || d.status !== 'active' || !stored || stored.length !== h.length || !crypto.timingSafeEqual(stored, h)) return refuse(401, 'device-unauthorized');
       if (!svc.deviceRateOk(d.id)) return refuse(429, 'too-many-requests');
+      const np = svc.personOfDevice(d);
+      if (!np.ok) return refuse(403, 'person-unknown');
       (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device-notify', deviceId: d.id };
+      (req as unknown as { instarDevicePerson: ResolvedPerson }).instarDevicePerson = np;
       return 'ok';
     }
     const rule = DEVICE_ALLOWLIST.find((r) => r.method === req.method && r.re.test(pathNorm));
@@ -1300,6 +1533,16 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     if (rule.ownBucket !== undefined) {
       if (!svc.deviceBucketOk(v.deviceId, rule.ownBucket)) return refuse(429, 'too-many-requests');
     } else if (!(rule.sendRoute && svc.nativeOn) && !svc.deviceRateOk(v.deviceId)) return refuse(429, 'too-many-requests');
+    // People and roles (spec §3.4): the phone's person, resolved once per request. A phone whose
+    // person is no longer in the registry is refused everywhere except its own status, confirm and
+    // self-revoke — never downgraded to the owner.
+    const rec = svc.devices.get(v.deviceId);
+    const person = rec ? svc.personOfDevice(rec) : null;
+    if (!person || !person.ok) {
+      if (!rule.unassignedOk) return refuse(403, 'person-unknown');
+    } else {
+      (req as unknown as { instarDevicePerson: ResolvedPerson }).instarDevicePerson = person;
+    }
     (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device', deviceId: v.deviceId };
     // The moment the device signature was accepted: the signed records' `receivedAt` (§4.6).
     (req as unknown as { instarDeviceAdmittedAt: number }).instarDeviceAdmittedAt = Date.now();
@@ -1308,6 +1551,29 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     (req as unknown as { instarDeviceHost: string }).instarDeviceHost = host ?? svc.devices.get(v.deviceId)?.host ?? '';
     return 'ok';
   };
+}
+
+/** The person of the phone that signed this request (people and roles §3.4), or null. */
+export function devicePersonOf(req: Request): ResolvedPerson | null {
+  const p = (req as unknown as { instarDevicePerson?: ResolvedPerson }).instarDevicePerson;
+  return p && p.ok ? p : null;
+}
+
+/**
+ * The shared conversation check for a device-signed (or notify-token) request: a bearer request
+ * (no device person) may use everything, as before. Spec §3.4.
+ */
+export function deviceMayUse(svc: MobilePairingService, req: Request, ref: string): boolean {
+  if (principalOf(req).kind === 'token') return true;
+  const p = devicePersonOf(req);
+  return p !== null && svc.mayUse(p, ref);
+}
+
+/** Is this request from an MSP phone? (bearer and owner phones: false) */
+export function isMspRequest(req: Request): boolean {
+  if (principalOf(req).kind === 'token') return false;
+  const p = devicePersonOf(req);
+  return p === null || p.role !== 'owner';
 }
 
 /** The Host this request's device signature was verified against, or null. */

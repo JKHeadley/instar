@@ -12,6 +12,13 @@
 
 import { renderGlance } from './glance.js';
 
+/** Whose phone (people and roles): " — Justin (MSP)", " — Ann (owner)", or a removed person. */
+function personText(d) {
+  if (d.unassigned) return ' — no longer assigned to anyone';
+  if (!d.personName) return '';
+  return ` — ${d.personName}${d.role === 'msp' ? ' (MSP)' : ' (owner)'}`;
+}
+
 /**
  * The glance (F10/F11): one plain headline and two tiles. Fixed prose plus counts only — no
  * phone name or code reaches the front layer; those live behind the tiles.
@@ -77,7 +84,7 @@ export function mountPhonesPanel(root, { request, unlock, now = () => Date.now()
     if (!list.length) { make('p', 'No phone is waiting. Ask me for a pairing link, open it on the phone, and its code appears here.', approvals); return; }
     for (const a of list) {
       const card = make('div', undefined, approvals); card.className = 'phone-approval';
-      make('p', `${a.deviceName || 'A phone'}${a.label ? ` (${a.label})` : ''} is waiting · ${minutesLeft(a.expiresAt, now())}`, card);
+      make('p', `${a.deviceName || 'A phone'}${a.label ? ` (${a.label})` : ''}${personText(a)} is waiting · ${minutesLeft(a.expiresAt, now())}`, card);
       if (a.fingerprint) make('p', `Phone key: ${a.fingerprint}. The app shows the same key; check they match.`, card);
       const code = make('p', prettyCode(a.code), card); code.className = 'phone-code'; code.setAttribute('aria-label', 'Confirmation code');
       make('p', 'Type this code into the Instar app on that phone. Never send it to anyone, including me.', card);
@@ -101,7 +108,7 @@ export function mountPhonesPanel(root, { request, unlock, now = () => Date.now()
     if (!shown.length) { make('p', 'No phones are paired with this machine.', devices); return; }
     for (const d of shown) {
       const row = make('div', undefined, devices); row.className = 'phone-row';
-      make('p', `${d.deviceName || 'Unnamed phone'} · ${STATUS[d.status] || d.status}${d.approvedAt ? ` since ${new Date(d.approvedAt).toLocaleDateString()}` : ''}`, row);
+      make('p', `${d.deviceName || 'Unnamed phone'}${personText(d)} · ${STATUS[d.status] || d.status}${d.approvedAt ? ` since ${new Date(d.approvedAt).toLocaleDateString()}` : ''}`, row);
       if (d.status === 'active') {
         const revoke = make('button', 'Remove this phone', row);
         revoke.onclick = async () => {
