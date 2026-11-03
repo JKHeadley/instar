@@ -18,7 +18,7 @@ import { DrainRehearsal, setActiveDrainRehearsal } from '../../src/monitoring/ma
 import { HostMaintenanceStore } from '../../src/monitoring/machineMaintenance/HostMaintenanceStore.js';
 import { normalizeSettings } from '../../src/monitoring/machineMaintenance/planner.js';
 import { makeReadOnlyRunner, parseHidIdleMs, readMachineSignals } from '../../src/monitoring/machineMaintenance/readings.js';
-import { MACHINE_BROWSER_CARE_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_CLAUDEMD_SECTION, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { MACHINE_BROWSER_CARE_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_POOL_CLAUDEMD_SECTION, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { BrowserCareSweep, DOWNLOAD_FRESH_MS, normalizeBrowserCare, parseChromeProcesses, setActiveBrowserCare } from '../../src/monitoring/machineMaintenance/BrowserCare.js';
 import { makeDownloadCheck } from '../../src/core/BrowserCareProbes.js';
 import { MachineLockStateReader, setActiveMachineLockStateReader } from '../../src/core/MachineLockStateReader.js';
@@ -120,7 +120,9 @@ describe('machine maintenance lifecycle', () => {
     expect(r1.upgraded).toContain('CLAUDE.md: added browser care and lock reading section');
     expect(r2.upgraded).not.toContain('CLAUDE.md: added browser care and lock reading section');
     const md = fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8');
-    expect(md.split('/machine-maintenance/lock-state').length - 1).toBe(MACHINE_BROWSER_CARE_CLAUDEMD_SECTION(4321).split('/machine-maintenance/lock-state').length - 1);
+    // The browser care section lands once; the pool view section (added by the same migration) names the pool lock read too.
+    const count = (t: string) => t.split('/machine-maintenance/lock-state').length - 1;
+    expect(count(md)).toBe(count(MACHINE_BROWSER_CARE_CLAUDEMD_SECTION(4321)) + count(MACHINE_MAINTENANCE_POOL_CLAUDEMD_SECTION(4321)));
     expect(generateClaudeMd('p', 'a', 4042, false)).toContain('chrome-close.sh');
   });
 });
