@@ -418,6 +418,8 @@ describe('standards-coverage ratchet script', () => {
       '  standards-coverage:',
       '    name: Standards Enforcement Coverage',
       '    runs-on: ubuntu-latest',
+      // Pinned as of 2026-11-02 (ACT-059): every CI job declares timeout-minutes.
+      '    timeout-minutes: 15',
       // Pinned as of 2026-08-23: path B's token scope is declared, not inherited.
       '    permissions:',
       '      contents: read',
@@ -532,6 +534,17 @@ describe('standards-coverage ratchet script', () => {
     const reviewEventUnhandled = runFullCheck();
     expect(reviewEventUnhandled.code).toBe(1);
     expect(reviewEventUnhandled.out).toContain('requires dependency install plus full-history protected-base extraction');
+
+    // The job's timeout is pinned too (ACT-059): without one a hung run holds a PR
+    // for GitHub's 6-hour default.
+    write('.github/workflows/ci.yml', validWorkflow.replace('    timeout-minutes: 15\n', ''));
+    const untimed = runFullCheck();
+    expect(untimed.code).toBe(1);
+    expect(untimed.out).toContain('requires the standards-coverage CI job to invoke');
+    write('.github/workflows/ci.yml', validWorkflow.replace('    timeout-minutes: 15\n', '    timeout-minutes: 360\n'));
+    const sixHours = runFullCheck();
+    expect(sixHours.code).toBe(1);
+    expect(sixHours.out).toContain('requires the standards-coverage CI job to invoke');
 
     // And the token scope is pinned, not inherited: dropping the permissions block
     // returns the job to the repository default, which a tightened org policy can

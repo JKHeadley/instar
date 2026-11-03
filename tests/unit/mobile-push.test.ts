@@ -225,9 +225,10 @@ describe('MobilePushService — app conversation replies', () => {
     svc.onAppReply(KEY_A, 'msg-1');
     await new Promise((r) => setTimeout(r, 20));
     expect(c.sent).toHaveLength(1);
-    expect((c.sent[0]!.body as any).instar).toMatchObject({ kind: 'reply', conversationKey: KEY_A });
-    expect(JSON.stringify(c.sent[0]!.body)).not.toContain('msg-1');
-    expect(fanned).toEqual([{ kind: 'reply', conversationKey: KEY_A, dedupeKey: 'app-reply:msg-1', sourceMachine: 'm1' }]);
+    // The message id lets the phone fetch the preview from the agent (chat-media §4.11); the text never goes to Apple.
+    expect((c.sent[0]!.body as any).instar).toMatchObject({ kind: 'reply', conversationKey: KEY_A, messageId: 'msg-1', machine: 'm1' });
+    expect((c.sent[0]!.body as any).aps.alert.body).toBe('New reply');
+    expect(fanned).toEqual([{ kind: 'reply', conversationKey: KEY_A, messageId: 'msg-1', dedupeKey: 'app-reply:msg-1', sourceMachine: 'm1' }]);
     // The same reply's trigger arriving again (a peer echo) is deduped; a new reply folds.
     expect(await svc.receive({ kind: 'reply', conversationKey: KEY_A, dedupeKey: 'app-reply:msg-1', sourceMachine: 'm2' }, true)).toBe('deduped');
     c.clock.t += 10_000;

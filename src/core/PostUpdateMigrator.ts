@@ -1289,6 +1289,22 @@ export function MACHINE_BROWSER_CARE_CLAUDEMD_SECTION(port: number | string): st
 `;
 }
 
+/**
+ * The machine self-maintenance pool view (CMT-1199), one definition for fresh agents and updated
+ * ones. Read-only: it reports every machine's watch-only state and grants nothing.
+ * Sniff key: `/machine-maintenance?scope=pool`.
+ */
+export function MACHINE_MAINTENANCE_POOL_CLAUDEMD_SECTION(port: number | string): string {
+  return `
+### Restart care on every machine (read-only)
+
+- One call from any machine shows every online machine's watch-only maintenance state, each tagged with its \`machineId\` and \`machineNickname\`: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/machine-maintenance?scope=pool"\` (and \`/machine-maintenance/lock-state?scope=pool\` for every machine's lock reading) → \`{ machines: [{ machineId, machineNickname, self, state }], pool: { failed, peersQueried, peersOk, stale } }\`.
+- A machine that could not be read is in \`pool.failed\` with a reason: \`offline\`, \`not-enabled\` (dark there), \`route-missing\` (an older version), \`unauthorized\`, \`url-rejected\`, \`peer-unreachable\`, \`invalid-body\`, \`too-large\` or \`read-failed\`. A failed row means "can't tell", never "fine".
+- The view is read-only (\`authority: "none"\`, \`canRestart: false\`, \`canStopWork: false\`): nothing in it restarts, closes or approves anything.
+- **When to use** (PROACTIVE): the operator asks "which of my machines is overdue for a restart?" or "are any of my Macs locked?" → read the pool view and name each machine; never infer another machine's state from this one.
+`;
+}
+
 export function DUPLICATE_RECONCILER_CLAUDEMD_SECTION(port: number): string {
   return `\n### Duplicate-Session Prevention & Auto-Heal (⚗️ ownership-gated spawn — observe-only for now)
 
@@ -11746,6 +11762,15 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.skipped.push('CLAUDE.md: browser care and lock reading section already present');
     }
 
+    // Machine maintenance pool view (CMT-1199). Idempotent via content-sniffing on the pool route.
+    if (!content.includes('/machine-maintenance?scope=pool')) {
+      content += '\n' + MACHINE_MAINTENANCE_POOL_CLAUDEMD_SECTION(this.config.port ?? 4040);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added machine maintenance pool view section');
+    } else {
+      result.skipped.push('CLAUDE.md: machine maintenance pool view section already present');
+    }
+
     // Reap notices: a background job whose work completed normally no longer
     // posts to the lifeline (reap-notify spec R1.1, amended 2026-11-01). Patch the
     // already-installed sentence in place so the agent does not tell the user to
@@ -20511,6 +20536,10 @@ process.stdin.on('end', async () => {
     // printed a 409 telegram-origin-held as a plain failure, so a session
     // resent a message Telegram had already delivered (Echo Bugs 10000000967).
     '539bf9b3d8d76136bc5e9041c09e914cfcc8e463807a715775eae93f1ac702d3',
+    // Held-reply outcome version shipped before the queued-row origin digest.
+    // A reply queued while the server booted carried no session identity, so
+    // recovery sent it labelled "unknown · unknown · unknown".
+    '4b19226d06a99514cf53e92b0aa764705289002a0fd183990cbf4f5d827a4a8c',
   ]);
 
   /**

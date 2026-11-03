@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { createHash } from 'node:crypto';
 import { OriginSessionRegistry } from '../../../src/messaging/telegram-origin/OriginSessionRegistry.js';
 
 describe('OriginSessionRegistry scoped persistent verifiers', () => {
@@ -33,6 +34,28 @@ describe('OriginSessionRegistry scoped persistent verifiers', () => {
     await pending;
     const restarted = create(directory); await restarted.initialize();
     expect(restarted.verify(current).ok).toBe(false);
+  });
+  it('attributes a pre-restart credential digest to its live session for labelling only, never for authority', async () => {
+    let live = true;
+    const registry = create(directory, 'host', () => live); await registry.initialize();
+    const digestOf = (t: string) => createHash('sha256').update(t).digest('hex');
+    const first = await registry.issue(launch);
+    const second = await registry.issue(launch);
+    expect(registry.verify(first).ok).toBe(false);
+    expect(registry.attributeVerifier(digestOf(first))?.sessionId).toBe('session');
+    expect(registry.attributeVerifier(digestOf(second))?.sessionId).toBe('session');
+    const restarted = create(directory, 'host', () => live); await restarted.initialize();
+    expect(restarted.attributeVerifier(digestOf(first))?.sessionId).toBe('session');
+    // Bounded history: only the last four re-issues stay attributable.
+    for (let n = 0; n < 4; n++) await registry.issue(launch);
+    expect(registry.attributeVerifier(digestOf(first))).toBeUndefined();
+    expect(registry.attributeVerifier('f'.repeat(64))).toBeUndefined();
+    expect(registry.attributeVerifier('not-a-digest')).toBeUndefined();
+    live = false;
+    expect(registry.attributeVerifier(digestOf(second))).toBeUndefined();
+    live = true;
+    await registry.revoke(launch.sessionId);
+    expect(registry.attributeVerifier(digestOf(second))).toBeUndefined();
   });
   it('rejects wrong host, missing lifecycle authority, ended sessions and arbitrary bearer tokens', async () => {
     const registry = create(directory); await registry.initialize();

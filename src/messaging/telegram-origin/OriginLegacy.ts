@@ -1,10 +1,21 @@
 import type { PendingRelayRow } from '../pending-relay-store.js';
 import { originDigest } from './CanonicalOrigin.js';
+import type { OriginEvidence, TelegramOriginRecord } from './types.js';
+
+/** What the importing machine can truthfully claim about a queued row's author. */
+export interface OriginLegacyAttribution {
+  machine: OriginEvidence;
+  session: { sessionId: string; sessionIncarnation: string; turnId: string | null; harnessId: string; harnessName: string;
+    harness: OriginEvidence; model: OriginEvidence } | null;
+}
 
 export interface OriginLegacySnapshot {
   deliveryId: string; topicId: number; text: string; format: string | null;
   preparedAt: number; attempts: number; nextAttemptAt: string | null;
   state: string; snapshotDigest: string; replaySafe: boolean;
+  /** SHA-256 hex of the queuing session's origin credential, when the reply
+   * script recorded one. Attribution input only; never authority. */
+  originSessionDigest: string | null;
 }
 /** Old queue rows do not prove their author or transport phase. Only a complete
  * history of explicit pre-dispatch HTTP refusals permits automatic recovery. */
@@ -32,7 +43,9 @@ export function snapshotLegacyOrigin(row: PendingRelayRow): OriginLegacySnapshot
     (attempts === 0 || ((refused(row.http_code) || preDispatchRefused) && history.length === attempts && history.every(refusedAt)));
   return { deliveryId: row.delivery_id, topicId: row.topic_id, text, format: row.format,
     preparedAt, attempts, nextAttemptAt: row.next_attempt_at, state: row.state,
-    snapshotDigest: originDigest({ ...row, text: rawText.toString('base64') }), replaySafe };
+    snapshotDigest: originDigest({ ...row, text: rawText.toString('base64') }), replaySafe,
+    originSessionDigest: typeof row.origin_session_digest === 'string' && /^[a-f0-9]{64}$/.test(row.origin_session_digest)
+      ? row.origin_session_digest : null };
 }
 
 /** The exact body BootHealthBeacon sends for every non-health request. */
@@ -61,4 +74,18 @@ export function isPreDispatchRefusal(code: unknown, body: unknown): boolean {
   if (code === 500) return keys === 'error' && (value.error === 'origin-display-authority-unavailable'
     || /^issues-chat-not-configured: topic \d+ belongs to the issues group/.test(value.error));
   return keys === 'error,message,reason,retryable' && value.error === 'origin-config-unavailable' && value.retryable === true;
+}
+
+/** What an imported legacy record may claim about its author. The importer
+ * holds the queue row in its own local custody, so it may state its own
+ * machine. Harness and model are claimed only together with the session they
+ * were observed from (a queued credential digest that matched a live session);
+ * without a session they stay unknown. Shared by the attestation verifier and
+ * the store's import fence so the two can never disagree. */
+export function legacyAttributionValid(record: Pick<TelegramOriginRecord, 'sessionId' | 'machine' | 'harness' | 'model'>): boolean {
+  const ok = (status: string) => status === 'unknown' || status === 'observed' || status === 'configured';
+  if (record.machine.status !== 'unknown' && record.machine.status !== 'observed') return false;
+  if (!ok(record.harness.status) || !ok(record.model.status)) return false;
+  if (record.sessionId === null && (record.harness.status !== 'unknown' || record.model.status !== 'unknown')) return false;
+  return true;
 }

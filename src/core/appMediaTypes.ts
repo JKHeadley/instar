@@ -179,6 +179,24 @@ export function historyLine(a: AppAttachment): string {
 }
 
 /** The conversation list's preview of a media message. */
+/** Longest caption or reply text a push preview carries (chat-media spec §4.11). */
+export const PUSH_PREVIEW_CHARS = 100;
+
+/**
+ * The body of a reply notification (chat-media spec §4.11): the reply's first 100 characters,
+ * or a fixed phrase for files followed by the caption's first 100 characters.
+ */
+export function pushPreviewBody(attachments: ReadonlyArray<AppAttachment>, text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  const clip = flat.length > PUSH_PREVIEW_CHARS ? `${flat.slice(0, PUSH_PREVIEW_CHARS - 1)}…` : flat;
+  if (attachments.length === 0) return clip || 'New reply';
+  const first = attachments[0]!;
+  const label = attachments.length > 1 ? `sent ${attachments.length} files`
+    : first.kind === 'photo' ? 'sent a photo' : first.kind === 'video' ? 'sent a video'
+      : first.kind === 'voice' ? 'sent a voice message' : `sent a file: ${displayName(first.filename)}`;
+  return clip ? `${label}: ${clip}` : label;
+}
+
 export function mediaPreview(attachments: ReadonlyArray<AppAttachment>, text: string): string {
   const caption = text.replace(/\s+/g, ' ').trim();
   const first = attachments[0];

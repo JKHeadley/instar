@@ -807,6 +807,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       kind, dedupeKey, sourceMachine,
       ...(kind === 'item' && typeof b.itemId === 'string' ? { itemId: b.itemId.slice(0, 120) } : {}),
       ...(conversationKey ? { conversationKey } : {}),
+      ...(conversationKey && typeof b.messageId === 'string' && /^[a-z0-9._:-]{1,128}$/.test(b.messageId) ? { messageId: b.messageId } : {}),
       ...(typeof b.priority === 'string' ? { priority: b.priority.slice(0, 20) } : {}),
     };
     res.status(202).json({ accepted: true });
@@ -1077,6 +1078,8 @@ const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySe
     // Slack conversations from the app (§4.9): the machine-local negative durable id.
     { method: 'POST', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}$/, statuses: active, sendRoute: true },
     { method: 'GET', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/messages$/, statuses: active },
+    // Reply notification preview (chat-media §4.11); the read token opens it too (NOTIFY_TOKEN_PATHS).
+    { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/preview/[a-z0-9._:-]{1,128}$`), statuses: active },
     { method: 'POST', re: /^\/mobile\/device\/push$/, statuses: active },
     { method: 'GET', re: /^\/mobile\/attention\/[^/]+$/, statuses: active },
     // Media in app conversations (mobile-native-chat-media §4.10).
@@ -1094,6 +1097,12 @@ const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySe
  * headers (bearer rules apply), 'ok' after setting req.instarPrincipal, or 'refused' after
  * answering the request.
  */
+/** The only paths the notification read token opens (lower-cased, no trailing slash). */
+const NOTIFY_TOKEN_PATHS: ReadonlyArray<RegExp> = [
+  /^\/mobile\/attention\/[^/]+$/,
+  new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/preview/[a-z0-9._:-]{1,128}$`),
+];
+
 export function deviceAuthenticator(svc: MobilePairingService) {
   return (req: Request, res: Response): 'none' | 'ok' | 'refused' => {
     const id = req.headers['x-instar-device'];
@@ -1101,10 +1110,11 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     if (!svc.enabled()) return 'none'; // gate off: device headers authenticate nothing
     const refuse = (status: number, error: string): 'refused' => { res.status(status).json({ error }); return 'refused'; };
     const pathNorm = req.path.toLowerCase().replace(/\/+$/, '') || '/';
-    // Notification read token (mobile-push §2.2): exactly GET /mobile/attention/<id>, no signature.
+    // Notification read token (mobile-push §2.2): exactly GET /mobile/attention/<id> or a reply
+    // preview (chat-media §4.11), no signature.
     const notifyToken = req.headers['x-instar-notify-token'];
     if (notifyToken !== undefined) {
-      if (req.method !== 'GET' || !/^\/mobile\/attention\/[^/]+$/.test(pathNorm) || req.headers['x-instar-device-sig'] !== undefined || typeof notifyToken !== 'string' || typeof id !== 'string') return refuse(403, 'notify-token-not-allowed');
+      if (req.method !== 'GET' || !NOTIFY_TOKEN_PATHS.some((re) => re.test(pathNorm)) || req.headers['x-instar-device-sig'] !== undefined || typeof notifyToken !== 'string' || typeof id !== 'string') return refuse(403, 'notify-token-not-allowed');
       const d = svc.devices.get(id);
       const h = crypto.createHash('sha256').update(notifyToken).digest();
       const stored = d?.notifyTokenHash ? Buffer.from(d.notifyTokenHash, 'hex') : null;
@@ -1153,8 +1163,17 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device', deviceId: v.deviceId };
     // The moment the device signature was accepted: the signed records' `receivedAt` (§4.6).
     (req as unknown as { instarDeviceAdmittedAt: number }).instarDeviceAdmittedAt = Date.now();
+    // The Host the signature was checked against (multi-route: one of this machine's own names;
+    // otherwise the paired host). Signed records store THIS host, never the paired one.
+    (req as unknown as { instarDeviceHost: string }).instarDeviceHost = host ?? svc.devices.get(v.deviceId)?.host ?? '';
     return 'ok';
   };
+}
+
+/** The Host this request's device signature was verified against, or null. */
+export function deviceAdmittedHost(req: Request): string | null {
+  const h = (req as unknown as { instarDeviceHost?: unknown }).instarDeviceHost;
+  return typeof h === 'string' && h.length > 0 ? h : null;
 }
 
 /** When the device authenticator accepted this request's signature (ms), or null. */

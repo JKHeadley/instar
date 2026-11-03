@@ -82,6 +82,11 @@ export interface PendingRelayRow {
   message_metadata: string | null;
   /** Disjoint execution lane; legacy redrive must never claim origin children. */
   entry_kind?: 'legacy' | 'telegram-origin' | 'telegram-origin-notice';
+  /** SHA-256 hex of the session origin credential the reply script held when
+   *  it queued this row (never the credential itself). Lets the origin import
+   *  label a boot-time queued reply with its real session. Null on rows from
+   *  older scripts and from server-side writers. */
+  origin_session_digest?: string | null;
 }
 
 export interface EnqueueInput {
@@ -103,6 +108,9 @@ export interface EnqueueInput {
    * rolled-back binary keeps honoring holds. No schema change.
    */
   next_attempt_at?: string | null;
+  /** SHA-256 hex of the queuing session's origin credential (mirrors the
+   *  reply script's writer). Attribution input for the origin import only. */
+  origin_session_digest?: string | null;
 }
 
 // ── Schema ────────────────────────────────────────────────────────────
@@ -146,6 +154,9 @@ const COLUMN_ADDS: Array<{ name: string; ddl: string }> = [
   { name: 'origin_child_id', ddl: 'ALTER TABLE entries ADD COLUMN origin_child_id TEXT' },
   { name: 'owner_boot_id', ddl: 'ALTER TABLE entries ADD COLUMN owner_boot_id TEXT' },
   { name: 'lease_until', ddl: 'ALTER TABLE entries ADD COLUMN lease_until INTEGER' },
+  // Written only by telegram-reply.sh's two queue writers (which add it with
+  // the same idempotent ALTER); read by the origin legacy import.
+  { name: 'origin_session_digest', ddl: 'ALTER TABLE entries ADD COLUMN origin_session_digest TEXT' },
 ];
 
 // ── Path resolution ───────────────────────────────────────────────────
@@ -290,12 +301,14 @@ export class PendingRelayStore {
          delivery_id, topic_id, text_hash, text, format,
          http_code, error_body, attempted_port,
          attempted_at, attempts, next_attempt_at,
-         state, claimed_by, status_history, truncated, message_metadata
+         state, claimed_by, status_history, truncated, message_metadata,
+         origin_session_digest
        ) VALUES (
          @delivery_id, @topic_id, @text_hash, @text, @format,
          @http_code, @error_body, @attempted_port,
          @attempted_at, 1, @next_attempt_at,
-         'queued', NULL, @status_history, @truncated, @message_metadata
+         'queued', NULL, @status_history, @truncated, @message_metadata,
+         @origin_session_digest
        )`,
     );
     const result = stmt.run({
@@ -312,6 +325,7 @@ export class PendingRelayStore {
       status_history: initialHistory,
       truncated: input.truncated ? 1 : 0,
       message_metadata: input.message_metadata ?? null,
+      origin_session_digest: input.origin_session_digest ?? null,
     });
     return result.changes === 1;
   }

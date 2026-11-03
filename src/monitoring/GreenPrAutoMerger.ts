@@ -27,6 +27,7 @@ import {
   holdReasonOf,
   agentOwnership,
   stuckRedChecks,
+  isStackedPr,
   debounceHoldRelease,
   applyOutcome,
   maybeRearm,
@@ -1461,7 +1462,10 @@ export class GreenPrAutoMerger extends EventEmitter {
     for (const pr of prs) {
       // Only my own PRs (namespace or same-repo author — merge-line-author-eligibility).
       if (!this.ownership(pr).owned) continue;
-      const stuck = stuckRedChecks(pr, now, thresholdMs);
+      // A stacked PR (base is a feature branch) is red BY DESIGN — the
+      // stacked-pr-guard check says "retarget to main" (ACT-053) and no suite
+      // runs for it — so it is not "stuck". Judged again once retargeted.
+      const stuck = isStackedPr(pr) ? [] : stuckRedChecks(pr, now, thresholdMs);
       if (stuck.length === 0) {
         // Green / recovered / not-yet-stuck → clear any prior raise.
         if (raised[pr.number]) {
