@@ -58,14 +58,15 @@ function setup() {
   services.push(svc);
   mountPublicMobilePairingRoutes(app, svc);
   app.use(authMiddleware(() => config.authToken, 'echo', undefined, deviceAuthenticator(svc)));
-  app.use(createMobilePairingRouter(svc, deps));
-  app.get('/sessions', (_req, res) => { res.json([]); });
+  // Mounted before the pairing router (which owns this path in production).
   // A signed send's stored origin, built exactly as the app send routes build it (POST /mobile/chat/:topicId is allowlisted).
   app.post('/mobile/chat/:topicId', (req, res) => {
     const deviceId = (req as unknown as { instarPrincipal: { deviceId: string } }).instarPrincipal.deviceId;
     const receivedAt = new Date().toISOString();
     res.json({ ...buildSignedOrigin(req, svc, deviceId, String((req.body as { text?: string }).text ?? '').trim(), [], signer, receivedAt), receivedAt });
   });
+  app.use(createMobilePairingRouter(svc, deps));
+  app.get('/sessions', (_req, res) => { res.json([]); });
   return { app, svc, dms };
 }
 
