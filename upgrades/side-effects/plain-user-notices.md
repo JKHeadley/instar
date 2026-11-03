@@ -22,7 +22,7 @@ Choice of rewrites was measured, not guessed: automation-provenance rows in Echo
 
 - `isSystemOrProxyMessage` — modify — reads the catalog's exact texts and prefixes instead of its own literals; old wordings kept.
 - Post-respawn notice — modify — suppressed only for the two callers that announced the restart first (`quietAfterRespawn`).
-- Build gate — add — `lint-plain-user-notices` (dev-time ratchet, no runtime authority).
+- Build gate — add — `lint-plain-user-notices` (dev-time ratchet, no runtime authority), registered in `REQUIRED_LINTS` (`tests/unit/lint-chain-completeness.test.ts`) so a merge cannot drop it.
 
 **unbounded-self-action: n/a.** No self-triggered action is added or changed. Every respawn and notify call site keeps its trigger; the change rewords existing notices and suppresses one post-respawn notice for two callers.
 
