@@ -22,7 +22,7 @@ import {
   writeInstallProgress,
   type InstallProgress,
 } from '../../src/commands/install/progress.js';
-import { looksLikeClaudeToken, writeClaudeToken, answersFileProblem, buildInstallHandlers, sqliteInstallCommand, tailscaleOperatorCommand, ensureViewingPin, finishAgentConfig, INSTALL_EXIT_CODES, installInitOptions, reportedStatus, tmuxInstallCommand, type InstallEnv, MIN_FREE_BYTES, preflightRefusal, presetFromAnswers } from '../../src/commands/install.js';
+import { gitWorks, restrictToOwner, looksLikeClaudeToken, writeClaudeToken, answersFileProblem, buildInstallHandlers, sqliteInstallCommand, tailscaleOperatorCommand, ensureViewingPin, finishAgentConfig, INSTALL_EXIT_CODES, installInitOptions, reportedStatus, tmuxInstallCommand, type InstallEnv, MIN_FREE_BYTES, preflightRefusal, presetFromAnswers } from '../../src/commands/install.js';
 
 const ALL_ACTIONS: WizardActionKind[] = [
   'install-preflight', 'install-tools', 'install-tailscale-operator', 'door-install', 'door-sign-in', 'agent-init',
@@ -544,5 +544,25 @@ describe('server sign-in token reaches the agent', () => {
     } finally {
       process.env.HOME = realHome;
     }
+  });
+});
+
+describe('git check', () => {
+  // It once asked SafeGitExecutor for `--version`, which it refuses, so it read false on every
+  // machine and no install got past the tools step. The test machine has git.
+  it('finds the git this machine has', () => {
+    expect(gitWorks()).toBe(true);
+  });
+});
+
+describe('agent config privacy', () => {
+  it('leaves the agent config readable only by its owner', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'install-mode-'));
+    const file = path.join(dir, 'config.json');
+    fs.writeFileSync(file, '{}', { mode: 0o664 });
+    fs.chmodSync(file, 0o664);
+    restrictToOwner(file);
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(() => restrictToOwner(path.join(dir, 'missing.json'))).not.toThrow();
   });
 });

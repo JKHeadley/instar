@@ -106,6 +106,29 @@ describe('detectFrameworkBinary', () => {
     }
   });
 
+  it('finds a binary in ~/.local/bin even when that folder is not on PATH', async () => {
+    // Claude Code's native installer and `instar install` (non-writable npm prefix) both put
+    // the binary here; a login shell adds it to PATH only if it existed at login.
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'local-bin-home-test-'));
+    const prevHome = process.env.HOME;
+    try {
+      const binDir = path.join(tmpHome, '.local', 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const bin = path.join(binDir, 'plandex');
+      fs.writeFileSync(bin, '#!/bin/sh\necho stub\n', { mode: 0o755 });
+      process.env.HOME = tmpHome;
+      _resetFrameworkBinaryCache();
+      expect(detectFrameworkBinary('plandex')).toBe(bin);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+      _resetFrameworkBinaryCache();
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
   it('source MUST search nvm version dirs (regression guard for bug #10)', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');

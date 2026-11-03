@@ -334,6 +334,7 @@ function detectFrameworkBinaryUncached(name: FrameworkBinary): string | null {
   candidates.push(`/usr/local/bin/${name}`);    // macOS Intel / Linux
   candidates.push(`/usr/bin/${name}`);           // Linux system
 
+
   // npm global bin (where `npm install -g <pkg>` lands).
   // MEMOIZED across every framework name (round-11 scalability): this
   // subprocess ran once PER framework probed, BEFORE the existsSync candidate
@@ -381,6 +382,12 @@ function detectFrameworkBinaryUncached(name: FrameworkBinary): string | null {
   // Honors ASDF_DATA_DIR, else the default ~/.asdf.
   const asdfDataDir = process.env.ASDF_DATA_DIR || path.join(home, '.asdf');
   candidates.push(path.join(asdfDataDir, 'shims', name));
+
+  // The per-user bin, LAST, so an agent that already finds a copy anywhere else keeps using it (a Mac can hold both, with only the system one on PATH). Claude Code's own native
+  // installer puts `claude` here, and `instar install` puts an npm CLI here when the global npm
+  // folder isn't writable; a login shell adds it to PATH only if it existed at login, so a binary
+  // installed during this session would otherwise read as missing (fresh Ubuntu, 2026-11-03).
+  if (home) candidates.push(path.join(home, '.local', 'bin', name));
 
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) return candidate;
