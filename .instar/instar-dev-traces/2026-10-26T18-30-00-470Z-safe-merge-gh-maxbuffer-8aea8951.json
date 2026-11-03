@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "safe-merge-gh-maxbuffer",
+  "sessionId": "12adc2d4-2420-47cc-9f88-3b8be457bbd5",
+  "timestamp": "2026-10-26T18:30:00.470Z",
+  "artifactPath": "upgrades/side-effects/safe-merge-gh-maxbuffer.md",
+  "artifactSha256": "0c6fbbfa2c71063479db39607c197e8e54d5b977aaeb278892478e8ded3445a8",
+  "coveredFiles": [
+    "docs/specs/safe-merge-gh-maxbuffer.eli16.md",
+    "scripts/safe-merge.mjs",
+    "tests/unit/safe-merge-gh-buffer.test.ts",
+    "upgrades/next/safe-merge-gh-maxbuffer.md",
+    "upgrades/side-effects/safe-merge-gh-maxbuffer.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-line class fix to a CLI spawn option plus a test; fully undone by a revert; no new authority, state or user surface",
+  "eli16Path": "docs/specs/safe-merge-gh-maxbuffer.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/safe-merge-gh-maxbuffer.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

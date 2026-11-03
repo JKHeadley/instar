@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "safe-merge-gh-maxbuffer",
+  "sessionId": "94177e2d-85a2-4315-9510-e63211d04631",
+  "timestamp": "2026-10-27T00:50:33.857Z",
+  "artifactPath": "upgrades/side-effects/safe-merge-gh-maxbuffer.md",
+  "artifactSha256": "8d55be702f499228a070d6996fce18250fd9be4bd5f6e6af805187254a58be7e",
+  "coveredFiles": [
+    "docs/specs/safe-merge-gh-maxbuffer.eli16.md",
+    "scripts/safe-merge.mjs",
+    "tests/unit/safe-merge-code-owner-reviews.test.ts",
+    "upgrades/next/safe-merge-gh-maxbuffer.md",
+    "upgrades/side-effects/safe-merge-gh-maxbuffer.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fix to safe-merge's code-owner precheck plus tests; fully undone by a revert; no new state or user surface",
+  "eli16Path": "docs/specs/safe-merge-gh-maxbuffer.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/safe-merge-gh-maxbuffer.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
