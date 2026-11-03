@@ -1,4 +1,5 @@
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError } from './telegram-origin/types.js';
+import { consolePageUrl } from '../server/dashboardPaths.js';
 import { recordTelegramEditRejection, takeTelegramEditRejection } from './TelegramEditRejection.js';
 /**
  * Telegram Messaging Adapter — send/receive messages via Telegram Bot API.
@@ -2548,9 +2549,11 @@ export class TelegramAdapter implements MessagingAdapter {
 
   private formatDashboardMessage(url: string, pin: string | null, isNamed: boolean): string {
     const dashboardUrl = url + '/dashboard';
+    // /dashboard opens the console; the quick links go to its own pages (a `?tab=` link would
+    // open the legacy dashboard).
     const quickLinks = [
-      `Sessions: ${dashboardUrl}?tab=sessions`,
-      `Files: ${dashboardUrl}?tab=files`,
+      `Sessions: ${consolePageUrl(url, '#/work/sessions')}`,
+      `Files: ${consolePageUrl(url, '#/settings/files')}`,
     ];
 
     // A null PIN means the value could not be resolved. NEVER substitute an

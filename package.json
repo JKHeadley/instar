@@ -97,6 +97,7 @@
   "files": [
     "dist",
     "dashboard",
+    "dashboard-pair",
     "upgrades",
     "src/templates",
     "src/data",

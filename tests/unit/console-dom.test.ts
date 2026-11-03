@@ -249,7 +249,7 @@ describe('console shell (jsdom)', () => {
     dom.window.dispatchEvent(new dom.window.HashChangeEvent('hashchange'));
     await flush();
     const tiles = [...doc.querySelectorAll('a.tile')].map((a) => a.getAttribute('href'));
-    expect(tiles).toContain('/dashboard?tab=systems');
+    expect(tiles).toContain('/dashboard/legacy?tab=systems');
     expect(doc.querySelector('iframe')).toBeNull();
   });
 });

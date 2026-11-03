@@ -380,7 +380,7 @@ describe('costs page in a DOM', () => {
     expect(doc.querySelector('#sec-checks')!.textContent).not.toContain('$');
     // Spending controls are collapsed and read-only, pointing at the legacy tab.
     expect(doc.querySelector('#sec-controls .controls-body')!.hasAttribute('hidden')).toBe(true);
-    expect(doc.querySelector('#sec-controls a')!.getAttribute('href')).toBe('/dashboard?tab=spend');
+    expect(doc.querySelector('#sec-controls a')!.getAttribute('href')).toBe('/dashboard/legacy?tab=spend');
     expect(doc.querySelectorAll('#sec-controls button').length).toBe(1); // only the fold, no Freeze/arm buttons
     // The routing sheet opens from the header link.
     (doc.querySelector('.head-link') as HTMLButtonElement).click();

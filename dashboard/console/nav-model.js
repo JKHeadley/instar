@@ -64,7 +64,7 @@ export const GROUPS = [
       { id: 'threadline', label: 'Other agents', icon: 'chat', desc: 'Who is waiting on you, whether each agent I work with is actually there, pairing new ones, and our conversations.' },
       { id: 'origins', label: 'Messages to you', icon: 'chat', desc: 'Who wrote each message I sent you, and the who-wrote-this footer.' },
       { id: 'mandates', label: 'Permission slips', icon: 'stamp', desc: 'What you have let agents do together, who is waiting for your approval, and every allow and refusal.' },
-      { id: 'phones', label: 'Phones', icon: 'phone', desc: 'Pair the Instar iPhone app (the code shows here after a PIN unlock when there is no Telegram), and the phones already paired.' },
+      { id: 'phones', label: 'Phones', icon: 'phone', desc: 'Pair the Instar iPhone app: a waiting phone’s code, large with a Copy button, after your PIN (when there is no Telegram), and the phones already paired.' },
       { id: 'secrets', label: 'Passwords & keys', icon: 'lock', desc: 'Whether the agent is waiting on a password, a safe one-time link to hand one over, and the keys it already holds.' },
     ],
   },
@@ -118,6 +118,8 @@ export const NATIVE_PAGES = {
   features: '#/settings/allowed',
   'preferences-learning': '#/settings/learned',
   files: '#/settings/files',
+  // The pairing code page: its own strict page, outside the console (PIN, then the code + Copy).
+  phones: '/dashboard/pair',
   'pr-pipeline': '#/work/development?s=shipping',
   throughput: '#/work/development?s=pace',
   'feedback-drain': '#/work/development?s=feedback',
@@ -131,9 +133,12 @@ export function tabHref(tabId) {
   return NATIVE_PAGES[tabId] || legacyHref(tabId);
 }
 
+/** The legacy dashboard's own address (/dashboard itself opens this console). */
+export const LEGACY_DASHBOARD = '/dashboard/legacy';
+
 /** The legacy URL for a tab. Ordinary link; nothing is embedded. */
 export function legacyHref(tabId) {
-  return `/dashboard?tab=${encodeURIComponent(tabId)}`;
+  return `${LEGACY_DASHBOARD}?tab=${encodeURIComponent(tabId)}`;
 }
 
 export function icon(name) {

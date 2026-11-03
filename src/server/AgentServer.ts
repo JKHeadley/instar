@@ -215,6 +215,7 @@ import { DesktopHelperRetention } from '../core/DesktopHelperRetention.js';
 import { getInstarVersion } from '../core/Config.js';
 import { DesktopHelperPermissionNotice } from '../core/DesktopHelperPermissionNotice.js';
 import { dashboardUnlockRefused, isLoopbackPeer, wslWindowsHostAddress } from '../core/desktopTransport.js';
+import { mountDashboardEntryRoutes, mountPairPage, resolvePairDir } from './dashboardEntry.js';
 import { mountDashboardPreview } from './dashboardPreview.js';
 import { execFile } from 'node:child_process';
 import { DEFAULT_MAC_DESKTOP_HELPER, MacDesktopHost, macDesktopHelperPath } from '../core/MacDesktopHost.js';
@@ -1522,16 +1523,11 @@ export class AgentServer {
     // fresh index.html with a stale glance.js. Header logic lives in
     // dashboardCacheControl / DASHBOARD_STATIC_OPTIONS (middleware.ts), exercised by
     // the same object in the integration test (no wiring drift).
-    this.app.get('/dashboard', (_req, res) => {
-      dashboardCacheControl(res);
-      // cacheControl:false so send() does not re-stamp `public, max-age=0` over the
-      // no-cache header above; etag/lastModified stay on for cheap 304 revalidation.
-      res.sendFile(path.join(dashboardDir, 'index.html'), {
-        cacheControl: false,
-        etag: true,
-        lastModified: true,
-      });
-    });
+    // /dashboard opens the console; the legacy page lives at /dashboard/legacy, and any
+    // /dashboard?… deep link opens there (docs/specs/dashboard-console-default-and-pair-page.md).
+    mountDashboardEntryRoutes(this.app, { dashboardDir });
+    // The pairing code page: its own strict policy, files outside the static mount (§3.2, §3.5).
+    mountPairPage(this.app, { pairDir: resolvePairDir() });
     this.app.get('/dashboard/desktop.html', (_req, res) => {
       dashboardCacheControl(res);
       const label = this.directDesktopAccess?.targetInfo().label ?? 'this machine';

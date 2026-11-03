@@ -636,7 +636,8 @@ describe('auto-start handover and phone pairing', () => {
       expect(out).toContain('Your dashboard: https://cirrus.tail1234.ts.net/dashboard');
       expect(out).not.toContain('localhost');
       expect(out).toContain(link);
-      expect(out).toMatch(/open Phones/);
+      expect(out).toContain('open https://cirrus.tail1234.ts.net/dashboard/pair on your phone');
+      expect(out).not.toMatch(/open Phones/);
     } finally { restore(); }
   });
 
