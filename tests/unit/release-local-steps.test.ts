@@ -449,7 +449,7 @@ describe('activePublishRuns (ANY publish.yml run, not just this commit)', () => 
     const calls: string[][] = [];
     const run = (c: string, a: string[]): R => {
       calls.push([c, ...a]);
-      const status = a[a.indexOf('--status') + 1];
+      const status = a.includes('--status') ? a[a.indexOf('--status') + 1] : 'unfiltered';
       return answers[status] ?? { status: 0, stdout: '[]', stderr: '' };
     };
     return { run, calls };
@@ -463,13 +463,33 @@ describe('activePublishRuns (ANY publish.yml run, not just this commit)', () => 
     // never filtered to one commit
     expect(calls.every((c) => !c.includes('--commit'))).toBe(true);
     // one query per active status
-    expect(calls.map((c) => c[c.indexOf('--status') + 1])).toEqual(ACTIVE_RUN_STATUSES);
+    expect(calls.filter((c) => c.includes('--status')).map((c) => c[c.indexOf('--status') + 1])).toEqual(ACTIVE_RUN_STATUSES);
+    // plus exactly one unfiltered recent-runs query
+    expect(calls.filter((c) => !c.includes('--status'))).toHaveLength(1);
     expect(calls.every((c) => c.includes('--workflow') && c.includes('publish.yml') && c.includes('o/r'))).toBe(true);
   });
 
   it('an in-progress run for another sha is active too', () => {
     const { run } = gh({ in_progress: { status: 0, stdout: JSON.stringify([{ databaseId: 5, status: 'in_progress', headSha: 'bbb' }]), stderr: '' } });
     expect(activePublishRuns(run, 'o/r').state).toBe('active');
+  });
+
+  it('a run PENDING behind the publish concurrency group is active (no status filter returns it)', () => {
+    const { run } = gh({ unfiltered: { status: 0, stdout: JSON.stringify([
+      { databaseId: 9, status: 'pending', headSha: 'ccc' },
+      { databaseId: 8, status: 'completed', headSha: 'ddd' },
+    ]), stderr: '' } });
+    expect(activePublishRuns(run, 'o/r')).toEqual({ state: 'active', ids: [9] });
+  });
+
+  it('a run seen by both a status query and the recent-runs query is listed once', () => {
+    const q = JSON.stringify([{ databaseId: 4, status: 'queued', headSha: 'eee' }]);
+    const { run } = gh({ queued: { status: 0, stdout: q, stderr: '' }, unfiltered: { status: 0, stdout: q, stderr: '' } });
+    expect(activePublishRuns(run, 'o/r')).toEqual({ state: 'active', ids: [4] });
+  });
+
+  it('a failed recent-runs query → unknown, never clear', () => {
+    expect(activePublishRuns(gh({ unfiltered: { status: 1, stdout: '', stderr: 'HTTP 502' } }).run, 'o/r').state).toBe('unknown');
   });
 
   it('all empty → clear; ANY failed or unreadable query → unknown (never clear)', () => {

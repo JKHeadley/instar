@@ -377,8 +377,13 @@ export const ACTIVE_RUN_STATUSES = ['queued', 'in_progress', 'waiting', 'request
  * `concurrency: publish` without cancelling, so a run queued for an EARLIER
  * merge publishes whatever main is when it gets a runner. That races a local
  * release on the same version. So no `--commit` filter. One query per active
- * status (so an old queued run is never pushed out of a recent-runs page); any
- * query that fails or is unreadable makes the whole answer unknown.
+ * status (so an old queued run is never pushed out of a recent-runs page), plus
+ * one unfiltered recent-runs query that counts every run not yet `completed`:
+ * GitHub reports a run waiting behind another in `concurrency: publish` as
+ * `pending`, which none of the status filters returns (and which gh 2.64 did
+ * not accept as a filter). Cancelling only the queued run would then admit the
+ * pending one to race the local release. Any query that fails or is unreadable
+ * makes the whole answer unknown.
  * @returns {{ state: 'clear'|'active'|'unknown', ids: number[] }}
  */
 export function activePublishRuns(run, slug) {
@@ -390,6 +395,10 @@ export function activePublishRuns(run, slug) {
     if (v.state === 'unknown') return { state: 'unknown', ids: [] };
     ids.push(...v.ids);
   }
+  const recent = run('gh', ['run', 'list', '-R', slug, '--workflow', 'publish.yml', '--limit', '100', '--json', 'databaseId,status,headSha']);
+  const rv = ciRunState(recent.status === 0 ? recent.stdout : null);
+  if (rv.state === 'unknown') return { state: 'unknown', ids: [] };
+  ids.push(...rv.ids);
   return ids.length ? { state: 'active', ids: [...new Set(ids)] } : { state: 'clear', ids: [] };
 }
 
