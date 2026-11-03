@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "presence-follows-replacement-session",
+  "sessionId": "54397a3c-90cd-48e3-97cc-d4865ff2020c",
+  "timestamp": "2026-11-03T21:25:25.335Z",
+  "artifactPath": "upgrades/side-effects/presence-follows-replacement-session.md",
+  "artifactSha256": "bb05916ea9c0ba38e68add753c2a68dac8d59b606d7141e79c279e6ced90c916",
+  "coveredFiles": [
+    "src/monitoring/PresenceProxy.ts",
+    "upgrades/side-effects/presence-follows-replacement-session.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow follow-up to the presence fix: restricts the tier catch-up to held checks; a revert fully undoes it.",
+  "eli16Path": "docs/specs/presence-follows-replacement-session.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/presence-follows-replacement-session.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

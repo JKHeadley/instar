@@ -793,6 +793,8 @@ export class PresenceProxy {
   private tier1DelayMs: number;
   private tier2DelayMs: number;
   private tier3DelayMs: number;
+  /** Topics whose last check was held or deferred (dead read / spawn in progress). */
+  private heldTopics = new Set<number>();
   private tier3RecheckDelayMs: number;
   private silenceDurationMs: number;
   private prefix: string;
@@ -1127,6 +1129,7 @@ export class PresenceProxy {
       // A session being started for this message is not "stopped".
       if (elapsed < this.tier3DelayMs && this.isSessionStarting(topicId)) {
         console.log(`[PresenceProxy] Holding Tier ${tier} for topic ${topicId} — a session is starting`);
+        this.heldTopics.add(topicId);
         this.scheduleTier(topicId, tier, this.tier1DelayMs);
         return;
       }
@@ -1137,6 +1140,7 @@ export class PresenceProxy {
         // Tier 1's stage has passed (as on the ack-suppressed path); Tier 2
         // requires it, and must keep the watch going if a replacement appears.
         state.tier1FiredAt = Date.now();
+        this.heldTopics.add(topicId);
         this.scheduleTier(topicId, 2, Math.max(0, this.tier2DelayMs - elapsed));
         return;
       }
@@ -1149,7 +1153,8 @@ export class PresenceProxy {
     // A hold (dead read / spawn in progress) can end after later tier marks
     // have passed. Run the tier that matches the elapsed time, so the next
     // tier is still scheduled and the watch never silently ends.
-    if (alive) {
+    // Only after a hold: a plain on-time check keeps its own tier.
+    if (alive && this.heldTopics.delete(topicId)) {
       const elapsed = Date.now() - state.userMessageAt;
       if (tier === 1 && elapsed >= this.tier2DelayMs) {
         state.tier1FiredAt = state.tier1FiredAt ?? Date.now();

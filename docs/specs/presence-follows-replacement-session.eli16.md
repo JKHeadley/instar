@@ -37,6 +37,9 @@ same thing could happen there.
 - **One dead reading at the first check is not enough.** If the session reads
   dead at the 20-second check, the watcher waits until the 2-minute mark for a
   replacement before reporting.
+  When a held check is finally answered after a later mark has passed,
+  the watcher moves on to the stage that matches the time, so the watch
+  never quietly ends.
 - **Honest labels.** "5-minute check" is printed only when about 5 minutes have
   really passed. A real death found earlier says "Check — The session handling
   this conversation has stopped, and no new session has started for it", with
