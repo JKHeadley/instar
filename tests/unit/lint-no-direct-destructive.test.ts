@@ -258,3 +258,121 @@ describe('lint-no-direct-destructive — package.json scripts', () => {
     expect(r.code).toBe(0);
   });
 });
+
+/** chmod 000, first stripping any inherited macOS ACL that would still grant access. */
+function lockDown(p: string): void {
+  if (process.platform === 'darwin') {
+    try { execFileSync('chmod', ['-N', p], { stdio: 'ignore' }); } catch { /* no ACL support */ }
+  }
+  fs.chmodSync(p, 0o000);
+}
+
+function runLintWithEnv(env: Record<string, string>, ...args: string[]): RunResult {
+  try {
+    const stdout = execFileSync('node', [LINT_SCRIPT, ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...env },
+    });
+    return { code: 0, stdout, stderr: '' };
+  } catch (err) {
+    const e = err as { status?: number; stdout?: string; stderr?: string };
+    return { code: e.status ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+  }
+}
+
+// #2190 / #2189: a file the lint could not read or parse used to be skipped
+// silently, so an unchecked file was indistinguishable from a clean one.
+describe('lint-no-direct-destructive — uninspected files (#2190)', () => {
+  const VIOLATION = `import { execFileSync } from 'node:child_process';\nexecFileSync('git', ['push']);\n`;
+  const CLEAN = `export const x = 1;\n`;
+
+  it('refuses (exit 2) and names a file that cannot be read, with the reason', () => {
+    const bad = path.join(sandbox, 'unreadable.ts');
+    const ok = path.join(sandbox, 'ok.ts');
+    writeFile(bad, VIOLATION);
+    writeFile(ok, CLEAN);
+    const r = runLintWithEnv({ INSTAR_LINT_FORCE_READ_FAILURE: 'unreadable.ts' }, sandbox);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('COULD NOT INSPECT 1 path(s)');
+    expect(r.stderr).toContain('unreadable.ts');
+    expect(r.stderr).toContain('could not read: EBUSY');
+  });
+
+  it('refuses a file that is genuinely unreadable on disk (permissions)', () => {
+    // Root can read anything, so the permission check is meaningless there.
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return;
+    const bad = path.join(sandbox, 'locked.ts');
+    writeFile(bad, VIOLATION);
+    writeFile(path.join(sandbox, 'ok.ts'), CLEAN);
+    lockDown(bad);
+    let readable = true;
+    try { fs.readFileSync(bad); } catch { readable = false; }
+    try {
+      // An inherited ACL can still grant read; skip rather than assert nonsense.
+      if (readable) return;
+      const r = runLint(sandbox);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain('locked.ts');
+      expect(r.stderr).toMatch(/could not read: EACCES/);
+    } finally {
+      fs.chmodSync(bad, 0o644);
+    }
+  });
+
+  it('retries a transient read error briefly and then inspects the file normally', () => {
+    const file = path.join(sandbox, 'flaky.ts');
+    writeFile(file, VIOLATION);
+    const r = runLintWithEnv({ INSTAR_LINT_FORCE_READ_FAILURE: 'flaky.ts:1' }, sandbox);
+    // The retry succeeded, so the real violation is found — not an uninspected hole.
+    expect(r.code).toBe(1);
+    expect(r.stderr).not.toContain('COULD NOT INSPECT');
+    expect(r.stderr).toContain('flaky.ts');
+  });
+
+  it('refuses (exit 2) and names a file that cannot be parsed while others parse', () => {
+    writeFile(path.join(sandbox, 'broken.ts'), CLEAN);
+    writeFile(path.join(sandbox, 'ok.ts'), CLEAN);
+    const r = runLintWithEnv({ INSTAR_LINT_FORCE_PARSE_FAILURE: 'broken.ts' }, sandbox);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('broken.ts');
+    expect(r.stderr).toContain('failed to parse:');
+  });
+
+  it('refuses a directory it cannot list', () => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return;
+    const dir = path.join(sandbox, 'sub');
+    writeFile(path.join(dir, 'inner.ts'), VIOLATION);
+    writeFile(path.join(sandbox, 'ok.ts'), CLEAN);
+    lockDown(dir);
+    let listable = true;
+    try { fs.readdirSync(dir); } catch { listable = false; }
+    try {
+      if (listable) return;
+      const r = runLint(sandbox);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain('sub');
+      expect(r.stderr).toContain('could not list directory');
+    } finally {
+      fs.chmodSync(dir, 0o755);
+    }
+  });
+
+  it('still exits 1 for violations, and lists the uninspected file alongside them', () => {
+    writeFile(path.join(sandbox, 'unreadable.ts'), CLEAN);
+    writeFile(path.join(sandbox, 'bad.ts'), VIOLATION);
+    const r = runLintWithEnv({ INSTAR_LINT_FORCE_READ_FAILURE: 'unreadable.ts' }, sandbox);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('COULD NOT INSPECT 1 path(s)');
+    expect(r.stderr).toContain('unreadable.ts');
+    expect(r.stderr).toContain('VIOLATIONS');
+    expect(r.stderr).toContain('bad.ts');
+  });
+
+  it('a fully readable clean tree still exits 0', () => {
+    writeFile(path.join(sandbox, 'a.ts'), CLEAN);
+    writeFile(path.join(sandbox, 'b.ts'), CLEAN);
+    const r = runLint(sandbox);
+    expect(r.code).toBe(0);
+  });
+});
