@@ -272,6 +272,6 @@ describe('agent awareness migration', () => {
     const content = fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf8');
     expect(content.split(SLACK_FROM_APP_CLAUDEMD_MARKER).length - 1).toBe(1);
     expect(content).toContain('mobilePairing.slackOwnerUserId');
-    expect(SLACK_FROM_APP_CLAUDEMD_SECTION(4321)).toContain('http://localhost:4321/mobile/chat/slack/CONVERSATION_ID/messages');
+    expect(SLACK_FROM_APP_CLAUDEMD_SECTION(4321)).toContain('http://localhost:4321/mobile/chat/slack/CONVERSATION_ID/messages?machine=MACHINE');
   });
 });

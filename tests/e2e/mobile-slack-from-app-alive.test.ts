@@ -122,9 +122,12 @@ describe('Slack from the app — production wiring', () => {
     const list = await send('GET', '/mobile/conversations');
     expect(list.status).toBe(200);
     expect(list.body.conversations).toEqual([expect.objectContaining({ id: conversationId, platform: 'slack', title: '#C0E2ECHAN' })]);
+    // Every Slack request names the machine its row came from.
+    const machine = list.body.conversations[0].machine as string;
+    expect(machine).toBe(server.appConversations!.deps.machineId());
 
     // A signed send reaches the server's Slack dispatch as the operator, tagged signed.
-    const sent = await send('POST', `/mobile/chat/slack/${conversationId}`, { text: 'Can you post the release notes?', requestId: `${Date.now()}-${crypto.randomUUID()}` });
+    const sent = await send('POST', `/mobile/chat/slack/${conversationId}`, { machine, text: 'Can you post the release notes?', requestId: `${Date.now()}-${crypto.randomUUID()}` });
     expect(sent.status).toBe(200);
     expect(sent.body).toMatchObject({ ok: true, outcome: 'delivered', mirror: 'sent' });
     expect(dispatched).toHaveLength(1);
@@ -137,7 +140,7 @@ describe('Slack from the app — production wiring', () => {
     expect(reply.status).toBe(200);
 
     // The phone's history shows its own message (verified) and the reply.
-    const hist = await send('GET', `/mobile/chat/slack/${conversationId}/messages`);
+    const hist = await send('GET', `/mobile/chat/slack/${conversationId}/messages?machine=${encodeURIComponent(machine)}`);
     expect(hist.status).toBe(200);
     expect(hist.body.messages.map((m: { text: string; role: string; originVerified: string }) => [m.role, m.originVerified, m.text])).toEqual([
       ['operator', 'verified', 'Can you post the release notes?'],
@@ -151,7 +154,7 @@ describe('Slack from the app — production wiring', () => {
     const { send } = await pairPhone(app, server);
     const list = await send('GET', '/mobile/conversations');
     expect(list.body).toMatchObject({ conversations: [], slackOwnerUnset: true });
-    const r = await send('POST', `/mobile/chat/slack/${conversationId}`, { text: 'hi', requestId: `${Date.now()}-${crypto.randomUUID()}` });
+    const r = await send('POST', `/mobile/chat/slack/${conversationId}`, { machine: server.appConversations!.deps.machineId(), text: 'hi', requestId: `${Date.now()}-${crypto.randomUUID()}` });
     expect(r.status).toBe(503);
     expect(r.body.error).toBe('slack-owner-unset');
     expect(dispatched).toHaveLength(0);

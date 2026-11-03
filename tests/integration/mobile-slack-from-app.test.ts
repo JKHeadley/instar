@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
+import type { Server } from 'node:http';
 import request from 'supertest';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
 import { authMiddleware } from '../../src/server/middleware.js';
@@ -41,7 +42,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mobile-slack-from-app.test.ts' });
 });
 
-async function setup(opts: { owner?: string | null; slack?: boolean; holdsLease?: boolean } = {}) {
+async function setup(opts: { owner?: string | null; slack?: boolean; holdsLease?: boolean; peerUrls?: string[] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mslack-'));
   dirs.push(dir);
   await new MachineIdentityManager(dir).generateIdentity({ name: 'test machine' });
@@ -94,9 +95,10 @@ async function setup(opts: { owner?: string | null; slack?: boolean; holdsLease?
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
-  app.use(createMobileSlackRouter({ config: config as never, pairing, service: svc, slack: opts.slack === false ? null : () => bridge }));
+  app.use(createMobileSlackRouter({ config: config as never, pairing, service: svc, slack: opts.slack === false ? null : () => bridge, machineId: () => 'm1' }));
   app.use(createMobileConversationRouter({
     config: config as never, pairing, service: svc, machineId: () => 'm1',
+    pool: { config: config as never, resolvePeerUrls: () => (opts.peerUrls ?? []).map((url, i) => ({ machineId: `m_peer${i}`, url, kind: 'lan' })) } as never,
     slackConversations: opts.slack === false ? undefined : () => (slackOwnerUserId(config as never) ? slackListRows(bridge) : null),
   }));
   app.use(createMobilePairingRouter(pairing, deps, { config } as never));
@@ -137,7 +139,7 @@ describe('Slack from the app — list and history', () => {
     const l2 = await signed(none, 'GET', '/mobile/conversations');
     expect(l2.body.slackOwnerUnset).toBe(true);
     expect(l2.body.conversations.filter((c: { platform: string }) => c.platform === 'slack')).toHaveLength(0);
-    expect((await signed(none, 'GET', `/mobile/chat/slack/${none.channelId}/messages`)).body.error).toBe('slack-owner-unset');
+    expect((await signed(none, 'GET', `/mobile/chat/slack/${none.channelId}/messages?machine=m1`)).body.error).toBe('slack-owner-unset');
   });
 
   it('with Slack not configured the list has no Slack rows and the routes say so', async () => {
@@ -145,7 +147,7 @@ describe('Slack from the app — list and history', () => {
     const list = await signed(e, 'GET', '/mobile/conversations');
     expect(list.body.conversations).toHaveLength(0);
     expect(list.body.slackOwnerUnset).toBeUndefined();
-    const r = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { text: 'hi', requestId: rid() });
+    const r = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm1', text: 'hi', requestId: rid() });
     expect(r.status).toBe(503);
     expect(r.body.error).toBe('slack-not-configured');
   });
@@ -154,26 +156,75 @@ describe('Slack from the app — list and history', () => {
     const e = await setup();
     fs.appendFileSync(e.logPath, `${JSON.stringify({ messageId: '1793615300.000000', channelId: 'C0123ABC', text: 'typed in Slack', fromUser: true, timestamp: new Date(Date.now() - 60_000).toISOString(), senderName: 'Ada' })}\n`);
     fs.appendFileSync(e.logPath, `${JSON.stringify({ messageId: '1793615310.000000', channelId: 'C0123ABC', text: 'agent reply', fromUser: false, timestamp: new Date(Date.now() - 30_000).toISOString() })}\n`);
-    const sent = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { text: 'from the app into Slack', requestId: rid() });
+    const sent = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm1', text: 'from the app into Slack', requestId: rid() });
     expect(sent.status).toBe(200);
-    const hist = await signed(e, 'GET', `/mobile/chat/slack/${e.channelId}/messages`);
+    const hist = await signed(e, 'GET', `/mobile/chat/slack/${e.channelId}/messages?machine=m1`);
     expect(hist.status).toBe(200);
     expect(hist.body.messages.map((m: { text: string; originVerified: string; role: string }) => [m.text, m.role, m.originVerified])).toEqual([
       ['typed in Slack', 'participant', 'none'], ['agent reply', 'agent', 'none'], ['from the app into Slack', 'operator', 'verified'],
     ]);
-    const tok = await bearer(e, 'get', `/mobile/chat/slack/${e.channelId}/messages`);
+    const tok = await bearer(e, 'get', `/mobile/chat/slack/${e.channelId}/messages?machine=m1`);
     expect(tok.status).toBe(200);
     // The thread conversation shows none of the channel's rows.
-    expect((await signed(e, 'GET', `/mobile/chat/slack/${e.threadId}/messages`)).body.messages).toHaveLength(0);
+    expect((await signed(e, 'GET', `/mobile/chat/slack/${e.threadId}/messages?machine=m1`)).body.messages).toHaveLength(0);
   });
 
   it('a dispatched message is still returned from the store after slack-messages.jsonl rotates away', async () => {
     const e = await setup();
-    await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { text: 'survives rotation', requestId: rid() });
+    await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm1', text: 'survives rotation', requestId: rid() });
     fs.writeFileSync(e.logPath, '');
-    const hist = await signed(e, 'GET', `/mobile/chat/slack/${e.channelId}/messages`);
+    const hist = await signed(e, 'GET', `/mobile/chat/slack/${e.channelId}/messages?machine=m1`);
     expect(hist.body.messages).toHaveLength(1);
     expect(hist.body.messages[0]).toMatchObject({ text: 'survives rotation', deliveryState: 'delivered', originVerified: 'verified' });
+  });
+});
+
+function listen(app: express.Express): Promise<Server> {
+  return new Promise((r) => { const sv = app.listen(0, '127.0.0.1', () => r(sv)); });
+}
+const urlOf = (sv: Server) => `http://127.0.0.1:${(sv.address() as { port: number }).port}`;
+
+describe('Slack from the app — conversation ids are local to one machine', () => {
+  it('a pool list shows only this machine\'s Slack rows, never a peer\'s row that shares the number', async () => {
+    let channelIdHere = 0;
+    const peer = express();
+    // The peer's own Slack conversation happens to carry the SAME negative id as one here, with
+    // newer activity (so a naive merge would replace this machine's row with the peer's).
+    peer.get('/mobile/conversations', (_req, res) => {
+      res.json({ conversations: [{ id: channelIdHere, platform: 'slack', title: '#C0PEERCHAN', lastActivity: '2031-01-01T00:00:00.000Z', lastPreview: 'peer secret' }], nextCursor: null });
+    });
+    const server = await listen(peer);
+    try {
+      const e = await setup({ peerUrls: [urlOf(server)] });
+      channelIdHere = e.channelId;
+      const r = await signed(e, 'GET', '/mobile/conversations?scope=pool');
+      expect(r.status).toBe(200);
+      const slack = r.body.conversations.filter((c: { platform: string }) => c.platform === 'slack');
+      expect(slack.map((c: { id: number; machine: string; title: string }) => [c.machine, c.id, c.title]).sort()).toEqual(
+        [['m1', e.channelId, '#C0123ABC'], ['m1', e.threadId, '#C0123ABC (thread)']].sort(),
+      );
+      expect(JSON.stringify(r.body)).not.toContain('peer secret');
+      // The plain list names the machine on every Slack row too.
+      const plain = await signed(e, 'GET', '/mobile/conversations');
+      expect(plain.body.conversations.every((c: { machine?: string }) => c.machine === 'm1')).toBe(true);
+    } finally { server.close(); }
+  });
+
+  it('a request naming another machine, or none, is refused before anything is read, saved or sent', async () => {
+    const e = await setup();
+    const other = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm_peer0', text: 'meant for the laptop', requestId: rid() });
+    expect(other.status).toBe(409);
+    expect(other.body).toMatchObject({ error: 'wrong-machine', servedBy: 'm1' });
+    const none = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { text: 'which machine?', requestId: rid() });
+    expect(none.status).toBe(400);
+    expect(none.body.error).toBe('machine-required');
+    expect(e.dispatched).toHaveLength(0);
+    expect(e.posted).toHaveLength(0);
+    expect(fs.existsSync(e.logPath) ? fs.readFileSync(e.logPath, 'utf8') : '').not.toContain('meant for the laptop');
+    const key = (e.registry.resolve(e.channelId) as { key: string }).key;
+    expect(e.svc.store.browseMessages(key, null, 10).messages).toHaveLength(0);
+    expect((await signed(e, 'GET', `/mobile/chat/slack/${e.channelId}/messages?machine=m_peer0`)).body).toMatchObject({ error: 'wrong-machine', servedBy: 'm1' });
+    expect((await signed(e, 'GET', `/mobile/chat/slack/${e.channelId}/messages`)).status).toBe(400);
   });
 });
 
@@ -182,7 +233,7 @@ describe('Slack from the app — send', () => {
     const e = await setup();
     const requestId = rid();
     const text = 'deploy with sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH please';
-    const sent = await signed(e, 'POST', `/mobile/chat/slack/${e.threadId}`, { text, requestId });
+    const sent = await signed(e, 'POST', `/mobile/chat/slack/${e.threadId}`, { machine: 'm1', text, requestId });
     expect(sent.status).toBe(200);
     expect(sent.body).toMatchObject({ ok: true, outcome: 'delivered', deliveryState: 'delivered', mirror: 'sent', credentialShaped: true });
     // The store holds the message under the canonical thread key, with a v2 receipt naming it.
@@ -201,54 +252,54 @@ describe('Slack from the app — send', () => {
     expect(e.posted[0]!.text.startsWith('📱 Justin (from the app): deploy with ')).toBe(true);
     expect(e.posted[0]!.text).not.toContain('sk-ant-api03');
     // A retry answers the recorded result and dispatches nothing.
-    const again = await signed(e, 'POST', `/mobile/chat/slack/${e.threadId}`, { text, requestId });
+    const again = await signed(e, 'POST', `/mobile/chat/slack/${e.threadId}`, { machine: 'm1', text, requestId });
     expect(again.status).toBe(200);
     expect(again.body.eventId).toBe(sent.body.eventId);
     expect(e.dispatched).toHaveLength(1);
     expect(e.posted).toHaveLength(1);
     // Same id, other text: a payload conflict.
-    expect((await signed(e, 'POST', `/mobile/chat/slack/${e.threadId}`, { text: 'other', requestId })).body.error).toBe('payload-conflict');
+    expect((await signed(e, 'POST', `/mobile/chat/slack/${e.threadId}`, { machine: 'm1', text: 'other', requestId })).body.error).toBe('payload-conflict');
   });
 
   it('refuses before saving anything: unknown id, owner not authorized, not serving', async () => {
     const e = await setup();
-    expect((await signed(e, 'POST', '/mobile/chat/slack/-77', { text: 'x', requestId: rid() })).status).toBe(404);
+    expect((await signed(e, 'POST', '/mobile/chat/slack/-77', { machine: 'm1', text: 'x', requestId: rid() })).status).toBe(404);
     const notServing = await setup({ holdsLease: false });
-    const r = await signed(notServing, 'POST', `/mobile/chat/slack/${notServing.channelId}`, { text: 'x', requestId: rid() });
+    const r = await signed(notServing, 'POST', `/mobile/chat/slack/${notServing.channelId}`, { machine: 'm1', text: 'x', requestId: rid() });
     expect(r.status).toBe(409);
     expect(r.body.error).toBe('not-serving');
     expect(notServing.svc.store.browseMessages((notServing.registry.resolve(notServing.channelId) as { key: string }).key, null, 10).messages).toHaveLength(0);
     const other = await setup({ owner: 'U0STRANGER' });
-    expect((await signed(other, 'POST', `/mobile/chat/slack/${other.channelId}`, { text: 'x', requestId: rid() })).body.error).toBe('slack-owner-not-authorized');
+    expect((await signed(other, 'POST', `/mobile/chat/slack/${other.channelId}`, { machine: 'm1', text: 'x', requestId: rid() })).body.error).toBe('slack-owner-not-authorized');
   });
 
   it('a dispatch that throws is outcome-unknown; a refused one is an honest 503; a failed mirror never repeats the dispatch', async () => {
     const e = await setup();
     e.outcomes.push(new Error('tmux gone'));
-    const a = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { text: 'first', requestId: rid() });
+    const a = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm1', text: 'first', requestId: rid() });
     expect(a.status).toBe(409);
     expect(a.body.error).toBe('outcome-unknown');
     expect(e.svc.store.deliveryState(a.body.messageId as string)).toBe('unknown');
 
     e.outcomes.push('refused');
-    const b = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { text: 'second', requestId: rid() });
+    const b = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm1', text: 'second', requestId: rid() });
     expect(b.status).toBe(503);
     expect(b.body).toMatchObject({ error: 'chat-unavailable', deliveryState: 'refused' });
 
     e.mirrorFailures.push(1);
     const requestId = rid();
-    const c = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { text: 'third', requestId });
+    const c = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm1', text: 'third', requestId });
     expect(c.body).toMatchObject({ ok: true, deliveryState: 'delivered', mirror: 'failed' });
     const before = e.dispatched.length;
-    expect((await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { text: 'third', requestId })).body.mirror).toBe('failed');
+    expect((await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm1', text: 'third', requestId })).body.mirror).toBe('failed');
     expect(e.dispatched.length).toBe(before);
   });
 
   it('an emergency stop gets through over the send rate limit and is recorded intercepted', async () => {
     const e = await setup();
-    for (let i = 0; i < 20; i++) await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { text: `msg ${i}`, requestId: rid() });
-    expect((await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { text: 'one more', requestId: rid() })).status).toBe(429);
-    const stop = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { text: 'stop everything', requestId: rid() });
+    for (let i = 0; i < 20; i++) await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm1', text: `msg ${i}`, requestId: rid() });
+    expect((await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm1', text: 'one more', requestId: rid() })).status).toBe(429);
+    const stop = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm1', text: 'stop everything', requestId: rid() });
     expect(stop.status).toBe(200);
     expect(stop.body).toMatchObject({ outcome: 'sentinel-kill', deliveryState: 'intercepted', stopped: true });
     expect(e.kills()).toBe(1);
@@ -257,18 +308,18 @@ describe('Slack from the app — send', () => {
   it('a pairing invite is removed and the message reads "redacted"', async () => {
     const e = await setup();
     const token = `tlinv1:${crypto.randomBytes(12).toString('base64url')}.${crypto.randomBytes(12).toString('base64url')}`;
-    const sent = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { text: `pair with ${token} now`, requestId: rid() });
+    const sent = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm1', text: `pair with ${token} now`, requestId: rid() });
     expect(sent.body.redacted).toBe(true);
     expect(e.dispatched[0]!.content).toBe('pair with [pairing invite removed] now');
-    const hist = await signed(e, 'GET', `/mobile/chat/slack/${e.channelId}/messages`);
+    const hist = await signed(e, 'GET', `/mobile/chat/slack/${e.channelId}/messages?machine=m1`);
     expect(hist.body.messages[0]).toMatchObject({ text: 'pair with [pairing invite removed] now', originVerified: 'redacted' });
   });
 
   it('the device allowlist: a Bearer send is refused, a malformed id is not a device route, files are refused', async () => {
     const e = await setup();
-    expect((await bearer(e, 'post', `/mobile/chat/slack/${e.channelId}`).send({ text: 'x', requestId: rid() })).status).toBe(403);
-    expect((await signed(e, 'POST', '/mobile/chat/slack/042', { text: 'x', requestId: rid() })).status).toBeGreaterThanOrEqual(400);
-    const f = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { text: 'x', requestId: rid(), attachments: [] });
+    expect((await bearer(e, 'post', `/mobile/chat/slack/${e.channelId}`).send({ machine: 'm1', text: 'x', requestId: rid() })).status).toBe(403);
+    expect((await signed(e, 'POST', '/mobile/chat/slack/042', { machine: 'm1', text: 'x', requestId: rid() })).status).toBeGreaterThanOrEqual(400);
+    const f = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm1', text: 'x', requestId: rid(), attachments: [] });
     expect(f.body.error).toBe('media-target-unsupported');
   });
 });

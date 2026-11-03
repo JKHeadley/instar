@@ -378,8 +378,10 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       try {
         const list = deps.slackConversations();
         if (list === null) slackOwnerUnset = true;
+        // A Slack id is this machine's own: every Slack row names the machine that serves it, and
+        // the Slack routes refuse a request naming another machine (mobile-native-conversations §4.9).
         else slackRows = list
-          .map((c): ConversationListRow => ({ id: c.id, platform: 'slack', title: c.title, lastActivity: c.lastActivity, lastPreview: c.lastPreview }))
+          .map((c): ConversationListRow => ({ id: c.id, platform: 'slack', title: c.title, lastActivity: c.lastActivity, lastPreview: c.lastPreview, machine: deps.machineId() }))
           .filter((r) => isAfterListCursor(r, c));
       } catch { /* @silent-fallback-ok — a Slack read failure leaves the other rows; never an error for the app list */ }
     }
@@ -411,8 +413,11 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         more: typeof body.nextCursor === 'string' && body.nextCursor.length > 0,
       }))
       : { results: [], failed: [] };
-    // A peer's Slack rows are withheld when this machine's owner id is unset (the app cannot send to them here).
-    const peerPages = local.slackOwnerUnset ? peers.results.map((p) => ({ ...p, rows: p.rows.filter((r) => r.platform !== 'slack') })) : peers.results;
+    // A peer's Slack rows are never listed: a Slack conversation id is local to the machine that
+    // minted it, and the Slack routes on this machine look ids up here, so a peer row could name a
+    // different conversation that shares the number (and would otherwise collapse onto this
+    // machine's row of the same id). Only this machine's own Slack rows are listed.
+    const peerPages = peers.results.map((p) => ({ ...p, rows: p.rows.filter((r) => r.platform !== 'slack') }));
     const m = mergeConversationPages([{ rows: local.rows.map((r) => ({ ...r, machine: self })), more: local.more }, ...peerPages], limit);
     res.json({ conversations: m.rows, nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed } });
   });

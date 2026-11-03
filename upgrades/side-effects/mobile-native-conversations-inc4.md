@@ -39,7 +39,7 @@ Increment 4 of docs/specs/mobile-native-conversations.md (§4.9 Slack, §4.10 al
 ## 2. Under-block
 
 - History reads a bounded tail of `slack-messages.jsonl`; messages older than the newest 5000 lines are not reachable from the app (app-sent messages are, from the store, never rotated). Slack keeps its own full history.
-- Pool list rows from a peer carry that peer's local id; Slack ids are derived from the routing key, so they normally agree, but a collision-probed id could differ; such a row would 404 on this machine.
+- **Slack ids are local to one machine (review fix).** Every Slack list row names the machine that serves it (`machine`), a pool list never includes another machine's Slack rows (a peer row with the same number would otherwise collapse onto this machine's row, or name a different conversation), and both Slack routes require the row's machine (`?machine=` on the read, `machine` in the signed send body): another machine answers 409 `wrong-machine` (with `servedBy`), none answers 400 `machine-required`, before anything is read, saved or sent. A Slack conversation is therefore only reachable through the machine that lists it; with several machines that is the one the phone is paired to.
 - Verification of a Slack record is relative to the canonical key: a workspace id that was `_` on one machine and `T…` on another yields two keys (two store files) for one channel; each record still verifies under its own key.
 
 ---
@@ -81,9 +81,9 @@ No new judgment point. Credential-shape detection is the existing `detectOutboun
 
 ## 6. External surfaces
 
-Two new device routes (allowlisted for active devices: `POST /mobile/chat/slack/-N`, `GET /mobile/chat/slack/-N/messages`), Slack rows in the conversation list, a new optional config field, a new receipt version in stored records (replicated; an older machine reading a v2 Slack record cannot verify it and reads `failed` for a Slack path — such records only exist once this version runs), a new message posted into Slack (the mirror) on each app send, and agent replies added to the Slack log. CLAUDE.md gains a section on update.
+Two new device routes (allowlisted for active devices: `POST /mobile/chat/slack/-N`, `GET /mobile/chat/slack/-N/messages`, both requiring the list row's `machine`), Slack rows in the conversation list, a new optional config field, a new receipt version in stored records (replicated; an older machine reading a v2 Slack record cannot verify it and reads `failed` for a Slack path — such records only exist once this version runs), a new message posted into Slack (the mirror) on each app send, and agent replies added to the Slack log. CLAUDE.md gains a section on update.
 
-- **iOS app:** must list `platform: "slack"` rows, send to `/mobile/chat/slack/<id>` and read `/mobile/chat/slack/<id>/messages`, show `slackOwnerUnset` as a plain hint, and show marks from `originVerified` (increment 5).
+- **iOS app:** must list `platform: "slack"` rows, send to `/mobile/chat/slack/<id>` with the row's `machine` in the body and read `/mobile/chat/slack/<id>/messages?machine=<row machine>`, show `slackOwnerUnset` as a plain hint, and show marks from `originVerified` (increment 5).
 - **Operator surface:** setting the owner id is done by the agent after the operator's yes in conversation (no PIN, no file editing by the operator).
 
 ---
@@ -91,7 +91,7 @@ Two new device routes (allowlisted for active devices: `POST /mobile/chat/slack/
 ## 7. Multi-machine posture (Cross-Machine Coherence)
 
 - App-sent Slack messages: **replicated** in the app conversation store under the canonical Slack key (the existing `appConversations` replicated kind); the v2 receipt makes them checkable on any machine.
-- Slack rows in the list and Slack history: **machine-local reads of the Slack log and registry**, with the list also **proxied on read** (`?scope=pool`).
+- Slack rows in the list and Slack history: **machine-local BY DESIGN** (a Slack conversation id is minted per machine): the list carries only this machine's Slack rows even with `?scope=pool`, and the routes refuse any other machine's id.
 - Sending: on the serving-lease holder (where Slack inbound is dispatched).
 
 ---
@@ -111,3 +111,5 @@ Not applicable: no agent-authored-artifact defect. The mirror post fires once pe
 ## Second-pass review
 
 Not run for this build (`--second-pass false`, per the build instructions). The PR is the review surface.
+
+Review follow-up (Slack ids are per machine): independent reviewer — Concur with the review. The machine check runs before any read or send in both routes; the query is inside the signed path and the body field inside the body hash; the agent read works with ?machine=; pool lists drop peers' Slack rows; the CLAUDE.md text matches (it now names the 400 too).

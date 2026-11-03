@@ -6254,6 +6254,8 @@ export class AgentServer {
       this.app.use(createMobileSlackRouter({
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         slack: slackBridge ? () => slackBridge : null, sentinel: options.sentinel ?? null,
+        // The same machine id the conversation list puts on its rows.
+        machineId: () => this.appConversations?.deps.machineId() ?? 'local',
       }));
       this.app.use(createMobileConversationRouter({
         slackConversations: slackBridge ? () => (slackOwnerUserId(options.config) ? slackListRows(slackBridge) : null) : undefined,

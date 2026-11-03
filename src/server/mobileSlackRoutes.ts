@@ -2,8 +2,12 @@
  * Slack conversations from the Instar app (docs/specs/mobile-native-conversations.md §4.9,
  * increment 4). Device-signed (the read also accepts the agent's Bearer token):
  *
- *   GET  /mobile/chat/slack/:conversationId/messages?before=&limit=   history (backwards)
- *   POST /mobile/chat/slack/:conversationId                           send {text, requestId}
+ *   GET  /mobile/chat/slack/:conversationId/messages?machine=&before=&limit=   history (backwards)
+ *   POST /mobile/chat/slack/:conversationId                           send {text, requestId, machine}
+ *
+ * `machine` is the `machine` field of the conversation's list row. Slack ids are local to the
+ * machine that minted them, so a request naming another machine is refused (409 wrong-machine)
+ * and a request naming none is refused (400 machine-required).
  *
  * `:conversationId` is the machine-local negative durable id the conversation registry minted
  * for the Slack channel or thread ("Durable Conversation Identity"). It is translated on this
@@ -97,6 +101,8 @@ export interface MobileSlackRouteDeps {
   /** Null when Slack is not configured on this agent. */
   slack: (() => MobileSlackBridge | null) | null;
   sentinel?: { decideInboundDisposition(message: string, topicId?: number): Promise<{ disposition: string }> } | null;
+  /** This machine's id: the `machine` the list puts on Slack rows, which every Slack request must name. */
+  machineId: () => string;
   now?: () => number;
 }
 
@@ -133,6 +139,19 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     const p = (req as unknown as { instarPrincipal?: { kind: string; deviceId?: string } }).instarPrincipal;
     return p?.kind === 'device' && typeof p.deviceId === 'string' ? p.deviceId : null;
   };
+  /**
+   * A Slack conversation id is local to the machine that minted it, so every Slack request must
+   * name the machine its row came from (`machine` from the list row: a query parameter on the read,
+   * a body field on the send, both covered by the device signature). A missing or different
+   * machine is refused before anything is read or written: this machine never reads or sends to
+   * a conversation that merely shares the number.
+   */
+  const rightMachine = (res: Response, named: unknown): boolean => {
+    const self = deps.machineId();
+    if (typeof named !== 'string' || !named) { res.status(400).json({ error: 'machine-required', detail: 'Name the machine this Slack conversation was listed from.' }); return false; }
+    if (named !== self) { res.status(409).json({ error: 'wrong-machine', servedBy: self, detail: 'This Slack conversation belongs to another machine. Open it through that machine.' }); return false; }
+    return true;
+  };
   /** Slack on this agent and the owner's Slack id set, else answered. */
   const slackReady = (res: Response): { bridge: MobileSlackBridge; owner: string } | null => {
     const bridge = deps.slack?.() ?? null;
@@ -151,6 +170,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     if (!deps.pairing.enabled() || !svc) { res.status(503).json({ error: 'native-conversations-off', detail: 'App conversations are turned off on this agent.' }); return; }
     const id = parseSlackConversationId(String(req.params.conversationId));
     if (id === null) { res.status(400).json({ error: 'bad-conversation' }); return; }
+    if (!rightMachine(res, req.query.machine)) return;
     const ready = slackReady(res); if (!ready) return;
     const conv = ready.bridge.resolve(id);
     if (!conv) { res.status(404).json({ error: 'unknown-conversation' }); return; }
@@ -204,6 +224,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     const id = parseSlackConversationId(raw);
     if (id === null) { res.status(400).json({ error: 'bad-conversation' }); return; }
     const body = (req.body ?? {}) as Record<string, unknown>;
+    if (!rightMachine(res, body.machine)) return;
     if (body.attachments !== undefined) { res.status(400).json({ error: 'media-target-unsupported', detail: 'Files can be sent in app conversations. Sending them into Slack is not available yet.' }); return; }
     const text = typeof body.text === 'string' ? body.text.trim() : '';
     if (text.length < 1 || text.length > 4000) { res.status(400).json({ error: 'text must be 1-4000 characters' }); return; }
