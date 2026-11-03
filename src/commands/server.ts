@@ -23938,7 +23938,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         // window due early. No rung exists in this build. The operator notice is off unless
         // machineMaintenance.wedgeRestart.dryRunNotice is true.
         const { WedgeMonitor, normalizeWedgeSettings, setActiveWedgeMonitor } = await import('../monitoring/machineMaintenance/WedgeMonitor.js');
-        const { makeProbeRunner, parseBootTime } = await import('../monitoring/machineMaintenance/readings.js');
+        const { makeProbeRunner, parseBootTime, wedgeCanaryAvailable } = await import('../monitoring/machineMaintenance/readings.js');
         const { windowFor } = await import('../monitoring/machineMaintenance/planner.js');
         const { makeMachineWedgeJudge } = await import('../monitoring/MachineWedgeJudge.js');
         const { makeWedgeNoticeSender } = await import('../monitoring/MachineWedgeNotice.js');
@@ -23963,6 +23963,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             const reader = getActiveMachineLockStateReader();
             return reader ? (await reader.read()).lockState : null;
           },
+          // F1 on macOS: the shipped no-UI canary, opened through LaunchServices (`open -g -j`).
+          canaryAvailable: () => wedgeCanaryAvailable(),
+          ownUser: os.userInfo().username,
           loadReading: () => {
             const r = _machineLoadSampler?.read() ?? null;
             return r ? { verdict: r.verdict, cpuIdlePct: r.cpuIdlePct, eventLoopLagP99Ms: r.eventLoopLagP99Ms, sampleAgeMs: r.sampleAgeMs } : null;

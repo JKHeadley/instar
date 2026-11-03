@@ -16,7 +16,7 @@ import type { IntelligenceOptions, IntelligenceProvider } from '../../src/core/t
 const evidence: WedgeJudgeEvidence = {
   pair: 'F2+F4',
   families: {
-    F1: { result: 'unknown', reason: 'canary-not-shipped', ageMinutes: 0 },
+    F1: { result: 'unknown', reason: 'canary-not-installed', ageMinutes: 0 },
     F2: { result: 'positive', reason: 'ps-timed-out', ageMinutes: 0 },
     F3: { result: 'not-covered', reason: 'dialog-probe-not-built', ageMinutes: null },
     F4: { result: 'positive', reason: 'impaired-while-idle', ageMinutes: 0 },

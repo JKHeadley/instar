@@ -52,7 +52,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: instar-desktop-host-universal
-          path: dist/native/instar-desktop-host
+          path: |
+            dist/native/instar-desktop-host
+            dist/native/InstarWedgeCanary.app
           if-no-files-found: error
           retention-days: 7
 
@@ -92,9 +94,9 @@ jobs:
           path: dist/native
       - name: Verify release includes native desktop host
         run: |
-          chmod 0755 dist/native/instar-desktop-host
+          chmod 0755 dist/native/instar-desktop-host dist/native/InstarWedgeCanary.app/Contents/MacOS/InstarWedgeCanary
           node scripts/check-native-desktop-release.mjs
-          npm pack --dry-run --json --ignore-scripts | node -e 'let text=""; process.stdin.on("data", chunk => text += chunk).on("end", () => { const pack = JSON.parse(text)[0]; if (!pack.files.some(file => file.path === "dist/native/instar-desktop-host")) throw new Error("npm tarball omits native desktop host"); });'
+          npm pack --dry-run --json --ignore-scripts | node -e 'let text=""; process.stdin.on("data", chunk => text += chunk).on("end", () => { const pack = JSON.parse(text)[0]; if (!pack.files.some(file => file.path === "dist/native/instar-desktop-host")) throw new Error("npm tarball omits native desktop host"); if (!pack.files.some(file => file.path === "dist/native/InstarWedgeCanary.app/Contents/MacOS/InstarWedgeCanary")) throw new Error("npm tarball omits the wedge canary app"); });'
 
       - name: Assemble release-note fragments
         # Release notes are authored as per-PR FRAGMENTS in upgrades/next/<slug>.md

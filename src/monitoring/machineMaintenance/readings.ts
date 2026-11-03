@@ -16,7 +16,34 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { SafetyHoldId } from './planner.js';
+
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * The shipped wedge canary (Part E, F1 on macOS): a no-UI app that quits at once,
+ * built by scripts/build-native-desktop-host.mjs into dist/native. From a source
+ * checkout this resolves to that checkout's dist; from the package, beside dist.
+ */
+export const WEDGE_CANARY_APP = path.basename(path.resolve(MODULE_DIR, '..', '..')) === 'src'
+  ? path.resolve(MODULE_DIR, '..', '..', '..', 'dist', 'native', 'InstarWedgeCanary.app')
+  : path.resolve(MODULE_DIR, '..', '..', 'native', 'InstarWedgeCanary.app');
+
+/**
+ * Whether the canary can be run here: macOS, the bundle's executable present, and not
+ * a test run that did not opt in (a test must not launch the real app by accident).
+ */
+export function wedgeCanaryAvailable(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env, app: string = WEDGE_CANARY_APP): boolean {
+  if (platform !== 'darwin') return false;
+  if (env.VITEST && env.INSTAR_REAL_WEDGE_CANARY_TESTS !== '1') return false;
+  try {
+    return fs.statSync(path.join(app, 'Contents', 'MacOS', 'InstarWedgeCanary')).isFile();
+  } catch {
+    // @silent-fallback-ok — no canary installed: F1 on macOS reads unknown, with that reason.
+    return false;
+  }
+}
 
 /** Every OS call this feature can make, by name, with its exact arguments. Nothing else can run. */
 const READ_ONLY_CALLS = {
@@ -37,6 +64,15 @@ const READ_ONLY_CALLS = {
   interopProbe: { command: 'cmd.exe', args: ['/c', 'exit', '0'] },
   // F2 on WSL: the Windows process table, timed.
   windowsTasks: { command: 'tasklist.exe', args: ['/NH', '/FO', 'CSV'] },
+  // F1 on macOS: LaunchServices starts the shipped no-UI canary, which quits at once.
+  // `-g` keeps it in the background and `-j` hidden; nothing is drawn or focused.
+  guiCanary: { command: '/usr/bin/open', args: ['-g', '-j', WEDGE_CANARY_APP] },
+  // F1 eligibility on macOS: who owns the console. `root` is the login window (no one
+  // logged in); another name is someone else's session. A file stat, no GUI involved.
+  consoleOwner: { command: '/usr/bin/stat', args: ['-f', '%Su', '/dev/console'] },
+  // F2 on macOS: the data.kalloc.1024 kernel zone. Unprivileged, zprint reports the
+  // zone's in-use element count and element size (its byte columns read 0 without root).
+  kernelZone: { command: '/usr/bin/zprint', args: ['-L', 'data.kalloc.1024'] },
 } as const;
 
 export type ReadingName = keyof typeof READ_ONLY_CALLS;
@@ -51,6 +87,8 @@ export interface ProbeResult {
   timedOut: boolean;
   /** The error code when it did not succeed: `ENOENT`, `EAGAIN`, an exit code, or null. */
   code: string | number | null;
+  /** What the child wrote to stderr, when it ended with an error. Parsed for codes only, never shown. */
+  stderr?: string | null;
 }
 
 export type ProbeRunner = (name: ReadingName, timeoutMs: number) => Promise<ProbeResult>;
@@ -60,10 +98,10 @@ export type ExecLike = (
   command: string,
   args: string[],
   options: { timeout: number; killSignal: NodeJS.Signals; maxBuffer: number; env: NodeJS.ProcessEnv },
-  callback: (err: Error | null, stdout: string) => void,
+  callback: (err: Error | null, stdout: string, stderr?: string) => void,
 ) => unknown;
 
-const defaultExec: ExecLike = (command, args, options, callback) => execFile(command, args, options, (err, stdout) => callback(err, String(stdout)));
+const defaultExec: ExecLike = (command, args, options, callback) => execFile(command, args, options, (err, stdout, stderr) => callback(err, String(stdout), String(stderr ?? '')));
 
 /**
  * A child stuck in the kernel (uninterruptible sleep) ignores every signal, so
@@ -94,12 +132,12 @@ function runCall(name: ReadingName, timeoutMs: number, tmuxPath?: string, runChi
     }, timeoutMs + PROBE_EXIT_GRACE_MS);
     guard.unref?.();
     try {
-      runChild(command, [...call.args], { timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } }, (err, stdout) => {
+      runChild(command, [...call.args], { timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } }, (err, stdout, stderr) => {
         outstanding?.delete(name);
         const ms = Date.now() - started;
         if (!err) { finish({ ok: true, stdout, ms, timedOut: false, code: null }); return; }
         const e = err as NodeJS.ErrnoException & { killed?: boolean };
-        finish({ ok: false, stdout: null, ms, timedOut: e.killed === true, code: e.code ?? null });
+        finish({ ok: false, stdout: null, ms, timedOut: e.killed === true, code: e.code ?? null, stderr: stderr ? stderr.slice(0, 2048) : null });
       });
     } catch (err) {
       // A spawn that throws synchronously (EAGAIN on some platforms) is a completed failure, not a hang.

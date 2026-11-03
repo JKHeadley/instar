@@ -25,7 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { HostMaintenanceStore, WedgeMaintainerClaim } from './HostMaintenanceStore.js';
 import type { ProbeResult, ProbeRunner } from './readings.js';
-import { readF1, readF2, readF4, type FamilyReading, type LoadReading, type WedgePlatform } from './wedgeEvidence.js';
+import { consoleSessionFromOwner, readF1, readF2, readF4, type FamilyReading, type LoadReading, type WedgePlatform } from './wedgeEvidence.js';
 import {
   CANDIDATE_FAMILIES, JUDGE_ACTIONS, currentCandidate, emptyWindow, isFresh, nextSampleDelay, observe, recentlyRestarted, rungsFor, singleFamilyRun,
   WEDGE_FRESH_MS, WEDGE_MAX_GAP_MS, WEDGE_MIN_OBSERVATIONS, WEDGE_RECENT_BOOT_MS, WEDGE_SAMPLE_IDLE_MS, WEDGE_SAMPLE_POSITIVE_MS, WEDGE_SINGLE_FAMILY_MS, WEDGE_WINDOW_MS,
@@ -95,6 +95,10 @@ export interface WedgeMonitorDeps {
   readBootAt: () => Promise<number | null>;
   /** The honest lock reading on macOS; null where it is not read. */
   lockState?: () => Promise<string | null>;
+  /** macOS: whether the shipped wedge canary can run here (installed, not a test that did not opt in). */
+  canaryAvailable?: () => boolean;
+  /** macOS: this agent's OS user, compared with the console owner for F1 eligibility. */
+  ownUser?: string;
   loadReading: () => LoadReading | null;
   /** Session spawns that failed for system reasons in the last 30 minutes; null when not counted. */
   spawnSystemFailures30m: () => number | null;
@@ -295,18 +299,24 @@ export class WedgeMonitor {
       if (wasKnown) { this.window = emptyWindow(); this.audit({ type: 'wedge-new-boot', bootAt }); }
     }
 
-    const f1Name = platform === 'linux' ? 'userUnitProbe' as const : platform === 'wsl' ? 'interopProbe' as const : null;
-    const [ps, f1Probe, tasklist, lockState] = await Promise.all([
+    const mac = platform === 'darwin';
+    let canary = false;
+    try { canary = mac && this.deps.canaryAvailable?.() === true; } catch { canary = false; } // @silent-fallback-ok — no canary: F1 reads unknown with that reason
+    const f1Name = platform === 'linux' ? 'userUnitProbe' as const : platform === 'wsl' ? 'interopProbe' as const : canary ? 'guiCanary' as const : null;
+    const [ps, f1Probe, tasklist, lockState, consoleOwner, kernelZone] = await Promise.all([
       this.runProbe('processStates', PS_TIMEOUT_MS),
       f1Name ? this.runProbe(f1Name, F1_TIMEOUT_MS) : Promise.resolve(null),
       platform === 'wsl' ? this.runProbe('windowsTasks', F1_TIMEOUT_MS) : Promise.resolve(null),
-      platform === 'darwin' && this.deps.lockState ? bounded(this.deps.lockState(), WEDGE_READ_BOUND_MS, null) : Promise.resolve(null),
+      mac && this.deps.lockState ? bounded(this.deps.lockState(), WEDGE_READ_BOUND_MS, null) : Promise.resolve(null),
+      canary ? this.runProbe('consoleOwner', PS_TIMEOUT_MS) : Promise.resolve(null),
+      mac ? this.runProbe('kernelZone', PS_TIMEOUT_MS) : Promise.resolve(null),
     ]);
     const at = this.now();
 
-    const f1 = readF1({ platform, probe: f1Probe, passedSinceBoot: this.durable.f1PassedThisBoot, lockState });
+    const consoleSession = mac ? consoleSessionFromOwner(consoleOwner, this.deps.ownUser) : null;
+    const f1 = readF1({ platform, probe: f1Probe, passedSinceBoot: this.durable.f1PassedThisBoot, lockState, consoleSession });
     if (f1.passed) this.durable.f1PassedThisBoot = true;
-    const f2 = readF2({ platform, ps, priorCounts: this.durable.uninterruptibleCounts, tasklist });
+    const f2 = readF2({ platform, ps, priorCounts: this.durable.uninterruptibleCounts, tasklist, kernelZone });
     if (f2.count !== null) this.durable.uninterruptibleCounts = [...this.durable.uninterruptibleCounts, f2.count].slice(-3);
     const f4 = readF4({ load: this.deps.loadReading(), spawnSystemFailures30m: this.deps.spawnSystemFailures30m() });
 
@@ -537,9 +547,9 @@ export class WedgeMonitor {
         sampleEveryMinutes: WEDGE_SAMPLE_IDLE_MS / MIN, sampleEveryMinutesWhenPositive: WEDGE_SAMPLE_POSITIVE_MS / MIN,
       },
       limits: [
-        'F1 is unread on macOS: the canary app is not shipped and the capture probe is not wired.',
+        'F1 on macOS runs the shipped canary app only; the capture half (one helper frame) and the desktop-grant failure count are not wired.',
+        'The macOS canary app is signed with the release identity when one is configured, and is not notarized.',
         'F3 (stuck dialog) is not built; it never forms a candidate in any build.',
-        'The kernel-zone reading for F2 on macOS is not wired.',
         'Enrolment is not built, so the maintainer is whichever gated agent on this login claims first.',
       ],
       auditPath: this.deps.logPath,

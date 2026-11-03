@@ -42,8 +42,8 @@ describe('evidence readers', () => {
     expect(readF2({ platform: 'wsl', ps: ok('S\n'), priorCounts: [], tasklist: timedOut() }).reading).toMatchObject({ result: 'positive', reason: 'tasklist-timed-out' });
   });
 
-  it('F1: macOS is unread in this build (unknown), and locked is ineligible, never positive', () => {
-    expect(readF1({ platform: 'darwin', probe: null, passedSinceBoot: true }).reading).toMatchObject({ result: 'unknown', reason: 'canary-not-shipped' });
+  it('F1: macOS with no canary installed is unknown, and locked is ineligible, never positive', () => {
+    expect(readF1({ platform: 'darwin', probe: null, passedSinceBoot: true }).reading).toMatchObject({ result: 'unknown', reason: 'canary-not-installed' });
     expect(readF1({ platform: 'darwin', probe: null, passedSinceBoot: true, lockState: 'locked' }).reading.result).toBe('ineligible');
   });
 

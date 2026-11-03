@@ -35,4 +35,31 @@ if (process.platform === 'darwin') {
     throw new Error('Release desktop host lost its signing identity, so macOS grants would not survive an update');
   }
 }
-console.log('Universal macOS desktop host is packaged and executable');
+
+// The wedge canary (machine-self-maintenance Part E, F1): a no-UI app bundle beside the helper.
+const canaryApp = path.join(root, 'dist/native/InstarWedgeCanary.app');
+const canaryBinary = path.join(canaryApp, 'Contents/MacOS/InstarWedgeCanary');
+const canaryBytes = fs.readFileSync(canaryBinary);
+if (canaryBytes.length < 4096 || canaryBytes.readUInt32BE(0) !== 0xcafebabe) {
+  throw new Error('Release wedge canary is missing or is not a universal Mach-O binary');
+}
+const canaryArchCount = canaryBytes.readUInt32BE(4);
+const canaryArchs = new Set();
+for (let i = 0; i < canaryArchCount && 8 + (i + 1) * 20 <= canaryBytes.length; i++) canaryArchs.add(canaryBytes.readUInt32BE(8 + i * 20));
+if (!canaryArchs.has(0x0100000c) || !canaryArchs.has(0x01000007)) {
+  throw new Error('Release wedge canary must contain arm64 and x86_64');
+}
+if (!(fs.statSync(canaryBinary).mode & 0o111)) {
+  throw new Error('Release wedge canary is not executable');
+}
+const plist = fs.readFileSync(path.join(canaryApp, 'Contents/Info.plist'), 'utf8');
+for (const key of ['LSBackgroundOnly', 'LSUIElement']) {
+  if (!new RegExp(`<key>${key}</key>\\s*<true/>`).test(plist)) throw new Error(`Release wedge canary must set ${key}: it must never show a window or a Dock icon`);
+}
+if (!fs.existsSync(path.join(canaryApp, 'Contents/_CodeSignature/CodeResources'))) {
+  throw new Error('Release wedge canary bundle is not signed');
+}
+if (process.platform === 'darwin') {
+  execFileSync('codesign', ['--verify', '--strict', canaryApp], { stdio: ['ignore', 'pipe', 'pipe'] });
+}
+console.log('Universal macOS desktop host and wedge canary are packaged and executable');

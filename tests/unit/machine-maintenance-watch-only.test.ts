@@ -27,7 +27,8 @@ describe('machine maintenance cannot act', () => {
       const source = code(f);
       for (const m of source.matchAll(/(?:from|import\()\s*['"]([^'"]+)['"]/g)) {
         const spec = m[1];
-        if (spec.startsWith('./') || allowed.has(spec) || (f === 'readings.ts' && spec === 'node:child_process')) continue;
+        // readings.ts runs the command table and resolves the shipped canary bundle beside its own module.
+        if (spec.startsWith('./') || allowed.has(spec) || (f === 'readings.ts' && (spec === 'node:child_process' || spec === 'node:url'))) continue;
         throw new Error(`${f} imports ${spec}`);
       }
       expect(source, f).not.toMatch(/\bfetch\(|\brequire\(/);
@@ -39,13 +40,17 @@ describe('machine maintenance cannot act', () => {
     expect(users).toEqual(['readings.ts']);
     expect(code('readings.ts').match(/execFile\(/g)).toHaveLength(1);
     const table = /READ_ONLY_CALLS = \{([\s\S]*?)\n\} as const/.exec(code('readings.ts'))![1];
-    expect([...table.matchAll(/command: '([\w.-]+)', args: \[([^\]]*)\]/g)].map((m) => `${m[1]} ${m[2]}`).sort()).toEqual([
+    expect([...table.matchAll(/command: '([\w./-]+)', args: \[([^\]]*)\]/g)].map((m) => `${m[1]} ${m[2]}`).sort()).toEqual([
+      // F1 on macOS: LaunchServices opens Instar's own shipped no-UI canary, which quits at once.
+      "/usr/bin/open '-g', '-j', WEDGE_CANARY_APP",
+      "/usr/bin/stat '-f', '%Su', '/dev/console'",
+      "/usr/bin/zprint '-L', 'data.kalloc.1024'",
       "cmd.exe '/c', 'exit', '0'", "ioreg '-c', 'IOHIDSystem', '-d', '4'", "pmset '-g', 'batt'", "ps '-axo', 'args='", "ps '-axo', 'pid=,lstart=,args='",
       "ps '-axo', 'stat='", "sysctl '-n', 'kern.boottime'", "systemd-run '--user', '--quiet', '--wait', '--collect', '/bin/true'",
       "tasklist.exe '/NH', '/FO', 'CSV'", "tmux 'list-sessions', '-F', '#{session_name}'", "who '-u'",
     ]);
     // Every entry is matched above, so nothing else can hide in the table.
-    expect(table.match(/command:/g)).toHaveLength(11);
+    expect(table.match(/command:/g)).toHaveLength(14);
   });
 
   it('declares no callable yield on any kind', () => {
