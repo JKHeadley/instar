@@ -11,6 +11,8 @@ Tier 2; six production files (104 added, 33 removed lines), nine test and fixtur
 
 ## Decision-point inventory
 
+The shared Docs Coverage check was at 54% class coverage against its 55% floor on the initial head. The feedback factory documentation now names the actual intake and triage-message components (`FeedbackManager`, `FeedbackAnomalyDetector`, `TriageOrigin`) and their responsibilities. The local documentation coverage check passes at 55%; GitHub must verify the revised head.
+
 - `feedbackReviewLead` — added — classifies the lead model from persisted triage facts and actual changed paths; it never admits a merge.
 - `resolveClaudeReviewerModel` — modified — permits one explicit operator-selected Opus pin and still refuses other unapproved overrides.
 - Codex reviewer invocation — modified — accepts a restricted Astra/Sol choice and verifies the resolved concrete model before calling the provider.

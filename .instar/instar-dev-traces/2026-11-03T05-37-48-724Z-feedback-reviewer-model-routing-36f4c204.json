@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "feedback-reviewer-model-routing",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-03T05:37:48.724Z",
+  "artifactPath": "upgrades/side-effects/feedback-reviewer-model-routing.md",
+  "artifactSha256": "f55d8d5e9a347b3bd01ba63864fa0f536c6823cd50fcb138ba7172db76fa50fa",
+  "specPath": "docs/specs/feedback-triage-and-execution.md",
+  "coveredFiles": [
+    "site/src/content/docs/features/feedback-factory-processing.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Documentation repair for the shared CI coverage gate; it changes shipped guidance but no runtime behavior.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
