@@ -128,6 +128,46 @@ describe('GET /machine-maintenance wedge block (integration)', () => {
     expect(res.body.forcedDueAt).toBe(w.forcedDueAt);
   });
 
+  it('on macOS the block shows the F1 canary reading and the F2 kernel-zone reading, and still cannot act', async () => {
+    const bootAtMac = clock - 2 * 24 * 60 * MIN;
+    let canary = { ok: true, stdout: '', ms: 60, timedOut: false, code: null as string | number | null, stderr: null as string | null };
+    const mac = new WedgeMonitor({
+      agentName: 'echo', machineId: () => 'm_route_mac', platform: 'darwin',
+      logPath: path.join(dir, 'logs', 'machine-maintenance-mac.jsonl'),
+      store: new HostMaintenanceStore({ dir: path.join(dir, 'host-mac'), now: () => clock }),
+      enabled: () => true, settings: () => ({ dryRun: true, dryRunNotice: false }),
+      probe: async (name) => {
+        if (name === 'guiCanary') return canary;
+        if (name === 'consoleOwner') return { ok: true, stdout: 'me\n', ms: 3, timedOut: false, code: null };
+        if (name === 'kernelZone') return { ok: true, stdout: 'data.kalloc.1024            1024          0K          0K          0           0      332120     0K      0\n', ms: 200, timedOut: false, code: null };
+        return { ok: true, stdout: 'S\n', ms: 30, timedOut: false, code: null };
+      },
+      readBootAt: async () => bootAtMac,
+      lockState: async () => 'unlocked',
+      canaryAvailable: () => true,
+      ownUser: 'me',
+      loadReading: () => null, spawnSystemFailures30m: () => null, sessionsCount: () => 0,
+      nextWindowRestartAt: (now) => now + 14 * 60 * MIN, judge: null, raiseNotice: null, now: () => clock,
+    });
+    setActiveWedgeMonitor(mac);
+    await mac.tick();
+    let res = await request(app()).get('/machine-maintenance').set('Authorization', `Bearer ${AUTH}`);
+    expect(res.status).toBe(200);
+    expect(res.body.wedge.families.F1).toMatchObject({ result: 'negative', reason: 'canary-passed' });
+    expect(res.body.wedge.f1PassedThisBoot).toBe(true);
+    expect(res.body.wedge.families.F2).toMatchObject({ result: 'negative', detail: { kernelZoneRead: true, kallocInUseBytes: 332120 * 1024 } });
+    canary = { ok: false, stdout: null, ms: 2100, timedOut: false, code: 1, stderr: 'failed with error -600 for the file /private/x.app' };
+    clock += 10 * MIN;
+    await mac.tick();
+    res = await request(app()).get('/machine-maintenance').set('Authorization', `Bearer ${AUTH}`);
+    const w = res.body.wedge;
+    expect(w.families.F1).toMatchObject({ result: 'positive', reason: 'canary-failed', detail: { launchServicesError: -600 } });
+    // The stderr path never reaches the route.
+    expect(JSON.stringify(res.body)).not.toContain('/private/x.app');
+    expect(w).toMatchObject({ canRestart: false, canStopWork: false, actuation: 'not-built' });
+    expect(w.limits.join(' ')).toMatch(/not notarized/);
+  });
+
   it('the pool view self row carries the same wedge block', async () => {
     setActiveWedgeMonitor(monitor);
     await monitor.tick();

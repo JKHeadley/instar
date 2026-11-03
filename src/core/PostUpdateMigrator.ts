@@ -1322,11 +1322,15 @@ export function MACHINE_BROWSER_CARE_CLAUDEMD_SECTION(port: number | string): st
  * fresh agents and updated ones. It records candidates and the judge's proposal; nothing
  * restarts. Sniff key: `### Is this machine wedged? (dry-run)`.
  */
+/** The wedge section's evidence sentence before the macOS canary and kernel-zone reading shipped. */
+export const MACHINE_WEDGE_STALE_F1_TEXT = 'F1 the GUI path (a no-op launch; unread on macOS in this build), F2 the process table (`ps` timing, fork failure, rising stuck processes),';
+export const MACHINE_WEDGE_CURRENT_F1_TEXT = 'F1 the GUI path (a no-op launch; on macOS a shipped background app opened through LaunchServices, which counts only after it has passed once since boot and never while the screen is locked or no one is logged in at the console), F2 the process table (`ps` timing, fork failure, rising stuck processes; on macOS also the `data.kalloc.1024` kernel zone over 4 GiB, read without root),';
+
 export function MACHINE_WEDGE_CLAUDEMD_SECTION(port: number | string): string {
   return `
 ### Is this machine wedged? (dry-run)
 
-- On a development agent, the host maintainer (one agent per login) samples four kinds of evidence every 10 minutes, every 2 while any is positive: F1 the GUI path (a no-op launch; unread on macOS in this build), F2 the process table (\`ps\` timing, fork failure, rising stuck processes), F3 a stuck dialog (not built), F4 the agent itself (impaired or lagging while the processor is idle). Read it: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/machine-maintenance\` → \`wedge\` (\`families\`, \`window\`, \`candidate\`, \`condition\`, \`lastVerdict\`, \`forcedDueAt\`, \`brakes\`). \`wedge: null\` means the sampler is not running here; a family reading \`unknown\`, \`ineligible\` or \`not-covered\` means it was not read, never "healthy".
+- On a development agent, the host maintainer (one agent per login) samples four kinds of evidence every 10 minutes, every 2 while any is positive: ${MACHINE_WEDGE_CURRENT_F1_TEXT} F3 a stuck dialog (not built), F4 the agent itself (impaired or lagging while the processor is idle). Read it: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/machine-maintenance\` → \`wedge\` (\`families\`, \`window\`, \`candidate\`, \`condition\`, \`lastVerdict\`, \`forcedDueAt\`, \`brakes\`). \`wedge: null\` means the sampler is not running here; a family reading \`unknown\`, \`ineligible\` or \`not-covered\` means it was not read, never "healthy".
 - A candidate needs the SAME two families positive at 3 or more observations across 20 minutes; a negative resets it and a gap over 6 minutes restarts it. One family positive for 2 hours forms no candidate but marks the next restart window due early (\`forcedDueAt\`, on paper).
 - Each new wedge condition gets one judge call; its proposal (\`leave\`, \`gentle\`, \`restart-next-window\`, \`restart-now\`) is recorded with the rungs it WOULD run. **Nothing restarts, closes or dismisses anything** (\`actuation: "not-built"\`, \`canRestart: false\`). The operator notice is off unless \`machineMaintenance.wedgeRestart.dryRunNotice\` is true. Audit: \`logs/machine-maintenance.jsonl\`.
 - **When to use** (PROACTIVE): the operator says a machine is frozen, unreachable or "stuck" → read \`wedge\` on that machine (or \`?scope=pool\`) and quote the families and their reasons; never call a machine healthy from unread families, and never run a restart by hand.
@@ -12163,6 +12167,12 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.upgraded.push('CLAUDE.md: added machine wedge detection section');
     } else {
       result.skipped.push('CLAUDE.md: machine wedge detection section already present');
+    }
+    // The macOS canary and kernel-zone reading (wedge-mac-f1-canary). Content-sniffed; idempotent.
+    if (content.includes(MACHINE_WEDGE_STALE_F1_TEXT)) {
+      content = content.replace(MACHINE_WEDGE_STALE_F1_TEXT, MACHINE_WEDGE_CURRENT_F1_TEXT);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated the machine wedge F1/F2 evidence line');
     }
 
     // Machine maintenance pool view (CMT-1199). Idempotent via content-sniffing on the pool route.

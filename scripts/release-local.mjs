@@ -591,6 +591,9 @@ catch { fail('npm pack did not return its package file list'); }
 if (!desktopPackFiles?.some((file) => file.path === 'dist/native/instar-desktop-host')) {
   fail('npm tarball omits the native desktop host');
 }
+if (!desktopPackFiles?.some((file) => file.path === 'dist/native/InstarWedgeCanary.app/Contents/MacOS/InstarWedgeCanary')) {
+  fail('npm tarball omits the wedge canary app');
+}
 
 // ── 3-4. release notes ────────────────────────────────────────────────
 step('Assemble release-note fragments (scripts/assemble-next-md.mjs)');
