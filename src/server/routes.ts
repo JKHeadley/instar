@@ -11364,7 +11364,10 @@ export function createRoutes(ctx: RouteContext): Router {
               ...s,
               name: sessionDisplayName(s.name, remotePlatform),
               machineId: s.machineId ?? p.machineId,
-              machineNickname: verifiedEntityName(p.machineId, s.machineNickname) ?? verifiedEntityName(p.machineId, nickname) ?? null,
+              // This machine's registry names the machine first, so one dashboard never shows
+              // the same machine under two names (2026-11-02: a peer called itself "Mac Lan"
+              // while the registry here said "Mac M5 Pro"). The peer's own name is the fallback.
+              machineNickname: verifiedEntityName(p.machineId, nickname) ?? verifiedEntityName(p.machineId, s.machineNickname) ?? null,
               remote: true,
             });
           }
@@ -17611,7 +17614,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             remote.push({
               ...j,
               machineId: j.machineId ?? p.machineId,
-              machineNickname: j.machineNickname ?? nickname ?? undefined,
+              machineNickname: nickname ?? j.machineNickname ?? undefined, // registry here first (see sessions)
               remote: true,
             });
           }
@@ -21579,10 +21582,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           const body = (await r.json()) as { items?: Array<Record<string, unknown>> };
           const nickname = cap?.nickname ?? null;
           for (const it of body.items ?? []) {
+            // Registry here names the machine first (see sessions). A title the peer prefixed
+            // with its own name ("Mac Lan: …") is re-prefixed with that name too.
+            const own = typeof it.machineNickname === 'string' ? it.machineNickname : null;
+            const name = nickname ?? own ?? undefined;
+            const title = typeof it.title === 'string' && own && nickname && own !== nickname && it.title.startsWith(`${own}: `)
+              ? `${nickname}: ${it.title.slice(own.length + 2)}`
+              : it.title;
             remote.push({
               ...it,
+              ...(title !== undefined ? { title } : {}),
               machineId: it.machineId ?? p.machineId,
-              machineNickname: it.machineNickname ?? nickname ?? undefined,
+              machineNickname: name,
               remote: true,
             });
           }
