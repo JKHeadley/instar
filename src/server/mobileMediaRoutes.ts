@@ -8,7 +8,8 @@
  *   PUT  /mobile/media/uploads/:uploadId/chunks/:i  one signed chunk (application/octet-stream)
  *   GET  /mobile/media/uploads/:uploadId            resume  {received, state, expiresAt}
  *   GET  /mobile/media/:sha256?ref=<conversationRef> download (Range honored, never executable);
- *        ref is app:<uuid> or telegram:<topicId> (§4.9 platform media)
+ *        ref is app:<uuid>, telegram:<topicId>, or a Slack conversation's canonical key
+ *        slack:<team>:<channel>[:<thread>] held by THIS machine (§4.9 platform media)
  *   POST /mobile/media/purge                        permanently remove files {conversationKeys, requestId}
  */
 import crypto from 'node:crypto';
@@ -20,12 +21,19 @@ import { requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
 import { CHUNK_BYTES, CONTROL_CHARS, MEDIA_KINDS, isInlineSafe, isSha256Hex, safeFileName, type AppAttachment, type MediaKind } from '../core/appMediaTypes.js';
 import { canonicalConversationKey, isAppConversationKey, parseAppCanonicalKey } from '../core/appConversationText.js';
 import type { UploadRow } from '../core/AppMediaStore.js';
+import { PLATFORM_CONVERSATION_KEY_RE } from '../core/AppConversationStore.js';
+import { slackMediaKeys } from '../core/appPlatformMedia.js';
 
 export interface MobileMediaRouteDeps {
   pairing: MobilePairingService;
   service: AppConversationService | null;
   /** Resolved at boot. */
   mediaEnabled: boolean;
+  /**
+   * Whether this machine holds the Slack conversation a download names (§4.9): the ref is the
+   * current canonical key of a conversation this machine's registry minted. Absent = no Slack.
+   */
+  slackHeld?: (canonicalKey: string) => boolean;
   now?: () => number;
 }
 
@@ -138,13 +146,22 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     const sha = String(req.params.sha256);
     const ref = typeof req.query.ref === 'string' ? req.query.ref : '';
     const notFound = () => res.status(404).json({ error: 'not-found' });
-    // The conversation is a live native app conversation (`app:<uuid>`) or a Telegram topic
-    // (`telegram:<topicId>`, §4.9), whose files are referenced by `platform-media` events.
+    // The conversation is a live native app conversation (`app:<uuid>`), a Telegram topic
+    // (`telegram:<topicId>`, §4.9), or a Slack conversation by its canonical key — only one this
+    // machine's registry minted itself, since a Slack conversation is served by the machine that
+    // lists it (§4.9). Platform files are referenced by `platform-media` events.
     const appKey = parseAppCanonicalKey(ref);
     const telegramKey = /^telegram:[1-9][0-9]{0,15}$/.test(ref) ? ref : null;
-    const key = appKey ?? telegramKey;
+    const slackKey = /^slack:/.test(ref) && ref.length <= 128 && deps.slackHeld?.(ref) === true ? ref : null;
+    const key = appKey ?? telegramKey ?? slackKey;
     if (!isSha256Hex(sha) || !key || (appKey && !svc!.liveConversation(appKey))) { notFound(); return; }
-    const att = svc!.store.mediaRefInConversation(key, sha);
+    // A Slack file may sit under the conversation's earlier placeholder-workspace key.
+    let att: ReturnType<AppConversationService["store"]["mediaRefInConversation"]> = null;
+    let refKey = key;
+    for (const k of slackKey ? slackMediaKeys(slackKey) : [key]) {
+      att = svc!.store.mediaRefInConversation(k, sha);
+      if (att) { refKey = k; break; }
+    }
     if (!att) { notFound(); return; }
     const blob = media.locateBlob(sha);
     // A good copy held now wins over a quarantined older copy of the same hash.
@@ -160,7 +177,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
       res.status(202).json({ state: 'fetching', retryAfterMs: 2000 });
       return;
     }
-    const attachment: AppAttachment | undefined = svc!.store.getMediaAttachments(key, att.messageId)?.[att.idx];
+    const attachment: AppAttachment | undefined = svc!.store.getMediaAttachments(refKey, att.messageId)?.[att.idx];
     const mediaType = attachment?.mediaType ?? 'application/octet-stream';
     const inline = isInlineSafe(mediaType);
     let handle: fs.promises.FileHandle;
@@ -219,7 +236,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
       if (isAppConversationKey(key)) {
         if (s.liveConversation(key)) { res.status(409).json({ error: 'conversation-live', detail: 'Delete the conversation first, then remove its files.' }); return; }
         if (!s.store.getConversation(key)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
-      } else if (!/^(telegram:\d+|slack:[A-Za-z0-9]+:[A-Za-z0-9]+(:[0-9.]+)?)$/.test(key)) {
+      } else if (!PLATFORM_CONVERSATION_KEY_RE.test(key)) {
         res.status(404).json({ error: 'unknown-conversation' });
         return;
       }

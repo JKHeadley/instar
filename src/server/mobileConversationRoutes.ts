@@ -225,7 +225,7 @@ const MAX_RECORD_BYTES = 72 * 1024;
 const MAX_ORIGIN_BODY_B64 = 64 * 1024;
 
 /** Attachment rows for the app: the stored fields plus the per-file byte fact (§4.13). Never a server path. */
-function attachmentRows(attachments: ReadonlyArray<AppAttachment>, svc: AppConversationService): Array<Record<string, unknown>> {
+export function attachmentRows(attachments: ReadonlyArray<AppAttachment>, svc: AppConversationService): Array<Record<string, unknown>> {
   return attachments.map((a) => ({ ...a, ...svc.media.byteFact(a.sha256, a.attachmentId) }));
 }
 

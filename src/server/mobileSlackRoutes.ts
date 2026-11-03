@@ -37,7 +37,8 @@ import { derivedEventId, hideCredentialSpans, removeAuthorityTokens } from '../c
 import type { MessageEvent } from '../core/AppConversationStore.js';
 import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { isExactStopMessage } from '../core/MessageSentinel.js';
-import { appOwnerName, buildSignedOrigin, historyRow } from './mobileConversationRoutes.js';
+import { appOwnerName, attachmentRows, buildSignedOrigin, historyRow } from './mobileConversationRoutes.js';
+import { slackDeviceText, slackPlatformMediaFor } from '../core/appPlatformMedia.js';
 import type { OriginVerdict } from '../core/AppRecordSignatures.js';
 import { readJsonlTailLastLines } from '../utils/jsonl-tail.js';
 
@@ -178,6 +179,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     const before = typeof req.query.before === 'string' ? req.query.before.split(',') : null;
     const isBefore = (at: string, eventId: string) => !before || before.length !== 2 || at < before[0]! || (at === before[0] && eventId < before[1]!);
 
+    const isDevice = principalDevice(req) !== null;
     const byId = new Map<string, Record<string, unknown>>();
     // App-sent messages from the store, with their verdict (the store is the evidence, never rotated).
     let stored: ReturnType<typeof svc.store.browseMessages>['messages'] = [];
@@ -200,14 +202,24 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
       }
       const eventId = `slack:${r.ts}`;
       if (!isBefore(r.at, eventId) || byId.has(eventId)) continue;
-      byId.set(eventId, { eventId, messageId: r.ts, role: r.fromUser ? 'participant' : 'agent', fromUser: r.fromUser, senderName: r.senderName, text: r.text, at: r.at, originVerified: 'none' });
+      // A DEVICE read (media spec §4.9): a file a Slack message carried comes back as
+      // `attachments` (the app history row shape), and the text never shows a server path.
+      let text = r.text;
+      let attachments: Record<string, unknown>[] | null = null;
+      if (isDevice) {
+        const recorded = r.fromUser ? slackPlatformMediaFor(svc.store, conv.key, r.ts) : null;
+        text = slackDeviceText(r.text, recorded);
+        if (recorded) { try { attachments = attachmentRows(recorded, svc); } catch { attachments = null; } } // @silent-fallback-ok — the row is still returned, path-free
+      }
+      byId.set(eventId, { eventId, messageId: r.ts, role: r.fromUser ? 'participant' : 'agent', fromUser: r.fromUser, senderName: r.senderName, text, at: r.at, originVerified: 'none', ...(attachments ? { attachments } : {}) });
     }
     const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
     const desc = [...byId.values()].sort((x, y) => cmp(String(y.at), String(x.at)) || cmp(String(y.eventId), String(x.eventId)));
     const page = desc.slice(0, limit);
     const oldest = page[page.length - 1];
     res.json({
-      conversationId: id, title: slackConversationTitle(conv), messages: page.reverse(),
+      // `conversationKey` is the `ref` a download of this conversation's files names (§4.9).
+      conversationId: id, title: slackConversationTitle(conv), conversationKey: conv.key, messages: page.reverse(),
       nextBefore: desc.length > limit && oldest ? `${String(oldest.at)},${String(oldest.eventId)}` : null,
     });
   });
@@ -493,7 +505,7 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
         const threadTs = typeof row.threadTs === 'string' && row.threadTs !== ts ? row.threadTs : null;
         const k = routingKeyOf(row.channelId, threadTs);
         const cur = map.get(k);
-        if (!cur || row.timestamp >= cur.at) map.set(k, { at: row.timestamp, preview: row.text.slice(0, 140) });
+        if (!cur || row.timestamp >= cur.at) map.set(k, { at: row.timestamp, preview: row.text.slice(0, 2048) }); // cut to 140 after paths are replaced (slackListRows)
       }
       activityCache = { at: now(), map };
       return map;
@@ -539,6 +551,6 @@ export function slackListRows(bridge: MobileSlackBridge): Array<{ id: number; ti
   const act = bridge.lastActivity();
   return bridge.conversations().map((c) => {
     const a = act.get(routingKeyOf(c.channelId, c.threadTs));
-    return { id: c.id, title: slackConversationTitle(c), lastActivity: a?.at ?? c.mintedAt, lastPreview: a?.preview ?? null };
+    return { id: c.id, title: slackConversationTitle(c), lastActivity: a?.at ?? c.mintedAt, lastPreview: a ? slackDeviceText(a.preview).slice(0, 140) : null };
   });
 }

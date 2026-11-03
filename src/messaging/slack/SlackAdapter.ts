@@ -101,6 +101,34 @@ export function classifyFilesInfoSelfTest(
   return { status: 'fail', detail: `Unexpected error: ${probeError}` };
 }
 
+/** One file the Slack inbound path downloaded (docs/specs/mobile-native-chat-media.md §4.9). */
+export interface SlackInboundMedia {
+  channelId: string;
+  /** The message's thread ts (absent for a top-level message). */
+  threadTs: string | null;
+  /** The Slack message ts (for a standalone `file_shared` file, the id its log row carries). */
+  platformMessageId: string;
+  /** The file's position in the message's `files` list. */
+  fileIndex: number;
+  filePath: string;
+  /** The tag the session received for it: `[image:]` → photo, `[document:]` → file, `[voice]` → voice. */
+  declaredKind: 'photo' | 'file' | 'voice';
+  filename: string;
+  declaredType: string;
+  at: string;
+  durationMs?: number;
+  width?: number;
+  height?: number;
+}
+export type SlackInboundMediaHook = (info: SlackInboundMedia) => Promise<void> | void;
+
+/** Longest the inbound media copy is waited on before delivery stops caring about it. */
+const INBOUND_MEDIA_WAIT_MS = 30_000;
+
+function finiteNonNegative(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
+}
+
 export class SlackAdapter implements MessagingAdapter {
   readonly platform = 'slack';
 
@@ -196,6 +224,34 @@ export class SlackAdapter implements MessagingAdapter {
   onListSessions: (() => Array<{ name: string; tmuxSession: string; status: string; alive: boolean }>) | null = null;
   /** Called to check if a session is alive */
   onIsSessionAlive: ((tmuxSession: string) => boolean) | null = null;
+  // Inbound media copy (docs/specs/mobile-native-chat-media.md §4.9): wired by the server only
+  // when native app media is on. Called after a successful download, beside delivery (the
+  // download stays on disk). Failures never affect delivery to the session.
+  private inboundMediaHook: SlackInboundMediaHook | null = null;
+
+  setInboundMediaHook(hook: SlackInboundMediaHook | null): void { this.inboundMediaHook = hook; }
+
+  /**
+   * Hand one downloaded file to the inbound media hook. Bounded: at most 30 s is waited, and any
+   * failure is logged and swallowed — the Slack delivery to the session goes on regardless.
+   */
+  private async copyInboundMedia(info: SlackInboundMedia): Promise<void> {
+    const hook = this.inboundMediaHook;
+    if (!hook) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      await Promise.race([
+        Promise.resolve().then(() => hook(info)),
+        new Promise<void>((resolve) => { timer = setTimeout(() => { console.warn(`[slack] inbound media copy for message ${info.platformMessageId} took over 30 s; delivery continues`); resolve(); }, INBOUND_MEDIA_WAIT_MS); }),
+      ]);
+    } catch (err) {
+      // @silent-fallback-ok — the hook reports its own degradation; delivery to the session is unaffected
+      console.warn(`[slack] inbound media copy failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   /** Called to transcribe a voice/audio file (via Whisper API) */
   transcribeVoice: ((filePath: string) => Promise<string>) | null = null;
   /** Called to handle standby commands (unstick, quiet, resume, restart) */
@@ -1258,7 +1314,7 @@ export class SlackAdapter implements MessagingAdapter {
     // Download attached files (images, documents, voice/audio) and append appropriate tags
     const filePaths: string[] = [];
     if (files && files.length > 0) {
-      for (const file of files) {
+      for (const [fileIndex, file] of files.entries()) {
         // Prefer url_private_download (direct download URL) over url_private (preview URL)
         const url = (file.url_private_download as string) || (file.url_private as string);
         const mimetype = file.mimetype as string ?? '';
@@ -1272,6 +1328,15 @@ export class SlackAdapter implements MessagingAdapter {
           const destPath = path.join(this.fileHandler.downloadDir, destName);
           const savedPath = await this.fileHandler.downloadFile(url, destPath);
           filePaths.push(savedPath);
+          // §4.9: the app's copy, recorded under the tag the session received (a shared text file
+          // inlined into the message is not recorded: its content is already in the text).
+          const keepForApp = (declaredKind: SlackInboundMedia['declaredKind']) => {
+            void this.copyInboundMedia({
+              channelId, threadTs: threadTs ?? null, platformMessageId: ts, fileIndex, filePath: savedPath, declaredKind,
+              filename, declaredType: mimetype || 'application/octet-stream', at: new Date(parseFloat(ts) * 1000).toISOString(),
+              width: finiteNonNegative(file.original_w), height: finiteNonNegative(file.original_h), durationMs: finiteNonNegative(file.duration_ms),
+            });
+          };
 
           // Detect text-based content (snippets, plain text, code, markdown, CSV, etc.)
           const isText = mimetype.startsWith('text/') ||
@@ -1359,22 +1424,27 @@ export class SlackAdapter implements MessagingAdapter {
             const imageValid = this._validateImageFile(savedPath);
             if (imageValid) {
               cleanText = cleanText ? `${cleanText} [image:${savedPath}]` : `[image:${savedPath}]`;
+              keepForApp('photo');
             } else {
               // File exists but isn't a valid/processable image — fall back to document
               console.warn(`[slack] Downloaded image failed validation, treating as document: ${savedPath}`);
               cleanText = cleanText ? `${cleanText} [document:${savedPath}]` : `[document:${savedPath}]`;
+              keepForApp('file');
             }
           } else if (isAudio && this.transcribeVoice) {
             // Voice message: transcribe and inject as [voice] transcript
             try {
               const transcript = await this.transcribeVoice(savedPath);
               cleanText = cleanText ? `${cleanText} [voice] ${transcript}` : `[voice] ${transcript}`;
+              keepForApp('voice');
             } catch (transcribeErr) {
               console.warn(`[slack] Voice transcription failed: ${(transcribeErr as Error).message}`);
               cleanText = cleanText ? `${cleanText} [document:${savedPath}]` : `[document:${savedPath}]`;
+              keepForApp('file');
             }
           } else {
             cleanText = cleanText ? `${cleanText} [document:${savedPath}]` : `[document:${savedPath}]`;
+            keepForApp('file');
           }
         } catch (err) {
           console.warn(`[slack] Failed to download file ${filename}: ${(err as Error).message}`);
@@ -1579,10 +1649,12 @@ export class SlackAdapter implements MessagingAdapter {
       const destName = `${isImage ? 'photo' : isAudio ? 'voice' : 'file'}-${Date.now()}-${fileId}.${filename.split('.').pop() ?? 'bin'}`;
       const destPath = path.join(this.fileHandler.downloadDir, destName);
       const savedPath = await this.fileHandler.downloadFile(url, destPath);
+      let keptAs: SlackInboundMedia['declaredKind'] = 'file';
 
       if (isImage) {
         const imageValid = this._validateImageFile(savedPath);
         cleanText = imageValid ? `[image:${savedPath}]` : `[document:${savedPath}]`;
+        if (imageValid) keptAs = 'photo';
         if (!imageValid) {
           console.warn(`[slack] Downloaded image failed validation, treating as document: ${savedPath}`);
         }
@@ -1590,6 +1662,7 @@ export class SlackAdapter implements MessagingAdapter {
         try {
           const transcript = await this.transcribeVoice(savedPath);
           cleanText = `[voice] ${transcript}`;
+          keptAs = 'voice';
         } catch (transcribeErr) {
           console.warn(`[slack] Voice transcription failed: ${(transcribeErr as Error).message}`);
           cleanText = `[document:${savedPath}]`;
@@ -1597,6 +1670,12 @@ export class SlackAdapter implements MessagingAdapter {
       } else {
         cleanText = `[document:${savedPath}]`;
       }
+      // §4.9: the app's copy, keyed by the id this file's log row carries (it has no message ts).
+      void this.copyInboundMedia({
+        channelId, threadTs: null, platformMessageId: ts, fileIndex: 0, filePath: savedPath, declaredKind: keptAs,
+        filename, declaredType: mimetype || 'application/octet-stream', at: new Date().toISOString(),
+        width: finiteNonNegative(fileInfo.original_w), height: finiteNonNegative(fileInfo.original_h), durationMs: finiteNonNegative(fileInfo.duration_ms),
+      });
     } catch (err) {
       console.error(`[slack] Failed to download standalone file ${filename}: ${(err as Error).message}`);
       cleanText = `[document:download-failed]`;

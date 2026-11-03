@@ -1,5 +1,5 @@
 /**
- * Telegram (and later Slack) media in the app's history (docs/specs/mobile-native-chat-media.md
+ * Telegram and Slack media in the app's history (docs/specs/mobile-native-chat-media.md
  * §4.9, third bullet): a file that arrived in a platform conversation is copied into the app media
  * blob store and recorded as one durable, replicated `platform-media` event under the platform
  * conversation's canonical key. That event — not the rotating platform log — is the reference that
@@ -129,4 +129,96 @@ export function deviceTextForRow(text: string, attachments?: ReadonlyArray<AppAt
       const fromPath = path.basename(p).replace(/^\d{10,}-/, '');
       return `[file: ${displayName(a ? a.filename : fromPath || 'file')}]`;
     });
+}
+
+// ── Slack (§4.9, the Slack half) ─────────────────────────────────────────────────────────────
+
+/** A Slack message carries at most this many files (Slack's own limit). */
+export const SLACK_MAX_FILES_PER_MESSAGE = 10;
+
+/**
+ * The platform message id of one Slack file: the message ts for the message's first recorded
+ * file position, `<ts>:<i>` for the file at position `i` > 0, so every file of a message gets its
+ * own event and a re-delivered message appends nothing new.
+ */
+export function slackPlatformMessageId(ts: string, fileIndex: number): string {
+  return fileIndex > 0 ? `${ts}:${fileIndex}` : ts;
+}
+
+/**
+ * The keys a Slack conversation's media may be recorded under: its current canonical key, and,
+ * for a concrete workspace, the same conversation under the registry's `_` placeholder (a file
+ * recorded before the registry learned the workspace keeps its first key).
+ */
+export function slackMediaKeys(canonicalKey: string): string[] {
+  const m = /^slack:([^:]+):(.+)$/.exec(canonicalKey);
+  if (!m || m[1] === '_') return [canonicalKey];
+  return [canonicalKey, `slack:_:${m[2]}`];
+}
+
+/** The slice of the conversation registry the Slack media path uses. */
+export interface SlackMediaRegistry {
+  mintForInbound(routingKey: string): { id: number | null };
+  resolve(id: number): unknown;
+  resolveByKey(key: string): unknown;
+}
+
+/**
+ * The canonical key of the conversation a Slack inbound message belongs to: the same
+ * get-or-create mint the Slack inbound dispatch performs for its routing key, then the
+ * registry's canonical key for that id — the key the app store already uses for app-sent Slack
+ * messages. Null when the registry has no durable id for it. Never throws.
+ */
+export function slackMediaConversationKey(registry: SlackMediaRegistry, routingKey: string): string | null {
+  try {
+    const id = registry.mintForInbound(routingKey).id;
+    if (id === null) return null;
+    const d = registry.resolve(id) as { platform?: string; key?: unknown } | null;
+    return d && d.platform === 'slack' && typeof d.key === 'string' && PLATFORM_CONVERSATION_KEY_RE.test(d.key) ? d.key : null;
+  } catch { return null; } // @silent-fallback-ok — reported by the caller as recorded:false (no conversation)
+}
+
+/**
+ * Whether this machine holds the Slack conversation a download names: the ref is the CURRENT
+ * canonical key of a conversation this machine's registry minted itself (never a replicated
+ * entry, never a stale placeholder key). Never throws.
+ */
+export function slackConversationHeldLocally(registry: Pick<SlackMediaRegistry, 'resolveByKey'>, ref: string): boolean {
+  if (!/^slack:/.test(ref) || !PLATFORM_CONVERSATION_KEY_RE.test(ref)) return false;
+  try {
+    const d = registry.resolveByKey(ref) as { platform?: string; key?: unknown; origin?: unknown } | null;
+    return !!d && d.platform === 'slack' && d.key === ref && d.origin !== 'replicated';
+  } catch { return false; } // @silent-fallback-ok — an unreadable registry holds nothing (404)
+}
+
+/**
+ * Every file recorded for one Slack message in a conversation, in the message's file order
+ * (for `deviceTextForRow`'s `[document:]` naming). Null when none. Never throws.
+ */
+export function slackPlatformMediaFor(store: Pick<AppConversationService['store'], 'getPlatformMedia'>, canonicalKey: string, ts: string): AppAttachment[] | null {
+  const out: AppAttachment[] = [];
+  const keys = slackMediaKeys(canonicalKey);
+  for (let i = 0; i < SLACK_MAX_FILES_PER_MESSAGE; i++) {
+    const pmid = slackPlatformMessageId(ts, i);
+    for (const k of keys) {
+      let ev: ReturnType<typeof store.getPlatformMedia> = null;
+      try { ev = store.getPlatformMedia(k, pmid); } catch { ev = null; } // @silent-fallback-ok — the row is still returned, path-free
+      if (ev) { out.push(...ev.attachments); break; }
+    }
+  }
+  return out.length ? out : null;
+}
+
+const SLACK_REVIEW_PATH = /(manual review) at [^\]\n]*\]/g;
+const SLACK_SAVED_PATH = /(full content saved) to [^\]\n]*\]/g;
+
+/**
+ * A Slack history row's text as a device may see it: the paths the Slack adapter writes into a
+ * shared text file's note replaced too, then `deviceTextForRow`.
+ */
+export function slackDeviceText(text: string, attachments?: ReadonlyArray<AppAttachment> | null): string {
+  return deviceTextForRow(
+    text.replace(SLACK_REVIEW_PATH, "$1 on the agent's machine]").replace(SLACK_SAVED_PATH, "$1 on the agent's machine]"),
+    attachments,
+  );
 }

@@ -103,7 +103,12 @@ export interface PlatformMediaEvent extends AppEventBase { kind: 'platform-media
 export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent | MediaMessageEvent | PurgeEvent | PlatformMediaEvent;
 
 /** A platform conversation's canonical key (the same shapes the purge route accepts). */
-export const PLATFORM_CONVERSATION_KEY_RE = /^(telegram:\d+|slack:[A-Za-z0-9]+:[A-Za-z0-9]+(:[0-9.]+)?)$/;
+/**
+ * A Slack key is the conversation registry's canonical key: `slack:<team>:<channel>[:<thread>]`,
+ * where `<team>` is a workspace id or `_` (the registry's unknown-workspace placeholder, which a
+ * mint uses until the workspace is known), `<channel>` a `C`/`D`/`G` id and `<thread>` a Slack ts.
+ */
+export const PLATFORM_CONVERSATION_KEY_RE = /^(telegram:\d+|slack:(_|[A-Za-z0-9]+):[A-Za-z0-9]+(:[0-9.]+)?)$/;
 
 /** The stable message id (and event id) of the platform-media event for one platform message. */
 export function platformMediaMessageId(conversationKey: string, platformMessageId: string): string {
