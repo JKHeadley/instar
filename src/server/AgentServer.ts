@@ -1142,6 +1142,11 @@ export class AgentServer {
     autonomousRunOnMachine?: (machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>;
     /** Kick the working-set carrier on the machine that just acquired a topic. */
     kickWorkingSetOnMachine?: (machineId: string, topic: number) => void;
+    /** Ownership Follows Live Work Part B for POST /sessions/spawn: record THIS
+     *  machine as the topic's owner when a topic-bound session is started here,
+     *  so a peer's router never treats the topic as unowned and starts a second
+     *  copy. Never force-claims a peer-owned topic. */
+    claimTopicOwnershipOnSpawn?: (topicId: number) => import('../core/ownershipFollowsLiveWork.js').ClaimOnSpawnOutcome;
     /** Every other active machine with a known URL — backs GET /sessions?scope=pool. */
     resolvePeerUrls?: () => Array<{
       machineId: string;
@@ -5738,6 +5743,7 @@ export class AgentServer {
       sendDrain: options.sendDrain ?? null,
       autonomousRunOnMachine,
       kickWorkingSetOnMachine,
+      claimTopicOwnershipOnSpawn: options.claimTopicOwnershipOnSpawn ?? null,
       resolvePeerUrls: options.resolvePeerUrls ?? null,
       guardRegistry: options.guardRegistry ?? null,
       listPoolMachines: options.listPoolMachines ?? null,
