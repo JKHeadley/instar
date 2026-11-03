@@ -30,5 +30,10 @@
   "eli16Path": "upgrades/side-effects/boot-queued-reply-origin-label.eli16.md",
   "sideEffectsPath": "upgrades/side-effects/boot-queued-reply-origin-label.md",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-triggered action: the existing recovery tick's legacy import gains a read-only label lookup (registry digest match + observer refresh, the same calls a direct session send makes); no restart, spawn, notify, retry or re-drive is added or changed."
+  }
 }
