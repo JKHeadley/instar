@@ -182,6 +182,23 @@ describe('Part B — planClaimOnSpawn (claim-on-spawn, both sides)', () => {
       .toEqual({ action: 'noop' });
   });
 
+  it('placing@self → in-flight (route() is mid-claim here; never a competing claim, never "owned elsewhere")', () => {
+    expect(planClaimOnSpawn({ enabled: true, selfMachineId: SELF, record: rec({ ownerMachineId: SELF, status: 'placing' }) }))
+      .toEqual({ action: 'in-flight' });
+  });
+
+  it('transferring → self → in-flight; transferring → a third machine stays owned-elsewhere', () => {
+    expect(planClaimOnSpawn({ enabled: true, selfMachineId: SELF, record: rec({ ownerMachineId: PEER, status: 'transferring', transferTo: SELF }) }))
+      .toEqual({ action: 'in-flight' });
+    expect(planClaimOnSpawn({ enabled: true, selfMachineId: SELF, record: rec({ ownerMachineId: PEER, status: 'transferring', transferTo: 'm_third' }) }).action)
+      .toBe('audit-owned-elsewhere');
+  });
+
+  it('placing@PEER stays owned-elsewhere', () => {
+    expect(planClaimOnSpawn({ enabled: true, selfMachineId: SELF, record: rec({ ownerMachineId: PEER, status: 'placing' }) }).action)
+      .toBe('audit-owned-elsewhere');
+  });
+
   it('force-claim contract guard: the plan NEVER yields a force-claim regardless of state', () => {
     const states: SessionOwnershipRecord['status'][] = ['active', 'transferring', 'placing', 'released'];
     for (const owner of [SELF, PEER]) {

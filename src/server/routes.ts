@@ -2001,6 +2001,9 @@ export interface RouteContext {
   autonomousRunOnMachine?: ((machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>) | null;
   /** Working-set acquire kick for an explicit transfer target. */
   kickWorkingSetOnMachine?: ((machineId: string, topic: number) => void) | null;
+  /** Ownership Follows Live Work Part B for POST /sessions/spawn (see AgentServer
+   *  option of the same name). Null/absent = not wired (single-machine). */
+  claimTopicOwnershipOnSpawn?: ((topicId: number) => import('../core/ownershipFollowsLiveWork.js').ClaimOnSpawnOutcome) | null;
   /** Every OTHER registered, non-revoked machine with a known URL — for pool-wide
    *  aggregation (GET /sessions?scope=pool). Null/absent (single-machine/dark). */
   resolvePeerUrls?:
@@ -12234,8 +12237,25 @@ export function createRoutes(ctx: RouteContext): Router {
         ultracode,
         topicId: parsedTopicId,
       });
+      let topicOwnership: string | undefined;
       if (parsedTopicId !== undefined) {
         persistTopicBinding(parsedTopicId, session.tmuxSession);
+        // Ownership Follows Live Work Part B (2026-11-03, topic 10000001485): a
+        // topic-bound spawn bypasses route(), which is what normally records the
+        // owner. Without this the topic stayed "unowned" in the pool while its
+        // session ran here, so a peer's router placed the user's next message on
+        // itself and started a SECOND copy. Never force-claims a peer-owned topic.
+        try {
+          topicOwnership = ctx.claimTopicOwnershipOnSpawn?.(parsedTopicId) ?? 'unwired';
+        } catch (err) {
+          // @silent-fallback-ok: reported in the response as `ownership:"error"`;
+          // the spawn already succeeded and the duplicate reconciler still converges.
+          topicOwnership = 'error';
+          console.warn(`[sessions/spawn] ownership claim failed for topic ${parsedTopicId}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        if (topicOwnership === 'owned-elsewhere') {
+          console.warn(`[sessions/spawn] topic ${parsedTopicId} is owned by another machine; spawned here without claiming (possible duplicate copy)`);
+        }
         try {
           ctx.topicProfile?.spawnBriefs?.record(parsedTopicId, session.tmuxSession, prompt);
         } catch (err) {
@@ -12258,7 +12278,7 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       res.status(201).json({
         ...session,
-        ...(parsedTopicId !== undefined ? { topicId: parsedTopicId, topicBound: true } : {}),
+        ...(parsedTopicId !== undefined ? { topicId: parsedTopicId, topicBound: true, ownership: topicOwnership } : {}),
       });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -24177,7 +24197,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
     }
-    const selectedAutonomousRun = liveAutonomousRun(topicId) ?? ownerAutonomousRun;
+    // A run on the machine the topic is moving TO is not interrupted by the move,
+    // so it neither needs consent nor gets suspended (2026-11-03, topic 136774:
+    // moving a topic back to the Studio that was running its build asked to
+    // pause that build). Only a run on a machine the topic is LEAVING counts.
+    const requestedTarget = resolveTarget(to);
+    const localRunIsOnTarget = self != null && requestedTarget === self;
+    // (When the target IS the owner the planner answers noop before it reads the
+    // run; this guard keeps the selection honest if that order ever changes.)
+    const ownerRunIsOnTarget = ownerBeforePlan != null && requestedTarget === ownerBeforePlan;
+    const runOnLeavingMachine = (): { goal: string | null; remainingMinutes: number | null; runKey: string | null } | null =>
+      localRunIsOnTarget ? null : liveAutonomousRun(topicId);
+    const selectedAutonomousRun = runOnLeavingMachine() ?? (ownerRunIsOnTarget ? null : ownerAutonomousRun);
     const plan = planTransferByNickname(
       { intent: 'transfer', nickname: to, matchedVerb: 'transfer' },
       {
@@ -24307,7 +24338,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // re-fired pull sees the final, consistent file. Only fires for a real
     // move (noop/already-there never suspends).
     let autonomousRunSuspended = false;
-    if (plan.action !== 'noop' && liveAutonomousRun(topicId)) {
+    if (plan.action !== 'noop' && runOnLeavingMachine()) {
       try {
         autonomousRunSuspended = suspendAutonomousTopicForMove(
           ctx.config.stateDir, topicId, target, ctx.state.getCoherenceJournal() ?? undefined,
