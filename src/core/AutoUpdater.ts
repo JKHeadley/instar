@@ -37,6 +37,23 @@ const DEFAULT_RESTART_RETRY_MS = 5 * 60_000;
 /** Retry delay once the local-verify hold that deferred a restart has ended. */
 const RESTART_HOLD_ENDED_RETRY_MS = 1_000;
 
+/**
+ * Is semver `a` strictly newer than `b`? Pre-release suffixes are ignored; malformed input is never newer.
+ * Same comparison as the private `UpdateChecker.isNewer`; keep the two in step.
+ */
+function isNewerVersion(a: string, b: string): boolean {
+  const semverRe = /^(\d+)\.(\d+)\.(\d+)/;
+  const matchA = semverRe.exec(a);
+  const matchB = semverRe.exec(b);
+  if (!matchA || !matchB) return false;
+  for (let i = 1; i <= 3; i++) {
+    const va = Number(matchA[i]);
+    const vb = Number(matchB[i]);
+    if (va !== vb) return va > vb;
+  }
+  return false;
+}
+
 export interface AutoUpdaterConfig {
   /** How often to check for updates, in minutes. Default: 30 */
   checkIntervalMinutes?: number;
@@ -467,6 +484,22 @@ export class AutoUpdater {
       this.lastError = null;
 
       if (!info.updateAvailable) {
+        // RECONCILE (#2282): the running build is current, so whatever pending
+        // update existed has landed. If it landed without passing through
+        // applyPendingUpdate's success branch (process killed mid-apply after
+        // the shadow install was written, a restart onto an externally
+        // installed build, ...) lastAppliedVersion was never advanced and
+        // would stay stale forever once pendingUpdate is cleared below.
+        // Advance it to the running version — forward only, and only when a
+        // version has been applied before (null means "never applied").
+        const runningVersion = this.updateChecker.getInstalledVersion();
+        if (this.lastAppliedVersion && isNewerVersion(runningVersion, this.lastAppliedVersion)) {
+          console.log(
+            `[AutoUpdater] Reconciling lastAppliedVersion v${this.lastAppliedVersion} → v${runningVersion} ` +
+            `(running build is newer than the recorded apply)`
+          );
+          this.lastAppliedVersion = runningVersion;
+        }
         this.pendingUpdate = null;
         this.pendingUpdateDetectedAt = null;
         this.coalescingUntil = null;
@@ -657,7 +690,14 @@ export class AutoUpdater {
       // updates files in-place (making getInstalledVersion() return the new version
       // before the verification step). Using targetVersion ensures the loop breaker
       // always matches and prevents the update→apply→notify→restart spam loop.
-      this.lastAppliedVersion = targetVersion;
+      // Exception (#2282): applyUpdate() re-checks the registry and installs
+      // whatever is latest, which can be NEWER than the pending target if a
+      // release landed during coalescing. Record that version, or the record
+      // lags the install and the loop breaker re-applies the newer build.
+      const appliedVersion = isNewerVersion(result.newVersion, targetVersion)
+        ? result.newVersion
+        : targetVersion;
+      this.lastAppliedVersion = appliedVersion;
       this.pendingUpdate = null;
       this.pendingUpdateDetectedAt = null;
       this.coalescingUntil = null;
@@ -686,7 +726,7 @@ export class AutoUpdater {
       // The loop breaker in tick() (checking lastAppliedVersion === latestVersion)
       // prevents this from becoming an infinite loop. After restart, the loop
       // breaker catches the next cycle and returns early.
-      await this.gatedRestart(targetVersion, options?.bypassWindow ?? false, options?.bypassHolds ?? false);
+      await this.gatedRestart(appliedVersion, options?.bypassWindow ?? false, options?.bypassHolds ?? false);
     } catch (err) {
       this.isApplying = false;
       // @silent-fallback-ok — lastError is persisted and logged below; release the temporary pause.
