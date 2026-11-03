@@ -184,8 +184,8 @@ import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairi
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
 import { createMobileMediaRouter } from './mobileMediaRoutes.js';
-import { AppConversationService, VOICE_TRANSCRIBE_DEADLINE_MS } from '../core/AppConversationService.js';
-import { transcribeAudioFile, configuredVoiceProvider } from '../core/VoiceTranscription.js';
+import { AppConversationService, VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS } from '../core/AppConversationService.js';
+import { transcribeAudioFile, configuredVoiceProvider, resolveTranscriptionProvider } from '../core/VoiceTranscription.js';
 import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
 import { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
@@ -5855,7 +5855,9 @@ export class AgentServer {
             },
             mediaMaxStoreBytes: () => options.config.mobilePairing?.native?.media?.maxStoreBytes,
             // §4.5.1: voice notes the phone did not transcribe use Telegram's transcriber (same provider).
-            transcribeVoice: (filePath, mediaType) => transcribeAudioFile(filePath, { explicit: configuredVoiceProvider(options.config), mediaType, timeoutMs: VOICE_TRANSCRIBE_DEADLINE_MS }),
+            // The dispatch waits 60 s; the provider call itself may run longer (a late transcript).
+            transcribeVoice: (filePath, mediaType, timeoutMs) => transcribeAudioFile(filePath, { explicit: configuredVoiceProvider(options.config), mediaType, timeoutMs: timeoutMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }),
+            voiceProviderName: () => resolveTranscriptionProvider({ explicit: configuredVoiceProvider(options.config) })?.name,
             raiseAttention: (item) => { void options.telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-media' }); },
             clearAttention: (conditionKey) => { options.telegram?.clearAttentionCondition({ conditionKey }, 'cleared: the app media store has room again'); },
             reportDegradation: (what, detail) => DegradationReporter.getInstance().report({
@@ -5906,6 +5908,9 @@ export class AgentServer {
         // push through the push service's budgets, folding and dedupe (fanned out to peers).
         const pairing = this.mobilePairing;
         svc.pushHook = (conversationKey, messageId) => { pairing.push?.onAppReply(conversationKey, messageId); };
+        // Server voice transcripts get the phone transcript's scan (§4.5.1): a dictated pending
+        // pairing code declines that pairing, exactly as in a caption or a phone transcript.
+        svc.setInboundScan((text) => pairing.scanInbound(text));
         svc.start();
         this.appConversations = svc;
         routeCtx.appConversations = svc;

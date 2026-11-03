@@ -15,8 +15,8 @@
 import type { ConversationRegistry } from './ConversationRegistry.js';
 import type { MobileChatRequestStore } from './MobileChatRequests.js';
 import { SessionChannelRegistry } from '../messaging/shared/SessionChannelRegistry.js';
-import { AppConversationStore, type AppEvent } from './AppConversationStore.js';
-import { derivedEventId, isAppConversationKey } from './appConversationText.js';
+import { AppConversationStore, MAX_STORED_TEXT, transcriptEventId, type AppEvent } from './AppConversationStore.js';
+import { derivedEventId, isAppConversationKey, removeAuthorityTokens } from './appConversationText.js';
 import { appInjectionTag, type AppInboundDispatch } from './appInboundDispatch.js';
 import { ledgerViewKey, verifyRecordedOrigin, type MachineKeyLookup, type MachineSigner, type OriginVerdict, type VerifiableRecord } from './AppRecordSignatures.js';
 import type { MobileDeviceKeyLedger } from './MobileDeviceKeyLedger.js';
@@ -77,9 +77,18 @@ export interface AppConversationServiceDeps {
    * `TranscriptionUnavailableError` when no provider is configured. Absent ⇒ every voice note
    * without a phone transcript reads "transcription unavailable".
    */
-  transcribeVoice?: (filePath: string, mediaType: string) => Promise<string>;
+  transcribeVoice?: (filePath: string, mediaType: string, timeoutMs?: number) => Promise<string>;
   /** How long one dispatch waits for a server transcript (default 60 s, the spec's fixed deadline). */
   transcribeDeadlineMs?: number;
+  /** At most this many provider calls run at once in this process (default 3). */
+  transcribeConcurrency?: number;
+  /**
+   * The ceiling on one transcription, queueing included (default 10 minutes): a call still queued
+   * at the ceiling ends "timed out waiting"; a running call gets only what is left of it.
+   */
+  transcribeCeilingMs?: number;
+  /** The provider name stored on a transcript event (e.g. `groq`); absent ⇒ `server`. */
+  voiceProviderName?: () => string | undefined;
 }
 
 /** §4.5.1: server transcription has a 60-second limit. */
@@ -90,12 +99,82 @@ export const VOICE_TRANSCRIBE_DEADLINE_MS = 60_000;
  * server transcript on one line, or an honest note when there is none.
  */
 export function voiceLineWithTranscript(filePath: string, transcript: string): string {
+  return `[voice:${filePath}] ${transcriptOneLine(transcript)}`;
+}
+
+/** A transcript on one line for a session: control characters removed; a long one says it was cut. */
+export function transcriptOneLine(transcript: string): string {
   const oneLine = transcript.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim();
-  return `[voice:${filePath}] ${oneLine ? Array.from(oneLine).slice(0, MAX_TRANSCRIPT_CHARS).join('') : '(no speech recognized)'}`;
+  if (!oneLine) return '(no speech recognized)';
+  const chars = Array.from(oneLine);
+  if (chars.length <= MAX_TRANSCRIPT_CHARS) return oneLine;
+  return `${chars.slice(0, MAX_TRANSCRIPT_CHARS).join('')} (transcript cut here; the full transcript is saved with the message)`;
 }
 
 export function voiceLineUnavailable(filePath: string, reason: string): string {
   return `[voice:${filePath}] (transcription unavailable: ${reason}; the audio file is at that path)`;
+}
+
+/**
+ * The line for a voice note whose server transcript was not ready by the deadline (§4.5.1). An app
+ * conversation gets the transcript later as one follow-up line; a Telegram or Slack conversation
+ * continued from the app keeps it with the message only (no follow-up path reaches those sessions).
+ */
+export function voiceLinePending(filePath: string, followUp: boolean): string {
+  return followUp
+    ? `[voice:${filePath}] (transcript not ready after 60 s; it follows in a separate line, and the audio file is at that path)`
+    : `[voice:${filePath}] (transcript not ready after 60 s; it is saved with the message if it finishes, and the audio file is at that path)`;
+}
+
+/** The follow-up line a late server transcript produces (§4.5.1), once per attachment. */
+export function lateTranscriptLine(filePath: string, outcome: VoiceOutcome, caption: string): string {
+  const forMsg = caption ? ` (for the message "${caption}")` : '';
+  return outcome.ok
+    ? `[voice transcript ready: ${filePath}]${forMsg} ${transcriptOneLine(transcriptForDelivery(outcome.text))}`
+    : `[voice transcript unavailable: ${filePath}]${forMsg} (transcription unavailable: ${outcome.reason}; the audio file is at that path)`;
+}
+
+/** What one server transcription produced. A failure carries a plain reason, never silence. */
+export type VoiceOutcome = { ok: true; text: string } | { ok: false; reason: string };
+
+/**
+ * How long the provider itself may take (§4.5.1): past the 60 s dispatch deadline the transcript
+ * is still wanted, as a late transcript. Bounded: one call per attachment, aborted at this limit.
+ */
+export const VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS = 10 * 60_000;
+
+const CUT_NOTE = ' … (transcript cut here; the audio file has the rest)';
+
+/**
+ * A server transcript gets the phone transcript's treatment before it is stored or delivered
+ * (§4.3, §4.5.1): `scanInbound` first (so a dictated pending pairing code declines that pairing),
+ * then exact-token removal. Text past the store's limit is cut with a note, never refused.
+ */
+export function scrubServerTranscript(text: string, scan?: ((t: string) => void) | null): { text: string; kinds: string[] } {
+  try { scan?.(text); } catch { /* @silent-fallback-ok — the scan only declines leaked pairings; token removal still runs */ }
+  const removed = removeAuthorityTokens(text);
+  let out = removed.text;
+  if (out.length > MAX_STORED_TEXT) out = out.slice(0, MAX_STORED_TEXT - CUT_NOTE.length).replace(/[\uD800-\uDBFF]$/, '') + CUT_NOTE;
+  return { text: out, kinds: removed.kinds };
+}
+
+interface TranscriptionEntry { done: Promise<VoiceOutcome>; late: boolean; lateArmed: boolean }
+
+/** At most this many server transcriptions call the provider at once, per process (§4.5.1). */
+export const VOICE_TRANSCRIBE_CONCURRENCY = 3;
+
+/** A transcription still queued for a provider slot when its ceiling passed. */
+class TranscriptionQueueTimeout extends Error { constructor() { super('timed out waiting for a transcription slot'); } }
+/** A provider call still running when the ceiling (queue time included) passed. */
+class TranscriptionCeilingTimeout extends Error { constructor() { super('the transcription provider ran past the ceiling'); } }
+
+/**
+ * A stored transcript as it may be handed to a session or a device: the exact-token removal runs
+ * again on READ, so a transcript a peer stored without scrubbing (an older or misbehaving build)
+ * can never carry a pairing invite or a desktop code anywhere (second-pass review, finding 2).
+ */
+export function transcriptForDelivery(text: string): string {
+  return removeAuthorityTokens(text).text;
 }
 
 const MEDIA_SWEEP_MS = 60 * 60_000;
@@ -121,6 +200,12 @@ export class AppConversationService {
   /** Conditions whose notice is raised: the latch that makes it one notice per episode. */
   private readonly raisedNotices = new Set<string>();
   private readonly now: () => number;
+  /** Server transcriptions running in this process, by attachment (one per attachment, §4.5.1). */
+  private readonly transcriptions = new Map<string, TranscriptionEntry>();
+  /** Provider slots in use, and the calls queued for one (a bounded, per-process limit). */
+  private transcribeActive = 0;
+  private readonly transcribeWaiters: Array<() => void> = [];
+  private inboundScan: ((text: string) => void) | null = null;
   /** Increment 3 fills this in (push without Telegram); increment 1 records the hook only. */
   pushHook: ((conversationKey: string, messageId: string) => void) | null = null;
 
@@ -276,7 +361,7 @@ export class AppConversationService {
         this.report('session copy', err);
         return null;
       });
-      if (copy) { lines.push(a.kind === 'voice' && !a.transcript ? this.voiceLine(copy, a.mediaType) : sessionLine(a, copy)); continue; }
+      if (copy) { lines.push(a.kind === 'voice' && !a.transcript ? this.voiceLine(conversationKey, messageId, a, copy, caption) : sessionLine(a, copy)); continue; }
       // Held here but the copy failed: not a copying problem (reported above).
       if (this.media.locateBlob(a.sha256)) { lines.push(`[file unavailable: ${displayName(a.filename)}]`); continue; }
       lines.push(`[file still copying: ${displayName(a.filename)}]`);
@@ -289,30 +374,179 @@ export class AppConversationService {
     return Promise.all(lines);
   }
 
+  /** Wired where the pairing service is: declines a pending pairing whose code a transcript dictates. */
+  setInboundScan(fn: ((text: string) => void) | null): void { this.inboundScan = fn; }
+
+  /** The session line for a voice note the phone did not transcribe (§4.5.1). Never rejects. */
+  private async voiceLine(conversationKey: string, messageId: string, a: AppAttachment, copy: string, caption: string): Promise<string> {
+    const r = await this.voiceResult(conversationKey, messageId, a, copy, caption);
+    if (r === 'pending') return voiceLinePending(copy, isAppConversationKey(conversationKey));
+    return r.ok ? voiceLineWithTranscript(copy, r.text) : voiceLineUnavailable(copy, r.reason);
+  }
+
   /**
-   * Transcribe one voice note with the shared Telegram transcriber, bounded by the 60 s deadline.
-   * Never rejects: no provider, a failure or the deadline all become an honest line with the path.
+   * The server transcript of one voice attachment, waiting at most the 60 s dispatch deadline.
+   * `pending` means it is still running: when it settles, a late transcript event is stored and
+   * one follow-up line is delivered (app conversations). Never rejects.
    */
-  private async voiceLine(copy: string, mediaType: string): Promise<string> {
-    const transcribe = this.deps.transcribeVoice;
-    if (!transcribe) return voiceLineUnavailable(copy, 'no voice transcription on this machine');
+  private async voiceResult(conversationKey: string, messageId: string, a: AppAttachment, copy: string, caption: string): Promise<VoiceOutcome | 'pending'> {
+    const t = this.transcription(conversationKey, messageId, a, copy);
+    if (!('entry' in t)) return t.now;
+    const entry = t.entry;
     const deadlineMs = this.deps.transcribeDeadlineMs ?? VOICE_TRANSCRIBE_DEADLINE_MS;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const deadline = new Promise<'deadline'>((resolve) => { timer = setTimeout(() => resolve('deadline'), deadlineMs); });
     try {
-      const out = await Promise.race([transcribe(copy, mediaType), deadline]);
-      if (out === 'deadline') {
-        this.report('voice transcription', new Error(`no transcript within ${Math.round(deadlineMs / 1000)} s`));
-        return voiceLineUnavailable(copy, 'transcription took too long');
+      const out = await Promise.race([entry.done, deadline]);
+      if (out !== 'deadline') return out;
+      entry.late = true;
+      this.report('voice transcription', new Error(`no transcript within ${Math.round(deadlineMs / 1000)} s; it is kept as a late transcript when it finishes`));
+      if (!entry.lateArmed) {
+        entry.lateArmed = true;
+        void entry.done.then((o) => this.deliverLate(conversationKey, a, copy, captionSnippet(caption), o));
       }
-      return voiceLineWithTranscript(copy, out);
-    } catch (err) {
-      if (err instanceof TranscriptionUnavailableError) return voiceLineUnavailable(copy, 'no transcription provider is configured');
-      this.report('voice transcription', err);
-      return voiceLineUnavailable(copy, 'the transcription service failed');
+      return 'pending';
     } finally {
       if (timer) clearTimeout(timer);
     }
+  }
+
+  /**
+   * One server transcription per attachment on this machine, ever (§4.5.1, bounded): a stored
+   * transcript (made here or replicated from a peer) is reused; one already running is joined; a
+   * recorded failure is reported with its reason and never retried; a run a restart interrupted
+   * reads as a failure. Only an attachment with no row starts the provider.
+   */
+  private transcription(conversationKey: string, messageId: string, a: AppAttachment, copy: string): { now: VoiceOutcome } | { entry: TranscriptionEntry } {
+    const stored = this.store.transcriptFor(a.attachmentId);
+    if (stored) return { now: { ok: true, text: transcriptForDelivery(stored.text) } };
+    const live = this.transcriptions.get(a.attachmentId);
+    if (live) return { entry: live };
+    const transcribe = this.deps.transcribeVoice;
+    if (!transcribe) return { now: { ok: false, reason: 'no voice transcription on this machine' } };
+    const db = this.media.indexDb;
+    const prior = db.prepare('SELECT state, reason FROM voice_transcriptions WHERE attachmentId = ?').get(a.attachmentId) as { state: string; reason: string | null } | undefined;
+    if (prior) {
+      if (prior.state === 'running') {
+        const reason = 'the server restarted before the transcript finished';
+        db.prepare(`UPDATE voice_transcriptions SET state = 'failed', reason = ?, finishedAt = ? WHERE attachmentId = ?`).run(reason, this.now(), a.attachmentId);
+        return { now: { ok: false, reason } };
+      }
+      return { now: { ok: false, reason: prior.reason ?? 'the transcription service failed' } };
+    }
+    const claimed = db.prepare(`INSERT OR IGNORE INTO voice_transcriptions (attachmentId, state, reason, startedAt, finishedAt) VALUES (?, 'running', NULL, ?, NULL)`).run(a.attachmentId, this.now());
+    if (claimed.changes !== 1) return { now: { ok: false, reason: 'the transcription service failed' } };
+    const entry: TranscriptionEntry = { late: false, lateArmed: false, done: Promise.resolve({ ok: false, reason: 'not started' }) };
+    entry.done = this.limitedTranscribe(transcribe, copy, a.mediaType)
+      .then(
+        (raw): VoiceOutcome => this.storeTranscript(conversationKey, messageId, a, raw, entry.late),
+        (err: unknown): VoiceOutcome => {
+          if (err instanceof TranscriptionUnavailableError) return { ok: false, reason: 'no transcription provider is configured' };
+          this.report('voice transcription', err);
+          if (err instanceof TranscriptionQueueTimeout) return { ok: false, reason: 'timed out waiting' };
+          if (err instanceof TranscriptionCeilingTimeout) return { ok: false, reason: 'the transcription service timed out' };
+          return { ok: false, reason: 'the transcription service failed' };
+        },
+      )
+      .then((o) => {
+        try {
+          db.prepare('UPDATE voice_transcriptions SET state = ?, reason = ?, finishedAt = ? WHERE attachmentId = ?')
+            .run(o.ok ? 'done' : 'failed', o.ok ? null : o.reason, this.now(), a.attachmentId);
+        } catch (err) { this.report('voice transcription record', err); } // @silent-fallback-ok — reported; a restart reads the row as interrupted, never retries
+        this.transcriptions.delete(a.attachmentId);
+        return o;
+      });
+    this.transcriptions.set(a.attachmentId, entry);
+    return { entry };
+  }
+
+  /**
+   * One provider call under the per-process limit (§4.5.1, second-pass finding 1). Queue time counts
+   * toward the ceiling: still queued at the ceiling ⇒ `TranscriptionQueueTimeout`; a running call
+   * gets the remaining time (passed to the provider as its own timeout) and is abandoned at the
+   * ceiling. The slot is held until the provider call itself settles, so at most N ever run.
+   */
+  private async limitedTranscribe(transcribe: NonNullable<AppConversationServiceDeps['transcribeVoice']>, copy: string, mediaType: string): Promise<string> {
+    const ceilingMs = this.deps.transcribeCeilingMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS;
+    const startedAt = Date.now();
+    if (!(await this.acquireTranscribeSlot(ceilingMs))) throw new TranscriptionQueueTimeout();
+    const remaining = Math.max(1, ceilingMs - (Date.now() - startedAt));
+    const run = Promise.resolve().then(() => transcribe(copy, mediaType, remaining));
+    void run.then(() => this.releaseTranscribeSlot(), () => this.releaseTranscribeSlot());
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const ceiling = new Promise<never>((_r, reject) => { timer = setTimeout(() => reject(new TranscriptionCeilingTimeout()), remaining); });
+    try { return await Promise.race([run, ceiling]); } finally { if (timer) clearTimeout(timer); }
+  }
+
+  /** A provider slot, waiting at most `waitMs`; false when the wait ran out. */
+  private acquireTranscribeSlot(waitMs: number): Promise<boolean> {
+    const limit = Math.max(1, this.deps.transcribeConcurrency ?? VOICE_TRANSCRIBE_CONCURRENCY);
+    if (this.transcribeActive < limit) { this.transcribeActive++; return Promise.resolve(true); }
+    return new Promise<boolean>((resolve) => {
+      const waiter = () => { clearTimeout(timer); resolve(true); };
+      const timer = setTimeout(() => {
+        const i = this.transcribeWaiters.indexOf(waiter);
+        if (i >= 0) this.transcribeWaiters.splice(i, 1);
+        resolve(false);
+      }, waitMs);
+      timer.unref?.();
+      this.transcribeWaiters.push(waiter);
+    });
+  }
+
+  /** Hand the slot to the next queued call, or free it. */
+  private releaseTranscribeSlot(): void {
+    const next = this.transcribeWaiters.shift();
+    if (next) { next(); return; } // the slot passes on; the active count is unchanged
+    this.transcribeActive = Math.max(0, this.transcribeActive - 1);
+  }
+
+  /** Scrub, then store the transcript as its own unsigned event (§4.5.1). The session gets it either way. */
+  private storeTranscript(conversationKey: string, messageId: string, a: AppAttachment, raw: string, late: boolean): VoiceOutcome {
+    const scrubbed = scrubServerTranscript(raw, this.inboundScan);
+    const machineId = this.deps.machineId();
+    const provider = (this.deps.voiceProviderName?.() ?? 'server').toLowerCase();
+    try {
+      this.store.append({
+        eventId: transcriptEventId(a.attachmentId, machineId), kind: 'transcript', conversationKey, messageId,
+        attachmentId: a.attachmentId, text: scrubbed.text, provider: /^[a-z0-9][a-z0-9._-]{0,31}$/.test(provider) ? provider : 'server',
+        at: new Date(this.now()).toISOString(), machineId, ...(late ? { late: true as const } : {}),
+      });
+    } catch (err) { this.report('voice transcript store', err); } // @silent-fallback-ok — reported; the session still receives the transcript
+    return { ok: true, text: scrubbed.text };
+  }
+
+  /** A late transcript (or its failure): one follow-up line, or a note for the next delivery. */
+  private deliverLate(conversationKey: string, a: AppAttachment, copy: string, caption: string, outcome: VoiceOutcome): void {
+    try {
+      if (!isAppConversationKey(conversationKey)) return; // kept with the message; no follow-up path reaches platform sessions
+      const line = lateTranscriptLine(copy, outcome, caption);
+      const alias = this.deps.registry.appAliasFor(conversationKey);
+      const title = this.store.getConversation(conversationKey)?.title ?? 'Untitled';
+      const sent = alias !== null && this.ownsAlias(alias)
+        && this.followUp?.(alias, `${appInjectionTag(alias, title, this.ownerName(), 'none')} ${line}`) === true;
+      // A "now available" row still waiting for a delivery will carry the stored transcript itself
+      // (pendingContext), so a separate note would say it twice (second-pass finding 3).
+      const carried = !!this.media.indexDb.prepare(`SELECT 1 FROM pending_deliveries WHERE attachmentId = ? AND state = 'ready'`).get(a.attachmentId);
+      if (sent && outcome.ok) this.markTranscriptDelivered(a.attachmentId);
+      if (!sent && !(outcome.ok && carried)) {
+        this.media.indexDb.prepare('INSERT OR IGNORE INTO transcript_notes (attachmentId, conversationKey, line, createdAt) VALUES (?, ?, ?, ?)')
+          .run(a.attachmentId, conversationKey, line, this.now());
+      }
+    } catch (err) { this.report('late transcript', err); }
+  }
+
+  /** The transcript reached the session already: no later line may repeat it (second-pass finding 3). */
+  private markTranscriptDelivered(attachmentId: string): void {
+    try {
+      this.media.indexDb.prepare(`INSERT INTO voice_transcriptions (attachmentId, state, reason, startedAt, finishedAt, delivered) VALUES (?, 'done', NULL, ?, ?, 1) ON CONFLICT(attachmentId) DO UPDATE SET delivered = 1`)
+        .run(attachmentId, this.now(), this.now());
+    } catch (err) { this.report('transcript delivered mark', err); } // @silent-fallback-ok — reported; at worst the transcript is repeated once
+  }
+
+  private transcriptDelivered(attachmentId: string): boolean {
+    const r = this.media.indexDb.prepare('SELECT delivered FROM voice_transcriptions WHERE attachmentId = ?').get(attachmentId) as { delivered: number } | undefined;
+    return r?.delivered === 1;
   }
 
   /** A blob landed: each waiting row gets its session copy and one follow-up line. */
@@ -326,11 +560,26 @@ export class AppConversationService {
         // Claim the row first, so two landings never produce two lines (§4.12: de-duplicated by attachment).
         const claimed = this.media.indexDb.prepare(`UPDATE pending_deliveries SET state = 'ready', path = ? WHERE attachmentId = ? AND state = 'waiting'`).run(copy, r.attachmentId);
         if (claimed.changes !== 1) continue;
+        // A voice note the phone did not transcribe is transcribed now that it is here (§4.5.1):
+        // the transcript (or an honest reason) rides on the same line; past 60 s it follows later.
+        let tail = '';
+        let carriesTranscript = false;
+        if (a && a.kind === 'voice' && !a.transcript) {
+          const v = await this.voiceResult(r.conversationKey, r.messageId, a, copy, r.caption);
+          carriesTranscript = v !== 'pending' && v.ok;
+          tail = v === 'pending' ? ' (transcript not ready after 60 s; it follows in a separate line)'
+            : v.ok ? ` ${transcriptOneLine(transcriptForDelivery(v.text))}` : ` (transcription unavailable: ${v.reason})`;
+        }
         const alias = this.deps.registry.appAliasFor(r.conversationKey);
         const title = this.store.getConversation(r.conversationKey)?.title ?? 'Untitled';
         const sent = alias !== null && this.ownsAlias(alias)
-          && this.followUp?.(alias, `${appInjectionTag(alias, title, this.ownerName(), 'none')} ${availableLine(copy, r.caption)}`) === true;
-        if (sent) this.media.indexDb.prepare('DELETE FROM pending_deliveries WHERE attachmentId = ?').run(r.attachmentId);
+          && this.followUp?.(alias, `${appInjectionTag(alias, title, this.ownerName(), 'none')} ${availableLine(copy, r.caption)}${tail}`) === true;
+        if (sent) {
+          this.media.indexDb.prepare('DELETE FROM pending_deliveries WHERE attachmentId = ?').run(r.attachmentId);
+          // The transcript rode on this line: a note for it would repeat it (second-pass finding 3).
+          if (carriesTranscript) this.markTranscriptDelivered(r.attachmentId);
+          if (carriesTranscript) this.media.indexDb.prepare('DELETE FROM transcript_notes WHERE attachmentId = ?').run(r.attachmentId);
+        }
       } catch (err) { this.report('pending resolve', err); }
     }
   }
@@ -341,16 +590,38 @@ export class AppConversationService {
    */
   pendingContext(conversationKey: string): { lines: string[]; ack: () => void } {
     const rows = this.media.indexDb.prepare(`SELECT * FROM pending_deliveries WHERE conversationKey = ? AND state IN ('ready','expired') ORDER BY createdAt`).all(conversationKey) as PendingRow[];
-    const lines = rows.map((r) => (r.state === 'ready' && r.path ? availableLine(r.path, r.caption) : `(a file from ${new Date(r.createdAt).toISOString().slice(0, 10)}, ${r.displayName}, could not be copied to this machine)`));
+    const carried = new Set<string>();
+    const lines = rows.map((r) => {
+      if (!(r.state === 'ready' && r.path)) return `(a file from ${new Date(r.createdAt).toISOString().slice(0, 10)}, ${r.displayName}, could not be copied to this machine)`;
+      // A voice note's stored server transcript rides on its line (§4.5.1), scrubbed on read.
+      const stored = this.store.transcriptFor(r.attachmentId);
+      const t = stored && !this.transcriptDelivered(r.attachmentId) ? stored : null;
+      if (stored) carried.add(r.attachmentId);
+      return `${availableLine(r.path, r.caption)}${t ? ` ${transcriptOneLine(transcriptForDelivery(t.text))}` : ''}`;
+    });
+    // Late transcripts that found no live session (§4.5.1), oldest first — except one whose
+    // transcript the "now available" line above already carries (said once, never twice).
+    const notes = this.media.indexDb.prepare('SELECT attachmentId, line FROM transcript_notes WHERE conversationKey = ? ORDER BY createdAt').all(conversationKey) as Array<{ attachmentId: string; line: string }>;
+    for (const n of notes) if (!carried.has(n.attachmentId)) lines.push(transcriptForDelivery(n.line));
     return {
       lines,
-      ack: () => { for (const r of rows) this.media.indexDb.prepare('DELETE FROM pending_deliveries WHERE attachmentId = ? AND state = ?').run(r.attachmentId, r.state); },
+      ack: () => {
+        for (const r of rows) this.media.indexDb.prepare('DELETE FROM pending_deliveries WHERE attachmentId = ? AND state = ?').run(r.attachmentId, r.state);
+        for (const n of notes) this.media.indexDb.prepare('DELETE FROM transcript_notes WHERE attachmentId = ?').run(n.attachmentId);
+      },
     };
   }
 
   /** Waiting rows older than 7 days become a line in the session's next context (§4.12). */
   private expirePending(): void {
     try { this.media.indexDb.prepare(`UPDATE pending_deliveries SET state = 'expired' WHERE state = 'waiting' AND createdAt <= ?`).run(this.now() - PENDING_DELIVERY_TTL_MS); } catch (err) { this.report('pending expiry', err); }
+    // Bounded bookkeeping (§4.5.1): late-transcript notes no delivery picked up within 7 days (the
+    // transcript itself stays in the store and in history), and finished attempt rows after 30
+    // days (by then no dispatch re-reads them; a stored transcript is found in the store first).
+    try {
+      this.media.indexDb.prepare('DELETE FROM transcript_notes WHERE createdAt <= ?').run(this.now() - PENDING_DELIVERY_TTL_MS);
+      this.media.indexDb.prepare(`DELETE FROM voice_transcriptions WHERE state IN ('done','failed') AND COALESCE(finishedAt, startedAt) <= ?`).run(this.now() - 30 * 24 * 60 * 60_000);
+    } catch (err) { this.report('transcript bookkeeping', err); }
   }
 
   /**

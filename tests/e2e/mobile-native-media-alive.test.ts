@@ -181,6 +181,72 @@ describe('media in app conversations — production wiring', () => {
     expect(health.body.appMedia).toMatchObject({ liveBytes: photo.length + voice.length + voice2.length + fs.statSync(itinerary).size, openUploads: 0 });
   });
 
+  it('server voice transcripts (§4.5.1) on the production path: the shared provider transcribes, the transcript is its own scrubbed event, history shows it unsigned', async () => {
+    vi.stubEnv('GROQ_API_KEY', 'gsk-e2e');
+    vi.stubEnv('OPENAI_API_KEY', '');
+    const invite = `tlinv1:${crypto.randomBytes(12).toString('base64url')}.${crypto.randomBytes(12).toString('base64url')}`;
+    const providerCalls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+      if (String(url).startsWith('https://api.groq.com/')) {
+        providerCalls.push(String(url));
+        return new Response(JSON.stringify({ text: `book the ferry, invite ${invite}` }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }));
+    const { server, spawned } = await boot(true);
+    const app = server.getApp();
+    server.mobilePairing!.deps.fetchFn = (async (url: string) => {
+      const u = new URL(url);
+      const r = await request(app).get(u.pathname + u.search).set('Host', HOST);
+      return { ok: r.status === 200, status: r.status, json: async () => r.body } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const m = await request(app).post('/mobile/pairing-codes').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'media-e2e').send({});
+    const dms: string[] = [];
+    server.mobilePairing!.deps.ownerDM = async (text) => { dms.push(text); return 1; };
+    server.mobilePairing!.deps.telegramOwnerPresent = () => true;
+    const dev = makeDevice();
+    const r = await request(app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code: m.body.code, deviceName: 'e2e phone', devicePublicKey: dev.publicKey });
+    const deviceId = r.body.deviceId as string;
+    const code = /is (\d{3}) (\d{3})\./.exec(dms[0]!)!.slice(1).join('');
+    let tick = 0;
+    const send = (method: 'GET' | 'POST' | 'PUT', p: string, body?: unknown, rawBytes?: Buffer) => {
+      const raw = rawBytes ?? (body === undefined ? undefined : Buffer.from(JSON.stringify(body)));
+      const time = String(Date.now() + (tick++ % 500));
+      const sig = dev.sign(canonicalString(deviceId, HOST, method, p, time, raw));
+      const q = method === 'GET' ? request(app).get(p) : method === 'PUT' ? request(app).put(p) : request(app).post(p);
+      q.set('X-Instar-Device', deviceId).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', sig);
+      if (rawBytes) return q.set('Content-Type', 'application/octet-stream').send(rawBytes);
+      return raw ? q.set('Content-Type', 'application/json').send(raw.toString()) : q;
+    };
+    expect((await send('POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
+    const key = (await send('POST', '/mobile/conversations', { title: 'Ferry', requestId: rid() })).body.conversationKey as string;
+    const voice = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypM4A '), crypto.randomBytes(1500)]);
+    const d = { size: voice.length, sha256: sha(voice), declaredKind: 'voice', declaredType: 'audio/mp4', filename: 'ferry.m4a' };
+    const start = await send('POST', '/mobile/media/uploads', { conversationRef: `app:${key}`, ...d, requestId: rid() });
+    expect((await send('PUT', `/mobile/media/uploads/${start.body.uploadId}/chunks/0`, undefined, voice)).status).toBe(200);
+    const sent = await send('POST', `/mobile/chat/app/${key}`, { text: '', requestId: rid(), attachments: [{ uploadId: start.body.uploadId, ...d }] });
+    expect(sent.status).toBe(200);
+    expect(sent.body).toMatchObject({ ok: true, outcome: 'delivered' });
+    expect(providerCalls).toEqual(['https://api.groq.com/openai/v1/audio/transcriptions']);
+
+    // The session line carries the scrubbed transcript; the invite never reaches it.
+    const pointer = /Long message saved to (\S+?) —/.exec(spawned[0]!.message);
+    const msg = pointer ? fs.readFileSync(pointer[1]!, 'utf8') : spawned[0]!.message;
+    expect(msg).toMatch(/\[voice:[^\]]+\] book the ferry, invite \[pairing invite removed\]/);
+    expect(msg).not.toContain('tlinv1:');
+
+    // Stored as its own unsigned event, shown on the attachment; the operator message still verifies.
+    const hist = await send('GET', `/mobile/chat/app/${key}/messages`);
+    const op = hist.body.messages[0];
+    expect(op.originVerified).toBe('verified');
+    expect(op.attachments[0].transcript).toBeUndefined();
+    expect(op.attachments[0].serverTranscript).toMatchObject({ text: 'book the ferry, invite [pairing invite removed]', provider: 'groq', signed: false });
+    const tr = server.appConversations!.store.transcriptFor(op.attachments[0].attachmentId);
+    expect(tr).toMatchObject({ kind: 'transcript', provider: 'groq', messageId: op.messageId });
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
   it('Telegram media (§4.9): a photo a Telegram topic receives is recorded on the production path and served to the paired phone', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => ({ ok: true, json: async () => ({ ok: true, result: { message_id: 1 } }) })));
     const { server, telegram } = await boot(true, (stateDir) => new TelegramAdapter({ token: 'test-token-123', chatId: '-100123', pollIntervalMs: 100 }, stateDir));

@@ -31,6 +31,7 @@ import type { InstarConfig } from '../core/types.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 import { deviceAdmittedAt, deviceAdmittedHost, isMobileChatEnabled } from './mobilePairingRoutes.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
+import { transcriptForDelivery } from '../core/AppConversationService.js';
 import { requestIdAgeOk, requestIdTime, type ChatLookup } from '../core/MobileChatRequests.js';
 import {
   cleanConversationTitle, derivedEventId, isAppConversationKey, newAppConversationKey, removeAuthorityTokens,
@@ -224,9 +225,20 @@ const SEND_RATE_PER_MIN = 20;
 const off = (res: Response) => res.status(503).json({ error: 'native-conversations-off', detail: 'App conversations are turned off on this agent.' });
 const hashOf = (...parts: string[]) => crypto.createHash('sha256').update(parts.join('\n')).digest('hex');
 
-/** Attachment rows for the app: the stored fields plus the per-file byte fact (§4.13). Never a server path. */
+/**
+ * Attachment rows for the app: the stored fields plus the per-file byte fact (§4.13), and for a
+ * voice note the stored server transcript (§4.5.1) as `serverTranscript`, marked unsigned: the
+ * phone never saw it, so it is never `transcript` and never part of `originVerified`. Never a
+ * server path.
+ */
 export function attachmentRows(attachments: ReadonlyArray<AppAttachment>, svc: AppConversationService): Array<Record<string, unknown>> {
-  return attachments.map((a) => ({ ...a, ...svc.media.byteFact(a.sha256, a.attachmentId) }));
+  return attachments.map((a) => {
+    const t = a.kind === 'voice' || a.declaredKind === 'voice' ? svc.store.transcriptFor(a.attachmentId) : null;
+    return {
+      ...a, ...svc.media.byteFact(a.sha256, a.attachmentId),
+      ...(t ? { serverTranscript: { text: transcriptForDelivery(t.text), provider: t.provider, at: t.at, machineId: t.machineId, signed: false, ...(t.late ? { late: true } : {}) } } : {}),
+    };
+  });
 }
 
 /** History rows for the app: the stored fields plus the verdict (§4.6). */
@@ -705,6 +717,8 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
             return { originVerified: verdict, ...(via ? { originApprovedVia: via } : {}) };
           })() : {}),
           ...(e.kind === 'media-message' ? { attachments: attachmentRows(e.attachments, svc!) } : {}),
+          // A server transcript is scrubbed on read too (a peer may have stored it unscrubbed).
+          ...(e.kind === 'transcript' ? { text: transcriptForDelivery(e.text) } : {}),
         };
       }),
       cursor: page.cursor,

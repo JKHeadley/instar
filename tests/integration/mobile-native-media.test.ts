@@ -44,7 +44,7 @@ const sha = (b: Buffer | string) => crypto.createHash('sha256').update(b).digest
 const png = (n = 200) => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), crypto.randomBytes(n)]);
 const rid = () => `${Date.now()}-${crypto.randomUUID()}`;
 
-async function setup(opts: { mediaEnabled?: boolean } = {}) {
+async function setup(opts: { mediaEnabled?: boolean; transcribeVoice?: (p: string, t: string) => Promise<string>; transcribeDeadlineMs?: number } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmedia-'));
   dirs.push(dir);
   await new MachineIdentityManager(dir).generateIdentity({ name: 'test machine' });
@@ -63,7 +63,14 @@ async function setup(opts: { mediaEnabled?: boolean } = {}) {
     stateDir: dir, machineId: () => 'm1', registry, requests: pairing.chatRequests()!, holdsLease: () => true, ownerName: () => 'Justin',
     signer, keyLookup, keyLedger,
     dispatch: () => async (input) => { dispatched.push(input); svc.channels.register(String(input.alias), 'sess-app'); return 'delivered'; },
+    ...(opts.transcribeVoice ? { transcribeVoice: opts.transcribeVoice, voiceProviderName: () => 'groq' } : {}),
+    ...(opts.transcribeDeadlineMs !== undefined ? { transcribeDeadlineMs: opts.transcribeDeadlineMs } : {}),
   });
+  // As AgentServer wires it: server transcripts get the pairing service's inbound scan.
+  const scanned: string[] = [];
+  svc.setInboundScan((t) => { scanned.push(t); pairing.scanInbound(t); });
+  const followUps: string[] = [];
+  svc.setFollowUp((_alias, line) => { followUps.push(line); return true; });
   const bindAuth = createConversationBindAuth(dir);
   const ctx = {
     config, startTime: new Date(), scheduler: null, meshSelfId: 'm1',
@@ -84,7 +91,7 @@ async function setup(opts: { mediaEnabled?: boolean } = {}) {
   const c = pairing.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST });
   if (!c.ok) throw new Error('setup');
   const code = pairing.confirm.issue(c.device.id, Date.now() + 60_000);
-  const e = { app, dir, svc, dev, deviceId: c.device.id, dispatched, pairing, bindAuth, registry };
+  const e = { app, dir, svc, dev, deviceId: c.device.id, dispatched, pairing, bindAuth, registry, scanned, followUps };
   expect((await signed(e, 'POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
   return e;
 }
@@ -398,6 +405,90 @@ describe('signed records with media', () => {
     fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"filename":"holiday.png"', '"filename":"other.png"'));
     e.svc.store.rebuildIndex();
     expect((await signed(e, 'GET', `/mobile/chat/app/${key}/messages`)).body.messages[0].originVerified).toBe('failed');
+  });
+});
+
+describe('server voice transcripts (§4.5.1)', () => {
+  const m4a = () => Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypM4A '), crypto.randomBytes(600)]);
+  const voiceOver = { declaredKind: 'voice', declaredType: 'audio/mp4', filename: 'note.m4a' };
+
+  it('a voice note without a phone transcript: stored as its own event, scrubbed and scanned, shown on the attachment, signature untouched', async () => {
+    const invite = `tlinv1:${crypto.randomBytes(12).toString('base64url')}.${crypto.randomBytes(12).toString('base64url')}`;
+    const e = await setup({ transcribeVoice: async () => `the code is ${invite} ok` });
+    const key = await newConversation(e);
+    const sent = await sendFile(e, key, m4a(), {}, voiceOver);
+    expect(sent.status).toBe(200);
+    expect(sent.body.redacted).toBeUndefined(); // the phone's signed body had nothing removed
+    const d = e.dispatched[0]!;
+    expect(d.originVerdict).toBe('verified');
+    expect(d.text).toMatch(/^\[voice:.+\] the code is \[pairing invite removed\] ok\nLook at this$/);
+    expect(e.scanned.some((t) => t.includes(invite))).toBe(true);
+
+    const hist = await signed(e, 'GET', `/mobile/chat/app/${key}/messages`);
+    const row = hist.body.messages[0];
+    expect(row.originVerified).toBe('verified');
+    expect(row.attachments[0].transcript).toBeUndefined();
+    expect(row.attachments[0].serverTranscript).toMatchObject({ text: 'the code is [pairing invite removed] ok', provider: 'groq', machineId: 'm1', signed: false });
+    expect(JSON.stringify(hist.body)).not.toContain('tlinv1:');
+
+    const sync = await signed(e, 'GET', `/mobile/chat/app/${key}/events`);
+    expect(sync.body.events.find((x: { kind: string }) => x.kind === 'transcript')).toMatchObject({ kind: 'transcript', provider: 'groq', text: 'the code is [pairing invite removed] ok' });
+    expect(sync.body.events.find((x: { kind: string }) => x.kind === 'media-message')).toMatchObject({ originVerified: 'verified' });
+  });
+
+  it('a phone transcript stays the signed transcript; the server makes none', async () => {
+    let calls = 0;
+    const e = await setup({ transcribeVoice: async () => { calls++; return 'server words'; } });
+    const key = await newConversation(e);
+    await sendFile(e, key, m4a(), { transcript: 'phone words' }, voiceOver);
+    expect(calls).toBe(0);
+    const row = (await signed(e, 'GET', `/mobile/chat/app/${key}/messages`)).body.messages[0];
+    expect(row.attachments[0]).toMatchObject({ transcript: 'phone words' });
+    expect(row.attachments[0].serverTranscript).toBeUndefined();
+    expect(row.originVerified).toBe('verified');
+  });
+
+  it('a late transcript: dispatched without it, then stored as late and sent as one follow-up line', async () => {
+    const e = await setup({ transcribeVoice: () => new Promise((r) => setTimeout(() => r('arrived afterwards'), 80)), transcribeDeadlineMs: 20 });
+    const key = await newConversation(e);
+    const sent = await sendFile(e, key, m4a(), {}, voiceOver);
+    expect(sent.body.deliveryState).toBe('delivered');
+    expect(e.dispatched[0]!.text).toContain('(transcript not ready after 60 s; it follows in a separate line, and the audio file is at that path)');
+    await new Promise((r) => setTimeout(r, 160));
+    expect(e.followUps).toHaveLength(1);
+    expect(e.followUps[0]).toMatch(/\[voice transcript ready: .+\] \(for the message "Look at this"\) arrived afterwards$/);
+    const row = (await signed(e, 'GET', `/mobile/chat/app/${key}/messages`)).body.messages[0];
+    expect(row.attachments[0].serverTranscript).toMatchObject({ text: 'arrived afterwards', late: true, signed: false });
+    expect(row.originVerified).toBe('verified');
+  });
+
+  it('a transcript a peer stored without scrubbing reaches the device scrubbed, in history and in sync', async () => {
+    const e = await setup({ transcribeVoice: async () => { throw new Error('unused'); } });
+    const key = await newConversation(e);
+    await sendFile(e, key, m4a(), { transcript: 'phone' }, voiceOver); // no server transcription
+    const row0 = (await signed(e, 'GET', `/mobile/chat/app/${key}/messages`)).body.messages[0];
+    const invite = `tlinv1:${crypto.randomBytes(12).toString('base64url')}.${crypto.randomBytes(12).toString('base64url')}`;
+    const { validateAppEvent, transcriptEventId } = await import('../../src/core/AppConversationStore.js');
+    const aid = row0.attachments[0].attachmentId as string;
+    e.svc.ingestReplicated([validateAppEvent({
+      eventId: transcriptEventId(aid, 'peer'), kind: 'transcript', conversationKey: key, messageId: row0.messageId, attachmentId: aid,
+      text: `join ${invite}\n/desktop 12 345678`, provider: 'groq', at: new Date().toISOString(), machineId: 'peer',
+    })]);
+    const hist = await signed(e, 'GET', `/mobile/chat/app/${key}/messages`);
+    expect(hist.body.messages[0].attachments[0].serverTranscript.text).toBe('join [pairing invite removed]\n[desktop code removed]');
+    expect(hist.body.messages[0].originVerified).toBe('verified');
+    const sync = await signed(e, 'GET', `/mobile/chat/app/${key}/events`);
+    expect(JSON.stringify(sync.body)).not.toContain('tlinv1:');
+    expect(JSON.stringify(hist.body)).not.toContain('tlinv1:');
+  });
+
+  it('a failing provider: an honest line, nothing stored, and the history shows no transcript', async () => {
+    const e = await setup({ transcribeVoice: async () => { throw new Error('Transcription API error (502)'); } });
+    const key = await newConversation(e);
+    await sendFile(e, key, m4a(), {}, voiceOver);
+    expect(e.dispatched[0]!.text).toMatch(/\(transcription unavailable: the transcription service failed; the audio file is at that path\)/);
+    const row = (await signed(e, 'GET', `/mobile/chat/app/${key}/messages`)).body.messages[0];
+    expect(row.attachments[0].serverTranscript).toBeUndefined();
   });
 });
 

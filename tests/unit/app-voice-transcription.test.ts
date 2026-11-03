@@ -151,10 +151,10 @@ describe('sessionLinesFor — voice notes', () => {
     expect(reports.some((r) => r.includes('voice transcription') && r.includes('503'))).toBe(true);
   });
 
-  it('past the deadline: delivered without a transcript, reported', async () => {
+  it('past the deadline: delivered without a transcript, saying it follows, reported', async () => {
     const { svc, reports } = service(() => new Promise<string>(() => { /* never answers */ }), 30);
     const ev = await voiceMessage(svc);
-    expect((await linesFor(svc, ev))[0]).toMatch(/\(transcription unavailable: transcription took too long; /);
+    expect((await linesFor(svc, ev))[0]).toMatch(/^\[voice:.+\] \(transcript not ready after 60 s; it follows in a separate line, and the audio file is at that path\)$/);
     expect(reports.some((r) => r.includes('no transcript within'))).toBe(true);
   });
 
