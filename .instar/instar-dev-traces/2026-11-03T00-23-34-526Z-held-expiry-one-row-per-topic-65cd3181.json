@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "held-expiry-one-row-per-topic",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-03T00:23:34.526Z",
+  "artifactPath": "upgrades/side-effects/held-expiry-one-row-per-topic.md",
+  "artifactSha256": "abc8c87359c3677786cb3e663e71fe0f7b35e3dfbccbb9995b048da262e98fc7",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+    "tests/unit/telegram-origin-forward-on-standby.test.ts",
+    "upgrades/next/held-expiry-one-row-per-topic.md",
+    "upgrades/side-effects/held-expiry-one-row-per-topic.eli16.md",
+    "upgrades/side-effects/held-expiry-one-row-per-topic.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "grouping key of an existing notification; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/held-expiry-one-row-per-topic.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/held-expiry-one-row-per-topic.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "changes the grouping key of an existing notification; no new action or loop"
+  }
+}
