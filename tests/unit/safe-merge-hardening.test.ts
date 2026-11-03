@@ -117,10 +117,10 @@ describe('capabilities — contract probe', () => {
     expect(c.contract).toBe(CONTRACT_VERSION);
     expect(c.features).toContain('head-pinning');
     expect(c.features).toContain('producer-binding');
-    expect(c.features).toContain('native-auto-merge');
-    expect(c.features).toContain('auto-arm-unavailable-detection');
+    expect(c.features).toContain('ci-floor-sync-merge');
+    expect(c.features).toContain('pending-check-deferral');
     expect(c.exitCodes.merged).toBe(0);
-    expect(c.exitCodes.autoMergeArmed).toBe(5);
+    expect(c.exitCodes.autoMergeArmed).toBeUndefined();
   });
 });
 

@@ -88,10 +88,10 @@ describe('availability and refusal', () => {
     expect((await h.exec.refreshAvailability()).reason).toBe('approver-not-independent');
   });
 
-  it('auto-merge disabled, organization without an approver, no source repo, disabled, sandbox missing', async () => {
+  it('native auto-merge setting is irrelevant to the CI-floor merge; other availability gates remain', async () => {
     h = await createExecHarness();
     h.repo.info = { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: false };
-    expect((await h.exec.refreshAvailability()).reason).toBe('auto-merge-disabled');
+    expect((await h.exec.refreshAvailability()).available).toBe(true);
     h.repo.info = { ownerLogin: 'org', ownerType: 'Organization', allowAutoMerge: true };
     expect((await h.exec.refreshAvailability()).reason).toBe('approver-unset');
     h.repo.info = { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: true };
@@ -986,6 +986,27 @@ describe('review gate and merge', () => {
     expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'held', reason: 'merge-refused:red-checks' });
     expect(h.store.get(initiativeId)).toMatchObject({ state: 'hold', reason: 'merge-unavailable' });
     expect(h.disarmed.filter((n) => n === 100).length).toBe(2);
+  });
+
+  it('queued CI defers auto-merge without spending the merge-refusal retry', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await toPrOpen();
+    h.reviews.set(100, [{ login: 'Owner', state: 'APPROVED', commitId: HEAD_SHA, submittedAt: '2026-10-07T01:00:00Z' }]);
+    h.safeMergeExit = { code: 1, stdout: 'safe-merge-result: {"result":"deferred:checks-pending"}' };
+    await h.exec.tick();
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reason: 'merge-deferred:checks-pending', mergeRetries: 0 });
+    expect(h.disarmed).not.toContain(100);
+    expect(h.merges).toHaveLength(1);
+    h.now.value += 4 * 60_000;
+    await h.exec.tick();
+    expect(h.merges).toHaveLength(1);
+    h.now.value += 60_001;
+    await h.exec.tick();
+    expect(h.merges).toHaveLength(2);
+    expect(h.execStore.latestFor(initiativeId)?.mergeRetries).toBe(0);
+    h.now.value += 3 * 60 * 60_000 + 1;
+    await h.exec.tick();
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reason: 'merge-refused:checks-timeout', mergeRetries: 1 });
   });
 
   it('a merge-armed PR past its 24 h deadline is disarmed and refused (deadline)', async () => {

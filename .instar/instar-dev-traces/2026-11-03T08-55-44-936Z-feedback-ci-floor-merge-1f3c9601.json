@@ -1,0 +1,24 @@
+{
+  "version": 3,
+  "slug": "feedback-ci-floor-merge",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-03T08:55:44.936Z",
+  "artifactPath": "upgrades/side-effects/feedback-ci-floor-merge.md",
+  "artifactSha256": "209375733d9fb2c8172eb680dbe4ae4acbc1064cef9dfecf047b30be3a91fc35",
+  "specPath": "docs/specs/green-pr-automerge-enforcement.md",
+  "coveredFiles": [
+    "tests/integration/safe-merge-non-main-base.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This regression expectation documents the CI-floor merge decision boundary and keeps the approved safety behavior checked.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}
