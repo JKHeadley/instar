@@ -32,7 +32,7 @@ import {
 } from '../core/MobilePairing.js';
 import type { InstarConfig } from '../core/types.js';
 import {
-  ConfirmationCodes, DeviceRegistry, ReplayGuard, parseDevicePublicKey, verifyDeviceRequest,
+  ConfirmationCodes, DeviceRegistry, displayCode, type CodeFormat, ReplayGuard, parseDevicePublicKey, verifyDeviceRequest,
   type DeviceRecord, type DeviceStatus,
 } from '../core/MobileDeviceKeys.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
@@ -558,17 +558,20 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       return;
     }
     const device = created.device;
-    const code = svc.confirm.issue(device.id, Date.parse(device.expiresAt!));
+    // mobile-pairing-word-code §3.2: only an app that asks for it gets a WORD-NNNN code; builds
+    // already on phones send digits only, so everything else keeps today's 6-digit code.
+    const codeFormat: CodeFormat = Array.isArray(body.codeFormats) && body.codeFormats.length <= 8 && body.codeFormats.includes('word') ? 'word' : 'digits';
+    const code = svc.confirm.issue(device.id, Date.parse(device.expiresAt!), codeFormat);
     if (approval === 'dashboard') {
       // No DM to wait for: the code (plaintext, memory only) is shown on the dashboard's Phones
       // card to an operator session; the phone shows "confirm on your dashboard".
       svc.holdDashboardCode(device.id, code, Date.parse(device.expiresAt!));
-      res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'dashboard' });
+      res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'dashboard', codeFormat });
       return;
     }
     const nonce = crypto.randomBytes(12).toString('hex');
     svc.declineNonces.set(nonce, device.id);
-    const pretty = `${code.slice(0, 3)} ${code.slice(3)}`;
+    const pretty = displayCode(code);
     const text = [
       `Your code to pair a phone with ${svc.deps.config.projectName} is ${pretty}.`,
       `Type it into the Instar app only if you are pairing a phone right now. If you did not start this, tap Decline. Don't send or show this message to anyone, including me.`,
@@ -588,7 +591,7 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       res.status(409).json({ error: 'approval-unavailable', detail: 'I could not send you the confirmation code in Telegram. Open a private chat with the bot and send it any message, then ask me for a new link.' });
       return;
     }
-    res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'telegram' });
+    res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'telegram', codeFormat });
   });
 }
 
@@ -665,7 +668,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (!operatorOnly(req, res)) return;
     const approvals = svc.dashboardApprovals().map(({ device, code, expiresAt }) => ({
       deviceId: device.id, deviceName: device.deviceName, label: device.label, fingerprint: device.fingerprint ?? null,
-      code, pairedAt: device.pairedAt, expiresAt: new Date(expiresAt).toISOString(),
+      // Display form for both formats (mobile-pairing-word-code §3.4): `KITE-4172` or `123 456`.
+      code: displayCode(code), codeFormat: /^\d{6}$/.test(code) ? 'digits' : 'word', pairedAt: device.pairedAt, expiresAt: new Date(expiresAt).toISOString(),
     }));
     res.json({ approval: svc.approvalPath(), approvals });
   });
@@ -732,6 +736,11 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (svc.devices.pairingPaused()) { res.status(429).json({ error: 'pairing-paused' }); return; }
     const check = svc.confirm.check(d.id, (req.body as Record<string, unknown> | undefined)?.code);
     if (check.result === 'none') { res.status(409).json({ error: 'expired' }); return; }
+    if (check.result === 'wrong-format') {
+      // mobile-pairing-word-code §3.3: a shape that can never match costs no strike.
+      res.status(422).json({ error: 'wrong-format', detail: 'That is not the pairing code. The code looks like KITE-4172: a word, then four digits.' });
+      return;
+    }
     let after: DeviceRecord | null;
     const approvedAt = new Date().toISOString();
     if (check.result === 'ok' && svc.keyLedger) {
