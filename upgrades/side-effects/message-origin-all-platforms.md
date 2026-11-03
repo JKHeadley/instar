@@ -84,3 +84,7 @@ Notes raised and handled: (1) the credential lookup was unbounded and the app ro
 - Unit: `tests/unit/messageOrigin.test.ts`, `tests/unit/SlackOriginLedger.test.ts`, `tests/unit/replyOrigin.test.ts`, `tests/unit/app-conversation-agent-origin.test.ts`, `tests/unit/telegram-origin/lookup-origin-evidence.test.ts`, `tests/unit/PostUpdateMigrator-messageOriginAllPlatforms.test.ts`.
 - Integration (production device authenticator): `tests/integration/message-origin-all-platforms.test.ts`.
 - E2E alive: `tests/e2e/message-origin-all-platforms-alive.test.ts`.
+
+## Found in testing
+
+The integration test caught one defect before push: `detectOutboundCredential` returns `{ detected }`, and the footer check treated the object as truthy, so the Slack footer was always dropped. Fixed to read `.detected`; the integration test asserts the footer reaches the adapter.

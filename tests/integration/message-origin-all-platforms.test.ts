@@ -50,7 +50,8 @@ afterAll(() => {
 
 const launch = (machineId = 'm1') => originEvidenceFromLaunchRecord({ machineId, machineName: 'Mac Studio', sessionId: 's', framework: 'claude-code', model: 'claude-opus-5-5', at: 1 });
 
-async function pairedApp(mount: (app: express.Express, ctx: { pairing: MobilePairingService; dir: string; svc: AppConversationService; registry: ConversationRegistry; config: Record<string, unknown> }) => void) {
+type MountCtx = { pairing: MobilePairingService; dir: string; svc: AppConversationService; registry: ConversationRegistry; config: Record<string, unknown> };
+async function pairedApp(mount: (app: express.Express, ctx: MountCtx) => void, mountAfterPairing?: (app: express.Express, ctx: MountCtx) => void) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'morigin-'));
   dirs.push(dir);
   await new MachineIdentityManager(dir).generateIdentity({ name: 'test machine' });
@@ -76,6 +77,8 @@ async function pairedApp(mount: (app: express.Express, ctx: { pairing: MobilePai
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
   mount(app, { pairing, dir, svc, registry, config });
   app.use(createMobilePairingRouter(pairing, deps, { config } as never));
+  // A full createRoutes app answers every path it does not know; it goes after the pairing router.
+  mountAfterPairing?.(app, { pairing, dir, svc, registry, config });
   const dev = makeDevice();
   const c = pairing.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST });
   if (!c.ok) throw new Error('setup');
@@ -157,7 +160,7 @@ describe('Slack history carries origin on agent rows', () => {
   });
 });
 
-function routesApp(over: Partial<Record<string, unknown>>, pairing?: MobilePairingService) {
+function routesApp(over: Partial<Record<string, unknown>>, nestedBehindAuth = false) {
   const telegram = {
     getTopicHistory: () => [
       { topicId: 12, messageId: 501, text: 'agent reply', timestamp: '2026-11-03T10:00:00.000Z', fromUser: false },
@@ -169,6 +172,7 @@ function routesApp(over: Partial<Record<string, unknown>>, pairing?: MobilePairi
   const observed = (value: string) => ({ value, status: 'observed', sourceEventRef: 'x', observedAt: 1, reason: null });
   const lookups: unknown[] = [];
   const telegramOrigin = {
+    attachSendPolicy: () => undefined,
     options: { bot: { chatId: '-100123' }, identity: { originMachineId: 'm1', originMachineName: 'Mac Studio' } },
     store: { lookupOriginEvidence: async (input: unknown) => { lookups.push(input); return { results: [{ messageId: '501', state: 'found', producer: {
       producerKind: 'session', originMachineId: 'm1', originMachineName: 'Mac Studio', harnessName: 'Codex',
@@ -184,7 +188,8 @@ function routesApp(over: Partial<Record<string, unknown>>, pairing?: MobilePairi
   dirs.push((ctx.config as { stateDir: string }).stateDir);
   const a = express();
   a.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
-  a.use(authMiddleware(() => 'tok-1', 'echo', undefined, pairing ? deviceAuthenticator(pairing) : undefined));
+  // Nested behind the paired app's authenticator, a second one would refuse the same signed request as a replay.
+  if (!nestedBehindAuth) a.use(authMiddleware(() => 'tok-1', 'echo'));
   a.use(createRoutes(ctx));
   return { a, lookups };
 }
@@ -192,8 +197,8 @@ function routesApp(over: Partial<Record<string, unknown>>, pairing?: MobilePairi
 describe('Telegram history joins the origin store', () => {
   it('a device read gets origin on agent rows; a plain Bearer read is unchanged; includeOrigin=1 joins', async () => {
     let routes!: ReturnType<typeof routesApp>;
-    const env = await pairedApp((app, x) => {
-      routes = routesApp({}, x.pairing);
+    const env = await pairedApp(() => undefined, (app, x) => {
+      void x; routes = routesApp({}, true);
       app.use(routes.a);
     });
     const dev = await env.signed('GET', '/telegram/topics/12/messages');
@@ -204,9 +209,9 @@ describe('Telegram history joins the origin store', () => {
     expect(rows.find((r) => r.text === 'user line')!.origin).toBeUndefined();
     expect(routes.lookups[0]).toEqual({ transport: 'bot-api', chatId: '-100123', messageIds: ['501', '502'] });
 
-    const plain = await request(routes.a).get('/telegram/topics/12/messages').set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'echo');
+    const plain = await request(env.app).get('/telegram/topics/12/messages').set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'echo');
     expect((plain.body.messages as Array<{ origin?: unknown }>).every((r) => r.origin === undefined)).toBe(true);
-    const asked = await request(routes.a).get('/telegram/topics/12/messages?includeOrigin=1').set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'echo');
+    const asked = await request(env.app).get('/telegram/topics/12/messages?includeOrigin=1').set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'echo');
     expect((asked.body.messages as Array<{ text: string; origin?: { recorded: unknown } }>).find((r) => r.text === 'agent reply')!.origin).toMatchObject({ recorded: true });
   });
 });

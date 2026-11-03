@@ -121,7 +121,7 @@ describe('message origin — production wiring', () => {
     const agentRow = (hist.body.messages as Array<{ role: string; origin?: unknown }>).find((x) => x.role === 'agent')!;
     expect(agentRow.origin).toEqual({
       recorded: true,
-      machine: { value: 'e2e machine', status: 'observed' },
+      machine: { value: 'E2e Machine', status: 'observed' }, // the registry nickname, title-cased from 'e2e machine'
       harness: { value: 'Claude Code', id: 'claude-code', status: 'configured' },
       model: { value: 'claude-opus-5-5', status: 'configured' },
       display: { enabled: true, machine: true, harness: true, model: true },

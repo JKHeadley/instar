@@ -21222,7 +21222,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         originFooter = slackOriginFooter(ctx.config.projectName ?? 'agent', replyOrigin,
           currentAgentDisplay({ liveConfig: ctx.liveConfig, config: ctx.config as unknown as Record<string, unknown> }));
         // The labels are outgoing content: the deterministic credential wall sees them too (§5).
-        if (originFooter && detectOutboundCredential(originFooter)) originFooter = '';
+        if (originFooter && detectOutboundCredential(originFooter).detected) originFooter = '';
       } catch { originFooter = ''; } // @silent-fallback-ok — the footer is presentation; it never fails the send
       const ts = await sendWithAdapterTimeout(
         () => SlackOriginLedger.runInScope({ evidence: replyOrigin, channel: scopeChannel, threadTs: scopeThread },
