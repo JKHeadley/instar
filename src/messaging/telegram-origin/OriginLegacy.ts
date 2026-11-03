@@ -17,16 +17,19 @@ export function snapshotLegacyOrigin(row: PendingRelayRow): OriginLegacySnapshot
   const attempts = Number.isSafeInteger(row.attempts) && row.attempts >= 0 ? row.attempts : 9;
   // Authentication/path refusals precede the reply handler. 409/200, 5xx,
   // HTTP 0 and claimed-only history cannot establish definite non-delivery,
-  // with one exception: the boot beacon's 503 body. The beacon answers before
-  // the real server listens, so no reply handler ran and nothing was sent. The
-  // row keeps only the latest body, so only the latest attempt can prove it.
+  // with two exceptions whose exact bodies prove nothing was sent: the boot
+  // beacon's 503 (it answers before the real server listens, so no reply
+  // handler ran) and a refusal raised while the send was still being prepared
+  // (before admission, before any network call). The row keeps only the
+  // latest body, so only the latest attempt can carry that proof.
   const refused = (code: unknown) => code === 401 || code === 404;
-  const bootRefused = row.http_code === 503 && isBootBeaconBody(row.error_body);
+  const preDispatchRefused = (row.http_code === 503 && isBootBeaconBody(row.error_body))
+    || isPreDispatchRefusal(row.http_code, row.error_body);
   const refusedAt = (item: { http_code?: unknown } | null | undefined, index: number) =>
-    !!item && (refused(item.http_code) || (bootRefused && index === history.length - 1 && item.http_code === 503));
+    !!item && (refused(item.http_code) || (preDispatchRefused && index === history.length - 1 && item.http_code === row.http_code));
   const replaySafe = row.state === 'queued' && row.claimed_by === null && !row.truncated &&
     rawText.equals(Buffer.from(text)) && text.length > 0 && preparedAt > 0 &&
-    (attempts === 0 || ((refused(row.http_code) || bootRefused) && history.length === attempts && history.every(refusedAt)));
+    (attempts === 0 || ((refused(row.http_code) || preDispatchRefused) && history.length === attempts && history.every(refusedAt)));
   return { deliveryId: row.delivery_id, topicId: row.topic_id, text, format: row.format,
     preparedAt, attempts, nextAttemptAt: row.next_attempt_at, state: row.state,
     snapshotDigest: originDigest({ ...row, text: rawText.toString('base64') }), replaySafe };
@@ -40,4 +43,22 @@ export function isBootBeaconBody(body: unknown): boolean {
     return !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 2
       && value.status === 'warming' && value.phase === 'booting';
   } catch { return false; }
+}
+
+/** The reply route's exact body for a send it refused while preparing it:
+ * 500 `issues-chat-not-configured: …` (config read, no issues group), 500
+ * `origin-display-authority-unavailable` (the bare body earlier releases gave
+ * when config could not be read; thrown only by display resolution) or 503
+ * `origin-config-unavailable` (config could not be read). Both come from
+ * destination/display resolution, which runs before a send is admitted or
+ * dispatched. A body relayed from another machine, or with extra keys, does not qualify. */
+export function isPreDispatchRefusal(code: unknown, body: unknown): boolean {
+  if ((code !== 500 && code !== 503) || typeof body !== 'string' || body.length > 1024) return false;
+  let value: Record<string, unknown>;
+  try { value = JSON.parse(body) as Record<string, unknown>; } catch { return false; }
+  if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.error !== 'string') return false;
+  const keys = Object.keys(value).sort().join(',');
+  if (code === 500) return keys === 'error' && (value.error === 'origin-display-authority-unavailable'
+    || /^issues-chat-not-configured: topic \d+ belongs to the issues group/.test(value.error));
+  return keys === 'error,message,reason,retryable' && value.error === 'origin-config-unavailable' && value.retryable === true;
 }
