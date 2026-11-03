@@ -44,7 +44,18 @@ describe('locked-screen access on the production boot path', () => {
     } finally { await server.stop(); SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'test cleanup' }); }
   });
 
-  it.skipIf(process.platform !== 'darwin')('is alive on a Mac and refuses to turn on', async () => {
+  // Reads the real helper's locked state, so it runs only on a Mac set aside for
+  // real-helper tests (INSTAR_REAL_DESKTOP_HELPER_TESTS=1); otherwise the route must answer, not hang.
+  it.skipIf(process.platform !== 'darwin' || process.env.INSTAR_REAL_DESKTOP_HELPER_TESTS === '1')('answers 503 with a reason when the helper is not available to tests', async () => {
+    const { server, dir } = await boot(true);
+    try {
+      const status = await request(server.getApp()).get('/desktop/locked/status').set(auth);
+      expect([200, 503]).toContain(status.status);
+      if (status.status === 503) expect(status.body.code).toMatch(/^(mac-desktop-host-[a-z-]+|locked-state-unreadable)$/);
+    } finally { await server.stop(); SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'test cleanup' }); }
+  });
+
+  it.skipIf(process.platform !== 'darwin' || process.env.INSTAR_REAL_DESKTOP_HELPER_TESTS !== '1')('is alive on a Mac and refuses to turn on', async () => {
     const { server, dir } = await boot(true);
     try {
       const status = await request(server.getApp()).get('/desktop/locked/status').set(auth);
