@@ -64,6 +64,8 @@ The change prevents merges based on a weaker GitHub rule and bounds delayed CI r
 
 ## Second-pass review (if required)
 
+**Reviewer:** feedback_gate_review
+
 Concur with the review. The reviewer found and cleared the durable auto-arm, CI-registration, head-of-line, and rollback-description gaps after revisions. The final diff requires its exact-head tests and CI.
 
 ## Evidence pointers
