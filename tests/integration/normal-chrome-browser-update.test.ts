@@ -18,6 +18,16 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 const V1_FIXTURE = path.resolve(process.cwd(), 'tests/fixtures/skills/normal-chrome-browser-v1.md');
 const count = (text: string, needle: string) => text.split(needle).length - 1;
 
+// CLAUDE.md reference layout: an existing agent's CLAUDE.md is converted at the
+// end of migrate(), so its feature sections live in .instar/reference/.
+function readAwareness(projectDir: string, doc: string): string {
+  const own = fs.readFileSync(path.join(projectDir, doc), 'utf-8');
+  if (doc !== 'CLAUDE.md') return own;
+  const refDir = path.join(projectDir, '.instar', 'reference');
+  const refs = fs.existsSync(refDir) ? fs.readdirSync(refDir).map(f => fs.readFileSync(path.join(refDir, f), 'utf-8')) : [];
+  return [own, ...refs].join('\n');
+}
+
 describe('PostUpdateMigrator.migrate() — normal-Chrome browser (macOS + Windows) reaches an existing agent', () => {
   let projectDir: string;
   const skillPath = () => path.join(projectDir, '.claude', 'skills', 'normal-chrome-browser', 'SKILL.md');
@@ -51,7 +61,7 @@ describe('PostUpdateMigrator.migrate() — normal-Chrome browser (macOS + Window
       expect(fs.readFileSync(p, 'utf-8'), name).not.toBe('#!/bin/bash\necho v1\n');
     }
     for (const doc of ['CLAUDE.md', 'AGENTS.md']) {
-      const md = fs.readFileSync(path.join(projectDir, doc), 'utf-8');
+      const md = readAwareness(projectDir, doc);
       expect(count(md, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING), doc).toBe(1);
       expect(md, doc).not.toContain(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1);
     }
@@ -62,7 +72,7 @@ describe('PostUpdateMigrator.migrate() — normal-Chrome browser (macOS + Window
     expect(second.upgraded.filter(u => /Normal-Chrome browser section|normal-chrome-browser\/SKILL/.test(u))).toEqual([]);
     expect(fs.readFileSync(path.join(projectDir, '.instar', 'scripts', 'browser', 'ndrive.sh'), 'utf-8')).toContain('Register-ScheduledTask');
     for (const doc of ['CLAUDE.md', 'AGENTS.md']) {
-      expect(count(fs.readFileSync(path.join(projectDir, doc), 'utf-8'), NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING), doc).toBe(1);
+      expect(count(readAwareness(projectDir, doc), NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING), doc).toBe(1);
     }
   });
 

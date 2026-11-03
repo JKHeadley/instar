@@ -18,7 +18,7 @@ describe('Telegram Web K drift awareness installation parity', () => {
   it('existing agents receive it idempotently and the old per-episode wording is corrected', () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'webk-drift-migration-'));
     const stateDir = path.join(projectDir, '.instar'), md = path.join(projectDir, 'CLAUDE.md');
-    fs.mkdirSync(stateDir); fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ projectName: 'echo', port: 4042 }));
+    fs.mkdirSync(stateDir); fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ projectName: 'echo', port: 4042 , claudeMd: { layout: 'full' } /* tests the legacy append chain; the reference-layout conversion is covered in claude-md-reference-layout.test.ts */ }));
     fs.writeFileSync(md, '# Existing custom instructions\nA failed browser canary gets one fresh-process retry, then a persisted 15-minute pause and one attention item per episode.\n');
     fs.writeFileSync(path.join(projectDir, 'AGENTS.md'), '# Custom framework instructions\n');
     try {

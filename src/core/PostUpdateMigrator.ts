@@ -97,6 +97,26 @@ import {
   THREADLINE_PAIR_TOOL_BULLET,
   THREADLINE_PAIR_TOOL_MARKER,
 } from '../scaffold/templates.js';
+import { generateClaudeMd } from '../scaffold/templates.js';
+import {
+  CLAUDE_MD_DIFFERING_LINES_REL,
+  CLAUDE_MD_LEGACY_BACKUP_REL,
+  REFERENCE_DIR_REL,
+  differingLinesPointer,
+  renderDifferingLinesFile,
+  REFERENCE_FILE_HEADER,
+  extractOperatorContent,
+  findCoreRegion,
+  renderCoreRegion,
+  renderLayoutClaudeMd,
+  renderReferenceFiles,
+  readTailStamp,
+  replaceCoreRegion,
+  stampTail,
+  tailExtendsStamp,
+  withoutTailStamp,
+  type CoreRegionLocation,
+} from '../scaffold/claudeMdLayout.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills, installBrowserScripts } from '../commands/init.js';
@@ -2102,6 +2122,39 @@ export function migrateConfigAccountFollowMeRevocationDeadline(config: Record<st
   return true;
 }
 
+/** Minimum instar sections in newly appended below-marker text before it is treated as an older instar's append. */
+const CLAUDE_MD_CLEANUP_MIN_UNITS = 10;
+
+const CONTEXT_DEATH_MARKER_ID = 'INSTAR:ANTI-PATTERN-CONTEXT-DEATH';
+
+/**
+ * Insert the context-death anti-pattern block into a CLAUDE.md string (end of
+ * "Critical Anti-Patterns", or a new section). Shared by the file migration and
+ * the canonical document the reference layout is built from. No-op when present.
+ */
+export function insertContextDeathClaudeBlock(input: string): string {
+  const markerId = CONTEXT_DEATH_MARKER_ID;
+  if (input.includes(markerId)) return input;
+  const claudeBlock = [
+    `<!-- ${markerId} -->`,
+    '**"Context-Death Self-Stop"** — Do not self-terminate mid-plan citing context preservation, context-window concerns, or "let\'s continue in a fresh session" when durable artifacts for the plan exist on disk (committed code, plan files, ledger rows). Compaction-recovery re-injects identity, memory, and recent context automatically; worst case is a ~30s re-read of the plan file. Legitimate stops: real design questions, missing information only the user can provide, genuine errors, completion. Context-preservation is NOT a legitimate stop reason on its own. If you catch yourself reaching for it, check the durable artifact instead and keep going.',
+    `<!-- /${markerId} -->`,
+  ].join('\n');
+  let content = input;
+  // Anchor: end of "Critical Anti-Patterns" (just before next `## ` heading) —
+  // falls back to append if section absent.
+  const antiPatternsIdx = content.indexOf('## Critical Anti-Patterns');
+  if (antiPatternsIdx >= 0) {
+    const afterHeader = antiPatternsIdx + '## Critical Anti-Patterns'.length;
+    const nextHeadingIdx = content.indexOf('\n## ', afterHeader);
+    const insertAt = nextHeadingIdx >= 0 ? nextHeadingIdx : content.length;
+    content = content.slice(0, insertAt) + '\n' + claudeBlock + '\n' + content.slice(insertAt);
+  } else {
+    content += '\n\n## Critical Anti-Patterns\n\n' + claudeBlock + '\n';
+  }
+  return content;
+}
+
 export class PostUpdateMigrator {
   private config: MigratorConfig;
   /**
@@ -2322,6 +2375,9 @@ export class PostUpdateMigrator {
     this.migrateStallGateInstallProvenance(result);
     this.migrateFeatureMaturationGate(result);
     this.migrateRetireStaleReleaseReadinessEvalFailureAttention(result);
+    // LAST: every step above that patches CLAUDE.md has run, so the legacy
+    // file is complete before it is split (docs/specs/claude-md-reference-layout.md).
+    this.migrateClaudeMdReferenceLayout(result);
 
     return result;
   }
@@ -5298,11 +5354,6 @@ export class PostUpdateMigrator {
       return;
     }
 
-    const claudeBlock = [
-      `<!-- ${markerId} -->`,
-      '**"Context-Death Self-Stop"** — Do not self-terminate mid-plan citing context preservation, context-window concerns, or "let\'s continue in a fresh session" when durable artifacts for the plan exist on disk (committed code, plan files, ledger rows). Compaction-recovery re-injects identity, memory, and recent context automatically; worst case is a ~30s re-read of the plan file. Legitimate stops: real design questions, missing information only the user can provide, genuine errors, completion. Context-preservation is NOT a legitimate stop reason on its own. If you catch yourself reaching for it, check the durable artifact instead and keep going.',
-      `<!-- /${markerId} -->`,
-    ].join('\n');
 
     const agentBlock = [
       `<!-- ${markerId} -->`,
@@ -5315,19 +5366,12 @@ export class PostUpdateMigrator {
     if (fs.existsSync(claudeMdPath)) {
       try {
         let content = fs.readFileSync(claudeMdPath, 'utf-8');
-        if (!content.includes(markerId)) {
-          // Anchor: end of "Critical Anti-Patterns" (just before next
-          // `## ` heading) — falls back to append if section absent.
-          const antiPatternsIdx = content.indexOf('## Critical Anti-Patterns');
-          if (antiPatternsIdx >= 0) {
-            // Find the next top-level heading after Critical Anti-Patterns.
-            const afterHeader = antiPatternsIdx + '## Critical Anti-Patterns'.length;
-            const nextHeadingIdx = content.indexOf('\n## ', afterHeader);
-            const insertAt = nextHeadingIdx >= 0 ? nextHeadingIdx : content.length;
-            content = content.slice(0, insertAt) + '\n' + claudeBlock + '\n' + content.slice(insertAt);
-          } else {
-            content += '\n\n## Critical Anti-Patterns\n\n' + claudeBlock + '\n';
-          }
+        if (findCoreRegion(content) !== null) {
+          // Reference layout: the block is part of the canonical document the
+          // instar region and reference files are built from.
+          result.skipped.push(`CLAUDE.md: ${markerId} carried by the reference layout`);
+        } else if (!content.includes(markerId)) {
+          content = insertContextDeathClaudeBlock(content);
           fs.writeFileSync(claudeMdPath, content);
           result.upgraded.push(`CLAUDE.md: added ${markerId} marker block`);
         } else {
@@ -7883,14 +7927,306 @@ setTimeout(() => process.exit(0), 2000);
       return;
     }
 
-    let content: string;
+    let original: string;
     try {
-      content = fs.readFileSync(claudeMdPath, 'utf-8');
+      original = fs.readFileSync(claudeMdPath, 'utf-8');
     } catch (err) {
       result.errors.push(`CLAUDE.md read: ${err instanceof Error ? err.message : String(err)}`);
       return;
     }
 
+    this.stripRetiredJevCardFromShadows(result);
+
+    // Reference layout (docs/specs/claude-md-reference-layout.md): the instar
+    // block between the core markers is regenerated from the canonical full
+    // document; the legacy append chain never runs against the small file.
+    const region = findCoreRegion(original);
+    if (region === 'broken') {
+      result.upgraded.push(`REVIEW: CLAUDE.md has only one of the instar core markers (or they are out of order), so instar left it untouched. Restore both markers, or remove both to have it converted again. The whole previous file is at ${CLAUDE_MD_LEGACY_BACKUP_REL} if it was converted before.`);
+      return;
+    }
+    if (region) {
+      this.refreshClaudeMdReferenceLayout(original, region, result);
+      return;
+    }
+
+    const { content, patched } = this.patchClaudeMdContent(original, result);
+    if (patched) {
+      try {
+        fs.writeFileSync(claudeMdPath, content);
+      } catch (err) {
+        result.errors.push(`CLAUDE.md write: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  /**
+   * Strip the retired Jev review-flag-shadow card from the Codex/Gemini mirrors
+   * (spec retire-staged-features-2026-10-25). Kept out of patchClaudeMdContent so
+   * that chain stays a pure string transform (it also builds the canonical
+   * document for the CLAUDE.md reference layout).
+   */
+  private stripRetiredJevCardFromShadows(result: MigrationResult): void {
+    const port = this.config.port;
+    for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
+      const shadowPath = path.join(this.config.projectDir, shadowName);
+      if (!fs.existsSync(shadowPath)) continue;
+      let shadow: string;
+      try {
+        shadow = fs.readFileSync(shadowPath, 'utf-8');
+      } catch (err) {
+        result.errors.push(`${shadowName} read: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      const s = stripRetiredJevReviewFlagCard(shadow, port);
+      if (s.stripped > 0) {
+        try {
+          fs.writeFileSync(shadowPath, s.content);
+          result.upgraded.push(`${shadowName}: removed the retired Jev review-flag-shadow card (${s.stripped})`);
+        } catch (err) {
+          result.errors.push(`${shadowName} write: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      if (s.review) {
+        result.upgraded.push(`REVIEW: ${shadowName}: the "${JEV_REVIEW_FLAG_CARD_RETIRED_HEADING}" card was edited, so it was not removed; the route it describes no longer exists — delete the card by hand`);
+      }
+    }
+  }
+
+  /** `claudeMd.layout` from `.instar/config.json`: 'reference' (default) or 'full'. */
+  private readClaudeMdLayout(): 'reference' | 'full' {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(path.join(this.config.stateDir, 'config.json'), 'utf-8')) as { claudeMd?: { layout?: unknown } };
+      return cfg?.claudeMd?.layout === 'full' ? 'full' : 'reference';
+    } catch {
+      // @silent-fallback-ok: an absent or unreadable config means no override was set; the default layout applies.
+      return 'reference';
+    }
+  }
+
+  private canonicalClaudeMdCache: string | undefined;
+
+  /**
+   * The agent's own name from `.instar/AGENT.md` ("**Name**: Luna" or a
+   * "# Groky" title), so the core's "Who I Am" line names the agent rather
+   * than its folder. Null when absent or unrecognised.
+   */
+  private readAgentDisplayName(): string | null {
+    let text: string;
+    try {
+      text = fs.readFileSync(path.join(this.config.stateDir, 'AGENT.md'), 'utf-8');
+    } catch {
+      // @silent-fallback-ok: no AGENT.md → the project name is used, as generateClaudeMd's callers always did.
+      return null;
+    }
+    const field = /^\*\*Name\*\*:\s*(.+?)\s*$/m.exec(text);
+    if (field) return field[1].slice(0, 80);
+    const h1 = /^# (.+?)\s*$/m.exec(text);
+    if (h1 && !/^agent identity$/i.test(h1[1])) return h1[1].slice(0, 80);
+    return null;
+  }
+
+  /**
+   * The full agent-awareness document this agent would have today: the
+   * template, every migration-appended section, and the context-death block.
+   * The reference layout's instar block and reference files are built from it.
+   */
+  buildCanonicalClaudeMd(): string {
+    if (this.canonicalClaudeMdCache !== undefined) return this.canonicalClaudeMdCache;
+    const name = this.config.projectName || 'agent';
+    const scratch: MigrationResult = { upgraded: [], skipped: [], errors: [] };
+    let full = generateClaudeMd(name, this.readAgentDisplayName() ?? name, this.config.port, this.config.hasTelegram);
+    full = this.patchClaudeMdContent(full, scratch).content;
+    if (!this.readIdentityPins()[CONTEXT_DEATH_MARKER_ID]) full = insertContextDeathClaudeBlock(full);
+    this.canonicalClaudeMdCache = full;
+    return full;
+  }
+
+  /** Write the reference files that differ; remove generated ones no longer produced. */
+  private writeClaudeMdReferenceFiles(full: string, result: MigrationResult): void {
+    const dir = path.join(this.config.projectDir, REFERENCE_DIR_REL);
+    const files = renderReferenceFiles(full);
+    let written = 0;
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      for (const [name, body] of files) {
+        const p = path.join(dir, name);
+        let current: string | null = null;
+        try { current = fs.readFileSync(p, 'utf-8'); } catch { /* @silent-fallback-ok: an absent reference file is written below */ }
+        if (current !== body) {
+          fs.writeFileSync(p, body);
+          written++;
+        }
+      }
+      for (const entry of fs.readdirSync(dir)) {
+        if (!entry.endsWith('.md') || files.has(entry)) continue;
+        const p = path.join(dir, entry);
+        let firstLine = '';
+        try { firstLine = fs.readFileSync(p, 'utf-8').split('\n', 1)[0]; } catch { /* @silent-fallback-ok: unreadable → not provably ours → left alone */ }
+        if (firstLine !== REFERENCE_FILE_HEADER) continue;
+        SafeFsExecutor.safeUnlinkSync(p, { operation: 'PostUpdateMigrator.writeClaudeMdReferenceFiles.stale-generated-reference' });
+        result.upgraded.push(`${REFERENCE_DIR_REL}/${entry}: removed (instar no longer generates it)`);
+      }
+    } catch (err) {
+      result.errors.push(`${REFERENCE_DIR_REL}: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (written > 0) result.upgraded.push(`${REFERENCE_DIR_REL}: wrote ${written} reference file(s)`);
+  }
+
+  /** Reference layout already in place: regenerate the instar block + reference files. */
+  private refreshClaudeMdReferenceLayout(original: string, region: CoreRegionLocation, result: MigrationResult): void {
+    const claudeMdPath = path.join(this.config.projectDir, 'CLAUDE.md');
+    let full: string;
+    try {
+      full = this.buildCanonicalClaudeMd();
+    } catch (err) {
+      result.errors.push(`CLAUDE.md canonical build: ${err instanceof Error ? err.message : String(err)} — CLAUDE.md left unchanged`);
+      return;
+    }
+    const layout = this.readClaudeMdLayout();
+    const bareRegion = renderCoreRegion(full, layout);
+    // Text below the end marker is the operator's. An older instar (a rollback,
+    // or another machine of a git-synced agent still on an older version) runs
+    // its append chain on this file and APPENDS instar sections at the end. The
+    // evidence for that is the fingerprint of the below-marker text instar last
+    // wrote, stamped inside the block (so it travels with CLAUDE.md): only text after an unchanged recorded prefix is reconsidered,
+    // so an operator's own text (including a section they copied there on
+    // purpose) is never taken out. A unit with an instar:keep line never moves.
+    const afterOriginal = original.slice(region.end);
+    let after = afterOriginal;
+    let cleanup: { movedUnits: number } | undefined;
+    const oldRegion = original.slice(region.start, region.end);
+    const record = readTailStamp(oldRegion);
+    {
+      // With an intact stamp only the appended text is reconsidered; when the
+      // operator edited the text since (or there is no stamp) the whole tail is,
+      // under the same threshold and instar:keep exemption — an operator's notes
+      // essentially never hold ten instar sections, an older chain appends ~100.
+      const extends_ = !!record && tailExtendsStamp(record, after);
+      const keptPrefix = extends_ ? after.slice(0, record!.length) : '';
+      const added = extends_ ? after.slice(record!.length) : after;
+      if (added.trim()) {
+        let migratorOnlyText: string;
+        try {
+          migratorOnlyText = this.patchClaudeMdContent('', { upgraded: [], skipped: [], errors: [] }).content;
+        } catch (err) {
+          result.errors.push(`CLAUDE.md canonical build: ${err instanceof Error ? err.message : String(err)} — CLAUDE.md left unchanged`);
+          return;
+        }
+        const ex = extractOperatorContent(added, full, migratorOnlyText);
+        // An older instar's append chain re-adds dozens of sections at once; an
+        // operator copying a section or two below the block is left alone.
+        if (ex.movedUnits >= CLAUDE_MD_CLEANUP_MIN_UNITS) {
+          cleanup = ex;
+          after = keptPrefix + (ex.kept ? `${keptPrefix.endsWith('\n') || !keptPrefix ? '' : '\n'}\n${keptPrefix ? ex.kept : ex.kept.replace(/^\n+/, '')}` : '');
+        }
+      }
+    }
+    const newRegion = stampTail(bareRegion, after);
+    const next = original.slice(0, region.start) + newRegion + after;
+    // Reference files first: CLAUDE.md never points at a file not yet written.
+    this.writeClaudeMdReferenceFiles(full, result);
+    if (next !== original) {
+      try {
+        if (cleanup) {
+          // One backup, overwritten by each cleanup (so they never pile up).
+          const backupRel = '.instar/CLAUDE.md.before-cleanup.md';
+          const backup = path.join(this.config.projectDir, backupRel);
+          fs.mkdirSync(path.dirname(backup), { recursive: true });
+          fs.writeFileSync(backup, original);
+          // The removed text is an older instar's own output (its differing lines are
+          // that version's fallback wording, not edits), so it is not listed for
+          // review; the backup above holds it.
+          result.upgraded.push(`REVIEW: CLAUDE.md had ${cleanup.movedUnits} instar section(s) appended below the instar block by an older instar version; moved them out. The file before this cleanup is at ${backupRel}.`);
+        }
+        fs.writeFileSync(claudeMdPath, next);
+        if (withoutTailStamp(oldRegion) !== withoutTailStamp(newRegion)) {
+          result.upgraded.push(`CLAUDE.md: refreshed the instar block (${layout === 'full' ? 'full document — claudeMd.layout "full"' : 'reference layout'})`);
+        }
+      } catch (err) {
+        result.errors.push(`CLAUDE.md write: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+    }
+  }
+
+  /**
+   * Final migrate() step: convert a legacy CLAUDE.md (no instar core markers)
+   * to the reference layout. Backs the old file up once, keeps every unit
+   * instar did not write, and writes the small instar block + reference files.
+   * Skipped when `claudeMd.layout` is "full".
+   */
+  migrateClaudeMdReferenceLayout(result: MigrationResult, opts: { freshInit?: boolean } = {}): void {
+    const claudeMdPath = path.join(this.config.projectDir, 'CLAUDE.md');
+    if (!fs.existsSync(claudeMdPath)) return;
+    if (this.readClaudeMdLayout() === 'full') {
+      result.skipped.push('CLAUDE.md reference layout: claudeMd.layout is "full"');
+      return;
+    }
+    let legacy: string;
+    try {
+      legacy = fs.readFileSync(claudeMdPath, 'utf-8');
+    } catch (err) {
+      result.errors.push(`CLAUDE.md read: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (findCoreRegion(legacy) !== null) return; // already converted (or broken — reported by migrateClaudeMd)
+    let full: string;
+    let migratorOnlyText: string;
+    try {
+      full = this.buildCanonicalClaudeMd();
+      migratorOnlyText = this.patchClaudeMdContent('', { upgraded: [], skipped: [], errors: [] }).content;
+    } catch (err) {
+      result.errors.push(`CLAUDE.md canonical build: ${err instanceof Error ? err.message : String(err)} — CLAUDE.md left unchanged`);
+      return;
+    }
+    // freshInit: `instar init` wrote this file a moment ago from the template, so
+    // nothing in it is operator-written and there is nothing worth backing up.
+    const extraction = opts.freshInit
+      ? { kept: '', keptUnits: 0, movedUnits: 0, keptTitles: [] as string[], movedDiffering: [] as Array<{ title: string; lines: string[] }> }
+      : extractOperatorContent(legacy, full, migratorOnlyText);
+    const backupPath = path.join(this.config.projectDir, CLAUDE_MD_LEGACY_BACKUP_REL);
+    const differing = extraction.movedDiffering;
+    const next = renderLayoutClaudeMd(full, extraction.kept, 'reference', differing.length > 0 ? differingLinesPointer(differing.length) : '');
+    // Reference files first: CLAUDE.md never points at a file not yet written.
+    this.writeClaudeMdReferenceFiles(full, result);
+    if (result.errors.some(e => e.startsWith(`${REFERENCE_DIR_REL}:`))) {
+      result.errors.push('CLAUDE.md reference layout: reference files could not be written — CLAUDE.md left unchanged');
+      return;
+    }
+    try {
+      if (!opts.freshInit) {
+        fs.mkdirSync(path.dirname(backupPath), { recursive: true });
+        if (!fs.existsSync(backupPath)) fs.writeFileSync(backupPath, legacy);
+        if (differing.length > 0) {
+          fs.writeFileSync(path.join(this.config.projectDir, CLAUDE_MD_DIFFERING_LINES_REL), renderDifferingLinesFile(differing, new Date().toISOString().slice(0, 10)));
+        }
+      }
+      fs.writeFileSync(claudeMdPath, next);
+    } catch (err) {
+      result.errors.push(`CLAUDE.md reference layout: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    result.upgraded.push(opts.freshInit
+      ? `CLAUDE.md: wrote the instar block + ${REFERENCE_DIR_REL}/ (${legacy.length} → ${next.length} characters)`
+      : `CLAUDE.md: moved ${extraction.movedUnits} instar sections to ${REFERENCE_DIR_REL}/ (${legacy.length} → ${next.length} characters); previous file kept at ${CLAUDE_MD_LEGACY_BACKUP_REL}`);
+    if (differing.length > 0) {
+      result.upgraded.push(`REVIEW: ${differing.length} moved instar section(s) held lines that differ from instar's current text (older wording or hand edits); they are listed in ${CLAUDE_MD_DIFFERING_LINES_REL}.`);
+    }
+    if (extraction.keptUnits > 0) {
+      result.upgraded.push(`REVIEW: CLAUDE.md kept ${extraction.keptUnits} section(s) (${extraction.kept.length} characters) instar did not recognise as its own, below the instar block: ${extraction.keptTitles.slice(0, 20).join('; ')}${extraction.keptTitles.length > 20 ? '; …' : ''}. Delete any that are outdated instar text. A kept section with the same title as one in the instar block (e.g. your own "Who I Am") now follows the block; keep whichever is right.`);
+    }
+  }
+
+  /**
+   * The legacy CLAUDE.md append chain as a string transform: every
+   * content-sniffed section a migration ever added. Runs against a legacy
+   * (pre-reference-layout) CLAUDE.md, and against `generateClaudeMd()` output
+   * to build the canonical full document for the reference layout.
+   */
+  private patchClaudeMdContent(input: string, result: MigrationResult): { content: string; patched: boolean } {
+    let content = input;
     let patched = false;
     const port = this.config.port;
 
@@ -8157,29 +8493,6 @@ setTimeout(() => process.exit(0), 2000);
       }
       if (r.review) {
         result.upgraded.push(`REVIEW: CLAUDE.md: the "${JEV_REVIEW_FLAG_CARD_RETIRED_HEADING}" card was edited, so it was not removed; the route it describes no longer exists — delete the card by hand`);
-      }
-      for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
-        const shadowPath = path.join(this.config.projectDir, shadowName);
-        if (!fs.existsSync(shadowPath)) continue;
-        let shadow: string;
-        try {
-          shadow = fs.readFileSync(shadowPath, 'utf-8');
-        } catch (err) {
-          result.errors.push(`${shadowName} read: ${err instanceof Error ? err.message : String(err)}`);
-          continue;
-        }
-        const s = stripRetiredJevReviewFlagCard(shadow, port);
-        if (s.stripped > 0) {
-          try {
-            fs.writeFileSync(shadowPath, s.content);
-            result.upgraded.push(`${shadowName}: removed the retired Jev review-flag-shadow card (${s.stripped})`);
-          } catch (err) {
-            result.errors.push(`${shadowName} write: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        }
-        if (s.review) {
-          result.upgraded.push(`REVIEW: ${shadowName}: the "${JEV_REVIEW_FLAG_CARD_RETIRED_HEADING}" card was edited, so it was not removed; the route it describes no longer exists — delete the card by hand`);
-        }
       }
     }
 
@@ -13971,13 +14284,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       result.upgraded.push('CLAUDE.md: added Throwaway test agents section');
     }
 
-    if (patched) {
-      try {
-        fs.writeFileSync(claudeMdPath, content);
-      } catch (err) {
-        result.errors.push(`CLAUDE.md write: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
+    return { content, patched };
   }
 
   /**
@@ -14015,6 +14322,16 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     } catch (err) {
       result.errors.push(`shadow capabilities: CLAUDE.md read failed: ${err instanceof Error ? err.message : String(err)}`);
       return;
+    }
+    // Reference layout: CLAUDE.md holds only the core, so mirror from the
+    // canonical full document the instar block and reference files come from.
+    if (findCoreRegion(claudeMd) !== null) {
+      try {
+        claudeMd = this.buildCanonicalClaudeMd();
+      } catch (err) {
+        result.errors.push(`shadow capabilities: canonical CLAUDE.md build failed: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
     }
 
     // Markers identifying each capability section migrateClaudeMd may have
