@@ -47,6 +47,7 @@ import { cleanText } from '../core/MobilePairing.js';
 import type { RouteContext } from './routes.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
+import { deviceTextForRow } from '../core/appPlatformMedia.js';
 
 /**
  * One row of the unified conversation list. The list order is total and the same on every
@@ -846,3 +847,25 @@ export function joinTelegramHistory(
   }
   return out.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp))).slice(-limit);
 }
+
+/**
+ * Telegram media for a DEVICE's history read (media spec §4.9): a row whose Telegram message id
+ * has a `platform-media` event gets that event's `attachments` (the app history row shape), and
+ * EVERY row's text has its server paths replaced (`[photo]`, `[file: <name>]`, `[voice note]`), so
+ * a device never sees a server path, with or without a recorded event. Never throws.
+ */
+export function withTelegramMediaForDevice(
+  app: AppConversationService | null, topicId: number, rows: ReadonlyArray<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  const key = `telegram:${topicId}`;
+  return rows.map((row) => {
+    let attachments: AppAttachment[] | null = null;
+    const pmid = typeof row.messageId === 'number' || (typeof row.messageId === 'string' && row.messageId) ? String(row.messageId) : null;
+    if (app && pmid && row.fromUser === true && !row.fromStore) {
+      try { attachments = app.store.getPlatformMedia(key, pmid)?.attachments ?? null; } catch { attachments = null; } // @silent-fallback-ok — the row is still returned, path-free, without attachments
+    }
+    const text = typeof row.text === 'string' ? deviceTextForRow(row.text, attachments) : row.text;
+    return { ...row, text, ...(attachments && app ? { attachments: attachmentRows(attachments, app) } : {}) };
+  });
+}
+

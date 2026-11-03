@@ -581,6 +581,21 @@ interface PendingPromise {
 /** Longest a send waits at boot for the forward-to-holder wiring (see holderForwardReady). */
 export const HOLDER_FORWARD_WIRING_WAIT_MS = 30_000;
 
+/** One file a Telegram inbound handler downloaded (media spec §4.9). */
+export interface TelegramInboundMedia {
+  topicId: number;
+  platformMessageId: number;
+  filePath: string;
+  declaredKind: 'photo' | 'file' | 'voice';
+  filename: string;
+  declaredType: string;
+  at: string;
+  durationMs?: number;
+  width?: number;
+  height?: number;
+}
+export type TelegramInboundMediaHook = (info: TelegramInboundMedia) => Promise<void> | void;
+
 export class TelegramAdapter implements MessagingAdapter {
   readonly platform = 'telegram';
 
@@ -721,6 +736,35 @@ export class TelegramAdapter implements MessagingAdapter {
 
   // Topic message callback — fires on every incoming topic message
   public onTopicMessage: ((message: Message) => void | Promise<void>) | null = null;
+
+  // Inbound media copy (docs/specs/mobile-native-chat-media.md §4.9): wired by the server only
+  // when native app media is on. Called after a successful download with the local file; the
+  // copy into the app's blob store must be finished when the returned promise settles (a voice
+  // note's download is deleted right after). Failures never affect delivery to the session.
+  private inboundMediaHook: TelegramInboundMediaHook | null = null;
+
+  setInboundMediaHook(hook: TelegramInboundMediaHook | null): void { this.inboundMediaHook = hook; }
+
+  /**
+   * Hand one downloaded file to the inbound media hook. Bounded: at most 30 s is waited, and any
+   * failure is logged and swallowed — the Telegram delivery to the session goes on regardless.
+   */
+  private async copyInboundMedia(info: TelegramInboundMedia): Promise<void> {
+    const hook = this.inboundMediaHook;
+    if (!hook) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      await Promise.race([
+        Promise.resolve().then(() => hook(info)),
+        new Promise<void>((resolve) => { timer = setTimeout(() => { console.warn(`[telegram] inbound media copy for message ${info.platformMessageId} took over 30 s; delivery continues`); resolve(); }, 30_000); }),
+      ]);
+    } catch (err) {
+      // @silent-fallback-ok — the hook reports its own degradation; delivery to the session is unaffected
+      console.warn(`[telegram] inbound media copy failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
 
   // Session management callbacks (wired by server.ts)
   public onInterruptSession: ((sessionName: string) => Promise<boolean>) | null = null;
@@ -6009,6 +6053,13 @@ export class TelegramAdapter implements MessagingAdapter {
       return;
     }
 
+    // §4.9: copied into the app's blob store BEFORE the download is deleted below.
+    await this.copyInboundMedia({
+      topicId, platformMessageId: msg.message_id, filePath: filepath, declaredKind: 'voice',
+      filename: filename, declaredType: voice.mime_type || 'audio/ogg', at: new Date(msg.date * 1000).toISOString(),
+      durationMs: typeof voice.duration === 'number' ? voice.duration * 1000 : undefined,
+    });
+
     // Transcribe
     try {
       const transcript = await this.transcribeVoice(filepath);
@@ -6088,6 +6139,12 @@ export class TelegramAdapter implements MessagingAdapter {
     try {
       const filepath = await this.downloadPhoto(photo.file_id, msg.message_id);
       console.log(`[telegram] Downloaded photo: ${filepath}`);
+      // §4.9: the app's copy runs beside delivery (the download stays on disk).
+      void this.copyInboundMedia({
+        topicId, platformMessageId: msg.message_id, filePath: filepath, declaredKind: 'photo',
+        filename: path.basename(filepath), declaredType: 'image/jpeg', at: new Date(msg.date * 1000).toISOString(),
+        width: photo.width, height: photo.height,
+      });
 
       const content = caption
         ? `[image:${filepath}] ${caption}`
@@ -6156,6 +6213,12 @@ export class TelegramAdapter implements MessagingAdapter {
     try {
       const filepath = await this.downloadDocument(doc.file_id, msg.message_id, doc.file_name);
       console.log(`[telegram] Downloaded document: ${filepath}`);
+      // §4.9: the app's copy runs beside delivery (the download stays on disk).
+      void this.copyInboundMedia({
+        topicId, platformMessageId: msg.message_id, filePath: filepath, declaredKind: 'file',
+        filename: doc.file_name || path.basename(filepath), declaredType: doc.mime_type || 'application/octet-stream',
+        at: new Date(msg.date * 1000).toISOString(),
+      });
 
       const content = caption
         ? `[document:${filepath}] ${caption}`

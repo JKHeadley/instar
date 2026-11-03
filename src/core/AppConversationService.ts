@@ -320,8 +320,7 @@ export class AppConversationService {
     const rows = this.media.indexDb.prepare(`SELECT * FROM pending_deliveries WHERE sha256 = ? AND state = 'waiting'`).all(sha) as PendingRow[];
     for (const r of rows) {
       try {
-        const ev = this.store.getMessageEvent(r.conversationKey, r.messageId);
-        const a = ev && ev.kind === 'media-message' ? ev.attachments.find((x) => x.attachmentId === r.attachmentId) : undefined;
+        const a = this.store.getMediaAttachments(r.conversationKey, r.messageId)?.find((x) => x.attachmentId === r.attachmentId);
         const copy = a ? await this.media.sessionCopy(r.messageId, a) : null;
         if (!copy) continue;
         // Claim the row first, so two landings never produce two lines (§4.12: de-duplicated by attachment).
@@ -403,8 +402,8 @@ export class AppConversationService {
         const r = this.store.ingestReplicated(ev);
         if (r?.appended) { added++; this.onReplicatedEvent(ev); }
         if (r?.appended && (ev.kind === 'purge' || ev.kind === 'tombstone')) needsMediaPass = true;
-        if (r?.appended && (ev.kind === 'media-message' || ev.kind === 'purge')) {
-          this.replicator.markWantedDirty(ev.kind === 'media-message' ? ev.attachments.map((a) => a.sha256) : undefined);
+        if (r?.appended && (ev.kind === 'media-message' || ev.kind === 'platform-media' || ev.kind === 'purge')) {
+          this.replicator.markWantedDirty(ev.kind === 'purge' ? undefined : ev.attachments.map((a) => a.sha256));
         }
       } catch (err) { this.report('replicated ingest', err); }
     }

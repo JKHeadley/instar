@@ -7,7 +7,8 @@
  *   POST /mobile/media/uploads                      start   {conversationRef, size, sha256, …}
  *   PUT  /mobile/media/uploads/:uploadId/chunks/:i  one signed chunk (application/octet-stream)
  *   GET  /mobile/media/uploads/:uploadId            resume  {received, state, expiresAt}
- *   GET  /mobile/media/:sha256?ref=<conversationRef> download (Range honored, never executable)
+ *   GET  /mobile/media/:sha256?ref=<conversationRef> download (Range honored, never executable);
+ *        ref is app:<uuid> or telegram:<topicId> (§4.9 platform media)
  *   POST /mobile/media/purge                        permanently remove files {conversationKeys, requestId}
  */
 import crypto from 'node:crypto';
@@ -137,8 +138,12 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     const sha = String(req.params.sha256);
     const ref = typeof req.query.ref === 'string' ? req.query.ref : '';
     const notFound = () => res.status(404).json({ error: 'not-found' });
-    const key = parseAppCanonicalKey(ref);
-    if (!isSha256Hex(sha) || !key || !svc!.liveConversation(key)) { notFound(); return; }
+    // The conversation is a live native app conversation (`app:<uuid>`) or a Telegram topic
+    // (`telegram:<topicId>`, §4.9), whose files are referenced by `platform-media` events.
+    const appKey = parseAppCanonicalKey(ref);
+    const telegramKey = /^telegram:[1-9][0-9]{0,15}$/.test(ref) ? ref : null;
+    const key = appKey ?? telegramKey;
+    if (!isSha256Hex(sha) || !key || (appKey && !svc!.liveConversation(appKey))) { notFound(); return; }
     const att = svc!.store.mediaRefInConversation(key, sha);
     if (!att) { notFound(); return; }
     const blob = media.locateBlob(sha);
@@ -155,8 +160,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
       res.status(202).json({ state: 'fetching', retryAfterMs: 2000 });
       return;
     }
-    const ev = svc!.store.getMessageEvent(key, att.messageId);
-    const attachment: AppAttachment | undefined = ev && ev.kind === 'media-message' ? ev.attachments[att.idx] : undefined;
+    const attachment: AppAttachment | undefined = svc!.store.getMediaAttachments(key, att.messageId)?.[att.idx];
     const mediaType = attachment?.mediaType ?? 'application/octet-stream';
     const inline = isInlineSafe(mediaType);
     let handle: fs.promises.FileHandle;
