@@ -804,6 +804,19 @@ except Exception:
     # `now` (which a wedged/slept script would push arbitrarily late).
     NOW_EPOCH=$(date -u +%s)
 
+    # origin_session_digest — SHA-256 of this session's origin credential (never
+    # the credential itself). A reply queued while the server boots would
+    # otherwise recover as "unknown machine/harness/model"; the server matches
+    # this digest to the live session that held the credential and labels the
+    # recovered send with it. Empty when no credential is present.
+    ORIGIN_DIGEST=""
+    if [ -n "${INSTAR_ORIGIN_TOKEN:-}" ]; then
+      ORIGIN_DIGEST=$(printf '%s' "$INSTAR_ORIGIN_TOKEN" | shasum -a 256 2>/dev/null | awk '{print $1}')
+      [ -n "$ORIGIN_DIGEST" ] || ORIGIN_DIGEST=$(printf '%s' "$INSTAR_ORIGIN_TOKEN" | sha256sum 2>/dev/null | awk '{print $1}')
+      [ -n "$ORIGIN_DIGEST" ] || ORIGIN_DIGEST=$(printf '%s' "$INSTAR_ORIGIN_TOKEN" | python3 -c 'import sys,hashlib; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())' 2>/dev/null)
+      printf '%s' "$ORIGIN_DIGEST" | grep -Eq '^[0-9a-f]{64}$' || ORIGIN_DIGEST=""
+    fi
+
     # Run the queue write through python3's stdlib sqlite3 module — it
     # owns schema creation, the 5s dedup window, parameterized inserts,
     # and 0600-mode enforcement. python3 is already a hard dependency
@@ -829,6 +842,7 @@ except Exception:
       Q_ATTEMPTED_AT="$ATTEMPTED_AT" \
       Q_TRUNCATED="$TRUNCATED" \
       Q_METADATA="$METADATA_JSON" \
+      Q_ORIGIN_DIGEST="$ORIGIN_DIGEST" \
       Q_DB_PATH="$QUEUE_DB" \
       python3 -c '
 import os, sqlite3, sys, json, datetime
@@ -876,6 +890,12 @@ try:
     except sqlite3.OperationalError as e:
         if "duplicate column name" not in str(e):
             raise
+    # origin_session_digest — lets recovery label the send with its session.
+    try:
+        conn.execute("ALTER TABLE entries ADD COLUMN origin_session_digest TEXT")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise
     conn.execute("CREATE INDEX IF NOT EXISTS idx_state_next ON entries(state, next_attempt_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_text_hash_topic ON entries(text_hash, topic_id)")
     # 5s dedup window (spec § 2b step 2).
@@ -899,8 +919,9 @@ try:
           delivery_id, topic_id, text_hash, text, format,
           http_code, error_body, attempted_port,
           attempted_at, attempts, next_attempt_at,
-          state, claimed_by, status_history, truncated, message_metadata
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, "queued", NULL, ?, ?, ?)""",
+          state, claimed_by, status_history, truncated, message_metadata,
+          origin_session_digest
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, "queued", NULL, ?, ?, ?, ?)""",
         (
             os.environ["Q_DELIVERY_ID"],
             int(os.environ["Q_TOPIC_ID"]),
@@ -914,6 +935,7 @@ try:
             initial_history,
             int(os.environ.get("Q_TRUNCATED", "0")),
             os.environ.get("Q_METADATA") or None,
+            os.environ.get("Q_ORIGIN_DIGEST") or None,
         ),
     )
     conn.commit()
@@ -963,17 +985,20 @@ CREATE TABLE IF NOT EXISTS entries (
   message_metadata TEXT
 );
 ALTER TABLE entries ADD COLUMN message_metadata TEXT;
+ALTER TABLE entries ADD COLUMN origin_session_digest TEXT;
 CREATE INDEX IF NOT EXISTS idx_state_next ON entries(state, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_text_hash_topic ON entries(text_hash, topic_id);
 INSERT OR IGNORE INTO entries (
   delivery_id, topic_id, text_hash, text, format,
   http_code, error_body, attempted_port, attempted_at,
-  attempts, state, status_history, truncated, message_metadata
+  attempts, state, status_history, truncated, message_metadata,
+  origin_session_digest
 ) VALUES (
   '$DELIVERY_ID', $TOPIC_ID, '$TEXT_HASH',
   CAST(readfile('${QUEUE_DB}.tmp.text') AS BLOB), $( [ -n "$FORMAT" ] && printf "'%s'" "$FORMAT" || echo "NULL"),
   $HTTP_CODE, NULL, $PORT, '$ATTEMPTED_AT',
-  1, 'queued', '[]', $TRUNCATED, $META_SQL_VALUE
+  1, 'queued', '[]', $TRUNCATED, $META_SQL_VALUE,
+  $( [ -n "$ORIGIN_DIGEST" ] && printf "'%s'" "$ORIGIN_DIGEST" || echo "NULL")
 );
 SQL
       rm -f "${QUEUE_DB}.tmp.text" "${QUEUE_DB}.tmp.meta" 2>/dev/null

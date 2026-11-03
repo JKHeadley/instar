@@ -9,7 +9,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 import { PendingRelayStore } from '../pending-relay-store.js';
-import { snapshotLegacyOrigin } from './OriginLegacy.js';
+import { legacyAttributionValid, snapshotLegacyOrigin } from './OriginLegacy.js';
 import type { OriginLegacySnapshot } from './OriginLegacy.js';
 import { advanceBrowserRecovery, type BrowserRecoveryState, type BrowserRecoveryAction, type BrowserRecoveryDecision } from './OriginBrowserRecovery.js';
 import type {
@@ -339,7 +339,7 @@ export class OriginStoreBackend {
         input.admission.children[0]?.deliveryId !== snapshot.deliveryId) fail('legacy-budget-or-identity-changed');
       const record = JSON.parse(input.admission.record.envelopeJson);
       if (record.producerKind !== 'imported-legacy' || record.legacySnapshotDigest !== snapshot.snapshotDigest ||
-        record.machine.status !== 'unknown' || record.model.status !== 'unknown' || record.harness.status !== 'unknown') fail('legacy-origin-required');
+        !legacyAttributionValid(record)) fail('legacy-origin-required');
       this.admitInternal(input.admission, false, snapshot);
       const terminal = !snapshot.replaySafe || snapshot.attempts >= input.admission.maxAttempts;
       for (const child of input.admission.children) {
