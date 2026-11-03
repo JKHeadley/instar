@@ -66,3 +66,7 @@ Ships a Linux host behind the existing per-machine opt-in. Live-verified standal
 
 - `tests/unit/linux-desktop-host.test.ts` (headless refusal, lock, input mapping, Stop release, display loss)
 - Live run on Cirrus, 2026-11-02 20:16 PST (output recorded in topic 131439)
+
+## Follow-up (2026-11-02 22:47 PST)
+
+Local Verify flagged the heartbeat catch in `startIndicator` under the no-silent-fallbacks ratchet (495 over 494). The catch is not silent: it ends the grant through `onUnexpectedExit`. It now carries an in-window `@silent-fallback-ok` marker saying so; no behavior changed.

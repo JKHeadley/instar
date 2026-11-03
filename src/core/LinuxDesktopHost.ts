@@ -357,7 +357,11 @@ export class LinuxDesktopHost implements DesktopHost {
       // @silent-fallback-ok — not every desktop runs a notification daemon.
     });
     this.heartbeat = setInterval(() => {
-      void this.rootArea().catch(() => this.loseIndicator());
+      void this.rootArea().catch(() => {
+        // @silent-fallback-ok — not silent: a display that stops answering ends
+        // the grant through onUnexpectedExit, which the stream manager reports.
+        this.loseIndicator();
+      });
     }, this.heartbeatMs);
     this.heartbeat.unref?.();
   }
