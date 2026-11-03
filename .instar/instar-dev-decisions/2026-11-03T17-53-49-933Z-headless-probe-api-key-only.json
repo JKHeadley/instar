@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-03T17:53:49.933Z",
+  "slug": "headless-probe-api-key-only",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 23,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/providers/adapters/anthropic-headless/control/authCredentialInjection.ts"
+    ],
+    "addedLines": 16,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
