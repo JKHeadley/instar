@@ -174,6 +174,7 @@ describe('DEVICE_ALLOWLIST coverage', () => {
     'POST /mobile/chat/app/<uuid>', 'GET /mobile/chat/app/<uuid>/messages', 'GET /mobile/chat/app/<uuid>/events',
     'GET /mobile/chat/app/<uuid>/preview/x', 'POST /mobile/chat/slack/-1', 'GET /mobile/chat/slack/-1/messages',
     'POST /mobile/media/uploads', 'GET /mobile/media/<sha>', 'POST /mobile/media/purge',
+    'GET /mobile/conversations/session',
   ];
   const UUID = '22222222-2222-4222-8222-222222222222';
   const sample = (s: string) => s.replace('<uuid>', UUID).replace('<sha>', 'a'.repeat(64));
