@@ -37,7 +37,10 @@ const DEFAULT_RESTART_RETRY_MS = 5 * 60_000;
 /** Retry delay once the local-verify hold that deferred a restart has ended. */
 const RESTART_HOLD_ENDED_RETRY_MS = 1_000;
 
-/** Is semver `a` strictly newer than `b`? Pre-release suffixes are ignored; malformed input is never newer. */
+/**
+ * Is semver `a` strictly newer than `b`? Pre-release suffixes are ignored; malformed input is never newer.
+ * Same comparison as the private `UpdateChecker.isNewer`; keep the two in step.
+ */
 function isNewerVersion(a: string, b: string): boolean {
   const semverRe = /^(\d+)\.(\d+)\.(\d+)/;
   const matchA = semverRe.exec(a);

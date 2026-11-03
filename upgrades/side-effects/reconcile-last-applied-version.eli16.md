@@ -20,6 +20,7 @@ Every Instar agent keeps a small note saying which version its auto-updater last
 
 - Forward only: a note that is already ahead of the running version is left alone.
 - A version string that cannot be read is never treated as newer.
+- The version comparison is the same one the update checker already uses, so the two agree on what counts as newer.
 - An in-place install, where the installer still reports the old version, records the target as before, so the loop breaker keeps working.
 - No install, restart or notification is added. The restart target only changes in the case where a newer build really was installed.
 
