@@ -43,6 +43,12 @@ async function boot(enabled: boolean, frontConfigured = true) {
   return { server, dir, machineId, stateDir, config };
 }
 
+// A live Mac target runs the real packaged helper from this checkout's path,
+// and macOS adds a new entry to its privacy lists for every new path, so each
+// verify clone left another row on the operator's Mac (2026-11-02). These run
+// only on a Mac set aside for it: INSTAR_REAL_DESKTOP_HELPER_TESTS=1.
+const realHelperOptIn = process.platform === 'darwin' && process.env.INSTAR_REAL_DESKTOP_HELPER_TESTS === '1';
+
 describe('native desktop production boot', () => {
   it('stays dark without explicit opt-in', async () => {
     const { server, dir } = await boot(false);
@@ -90,7 +96,7 @@ describe('native desktop production boot', () => {
     }
   });
 
-  it.skipIf(process.platform !== 'darwin')('wires a live Mac target into the production route', async () => {
+  it.skipIf(!realHelperOptIn)('wires a live Mac target into the production route', async () => {
     const { server, dir, machineId, config } = await boot(true);
     try {
       const unlock = await request(server.getApp()).post('/dashboard/unlock').send({ pin: '123456' });
@@ -139,7 +145,7 @@ describe('native desktop production boot', () => {
     }
   });
 
-  it.skipIf(process.platform !== 'darwin')('reports which helper copy is live on the production diagnostics route', async () => {
+  it.skipIf(!realHelperOptIn)('reports which helper copy is live on the production diagnostics route', async () => {
     const { server, dir, config } = await boot(true);
     try {
       const response = await request(server.getApp()).get('/desktop/diagnostics')
@@ -161,7 +167,7 @@ describe('native desktop production boot', () => {
     }
   });
 
-  it.skipIf(process.platform !== 'darwin')('limits desktop PIN guesses and persists the attempt budget', async () => {
+  it.skipIf(!realHelperOptIn)('limits desktop PIN guesses and persists the attempt budget', async () => {
     const { server, dir, stateDir } = await boot(true);
     try {
       for (let attempt = 0; attempt < 5; attempt++) {

@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "origin-config-unknown-not-missing",
+  "sessionId": "b57221ff-5402-4d01-abf8-755e809036ef",
+  "timestamp": "2026-11-02T21:37:12.749Z",
+  "artifactPath": "upgrades/side-effects/origin-config-unknown-not-missing.md",
+  "artifactSha256": "6c50c0be19722c80de95a1f945581ee6941e6d3cb707402aefec535b69fa7cf6",
+  "coveredFiles": [
+    "src/messaging/telegram-origin/OriginLegacy.ts",
+    "src/messaging/telegram-origin/TelegramOriginBoot.ts",
+    "src/messaging/telegram-origin/types.ts",
+    "src/server/routes.ts",
+    "tests/integration/telegram-origin-config-unknown.test.ts",
+    "tests/unit/telegram-origin/origin-service.test.ts",
+    "upgrades/next/origin-config-unknown-not-missing.md",
+    "upgrades/side-effects/origin-config-unknown-not-missing.eli16.md",
+    "upgrades/side-effects/origin-config-unknown-not-missing.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "narrow bug fix: honest retryable refusal when config read fails, plus two exact pre-dispatch bodies in the existing replay check; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/origin-config-unknown-not-missing.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/origin-config-unknown-not-missing.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

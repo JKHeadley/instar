@@ -25,7 +25,7 @@ import { Router } from 'express';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
-import { TelegramOriginHoldError, OriginForwardSettledLocallyError } from '../messaging/telegram-origin/types.js';
+import { TelegramOriginHoldError, OriginForwardSettledLocallyError, OriginConfigUnavailableError } from '../messaging/telegram-origin/types.js';
 import { deterministicAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 import { cadenceReportProducerPayload, type WindowRunCadenceExecutor, type WindowCadenceReportReceipt } from '../core/WindowRunCadenceExecutor.js';
 import { verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
@@ -13375,7 +13375,14 @@ export function createRoutes(ctx: RouteContext): Router {
   router.get('/desktop/locked/status', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.desktopLocked) { res.status(503).json({ error: 'Locked-screen access is not available on this machine' }); return; }
-    const local = { machineId: ctx.desktopLocked.machineId, ...await ctx.desktopLocked.status() };
+    let local: Record<string, unknown>;
+    try { local = { machineId: ctx.desktopLocked.machineId, ...await ctx.desktopLocked.status() }; }
+    catch (error) {
+      // @silent-fallback-ok — the helper's state could not be read; answer 503 with the reason instead of hanging the request.
+      const code = error instanceof Error && /^mac-desktop-host-[a-z-]+$/.test(error.message) ? error.message : 'locked-state-unreadable';
+      res.status(503).json({ error: 'Locked-screen state could not be read on this machine', code });
+      return;
+    }
     if (req.query.scope !== 'pool') { res.json(local); return; }
     const machines: Array<Record<string, unknown>> = [local];
     const failed: Array<{ machineId: string; reason: string }> = [];
@@ -19455,6 +19462,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(err.status).json({ ...err.body, relayedFromHolder: true });
         return;
       }
+      // Config could not be READ (a timed-out, failed or stale observation on a
+      // starved process), so the destination and display are unknown — not
+      // "missing". Nothing was sent: a 503 lets the relay queue it, and the
+      // recovery import proves non-delivery from this exact body
+      // (OriginLegacy.isPreDispatchRefusal).
+      if (err instanceof OriginConfigUnavailableError) {
+        res.status(503).json({ error: 'origin-config-unavailable', reason: err.reason, retryable: true,
+          message: 'This machine could not read its current messaging config, so nothing was sent. It will be retried.' });
+        return;
+      }
       // @silent-fallback-ok — NOT a silent fallback: this catch surfaces a 500 to the
       // caller. The tag exists because the no-silent-fallbacks scanner's fixed 20-line
       // window reaches past this route's end into the next route's `db = null`
@@ -20957,6 +20974,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (hasSlackDeliveryId) {
         deliveryLruRecord(slackDeliveryId as string);
       }
+
+      // Keep the agent's reply in slack-messages.jsonl (Slack never echoes the bot's own messages
+      // back), so the Instar app's Slack history shows both sides (mobile-native-conversations §4.9).
+      try {
+        ctx.slack.logMessage?.({ messageId: String(ts), channelId, threadTs: typeof thread_ts === 'string' ? thread_ts : null, text, fromUser: false });
+      } catch { /* @silent-fallback-ok — the reply was sent; only its log copy is missing */ }
 
       // Notify onMessageLogged that the agent responded (so PresenceProxy cancels standby)
       if (ctx.slack.onMessageLogged) {

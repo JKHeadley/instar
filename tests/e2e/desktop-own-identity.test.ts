@@ -4,7 +4,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const binary = path.resolve('dist/native/instar-desktop-host');
-const skip = process.platform !== 'darwin' || !fs.existsSync(binary);
+// Runs the real helper, which registers a new entry in this Mac's privacy
+// lists (and request-permission shows real pop-ups) on every run. Opt in only
+// on a Mac set aside for it: INSTAR_REAL_DESKTOP_HELPER_TESTS=1.
+const skip = process.platform !== 'darwin' || !fs.existsSync(binary)
+  || process.env.INSTAR_REAL_DESKTOP_HELPER_TESTS !== '1';
 
 // The private macOS call behind own identity is the part a mock cannot prove:
 // exit 71 means the re-exec failed. Permission values depend on the machine.
