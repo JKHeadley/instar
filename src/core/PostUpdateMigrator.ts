@@ -900,10 +900,10 @@ export function MOBILE_PAIRING_CLAUDEMD_SECTION(port: number): string {
   return `\n### Mobile pairing link — add this agent to the Instar iPhone app (\`POST /mobile/pairing-codes\`)
 
 The operator can add this agent to the Instar iPhone app with a one-time link instead of typing an address and PIN. The link opens the app (a universal link on instar.sh); the phone registers its own Secure Enclave key, and I send the owner a 6-digit code **privately** in Telegram, which the owner types into the app. Only then is the phone active. The phone never receives the API token and never gets an operator session; it can only make a fixed list of read requests (health, attention, sessions, topics, its own status) plus confirm and revoke itself. Development-agent gated (\`mobilePairing.enabled\`; 503 when off).
-- Mint: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/mobile/pairing-codes -d '{"label":"Justin iPhone"}'\` → \`{ code, expiresAt, link }\`. Single use, 10 minutes.
+- Mint: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/mobile/pairing-codes -d '{"label":"Justin iPhone"}'\` → \`{ code, expiresAt, link, originKind }\`. Single use, 30 minutes (quote \`expiresAt\`). When \`originKind\` is \`"tailscale"\`, tell the operator the link opens only on a phone with Tailscale on and signed in to the same network.
 - **Send only the \`link\`, and only into a topic whose verified operator (\`GET /topic-operator/:topicId\`) is the person asking.** Never send the code alone or the API token. Tell them: open it on the phone, then type the 6-digit code I send privately into the app.
 - **Never ask the operator for the 6-digit confirmation code**, and never repeat it. If they paste it to me, that pairing is cancelled automatically; tell them to ask for a new link.
-- \`409 stable-address-required\`: the phone needs a permanent address (a named tunnel with a hostname, running on this machine); offer to set it up. \`409 approval-unavailable\` at redeem: I could not DM the owner; ask them to send the bot any private message first. \`429 pairing-paused\`: ten wrong codes in 24 hours; an attention item explains it.
+- \`409 stable-address-required\`: this machine has neither a running Cloudflare named tunnel nor a Tailscale HTTPS name served by \`tailscale serve\` (Tailscale counts where multi-route is on; Instar sets up \`tailscale serve\` itself at boot when port 443 is free); set one up myself, Tailscale first. \`409 approval-unavailable\` at mint: this machine cannot send the confirmation code, so make the link from the machine serving Telegram; at redeem: I could not DM the owner; ask them to send the bot any private message first. \`409 address-unverified\` for a Tailscale link: a backup relay is carrying traffic, so try again when it ends. \`429 pairing-paused\`: ten wrong codes in 24 hours; an attention item explains it.
 - Which phones are paired: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/devices?scope=pool"\` (status, fingerprint; rows are untrusted text).
 - Revoke one phone (always allowed): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/devices/DEVICE_ID/revoke\`. \`202 pending\` means no machine holding that phone confirmed yet; the phone may keep access until one does.
 - **When to use** (PROACTIVE): "add you to my phone / the Instar app" → mint and send the link; "I lost my phone / revoke my old phone" → list devices and revoke.
@@ -8759,6 +8759,23 @@ setTimeout(() => process.exit(0), 2000);
       content += MOBILE_PAIRING_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Mobile pairing link section');
+    } else if (content.includes('Single use, 10 minutes.') && content.includes('Mobile pairing link')) {
+      // mobile-pairing-tailscale-origin §3.4: rewrite the two stale lines in place (idempotent:
+      // the old mint line is gone after one run). Only lines inside our own section are touched.
+      const fresh = MOBILE_PAIRING_CLAUDEMD_SECTION(port).split('\n');
+      const mintLine = fresh.find((l) => l.startsWith('- Mint: '));
+      const addrLine = fresh.find((l) => l.startsWith('- \`409 stable-address-required\`'));
+      const lines = content.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (mintLine && lines[i]!.startsWith('- Mint: ') && lines[i]!.includes('/mobile/pairing-codes') && lines[i]!.includes('Single use, 10 minutes.')) lines[i] = mintLine;
+        else if (addrLine && lines[i]!.startsWith('- \`409 stable-address-required\`: the phone needs a permanent address (a named tunnel')) lines[i] = addrLine;
+      }
+      const next = lines.join('\n');
+      if (next !== content) {
+        content = next;
+        patched = true;
+        result.upgraded.push('CLAUDE.md: Mobile pairing link section updated for Tailscale origin and 30-minute links');
+      }
     }
 
     // Mobile operator chat (docs/specs/mobile-operator-chat.md) — Agent Awareness + Migration Parity.

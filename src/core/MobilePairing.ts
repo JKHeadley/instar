@@ -26,10 +26,10 @@ export interface MobilePairingConfig {
   codeTtlMinutes?: number;
 }
 
-/** TTL in ms, default 10 minutes, clamped to 1–60 minutes. */
+/** TTL in ms, default 30 minutes (was 10: mobile-pairing-tailscale-origin §3.4), clamped to 1–60 minutes. */
 export function codeTtlMs(cfg: MobilePairingConfig | undefined): number {
   const raw = cfg?.codeTtlMinutes;
-  const minutes = typeof raw === 'number' && Number.isFinite(raw) ? Math.min(60, Math.max(1, Math.round(raw))) : 10;
+  const minutes = typeof raw === 'number' && Number.isFinite(raw) ? Math.min(60, Math.max(1, Math.round(raw))) : 30;
   return minutes * 60 * 1000;
 }
 
@@ -69,14 +69,17 @@ export function pingAnswer(nonce: string): string {
 
 const sha = (s: string): string => crypto.createHash('sha256').update(s).digest('hex');
 
-interface CodeEntry { expiresAt: number; label: string | null; tokenHash: string }
+/** The origin a code was minted for (mobile-pairing-tailscale-origin §3.1); redeem must arrive on it. */
+export interface BoundOrigin { host: string; kind: 'cloudflare' | 'tailscale' }
+
+interface CodeEntry { expiresAt: number; label: string | null; tokenHash: string; bound: BoundOrigin | null }
 
 export type MintResult =
   | { ok: true; code: string; expiresAt: number }
   | { ok: false; reason: 'too-many-live-codes' | 'too-many-mints' };
 
 export type RedeemResult =
-  | { ok: true; label: string | null }
+  | { ok: true; label: string | null; bound: BoundOrigin | null }
   | { ok: false; reason: 'invalid' | 'too-many-attempts' };
 
 /** In-memory pairing codes. Only SHA-256 hashes are kept; a restart drops every code. */
@@ -95,13 +98,13 @@ export class PairingCodeStore {
   }
 
   /** `currentToken` binds the code to the API token in force now; a later rotation voids it. */
-  mint(ttlMs: number, label: string | null, currentToken: string): MintResult {
+  mint(ttlMs: number, label: string | null, currentToken: string, bound: BoundOrigin | null = null): MintResult {
     this.prune();
     if (this.codes.size >= MAX_LIVE_CODES) return { ok: false, reason: 'too-many-live-codes' };
     if (this.mintTimes.length >= MAX_MINTS_PER_HOUR) return { ok: false, reason: 'too-many-mints' };
     const code = crypto.randomBytes(16).toString('base64url');
     const expiresAt = this.now() + ttlMs;
-    this.codes.set(sha(code), { expiresAt, label, tokenHash: sha(currentToken) });
+    this.codes.set(sha(code), { expiresAt, label, tokenHash: sha(currentToken), bound });
     this.mintTimes.push(this.now());
     return { ok: true, code, expiresAt };
   }
@@ -118,7 +121,7 @@ export class PairingCodeStore {
       const entry = this.codes.get(h);
       if (entry) {
         this.codes.delete(h);
-        if (entry.tokenHash === sha(currentToken)) return { ok: true, label: entry.label };
+        if (entry.tokenHash === sha(currentToken)) return { ok: true, label: entry.label, bound: entry.bound };
       }
     }
     if (this.failureTimes.length >= MAX_FAILED_REDEEMS) return { ok: false, reason: 'too-many-attempts' };

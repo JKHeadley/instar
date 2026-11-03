@@ -173,7 +173,7 @@ export function verifyDeviceRequest(
 
 // ── Device registry (.instar/state/mobile-devices.json) ─────────────────────────────
 
-export const PENDING_TTL_MS = 15 * 60_000;
+export const PENDING_TTL_MS = 30 * 60_000; // was 15 min (mobile-pairing-tailscale-origin §3.4)
 export const MAX_PENDING = 10;
 export const MAX_WRONG_PER_DEVICE = 3;
 export const WRONG_BUDGET = 10;
