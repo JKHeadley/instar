@@ -135,6 +135,10 @@ describe('native app conversations — production wiring', () => {
     const reply = await auth(request(app).post('/app/session-reply')).set('X-Instar-Bind-Token', token)
       .send({ conversationId: alias, text: 'Saturday is the farmers market at nine.' });
     expect(reply.status).toBe(200);
+    // The reply's notification preview is served on the production server (chat-media §4.11).
+    const preview = await send('GET', `/mobile/chat/app/${key}/preview/${reply.body.messageId as string}`);
+    expect(preview.status).toBe(200);
+    expect(preview.body.body).toBe('Saturday is the farmers market at nine.');
 
     // History shows both, the operator message verified against the ledger and the machine receipt.
     const hist = await send('GET', `/mobile/chat/app/${key}/messages`);
