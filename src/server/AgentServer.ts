@@ -179,7 +179,7 @@ import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
-import { recordPlatformMedia, deviceTextForRow } from '../core/appPlatformMedia.js';
+import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
@@ -6316,7 +6316,13 @@ export class AgentServer {
           return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
         }) : undefined,
       }));
-      this.app.use(createMobileMediaRouter({ pairing: this.mobilePairing, service: this.appConversations, mediaEnabled: isMobileMediaEnabled(options.config) }));
+      const slackRegistry = options.slack ? routeCtx.conversationRegistry ?? null : null;
+      this.app.use(createMobileMediaRouter({
+        pairing: this.mobilePairing, service: this.appConversations, mediaEnabled: isMobileMediaEnabled(options.config),
+        // A Slack file downloads only through the machine whose registry minted the conversation (§4.9).
+        // Same gate as the Slack history route: nothing is served until the owner's Slack id is set.
+        ...(slackRegistry ? { slackHeld: (key: string) => slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, key) } : {}),
+      }));
       // Telegram media in the app's history (media spec §4.9): each file a Telegram topic receives is
       // also copied into the blob store as a replicated `platform-media` event. Media on only.
       const appSvc = this.appConversations;
@@ -6329,6 +6335,26 @@ export class AgentServer {
           });
           if (!r.recorded && r.reason !== 'duplicate') {
             appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (topic ${info.topicId}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. The session still received it.`);
+          }
+        });
+      }
+      // Slack media in the app's history (media spec §4.9, the Slack half): each file the Slack
+      // adapter downloads for an inbound message is also copied in, under the conversation's
+      // canonical key (the registry mint the Slack dispatch performs for its routing key).
+      const slackAdapter = options.slack;
+      if (appSvc && slackAdapter && slackRegistry && isMobileMediaEnabled(options.config) && typeof slackAdapter.setInboundMediaHook === 'function') {
+        slackAdapter.setInboundMediaHook(async (info) => {
+          const routingKey = slackAdapter.resolveRoutingKey(info.channelId, info.threadTs ?? undefined, info.platformMessageId);
+          const conversationKey = slackMediaConversationKey(slackRegistry, routingKey);
+          const r = conversationKey
+            ? await recordPlatformMedia(appSvc, {
+              conversationKey, platformMessageId: slackPlatformMessageId(info.platformMessageId, info.fileIndex), filePath: info.filePath,
+              declaredKind: info.declaredKind, filename: info.filename, declaredType: info.declaredType, at: info.at,
+              durationMs: info.durationMs, width: info.width, height: info.height,
+            })
+            : { recorded: false as const, reason: 'no-conversation', detail: 'the conversation registry has no durable id for it' };
+          if (!r.recorded && r.reason !== 'duplicate') {
+            appSvc.deps.reportDegradation?.('AppMedia.slackInbound', `a Slack file (channel ${info.channelId}, message ${info.platformMessageId}, file ${info.fileIndex}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. The session still received it.`);
           }
         });
       }

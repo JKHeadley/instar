@@ -28,6 +28,8 @@ import { makeDevice } from '../helpers/mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { AppMediaStore } from '../../src/core/AppMediaStore.js';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
+import { SlackAdapter } from '../../src/messaging/slack/SlackAdapter.js';
+import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
 
 const HOST = 'echo-media-e2e.example.dev';
 const servers: AgentServer[] = [];
@@ -42,7 +44,7 @@ afterAll(async () => {
 const sha = (b: Buffer) => crypto.createHash('sha256').update(b).digest('hex');
 const rid = () => `${Date.now()}-${crypto.randomUUID()}`;
 
-async function boot(developmentAgent: boolean, telegramFactory?: (stateDir: string) => TelegramAdapter) {
+async function boot(developmentAgent: boolean, telegramFactory?: (stateDir: string) => TelegramAdapter, slackFactory?: (stateDir: string) => SlackAdapter) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'media-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -51,7 +53,7 @@ async function boot(developmentAgent: boolean, telegramFactory?: (stateDir: stri
   await new MachineIdentityManager(stateDir).generateIdentity({ name: 'e2e machine' });
   const config = {
     projectName: 'media-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent,
-    mobilePairing: { multiRoute: { enabled: false } },
+    mobilePairing: { multiRoute: { enabled: false }, ...(slackFactory ? { slackOwnerUserId: 'U0OWNER1' } : {}) },
     tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
@@ -67,9 +69,12 @@ async function boot(developmentAgent: boolean, telegramFactory?: (stateDir: stri
   sessionManager.injectMessage = () => true;
   const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, on: () => undefined } as any;
   const telegram = telegramFactory?.(stateDir);
-  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, ...(telegram ? { telegram } : {}) });
+  const slack = slackFactory?.(stateDir);
+  // Slack runs with the conversation registry server.ts builds (the production path passes it).
+  const conversationRegistry = slack ? new ConversationRegistry({ stateDir, machineId: () => 'e2e', isRecordingEnabled: () => true }) : undefined;
+  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, ...(telegram ? { telegram } : {}), ...(slack ? { slack, conversationRegistry } : {}) });
   servers.push(server);
-  return { server, stateDir, dir, spawned, telegram };
+  return { server, stateDir, dir, spawned, telegram, slack, conversationRegistry };
 }
 
 describe('media in app conversations — production wiring', () => {
@@ -223,6 +228,71 @@ describe('media in app conversations — production wiring', () => {
     expect(dl.status).toBe(200);
     expect(Buffer.from(dl.body as Buffer).equals(photo)).toBe(true);
     vi.unstubAllGlobals();
+  });
+
+  it('Slack media (§4.9): a file a Slack message carries is recorded on the production path and served to the paired phone', async () => {
+    const slackFactory = (stateDir: string) => new SlackAdapter({ botToken: 'xoxb-test', appToken: 'xapp-test', authorizedUserIds: ['U0OWNER1'], workspaceMode: 'dedicated' } as never, stateDir);
+    const { server, slack, conversationRegistry } = await boot(true, undefined, slackFactory);
+    const app = server.getApp();
+    const internals = slack as unknown as {
+      inboundMediaHook: unknown; getUserInfo: () => Promise<{ name: string }>;
+      apiClient: { call: () => Promise<Record<string, unknown>> };
+      fileHandler: { downloadFile: (u: string, d: string) => Promise<string> };
+      _handleMessage: (e: Record<string, unknown>) => Promise<void>;
+    };
+    // Wiring integrity: the hook is set on the real adapter and delegates to the real store.
+    expect(internals.inboundMediaHook).toBeTypeOf('function');
+    const photo = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), crypto.randomBytes(2000)]);
+    internals.getUserInfo = async () => ({ name: 'Justin' });
+    internals.apiClient.call = async () => ({ ok: true });
+    internals.fileHandler.downloadFile = async (_u, dest) => { fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, photo); return dest; };
+    // _validateImageFile reads real image headers; a JPEG header passes.
+    const ts = `${Math.floor(Date.now() / 1000)}.000100`;
+    await internals._handleMessage({ user: 'U0OWNER1', text: 'the view', channel: 'D0E2ESLK', ts, subtype: 'file_share', files: [{ id: 'F0E2E1', name: 'view.jpg', mimetype: 'image/jpeg', url_private_download: 'https://files.slack.com/view.jpg' }] });
+    const key = 'slack:_:D0E2ESLK';
+    let pm = null;
+    for (let i = 0; i < 50 && !pm; i++) { pm = server.appConversations!.store.getPlatformMedia(key, ts); if (!pm) await new Promise((r) => setTimeout(r, 20)); }
+    expect(pm?.attachments[0]).toMatchObject({ sha256: sha(photo), kind: 'photo' });
+    const convId = conversationRegistry!.mintForInbound('D0E2ESLK').id!;
+
+    // A phone paired through the production path reads the conversation and downloads the file.
+    server.mobilePairing!.deps.fetchFn = (async (url: string) => {
+      const u = new URL(url);
+      const r = await request(app).get(u.pathname + u.search).set('Host', HOST);
+      return { ok: r.status === 200, status: r.status, json: async () => r.body } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const m = await request(app).post('/mobile/pairing-codes').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'media-e2e').send({});
+    const dms: string[] = [];
+    server.mobilePairing!.deps.ownerDM = async (text) => { dms.push(text); return 1; };
+    server.mobilePairing!.deps.telegramOwnerPresent = () => true;
+    const dev = makeDevice();
+    const r = await request(app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code: m.body.code, deviceName: 'e2e phone', devicePublicKey: dev.publicKey });
+    const deviceId = r.body.deviceId as string;
+    const code = /is (\d{3}) (\d{3})\./.exec(dms[0]!)!.slice(1).join('');
+    let tick = 0;
+    const send = (method: 'GET' | 'POST', p: string, body?: unknown) => {
+      const raw = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
+      const time = String(Date.now() + (tick++ % 500));
+      const sig = dev.sign(canonicalString(deviceId, HOST, method, p, time, raw));
+      const q = (method === 'GET' ? request(app).get(p) : request(app).post(p)).set('X-Instar-Device', deviceId).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', sig);
+      return raw ? q.set('Content-Type', 'application/json').send(raw.toString()) : q;
+    };
+    expect((await send('POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
+    const machine = server.appConversations!.deps.machineId();
+    const hist = await send('GET', `/mobile/chat/slack/${convId}/messages?machine=${encodeURIComponent(machine)}`);
+    expect(hist.status).toBe(200);
+    expect(hist.body.conversationKey).toBe(key);
+    const row = (hist.body.messages as Array<Record<string, any>>).find((x) => x.messageId === ts)!;
+    expect(row.text).toBe('the view [photo]');
+    expect(row.attachments[0]).toMatchObject({ sha256: sha(photo), bytes: 'verified' });
+    const dl = await send('GET', `/mobile/media/${sha(photo)}?ref=${encodeURIComponent(key)}`);
+    expect(dl.status).toBe(200);
+    expect(Buffer.from(dl.body as Buffer).equals(photo)).toBe(true);
+  });
+
+  it('a fleet agent sets no Slack media hook', async () => {
+    const { slack } = await boot(false, undefined, (stateDir) => new SlackAdapter({ botToken: 'xoxb-test', appToken: 'xapp-test', authorizedUserIds: ['U0OWNER1'], workspaceMode: 'dedicated' } as never, stateDir));
+    expect((slack as unknown as { inboundMediaHook: unknown }).inboundMediaHook).toBeNull();
   });
 
   it('a fleet agent sets no Telegram media hook', async () => {
