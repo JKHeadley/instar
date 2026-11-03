@@ -64,17 +64,14 @@ describe('guided setup production boot', () => {
     }
   });
 
-  it.skipIf(process.platform !== 'linux' || isWslHost())('shows native Linux as unsupported without writing setup config', async () => {
+  it.skipIf(process.platform !== 'linux' || isWslHost())('offers setup on native Linux without writing config until asked', async () => {
     const { server, app, dir, stateDir, machineId, session } = await boot({ enabled: false } as never);
     try {
       const list = await request(app).get('/desktop/setup').set(session);
       expect(list.status).toBe(200);
       expect(list.body.machines).toHaveLength(1);
-      expect(list.body.machines[0]).toMatchObject({ machineId, state: 'not-supported', ready: false, actions: [] });
-      const on = await request(app).post(`/desktop/setup/${machineId}`).set(session)
-        .set('X-Instar-Request', '1').send({ action: 'turn-on' });
-      expect(on.status).toBe(409);
-      expect(on.body.code).toBe('not-supported');
+      expect(list.body.machines[0]).toMatchObject({ machineId, state: 'off', ready: false });
+      expect(list.body.machines[0].actions.map((a: { id: string }) => a.id)).toContain('turn-on');
       const file = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf8'));
       expect(file).toMatchObject({ keep: 'me' });
       expect(file.remoteDesktop).toBeUndefined();

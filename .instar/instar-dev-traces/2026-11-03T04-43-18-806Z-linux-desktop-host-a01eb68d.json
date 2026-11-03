@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "linux-desktop-host",
+  "sessionId": "cbaa6613-87c0-4eb5-9324-fa4a4f7dff8d",
+  "timestamp": "2026-11-03T04:43:18.806Z",
+  "artifactPath": "upgrades/side-effects/linux-desktop-host.md",
+  "artifactSha256": "70ead9c403ce55ea338a2d10f7b3a107196f0ebf440df3b778c421f154d177ad",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "upgrades/next/linux-desktop-host.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "release note for Linux host",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

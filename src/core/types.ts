@@ -3621,6 +3621,8 @@ export interface InstarConfig {
     frontMachineId?: string;
     /** macOS: keep one helper copy per Mac so an update with unchanged helper source keeps its grant. Default true. */
     retainedHelper?: boolean;
+    /** Native Linux: the X display to share, e.g. ":1". Absent: this user's own lowest-numbered X server. */
+    linuxDisplay?: string;
     /** Set when Remote Desktop was turned off on this machine itself: a peer cannot turn it back on. */
     peerClaimRefused?: boolean;
     /** Guided setup (docs/specs/desktop-guided-setup.md). `enabled` omitted ⇒ live on a development agent, dark on the fleet. */

@@ -122,8 +122,10 @@ describe('desktopSetupStep', () => {
     expect(ids(step)).toContain('show-prompt');
   });
 
-  it('explains Windows and refuses plain Linux', () => {
-    expect(desktopSetupStep({ reachable: true, platform: 'linux', configured: false }, ctx).state).toBe('not-supported');
+  it('explains Windows and offers setup on native Linux', () => {
+    expect(desktopSetupStep({ reachable: true, platform: 'linux', configured: false }, ctx).state).toBe('off');
+    // Only WSL talks about a Windows companion; native Linux has none.
+    expect(desktopSetupStep({ ...unlocked, platform: 'linux', targetConstructed: false }, ctx).state).toBe('target-unavailable');
     expect(desktopSetupStep({ reachable: true, platform: 'linux', wsl: true, configured: false }, ctx).state).toBe('off');
     const failed = desktopSetupStep({ reachable: true, platform: 'linux', wsl: true, configured: false,
       bootstrapFailure: { phase: 'install' } }, ctx);

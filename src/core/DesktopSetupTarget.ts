@@ -38,7 +38,7 @@ export interface DesktopSetupTargetDeps {
   helperPath: () => string | null;
   /** Whether a peer may turn this machine on. Prompts and status need only the front. */
   peerClaimAllowed: boolean;
-  /** Native Linux has no desktop to offer; WSL reaches Windows through its companion. */
+  /** WSL reaches Windows through its companion; native Linux shares its own X11 session. */
   wsl?: boolean;
   /** Tells the operator a peer, not this machine's own page, turned this machine on. */
   onPeerEnable?: (senderMachineId: string) => Promise<void>;
@@ -145,9 +145,6 @@ export class DesktopSetupTarget {
     }
     if (senderMachineId && !this.d.peerClaimAllowed) {
       throw new DesktopSetupRefused('setup-off', 'Guided setup is not switched on for this machine.');
-    }
-    if (this.d.platform === 'linux' && !this.d.wsl) {
-      throw new DesktopSetupRefused('not-supported', 'Remote Desktop does not run on this kind of machine yet.');
     }
     const current = this.d.config.remoteDesktop;
     const wasOn = current?.enabled === true && current.frontMachineId === frontMachineId;

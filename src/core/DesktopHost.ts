@@ -87,11 +87,14 @@ export interface DesktopProbe {
   helperSource?: 'retained' | 'packaged';
   helperFallback?: string;
   helperChange?: DesktopHelperPermissionChange;
+  /** Native Linux only: the X display it found (null = none, a headless
+   * server) and whether the screen-capture tool (ImageMagick) is installed. */
+  linux?: { display: string | null; capturer: boolean; wayland?: boolean };
   /** macOS only, while the locked-screen feature is on. */
   lockInputs?: import('./DesktopLockState.js').DesktopLockInputs;
 }
 
-export type DesktopPlatform = 'macos' | 'windows';
+export type DesktopPlatform = 'macos' | 'windows' | 'linux';
 
 export interface DesktopDisplay {
   /** Opaque to viewers; the host resolves it. */
