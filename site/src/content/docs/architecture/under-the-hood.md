@@ -862,3 +862,7 @@ gates protect it: the harness performs ZERO swaps unless `armed:true` is in the 
 operator explicitly arms the battery), and even armed the executor's own `dryRun` keeps writes off
 until a deliberate `dryRun:false`. Dark → 503; every named slot is validated against the enumerated
 ledger set (→ 400) before the harness runs. The report is scrubbed and carries no token material.
+
+## Mobile people and MSP grants (MobilePeople, MobileMspGrants)
+
+`MobilePeople` maps each paired phone to a person in the user registry (read through a small `PeopleLookup` interface that `UserManager` satisfies) and gives it a role, `owner` or `msp`. A device record with neither field is the owner's phone. The module is pure. `MobileMspGrants` holds the owner's per-person grants that open owner conversations or Slack to an MSP phone. It is machine-local, written atomically with mode 0600 to `state/mobile-msp-grants.json` beside the device registry, and keyed by `UserProfile.id`.
