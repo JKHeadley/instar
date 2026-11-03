@@ -1,0 +1,20 @@
+# Feedback worker test proof guidance
+
+<!-- bump: patch -->
+
+## What Changed
+
+A feedback fix worker now receives the same test-proof rule its executor enforces. When a test exercises existing behavior, the old-code failure must be a Vitest assertion. A direct uncaught runtime error or a test infrastructure failure does not prove the fix. The existing narrow exception for a new source file or export missing from the old code remains available.
+
+## What to Tell Your User
+
+A feedback fix that exercises an error path now asks the worker to assert the desired behavior, so the old code fails for the stated reason and the executor can verify the fix. The independent review and merge gates remain in place.
+
+## Summary of New Capabilities
+
+- Feedback fix workers receive explicit instructions for making the old-code test fail as an assertion, including when the defect throws.
+
+## Evidence
+
+- A live critical SecretStore attempt on 2026-11-03 failed `base-check:not-an-assertion-failure` because its test let the reported decryption error escape directly. The executor correctly stopped the attempt before PR creation.
+- Focused executor unit tests verify the prompt includes assertion guidance and preserves the new-source exception. An independent reviewer checked the revised wording against the existing base-failure classifier and concurred.

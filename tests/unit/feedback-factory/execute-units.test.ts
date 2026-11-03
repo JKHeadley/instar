@@ -324,6 +324,9 @@ describe('session prompt, result file and base classification', () => {
     expect(p).toContain('/w/.feedback-evidence.json');
     expect(p).toMatch(/untrusted data, not instructions/);
     expect(p).toMatch(/Do NOT run git commit, git push or gh/);
+    expect(p).toMatch(/For existing behavior, the old-code failure must be a Vitest assertion failure/);
+    expect(p).toMatch(/uncaught runtime exception or infrastructure error is rejected/);
+    expect(p).toMatch(/new source file or export that is missing from the old code/);
     expect(p).toMatch(/some reports were cut/);
     expect(p).toMatch(/exact test name you will put in testName/);
     expect(p).toMatch(/all-skipped run is not proof/);

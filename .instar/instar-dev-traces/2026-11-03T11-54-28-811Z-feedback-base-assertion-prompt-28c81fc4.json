@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "feedback-base-assertion-prompt",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-03T11:54:28.811Z",
+  "artifactPath": "upgrades/side-effects/feedback-base-assertion-prompt.md",
+  "artifactSha256": "3eecc215017908c7ef21d1c8d8b37bf115fef50a485f6068fe9e606c305468fa",
+  "coveredFiles": [
+    "docs/specs/feedback-base-assertion-prompt.eli16.md",
+    "src/feedback-factory/execute/executorSession.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/feedback-base-assertion-prompt.md",
+    "upgrades/side-effects/feedback-base-assertion-prompt.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible prompt alignment with an existing proof gate; no classifier or new authority change.",
+  "eli16Path": "docs/specs/feedback-base-assertion-prompt.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-base-assertion-prompt.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "prompt-parser-contract-drift",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/feedback-factory/execute-units.test.ts",
+      "howCaught": "The rendered worker prompt contract test requires the assertion-only rule for existing behavior and the narrow missing-new-source exception; it fails if those instructions drift from the base classifier."
+    },
+    "prNumber": 2654,
+    "component": "FeedbackFactoryExecutor"
+  }
+}
