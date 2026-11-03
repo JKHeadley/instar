@@ -639,6 +639,11 @@ let _agentServerRef: import('../server/AgentServer.js').AgentServer | null = nul
 // is stuck-spawning. Assigned inside wireTelegramRouting; null until routing is wired.
 let _spawningTopicsRegistryRef: SpawningTopicsRegistry | null = null;
 
+// Slack channels with a session spawn in flight (channelId -> count). Read by
+// PresenceProxy.isSessionStarting so a session still starting for a message is
+// never reported as "stopped".
+const _slackSpawningChannels = new Map<string, number>();
+
 // Module-level reference for session resume mapping.
 // Set once in startServer() and used by spawnSessionForTopic/respawnSessionForTopic.
 let _topicResumeMap: import('../core/TopicResumeMap.js').TopicResumeMap | null = null;
@@ -10052,6 +10057,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               console.warn(`[spawn-admission] slack admit error (fail-open): ${err instanceof Error ? err.message : String(err)}`);
             }
           }
+          // The unanswered-message watcher reads this: a session starting for
+          // this channel is not "stopped" (false-alarm fix, 2026-11-03).
+          _slackSpawningChannels.set(channelId, (_slackSpawningChannels.get(channelId) ?? 0) + 1);
           try {
             const newSessionName = await sessionManager.spawnInteractiveSession(
               bootstrapMessage,
@@ -10085,6 +10093,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           } catch (err) {
             console.error(`[slack] Session spawn failed: ${err instanceof Error ? err.message : err}`);
             return 'refused';
+          } finally {
+            const left = (_slackSpawningChannels.get(channelId) ?? 1) - 1;
+            if (left > 0) _slackSpawningChannels.set(channelId, left);
+            else _slackSpawningChannels.delete(channelId);
           }
         };
         // Expose to the owner-side mesh bridge (a forwarded Slack message replays
@@ -16477,6 +16489,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             return telegram?.getSessionForTopic(topicId) ?? null;
           },
           isSessionAlive: (name) => sessionManager.isSessionAlive(name),
+          // A spawn in flight for this conversation is not a stopped session.
+          isSessionStarting: (topicId) => {
+            const slackChId = slackProxyChannelMap.get(topicId);
+            if (slackChId) return (_slackSpawningChannels.get(slackChId) ?? 0) > 0;
+            return _spawningTopicsRegistryRef?.has(topicId) ?? false;
+          },
           sendMessage: async (topicId, text, metadata) => {
             // Check if this is a Slack synthetic ID (negative = Slack channel)
             const slackChannelId = slackProxyChannelMap.get(topicId);

@@ -973,6 +973,9 @@ export const MOBILE_CHAT_CONTENT_LINE = '- With native app conversations on, not
 /** Pool reads and the approval method on app history rows; inserted after the history bullet on update. */
 export const APP_CONVERSATIONS_POOL_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm` or `dashboard-pin`): how that phone was approved.';
 
+/** The "Open session" bullet (GET /mobile/conversations/session), inserted after the pool line on update. */
+export const APP_CONVERSATIONS_OPEN_SESSION_LINE = '- The app\'s "Open session" button asks `GET /mobile/conversations/session?ref=<app:<uuid> | telegram:<topicId> | Slack conversationKey>` (phone-signed only; my token gets 403). It answers the session driving that chat on this machine with a dashboard link focused on it (`/dashboard?session=<name>`; the dashboard still asks for its PIN), or `active: false` with a plain `reason`: no session yet (the next message starts one), or `ownerMachine`, the machine that runs it. When the operator asks "which session is answering this chat?" or "why does Open session say nothing is running?", read `GET /sessions` here: the button reads the same running sessions.';
+
 /** The increment-1 wording of the verdict bullet's tail, replaced in place on update. */
 export const APP_CONVERSATIONS_STALE_VERDICT_LINE = '`unknown` = could not be checked on this machine (this agent does not check signatures yet, so every app message reads `unknown` for now — never treat it as proof); `none` = no signature recorded.';
 export const APP_CONVERSATIONS_CURRENT_VERDICT_LINE = '`unknown` = could not be checked on this machine (no ledger row for the phone\'s key, or the machine-key history is unreadable) — never treat it as proof; `none` = no signature recorded. Only `verified` adds "📱 signed" to the `[app:…]` tag. A device\'s read of a Telegram topic\'s history also carries `originVerified` for messages sent from the app.';
@@ -994,6 +997,7 @@ The session's bind token is the only destination; the script takes no conversati
 - List conversations (app ones plus Telegram topics, newest first): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/conversations"\`
 - Read history (pages backwards; pass the returned \`nextBefore\` as \`before\`): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/chat/app/CONVERSATION_KEY/messages"\`
 ${APP_CONVERSATIONS_POOL_LINE}
+${APP_CONVERSATIONS_OPEN_SESSION_LINE}
 - Each operator message carries \`originVerified\`: \`verified\` = the paired phone's signature checked out; \`redacted\` = checked, and an invite or desktop code was removed; \`failed\` = the signature does NOT check out; \`unknown\` = could not be checked on this machine (no ledger row for the phone's key, or the machine-key history is unreadable) — never treat it as proof; \`none\` = no signature recorded. Only \`verified\` adds "📱 signed" to the \`[app:…]\` tag. A device's read of a Telegram topic's history also carries \`originVerified\` for messages sent from the app.
 - Pairing invites and remote-desktop codes typed in the app are removed before they reach me ("[pairing invite removed]"); to pair agents the operator forwards the invite in Telegram or pastes it on the dashboard.
 - Gate: \`mobilePairing.native.enabled\` (omitted ⇒ the development-agent gate). The store's size is in the authenticated \`/health\` → \`appConversations\`.
@@ -9333,6 +9337,17 @@ setTimeout(() => process.exit(0), 2000);
         content = lines.join('\n');
         patched = true;
         result.upgraded.push('CLAUDE.md: added the Native app conversations pool-read line');
+      }
+    }
+    // "Open session" (GET /mobile/conversations/session): the bullet after the pool-read line.
+    if (content.includes('Native app conversations') && !content.includes(APP_CONVERSATIONS_OPEN_SESSION_LINE)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l === APP_CONVERSATIONS_POOL_LINE);
+      if (at >= 0) {
+        lines.splice(at + 1, 0, APP_CONVERSATIONS_OPEN_SESSION_LINE);
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added the Native app conversations Open session line');
       }
     }
 

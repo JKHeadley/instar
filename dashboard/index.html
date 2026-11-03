@@ -8095,7 +8095,9 @@
               const qs = p.toString();
               history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
             }
-          } else if (++attempts < 15) {
+          } else if (++attempts < 50) {
+            // ~10 s: a phone opening an "Open session" link over a tunnel can take a few
+            // seconds to receive the first session list after the PIN.
             setTimeout(waitForSessions, 200);
           }
         };
