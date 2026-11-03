@@ -11,3 +11,5 @@ People reading the Telegram topic or the Slack channel should see what was sent,
 The app's history for that topic or channel shows the message with its files, and the files download from the server. A phone never sees a file's location on the computer. If the phone retries the same send, the server answers with the result it already recorded instead of sending again.
 
 All of this is behind the existing "files in app conversations" switch. With the switch off, everything behaves as before, and a message with files is refused as before.
+
+One honest limit: the copy into Slack could not be tried against the real Slack service, because this agent has no working Slack connection right now (its Slack key was withdrawn in July). The Slack upload steps are the same ones already in use, with two optional extras Slack documents; they should be tried for real when Slack is set up again.

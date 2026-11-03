@@ -108,3 +108,9 @@ Concur with the review. No blocking defect. The app-conversation send behaves as
 ## Class-Closure Declaration
 
 - `unbounded-self-action`: closure `n/a`. Each send and its Telegram/Slack copy happens once per operator request from the phone, idempotent by requestId; a failed copy is recorded as `mirror: "failed"` and never retried. Not a self-triggered loop.
+
+## Live contract evidence
+
+Not run: Echo's Slack bot token was revoked 2026-07-01 (config `_teardownNote`), so `npm run test:contract` cannot reach Slack. `FileHandler.ts` carries a CONTRACT-EVIDENCE: EXEMPT marker naming this. The change adds only Slack's documented optional `thread_ts` and `initial_comment` fields to the existing v2 upload flow. Run the contract suite when Slack is re-provisioned.
+
+- `unbounded-self-action` (marker commit): closure `n/a`, comment-only.

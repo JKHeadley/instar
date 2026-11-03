@@ -14,6 +14,10 @@ import path from 'node:path';
 import type { SlackApiClient } from './SlackApiClient.js';
 import { validateSlackHostname } from './sanitize.js';
 
+// CONTRACT-EVIDENCE: EXEMPT — the v2 three-step upload flow is unchanged; this only adds Slack's documented
+// optional `thread_ts` and `initial_comment` fields to files.completeUploadExternal and lets a caller name the
+// file. No live run was possible: Echo's Slack bot token was revoked 2026-07-01 (config _teardownNote). Run
+// `npm run test:contract` when Slack is re-provisioned (docs/runbooks/slack-live-test-reprovision.md).
 /** Optional extras for an upload: a thread to post into, a message beside the file, and the file's name. */
 export interface SlackUploadOptions { threadTs?: string; initialComment?: string; filename?: string }
 
