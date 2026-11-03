@@ -58,6 +58,7 @@ export async function settleBeforeRelay(prompt: DetectedPrompt, deps: SettleDeps
   try {
     pane = deps.capture(prompt.sessionName);
   } catch {
+    // @silent-fallback-ok — an unreadable pane is treated as unknown, and unknown relays.
     pane = null;
   }
   if (pane == null) return { relay: true, reason: 'pane-unreadable' };

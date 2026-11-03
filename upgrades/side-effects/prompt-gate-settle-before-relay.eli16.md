@@ -7,3 +7,5 @@ The trouble is that many of those questions get answered without you. When a ses
 What changes: after seeing a question, Prompt Gate now waits 45 seconds and looks at the session's screen again. If the question is still there, you get the message as before. If it's gone, or the session no longer exists, nothing is sent. If the screen can't be read, it sends anyway, so a question that really needs you is never dropped. The "now active" notice becomes one short line on the first real question instead of its own message.
 
 What you might notice: fewer of these messages, and a real one arrives about 45 seconds after the question appears. The wait can be changed or switched off with one setting.
+
+If the screen check itself fails, that counts as "can't tell", and the message is sent.

@@ -53,3 +53,5 @@ Set `promptGate.relaySettleMs: 0`, or revert. No state.
 ## Second-pass review
 
 Independent reviewer — Concur with the review. Argument types match (prompt.sessionName is the tmux name, as the auto-dismiss sendKey already uses); a prompt is dropped only when the session is gone or no anchor is in the pane tail, every uncertain case relays; a skipped relay resets the detector like the auto-approve path; the 45 s wait is per prompt and does not hold the event loop; the appended note is fixed text. Minor: the topic is marked disclosed before the send succeeds, unchanged from before.
+
+Follow-up: Local Verify flagged the pane-read catch for the silent-fallback rule; it now carries the marker explaining that an unreadable pane relays.
