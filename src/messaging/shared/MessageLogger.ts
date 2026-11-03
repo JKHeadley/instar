@@ -31,6 +31,8 @@ export interface LogEntry {
   via?: 'mobile-device';
   deviceId?: string;
   eventId?: string;
+  /** Slack: the thread this message sits in (absent for a channel-level message and on older rows). */
+  threadTs?: string;
   /** Structural message origin. Undefined only for legacy/non-migrated writers. */
   provenance?: MessageProvenance;
 }

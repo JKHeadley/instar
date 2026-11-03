@@ -64,7 +64,7 @@ export interface DeviceSignedOrigin {
 }
 
 /** The accepting machine's receipt (§4.6): its signature over (sha256(canonical request), receivedAt, machineId). */
-export interface MachineReceipt { machineId: string; signerKeyHash: string; sig: string }
+export interface MachineReceipt { machineId: string; signerKeyHash: string; sig: string; v?: 2; conversationKey?: string }
 
 export interface AppEventBase {
   eventId: string;
@@ -262,7 +262,13 @@ function validateReceipt(raw: unknown): MachineReceipt | undefined {
   const machineId = s(o.machineId, 256);
   const signerKeyHash = s(o.signerKeyHash, 64);
   const sig = s(o.sig, 512);
-  return machineId && signerKeyHash && sig ? { machineId, signerKeyHash, sig } : undefined;
+  if (!machineId || !signerKeyHash || !sig) return undefined;
+  // A v2 receipt (§4.9) also signs the canonical conversation key; both fields travel together.
+  if (o.v === 2) {
+    const conversationKey = s(o.conversationKey, 256);
+    return conversationKey ? { machineId, signerKeyHash, sig, v: 2, conversationKey } : undefined;
+  }
+  return { machineId, signerKeyHash, sig };
 }
 
 export interface AppConversationStoreOptions {
