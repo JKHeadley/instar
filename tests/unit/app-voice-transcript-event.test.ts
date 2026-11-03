@@ -427,12 +427,17 @@ describe('finding 1: a per-process limit on provider calls', () => {
     const first = await voiceMessage(svc);
     const second = await voiceMessage(svc);
     const [[a], [b]] = await Promise.all([lines(svc, first), lines(svc, second)]);
-    expect(a).toMatch(/\(transcription unavailable: the transcription service timed out; /);
-    expect(b).toMatch(/\(transcription unavailable: timed out waiting; /);
+    // Which of the two reaches the one slot first is a race (seen on a loaded peer verifier,
+    // 2026-11-03): exactly one ran and timed out, the other waited and timed out waiting.
+    const ran = [a, b].filter((l) => /\(transcription unavailable: the transcription service timed out; /.test(l!));
+    const waited = [a, b].filter((l) => /\(transcription unavailable: timed out waiting; /.test(l!));
+    expect(ran).toHaveLength(1);
+    expect(waited).toHaveLength(1);
     expect(timeouts).toHaveLength(1); // the queued call never reached the provider
     expect(timeouts[0]!).toBeLessThanOrEqual(60);
     // Recorded, never retried.
-    expect((await lines(svc, second))[0]).toMatch(/timed out waiting/);
+    const queued = waited[0] === a ? first : second;
+    expect((await lines(svc, queued))[0]).toMatch(/timed out waiting/);
     await settle(150);
     expect(timeouts).toHaveLength(1);
   });

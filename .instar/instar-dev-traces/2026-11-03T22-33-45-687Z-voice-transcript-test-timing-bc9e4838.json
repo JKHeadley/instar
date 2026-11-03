@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "voice-transcript-test-timing",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T22:33:45.687Z",
+  "artifactPath": "upgrades/side-effects/voice-transcript-test-timing.md",
+  "artifactSha256": "af46163467844cc1163f2b037c7635d92f48f8d44c664cd35619b38e1181246a",
+  "coveredFiles": [
+    "tests/unit/app-voice-transcript-event.test.ts",
+    "upgrades/side-effects/voice-transcript-test-timing.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test-only race fix",
+  "eli16Path": "upgrades/side-effects/voice-transcript-test-timing.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/voice-transcript-test-timing.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
