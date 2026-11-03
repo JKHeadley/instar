@@ -37,6 +37,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import pc from 'picocolors';
+import { ensureClaudeFirstRunAnswered } from '../core/ensureInteractiveReady.js';
 import {
   assertNotTccProtected,
   describeTccProtectedPath,
@@ -122,6 +123,10 @@ interface InitOptions {
   expiresIn?: string;
   /** Test-agent leak guard: never expire, even in a temporary folder. */
   keep?: boolean;
+  /** Installer: what this agent is for, in the person's own words. */
+  role?: string;
+  /** Installer: don't ask about cloud backup. The agent offers it later, when wanted. */
+  skipCloudBackup?: boolean;
 }
 
 /**
@@ -1100,6 +1105,7 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
 
   // Generate identity
   const identity = defaultIdentity(agentName);
+  if (options.role) identity.role = options.role;
   const authToken = randomUUID();
 
   // Write identity files
@@ -1255,7 +1261,7 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
   }
 
   // Cloud backup setup (recommended — protects agent data from machine loss)
-  await setupCloudBackup(projectDir, stateDir, agentName);
+  if (!options.skipCloudBackup) await setupCloudBackup(projectDir, stateDir, agentName);
 
   // Generate manifest signing key
   const standaloneIntegrity = new ManifestIntegrity(path.join(stateDir, 'state'));
@@ -5542,6 +5548,14 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   // MCP Servers: Register Playwright in the correct locations
   // Claude Code reads MCP servers from ~/.claude.json and .mcp.json, NOT .claude/settings.json
   registerPlaywrightMcp(projectDir);
+
+  // Pre-answer Claude Code's first-run screens (welcome, folder trust, project
+  // MCP picker, bypass-permissions warning) for the login this agent will use.
+  // On a machine that never ran Claude Code they otherwise end every session.
+  const firstRun = ensureClaudeFirstRunAnswered(process.env.CLAUDE_CONFIG_DIR || null, path.resolve(projectDir));
+  if (!firstRun.patched && firstRun.reason !== 'already interactive-ready') {
+    console.log(pc.yellow(`  Could not pre-answer Claude Code's first-run screens: ${firstRun.reason}`));
+  }
 }
 
 /**

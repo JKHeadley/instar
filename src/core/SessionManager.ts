@@ -38,7 +38,7 @@ import { initialConfinedStartupState, stepConfinedStartup, classifyConfinedStart
 
 const squash = (text: string): string => text.replace(/\s+/g, '');
 import { extractGeminiFinalAssistantBlock, meaningfulTail, meaningfulNonBlankTail } from './paneText.js';
-import { ensureInteractiveReady } from './ensureInteractiveReady.js';
+import { ensureClaudeFirstRunAnswered } from './ensureInteractiveReady.js';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
 import type { DegradedTmuxGuard } from '../monitoring/DegradedTmuxGuard.js';
 
@@ -1736,11 +1736,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return this.config.projectDir;
   }
 
-  private ensurePinnedHomeInteractiveReady(configHome: string, lane: string): void {
+  /** The default login's first-run answers are checked once per process. */
+  private defaultHomeFirstRunChecked = false;
+
+  private ensurePinnedHomeInteractiveReady(configHome: string | null, lane: string): void {
     // projectDir is what makes the folder-trust acknowledgement specific to the
     // directory this session will actually launch in — without it the home can
     // read as ready and still die at "Do you trust the files in this folder?".
-    const ready = ensureInteractiveReady(configHome, { projectDir: this.config.projectDir });
+    const ready = ensureClaudeFirstRunAnswered(configHome, this.config.projectDir);
     if (ready.patched) {
       console.log(`[SessionManager] ${lane}: made ${configHome} interactive-ready (${ready.reason})`);
     } else if (ready.reason !== 'already interactive-ready') {
@@ -4636,6 +4639,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
       const pinnedHome = this.resolvePinnedSpawnHome(pinnedAccount);
       launchSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedHome;
       this.ensurePinnedHomeInteractiveReady(pinnedHome, 'interactive-reroute pin');
+    } else if (!this.defaultHomeFirstRunChecked && !options.confinement && !process.env.VITEST) {
+      // (Skipped under vitest: the default login is the operator's real home, and a
+      // test's temp project dir must never land in their ~/.claude.json.)
+      // The default login has first-run screens too. A machine that never ran
+      // Claude Code interactively (a fresh server, or a machine this agent was
+      // moved to without `instar init`) otherwise kills every session at them.
+      this.defaultHomeFirstRunChecked = true;
+      this.ensurePinnedHomeInteractiveReady(process.env.CLAUDE_CONFIG_DIR || null, 'default login');
     }
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(launchSpec.envOverrides)) {

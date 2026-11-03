@@ -271,6 +271,33 @@ export async function defaultTokenResolver(
 }
 
 /**
+ * One read-only usage call as a login proof, for the installer: `ok`, `auth-failed` on 401/403, and
+ * `unknown` for anything that says nothing about the login (a rate limit, a 5xx, the network).
+ * NEVER logs the token.
+ */
+export async function probeClaudeUsage(
+  token: string,
+  fetchImpl: FetchImpl,
+  timeoutMs: number,
+): Promise<'ok' | 'auth-failed' | 'unknown'> {
+  try {
+    const res = await fetchImpl(USAGE_URL, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+        'anthropic-version': '2023-06-01',
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+    } as Parameters<FetchImpl>[1]);
+    if (res.ok) return 'ok';
+    return res.status === 401 || res.status === 403 ? 'auth-failed' : 'unknown';
+  } catch {
+    // @silent-fallback-ok: a network failure says nothing about the login
+    return 'unknown';
+  }
+}
+
+/**
  * Read the account email (`oauthAccount.emailAddress`) Claude Code records for a
  * config home. This is a PUBLIC account identifier (not a secret) — it lets the
  * pool show WHICH account a slot actually authenticated as, so a login into the
