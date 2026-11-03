@@ -232,7 +232,7 @@ describe('app → Telegram topic with files', () => {
     const hist = await signed(e, 'GET', `/telegram/topics/${TOPIC}/messages`);
     expect(hist.status).toBe(200);
     const row = hist.body.messages.find((x: { eventId?: string }) => x.eventId === r.body.eventId);
-    expect(row).toMatchObject({ text: 'Look at this', originVerified: 'verified' });
+    expect(row).toMatchObject({ text: 'Look at this', originVerified: 'verified', deliveryState: 'delivered' });
     expect(row.attachments[0]).toMatchObject({ sha256: sha(bytes), bytes: 'verified' });
     expect(JSON.stringify(hist.body)).not.toContain('session-files');
 

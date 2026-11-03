@@ -17,6 +17,18 @@ export function telegramMethodFor(kind: TelegramMediaKind): { method: 'sendPhoto
 }
 
 /**
+ * The kind Telegram will actually accept for this file. `sendPhoto` takes only JPEG, PNG and WebP,
+ * and `sendVideo` only MP4; anything else (an iPhone HEIC screenshot, a QuickTime clip) is refused
+ * with a 400, so it goes up as a document instead. A voice note keeps its kind.
+ */
+export function telegramKindFor(kind: TelegramMediaKind, mediaType: string): TelegramMediaKind {
+  const t = mediaType.toLowerCase().split(';')[0]!.trim();
+  if (kind === 'photo') return t === 'image/jpeg' || t === 'image/png' || t === 'image/webp' ? 'photo' : 'file';
+  if (kind === 'video') return t === 'video/mp4' ? 'video' : 'file';
+  return kind;
+}
+
+/**
  * The `sendMediaGroup` item type for each file: photos and videos group together; any other
  * mix goes up as a group of documents (Telegram refuses a group mixing documents with photos,
  * and a voice note cannot be in a group at all).

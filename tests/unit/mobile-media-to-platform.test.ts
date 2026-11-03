@@ -16,7 +16,7 @@ import { captureOriginAttachments } from '../../src/messaging/telegram-origin/Or
 import {
   TELEGRAM_MIRROR_CAPTION_MAX, TELEGRAM_MIRROR_MAX_BYTES, checkSignedFiles, mirrorMediaToTelegram, planTelegramMirror, signedFileHashParts,
 } from '../../src/server/mobileMediaSend.js';
-import { multipartFileName, multipartMediaType, telegramGroupTypes, telegramMethodFor } from '../../src/messaging/telegramMedia.js';
+import { multipartFileName, multipartMediaType, telegramGroupTypes, telegramKindFor, telegramMethodFor } from '../../src/messaging/telegramMedia.js';
 import { mirrorMediaToSlack, type MobileSlackBridge, type SlackAppConversation } from '../../src/server/mobileSlackRoutes.js';
 import type { AppAttachment } from '../../src/core/appMediaTypes.js';
 
@@ -158,7 +158,7 @@ describe('TelegramAdapter.sendMediaToTopic', () => {
     }));
     return seen;
   };
-  const file = (kind: 'photo' | 'video' | 'voice' | 'file', name = 'a.png') => ({ data: new Uint8Array([137, 80, 78, 71, 1, 2]), filename: name, mediaType: 'image/png', kind });
+  const file = (kind: 'photo' | 'video' | 'voice' | 'file', name = 'a.png') => ({ data: new Uint8Array([137, 80, 78, 71, 1, 2]), filename: name, mediaType: kind === 'video' ? 'video/mp4' : kind === 'voice' ? 'audio/mp4' : 'image/png', kind });
 
   it('one photo goes up as sendPhoto with its caption, a multipart body the origin outbox captures', async () => {
     const seen = capture({ message_id: 55 });
@@ -173,6 +173,25 @@ describe('TelegramAdapter.sendMediaToTopic', () => {
     expect(form.get('photo')).toBeInstanceOf(Blob);
     const captured = await captureOriginAttachments(form);
     expect(captured.refs).toEqual([expect.objectContaining({ field: 'photo', filename: 'a.png', mediaType: 'image/png', size: 6 })]);
+  });
+
+  it('a HEIC photo (an iPhone screenshot from Photos) goes up as a document, since sendPhoto refuses it', async () => {
+    const seen = capture({ message_id: 9 });
+    await adapter.sendMediaToTopic(42, [{ data: new Uint8Array([1, 2, 3]), filename: 'shot.heic', mediaType: 'image/heic', kind: 'photo' }], 'cap');
+    expect(seen[0]!.url).toMatch(/\/sendDocument$/);
+    expect(seen[0]!.body.get('document')).toBeInstanceOf(Blob);
+  });
+
+  it('telegramKindFor keeps only the formats Telegram accepts as photo/video', () => {
+    expect(telegramKindFor('photo', 'image/jpeg')).toBe('photo');
+    expect(telegramKindFor('photo', 'image/png')).toBe('photo');
+    expect(telegramKindFor('photo', 'image/webp')).toBe('photo');
+    expect(telegramKindFor('photo', 'image/heic')).toBe('file');
+    expect(telegramKindFor('photo', 'image/gif')).toBe('file');
+    expect(telegramKindFor('video', 'video/mp4')).toBe('video');
+    expect(telegramKindFor('video', 'video/quicktime')).toBe('file');
+    expect(telegramKindFor('voice', 'audio/mp4')).toBe('voice');
+    expect(telegramKindFor('file', 'image/png')).toBe('file');
   });
 
   it('each kind uses its own method', async () => {

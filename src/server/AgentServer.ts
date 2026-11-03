@@ -1676,10 +1676,16 @@ export class AgentServer {
           }));
         } catch { return []; } // @silent-fallback-ok — an unreadable registry falls back to the self-probes
       },
-      reportDegradation: (what, err) => DegradationReporter.getInstance().report({
-        feature: what, primary: 'record the phone device state', fallback: 'the request was refused or a pending pairing was cancelled',
-        reason: err instanceof Error ? err.message : String(err), impact: 'A phone pairing step failed and must be retried.',
-      }),
+      reportDegradation: (what, err) => DegradationReporter.getInstance().report(what === 'MobileChat.mirror'
+        ? {
+          feature: what, primary: 'copy the message sent from the Instar app into its Telegram topic',
+          fallback: 'the message reached the agent; only the Telegram copy is missing',
+          reason: err instanceof Error ? err.message : String(err), impact: 'The Telegram topic does not show a message the operator sent from the app.',
+        }
+        : {
+          feature: what, primary: 'record the phone device state', fallback: 'the request was refused or a pending pairing was cancelled',
+          reason: err instanceof Error ? err.message : String(err), impact: 'A phone pairing step failed and must be retried.',
+        }),
       ownerDM: async (text, declineData) => {
         if (!options.telegram) return null;
         return options.telegram.sendOwnerDMWithButton(text, declineData ? { text: 'Decline', data: declineData } : null);
