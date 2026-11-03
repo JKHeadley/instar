@@ -312,6 +312,9 @@ a.row:hover { background: var(--surface-raised); border-radius: var(--r-sm); }
 .tiles { display: grid; gap: var(--s-3); grid-template-columns: 1fr; }
 @media (min-width: 640px) { .tiles { grid-template-columns: 1fr 1fr; } }
 @media (min-width: 1100px) { .tiles { grid-template-columns: repeat(3, 1fr); } }
+/* A conditional tile's wrapper inside the grid: its tile takes a grid cell; hidden stays hidden. */
+.tiles .tiles-inline { display: contents; }
+.tiles .tiles-inline[hidden] { display: none; }
 .tile {
   display: flex; align-items: flex-start; gap: var(--s-3); padding: var(--s-4) var(--s-5);
   border-radius: var(--r-lg); border: 1px solid var(--hairline); background: var(--surface);
