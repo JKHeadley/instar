@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import { verifiedChannelIdentity, nameIdsInText } from './shared/channelIdentity.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
 import { telegramFetch } from './telegram-egress.js';
-import { multipartFileName, multipartMediaType, telegramGroupTypes, telegramMethodFor, type TelegramMediaKind } from './telegramMedia.js';
+import { multipartFileName, multipartMediaType, telegramGroupTypes, telegramKindFor, telegramMethodFor, type TelegramMediaKind } from './telegramMedia.js';
 import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -1680,6 +1680,8 @@ export class TelegramAdapter implements MessagingAdapter {
     for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null) form.append(k, String(v));
     const blob = (f: { data: Uint8Array; mediaType: string }) => new Blob([new Uint8Array(f.data)], { type: multipartMediaType(f.mediaType) });
     let method: string;
+    // Kinds Telegram refuses (HEIC photos, non-MP4 video) go up as documents.
+    files = files.map((f) => ({ ...f, kind: telegramKindFor(f.kind, f.mediaType) }));
     if (files.length === 1) {
       const one = files[0]!;
       const m = telegramMethodFor(one.kind);

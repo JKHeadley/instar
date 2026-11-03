@@ -802,19 +802,23 @@ export function joinTelegramHistory(
     let ev: ReturnType<AppConversationService['store']['getEvent']> = null;
     try { ev = app.store.getEvent(key, eventId); } catch { ev = null; } // @silent-fallback-ok — an unreadable store row reads "couldn't check"
     if (!ev || (ev.kind !== 'message' && ev.kind !== 'media-message')) return { ...row, originVerified: 'unknown' };
+    // The app's "Delivered" mark reads this; without it an app-sent message looked unsent.
+    let deliveryState: string | null = null;
+    try { deliveryState = typeof ev.messageId === 'string' ? app.store.deliveryState(ev.messageId) : null; } catch { deliveryState = null; } // @silent-fallback-ok — no mark rather than a wrong one
+    const delivered = deliveryState ? { deliveryState } : {};
     if (ev.kind === 'media-message') {
       // Files sent from the app (chat-media §4.9): the Telegram row holds the session's text
       // (file lines with server paths, then the caption). The device gets the STORED caption and
       // the attachments instead, so the verdict covers exactly what it shows and no path leaks.
       const verdict = app.verify(ev);
       const via = app.originApprovedVia(ev, verdict);
-      return { ...row, text: ev.text, attachments: attachmentRows(ev.attachments, app), originVerified: verdict, ...(via ? { originApprovedVia: via } : {}) };
+      return { ...row, ...delivered, text: ev.text, attachments: attachmentRows(ev.attachments, app), originVerified: verdict, ...(via ? { originApprovedVia: via } : {}) };
     }
     // The verdict covers the STORED text; a Telegram row showing different text gets no verdict.
-    if (typeof row.text === 'string' && row.text !== ev.text) return { ...row, originVerified: 'unknown' };
+    if (typeof row.text === 'string' && row.text !== ev.text) return { ...row, ...delivered, originVerified: 'unknown' };
     const verdict = app.verify(ev);
     const via = app.originApprovedVia(ev, verdict);
-    return { ...row, originVerified: verdict, ...(via ? { originApprovedVia: via } : {}) };
+    return { ...row, ...delivered, originVerified: verdict, ...(via ? { originApprovedVia: via } : {}) };
   });
   const seen = new Set(out.map((r) => (typeof r.eventId === 'string' ? r.eventId : '')).filter(Boolean));
   let stored: BrowsedMessage[] = [];
