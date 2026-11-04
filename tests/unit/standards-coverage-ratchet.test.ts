@@ -1272,7 +1272,8 @@ describe('standards-coverage ratchet script', () => {
     // one enforced Building article (refusal at init + boot detector + /guards
     // row + doctor + migrator). Re-derived from the live registry.
     expect(report.measurement.status, `measurement errors: ${JSON.stringify(report.measurement.errors)}`).toBe('proven');
-    expect(report.total).toBe(93);
+    // 2026-11-04: 93 -> 94. Operator mandate (Justin, 2026-11-03): *One Constitution, Two Books Aligned*.
+    expect(report.total).toBe(94);
     expect(report.enforcedRatio).toBe(0);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',
