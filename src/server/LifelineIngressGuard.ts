@@ -50,6 +50,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import {
   LifelineIngressSecretHolder,
   lifelineSecretMatches,
@@ -458,6 +459,7 @@ export class LifelineIngressGuard {
       // is still delivered (reachability) but with no sender trust; a tap is
       // nothing but a privileged act, so it is refused until we can verify.
       this.state.secretUnavailable++;
+      featureEvidence.recordAtMostEvery('telegramIngress.lifelineSecret.enforce', `secret-unavailable|${route}`, 60 * 60 * 1000, { kind: 'error', reason: 'secret-unavailable', context: { route, mode: this.mode(), failedLoads: this.holder.failedLoads, secretUnavailable: this.state.secretUnavailable } });
       this.persistSoon(nowMs);
       if (this.bypassed()) {
         // The full rollback is total: prior behaviour, whatever our own state.
@@ -505,6 +507,8 @@ export class LifelineIngressGuard {
         this.maybeGraduate(nowMs, nowIso);
       }
       this.persist(nowMs); // verified traffic is lifeline-rate; write through
+      // Per message, so the verified side is an hourly row carrying the running counts.
+      featureEvidence.recordAtMostEvery('telegramIngress.lifelineSecret.enforce', 'verified', 60 * 60 * 1000, { kind: 'fired', reason: 'verified', context: { mode: this.mode(), route, verified: this.state.verified, verifiedServerSelf: this.state.verifiedServerSelf, wouldRefuse: this.state.wouldRefuse, refused: this.state.refused, armed: this.state.armedAt !== null } });
       return { action: 'accept', verified: true, mode: this.mode(), senderTrusted: true, staleSecretHint: false };
     }
 
@@ -521,6 +525,7 @@ export class LifelineIngressGuard {
       this.state.byRoute[route].wouldRefuse++;
       this.state.lastWouldRefuseAt = nowIso;
       this.state.verifiedSinceLastWouldRefuse = 0;
+      featureEvidence.recordAtMostEvery('telegramIngress.lifelineSecret.enforce', `bypassed|${route}|${reason}`, 60 * 60 * 1000, { kind: 'error', reason: `bypassed-would-refuse: ${reason}`, context: { route, reason, mode: this.mode(), wouldRefuse: this.state.wouldRefuse } });
       this.degrade(nowMs, 'bypassed',
         `request without a valid lifeline secret on ${route} accepted because the guard is bypassed by config`,
         'telegramIngress.lifelineSecret.bypass is true: the internal Telegram routes are unprotected.');
@@ -557,6 +562,12 @@ export class LifelineIngressGuard {
 
     this.logLimited(nowMs,
       `[lifeline-ingress] ${refuse ? 'refused' : 'would-refuse'} ${route}: ${reason} (mode=${mode}, armed=${armed})`);
+    // One row per route, reason and verdict per ten minutes, so a caller without the secret cannot grow the log.
+    featureEvidence.recordAtMostEvery('telegramIngress.lifelineSecret.enforce', `${refuse ? 'refused' : 'would-refuse'}|${route}|${reason}`, 10 * 60 * 1000, {
+      kind: 'error',
+      reason: `${refuse ? 'refused' : 'would-refuse'}: ${reason}`,
+      context: { route, reason, mode, armed, lifelineVersion: typeof info.lifelineVersion === 'string' ? info.lifelineVersion.slice(0, 64) : null, wouldRefuse: this.state.wouldRefuse, refused: this.state.refused, verified: this.state.verified },
+    });
 
     if (armed) {
       // SECURITY class — reported on the same request, no heal-first delay,

@@ -7,6 +7,7 @@
  */
 
 import { isCredentialEnvName, CLAUDE_CONFINED_PERMISSION_ARGS } from './credentialEnvNames.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { execFileSync, execFile } from 'node:child_process';
 import { isInstarSourceTree } from './SourceTreeGuard.js';
 import { AdmissionRefusedError, type AdmissionDecision, type AdmissionKind } from './workAdmission.js';
@@ -1545,6 +1546,13 @@ export class SessionManager extends EventEmitter {
       // guard counts the degraded-call signal distinctly from a generic error.
       const killed = e.killed === true || e.signal === 'SIGKILL' || /SIGKILL/.test(msg);
       this.degradedTmuxGuard?.observeTmuxCall(Date.now() - t0, killed ? 'killed-client' : 'indeterminate');
+      if (this.tmuxAsyncEnabled) {
+        featureEvidence.recordAtMostEvery('monitoring.tmuxResilience.asyncHotPath', killed ? 'timeout' : 'indeterminate', 300_000, {
+          kind: killed ? 'fired' : 'error',
+          reason: killed ? 'bounded-call-timed-out-and-killed' : 'tmux-call-failed-indeterminate',
+          context: { op: args[0] ?? 'unknown', elapsedMs: Date.now() - t0, timeoutMs: timeout, inFlight: this.tmuxInflightCount },
+        });
+      }
       return { state: 'indeterminate', reason: msg.slice(0, 120) };
     }
   }
@@ -3015,6 +3023,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // (A) tri-state: ONLY a definitive `false` (dead) marks the session
         // completed. `'indeterminate'` (slow/timed-out tmux) does NOT — it falls
         // through to be re-checked next tick rather than reaping a live session.
+        if (alive === 'indeterminate') {
+          featureEvidence.recordAtMostEvery('monitoring.tmuxResilience.asyncHotPath', `kept:${session.tmuxSession}`, 300_000, { kind: 'held', reason: 'indeterminate-probe-kept-session', context: { session: session.tmuxSession } });
+        }
+        if (alive === false && this.tmuxAsyncEnabled) {
+          // A definitive-dead verdict is the one a spurious reap would come from; the review grades these rows.
+          featureEvidence.record('monitoring.tmuxResilience.asyncHotPath', { kind: 'fired', reason: 'probe-classified-session-dead', context: { session: session.tmuxSession } });
+        }
         if (alive === false) {
           // CAS re-read after the await: an operator kill (or another killer)
           // can land mid-probe, so re-read the live record before mutating it —
@@ -3416,11 +3431,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
                 now,
               );
               if (action === 'emit') {
+                featureEvidence.record('monitoring.idleThrottleSettleGate', { kind: 'fired', reason: 'settled-handed-to-rate-limit-sentinel', context: { session: session.tmuxSession, snapshotRead: settledSnapshot != null } });
                 this.idleThrottleSettle.delete(session.tmuxSession);
                 this.emit('rateLimitedAtIdle', session.tmuxSession);
                 continue; // Settled → sentinel owns recovery.
               }
               if (action === 'wait') {
+                if (!this.idleThrottleSettle.has(session.tmuxSession)) {
+                  featureEvidence.record('monitoring.idleThrottleSettleGate', { kind: 'held', reason: 'throttle-seen-waiting-to-settle', context: { session: session.tmuxSession } });
+                }
                 if (nextState) this.idleThrottleSettle.set(session.tmuxSession, nextState);
                 continue; // Not settled yet — re-sample next idle tick; do NOT emit, and
                           // (like the watchdog's 'waiting') do not run the generic-error
@@ -3428,6 +3447,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
               }
               // 'fall-through': no current throttle in the settled window (a stale buffer
               // line) → clear tracking and proceed to the normal idle machinery below.
+              if (this.idleThrottleSettle.has(session.tmuxSession) || settledSnapshot == null) {
+                // The row the gate exists for: a throttle string that never settled gets no hand-off.
+                if (settledSnapshot == null) {
+                  featureEvidence.recordAtMostEvery('monitoring.idleThrottleSettleGate', `read-failed:${session.tmuxSession}`, 3_600_000, { kind: 'error', reason: 'pane-read-failed', context: { session: session.tmuxSession } });
+                } else {
+                  featureEvidence.record('monitoring.idleThrottleSettleGate', { kind: 'held', reason: 'throttle-gone-before-settle-no-handoff', context: { session: session.tmuxSession } });
+                }
+              }
               this.idleThrottleSettle.delete(session.tmuxSession);
             }
             if (!this.idlePromptSince.has(session.id)) {
@@ -6220,6 +6247,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       this.buildContextStore.record(tmuxSession, this.config.projectDir, currentCwd);
     } catch (err) {
       console.warn(`[SessionManager] Failed to record build context for "${tmuxSession}": ${err instanceof Error ? err.message : String(err)}`);
+      featureEvidence.recordAtMostEvery('sessions.respawnBuildContext', `capture-failed|${tmuxSession}`, 60 * 60 * 1000, { kind: 'error', reason: 'capture-failed', context: { tmuxSession, errorName: err instanceof Error ? err.name : 'unknown' } });
     }
   }
 
@@ -6232,6 +6260,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       this.buildContextStore.record(tmuxSession, this.config.projectDir, currentCwd);
     } catch (err) {
       console.warn(`[SessionManager] Failed to record build context for "${tmuxSession}": ${err instanceof Error ? err.message : String(err)}`);
+      featureEvidence.recordAtMostEvery('sessions.respawnBuildContext', `capture-failed|${tmuxSession}`, 60 * 60 * 1000, { kind: 'error', reason: 'capture-failed', context: { tmuxSession, errorName: err instanceof Error ? err.name : 'unknown' } });
     }
   }
 
@@ -6242,8 +6271,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
   ): string | undefined {
     if (!resumeSessionId || !this.buildContextStore) return initialMessage;
     const restore = this.buildContextStore.getRestore(tmuxSession);
-    if (!restore) return initialMessage;
+    if (!restore) {
+      featureEvidence.record('sessions.respawnBuildContext', { kind: 'held', reason: 'no-usable-context-on-resume', context: { tmuxSession } });
+      return initialMessage;
+    }
     console.log(`[SessionManager] Restoring build context for "${tmuxSession}" from ${restore.entry.currentCwd}`);
+    featureEvidence.record('sessions.respawnBuildContext', { kind: 'fired', reason: 'context-restored-on-resume', context: { tmuxSession, contextAgeMs: Date.now() - restore.entry.updatedAt } });
     return [restore.note, initialMessage].filter(Boolean).join('\n\n');
   }
 

@@ -24,6 +24,14 @@ export const STAGE_B_CERTIFIED_SET = {
   ],
   "excluded": [
     {
+      "file": "src/monitoring/FeatureEvidenceLog.ts",
+      "reason": "Write-only evidence log reached through DegradationReporter; its calls never throw, return nothing the caller reads, and do not alter the certified Codex Stage-B delivery path."
+    },
+    {
+      "file": "src/utils/jsonl-rotation.ts",
+      "reason": "Size-based log rotation used only by the evidence log in this closure; it never throws and does not alter the certified Codex Stage-B delivery path."
+    },
+    {
       "file": "src/scheduler/jobScriptProtocol.ts",
       "reason": "Shared deterministic script-job output parser reached through scheduler imports; it does not alter the certified Codex Stage-B delivery path and has separate script protocol unit and lifecycle coverage"
     },

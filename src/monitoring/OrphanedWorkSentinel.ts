@@ -31,6 +31,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import {
   summarizeEnumerationError,
   type WorktreeEnumeration,
@@ -227,6 +228,7 @@ export class OrphanedWorkSentinel extends EventEmitter {
         this.lastEnumerationOk = false;
         this.lastEnumerationError = enumeration.error;
         this.recordEnumerationFailure(failedAt);
+        featureEvidence.recordAtMostEvery('monitoring.orphanedWorkSentinel', 'enumeration-failed', 3_600_000, { kind: 'error', reason: 'worktree-enumeration-failed', context: { preserveWork: this.cfg.preserveWork } });
         this.emit('enumeration-failed', { error: enumeration.error });
         this.warn(`[orphaned-work-sentinel] enumeration FAILED — stranded-work count is UNKNOWN, not zero: ${enumeration.error}`);
         return { ts: failedAt, evaluations, flagged: flaggedEvents };
@@ -265,6 +267,12 @@ export class OrphanedWorkSentinel extends EventEmitter {
           try { this.deps.preserve(info); event.preserved = true; }
           catch (e) { event.preserveError = e instanceof Error ? e.message : String(e); }
         }
+
+        featureEvidence.record('monitoring.orphanedWorkSentinel', {
+          kind: event.preserveError ? 'error' : 'fired',
+          reason: event.preserveError ? 'preserve-commit-failed' : 'orphaned-work-flagged',
+          context: { worktreePath: info.path, branch: info.branch ?? null, workSig: sig, preserved: event.preserved, preserveWork: this.cfg.preserveWork, flaggedThisProcess: this.flagged.size },
+        });
 
         try { this.deps.record(event); } catch { /* recording must never throw the pass */ }
         try { this.deps.raiseAttention(event); } catch { /* attention must never throw the pass */ }

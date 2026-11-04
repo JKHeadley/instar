@@ -22,6 +22,7 @@
 
 import { FencedLease, type StaleHolderTakeoverOpts, type HandbackConsentToken } from './FencedLease.js';
 import type { LeaseRecord } from './types.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 /** Durable (git-backed) view + CAS write of the lease. */
 export interface LeaseStore {
@@ -239,6 +240,10 @@ export class LeaseCoordinator {
   private lastObservedNonceEpoch = new Map<string, number>();
   private unconfirmedWriteCount = 0;
   private unconfirmedWriteReported = false;
+  /** Evidence only: the open solo-captain hold episode, so a hold records once, not per renew. */
+  private soloHoldEvidenceEpoch: number | null = null;
+  /** Evidence only: the last stale-holder takeover, to notice that holder renewing soon after. */
+  private staleTakeoverEvidence: { holder: string; epoch: number; atMono: number } | null = null;
 
   constructor(deps: LeaseCoordinatorDeps) {
     this.d = deps;
@@ -413,6 +418,17 @@ export class LeaseCoordinator {
             this.lastObservedNonceEpoch.set(obs.lease.holder, obs.lease.epoch);
             this.lastObservedNonce.set(obs.lease.holder, obs.lease.nonce);
             this.freshObservedMonoMs.set(obs.lease.holder, this.monotonicNow());
+            if (this.staleTakeoverEvidence?.holder === obs.lease.holder) {
+              const sinceMs = this.monotonicNow() - this.staleTakeoverEvidence.atMono;
+              if (sinceMs <= 10 * 60_000) {
+                featureEvidence.record('multiMachine.leaseSelfHeal.staleHolderTakeover', {
+                  kind: 'error',
+                  reason: 'taken-over holder was alive: its signed nonce advanced after the takeover',
+                  context: { holder: obs.lease.holder, takeoverEpoch: this.staleTakeoverEvidence.epoch, holderEpoch: obs.lease.epoch, msSinceTakeover: sinceMs },
+                });
+              }
+              this.staleTakeoverEvidence = null;
+            }
           }
           if (obs.lease.epoch > epoch) {
             bestLease = obs.lease;
@@ -831,6 +847,14 @@ export class LeaseCoordinator {
       const res = this.casWrite(candidate);
       if (res.ok) {
         this.selfIssued = candidate;
+        if (view.lease && decision.reason.startsWith('holder-not-renewing')) {
+          this.staleTakeoverEvidence = { holder: view.lease.holder, epoch: candidate.epoch, atMono: this.monotonicNow() };
+          featureEvidence.record('multiMachine.leaseSelfHeal.staleHolderTakeover', {
+            kind: 'fired',
+            reason: 'took over a holder that stopped renewing',
+            context: { decision: decision.reason, holder: view.lease.holder, fromEpoch: view.lease.epoch, toEpoch: candidate.epoch },
+          });
+        }
         if (
           view.lease &&
           view.lease.holder !== this.selfMachineId &&
@@ -850,6 +874,13 @@ export class LeaseCoordinator {
       }
       // CAS lost — someone advanced. Re-evaluate against the observed state.
       const observedEpoch = res.observed.epoch;
+      if (view.lease && decision.reason.startsWith('holder-not-renewing')) {
+        featureEvidence.record('multiMachine.leaseSelfHeal.staleHolderTakeover', {
+          kind: 'held',
+          reason: 'stale-holder takeover lost the epoch compare-and-set',
+          context: { decision: decision.reason, holder: view.lease.holder, candidateEpoch: candidate.epoch, observedEpoch, retries },
+        });
+      }
       if (observedEpoch >= candidate.epoch) {
         this.log(`CAS lost to epoch ${observedEpoch} (our candidate ${candidate.epoch}) — yielding`);
         this.emitEpoch(observedEpoch);
@@ -981,7 +1012,17 @@ export class LeaseCoordinator {
     const view = this.effectiveView();
     if (!view.lease || view.lease.holder !== this.selfMachineId) return false;
     // Superseded: a peer verified a higher epoch. Never renew or hold the older one.
-    if (this.higherEpochEvidence() > view.epoch) return false;
+    if (this.higherEpochEvidence() > view.epoch) {
+      if (this.soloHoldEvidenceEpoch !== null) {
+        featureEvidence.record('multiMachine.leaseSelfHeal.soloCaptainHold', {
+          kind: 'error',
+          reason: 'a healthy peer advanced the epoch while the sole captain was holding',
+          context: { heldEpoch: this.soloHoldEvidenceEpoch, higherEpoch: this.higherEpochEvidence() },
+        });
+        this.soloHoldEvidenceEpoch = null;
+      }
+      return false;
+    }
 
     // Re-sign with a fresh expiry (same epoch — renewal never advances it).
     const renewed = this.fl.signLease(
@@ -1011,6 +1052,14 @@ export class LeaseCoordinator {
     if (confirmed) {
       this.selfIssued = renewed;
       this.markRenewOk();
+      if (this.soloHoldEvidenceEpoch !== null) {
+        featureEvidence.record('multiMachine.leaseSelfHeal.soloCaptainHold', {
+          kind: 'held',
+          reason: 'hold ended: renewal confirmed over a medium again',
+          context: { heldEpoch: this.soloHoldEvidenceEpoch, epoch: view.epoch },
+        });
+        this.soloHoldEvidenceEpoch = null;
+      }
       return true;
     }
 
@@ -1027,10 +1076,25 @@ export class LeaseCoordinator {
       this.selfIssued = renewed;
       this.markRenewOk(); // hold the SAME epoch — no re-acquire, no inflation
       this.log('solo-captain hold: preferred + all peers presumed-gone + no higher epoch — held lease without medium confirm');
+      if (this.soloHoldEvidenceEpoch !== view.epoch) {
+        this.soloHoldEvidenceEpoch = view.epoch;
+        featureEvidence.record('multiMachine.leaseSelfHeal.soloCaptainHold', {
+          kind: 'fired',
+          reason: 'held the lease without medium confirmation',
+          context: { epoch: view.epoch, hasTunnel: !!this.d.tunnel, peerTakeoverAuthorized: this.peerTakeoverAuthorizedEpoch === view.epoch },
+        });
+      }
       return true;
     }
 
     if (this.monotonicNow() - this.lastRenewOkMonoMs > this.fl.ttlMs) {
+      if (this.d.soloCaptainHold?.()?.enabled) {
+        featureEvidence.record('multiMachine.leaseSelfHeal.soloCaptainHold', {
+          kind: 'held',
+          reason: 'not eligible to hold: self-suspending on lapsed renewal',
+          context: { epoch: view.epoch },
+        });
+      }
       this.suspended = true;
       // Only the tunnel's early deadline is provisional; a git refresh result is final.
       this.suspendedByRenewal = this.d.tunnel ? renewed : null;

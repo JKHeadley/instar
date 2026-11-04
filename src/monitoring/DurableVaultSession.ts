@@ -29,6 +29,8 @@
  * omitted `enabled`). When disabled, the org-vault probe simply reports unreachable.
  */
 
+import { featureEvidence } from './FeatureEvidenceLog.js';
+
 const DEFAULT_TTL_MS = 10 * 60 * 1000; // 10 min — a refreshable warm session
 const DEFAULT_IDLE_MS = 2 * 60 * 1000; // 2 min idle → drop
 
@@ -87,8 +89,12 @@ export class DurableVaultSession {
    */
   private async ensure(): Promise<string | null> {
     if (this.isValid()) {
+      featureEvidence.record('monitoring.blockerLedger.durableVaultSession', { kind: 'fired', reason: 'warm session used', context: { ageMs: this.now() - this.derivedAt, idleMs: this.now() - this.lastUsedAt, ttlMs: this.ttlMs, inFlight: this.inFlight } });
       this.lastUsedAt = this.now();
       return this.session;
+    }
+    if (this.session) {
+      featureEvidence.record('monitoring.blockerLedger.durableVaultSession', { kind: 'held', reason: this.now() - this.derivedAt >= this.ttlMs ? 'stale session dropped: ttl' : 'stale session dropped: idle', context: { ageMs: this.now() - this.derivedAt, idleMs: this.now() - this.lastUsedAt, ttlMs: this.ttlMs, idleLimitMs: this.idleMs } });
     }
     // Drop a stale value before re-deriving.
     this.session = null;
@@ -100,10 +106,16 @@ export class DurableVaultSession {
           this.session = value;
           this.derivedAt = this.now();
           this.lastUsedAt = this.derivedAt;
+          featureEvidence.record('monitoring.blockerLedger.durableVaultSession', { kind: 'fired', reason: 'session unlocked', context: { ttlMs: this.ttlMs, inFlight: this.inFlight } });
           return this.session;
         }
         this.session = null;
+        featureEvidence.record('monitoring.blockerLedger.durableVaultSession', { kind: 'error', reason: 'unlock returned no session', context: { inFlight: this.inFlight } });
         return null;
+      } catch (err) {
+        // Never the error text: a failed unlock command can carry the password.
+        featureEvidence.record('monitoring.blockerLedger.durableVaultSession', { kind: 'error', reason: 'unlock threw', context: { inFlight: this.inFlight, errorName: err instanceof Error ? err.name : 'unknown' } });
+        throw err;
       } finally {
         this.derivePromise = null;
       }
@@ -125,6 +137,9 @@ export class DurableVaultSession {
       this.lastUsedAt = this.now();
       const result = await fn(session);
       this.lastUsedAt = this.now();
+      if (this.now() - this.derivedAt >= this.ttlMs) {
+        featureEvidence.record('monitoring.blockerLedger.durableVaultSession', { kind: 'error', reason: 'session outlived its TTL in a run', context: { ageMs: this.now() - this.derivedAt, ttlMs: this.ttlMs, inFlight: this.inFlight } });
+      }
       return result;
     } finally {
       this.inFlight -= 1;

@@ -52,6 +52,11 @@
  */
 
 import os from 'node:os';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+
+const EVIDENCE_INTERVAL_MS = 15 * 60_000;
+const EVIDENCE_MIN_FETCHES = 5;
+const EVIDENCE_ERROR_SHARE = 0.2;
 
 /** A cached per-peer route body plus the freshness it was captured at. */
 interface CacheEntry {
@@ -115,6 +120,8 @@ export class PoolPollCache {
 
   /** keyed by `${peerMachineId}::${routePath}` */
   private readonly entries = new Map<string, CacheEntry>();
+  private evidenceAt: number | null = null;
+  private evidenceStats: CacheStats = { fetches: 0, cacheHits: 0, loadSheds: 0, coalesced: 0, errors: 0 };
   /** in-flight single-flight promises, same key. */
   private readonly inflight = new Map<string, Promise<unknown>>();
 
@@ -157,6 +164,7 @@ export class PoolPollCache {
     routePath: string,
     fetcher: () => Promise<T>,
   ): Promise<PeerFetchResult<T>> {
+    this.maybeRecordEvidence();
     const key = `${peerMachineId}::${routePath}`;
     const cached = this.entries.get(key);
     const fresh = cached != null && this.now() - cached.at < this.ttlMs;
@@ -202,6 +210,28 @@ export class PoolPollCache {
     } finally {
       this.inflight.delete(key);
     }
+  }
+
+  /** A bounded summary of the in-memory counters: at most one row per interval, only when there was traffic. */
+  private maybeRecordEvidence(): void {
+    const now = this.now();
+    if (this.evidenceAt === null) { this.evidenceAt = now; return; }
+    if (now - this.evidenceAt < EVIDENCE_INTERVAL_MS) return;
+    const last = this.evidenceStats;
+    const fetches = this.stats.fetches - last.fetches;
+    const errors = this.stats.errors - last.errors;
+    const cacheHits = this.stats.cacheHits - last.cacheHits;
+    const loadSheds = this.stats.loadSheds - last.loadSheds;
+    const coalesced = this.stats.coalesced - last.coalesced;
+    this.evidenceAt = now;
+    this.evidenceStats = { ...this.stats };
+    if (fetches + errors + cacheHits + loadSheds + coalesced === 0) return;
+    const failing = fetches + errors >= EVIDENCE_MIN_FETCHES && errors / (fetches + errors) > EVIDENCE_ERROR_SHARE;
+    featureEvidence.record('multiMachine.seamlessness.ws44PoolCache', {
+      kind: failing ? 'error' : 'fired',
+      reason: failing ? 'peer fetch failures passed the set share' : 'pool cache summary',
+      context: { fetches, errors, cacheHits, loadSheds, coalesced, cachedKeys: this.entries.size },
+    });
   }
 
   /** Drop the cached entry for a (peer, route) — e.g. when a peer goes offline. */
