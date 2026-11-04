@@ -1540,6 +1540,16 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     // summaries, owner phones only, with one shared bucket of their own (they read peers).
     { method: 'GET', re: /^\/mobile\/messages$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'phones-messages-reads' },
     { method: 'GET', re: /^\/mobile\/insights$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'phones-messages-reads' },
+    // Native Permission slips and What I'm allowed to do (docs/specs/mobile-native-permissions.md): two
+    // read-only trimmed lists, and the owner phone's Face ID-confirmed writes (each route re-checks the
+    // feature switch, local TLS, an active owner phone, a configured PIN, the presence key, a single-use
+    // challenge bound to the exact action, and the presence signature). Ids are lower-case in practice
+    // (request ids `authreq-…`, feature ids kebab-case); the router reads them with their case kept.
+    { method: 'GET', re: /^\/mobile\/permissions\/slips$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
+    { method: 'GET', re: /^\/mobile\/permissions\/features$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
+    { method: 'POST', re: /^\/mobile\/permissions\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/permissions\/requests\/[a-z0-9._:-]{1,128}\/(approve|decline)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/permissions\/features\/[a-z0-9._:-]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
   ];
 })();
 

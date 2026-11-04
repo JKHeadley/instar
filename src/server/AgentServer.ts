@@ -5386,6 +5386,7 @@ export class AgentServer {
       hookEventReceiver: options.hookEventReceiver ?? null,
       nativeHookIngest: this.nativeHookIngest,
       mobileOwnNames: this.mobilePairing?.ownNames ?? null,
+      mobilePairingService: this.mobilePairing,
       worktreeMonitor: options.worktreeMonitor ?? null,
       subagentTracker: options.subagentTracker ?? null,
       instructionsVerifier: options.instructionsVerifier ?? null,

@@ -448,6 +448,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobilePermissionsScreens',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Native Permission slips and What I\'m allowed to do screens for the Instar iPhone app (docs/specs/mobile-native-permissions.md): GET /mobile/permissions/slips (waiting authorization requests and active slips, across the machines that answer) and GET /mobile/permissions/features (feature switches, this machine\'s plus other machines read-only) for an owner phone or the bearer token. The owner phone alone may approve or decline a waiting request held on this machine and switch a feature, each with a fresh presence-key (Face ID / passcode) signature over a single-use challenge bound to the exact action: POST /mobile/permissions/challenge, /mobile/permissions/requests/:id/approve, /mobile/permissions/requests/:id/decline, /mobile/permissions/features/:id. The bearer is refused on every write. Writes are dev-gated (mobilePairing.permissionActions.enabled).',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/permissions/slips', 'GET /mobile/permissions/features', 'POST /mobile/permissions/challenge', 'POST /mobile/permissions/requests/:id/approve', 'POST /mobile/permissions/requests/:id/decline', 'POST /mobile/permissions/features/:id'],
+    }),
+  },
+  {
     key: 'releaseReadiness',
     prefixes: ['/release-readiness'],
     description: 'Release-readiness watchdog (instar-dev / maintainer environments). Surfaces a stalled release as one deduped, age-escalating Attention item. Null on installs with no analyzable instar repo.',
