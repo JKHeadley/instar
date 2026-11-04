@@ -12,10 +12,10 @@
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-09-07T03:58:13.637Z",
-      "auditRef": "docs/audits/telegram-message-origin-interaction-family.json",
-      "auditSha256": "0e3f891eb8f329d68cc50202f825579ef718c2087197ecc9d3cea04ae898d735",
-      "areaSha256": "e83a01a0c25843f89ed07600e594ed4fdd68fa0777aad288b2afde3b4d07b9c1",
+      "lastAuditedAt": "2026-11-04T01:31:00.000Z",
+      "auditRef": "docs/audits/message-origin-all-platforms-interaction-family-2026-11-03.json",
+      "auditSha256": "7c202e4a259acf30626806e2d824674e964159380e027c5b66fb7fab2f609ca6",
+      "areaSha256": "2a93dd9f0ce33f615611e26700fed66baec9eb2b3cfefc1f9c9571af2d13c163",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13
