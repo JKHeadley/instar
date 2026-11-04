@@ -7,6 +7,7 @@ import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
+import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { featureEvidence } from '../../src/monitoring/FeatureEvidenceLog.js';
@@ -29,7 +30,7 @@ async function boot(developmentAgent: boolean) {
   } as unknown as InstarConfig;
   const sessionManager = createMockSessionManager() as never as { on?: unknown };
   sessionManager.on = () => undefined;
-  const server = new AgentServer({ config, sessionManager: sessionManager as never, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir) } as never);
+  const server = new AgentServer({ config, sessionManager: sessionManager as never, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), commitmentTracker: new CommitmentTracker({ stateDir }) } as never);
   servers.push(server);
   await new Promise(resolve => setTimeout(resolve, 30));
   return { server, dir };
@@ -53,7 +54,7 @@ describe('maturation ladder — production wiring', () => {
     expect(ladder).not.toBeNull();
     const d = ladder.deps;
     expect(d.d7).not.toBeNull();
-    expect(d.commitments === null || typeof (d.commitments as { record: unknown }).record === 'function').toBe(true);
+    expect(typeof (d.commitments as { record: unknown }).record).toBe('function');
     expect(typeof d.setConfig).toBe('function');
   });
 
