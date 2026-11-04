@@ -1016,12 +1016,23 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
   // Console sign-in from an owner phone (docs/specs/mobile-console-device-signin.md).
   mountConsoleTicketDeviceRoutes(router, svc);
 
-  // Revoke: bearer may revoke any device; a device only itself.
+  // Revoke: bearer may revoke any device; a device itself; an ACTIVE OWNER phone any device held on
+  // this machine (docs/specs/mobile-native-phones-messages.md §3.3 — what the console's Phones panel
+  // already lets the owner do). The allowlist also admits pending/declined/expired devices on this
+  // path, so the requester's status is read from the registry here, never inferred from the rule.
   router.post('/mobile/devices/:id/revoke', async (req: Request, res: Response) => {
     if (!svc.enabled()) { json503(res); return; }
     const id = String(req.params.id);
     const p = principalOf(req);
-    if (p.kind === 'device' && p.deviceId !== id) { res.status(403).json({ error: 'a device may only revoke itself' }); return; }
+    const requestedBy = p.kind === 'device' ? p.deviceId : null;
+    if (p.kind === 'device' && p.deviceId !== id) {
+      const requester = svc.devices.get(p.deviceId);
+      const person = devicePersonOf(req);
+      if (!requester || requester.status !== 'active' || !person || person.role !== 'owner') {
+        res.status(403).json({ error: 'owner-phone-required', detail: 'Only the owner\'s phone can remove another phone.' });
+        return;
+      }
+    }
     let held: boolean;
     const revokedAt = new Date().toISOString();
     const existing = svc.keyLedger ? svc.devices.get(id) : null;
@@ -1040,7 +1051,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       res.status(500).json({ error: 'Could not record the revocation. Try again.' });
       return;
     }
-    if (held) { svc.confirm.drop(id); featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'revoked here', context: { deviceId: id, by: p.kind, heldHere: true } }); res.json({ revoked: true, machine: deps.selfMachineId ?? null }); return; }
+    if (held) { svc.confirm.drop(id); featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'revoked here', context: { deviceId: id, by: p.kind, heldHere: true, ...(requestedBy && requestedBy !== id ? { requestedBy } : {}) } }); res.json({ revoked: true, machine: deps.selfMachineId ?? null }); return; }
     if (p.kind === 'device' || !poolCtx) { res.status(404).json({ error: 'unknown-device' }); return; }
     const r = await forwardRevoke(poolCtx, id);
     if (r.confirmedBy) { featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'revoked by a peer', context: { deviceId: id, by: p.kind, heldHere: false } }); res.json({ revoked: true, machine: r.confirmedBy }); return; }
@@ -1525,6 +1536,10 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     { method: 'GET', re: /^\/mobile\/plans$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'plans-people-reads' },
     { method: 'GET', re: /^\/mobile\/learned$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'plans-people-reads' },
     { method: 'GET', re: /^\/mobile\/agents$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'plans-people-reads' },
+    // Native Messages to you and Insights (docs/specs/mobile-native-phones-messages.md): read-only trimmed
+    // summaries, owner phones only, with one shared bucket of their own (they read peers).
+    { method: 'GET', re: /^\/mobile\/messages$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'phones-messages-reads' },
+    { method: 'GET', re: /^\/mobile\/insights$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'phones-messages-reads' },
   ];
 })();
 

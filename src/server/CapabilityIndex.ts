@@ -438,6 +438,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobilePhonesMessagesScreens',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Native Messages to you and Insights screens for the Instar iPhone app (docs/specs/mobile-native-phones-messages.md): GET /mobile/messages (whether replies are held and why, grouped by conversation with fixed reason words, expired and unconfirmed sends, recording readiness, across the machines that answer) and GET /mobile/insights (each insight page\'s headline, lines and numbers, read cached-only so no model call is started). Read-only trimmed summaries for an owner phone (device-signed, ownerOnly) or the bearer token; ?scope=local answers this machine only. An active owner phone may also remove another phone on its machine through POST /mobile/devices/:id/revoke.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/messages', 'GET /mobile/insights'],
+    }),
+  },
+  {
     key: 'releaseReadiness',
     prefixes: ['/release-readiness'],
     description: 'Release-readiness watchdog (instar-dev / maintainer environments). Surfaces a stalled release as one deduped, age-escalating Attention item. Null on installs with no analyzable instar repo.',
