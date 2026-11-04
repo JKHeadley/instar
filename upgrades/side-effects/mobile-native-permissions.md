@@ -130,3 +130,7 @@ Concur with the review: the console's approve, deny and transition routes behave
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable.
+
+## Feature ladder entry (2026-11-04)
+
+The new switch `mobilePairing.permissionActions` is registered in src/data/feature-ladders.json: disposition ladder, final default-on, risk sensitive, rare, tracking "needed". Its fleet rung needs at least 3 fired actions and an error ratio of 5% or less over 14 days. The feature-ladder ratchet requires every switched-off feature to have an entry.
