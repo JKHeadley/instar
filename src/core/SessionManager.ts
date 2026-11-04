@@ -33,7 +33,7 @@ import { captureOriginHookSettings } from '../messaging/telegram-origin/OriginNa
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
 // ONE definition, imported by both this probe and the stand-down drain predicate
 // (a leaf module, so no load-order cycle — see baselineProcessPatterns.ts).
-import { BASELINE_PROCESS_PATTERNS, CLAUDE_TOOL_SHELL_PATTERN, isToolShellCommand } from './baselineProcessPatterns.js';
+import { BASELINE_PROCESS_PATTERNS, CLAUDE_TOOL_SHELL_PATTERN, isMcpLauncherShell, isToolShellCommand } from './baselineProcessPatterns.js';
 import { chunkLiteralForTmux, buildLiteralSendArgs } from './tmuxLiteralSend.js';
 import { isReadyPromptTail, classifyPaneReadiness, type PaneReadiness } from './claudeReadinessProbe.js';
 import { RerouteRefusedError } from './rerouteRefusedError.js';
@@ -5683,6 +5683,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // agent's own command line, which may merely mention a baseline name
     // (`caffeinate`, `mcp-stdio-entry`, a bare `mcp`, …).
     const activeProcesses = descendants.filter(p => {
+      if (isMcpLauncherShell(p.command, processes.get(processes.get(p.pid)?.ppid ?? '')?.command)) return false;
       if (isToolShellCommand(p.command)) return true;
       return !BASELINE_PROCESS_PATTERNS.some(pattern => pattern.test(p.command));
     });

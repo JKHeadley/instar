@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-04T19:59:08.137Z",
+  "slug": "rebalance-proof-settled-idle",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 71,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/core/baselineProcessPatterns.ts",
+      "src/core/rebalanceProof.ts",
+      "src/core/standDownDrain.ts"
+    ],
+    "addedLines": 59,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

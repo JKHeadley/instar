@@ -72,3 +72,19 @@ export const TOOL_SHELL_PATTERN = /(?:^|[\s/])(?:ba|z|da|k)?sh\s+-(?:l?c|cl?)\b/
 export function isToolShellCommand(command: string): boolean {
   return CLAUDE_TOOL_SHELL_PATTERN.test(command) || TOOL_SHELL_PATTERN.test(command);
 }
+
+/** `sh -c <one plain command naming an mcp binary>`: no quoting, no shell operators. */
+const MCP_LAUNCHER_SHELL_PATTERN = /^(?:\S*\/)?(?:ba|da)?sh -c [\w@./:-]*\bmcp\b[\w@./:-]*(?: [\w@./:=-]+)*$/;
+/** The package runner that starts one, anchored so `claude --mcp-config …` never qualifies. */
+const MCP_PACKAGE_RUNNER_PATTERN = /^(?:npm exec\b|(?:\S*\/)?npx\s|(?:\S*\/)?node\s+\S*npx-cli\.js\s).*\bmcp\b/;
+
+/**
+ * The one shell that is not the agent's command. On Linux `npm exec` starts an MCP
+ * through `sh -c playwright-mcp`, which reads as a tool shell, so every session looked
+ * busy forever (Mama PC, 2026-11-04); macOS has no such shell. Needs both the exact
+ * shape and the package runner as its direct parent, because a shell merely somewhere
+ * below an MCP, or below a framework launched with `--mcp-config`, can be real work.
+ */
+export function isMcpLauncherShell(command: string, parentCommand: string | undefined): boolean {
+  return MCP_LAUNCHER_SHELL_PATTERN.test(command) && MCP_PACKAGE_RUNNER_PATTERN.test(parentCommand ?? '');
+}
