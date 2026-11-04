@@ -1111,6 +1111,16 @@ ${APP_MEDIA_TO_PLATFORM_LINE}
 }
 
 /**
+ * The native Schedule / Promises / Machines reads (docs/specs/mobile-native-ops-screens.md), one bullet
+ * in the Mobile app routes block; inserted after the route-list bullet on update. Marker: `GET /mobile/jobs`.
+ */
+export function MOBILE_OPS_SCREENS_LINE(port: number): string {
+  return `- The app's native Schedule, Promises and Machines screens read \`GET /mobile/jobs\`, \`GET /mobile/commitments\` and \`GET /mobile/machines\` (read-only; an owner phone or my token; an MSP phone gets 403 \`owner-phone-required\`): trimmed summaries of what the console's Schedule, Promises and Machines pages show (no prompts, scripts, paths, hostnames or tokens), late or failing jobs and open promises first, plus the device-allowed \`/health\` for degradations. When the operator asks "what does my phone show?" or "why does the app say a job is late?", read the same answer: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/jobs\`.`;
+}
+export const MOBILE_OPS_SCREENS_MARKER = 'GET /mobile/jobs';
+export const MOBILE_ROUTES_LIST_LINE_PREFIX = '- The app reads its route list from `GET /mobile/routes`';
+
+/**
  * CLAUDE.md awareness block for several routes per agent (docs/specs/mobile-multi-route.md).
  * Unique content-sniff marker: `Mobile app routes`.
  */
@@ -1120,6 +1130,7 @@ export function MOBILE_ROUTES_CLAUDEMD_SECTION(port: number): string {
 A paired phone's signed request is accepted on any of this machine's own names: its Cloudflare tunnel hostname and its Tailscale HTTPS name. A name becomes an own name only from local configuration (the tunnel hostname; \`tailscale status\` + \`tailscale serve\` showing HTTPS 443 → this agent's port) and after the pairing ping proves this process answers on it, with the Host echoed and the request arriving through this machine's own TLS front. A request is accepted on a name only if it is still configured here and arrived through that local front, so a failed outbound check never locks a phone out, and a captured request cannot be replayed on another name. At boot I set up \`tailscale serve\` (HTTPS 443 → my port) myself when 443 has nothing configured; an existing different setup is reported, never overwritten. Development-agent gated (\`mobilePairing.multiRoute.enabled\`, read at boot).
 - Which routes I have and whether they answer (Registry First): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/health\` → \`mobileRoutes\` (\`ownNames\` with \`lastProbeOk\`/\`lastFailure\`, \`candidates\` that never passed with their reason, e.g. \`tailscale-serve-not-configured\`, and \`tailscaleServe\`).
 - The app reads its route list from \`GET /mobile/routes\` (device-signed only; a Bearer token gets 403): \`{ machineId, version, routes: [{ kind, origin, firstVerifiedAt, lastProbeOk, lastProbeAt }] }\`, Tailscale first.
+${MOBILE_OPS_SCREENS_LINE(port)}
 - A probe that fails 8 times in a row pauses for that name and raises one \`MobileRoutes.probe\` degradation; the name stays listed and still works for requests that reach me.
 ${MOBILE_CAPACITY_SCREENS_LINE(port)}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
@@ -9520,6 +9531,21 @@ setTimeout(() => process.exit(0), 2000);
       content += MOBILE_ROUTES_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Mobile app routes section');
+    }
+    // Native Schedule / Promises / Machines reads (docs/specs/mobile-native-ops-screens.md): one bullet
+    // after the route-list bullet of an existing Mobile app routes block.
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_OPS_SCREENS_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.startsWith(MOBILE_ROUTES_LIST_LINE_PREFIX));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_OPS_SCREENS_LINE(port));
+        content = lines.join('\n');
+      } else {
+        // A hand-edited block without the route-list bullet: append the line rather than skip it.
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_OPS_SCREENS_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the native Schedule, Promises and Machines line');
     }
 
     // Recommended services (docs/specs/recommended-services.md) — Agent Awareness + Migration Parity.
