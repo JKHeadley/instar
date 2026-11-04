@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "native-update-preflight",
+  "sessionId": "4e886cd7-f0bd-4c08-a34a-75e27029ee89",
+  "timestamp": "2026-11-04T22:17:14.925Z",
+  "artifactPath": "upgrades/side-effects/native-update-preflight.md",
+  "artifactSha256": "af1121c8382ad867b734499d87dd707e5d55d4adb786bcb515fc7c90d6211d99",
+  "coveredFiles": [
+    "src/commands/setup.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/UpdateChecker.ts",
+    "src/lifeline/ServerSupervisor.ts",
+    "tests/e2e/update-native-candidate-lifecycle.test.ts",
+    "tests/integration/native-update-preflight.test.ts",
+    "tests/unit/PostUpdateMigrator-bootWrapperAbiCheck.test.ts",
+    "tests/unit/SqliteRegistry-wiring.test.ts",
+    "tests/unit/UpdateChecker.test.ts",
+    "tests/unit/update-checker-apply.test.ts",
+    "tests/unit/update-provenance-xattr.test.ts",
+    "upgrades/native-update-preflight.eli16.md",
+    "upgrades/next/native-update-preflight.md",
+    "upgrades/side-effects/native-update-preflight.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible updater safety fix; a revert restores the prior install path and no durable schema changes.",
+  "eli16Path": "upgrades/native-update-preflight.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/native-update-preflight.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

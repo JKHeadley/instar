@@ -288,11 +288,12 @@ describe('UpdateChecker.rollback()', () => {
     expect(exec).toHaveBeenCalledTimes(1);
     expect(exec).toHaveBeenCalledWith('npm', [
       'install', 'instar@0.1.11', '--ignore-scripts',
-      '--prefix', path.join(tmpDir, 'shadow-install'),
+      '--prefix', expect.stringMatching(/^.*shadow-install\.pending-[^/]+$/),
     ], 120000);
+    expect(exec.mock.calls[0][1][4]).not.toBe(path.join(tmpDir, 'shadow-install'));
     expect(result).toEqual({
       success: false, previousVersion: '0.1.12', restoredVersion: '0.1.12',
-      message: 'Rollback failed: fixture install unavailable',
+      message: 'Rollback failed; kept the current install: fixture install unavailable',
     });
     expect(checker.getRollbackInfo()).toMatchObject({
       previousVersion: '0.1.11', updatedVersion: '0.1.12',
