@@ -41,13 +41,15 @@ async function boot() {
   const config = {
     projectName: 'ops-screens-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent: true,
     mobilePairing: { multiRoute: { enabled: false } },
+    tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
     threadline: { ownerName: 'Justin' },
   } as unknown as InstarConfig;
   const sessionManager = createMockSessionManager() as any;
   sessionManager.on = () => undefined;
-  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir) });
+  const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, on: () => undefined } as any;
+  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel });
   servers.push(server);
   return { server };
 }
@@ -57,6 +59,12 @@ describe('native ops screens — production wiring', () => {
     const { server } = await boot();
     const app = server.getApp();
     expect(server.mobilePairing).not.toBeNull();
+    // The pairing ping proves this server answers on its address (as in the open-session e2e).
+    server.mobilePairing!.deps.fetchFn = (async (url: string) => {
+      const u = new URL(url);
+      const r = await request(app).get(u.pathname + u.search).set('Host', HOST);
+      return { ok: r.status === 200, status: r.status, json: async () => r.body } as unknown as Response;
+    }) as unknown as typeof fetch;
     const auth = (q: request.Test) => q.set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'ops-screens-e2e');
     const m = await auth(request(app).post('/mobile/pairing-codes')).send({});
     expect(m.status).toBe(200);
