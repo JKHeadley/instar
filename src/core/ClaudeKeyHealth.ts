@@ -364,6 +364,11 @@ export class ClaudeKeyHealth {
     try { return await this.deps.listStuckSessions(); }
     catch (err) {
       this.logger.warn(`[ClaudeKeyHealth] could not list stuck sessions: ${err instanceof Error ? err.message : String(err)}`);
+      // @silent-fallback-ok: reported just below, so a skipped sweep is never silent
+      this.deps.report({
+        reason: 'Could not list conversations stuck at the login screen.',
+        impact: 'Those conversations recover on their next message instead of by themselves.',
+      });
       return [];
     }
   }
@@ -435,7 +440,7 @@ export class ClaudeKeyHealth {
     const text = this.state.operatorTold ? `${PERSON_TEXT}${PERSON_TOLD_SUFFIX}` : PERSON_TEXT;
     let delivered = false;
     try { delivered = await this.deps.notifyPerson(sessionName, text); }
-    catch (err) { this.logger.warn(`[ClaudeKeyHealth] person notice failed: ${err instanceof Error ? err.message : String(err)}`); }
+    catch (err) { /* @silent-fallback-ok: undelivered stays untold, so the next report of this session tries again */ this.logger.warn(`[ClaudeKeyHealth] person notice failed: ${err instanceof Error ? err.message : String(err)}`); }
     if (delivered) {
       this.state.peopleTold.push(sessionName);
       this.save();

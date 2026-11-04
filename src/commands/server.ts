@@ -21552,12 +21552,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           const hubTopicId = state.get<number>('agent-attention-topic') ?? 0;
           if (telegram && hubTopicId) {
             try { await telegram.sendToTopic(hubTopicId, text); delivered = true; }
-            catch (err) { console.warn(`[ClaudeKeyHealth] Telegram notice failed: ${err instanceof Error ? err.message : String(err)}`); }
+            catch (err) { /* @silent-fallback-ok: `delivered` stays false, which drives the retry and its capped report */ console.warn(`[ClaudeKeyHealth] Telegram notice failed: ${err instanceof Error ? err.message : String(err)}`); }
           }
           const attentionChannel = state.get<string>('slack-attention-channel');
           if (_slackAdapter && attentionChannel) {
             try { await _slackAdapter.sendToChannel(attentionChannel, text); delivered = true; }
-            catch (err) { console.warn(`[ClaudeKeyHealth] Slack notice failed: ${err instanceof Error ? err.message : String(err)}`); }
+            catch (err) { /* @silent-fallback-ok: `delivered` stays false, which drives the retry and its capped report */ console.warn(`[ClaudeKeyHealth] Slack notice failed: ${err instanceof Error ? err.message : String(err)}`); }
           }
           return delivered;
         },

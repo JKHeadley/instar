@@ -495,6 +495,13 @@ describe('second-pass review defects', () => {
     expect(t.r.refreshed).toEqual([]);
   });
 
+  it('a failed session listing is reported, not silently skipped', async () => {
+    const t = rig({ listStuckSessions: async () => { throw new Error('tmux gone'); } });
+    const h = t.make();
+    await kill(h, t.r);
+    expect(t.r.reports.some((m) => m.includes('Could not list'))).toBe(true);
+  });
+
   it('an API key on disk is not seen as a change on every pass', async () => {
     const t = rig();
     t.r.key = undefined;
