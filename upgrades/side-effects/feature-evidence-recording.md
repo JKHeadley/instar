@@ -58,3 +58,7 @@ Independent subagent, first read: "Concern raised". `allPeersPresumedGone()` in 
 ## Class-Closure Declaration
 
 `unbounded-self-action`: closure `n/a`. These calls observe decisions other code already made; none triggers an action or a retry. Row volume is bounded by rotation and, on per-message paths, by `recordAtMostEvery`.
+
+## Stage-B certified set
+
+`src/monitoring/DegradationReporter.ts` sits in the certified Codex delivery closure and gained a recording call, so the evidence log and its rotation helper entered the closure. Both are listed as excluded, with reasons: write-only, never throwing, and off the delivery path. The certified fingerprint is unchanged.
