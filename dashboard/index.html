@@ -10467,9 +10467,11 @@
           apiFetch('/shared-state/stats').catch(() => null),
         ]);
         const tbody = document.getElementById('ibEntriesTbody');
+        // A read missed by a background refresh keeps the rows on screen (Dashboard UX F12).
         if (!recentRes || !recentRes.entries) {
-          tbody.innerHTML = '<tr><td colspan="7" style="padding:14px;color:var(--text-dim);text-align:center">Integrated-Being disabled or unavailable</td></tr>';
+          if (!tbody.dataset.ibRows) tbody.innerHTML = '<tr><td colspan="7" style="padding:14px;color:var(--text-dim);text-align:center">Integrated-Being disabled or unavailable</td></tr>';
         } else {
+          tbody.dataset.ibRows = '1';
           let entries = recentRes.entries;
           if (kind) entries = entries.filter(e => e.kind === kind);
           if (entries.length === 0) {

@@ -30,7 +30,7 @@ import { renderSessions } from './sessions.js';
 import { renderMaturation, maturationTile } from './maturation-board.js';
 import { renderIdeas, ideasTile } from './ideas.js';
 import { paceCard } from './pace.js';
-import { sheetIsOpen, closeSheet, unlockCheck, machineIssue, MACHINES_PAGE } from './ui.js';
+import { sheetIsOpen, closeSheet, unlockCheck, machineIssue, MACHINES_PAGE, newArrival, refreshHeld } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
 const THEME_KEY = 'instar_console_theme';
@@ -639,6 +639,7 @@ const NATIVE = {
 function route() {
   if (homeRun) { homeRun.active = false; for (const p of Object.values(homeRun.pending)) if (p && p !== true) clearTimeout(p); homeRun = null; }
   closeSheet();
+  newArrival();
   const path = (location.hash.replace(/^#\/?/, '') || 'home').split('?')[0];
   const id = path.split('/')[0];
   const group = GROUPS.find((g) => g.id === id);
@@ -647,9 +648,13 @@ function route() {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   if (NATIVE[path]) {
     NATIVE[path](main, { get, post, getCommitments });
-    // Pages refresh in place every 30 s while visible, never over an open sheet.
+    // Pages refresh in place every 30 s while visible, never over an open sheet or an
+    // interaction in progress, and one at a time: a slow read cannot paint over a newer one.
+    let refreshing = false;
     refreshTimer = setInterval(() => {
-      if (document.visibilityState === 'visible' && !sheetIsOpen() && (location.hash.replace(/^#\/?/, '').split('?')[0]) === path) NATIVE[path](main, { get, post, getCommitments });
+      if (refreshing || document.visibilityState !== 'visible' || sheetIsOpen() || refreshHeld(main) || (location.hash.replace(/^#\/?/, '').split('?')[0]) !== path) return;
+      refreshing = true;
+      Promise.resolve().then(() => NATIVE[path](main, { get, post, getCommitments })).catch(() => { /* @silent-fallback-ok: a failed refresh keeps the page on screen; the next tick tries again */ }).finally(() => { refreshing = false; });
     }, REFRESH_MS);
   } else if (group) renderGroup(main, group); else renderHome(main);
   window.scrollTo(0, 0);

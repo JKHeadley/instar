@@ -9,7 +9,7 @@ import {
   issueRequest, revokeRequest, grantRequest, approveRequest, denyRequest, resultWords,
   FLOOR_ACTIONS, GRANT_DURATIONS, AUTHORITIES_TEMPLATE, humanAction, defaultExpiryLocal,
 } from './mandates-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, firstPaint } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
 
@@ -29,7 +29,7 @@ async function send(path, body) {
 
 export async function renderMandates(main, ctx) {
   const { get } = ctx;
-  if (!main.querySelector('.slips-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'People · Permission slips' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'People · Permission slips' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
   const [slipsRes, auditRes, approvalsRes, usersRes, healthRes, tlHealth, pairing] = await Promise.all([
     get('/mandate'), get(`/mandate/audit?limit=${AUDIT_LIMIT}`), get('/authorization-requests?status=pending'),
     get('/permissions/users'), get('/health'), get('/threadline/health'), get('/threadline/pairing/invites'),

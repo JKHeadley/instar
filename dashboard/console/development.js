@@ -13,7 +13,7 @@ import {
   buildShipping, buildPace, buildFeedback, developmentHeadline, stoppedLead, foldFromHash, maintainerMode, authorityCard, holdWords, verifyWords, rollbackWords,
   readinessAuthorityRequest, triageAuthorityRequest, commitRequest, authorityResultWords, commitResultWords, newDecisionRef, PACE_METRICS, DEV_TOOLS_KEY,
 } from './development-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, firstPaint, arrivalScroll } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const EYEBROW = 'Work · Development';
@@ -93,7 +93,7 @@ export async function renderDevelopment(main, ctx) {
   // Each navigation gets a new <main>, so no page yet means someone just arrived: a `?s=` link wins over the
   // remembered fold then. A 30-second refresh keeps the page, so it never overrides what the operator opened or closed.
   if (!main.querySelector('.dev-page')) {
-    setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading development' })));
+    firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading development' })));
     const want = foldFromHash(location.hash);
     if (want) { view.open = want; view.scrollTo = want; }
   }
@@ -140,7 +140,7 @@ function paint() {
   if (view.scrollTo) {
     const sec = main.querySelector(`#sec-${view.scrollTo}`);
     view.scrollTo = null;
-    if (sec) sec.scrollIntoView({ block: 'start' });
+    arrivalScroll(sec);
   }
 }
 

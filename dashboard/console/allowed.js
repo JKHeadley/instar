@@ -8,7 +8,7 @@ import {
   buildProfile, buildHistory, buildGuards, buildSuggestions, buildFeatures, flattenFeature, profileChanges,
   walkToEnabled, canTurnOff, canUndoOff, needsConsent, facts, applyText, refusalText, PROFILE_LABEL, PROFILE_SENTENCE, STATE_WORD,
 } from './allowed-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, actionButton, askPin, operatorSession, forgetOperatorSession } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, actionButton, askPin, operatorSession, forgetOperatorSession, firstPaint, arrivalScroll } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const featureErrors = new Map(); // feature id → the server's last refusal, shown beside the row
@@ -40,7 +40,7 @@ const errWords = (r) => {
 
 export async function renderAllowed(main, ctx) {
   const { get, post } = ctx;
-  if (!main.querySelector('.allowed-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Settings · What I’m allowed to do' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Settings · What I’m allowed to do' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
   const [auto, hist, elev, guardsRes, featRes] = await Promise.all([
     get('/autonomy'), get('/autonomy/history'), get('/autonomy/elevation'), get('/guards?scope=pool', 8000), get('/features'),
   ]);
@@ -66,8 +66,7 @@ export async function renderAllowed(main, ctx) {
 
   const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
   if (want) {
-    const sec = main.querySelector(`#sec-${want}`);
-    if (sec) sec.scrollIntoView({ block: 'start' });
+    arrivalScroll(main.querySelector(`#sec-${want}`));
   }
 }
 

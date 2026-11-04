@@ -7,7 +7,7 @@
 import {
   buildPlansPage, roundsTrack, projectActions, resultWords, refusalWords, driftSentence, linkChips, stepList, blockerStory, reasonWord, statusWord, PROJECT_DETAIL_CAP, OPEN_STATUSES,
 } from './plans-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, cantTell, firstPaint, arrivalScroll } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { topicNameMap } from './topic-names.js';
 import { topicLink } from './promises.js';
@@ -22,7 +22,7 @@ let last = null;                                // the last data read, repainted
 
 export async function renderPlans(main, ctx) {
   const { get, post } = ctx;
-  if (!main.querySelector('.plans-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading plans' })));
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading plans' })));
   const [initiatives, digest, projects, blockers, floor, pool, topics] = await Promise.all([
     get('/initiatives'), get('/initiatives/digest'), get('/projects'), get('/blockers'), get('/autonomous/throughput-floor'), get('/pool'), get('/telegram/topics?scope=pool'),
   ]);
@@ -94,10 +94,7 @@ function paint() {
   let want = new URLSearchParams(path[1] || '').get('s');
   if (!want && /^work\/plans\/in-the-way/.test(path[0])) want = 'in-the-way';
   if (want) {
-    const sec = main.querySelector(`#sec-${want}`);
-    const head = sec && sec.querySelector('button.list-head[aria-expanded="false"]');
-    if (head) head.click();
-    if (sec) sec.scrollIntoView({ block: 'start' });
+    arrivalScroll(main.querySelector(`#sec-${want}`), { open: true });
   }
 }
 
