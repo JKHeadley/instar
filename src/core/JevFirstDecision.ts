@@ -84,12 +84,18 @@ export class JevFirstDecision {
       if (bytes > point.maxStateBytes) reason = 'oversize';
       else if (!scrub || scrub.error || scrub.truncated) reason = 'scrub-error';
       else {
-        try { key = this.deps.readKey(); } catch { key = null; }
+        try { key = this.deps.readKey(); } catch {
+          // @silent-fallback-ok — no key is an allowed one-provider state;
+          // reason=no-key is recorded and the incumbent handles the decision.
+          key = null;
+        }
         if (!key) reason = 'no-key';
         else {
           try {
             jev = await this.deps.askJev({ key, state: scrub.text, question: point.question, model: point.model, timeoutMs: point.timeoutMs });
-            try { this.deps.onJevCall?.(point.id, jev); } catch { /* metering never changes the decision */ }
+            try { this.deps.onJevCall?.(point.id, jev); } catch {
+              /* @silent-fallback-ok — a metrics write cannot change the decision */
+            }
             if (jev.model !== point.model) reason = 'wrong-model';
             else {
               selected = settleJevProbability(jev.probability, point.band);
@@ -103,7 +109,9 @@ export class JevFirstDecision {
             }
           } catch {
             reason = 'jev-error';
-            try { this.deps.onJevCall?.(point.id, null); } catch { /* metering never changes the decision */ }
+            try { this.deps.onJevCall?.(point.id, null); } catch {
+              /* @silent-fallback-ok — the Jev failure already routes to the incumbent */
+            }
           }
         }
       }
@@ -139,14 +147,20 @@ export class JevFirstDecision {
       tokensOut: incumbent?.tokensOut, latencyMs: incumbent?.ms ?? jev?.ms,
     };
     let recordId: string | null = null;
-    try { recordId = await this.deps.recordDecision(row); } catch { /* record-error routes a Jev settlement to the incumbent below */ }
+    try { recordId = await this.deps.recordDecision(row); } catch {
+      /* @silent-fallback-ok — record-error routes a Jev settlement to the incumbent below */
+    }
     if (!recordId && source === 'jev') {
       const recovered = await fallback();
       reason = 'record-error';
-      try { this.deps.onOutcome?.(point.id, reason, 'incumbent', null); } catch { /* observability never changes the decision */ }
+      try { this.deps.onOutcome?.(point.id, reason, 'incumbent', null); } catch {
+        /* @silent-fallback-ok — a metrics write cannot change the incumbent result */
+      }
       return { answer: recovered.answer, source: 'incumbent', reason, probability: jev?.probability, fallback: recovered };
     }
-    try { this.deps.onOutcome?.(point.id, reason, source, auditDisagree); } catch { /* observability never changes the decision */ }
+    try { this.deps.onOutcome?.(point.id, reason, source, auditDisagree); } catch {
+      /* @silent-fallback-ok — a metrics write cannot change the settled result */
+    }
     return { answer, source, reason, ...(jev ? { probability: jev.probability } : {}), ...(incumbent ? { fallback: incumbent } : {}), ...(recordId ? { recordId } : {}) };
   }
 }

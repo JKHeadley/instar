@@ -20,7 +20,11 @@ export function buildCommitmentJevFirst(input: {
       try {
         const key = new SecretStore({ stateDir: input.stateDir, forceFileKey: input.forceFileKey }).get('typesafe_api_key');
         return typeof key === 'string' && key ? key : null;
-      } catch { return null; }
+      } catch {
+        // @silent-fallback-ok — an absent or unreadable optional Jev key uses
+        // the incumbent under reason=no-key; one-provider agents stay functional.
+        return null;
+      }
     }),
     askJev: input.askJev ?? createJevAsk(),
     recordDecision: (row) => input.provenance()?.recordDecisionFlushed(row) ?? null,

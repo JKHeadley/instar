@@ -17,7 +17,7 @@ The registered decision point remains the sole authority. Jev may be its first m
 
 ## Shared call contract
 
-- Stable point id and prompt version, pinned Jev model, question set and per-question yes/no bounds. A `cannot-tell` or unparseable answer is uncertain.
+- Stable point id and prompt version, pinned Jev model, one bounded yes/no question and its confidence band in this first release. Callers with several required rules remain on their incumbent path. A `cannot-tell` or unparseable answer is uncertain.
 - The caller supplies the complete relevant state. Secrets are scrubbed before external transmission. Oversize or scrub failure routes to the incumbent and records why; no silent truncation.
 - On an enabled point with a Jev key, call Jev within a bounded deadline. All confident answers may settle only if every required question is covered. A point that needs structured details from the incumbent may declare only the safe yes or no direction as settleable; the other direction invokes the incumbent even when Jev is confident. Any uncertain, missing, late, malformed, or wrong-model answer invokes the incumbent's existing call. A random, recorded audit share also invokes the incumbent and uses the incumbent verdict if they disagree.
 - With no Jev key, or with the point disabled, call the incumbent exactly as before. A one-provider agent continues delivering the feature.
