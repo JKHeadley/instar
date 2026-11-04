@@ -5,7 +5,7 @@ author: "echo"
 parent-principle: "An Instar Agent Is Always a Multi-Machine Entity"
 status: "draft"
 parent-spec: "docs/specs/statesync-writer-agnostic-reconciler.md (§4 step 4 deletion intents, §5.3 puts-only stores); docs/specs/ws23-relationships-userregistry-security.md (PII clamps, unchanged)"
-related-feedback: "feedback-e368a65b-a6ca-4ea5-acff-e129f76e3294; cluster-replicated-store-producers-are-instance-bound-several-userma. The reconciler spec tracks the same defect as fb-9ac43374-07b; the title and origin match, but confirm the two ids are the same item before closing either."
+related-feedback: "feedback-e368a65b-a6ca-4ea5-acff-e129f76e3294; cluster-replicated-store-producers-are-instance-bound-several-userma. The reconciler spec tracks the same defect as fb-9ac43374-07b; the title and origin match."
 ---
 
 ## 1. Problem
