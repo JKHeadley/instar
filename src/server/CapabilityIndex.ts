@@ -428,6 +428,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobilePlansPeopleScreens',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Native Plans, What I\'ve learned about you and Other agents screens for the Instar iPhone app (docs/specs/mobile-native-plans-people.md): GET /mobile/plans (projects and initiatives across the machines that answer: what needs the owner, what is moving, idle or finished), GET /mobile/learned (the learned preferences and the scrubbed corrections still being watched), GET /mobile/agents (other agents by claimed name with pairing state and delivery health, plus this machine\'s channel registry verdicts). Read-only trimmed summaries for an owner phone (device-signed, ownerOnly) or the bearer token; an MSP phone gets 403 owner-phone-required.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/plans', 'GET /mobile/learned', 'GET /mobile/agents'],
+    }),
+  },
+  {
     key: 'releaseReadiness',
     prefixes: ['/release-readiness'],
     description: 'Release-readiness watchdog (instar-dev / maintainer environments). Surfaces a stalled release as one deduped, age-escalating Attention item. Null on installs with no analyzable instar repo.',

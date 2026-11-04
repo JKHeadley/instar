@@ -1011,6 +1011,14 @@ export function MOBILE_CAPACITY_SCREENS_LINE(port: number): string {
   return `- The app's native Accounts, What thinking costs and Resource usage screens read \`GET /mobile/accounts\`, \`GET /mobile/spend?window=today|week|month\` and \`GET /mobile/resources\` (read-only; an owner phone or my token; an MSP phone gets 403 \`owner-phone-required\`): trimmed summaries of what the console's Accounts, What thinking costs and Resource usage views show (no login folders, machine or account ids, credential references or raw errors). Accounts and spend cover every machine that answers (a machine that didn't is named); resources are this machine's. Signing in and spending limits stay in the console. When the operator asks "what does my phone show for accounts?" or "why does the app say an account needs signing in?", read the same answer: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/accounts\`.`;
 }
 export const MOBILE_CAPACITY_SCREENS_MARKER = 'GET /mobile/accounts';
+/**
+ * The native Plans / What I've learned about you / Other agents reads (docs/specs/mobile-native-plans-people.md),
+ * one bullet in the Mobile app routes block after the capacity bullet. Sniff: `GET /mobile/plans`.
+ */
+export function MOBILE_PLANS_PEOPLE_LINE(port: number): string {
+  return `- The app's native Plans, What I've learned about you and Other agents screens read \`GET /mobile/plans\`, \`GET /mobile/learned\` and \`GET /mobile/agents\` (read-only; an owner phone or my token; an MSP phone gets 403 \`owner-phone-required\`): trimmed summaries of what the console's Plans, What I've learned about you and Other agents pages show, plus this machine's channel registry verdicts (no record ids, paths, fingerprints, invite material, message bodies or raw errors). Plans and corrections cover every machine that answers (a machine that didn't is named). When the operator asks "what does my phone show for plans?" or "why does the app say an agent isn't answering?", read the same answer: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/agents\`.`;
+}
+export const MOBILE_PLANS_PEOPLE_MARKER = 'GET /mobile/plans';
 export const MOBILE_ROUTES_PROBE_LINE_PREFIX = '- A probe that fails 8 times in a row pauses for that name';
 
 /** The increment-1 wording of the verdict bullet's tail, replaced in place on update. */
@@ -1133,6 +1141,7 @@ A paired phone's signed request is accepted on any of this machine's own names: 
 ${MOBILE_OPS_SCREENS_LINE(port)}
 - A probe that fails 8 times in a row pauses for that name and raises one \`MobileRoutes.probe\` degradation; the name stays listed and still works for requests that reach me.
 ${MOBILE_CAPACITY_SCREENS_LINE(port)}
+${MOBILE_PLANS_PEOPLE_LINE(port)}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }
@@ -9524,6 +9533,22 @@ setTimeout(() => process.exit(0), 2000);
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added the native Accounts, Spend and Resource usage line');
+    }
+
+    // Native Plans / Learned / Other agents reads (docs/specs/mobile-native-plans-people.md): one bullet
+    // after the capacity bullet of an existing Mobile app routes block (a block added below already has it).
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_PLANS_PEOPLE_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_CAPACITY_SCREENS_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_PLANS_PEOPLE_LINE(port));
+        content = lines.join('\n');
+      } else {
+        // A block without the capacity bullet: append the line rather than skip it.
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_PLANS_PEOPLE_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the native Plans, Learned and Other agents line');
     }
 
     // Mobile app routes (docs/specs/mobile-multi-route.md) — Agent Awareness + Migration Parity.
