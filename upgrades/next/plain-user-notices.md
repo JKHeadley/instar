@@ -1,0 +1,21 @@
+<!-- bump: patch -->
+
+## What Changed
+
+The notices Instar's server writes to you on its own now say, in plain words, what happened, what it means for you and what to do. The worst one, sent when a conversation moved to another machine before the last step finished, used to read "This conversation moved machines mid-task (drain bound (30000ms) reached — final turn may be partial)…". It now reads: "I moved this conversation to the Mac Studio before I'd finished my last step, so that step may be incomplete. The conversation carries on there. If that step matters, ask me to check it." It names the machine and never shows a machine id. The restart notices and the "pinned profile" note were rewritten the same way. The "Session respawned." line no longer follows a restart I have already told you about, because my reply confirms it.
+
+The standard behind this is written down as Rule 8, "Plain and Complete", in the UX and Agent Agency standard. A message fails if it is too vague to act on or too technical to digest. It has to give the most distinct and critical information in plain language. Two checks hold it. The fixed server notices live in one catalog that a test reads for internal words, ids, timeouts and reason codes. A build-time lint refuses any new server notice that pastes a raw internal reason (`${detail}`, `${err.message}`) or an internal word into your message. Neither check runs while a message is being sent, so an alarm is never held up when the model is down.
+
+## What to Tell Your User
+
+When I tell you something on my own (a restart, or a move to another machine), I now say what happened, what it means for you and whether you need to do anything, with no internal codes. If one of my automatic messages ever reads as jargon or too vague to use, tell me. It is now a defect against a written standard.
+
+## Summary of New Capabilities
+
+- Rule 8 "Plain and Complete" in docs/UX-AND-AGENT-AGENCY-STANDARD.md, with real before/after examples.
+- `src/messaging/userNotices.ts`: the tested catalog of fixed server notices.
+- `npm run lint` includes `lint-plain-user-notices`, a ratchet against raw internal detail in server notices (Telegram and Slack send sites).
+
+## Evidence
+
+Measured from the agent's sent-message log before choosing what to rewrite: in the four days to 2026-11-03, "Session respawned." and "Session restarting — message queued." went out 44 times and the pinned-profile note 29 times. The new tests fail on the old code: the drain notice received the raw reason, and the lint flags `${detail}` and "final turn" at that send site. They pass on the new code. Live proof is a real move between two updated machines (see the PR).

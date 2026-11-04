@@ -105,6 +105,7 @@ import type {
 import type { CodexSpawnFence, FenceCaptureResult } from './CodexResumeMap.js';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { PROFILE_REAPPLY_NOTICE } from '../messaging/userNotices.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types. NOTE: several of these arguably belong in src/core/types.ts, which is
@@ -1516,7 +1517,7 @@ export class TopicProfileOrchestrator {
         this.deps.disclose(
           topicKey,
           this.stamp(
-            "this topic's pinned profile wasn't applied before my last restart — applying it now (the session will briefly restart when idle)",
+            PROFILE_REAPPLY_NOTICE,
             seq,
           ),
           { allowDuplicate: true, auditSeq: seq },
