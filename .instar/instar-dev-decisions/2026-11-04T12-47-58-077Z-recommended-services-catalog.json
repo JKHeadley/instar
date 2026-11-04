@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-04T12:47:58.077Z",
+  "slug": "recommended-services-catalog",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 171,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/recommended/catalog.ts",
+      "src/recommended/serviceIds.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/recommendedServiceRoutes.ts"
+    ],
+    "addedLines": 165,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "A read-only catalog, route fields and a page section. The agent takes no action from them."
+  },
+  "verdict": "pass"
+}

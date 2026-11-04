@@ -277,7 +277,7 @@ Re-offers are suggestions, not attention raises. Detecting components keep their
 ## Rollout
 
 1. The ACT-115 owner-check fix and its migration check. Store, replication, routes, sticky rules, evaluator exclusions, and legacy decline import. Offers check a per-owner migration-complete flag before reserving anything. No offers yet. Also two prerequisites: move the door steps and the Tailscale operator step out of the CLI, and add a delivered-first-result trigger, since `install-experience.md` section 8 has no such event in code.
-2. Catalog, gap stubs, commitments, dashboard. All services unavailable.
+2. Catalog, gap stubs, commitments, dashboard. All services unavailable. Four stubs cover the five gap rows, because an off-machine copy closes both `github-state-backup` and `bitwarden` on a single machine.
 3. Recipes one at a time, each with live proof. Offers go live for new agents with what's proven. `offers.enabled` defaults to false until this step passes on a test agent, then the development agent, then the fleet. Existing agents stay out until step 5, through the migration flag. Before any offer reads the step 1 prerequisites, this step settles four things the review of that groundwork left open. **What counts as a result:** the marker takes the first ordinary reply a platform accepted, which can be a short acknowledgement or a job's status post, so the trigger moves to an explicit result signal, tied to the first tasks where they exist. **The holder's view:** a reply a standby forwards through the origin path never reaches the holder's reply route, and a note through the legacy relay loses its markers, so the holder needs a reliable reading. **Other carriers:** WhatsApp returns no message id and no client reports displaying a reply, so those agents get no first list until each carrier can prove delivery. **Replication:** both values are per machine, which fits none of the allowed machine-local reasons, so they move into the replicated ledger or get an explicit operator decision.
 4. Event sources. `reofferJudge` in shadow, and live once its bench and shadow criteria pass.
 5. Existing-agent first lists.
@@ -303,7 +303,7 @@ Accepted as written, one line each:
 - `state-loss-risk` fires only after a loss, not before one.
 - `principal` in `rotateKeep: 0` records: use an owner id, not personal data.
 - Kill switch re-arm: if set false, it raises an attention item after 30 days.
-- The fixed-template offer path is a prerequisite in rollout step 1.
+- The fixed-template offer path was listed under rollout step 1 and did not ship with it. It ships in rollout step 4 with the `provider-exhausted` event, the only offer that needs it.
 
 ## Open questions
 
