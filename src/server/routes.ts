@@ -1,4 +1,6 @@
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
+import { registerRecommendedServiceRoutes } from './recommendedServiceRoutes.js';
+import { isRetiredLegacyOffer } from '../recommended/legacyDeclines.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { ISSUES_TOPIC_OFFSET } from '../messaging/telegramTopicSpace.js';
 import { SlackOriginLedger, SlackOriginRecordingError } from '../messaging/slack/SlackOriginLedger.js';
@@ -1579,6 +1581,8 @@ export interface RouteContext {
   spendPlanStore?: import('../core/RenderedPlanStore.js').RenderedPlanStore | null;
   /** docs/specs/ecosystem-idea-pipeline.md. Null when dark; the routes answer 503. */
   ecosystemIdeas?: () => import('../ecosystem/buildEcosystemIdeas.js').EcosystemRouteContext | { unavailable: 'no-source' } | null;
+  /** docs/specs/recommended-services.md. Null when this machine has no identity; the routes answer 503. */
+  recommendedServicesLedger?: import('../recommended/RecommendedServicesLedger.js').RecommendedServicesLedger | null;
   /**
    * The money-layer OPERATOR ENABLE surface
    * (docs/specs/money-layer-operator-enable-surface.md). Unlike every field
@@ -15998,6 +16002,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ action: 'ignore-live', ...plan });
   });
 
+  registerRecommendedServiceRoutes(router, { ledger: () => ctx.recommendedServicesLedger ?? null, checkPin: (req, res) => checkMandatePin(req, res) });
   registerEcosystemIdeaRoutes(router, { ecosystem: () => ctx.ecosystemIdeas?.() ?? null, checkPin: (req, res) => checkMandatePin(req, res) });
 
   router.post('/feedback-factory/triage/commit', (req, res) => {
@@ -42428,6 +42433,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // ── Phase 2: State Machine, Consent, Events ─────────────────────
 
   router.post('/features/:id/surface', (req, res) => {
+    if (isRetiredLegacyOffer(req.params.id)) {
+      res.status(409).json({ error: { code: 'OFFER_RETIRED', message: 'This offer now goes through recommended services.' } });
+      return;
+    }
     if (!ctx.featureRegistry) {
       res.status(501).json({ error: 'FeatureRegistry not initialized' });
       return;

@@ -2156,6 +2156,24 @@
       }
     },
     {
+      "category": "recommended-services",
+      "description": "A person's yes and no choices about recommended outside services (docs/specs/recommended-services.md): an append-only signed ledger that replicates as the recommendedServices store.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": [
+        "state/recommended-services/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "jsonl",
+        "complianceHold": true,
+        "note": "Never pruned by design: dropping a row could undo a person's no. Volume is tiny: at most a few rows per service per person."
+      }
+    },
+    {
       "category": "ecosystem-ideas",
       "description": "The ecosystem idea pipeline (docs/specs/ecosystem-idea-pipeline.md): an append-only event ledger that replicates as the ecosystemIdeas store, a per-machine framework admission record and notice dedupe. Source mirrors and index.db in the same directory are a rebuildable cache.",
       "scope": "must-be-coherent",
