@@ -8,6 +8,7 @@ import { slackOriginFooter, currentAgentDisplay, deviceOriginRow, effectiveDispl
 import type { OriginDisplaySettings, TelegramOriginProducer } from '../messaging/telegram-origin/types.js';
 import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyOriginDeps } from './replyOrigin.js';
 import { consolePageUrl } from './dashboardPaths.js';
+import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
 import { stripViewSignatures } from './mobilePairingRoutes.js';
 import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
@@ -25082,6 +25083,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       res.status(500).json({ error: `sync failed: ${err instanceof Error ? err.message : String(err)}` });
     }
+  });
+
+  // Read-only signal (session-pool-default-on): nothing reads this to allow or block anything.
+  router.get('/session-pool/readiness', (_req, res) => {
+    const deps = getActivePoolReadiness();
+    res.json(deps ? computePoolReadiness(deps) : SINGLE_MACHINE_READINESS);
   });
 
   // GET /session-pool/e2e-results — the rollout gate's observable state (§Rollout).

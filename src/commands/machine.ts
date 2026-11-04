@@ -23,6 +23,7 @@ import pc from 'picocolors';
 import { loadConfig } from '../core/Config.js';
 import { redactUrl, redactUrlsInText } from '../core/redactUrl.js';
 import { resolveJoinDir } from '../utils/joinDir.js';
+import { gitLeaseHasNoRemote, selectLeaseMedium } from '../core/leaseMediumSelection.js';
 import { MachineIdentityManager, isRegistryEntryActive } from '../core/MachineIdentity.js';
 import { HeartbeatManager } from '../core/HeartbeatManager.js';
 import { SecretStore } from '../core/SecretStore.js';
@@ -331,6 +332,21 @@ export async function whoami(options: WhoamiOptions): Promise<void> {
   console.log();
 }
 
+/** Exported for tests. True only where the lease would use git and has nowhere to push. */
+export function noRemoteTakeoverApplies(projectDir: string, gitBackupEnabled: boolean, registryAbsPath: string, mediumCheckEnabled?: boolean): boolean {
+  if (!gitBackupEnabled || !fs.existsSync(path.join(projectDir, '.git'))) return false;
+  if (selectLeaseMedium({ projectDir, registryAbsPath, hasGitSyncManager: true, mediumCheckEnabled }).medium === 'local') return false;
+  return gitLeaseHasNoRemote(projectDir) === true;
+}
+
+function printNoRemoteTakeoverNote(config: ReturnType<typeof loadConfig>): void {
+  const registryPath = path.join(config.stateDir, 'machines', 'registry.json');
+  if (!noRemoteTakeoverApplies(config.projectDir, config.gitBackup?.enabled !== false, registryPath, config.multiMachine?.leaseFlapFix?.mediumCheck)) return;
+  console.log(pc.yellow('  Note: automatic takeover does not work yet on a pair with no git remote.'));
+  console.log(pc.dim('  If the other machine dies, this one will not step in. Adding a git remote avoids this.'));
+  console.log();
+}
+
 // ── instar pair ──────────────────────────────────────────────────
 
 interface PairOptions {
@@ -406,6 +422,7 @@ export async function startPairing(options: PairOptions): Promise<void> {
   }
 
   console.log();
+  printNoRemoteTakeoverNote(config);
   console.log(pc.dim('  This code expires in 10 minutes.'));
   console.log(pc.dim('  After entering the code, verify the visual symbols match on both screens.'));
   console.log();
@@ -733,6 +750,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
 
   console.log();
   console.log(pc.green(pc.bold(`  Joined ${config.projectName} mesh as standby.`)));
+  printNoRemoteTakeoverNote(config);
   console.log();
   console.log(`  Next steps:`);
   if (autoStarted) {

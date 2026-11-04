@@ -238,6 +238,8 @@ export class MachinePoolRegistry {
     }
   >();
   private readonly liveReceivedMonoMs = new Map<string, number>();
+  /** Last direct pull's quota and channel signals, for reports only; placement never reads this. */
+  private readonly directAdverts = new Map<string, { quotaState?: MachineCapacity['quotaState']; servesChannels?: MachineCapacity['servesChannels'] }>();
   /**
    * Evidence slots (trustworthy-machine-load A1), kept APART and never merged:
    * the last direct success (wall receipt time), the recent direct attempts
@@ -271,6 +273,9 @@ export class MachinePoolRegistry {
   recordHeartbeat(obs: HeartbeatObservation & { rttMs?: number }): ClockSkewSideEffect {
     const nowMs = this.now();
     if (!obs.coarseHeartbeat) this.liveReceivedMonoMs.set(obs.machineId, this.monoNow());
+    if (!obs.coarseHeartbeat && obs.loadReport) {
+      this.directAdverts.set(obs.machineId, { quotaState: obs.quotaState, servesChannels: obs.servesChannels });
+    }
     this.recordEvidence(obs, nowMs);
     const prev = this.observed.get(obs.machineId);
     // COARSE beats (the git-synced file MachineHeartbeat) NEVER drive the clock-skew
@@ -447,6 +452,18 @@ export class MachinePoolRegistry {
     const known = this.d.listMachines().find((m) => m.machineId === machineId);
     if (!known) return null;
     return this.assemble(known);
+  }
+
+  /**
+   * The capacity row with the last direct pull's quota and channel signals restored. Those two
+   * fields are deliberately not carried across a coarse beat for placement (see recordHeartbeat),
+   * but a report must not read a coarse beat as "this peer stopped serving". Read-only.
+   */
+  getCapacityForReport(machineId: string): MachineCapacity | null {
+    const row = this.getCapacity(machineId);
+    if (!row) return null;
+    const advert = this.directAdverts.get(machineId);
+    return advert ? { ...row, quotaState: advert.quotaState, servesChannels: advert.servesChannels } : row;
   }
 
   /** Assemble the full pool view (§L2) — the data behind GET /pool. */
