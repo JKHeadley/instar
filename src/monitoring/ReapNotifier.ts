@@ -539,7 +539,7 @@ export class ReapNotifier {
     });
     try {
       this.deps.reportDegradation?.(
-        `reap-notice enqueue failed for topic ${topicId}${enqueueError ? ` (${enqueueError})` : ''}`,
+        `reap-notice enqueue failed for ${topicRef(topicId)}${enqueueError ? ` (${enqueueError})` : ''}`,
         `The durable-delivery guarantee degraded to one direct attempt (${sendResult}).`,
       );
     } catch {

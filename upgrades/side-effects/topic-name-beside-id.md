@@ -29,8 +29,9 @@ the registry held "🤝 echo".
   `TelegramSpendTopicChannel`, `ReapNotifier`, `ReapNoticeDrain`, `TopicReachabilityVerifier`,
   `SeamlessOrchestratorEngine`, `ScopeVerifier`, `ColdStartFallbackReply`, `SessionManager`,
   `TelegramAdapter` (session list).
-- Ratchet `tests/unit/topic-ref-ratchet.test.ts`: per-file baseline of remaining bare
-  `topic ${…}` renders (31, all thrown errors / refusal reasons / internal strings); a new site fails.
+- Ratchet `tests/unit/topic-ref-ratchet.test.ts`: per-file baseline of two remaining bare
+  `topic ${…}` renders; one already carries the name beside the id and one is a lifeline log.
+  A new non-log site fails.
 
 Size: ~25 source files, ~120 changed lines + formatter + 4 test files. Effort: no spec rounds
 (Tier 1), one commit.
@@ -47,7 +48,9 @@ No block/allow surface.
 
 ## 2. Under-block
 
-- 31 bare renders remain (errors, refusal reasons, degradation messages, CLI output). Listed in the ratchet baseline, which only lets them shrink.
+- Two non-log bare renders remain in the ratchet baseline: the InputGuard prompt already
+  gives the name beside the id, and one lifeline diagnostic is internal. Other log-only
+  renders are outside the ratchet; they are not a proof that every log line carries a name.
 - A topic the registry has never named shows "(name unresolved)" until the adapter learns its name (rename events, startup backfill).
 - Processes with no Telegram adapter (no Telegram configured) render every topic as unresolved.
 - Attention item ids, condition keys and log lines are unchanged (ids, not prose).
@@ -112,4 +115,18 @@ Wording-only change with a structural ratchet against regression.
 
 After merging current main, four source files had acquired new bare topic labels: `SessionDrainRunner`, `AgentServer`, `server.ts`, and `WorkYieldRegistry`. They now use the same `topicRef` formatter. `OriginForwardToHolder.heldExpiryItem` also uses it while retaining main's condition key and attention-item shape. This is a Tier 1 wording repair in an existing formatter path. No new gate, block, routing choice, or static judgment heuristic was added; the signal-versus-authority rule in `docs/signal-vs-authority.md` is therefore unchanged.
 
-Over-block: none. Under-block: the 31 baseline bare renders remain. The formatter is the right layer because all four callers need the same verified local topic name. Interactions: only notice and audit text changes; topic ids, attention condition keys, dedupe keys, transfer decisions, and Telegram delivery remain as before. External surface: an agent or operator may see the topic name beside the id in a transfer reason, held-reply notice, media degradation, or maintenance work label. Multi-machine posture: machine-local registry reads by design, because a serving machine knows the topic names it owns; unresolved names are stated plainly. The changes add no durable state, URL, or new notifier, so they do not create a new one-voice or transfer obligation. Rollback is a revert of this PR; no data migration is needed.
+Over-block: none. Under-block: the two baseline sites described above remain. The formatter is the right layer because all four callers need the same verified local topic name. Interactions: only notice and audit text changes; topic ids, attention condition keys, dedupe keys, transfer decisions, and Telegram delivery remain as before. External surface: an agent or operator may see the topic name beside the id in a transfer reason, held-reply notice, media degradation, or maintenance work label. Multi-machine posture: machine-local registry reads by design, because a serving machine knows the topic names it owns; unresolved names are stated plainly. The changes add no durable state, URL, or new notifier, so they do not create a new one-voice or transfer obligation. Rollback is a revert of this PR; no data migration is needed.
+
+## Scope audit (2026-11-04)
+
+The first baseline included errors, refusal reasons, recovery notices, and command output that
+an agent or operator can read. Those are part of the operator's rule, so they now call
+`topicRef` too. This includes desktop confirmation, profile transfer disclosure, session
+recovery, PromiseBeacon, Telegram sender failures, and API error text. The changed log lines
+use the same formatter for consistency. This widens wording coverage only; no delivery target,
+ownership decision, or durable key changed. The local resolver can still have no verified name,
+in which case the text explicitly says `name unresolved`.
+
+The issues-group refusal text is also read by the legacy relay replay classifier. Its parser
+now accepts the old bare-id form plus the new verified-name and unresolved-name forms; unit
+coverage checks all three so queued replies retain their replay classification across update.

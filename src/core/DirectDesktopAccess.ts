@@ -2,6 +2,7 @@
  * All requests, grants and tickets are memory-only: a restart revokes access.
  * A PIN session may authorize access directly; the legacy Telegram challenge
  * remains available only when explicitly selected by the caller. */
+import { topicRef } from '../messaging/shared/topicRef.js';
 import crypto from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { validDisplayId, type DesktopDisplay, type DesktopHost, type DesktopInput, type DesktopPlatform, type DesktopProbe, type DesktopSealedSecret } from './DesktopHost.js';
@@ -343,7 +344,7 @@ export class DirectDesktopAccess {
       // before normal Telegram message history.
       if (!this.isVerifiedOperator(input.topicId, input.operatorUid)) throw new Error('operator binding changed');
       await this.sendChallenge(input.topicId,
-        `Remote desktop request for ${this.machineLabel}. This grants full human control of the logged-in desktop for up to 10 minutes. Target key fingerprint: ${crypto.createHash('sha256').update(this.targetIdentity.publicKey).digest('hex').slice(0, 32)}. In your verified Instar Telegram topic ${input.topicId}, reply exactly:\n/desktop ${id} ${code}\nExpires in 2 minutes. Do not share this code.`);
+        `Remote desktop request for ${this.machineLabel}. This grants full human control of the logged-in desktop for up to 10 minutes. Target key fingerprint: ${crypto.createHash('sha256').update(this.targetIdentity.publicKey).digest('hex').slice(0, 32)}. In your verified Instar Telegram ${topicRef(input.topicId)}, reply exactly:\n/desktop ${id} ${code}\nExpires in 2 minutes. Do not share this code.`);
     } catch (error) { this.requests.delete(id); throw error; }
     return { requestId: id };
   }

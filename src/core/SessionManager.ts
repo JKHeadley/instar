@@ -3290,7 +3290,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           // Check if this session had a pending Telegram injection that never got a response
           const pendingInjection = this.pendingInjections.get(session.tmuxSession);
           if (pendingInjection) {
-            console.warn(`[SessionManager] Session "${session.name}" died with unanswered Telegram injection for topic ${pendingInjection.topicId} (injected ${Math.round((Date.now() - pendingInjection.injectedAt) / 1000)}s ago)`);
+            console.warn(`[SessionManager] Session "${session.name}" died with unanswered Telegram injection for ${topicRef(pendingInjection.topicId)} (injected ${Math.round((Date.now() - pendingInjection.injectedAt) / 1000)}s ago)`);
             this.pendingInjections.delete(session.tmuxSession);
             this.emit('injectionDropped', {
               topicId: pendingInjection.topicId,
@@ -3555,7 +3555,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
               // Check for unanswered injection before timeout kill
               const pendingInjection = this.pendingInjections.get(session.tmuxSession);
               if (pendingInjection) {
-                console.warn(`[SessionManager] Timed-out session "${session.name}" had unanswered injection for topic ${pendingInjection.topicId}`);
+                console.warn(`[SessionManager] Timed-out session "${session.name}" had unanswered injection for ${topicRef(pendingInjection.topicId)}`);
                 this.pendingInjections.delete(session.tmuxSession);
                 this.emit('injectionDropped', {
                   topicId: pendingInjection.topicId,
@@ -3833,7 +3833,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
                 // Check for unanswered injection before killing
                 const pendingInjection = this.pendingInjections.get(session.tmuxSession);
                 if (pendingInjection) {
-                  console.warn(`[SessionManager] Zombie session "${session.name}" had unanswered injection for topic ${pendingInjection.topicId}`);
+                  console.warn(`[SessionManager] Zombie session "${session.name}" had unanswered injection for ${topicRef(pendingInjection.topicId)}`);
                   this.pendingInjections.delete(session.tmuxSession);
                   this.emit('injectionDropped', {
                     topicId: pendingInjection.topicId,
@@ -4260,7 +4260,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         }
       } catch (err: any) {
         if (err && err.code === 'LOCK_HELD') {
-          throw new Error(`Cannot spawn session for topic ${options.topicId}: lock held by ${JSON.stringify(err.holder)}`);
+          throw new Error(`Cannot spawn session for ${topicRef(options.topicId)}: lock held by ${JSON.stringify(err.holder)}`);
         }
         throw err;
       }
@@ -8660,7 +8660,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (priorAt !== undefined) {
         console.warn(
           `[SessionManager] Suppressed duplicate Telegram delivery to "${tmuxSession}" ` +
-          `(topic ${topicId}, messageId ${messageId}, ${Math.round((now - priorAt) / 1000)}s after first) — ` +
+          `(${topicRef(topicId)}, messageId ${messageId}, ${Math.round((now - priorAt) / 1000)}s after first) — ` +
           `a single user message was forwarded more than once; delivering only once.`,
         );
         return true; // already delivered on the first call — success without re-injecting
@@ -8912,7 +8912,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           // Wrong topic — log, alert, and drop
           console.error(
             `[InputGuard] BLOCKED cross-topic injection: message bound for different topic, ` +
-            `session "${tmuxSession}" is bound to topic ${binding.topicId}`
+            `session "${tmuxSession}" is bound to ${topicRef(binding.topicId)}`
           );
           this.inputGuard.logSecurityEvent({
             event: 'input-provenance-block',

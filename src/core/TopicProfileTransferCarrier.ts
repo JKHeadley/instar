@@ -65,6 +65,7 @@
  * undo means "back to what this machine had").
  */
 
+import { topicRef } from '../messaging/shared/topicRef.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
@@ -638,7 +639,7 @@ export class TopicProfileTransferCarrier {
         });
         for (const dropped of result.droppedFields) {
           disclosures.push(
-            `topic ${key}: the transferred ${dropped.field} didn't validate on this machine (${dropped.reason}) — using the default`,
+            `${topicRef(key)}: the transferred ${dropped.field} didn't validate on this machine (${dropped.reason}) — using the default`,
           );
         }
       } catch (e) {

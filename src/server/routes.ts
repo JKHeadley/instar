@@ -8342,7 +8342,7 @@ export function createRoutes(ctx: RouteContext): Router {
     autonomousRunStore.update(rec.topicId, rec.runId, (r) => {
       r.scopeAccretionOverride = { enabled, reason: String(body.reason).slice(0, 300), at: new Date().toISOString() };
     });
-    console.log(`[scope-accretion] operator PIN override for topic ${topic}: enabled=${enabled} (${String(body.reason).slice(0, 120)})`);
+    console.log(`[scope-accretion] operator PIN override for ${topicRef(topic)}: enabled=${enabled} (${String(body.reason).slice(0, 120)})`);
     scopeAccretionMetric('fired', `override-${enabled ? 'enable' : 'disable'}`);
     res.json({ ok: true, topic, enabled, runId: rec.runId });
   });
@@ -8739,7 +8739,7 @@ export function createRoutes(ctx: RouteContext): Router {
           scopeAccretionMetric('fired', 'run-identity-mismatch');
           res.json({
             met: false,
-            reason: `run-identity-mismatch: topic ${resolvedTopic} is registered to a different runId — the presented pair does not match the server's registration record`,
+            reason: `run-identity-mismatch: ${topicRef(resolvedTopic)} is registered to a different runId — the presented pair does not match the server's registration record`,
           });
           return;
         }
@@ -8747,7 +8747,7 @@ export function createRoutes(ctx: RouteContext): Router {
           armedRecord = byTopic;
           if (bodySessionId) autonomousRunStore.mapSession(bodySessionId, byTopic.topicId, byTopic.runId);
         } else if (!byTopic) {
-          console.log(`[scope-accretion] evaluate-completion for UNREGISTERED topic ${resolvedTopic} — accretion gate inert (honest degradation)`);
+          console.log(`[scope-accretion] evaluate-completion for UNREGISTERED ${topicRef(resolvedTopic)} — accretion gate inert (honest degradation)`);
         }
       }
 
@@ -8763,7 +8763,7 @@ export function createRoutes(ctx: RouteContext): Router {
             autonomousRunStore.update(armedRecord.topicId, armedRecord.runId, (r) => {
               r.conditionDivergenceFlagged = true;
             });
-            console.warn(`[scope-accretion] condition divergence for topic ${armedRecord.topicId}: body condition differs from the registered text — judging the REGISTERED condition (R36)`);
+            console.warn(`[scope-accretion] condition divergence for ${topicRef(armedRecord.topicId)}: body condition differs from the registered text — judging the REGISTERED condition (R36)`);
             void ctx.telegram
               ?.createAttentionItem({
                 id: `scope-accretion-condition-divergence-${armedRecord.topicId}-${armedRecord.runId}`,
@@ -9047,7 +9047,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     const tmux = resolveTopicSession(String(topicId));
-    if (!tmux) { res.status(404).json({ error: `no session for topic ${topicId}` }); return; }
+    if (!tmux) { res.status(404).json({ error: `no session for ${topicRef(topicId)}` }); return; }
     const ok = ctx.sessionManager.sendInput(tmux, `/goal ${condition}`);
     if (ok) setGoalMode(String(topicId), 'native');
     res.status(ok ? 200 : 502).json({ ok, topicId, mode: ok ? 'native' : 'unchanged' });
@@ -9057,7 +9057,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const { topicId } = req.body ?? {};
     if (!topicId) { res.status(400).json({ error: '"topicId" required' }); return; }
     const tmux = resolveTopicSession(String(topicId));
-    if (!tmux) { res.status(404).json({ error: `no session for topic ${topicId}` }); return; }
+    if (!tmux) { res.status(404).json({ error: `no session for ${topicRef(topicId)}` }); return; }
     const ok = ctx.sessionManager.sendInput(tmux, '/goal clear');
     if (ok) setGoalMode(String(topicId), '');
     res.status(ok ? 200 : 502).json({ ok, topicId });
@@ -12400,17 +12400,17 @@ export function createRoutes(ctx: RouteContext): Router {
           // @silent-fallback-ok: reported in the response as `ownership:"error"`;
           // the spawn already succeeded and the duplicate reconciler still converges.
           topicOwnership = 'error';
-          console.warn(`[sessions/spawn] ownership claim failed for topic ${parsedTopicId}: ${err instanceof Error ? err.message : String(err)}`);
+          console.warn(`[sessions/spawn] ownership claim failed for ${topicRef(parsedTopicId)}: ${err instanceof Error ? err.message : String(err)}`);
         }
         if (topicOwnership === 'owned-elsewhere') {
-          console.warn(`[sessions/spawn] topic ${parsedTopicId} is owned by another machine; spawned here without claiming (possible duplicate copy)`);
+          console.warn(`[sessions/spawn] ${topicRef(parsedTopicId)} is owned by another machine; spawned here without claiming (possible duplicate copy)`);
         }
         try {
           ctx.topicProfile?.spawnBriefs?.record(parsedTopicId, session.tmuxSession, prompt);
         } catch (err) {
           // @silent-fallback-ok: the brief only feeds a later profile respawn's
           // continuation; the spawn itself already succeeded.
-          console.warn(`[sessions/spawn] could not record spawn brief for topic ${parsedTopicId}: ${err instanceof Error ? err.message : String(err)}`);
+          console.warn(`[sessions/spawn] could not record spawn brief for ${topicRef(parsedTopicId)}: ${err instanceof Error ? err.message : String(err)}`);
         }
         if (topicSpawnProfile.applied) {
           try {
@@ -12421,7 +12421,7 @@ export function createRoutes(ctx: RouteContext): Router {
           } catch (err) {
             // @silent-fallback-ok: without the record the boot sweep leaves the
             // session alone (unknown launch profile is not divergence).
-            console.warn(`[sessions/spawn] could not record launched profile for topic ${parsedTopicId}: ${err instanceof Error ? err.message : String(err)}`);
+            console.warn(`[sessions/spawn] could not record launched profile for ${topicRef(parsedTopicId)}: ${err instanceof Error ? err.message : String(err)}`);
           }
         }
       }
@@ -12632,7 +12632,7 @@ export function createRoutes(ctx: RouteContext): Router {
             if (!result.ok) {
               console.warn(`[sessions/restart-all] refused sessionName=${sessionName} code=${result.code} message="${result.message}"`);
             } else {
-              console.log(`[sessions/restart-all] refreshed sessionName=${sessionName} -> ${result.newSessionName} (topic ${result.topicId})`);
+              console.log(`[sessions/restart-all] refreshed sessionName=${sessionName} -> ${result.newSessionName} (${topicRef(result.topicId)})`);
             }
           })
           .catch(err => {
@@ -19642,7 +19642,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           ctx.pendingRelayLookup?.(deliveryId) === true;
         if (!isValidRedrive) {
           console.log(
-            `[telegram/reply] breadcrumb: kindless send to topic ${topicId} mapping to job session (slug ${topicJobSlug}) — possible preflight bypass (observability only)`,
+            `[telegram/reply] breadcrumb: kindless send to ${topicRef(topicId)} mapping to job session (slug ${topicJobSlug}) — possible preflight bypass (observability only)`,
           );
         }
       }
@@ -19653,7 +19653,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // ORIGINATING machine (the index is process-local by construction).
         if (!outboundAdvisoryAudit.hasRecentPreflight(metadataJobSlug || topicJobSlug, topicId)) {
           console.log(
-            `[telegram/reply] breadcrumb: automated send to topic ${topicId} (slug ${metadataJobSlug || topicJobSlug}) with no recent preflight row — possible class-spoof (observability only)`,
+            `[telegram/reply] breadcrumb: automated send to ${topicRef(topicId)} (slug ${metadataJobSlug || topicJobSlug}) with no recent preflight row — possible class-spoof (observability only)`,
           );
         }
       }
@@ -19682,7 +19682,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // a successful send (below), so a failed send's retry isn't lost.
     const originOwnsContent = ctx.telegramOrigin?.service.hasProducerContext() === true;
     if (!originOwnsContent && !allowDuplicate && outboundContentDedup.isDuplicate(topicId, text)) {
-      console.log(`[telegram/reply] suppressed duplicate content for topic ${topicId} (identical text within window)`);
+      console.log(`[telegram/reply] suppressed duplicate content for ${topicRef(topicId)} (identical text within window)`);
       res.json({ ok: true, topicId, suppressedDuplicate: true });
       return;
     }
@@ -19736,7 +19736,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // reserves → no leak); resolved by record() on success or releaseReservation()
     // in the catch on failure. allowDuplicate bypasses it (no reserve, no block).
     if (!originOwnsContent && !allowDuplicate && !outboundContentDedup.tryReserve(topicId, text)) {
-      console.log(`[telegram/reply] suppressed in-flight duplicate for topic ${topicId} (identical text already sending/sent)`);
+      console.log(`[telegram/reply] suppressed in-flight duplicate for ${topicRef(topicId)} (identical text already sending/sent)`);
       res.json({ ok: true, topicId, suppressedDuplicate: true });
       return;
     }
@@ -19814,7 +19814,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (!isProxy && !isSystemTemplate) {
         const credited = creditUsherOnOutbound(ctx.usherSignalStore, topicId, text);
         if (credited.length) {
-          console.log(`[Usher] ${credited.length} signal(s) marked acted (use) on topic ${topicId}`);
+          console.log(`[Usher] ${credited.length} signal(s) marked acted (use) on ${topicRef(topicId)}`);
         }
       }
       // ── Exactly-once ingress: commit reply_committed (spec §8 G3a) ──
@@ -24848,7 +24848,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // (autonomousRunSuspended:false) — the transfer still proceeds (the
         // pin is the user's explicit, confirmed intent), and the run's own
         // stop hook keeps it honest on the old machine.
-        console.warn(`[pool/transfer] autonomous-run suspend failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
+        console.warn(`[pool/transfer] autonomous-run suspend failed for ${topicRef(topicId)}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     // ── WS5.3 (escalation-rides-topic) SOURCE capture ───────────────────────
@@ -27776,14 +27776,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                 const session = sessions.find(s => s.tmuxSession === newSessionName);
                 if (session?.claudeSessionId) {
                   ctx.topicResumeMap!.save(topicId, session.claudeSessionId, newSessionName);
-                  console.log(`[secret-drop] Proactive UUID save: ${session.claudeSessionId} for topic ${topicId} (source: hook)`);
+                  console.log(`[secret-drop] Proactive UUID save: ${session.claudeSessionId} for ${topicRef(topicId)} (source: hook)`);
                 }
               } catch (err) {
                 console.error(`[secret-drop] Proactive UUID save failed:`, err);
               }
             }, 8000);
           }
-          console.log(`[secret-drop] Spawned "${newSessionName}" for secret receipt on topic ${topicId}`);
+          console.log(`[secret-drop] Spawned "${newSessionName}" for secret receipt on ${topicRef(topicId)}`);
         }).catch((err) => {
           console.error(`[secret-drop] Session spawn failed:`, err);
         });
@@ -28272,7 +28272,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               // Clear this topic's autonomous job so it doesn't zombie-resume.
               try { stopAutonomousTopic(ctx.config.stateDir, String(topicId), ctx.state.getCoherenceJournal()); } catch { /* best-effort */ }
               if (killOutcome) {
-                console.log(`[telegram-forward] sentinel emergency-stop: killed session "${sessionName}" for topic ${topicId}`);
+                console.log(`[telegram-forward] sentinel emergency-stop: killed session "${sessionName}" for ${topicRef(topicId)}`);
               } else {
                 console.error(
                   `[telegram-forward] sentinel emergency-stop: KILL FAILED for session "${sessionName}" ` +
@@ -28305,7 +28305,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // pause
           if (sessionName && ctx.telegram?.onSentinelPauseSession) {
             ctx.telegram.onSentinelPauseSession(sessionName);
-            console.log(`[telegram-forward] sentinel pause: paused session "${sessionName}" for topic ${topicId}`);
+            console.log(`[telegram-forward] sentinel pause: paused session "${sessionName}" for ${topicRef(topicId)}`);
           }
           ctx.telegram?.sendToTopic(Number(topicId), sessionName
             ? 'Session paused.\n\nSend a message to resume.'
@@ -28379,7 +28379,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const currentOwner = ctx.sessionOwnershipRegistry.ownerOf(String(topicId));
         if (currentOwner && currentOwner !== ctx.meshSelfId) {
           shouldClaimInbound = false;
-          console.log(`[telegram-forward] exactly-once: skipped non-owner claim for topic ${topicId}; owner=${currentOwner} self=${ctx.meshSelfId}`);
+          console.log(`[telegram-forward] exactly-once: skipped non-owner claim for ${topicRef(topicId)}; owner=${currentOwner} self=${ctx.meshSelfId}`);
         }
       } catch (err) {
         console.error(`[telegram-forward] ownership read error (fail-open, claiming/routing normally): ${err instanceof Error ? err.message : err}`);
@@ -28474,7 +28474,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       typeof messageId === 'number' ? messageId : Number(messageId) || null,
     );
     if (lifelineSignedByAgent) {
-      console.log(`[telegram-forward] topic ${topicId} message ${messageId ?? '?'} is agent-signed by "${lifelineSignedByAgent}" — operator auto-bind skipped`);
+      console.log(`[telegram-forward] ${topicRef(topicId)} message ${messageId ?? '?'} is agent-signed by "${lifelineSignedByAgent}" — operator auto-bind skipped`);
     }
     // Lifeline-secret gate: belt and braces. The identity was already removed
     // above for an untrusted request; this bind also checks the flag itself.
@@ -28585,7 +28585,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           fs.mkdirSync(failDir, { recursive: true });
           const failFile = path.join(failDir, `failed-${topicId}-${Date.now()}.txt`);
           fs.writeFileSync(failFile, text);
-          console.error(`[telegram→session] Injection FAILED for topic ${topicId} into ${targetSession}. Message saved to ${failFile}`);
+          console.error(`[telegram→session] Injection FAILED for ${topicRef(topicId)} into ${targetSession}. Message saved to ${failFile}`);
           res.json({ ok: false, error: 'injection-failed', failFile, session: targetSession });
         } else {
           // Truncation detection — check if this message looks truncated and inject a hint
@@ -28641,7 +28641,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           } catch { /* fall through to default */ }
         }
         topicName = await resolveTopicNameAcrossPool(topicId) ?? (verifiedTopicName(topicId, topicName) ? topicName : `topic-${topicId}`);
-        console.log(`[telegram-forward] No live session for topic ${topicId}, spawning "${topicName}"...`);
+        console.log(`[telegram-forward] No live session for ${topicRef(topicId)}, spawning "${topicName}"...`);
 
         // Fetch thread history so auto-spawned sessions have full conversational context
         const historyLines: string[] = [];
@@ -28664,7 +28664,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               historyLines.push(`--- End Thread History ---`);
             }
           } catch (err) {
-            console.error(`[telegram-forward] Failed to fetch thread history for topic ${topicId}:`, err);
+            console.error(`[telegram-forward] Failed to fetch thread history for ${topicRef(topicId)}:`, err);
           }
         }
 
@@ -28691,7 +28691,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // TopicResumeMap is authoritative — skip LLM validation for this source.
         let resumeSessionId = ctx.topicResumeMap?.get(topicId) ?? undefined;
         if (resumeSessionId) {
-          console.log(`[telegram-forward] Found resume UUID for topic ${topicId}: ${resumeSessionId} (source: TopicResumeMap — trusted)`);
+          console.log(`[telegram-forward] Found resume UUID for ${topicRef(topicId)}: ${resumeSessionId} (source: TopicResumeMap — trusted)`);
         }
 
         // G3 — record the lease-gated-spawn decision for this SECONDARY spawn
@@ -28714,7 +28714,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           });
           sharedG3SoakLedger.record(g3, new Date().toISOString());
           if (g3.action !== 'spawn') {
-            console.log(`[g3-spawn-gate] (telegram-forward) topic ${topicId}: action=${g3.action} reason=${g3.reason} (record-only — local re-entry, no forward seam)`);
+            console.log(`[g3-spawn-gate] (telegram-forward) ${topicRef(topicId)}: action=${g3.action} reason=${g3.reason} (record-only — local re-entry, no forward seam)`);
           }
         } catch (err) {
           // @silent-fallback-ok — the soak record is observability only; a record
@@ -28750,14 +28750,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                 const session = sessions.find(s => s.tmuxSession === newSessionName);
                 if (session?.claudeSessionId) {
                   ctx.topicResumeMap!.save(topicId, session.claudeSessionId, newSessionName);
-                  console.log(`[telegram-forward] Proactive UUID save: ${session.claudeSessionId} for topic ${topicId} (source: hook)`);
+                  console.log(`[telegram-forward] Proactive UUID save: ${session.claudeSessionId} for ${topicRef(topicId)} (source: hook)`);
                 }
               } catch (err) {
                 console.error(`[telegram-forward] Proactive UUID save failed:`, err);
               }
             }, 8000);
           }
-          console.log(`[telegram-forward] Spawned "${newSessionName}" for topic ${topicId}`);
+          console.log(`[telegram-forward] Spawned "${newSessionName}" for ${topicRef(topicId)}`);
         }).catch((err) => {
           console.error(`[telegram-forward] Spawn failed:`, err);
         });
@@ -28964,7 +28964,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
 
       await ctx.telegram.relayPrompt(topicId, prompt);
-      console.log(`[PlanRelay] Relayed plan prompt ${promptId} to topic ${topicId} for session ${sessionName}`);
+      console.log(`[PlanRelay] Relayed plan prompt ${promptId} to ${topicRef(topicId)} for session ${sessionName}`);
       res.json({ ok: true, topicId, promptId });
     } catch (err) {
       console.error(`[PlanRelay] Failed:`, err instanceof Error ? err.message : err);
@@ -36493,7 +36493,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const topicId = typeof c.topicId === 'number' ? c.topicId : null;
     if (topicId !== null && ctx.telegram) {
       try { await ctx.telegram.sendToTopic(topicId, headline, { provenance: 'automation' }); told = true; }
-      catch (err) { console.warn(`[commitments/decide] could not post the decision in topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`); }
+      catch (err) { console.warn(`[commitments/decide] could not post the decision in ${topicRef(topicId)}: ${err instanceof Error ? err.message : String(err)}`); }
       // Hand the decision to the conversation's session so the agent acts on it.
       // It carries no sender identity: it is a record of a dashboard tap, never
       // an operator binding or command authority.
@@ -36508,7 +36508,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           receivedAt: new Date().toISOString(),
           metadata: { messageThreadId: topicId, senderUnverified: true, viaDashboardDecision: true, telegramMessageId: '' },
         } as never);
-      } catch (err) { console.warn(`[commitments/decide] could not hand the decision to topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`); }
+      } catch (err) { console.warn(`[commitments/decide] could not hand the decision to ${topicRef(topicId)}: ${err instanceof Error ? err.message : String(err)}`); }
     }
     res.json({ ok: true, id: c.id, decision, postedInConversation: told });
   });

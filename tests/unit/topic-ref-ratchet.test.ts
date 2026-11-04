@@ -9,8 +9,8 @@
  * `telegramTopicRef(id)` from `src/messaging/shared/topicRef.ts` instead, which carries the
  * verified name or says "(name unresolved)".
  *
- * The baseline holds the remaining sites (thrown errors, refusal reasons and other internal
- * strings). Lowering a count is always allowed — update the baseline down when you convert one.
+ * The baseline holds only the existing prompt with an adjacent name and one lifeline log.
+ * New bare renders fail this test.
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -24,28 +24,8 @@ const BARE = /(?:Telegram topic|[Tt]opic) #?\$\{/g;
 const LOG_LINE = /console\.|log\(|\.log\?\.\(|warn\(|\.debug\(|logger\.|logger\?\.\(|\[[A-Za-z0-9 _./:-]+\] /;
 
 export const BASELINE: Record<string, number> = {
-  'src/commands/postDriveTranscriptAudit.ts': 2,
-  'src/core/BetweenWindowAdmissionGate.ts': 2,
-  'src/core/DirectDesktopAccess.ts': 1,
   'src/core/InputGuard.ts': 1,
-  'src/core/LiveTailSource.ts': 1,
-  'src/core/OwnershipApplier.ts': 1,
-  'src/core/SessionManager.ts': 3,
-  'src/core/TelegramLiveSender.ts': 1,
-  'src/core/TopicProfileOrchestrator.ts': 1,
-  'src/core/TopicProfileStore.ts': 1,
-  'src/core/TopicProfileTransferCarrier.ts': 1,
-  'src/core/conversationBindGate.ts': 1,
   'src/lifeline/TelegramLifeline.ts': 1,
-  'src/memory/TopicSummarizer.ts': 1,
-  'src/messaging/NotificationBatcher.ts': 1,
-  'src/messaging/telegramTopicSpace.ts': 1,
-  'src/monitoring/PromiseBeacon.ts': 2,
-  'src/monitoring/ReapNotifier.ts': 1,
-  'src/monitoring/SessionRecovery.ts': 3,
-  'src/monitoring/sentinelWiring.ts': 1,
-  'src/server/routes.ts': 3,
-  'src/threadline/PairingInviteTelegram.ts': 1,
 };
 
 function walk(dir: string, out: string[] = []): string[] {

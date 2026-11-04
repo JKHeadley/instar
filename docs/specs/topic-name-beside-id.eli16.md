@@ -29,4 +29,4 @@ One small shared helper renders a topic everywhere the server writes one: `topic
 
 ## What you would decide
 
-Nothing. It is on for everyone and only changes wording. The remaining bare topic numbers in the code are internal error strings; the test lists them and only lets that list shrink.
+Nothing. It is on for everyone and only changes wording. The test keeps two old exceptions: a prompt that already puts the name beside the number, and a lifeline diagnostic. New bare topic numbers in agent-facing text fail the test.
