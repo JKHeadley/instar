@@ -114,15 +114,20 @@ withFileLockSync<T>(file: string, fn: () => T, opts?: { deadlineMs?: number }): 
 atomicWriteJsonSync(file: string, value: unknown): void   // unique temp + rename
 ```
 
-It is built on `proper-lockfile`, already a dependency, with a dedicated lock path (`<file>.lock`,
-`realpath: false`) so the target need not exist. It generalises `lockSyncWithRetry` from
-`PasskeyCredentialStore.ts:58`.
+The helper uses `better-sqlite3`, already a dependency, and a dedicated local coordination database
+at `<file>.write-lock.sqlite`. It opens an explicit `BEGIN IMMEDIATE` transaction before reading the
+JSON file and commits only after the JSON rename and any synchronous local journal append. Every
+writer of the same JSON file uses that same database. SQLite's kernel lock remains owned for the
+whole transaction and is released on commit, rollback or process death; it has no age-based stale
+threshold and another process cannot steal it from a paused holder. The lock database contains no
+user data. Its path is stable even when the JSON file is replaced by atomic rename.
 
-- The deadline defaults to 2 s and the stale threshold is 10 s.
+- `busy_timeout` defaults to 2 s. A contender times out rather than writing without the lock.
 - The manager API is synchronous, so a contended lock briefly blocks the event loop. The critical
   section contains a read, rename and local journal append; measure its duration and keep the
-  ordinary case within milliseconds. The deadline bounds lock acquisition, while a separate
-  watchdog must report a slow append.
+  ordinary case within milliseconds. A slow holder is reported, but elapsed time never revokes its
+  ownership. A process that dies releases its SQLite transaction; the next writer reads the current
+  JSON bytes before changing anything.
 - On timeout it throws a typed `StoreLockTimeoutError`. It never falls through to an unlocked write.
 
 **`UserManager` mutations become disk transactions.** `upsertUser` and `removeUser` each do this:
@@ -133,11 +138,11 @@ It is built on `proper-lockfile`, already a dependency, with a dedicated lock pa
 4. Apply a single-record change to the raw array.
 5. Write atomically and rebuild the in-memory map from the array just written.
 6. If a replication emitter is attached, append the affected user's `put`, or the removed user's
-   tombstone, to the local journal synchronously while holding the same file lock. Do not emit every
-   survivor. A failed
-   emit is counted and leaves the local write intact; the reconciler retries the current disk
-   projection, and Phase 3's durable intent covers a delete.
-7. Release the lock. No deferred emitter may publish an older snapshot after a later transaction.
+   tombstone, to the local journal synchronously while holding the same transaction. Do not emit
+   every survivor. A failed emit is counted and leaves the local write intact; the reconciler
+   retries the current disk projection, and Phase 3's durable intent covers a delete.
+7. Commit and release the coordination transaction. No deferred emitter may publish an older
+   snapshot after a later transaction.
 
 Applying the change to raw rows is what preserves rows this manager cannot load, including signed
 test-identity rows it has no key for and malformed rows. `persistUsers()`, the whole-map save, is
@@ -258,6 +263,12 @@ Phase 1 tests fail on today's code and pass after the fix.
 
 **Integration, `tests/integration/user-manager-multiprocess.test.ts`:** N child processes each add M
 users concurrently, and all N×M are present afterwards with the file parseable throughout.
+Pause process A after it acquires `BEGIN IMMEDIATE` for more than 10 seconds, then start process B
+against the same file. B must time out without writing or appending an event. After A commits, B
+retries, reads A's committed bytes and appends its event after A's; both records survive. Repeat with
+A killed while holding the transaction, once before and once after the atomic rename: B then
+acquires and reads the actual JSON bytes left on disk, preserving A's change if the rename finished.
+This is the regression for lock ownership and journal order across processes.
 
 **Phase 2, `tests/unit/replicated-store-write-funnels.test.ts` and
 `tests/integration/replicated-store-multiprocess-writes.test.ts`:**
@@ -289,8 +300,9 @@ that rely on the constructor persisting `initialUsers` will need updating, which
 
 ## 7. Rollout and rollback
 
-- Phases 1 and 2 change no file format and need no migration. They are always on, because a data-loss
-  fix should not sit behind a flag. Rollback is a revert, and lock files left behind go stale harmlessly.
+- Phases 1 and 2 change no user-data file format and need no migration. They are always on, because a
+  data-loss fix should not sit behind a flag. Rollback is a revert; idle coordination databases left
+  behind contain no user data and do not hold a lock.
 - Phase 3 rides the existing per-store `multiMachine.stateSync.*` gates. A tombstone already emitted
   is a removal on every peer and a revert does not undo it, so start with one dev agent and watch the
   reconciler counters before widening.
