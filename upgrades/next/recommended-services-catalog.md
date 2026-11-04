@@ -1,0 +1,17 @@
+<!-- bump: patch -->
+
+## What Changed
+
+The list of recommended outside services now exists, each with what you get, what leaves the machine, the cost, the account and the backup. The recommended services route returns it, and the dashboard's "What I'm allowed to do" page shows it in a read-only section. All services are marked unavailable until their setup is proven. Four plans now exist for the backups that are still missing.
+
+## What to Tell Your User
+
+Your dashboard now lists the outside services I may recommend, and what each one involves. None can be set up yet, and you don't need to do anything.
+
+## Summary of New Capabilities
+
+`GET /recommended-services` now returns each service's benefit, data, cost, account, backup, backup status and availability.
+
+## Evidence
+
+`tests/unit/recommended-services-catalog.test.ts`, `tests/integration/recommended-services-routes.test.ts`, `tests/integration/console-static-serving.test.ts`, `tests/e2e/recommended-services-alive.test.ts`. Page viewed at phone and desktop sizes.

@@ -48,6 +48,10 @@ describe('recommended services routes', () => {
     expect(res.status).toBe(200);
     expect(res.body.offersLive).toBe(false);
     expect(res.body.services.map((s: { service: string }) => s.service)).toContain('jev');
+    const jev = res.body.services.find((s: { service: string }) => s.service === 'jev');
+    expect(jev).toMatchObject({ backupStatus: 'specified', available: false, choice: 'unset' });
+    expect(jev.dataLeaves).toContain('TypeSafe');
+    expect(jev).not.toHaveProperty('setupRecipe');
   });
 
   it('reports what offers still wait for', async () => {

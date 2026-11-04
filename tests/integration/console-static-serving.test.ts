@@ -89,6 +89,7 @@ describe('console served beside the legacy dashboard', () => {
       ['/dashboard/console/messages-model.js', 'javascript'],
       ['/dashboard/console/allowed.js', 'javascript'],
       ['/dashboard/console/allowed-model.js', 'javascript'],
+      ['/dashboard/console/services-model.js', 'javascript'],
       ['/dashboard/console/plans.js', 'javascript'],
       ['/dashboard/console/plans-model.js', 'javascript'],
       ['/dashboard/console/costs.js', 'javascript'],

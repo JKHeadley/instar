@@ -63,6 +63,9 @@ describe('recommended services: production wiring', () => {
     expect(list.status).toBe(200);
     expect(list.body.offersLive).toBe(false);
     expect(list.body).toMatchObject({ migrationComplete: false, firstResult: null });
+    const jev = list.body.services.find((row: { service: string }) => row.service === 'jev');
+    expect(jev).toMatchObject({ name: 'Jev (TypeSafe)', backupStatus: 'specified', choice: 'unset', available: false });
+    expect(list.body.services.filter((row: { available: boolean }) => row.available)).toEqual([]);
 
     const noPin = await request(app).post('/recommended-services/jev/no').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(noPin.status).toBe(403);
