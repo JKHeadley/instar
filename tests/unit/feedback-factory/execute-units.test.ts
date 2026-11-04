@@ -440,7 +440,7 @@ describe('canary judgement', () => {
     available: () => ({ ok: true, version: '0.0.77' }),
     run: async (cmd) => ({ exitCode: fn(cmd.command), signal: null, stdout: '', stderr: '', timedOut: false, outputCapped: false }),
   });
-  const confinedOk = (c: string) => (/^(git |node -e .*better-sqlite3|npm run lint|npx vitest)/.test(c) ? 0 : 1);
+  const confinedOk = (c: string) => (/^(git |node -e .*better-sqlite3|npm run lint|\.\/node_modules\/\.bin\/vitest)/.test(c) ? 0 : 1);
 
   it('every confined probe gets vitest/esbuild caches inside the attempt temp, never the denied agent home', async () => {
     const p = paths(tmp());
@@ -462,8 +462,8 @@ describe('canary judgement', () => {
         expect(env.TMPDIR).toBe(p.tmpDir);
         expect(env.VITEST_CACHE_DIR.startsWith(p.agentHome + '/')).toBe(true);
         expect(env.VITEST_CACHE_DIR.startsWith(p.tmpDir)).toBe(true);
-        // base-unit-smoke runs through npx, which reads and writes npm's cache under HOME — denied
-        // by the confinement for the same reason as the two above.
+        // npm run lint still uses npm's cache; the direct Vitest launch does not.
+        // Keep its cache within the confined temp directory for the lint command.
         expect(env.npm_config_cache).toBe(path.join(p.tmpDir, 'npm'));
         expect(env.npm_config_cache.startsWith(p.tmpDir)).toBe(true);
         expect(env.npm_config_update_notifier).toBe('false');
@@ -476,8 +476,8 @@ describe('canary judgement', () => {
     const fx = await prepareCanaryFixture(p, { secretsDir: path.join(p.agentHome, '.instar', 'canary'), configPath: path.join(p.agentHome, '.instar', 'config.json') });
     const failingSmoke: ConfinedRunner = {
       available: () => ({ ok: true, version: '0.0.77' }),
-      run: async (cmd) => (/^npx vitest/.test(cmd.command)
-        ? { exitCode: 1, signal: null, stdout: 'Test Files  1 failed', stderr: "EPERM: operation not permitted, mkdir '/home/agent/.npm'", timedOut: false, outputCapped: false }
+      run: async (cmd) => (/^\.\/node_modules\/\.bin\/vitest/.test(cmd.command)
+        ? { exitCode: 1, signal: null, stdout: 'Test Files  1 failed', stderr: "EPERM: operation not permitted, mkdir '/home/agent/.vite'", timedOut: false, outputCapped: false }
         : { exitCode: confinedOk(cmd.command), signal: null, stdout: '', stderr: '', timedOut: false, outputCapped: false }),
     };
     try {
