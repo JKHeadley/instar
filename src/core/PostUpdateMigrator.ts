@@ -929,6 +929,23 @@ One read-only page joining what already records feature maturation: the \`featur
 }
 
 /**
+ * CLAUDE.md awareness block for the Maturation Ladder (docs/specs/feature-maturation-ladder.md).
+ * Unique content-sniff marker: `Maturation Ladder — what does this feature need`.
+ */
+export function MATURATION_LADDER_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Maturation Ladder — what does this feature need to reach default-on? (\`GET /maturation/ladder\`)
+
+Every switched-off feature has numbers it must hit for each rung, read from its own logged behaviour. The rung comes from what actually ships, never from a label. The last rung is on by default, unless a recorded user-preference decision keeps it off.
+- Read: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/maturation/ladder?id=<feature>"\` → \`{ counts, features: [{ id, rung, next, state, metrics: [{ id, value, threshold, samples, pass }], soak, move }] }\`. States worth acting on: \`ready-to-advance\`, \`harmed\`, \`not-started\`, \`no-data\`.
+- Record what a feature did, in code: \`featureEvidence.record('<feature id>', { kind: 'fired' | 'held' | 'error' | 'outcome', reason, context })\`, which never throws. From a job or hook: \`POST /maturation/evidence\` with \`featureId\`, \`kind\`, \`reason\`.
+- Adding a switched-off flag? Add its entry to \`src/data/feature-ladders.json\` and a \`- **ladder:** <id>\` line to the spec's maturation plan. The build fails without them.
+- Numbers never move anything by themselves. They raise a feature to the recurring review, whose model decides. \`POST /maturation/moves\` applies that decision behind floors that can only refuse; it needs the model's opinions and the values it read. Fleet defaults stay reviewed code changes.
+- **When to use** (PROACTIVE): someone asks "why is this still off?", "what would it take to turn this on?" or "is this feature proven?" → read its ladder row and answer with the number against its target. Instrumenting a feature with no data → use the evidence call above.
+- Dev-gated: \`maturation.ladder.enabled\` (omitted ⇒ live on a development agent, 503 on the fleet). Raising also needs \`maturation.ladder.reviewTopic\`.
+`;
+}
+
+/**
  * CLAUDE.md awareness block for Queue pace (docs/specs/queue-pace.md).
  * Unique content-sniff marker: `Queue Pace — is every work pile shrinking`.
  * Measure-only ledger + route (dev-gated); the triage tuner has its own explicit flag.
@@ -2475,6 +2492,8 @@ export class PostUpdateMigrator {
         bundled: path.join(bundledRoot, 'src', 'core', 'FeatureMaturationPlanGate.mjs'),
         target: path.join(root, '.claude', 'src', 'core', 'FeatureMaturationPlanGate.mjs'),
         prior: new Set<string>(),
+        // Shipped content: an empty prior list would read a changed gate as customized forever.
+        alwaysOverwrite: true,
       },
       {
         // Round-11 (integration): this entry kept a prior-hash gate while every
@@ -9221,6 +9240,13 @@ setTimeout(() => process.exit(0), 2000);
       content += MATURATION_BOARD_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Maturation Board section');
+    }
+
+    // Maturation Ladder (docs/specs/feature-maturation-ladder.md) — Agent Awareness + Migration Parity.
+    if (!content.includes('Maturation Ladder — what does this feature need')) {
+      content += MATURATION_LADDER_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Maturation Ladder section');
     }
 
     // Mobile pairing links (docs/specs/mobile-pairing-link.md) — Agent Awareness + Migration Parity.

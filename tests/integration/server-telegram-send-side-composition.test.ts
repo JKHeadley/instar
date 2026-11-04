@@ -74,6 +74,7 @@ describe('server Telegram send-side composition', () => {
     fs.writeFileSync(path.join(tmpDir, 'jobs.json'), '[]');
 
     const state = new StateManager(stateDir);
+    state.set('agent-attention-topic', 88);
     const sessionConfig: SessionManagerConfig = {
       tmuxPath: '/usr/bin/tmux',
       claudePath: '/usr/local/bin/claude',
@@ -135,7 +136,8 @@ describe('server Telegram send-side composition', () => {
       await (scheduler as unknown as {
         alertOnConsecutiveFailures(j: JobDefinition, failures: number, error: string): Promise<void>;
       }).alertOnConsecutiveFailures(job, 2, 'spawn refused');
-      expect(genericSend).toHaveBeenCalledTimes(1);
+      expect(genericSend).not.toHaveBeenCalled();
+      expect(topicSend).toHaveBeenCalledWith(88, expect.stringContaining('Health Check'));
 
       await batcher.enqueue({
         tier: 'IMMEDIATE',
