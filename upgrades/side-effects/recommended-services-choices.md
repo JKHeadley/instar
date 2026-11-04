@@ -41,3 +41,10 @@ Revert the release. The ledger file and journal rows stay inert, and return to u
 ## Second-pass review
 
 **Concern raised, then fixed.** The independent reviewer found that replication wouldn't work on the fleet while the text claimed it would, that a failed legacy import could stop boot, that the store overrode an explicit off switch, and that this artifact understated what step 1 still needs. All four are addressed above. A re-check found `replicating` could read true with nothing replicating; it now reads the store and replication switches. The reviewer checked wiring order, signing, the merge fold, backup paths and journal kind lists and found them clean. Live replication between two real machines has not been run.
+
+## Test corrections from the first CI run
+
+Test files only, no runtime change, so this commit did not go back to the second-pass reviewer.
+
+- `tests/unit/capabilities-discoverability.test.ts`: the new route file is added to the list the check scans. Without it the capability entry read as a dead entry.
+- `tests/e2e/discovery-evaluator.test.ts`: this test never enabled the feature. Its consent record had an empty `dataImplications`, the registry refused it, and the refusal went unchecked. The feature stayed `interested`, and the test passed only because that lower priority pushed it past the 10-feature cap. Retiring two offers freed room and exposed this. The record is now valid and the test asserts that the transition succeeded.
