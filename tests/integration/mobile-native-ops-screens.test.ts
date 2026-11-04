@@ -204,6 +204,7 @@ describe('refused', () => {
       expect([...rule!.statuses]).toEqual(['active']);
       expect(rule!.body).toBe('none');
       expect(rule!.conversationRef).toBeUndefined();
+      expect(rule!.ownerOnly).toBe(true);
       expect(DEVICE_ALLOWLIST.some((x) => x.method !== 'GET' && x.re.test(p))).toBe(false);
     }
     // The raw Bearer routes stay off the allowlist.

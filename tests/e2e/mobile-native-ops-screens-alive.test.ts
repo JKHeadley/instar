@@ -21,6 +21,7 @@ import type { InstarConfig } from '../../src/core/types.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
+import { DEVICE_ALLOWLIST } from '../../src/server/mobilePairingRoutes.js';
 
 const HOST = 'echo-ops-e2e.example.dev';
 const servers: AgentServer[] = [];
@@ -119,6 +120,10 @@ describe('native ops screens — production wiring', () => {
       const raw = await send('GET', p);
       expect(raw.status, p).toBe(403);
       expect(raw.body.error).toBe('device-not-allowed');
+    }
+    // The production allowlist refuses non-owner phones at the authenticator too (ownerOnly).
+    for (const p of ['/mobile/jobs', '/mobile/commitments', '/mobile/machines']) {
+      expect(DEVICE_ALLOWLIST.find((x) => x.method === 'GET' && x.re.test(p))?.ownerOnly, p).toBe(true);
     }
     // The bearer token reads the same summaries.
     expect((await auth(request(app).get('/mobile/machines'))).status).toBe(200);

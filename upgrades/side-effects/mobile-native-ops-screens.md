@@ -11,7 +11,7 @@ Adds `src/server/mobileOpsRoutes.ts`: three read-only routes, `GET /mobile/jobs`
 
 ## Decision-point inventory
 
-- `DEVICE_ALLOWLIST` — modify — three exact GET paths added for active devices (authentication by path, existing model).
+- `DEVICE_ALLOWLIST` — modify — three exact GET paths added for active devices, flagged `ownerOnly` (the flag #2707 introduced), so the authenticator refuses a non-owner phone before the route's own owner check runs (two layers, same `owner-phone-required` answer).
 - `ownerOrBearer` (new, in each route) — add — authorization from the authenticated principal's resolved role; deterministic, fails closed.
 - Summary field allow-list — add — a fixed redaction contract; only listed fields leave the server.
 - Job status / promise ordering / machine state words — add — display classification only; gates nothing.
