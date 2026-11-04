@@ -30,6 +30,7 @@ import { renderSessions } from './sessions.js';
 import { renderMaturation, maturationTile } from './maturation-board.js';
 import { renderIdeas, ideasTile } from './ideas.js';
 import { paceCard } from './pace.js';
+import { takeTicket, signInAtBoot } from './ticket-model.js';
 import { sheetIsOpen, closeSheet, unlockCheck, machineIssue, MACHINES_PAGE, newArrival, refreshHeld } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
@@ -696,5 +697,14 @@ function previewBanner() {
   applyTheme(readTheme());
   await loadPreviewInfo();
   try { token = localStorage.getItem(TOKEN_KEY) || ''; } catch { token = ''; }
-  if (await validToken(token)) start(); else renderUnlock();
+  // An owner's paired phone opens signed in without the PIN (mobile-console-device-signin §3.5).
+  let ticket = '';
+  try { ticket = takeTicket(sessionStorage); } catch { ticket = ''; }
+  const signIn = await signInAtBoot({ storedToken: token, validToken, ticket, fetchFn: (p, o) => fetch(p, o) });
+  if (signIn.via === 'ticket') {
+    // Stored exactly as the PIN unlock stores it.
+    try { localStorage.setItem(TOKEN_KEY, signIn.token); } catch { /* storage blocked */ }
+  }
+  token = signIn.token;
+  if (signIn.via === 'pin') renderUnlock(); else start();
 })();

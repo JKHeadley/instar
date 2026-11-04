@@ -214,6 +214,11 @@ export interface DeviceRecord {
    */
   userId?: string;
   role?: 'owner' | 'msp';
+  /**
+   * The phone's presence key (docs/specs/mobile-console-device-signin.md §3.1): a second Secure
+   * Enclave P-256 public key that signs only after the device owner authenticates. Set once.
+   */
+  presenceKey?: string;
 }
 
 export interface PushRegistration {
@@ -322,6 +327,21 @@ export class DeviceRegistry {
     if (person.role === 'owner') delete d.role; else d.role = person.role;
     this.write(f);
     return d;
+  }
+
+  /**
+   * Record the phone's presence key once (mobile-console-device-signin §3.1). The same key again is
+   * a no-op ('same'); a different key is refused ('conflict'); only an active device may set it.
+   */
+  setPresenceKey(id: string, publicKey: string): 'set' | 'same' | 'conflict' | 'not-active' {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || d.status !== 'active') return 'not-active';
+    if (d.presenceKey === publicKey) return 'same';
+    if (d.presenceKey) return 'conflict';
+    d.presenceKey = publicKey;
+    this.write(f);
+    return 'set';
   }
 
   remove(id: string): void {
