@@ -12,6 +12,7 @@ import { consolePageUrl } from './dashboardPaths.js';
 import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
 import { stripViewSignatures } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
+import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
 import type { AutoExpiryHold } from '../core/types.js';
@@ -20510,13 +20511,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     if (!poolScopeAuthorized(req, res)) return;
+    res.json(await peersHealthPoolView(localBody, staleAfterMs));
+  });
+
+  // The ?scope=pool delivery-health merge, shared with the phone's GET /mobile/agents
+  // (docs/specs/mobile-native-plans-people.md).
+  async function peersHealthPoolView(localBody: { peers: unknown[]; instarVersion?: unknown } | null, staleAfterMs: number | undefined): Promise<Record<string, unknown>> {
     const qs = staleAfterMs !== undefined ? `?staleAfterMs=${staleAfterMs}` : '';
     const { peers: pool, failed, peersQueried } = await readReaperPoolPeers(`/threadline/peers/health${qs}`, isPeerHealthBody);
     const selfId = ctx.meshSelfId ?? 'local';
     const { rows, mixedVersion } = poolPeerRows(pool, (b) => b.peers as unknown[]);
-    const localRows = (localBody?.peers ?? []).map((p) => ({ ...p, machineId: selfId, machineNickname: null, instarVersion: localBody?.instarVersion ?? null }));
+    const localRows = (localBody?.peers ?? []).map((p) => ({ ...(p as Record<string, unknown>), machineId: selfId, machineNickname: null, instarVersion: localBody?.instarVersion ?? null }));
     const all = [...localRows, ...rows];
-    res.json({
+    return {
       scope: 'pool',
       local: localBody,
       peers: all,
@@ -20525,8 +20532,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       darkCount: all.filter((p) => (p as { dark?: boolean }).dark === true).length,
       mixedVersion,
       pool: { selfMachineId: selfId, peersQueried, peersOk: pool.length, failed },
-    });
-  });
+    };
+  }
+  // This machine's own delivery-health body, or null when the tracker is not initialized.
+  const localPeersHealthBody = () => {
+    const peers = ctx.a2aDeliveryTracker?.allPeerHealth({ queuedDarkAfterMsFor: darkAfterFor })?.map(withConnectedNow) ?? null;
+    return peers ? { peers, count: peers.length, staleCount: peers.filter((p) => p.stale).length, darkCount: peers.filter((p) => p.dark).length, instarVersion: peerHealthInstarVersion() } : null;
+  };
 
   // ── A2A inbound message-id ledger: Registry-First read (spec §2) ──────
   // GET /a2a/inbound-ids?sender=<key>&id=<id>[&scope=pool] — under the global
@@ -30236,12 +30248,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ mode: 'inject', present: block !== '', block, outcome: result?.outcome ?? 'fallback', reason: result?.reason });
   });
 
-  router.get('/preferences/session-context', async (_req, res) => {
+  // The /preferences/session-context answer, shared with the phone's GET /mobile/learned
+  // (docs/specs/mobile-native-plans-people.md). Returns status + body; never sends.
+  async function preferencesSessionContext(): Promise<{ status: number; body: Record<string, unknown> }> {
     try {
       const cfg = ctx.config.monitoring?.correctionLearning;
       if (cfg?.enabled !== true) {
-        res.status(503).json({ error: 'correction-learning disabled' });
-        return;
+        return { status: 503, body: { error: 'correction-learning disabled' } };
       }
       const { PreferencesManager } = await import('../core/PreferencesManager.js');
       const manager = new PreferencesManager(ctx.config.stateDir);
@@ -30275,8 +30288,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const { buildUnionSessionContext, PREF_STORE_KEY } = await import('../core/PreferencesReplicatedStore.js');
         const union = ctx.preferencesUnionReader.readAll(PREF_STORE_KEY);
         const out = buildUnionSessionContext(union, maxBytes);
-        res.json(out);
-        return;
+        return { status: 200, body: out as unknown as Record<string, unknown> };
       }
       // MULTI-MACHINE-SEAMLESSNESS-SPEC §WS2.1 — when the pool flag is ON and we
       // hold replicas from peers, inject the MERGED (collapse-by-dedupeKey) view
@@ -30304,14 +30316,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           { schemaVersion: PREFERENCES_SCHEMA_VERSION, preferences: merged },
           maxBytes,
         );
-        res.json({ present: block.length > 0, block, count: merged.length, scope: 'mesh' });
-        return;
+        return { status: 200, body: { present: block.length > 0, block, count: merged.length, scope: 'mesh' } };
       }
       const result = manager.sessionContext(maxBytes);
-      res.json(result);
+      return { status: 200, body: result as unknown as Record<string, unknown> };
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read preferences' });
+      return { status: 500, body: { error: err instanceof Error ? err.message : 'Failed to read preferences' } };
     }
+  }
+
+  router.get('/preferences/session-context', async (_req, res) => {
+    const r = await preferencesSessionContext();
+    res.status(r.status).json(r.body);
   });
 
   // ── Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) ──
@@ -37462,6 +37478,75 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   }
 
+  // Native Plans / What I've learned about you / Other agents reads for the iPhone app
+  // (docs/specs/mobile-native-plans-people.md): owner phone or bearer; trimmed summaries of the same
+  // reads the console's Plans, Learned and Other agents pages use. Read-only.
+  {
+    /** Peer answers larger than this are not parsed; the peer counts as not answering. */
+    const PEER_BODY_MAX_CHARS = 2_000_000;
+    const onlinePeers = () => (ctx.resolvePeerUrls?.() ?? []).filter((p) => ctx.machinePoolRegistry?.getCapacity(p.machineId)?.online !== false);
+    // One online peer's list read: its rows, switched off there (503), or not answering.
+    // `offError`: the peer's documented "switched off here" 503 error; any other 503 is not answering.
+    const peerList = async (p: Parameters<typeof poolPeerFetch>[1], path: string, pick: (b: Record<string, unknown>) => unknown, offError: string): Promise<PlansPeoplePeerList> => {
+      try {
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, path, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+          signal: AbortSignal.timeout(5000),
+        });
+        const text = await r.text();
+        if (r.status === 503) {
+          let error: unknown = null;
+          try { error = (JSON.parse(text) as { error?: unknown }).error; } catch { /* @silent-fallback-ok — an unreadable 503 body is "not answering", returned below */ }
+          return { machineId: p.machineId, state: error === offError ? 'off' : 'unreached' };
+        }
+        if (!r.ok) return { machineId: p.machineId, state: 'unreached' };
+        if (text.length > PEER_BODY_MAX_CHARS) return { machineId: p.machineId, state: 'unreached' };
+        const items = pick(JSON.parse(text) as Record<string, unknown>);
+        return Array.isArray(items) ? { machineId: p.machineId, state: 'ok', items } : { machineId: p.machineId, state: 'unreached' };
+      } catch {
+        // @silent-fallback-ok — a peer that is down, slow or unreadable is named as not answering in the answer.
+        return { machineId: p.machineId, state: 'unreached' };
+      }
+    };
+    mountMobilePlansPeopleRoutes(router, {
+      initiatives: () => (ctx.initiativeTracker ? ctx.initiativeTracker.list() : null),
+      offlineMachineIds: () => {
+        if (!ctx.meshSelfId) return [];
+        const online = new Set([...onlinePeers().map((p) => p.machineId), ctx.meshSelfId]);
+        return (ctx.machinePoolRegistry?.getCapacities() ?? []).map((m) => m.machineId).filter((id) => !online.has(id));
+      },
+      peerInitiatives: () => Promise.all(onlinePeers().map((p) => peerList(p, '/initiatives', (b) => b.items, 'Initiative tracker not configured'))),
+      preferences: async () => {
+        const r = await preferencesSessionContext();
+        return r.status === 200 ? { ok: true, data: r.body } : { ok: false, off: r.status === 503 };
+      },
+      corrections: (limit) => {
+        if (!ctx.correctionLedger) return { ok: false, off: true };
+        const records = ctx.correctionLedger.list({ limit });
+        return { ok: true, data: { records: records.map((x) => CorrectionLedger.toApiView(x)), totalRecords: ctx.correctionLedger.countRecords() } };
+      },
+      peerCorrections: (limit) => Promise.all(onlinePeers().map((p) => peerList(p, `/corrections?limit=${limit}`, (b) => b.records, 'correction-learning disabled'))),
+      pairings: async () => {
+        if (!verifiedPairingRouteEnabled()) return { state: 'off' };
+        if (!ctx.unifiedTrust?.trustManager) return { state: 'unavailable' };
+        const view = await pairingPoolMerge(buildLocalPairings());
+        const failed = Array.isArray((view.pool as { failed?: unknown } | undefined)?.failed) ? ((view.pool as { failed: Array<{ machineId: string; error: string }> }).failed) : [];
+        return { state: 'ok', rows: Array.isArray(view.pairings) ? view.pairings : [], failedMachineIds: failed.filter((f) => f.error !== 'offline').map((f) => f.machineId) };
+      },
+      delivery: async () => {
+        const local = localPeersHealthBody();
+        const view = await peersHealthPoolView(local, undefined);
+        const failed = (view.pool as { failed?: Array<{ machineId: string; error?: string }> }).failed ?? [];
+        if (!local && !(view.peers as unknown[]).length && !ctx.resolvePeerUrls?.()?.length) return { state: 'off' };
+        // An offline machine was not asked; it is not "did not answer" (same as the pairing read).
+        return { state: 'ok', rows: view.peers as unknown[], failedMachineIds: failed.filter((f) => f.error !== 'offline').map((f) => f.machineId) };
+      },
+      channels: () => channelRegistryReport(),
+      nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+      bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    });
+  }
+
   // P1.3 (pre-limit half) — proactive swap status + on-demand check. The monitor
   // moves a session OFF an account BEFORE it walls (vs. the reactive swap, which
   // only fires after). Literal segments registered before GET /subscription-pool/:id.
@@ -40343,7 +40428,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // "Which ways of reaching a peer exist, and which work right now?" The channel SET is code-defined,
   // so a channel that failed to construct still gets a row saying so — see src/core/channelRegistry.ts
   // for why that invariant is the whole point.
-  router.get('/channels', async (_req, res) => {
+  // The /channels report, shared with the phone's GET /mobile/agents
+  // (docs/specs/mobile-native-plans-people.md). Never throws: a failure is the registry's own verdict.
+  async function channelRegistryReport(): Promise<Record<string, unknown>> {
     try {
       const relayClient = ctx.threadlineRelayClient;
       const defs = buildChannelDefinitions({
@@ -40401,17 +40488,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             : null,
       });
       const report = await resolveChannels([...defs, ...userDefs]);
-      return res.status(200).json({ advisory: true, ...report });
+      return { advisory: true, ...report };
     } catch (error) {
       // A registry that 500s teaches nothing. Report the failure as the registry's own verdict.
-      return res.status(200).json({
+      return {
         advisory: true,
         channels: [],
         summary: { total: 0, working: 0, unusable: 0, unknown: 0 },
         error: `channel registry could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
         generatedAt: new Date().toISOString(),
-      });
+      };
     }
+  }
+
+  router.get('/channels', async (_req, res) => {
+    res.status(200).json(await channelRegistryReport());
   });
 
   // ── Agent identity (a2a-single-agent-identity §1.2 / §Multi-machine posture) ──
