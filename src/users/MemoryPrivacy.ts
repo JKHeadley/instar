@@ -206,6 +206,8 @@ export class MemoryPrivacy {
       // Until the bot id is known there is no baseline to count against, so only
       // what clearly shows a second person counts, and nothing is recorded as a flip.
       if (!this.state.baselineDone) {
+        // People the operator named count as one here too; the bot may be one extra id.
+        if (this.deps.config().sharedMemoryPeople?.length) return this.reachableCount() > 2;
         return baselineFromConfig({ users: this.deps.users(), ...this.deps.reachable(), slackBotUnknown: true }).clearlySeveral;
       }
       many = this.reachableCount() > 1;

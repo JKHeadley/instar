@@ -19,7 +19,7 @@ The bigger change is what a session can reach. The proven leak came from an ordi
 ## Safeguards
 
 - If the agent can't tell who a conversation is for, it loads no memory.
-- If the sandbox can't run, the agent sends a fixed reply and tells the owner how to fix it. It doesn't run unprotected.
+- If the sandbox can't run, the agent first tries to set it up itself. If it still can't, it sends a fixed reply and tells the owner how to fix it. It doesn't run unprotected.
 - An agent with one person is unchanged in that person's private chats, and a test checks that its sessions start exactly as they do today. In a channel with other readers it now keeps private memory out, on purpose.
 - Old memory isn't moved or rewritten. On a multi-person agent it becomes visible only in the owner's private chats, because the owner can already read those files.
 - An operator can name people who share memory freely. Luna will name Justin and Adriana. If anyone else can reach the agent, the protection turns on by itself.
@@ -27,7 +27,7 @@ The bigger change is what a session can reach. The proven leak came from an ordi
 
 ## What it costs
 
-Outside the owner's private chats, the agent loses its search-based recall and doesn't learn across people. Private folders stay on one machine, so if a conversation moves to another machine it starts with an empty folder, never a wider one. On standard Ubuntu the sandbox needs one setup step as an administrator.
+Outside the owner's private chats, the agent loses its search-based recall and doesn't learn across people. Private folders stay on one machine, so if a conversation moves to another machine it starts with an empty folder, never a wider one. On standard Ubuntu the sandbox needs two packages and one setup step as an administrator; the agent does these itself if it has passwordless sudo.
 
 ## What it does not do
 

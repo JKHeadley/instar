@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-04T11:24:24.025Z",
+  "slug": "memory-privacy-sandbox-setup",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/users/MemoryPrivacy.ts",
+      "src/users/wireMemoryPrivacy.ts"
+    ],
+    "addedLines": 3,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -28,6 +28,19 @@ profile bwrap /usr/bin/bwrap flags=(unconfined) {
 }
 `;
 
+/**
+ * Best effort, with no prompt. A fresh Ubuntu server has neither tool, and without
+ * them every scoped conversation gets the fixed reply. Other distributions are left
+ * to the operator; the degradation report names the fix.
+ */
+export function installSandboxPackages(): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile('sudo', ['-n', 'apt-get', 'install', '-y', '-qq', 'bubblewrap', 'socat'],
+      { timeout: 120_000, env: { ...process.env, DEBIAN_FRONTEND: 'noninteractive' } },
+      (err) => resolve(!err));
+  });
+}
+
 /** Best effort, with no prompt: `sudo -n` either works or does nothing. */
 export function installBwrapProfile(): Promise<boolean> {
   return new Promise((resolve) => {

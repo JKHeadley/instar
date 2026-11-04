@@ -9,7 +9,7 @@ import path from 'node:path';
 import type { UserProfile } from '../core/types.js';
 import type { SessionManager } from '../core/SessionManager.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
-import { claudeMeetsFloor, installBwrapProfile, memorySandboxWorks } from '../core/memorySandboxProbe.js';
+import { claudeMeetsFloor, installBwrapProfile, installSandboxPackages, memorySandboxWorks } from '../core/memorySandboxProbe.js';
 import { MemoryInboundTracker } from './MemoryInboundTracker.js';
 import { MemoryPrivacy, type MemoryPrivacyConfig, type ReachableLists } from './MemoryPrivacy.js';
 
@@ -110,6 +110,7 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
   const ready = probe().then(async (first) => {
     let works = first;
     if (!works && process.platform === 'linux' && !input.probe) {
+      await installSandboxPackages();
       await installBwrapProfile();
       works = await probe();
     }
@@ -121,7 +122,7 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
         fallback: 'Those conversations get a fixed reply; nothing runs unprotected',
         reason: 'Why: the sandbox did not start on this machine',
         impact: process.platform === 'linux'
-          ? 'Install bubblewrap and socat, and on Ubuntu 24.04 add the bubblewrap AppArmor profile (one root step).'
+          ? 'Everyone but the owner in private chats gets a fixed reply instead of an answer. To fix it, install bubblewrap and socat as an administrator, and on Ubuntu 24.04 add the bubblewrap AppArmor profile.'
           : 'This platform has no supported sandbox.',
       });
     }
