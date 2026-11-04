@@ -1236,6 +1236,9 @@ export interface RouteContext {
   /** ProactiveSwapMonitor (P1.3, pre-limit half) — moves a session off an account
    *  BEFORE it walls. Optional; the routes report enabled:false when absent. */
   proactiveSwapMonitor?: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor;
+  /** UsageWallRescue (usage-wall-rescue) — moves a session at its account's usage
+   *  wall to an account with room. Optional; the route reports enabled:false. */
+  usageWallRescue?: import('../core/UsageWallRescue.js').UsageWallRescue;
   /** InUseAccountResolver — which pool account the agent is currently running on
    *  (for the dashboard "in use" badge). Optional; the route lazily constructs a
    *  default when absent so it never 503s. */
@@ -37677,6 +37680,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     res.json({ enabled: true, ...ctx.proactiveSwapMonitor.status() });
+  });
+
+  // usage-wall-rescue status: the switch, whether it is effective (2+ usable
+  // accounts), spawn tagging posture, and the last outcomes — the answer to
+  // "why didn't my walled session move?". Read-only. Literal segment registered
+  // before GET /subscription-pool/:id.
+  router.get('/subscription-pool/wall-rescue', (_req, res) => {
+    if (!ctx.usageWallRescue) {
+      res.json({ enabled: false });
+      return;
+    }
+    res.json({ enabled: true, ...ctx.usageWallRescue.status() });
   });
 
   // Run ONE proactive-swap pass now (the deterministic "show me it works" lever):

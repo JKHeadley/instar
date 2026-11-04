@@ -47,6 +47,7 @@ import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
 import { decideKeyRefresh, REFRESH_MAX_ATTEMPTS } from '../core/ClaudeKeyHealth.js';
 import { raiseDue } from '../monitoring/MaturationLadder.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
+import { decideRescueGate, WALL_RESCUE_LIMITS } from '../core/UsageWallRescue.js';
 import { nextBreakerState, RECONCILE_LIMITS } from '../core/ReplicatedStoreReconciler.js';
 import { findStuckPreparingRuns, PREPARING_NOTICE_MAX_ATTEMPTS } from '../core/AutonomousStartAdmission.js';
 import type { AutonomousRunRecord } from '../core/AutonomousRunStore.js';
@@ -3188,6 +3189,46 @@ const claudeKeySessionRefresh: SelfActionController = {
  * session, then it stays put. Moves are also serialised one per 30 s per machine (not modelled:
  * a stricter bound on the burst, not on the total).
  */
+/**
+ * usage-wall-rescue — UsageWallRescue's real gate (decideRescueGate, the only
+ * time gate the class uses; docs/specs/usage-wall-rescue.md) under the worst
+ * case: the watchdog reports the same session at its usage wall on every
+ * 5-minute tick, forever; an account with room always exists; and every move
+ * is refused (targetAlwaysRejects). Brakes: a 10-minute base interval,
+ * doubling back-off per failed move, a breaker after 5 failed moves holding 24
+ * hours, 12 moves/hour per machine. Over the horizon (and twice it) the count
+ * settles at 5 for the one session.
+ */
+const usageWallRescueMove: SelfActionController = {
+  id: 'usage-wall-rescue',
+  actionVerb: 'account-swap',
+  models: 'src/core/UsageWallRescue.ts (decideRescueGate: base interval, doubling back-off per failed move, 5-failure breaker for 24h, 12/hour per machine)',
+  modelsPath: 'src/core/UsageWallRescue.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The back-off and breaker are in memory; a server restart (never caused by this controller) starts a fresh budget, still capped at 5 failed moves per session and 12 per hour.' },
+  boundK: WALL_RESCUE_LIMITS.breakerThreshold,
+  perTargetBoundK: WALL_RESCUE_LIMITS.breakerThreshold,
+  ticks: 100,
+  tickMs: 5 * 60_000,
+  makeUnderPressure(f, sink) {
+    const TARGET = 'walled-session';
+    let failedMoves = 0;
+    let lastFailedAtMs: number | undefined;
+    let lastCheckAtMs: number | undefined;
+    const moveTimesMs: number[] = [];
+    return {
+      tick() {
+        sink.considered += 1;
+        const nowMs = f.clock.nowMs();
+        if (decideRescueGate({ failedMoves, lastFailedAtMs, lastCheckAtMs, moveTimesMs, nowMs, limits: WALL_RESCUE_LIMITS }) !== null) return;
+        lastCheckAtMs = nowMs;
+        moveTimesMs.push(nowMs);
+        sink.emit({ verb: 'account-swap', target: TARGET });
+        if (f.targetAlwaysRejects()) { failedMoves += 1; lastFailedAtMs = nowMs; } else { failedMoves = 0; lastFailedAtMs = undefined; }
+      },
+    };
+  },
+};
+
 const deviceLimitSessionMove: SelfActionController = {
   id: 'device-limit-session-move',
   actionVerb: 'account-swap',
@@ -3800,6 +3841,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   threadlineConnectEnableRestart,
   interactiveLoginExpiredSwap,
   deviceLimitSessionMove,
+  usageWallRescueMove,
   replicatedStoreReconcilerRetry,
   preparingRunWatchdog,
   machineWedgeNotice,
