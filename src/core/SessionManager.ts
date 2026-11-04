@@ -33,7 +33,7 @@ import { captureOriginHookSettings } from '../messaging/telegram-origin/OriginNa
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
 // ONE definition, imported by both this probe and the stand-down drain predicate
 // (a leaf module, so no load-order cycle — see baselineProcessPatterns.ts).
-import { BASELINE_PROCESS_PATTERNS, CLAUDE_TOOL_SHELL_PATTERN, isToolShellCommand } from './baselineProcessPatterns.js';
+import { BASELINE_PROCESS_PATTERNS, CLAUDE_TOOL_SHELL_PATTERN, isMcpLauncherShell, isToolShellCommand } from './baselineProcessPatterns.js';
 import { chunkLiteralForTmux, buildLiteralSendArgs } from './tmuxLiteralSend.js';
 import { isReadyPromptTail, classifyPaneReadiness, type PaneReadiness } from './claudeReadinessProbe.js';
 import { RerouteRefusedError } from './rerouteRefusedError.js';
@@ -111,6 +111,7 @@ import {
   computeGrokInteractiveOptIn,
 } from './frameworkSessionLaunch.js';
 import { frameworkFromEnv } from './intelligenceProviderFactory.js';
+import { codexSupportsGpt61Sol } from './codexCapabilities.js';
 import { decideSdkVsSubscription, DEFAULT_SAFETY_MARGIN_FRACTION } from '../providers/costAwareRouting.js';
 import {
   resolveCodexLaunchModelWithUsage,
@@ -1780,6 +1781,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
     });
     fs.writeFileSync(settingsPath, JSON.stringify(settings), { mode: 0o600 });
     return { audience, placeKey, dropResume, scopeDir, settingsPath };
+  }
+
+  /**
+   * With memory privacy off, end any session still inside the boundary. It would keep
+   * its sandbox and its limited token through a restart, so turning the setting off
+   * would not reach it. Runs at boot. The next message starts an ordinary session.
+   */
+  async retireBoundedSessionsWhenPrivacyOff(): Promise<string[]> {
+    const wiring = this.memoryPrivacyWiring;
+    if (!wiring || wiring.privacy.enabled) return [];
+    const retired: string[] = [];
+    for (const session of this.listRunningSessions()) {
+      if (!session.memoryScopeDir) continue;
+      if (await this.retireMemorySession(session)) retired.push(session.name);
+    }
+    return retired;
   }
 
   /**
@@ -5667,6 +5684,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // agent's own command line, which may merely mention a baseline name
     // (`caffeinate`, `mcp-stdio-entry`, a bare `mcp`, …).
     const activeProcesses = descendants.filter(p => {
+      if (isMcpLauncherShell(p.command, processes.get(processes.get(p.pid)?.ppid ?? '')?.command)) return false;
       if (isToolShellCommand(p.command)) return true;
       return !BASELINE_PROCESS_PATTERNS.some(pattern => pattern.test(p.command));
     });
@@ -7283,9 +7301,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
     });
     if (decision.swapped) {
       console.log(`[SessionManager] ${decision.reason}`);
-      return decision.model;
     }
-    return requestedModel;
+    const selected = decision.swapped ? decision.model : requestedModel;
+    if (framework === 'codex-cli' && selected === 'gpt-6.1-sol') {
+      const binary = resolveFrameworkBinaryPath({
+        framework,
+        frameworkBinaryPaths: this.config.frameworkBinaryPaths,
+        claudePath: this.config.claudePath,
+        configuredFramework: this.config.framework,
+      });
+      if (!binary || !codexSupportsGpt61Sol(binary)) {
+        console.warn('[SessionManager] This machine has an older Codex CLI; using gpt-6-sol for this session.');
+        return 'gpt-6-sol';
+      }
+    }
+    return selected;
   }
 
   /**

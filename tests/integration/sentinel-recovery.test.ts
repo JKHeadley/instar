@@ -44,6 +44,28 @@ afterEach(() => {
 });
 
 describe('DeliveryFailureSentinel — recovery happy path', () => {
+  it('delivers the oldest queued reply in a topic first after restart', async () => {
+    const store = PendingRelayStore.open('echo', stateDir);
+    const older = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const newer = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    store.enqueue({ delivery_id: older, topic_id: 136110, text_hash: 'a'.repeat(64), text: 'older answer',
+      http_code: 503, attempted_port: 4042, attempted_at: '2026-11-04T01:31:00.000Z' });
+    store.enqueue({ delivery_id: newer, topic_id: 136110, text_hash: 'b'.repeat(64), text: 'newer answer',
+      http_code: 503, attempted_port: 4042, attempted_at: '2026-11-04T01:48:00.000Z' });
+    const postReply = vi.fn(async () => ({ status: 200, body: '{"ok":true}' }));
+    const sentinel = new DeliveryFailureSentinel({ store, configPath,
+      readConfig: () => ({ port: 4042, authToken: 'tok', agentId: 'echo' }), bootId: 'restart',
+      toneGate: null, postReply, now: () => Date.parse('2026-11-04T02:27:00.000Z'),
+      whoamiCache: new WhoamiCache({ fetchFn: async () => ({ agentId: 'echo', port: 4042 }) }),
+    });
+    await sentinel.start();
+    expect(postReply).toHaveBeenCalledTimes(1);
+    expect(postReply.mock.calls[0][4]).toBe('older answer');
+    expect(store.findByDeliveryId(older)?.state).toBe('delivered-recovered');
+    expect(store.findByDeliveryId(newer)?.state).toBe('queued');
+    await sentinel.stop(); store.close();
+  });
+
   it('two stale drain reads of one delivery_id produce exactly one recovery POST', async () => {
     const store = PendingRelayStore.open('echo', stateDir);
     const id = '01010101-0101-4101-8101-010101010101';

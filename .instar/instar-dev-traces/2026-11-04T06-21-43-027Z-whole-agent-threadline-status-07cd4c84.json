@@ -1,0 +1,46 @@
+{
+  "version": 3,
+  "slug": "whole-agent-threadline-status",
+  "sessionId": "a7817f74-6b0c-4a81-9c98-6bcac06e6834",
+  "timestamp": "2026-11-04T06:21:43.027Z",
+  "artifactPath": "upgrades/side-effects/whole-agent-threadline-status.md",
+  "artifactSha256": "379fcbc5dedaeb4d08f1013a83cd3fc137f2bebf6cccbcd1d3c47b9013a53c73",
+  "specPath": "docs/specs/a2a-cross-machine-route.md",
+  "coveredFiles": [
+    "scripts/lint-machine-local-justification.js",
+    "skills/instar-dev/templates/side-effects-artifact.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/channelRegistry.ts",
+    "src/core/instarChannels.ts",
+    "src/scaffold/templates.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "src/threadline/ThreadlineEndpoints.ts",
+    "src/threadline/ThreadlineMCPServer.ts",
+    "src/threadline/ThreadlineMcpHttpService.ts",
+    "src/threadline/agentRelayStatus.ts",
+    "src/threadline/mcp-http-client.ts",
+    "src/threadline/mcp-stdio-entry.ts",
+    "src/threadline/relayForward.ts",
+    "tests/unit/a2a-cross-machine-route.test.ts",
+    "tests/unit/agent-relay-status.test.ts",
+    "tests/unit/channel-registry.test.ts",
+    "tests/unit/lint-machine-local-justification.test.ts",
+    "tests/unit/threadline-mcp-agent-discovery.test.ts",
+    "tests/unit/threadline/threadline-health-relay-state.test.ts",
+    "upgrades/next/whole-agent-threadline-status.eli16.md",
+    "upgrades/side-effects/whole-agent-threadline-status.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Cross-machine status projection and MCP discovery repair apply the approved A2A forwarding design; route security and topology were independently reviewed.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

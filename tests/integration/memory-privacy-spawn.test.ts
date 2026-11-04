@@ -59,7 +59,7 @@ describe('Memory privacy — real spawn path (integration)', () => {
   async function wire() {
     const wiring = wireMemoryPrivacy({
       projectDir, stateDir: path.join(projectDir, '.instar'), projectName: 'proof', instarRoot: path.join(home, '.instar'),
-      framework: () => 'claude-code', memoryPrivacy: () => ({}), messaging: () => messaging,
+      framework: () => 'claude-code', memoryPrivacy: () => ({ enabled: true }), messaging: () => messaging,
       sessionManager: manager, probe: async () => sandbox, slackBotUserId: () => 'B',
     });
     await wiring.ready;

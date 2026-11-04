@@ -377,18 +377,18 @@ export class DeliveryFailureSentinel extends EventEmitter {
     for (const [topicId, rows] of grouped.entries()) {
       if (rows.length > this.cfg.stampedeThreshold) {
         await this.handleStampede(topicId, rows);
-        toProcess.push(rows[rows.length - 1]); // most recent
+        toProcess.push(rows[rows.length - 1]); // the stampede policy explicitly drops older rows
         continue;
       }
       // Per-topic rate cap: ≤1 delivery per topic per perTopicRateMs.
-      // Drop all but the oldest queued row for this topic on this tick.
+      // Send only the oldest queued row for this topic on this tick.
       const last = this.lastTopicDelivery.get(topicId) ?? 0;
       if (this.deps.now() - last < this.cfg.perTopicRateMs) {
         continue; // skip this topic this tick
       }
-      // Otherwise process all rows on this topic up to maxConcurrent
-      // total — most-recent first per stampede semantics.
-      toProcess.push(rows[rows.length - 1]);
+      // Keep ordinary queued replies in their original order. The stampede
+      // branch above is the only policy that intentionally keeps the latest.
+      toProcess.push(rows[0]);
       // Also queue the older ones for next tick — they'll be re-selected
       // because we don't transition them on this pass.
     }

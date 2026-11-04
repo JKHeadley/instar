@@ -25,6 +25,7 @@ import { LlmAbortedError } from './LlmQueue.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 import { looksActivelyWorking } from './sentinelWiring.js';
+import { isPaneChromeLine } from './rateLimitDetection.js';
 import { OriginAuthorCall, deterministicAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 import type { OriginAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 
@@ -36,6 +37,8 @@ import type { OriginAutomationAuthor } from '../messaging/telegram-origin/Origin
  * (the one-voice silent-suppress, distinct from null = "not stuck, normal path").
  */
 const PRESENCE_SUPPRESS = Symbol('presence-proxy-suppress');
+/** The session is at a usage wall and the conversation was already told directly. */
+const QUOTA_ALREADY_TOLD = Symbol('presence-proxy-quota-already-told');
 
 export interface PresenceProxyConfig {
   stateDir: string;
@@ -149,6 +152,17 @@ export interface PresenceProxyConfig {
    * scrolled away. Signal-only for Tier 1/2; Tier 3 may invoke the existing
    * recovery callback exactly as it does for a live-tail context match. */
   hasContextExhaustionLatch?: (topicId: number) => boolean;
+  /**
+   * Usage-wall wording override (usage-wall-rescue). When the session is at its
+   * account's usage wall but another subscription account has room, the wall
+   * is being solved by moving the session, so "paused until the quota resets"
+   * would be untrue. Returns the plain replacement sentence, null to keep the
+   * standard "paused until reset" notice, or false when the conversation was
+   * already told about this wall directly (say nothing more; the tier chain
+   * ends exactly as if the notice had been sent).
+   * Absent → the standard notice, exactly as before.
+   */
+  describeQuotaWall?: (sessionName: string) => string | false | null;
 
   /**
    * Honest turn-receipts: when a recovery sentinel (ContextWedgeSentinel,
@@ -437,6 +451,11 @@ export function detectQuotaExhaustion(snapshot: string): string | null {
   const substantiveAfter = linesAfterQuota.filter(line => {
     const trimmed = line.trim();
     if (!trimmed) return false;
+    // Claude Code's own furniture under the banner — the auto-continue notice
+    // ("Continuing automatically at 8am · esc to cancel …"), the input box,
+    // the permission-mode status line — is not the session doing work. Counting
+    // it as output read a live wall as "recovered" (fb-d2862f4d-b52).
+    if (isPaneChromeLine(trimmed)) return false;
     // Also skip lines that are themselves quota messages
     for (const pattern of QUOTA_EXHAUSTION_PATTERNS) {
       if (pattern.test(trimmed)) return false;
@@ -450,7 +469,11 @@ export function detectQuotaExhaustion(snapshot: string): string | null {
   // Quota error is the last substantive content — it's current
   const recentOutput = recentLines.join('\n');
   const resetMatch = recentOutput.match(/resets?\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*\([^)]+\))/i);
-  const resetTime = resetMatch ? resetMatch[1] : null;
+  // Current banners print a bare time ("limit resets 8am") with no timezone.
+  const bareResetMatch = resetMatch
+    ? null
+    : recentOutput.match(/\bresets?\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i);
+  const resetTime = resetMatch ? resetMatch[1] : bareResetMatch ? bareResetMatch[1] : null;
   if (resetTime) {
     return `The agent has hit its Claude API usage limit. Quota resets ${resetTime}. The session is paused until then — no work is being done.`;
   }
@@ -1279,6 +1302,26 @@ export class PresenceProxy {
     return elapsed >= this.tier3DelayMs * 0.9 ? '5-minute check' : 'Check';
   }
 
+  /**
+   * The usage-wall notice for this session, or null when the pane is not at a
+   * wall. When another account has room the wiring supplies a "moving you to
+   * another account" sentence instead of "paused until reset".
+   */
+  private quotaWallMessage(sessionName: string, snapshot: string): string | typeof QUOTA_ALREADY_TOLD | null {
+    const standard = detectQuotaExhaustion(snapshot);
+    if (!standard) return null;
+    let override: string | false | null = null;
+    try {
+      override = this.config.describeQuotaWall?.(sessionName) ?? null;
+    } catch {
+      // @silent-fallback-ok: the override is wording only; the standard
+      // notice is still true enough to send.
+      override = null;
+    }
+    if (override === false) return QUOTA_ALREADY_TOLD;
+    return override ?? standard;
+  }
+
   private async fireTier1(topicId: number, state: PresenceState): Promise<void> {
     const lines = this.config.maxTmuxLines?.t1 ?? 50;
     const raw = this.config.captureSessionOutput(state.sessionName, lines);
@@ -1297,7 +1340,13 @@ export class PresenceProxy {
 
     // ── Quota exhaustion: detect before LLM call (saves tokens + gives clear message) ──
     if (snapshot) {
-      const quotaMessage = detectQuotaExhaustion(snapshot);
+      const quotaMessage = this.quotaWallMessage(state.sessionName, snapshot);
+      if (quotaMessage === QUOTA_ALREADY_TOLD) {
+        if (state.cancelled) return;
+        state.tier1FiredAt = Date.now();
+        this.persistState(topicId, state);
+        return; // already told directly; nothing more to assess
+      }
       if (quotaMessage) {
         message = `${this.prefix} ${quotaMessage}`;
         // Skip LLM, cancel further tiers — quota is a definitive state, not ambiguous
@@ -1440,7 +1489,13 @@ export class PresenceProxy {
 
     // ── Quota exhaustion: check before LLM call ──
     if (snapshot) {
-      const quotaMessage = detectQuotaExhaustion(snapshot);
+      const quotaMessage = this.quotaWallMessage(state.sessionName, snapshot);
+      if (quotaMessage === QUOTA_ALREADY_TOLD) {
+        if (state.cancelled) return;
+        state.tier2FiredAt = Date.now();
+        this.persistState(topicId, state);
+        return;
+      }
       if (quotaMessage) {
         if (state.cancelled) return;
         state.tier2FiredAt = Date.now();
@@ -1617,7 +1672,15 @@ export class PresenceProxy {
 
     // ── Quota exhaustion: check before LLM call ──
     if (snapshot) {
-      const quotaMessage = detectQuotaExhaustion(snapshot);
+      const quotaMessage = this.quotaWallMessage(state.sessionName, snapshot);
+      if (quotaMessage === QUOTA_ALREADY_TOLD) {
+        state.tier3FiredAt = Date.now();
+        state.tier3Assessment = 'waiting';
+        this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+        this.persistState(topicId, state);
+        this.cleanupState(topicId);
+        return;
+      }
       if (quotaMessage) {
         if (state.cancelled) {
           this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');

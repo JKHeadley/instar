@@ -29,6 +29,35 @@ export const PROOF_DUPLICATE_SETTLE_MS = 30_000;
 /** Longest wait on any one step that could otherwise never settle. */
 export const PROOF_MOVE_TIMEOUT_MS = 120_000;
 export const PROOF_IO_TIMEOUT_MS = 30_000;
+/** A session is settled after this many idle reads in a row, this far apart. */
+export const PROOF_SETTLED_READS = 6;
+export const PROOF_SETTLED_INTERVAL_MS = 5_000;
+
+/**
+ * A session still starting reads as idle: no working footer, no child process, and its
+ * opening brief not yet delivered. One idle read then lets the move start on a session
+ * about to go active, and the drain aborts it. Found live on 2026-11-04, Mama PC. So idle
+ * has to hold across several reads; any other read starts the count again.
+ */
+export async function waitForSettledIdle(
+  /** The idle session's identity, or null when it is not idle. A replacement starts the count again. */
+  idleSession: () => Promise<string | null>,
+  timeoutMs: number,
+  clock: { now: () => number; sleep: (ms: number) => Promise<void> },
+): Promise<boolean> {
+  const deadline = clock.now() + timeoutMs;
+  let inARow = 0;
+  let counted: string | null = null;
+  while (clock.now() < deadline) {
+    const session = await idleSession();
+    if (clock.now() >= deadline) return false;
+    inARow = session === null ? 0 : session === counted ? inARow + 1 : 1;
+    counted = session;
+    if (inARow >= PROOF_SETTLED_READS) return true;
+    await clock.sleep(PROOF_SETTLED_INTERVAL_MS);
+  }
+  return false;
+}
 const POLL_MS = 3_000;
 const MAX_KEPT_RUNS = 20;
 
@@ -174,7 +203,7 @@ export class RebalanceProofRunner {
     let moveStarted = false;
 
     try {
-      steps.sessionReady = await this.d.ensureIdleSession(run.topic, PROOF_SPAWN_TIMEOUT_MS);
+      steps.sessionReady = await within(this.d.ensureIdleSession(run.topic, PROOF_SPAWN_TIMEOUT_MS), PROOF_SPAWN_TIMEOUT_MS + PROOF_IO_TIMEOUT_MS, 'idle wait');
       if (steps.sessionReady !== true) return this.finish(run, null, 'no-idle-session', steps, self);
 
       const started = this.d.move(run.topic, run.to);
@@ -189,8 +218,11 @@ export class RebalanceProofRunner {
       if (!moved) reason = `move-${outcome.status}`;
 
       if (!reason && !(await this.ownershipLanded(run, startEpoch))) reason = 'ownership-not-landed';
-      if (!reason && this.d.hasLocalSession(run.topic)) reason = 'source-session-left-running';
-      steps.sourceSessionGone = !reason || reason !== 'source-session-left-running';
+      // Always a real read: a move that failed leaves the session running, and the evidence says so.
+      let sessionLeft: boolean | null = null;
+      try { sessionLeft = this.d.hasLocalSession(run.topic); } catch (err) { if (!reason) throw err; /* @silent-fallback-ok: not silent. The evidence says unknown and the move's failure stays the reason. */ }
+      if (!reason && sessionLeft) reason = 'source-session-left-running';
+      steps.sourceSessionGone = sessionLeft === null ? 'unknown' : !sessionLeft;
 
       if (!reason) {
         const nonce = this.d.newNonce();

@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-04T20:32:17.793Z",
+  "slug": "locked-proof-harness-viewer",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 114,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/locked-proof/configure-proof-agent.mjs",
+      "scripts/locked-proof/driver.mjs",
+      "scripts/locked-proof/stage-proof-agents.sh"
+    ],
+    "addedLines": 94,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

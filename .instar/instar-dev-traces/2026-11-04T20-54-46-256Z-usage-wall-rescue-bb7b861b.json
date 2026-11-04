@@ -1,0 +1,49 @@
+{
+  "version": 2,
+  "slug": "usage-wall-rescue",
+  "sessionId": "1ab10adb-4fa2-4ad6-9535-482a41142243",
+  "timestamp": "2026-11-04T20:54:46.256Z",
+  "artifactPath": "upgrades/side-effects/usage-wall-rescue.md",
+  "artifactSha256": "0696922d6558db60e62eac90e0680a1691c3cd1efe21885dbabb34548bf423e2",
+  "specPath": "docs/specs/usage-wall-rescue.md",
+  "coveredFiles": [
+    "docs/specs/reports/usage-wall-rescue-convergence.md",
+    "docs/specs/usage-wall-rescue.eli16.md",
+    "docs/specs/usage-wall-rescue.md",
+    "src/commands/server.ts",
+    "src/config/ConfigDefaults.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/UsageWallRescue.ts",
+    "src/core/types.ts",
+    "src/monitoring/PresenceProxy.ts",
+    "src/monitoring/SessionWatchdog.ts",
+    "src/monitoring/rateLimitDetection.ts",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/usage-wall-rescue-lifecycle.test.ts",
+    "tests/integration/usage-wall-rescue-route.test.ts",
+    "tests/integration/usage-wall-rescue-spawn.test.ts",
+    "tests/unit/lint-dev-agent-dark-gate.test.ts",
+    "tests/unit/presence-proxy-quota.test.ts",
+    "tests/unit/usage-wall-rescue.test.ts",
+    "upgrades/next/usage-wall-rescue.md",
+    "upgrades/side-effects/usage-wall-rescue.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Default-on authority to restart live sessions on a usage wall plus a fleet config migration; a revert alone does not undo restarts already made.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "usage-wall-rescue is registered in src/testing/selfActionRegistry.ts over the real decideRescueGate: with a wall that never clears and moves that always fail, it allows at most 5 moves per session before a 24h breaker, horizon-independent; a successful move resets the budget and the resumed pane stops matching detectUsageWall, so the loop settles; 12 moves/hour per machine caps the fleet edge."
+    }
+  }
+}
