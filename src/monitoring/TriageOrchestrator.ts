@@ -1002,11 +1002,11 @@ export class TriageOrchestrator extends EventEmitter {
       }
 
       case 'suggest_interrupt':
-        await send().catch(() => {});
+        // A stalled session is an internal recovery concern, not a command
+        // for the person to operate.
         break;
 
       case 'suggest_restart':
-        await send().catch(() => {});
         break;
 
       case 'auto_interrupt':
@@ -1021,7 +1021,6 @@ export class TriageOrchestrator extends EventEmitter {
         break;
 
       case 'auto_restart':
-        await send().catch(() => {});
         await this.deps.respawnSession(sessionName, topicId, { silent: true });
         break;
     }

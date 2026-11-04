@@ -465,12 +465,11 @@ export class StallTriageNurse extends EventEmitter {
         }
       }
 
-      // Exhausted all escalations — notify user with actionable instructions
+      // Exhausted all escalations. Keep the failure plain; do not ask the
+      // person to operate session commands.
       const failReason = 'max_escalations_reached';
       await this.deps.sendToTopic(topicId,
-        `I wasn't able to recover the session automatically. You can:\n` +
-        `• Send a new message to this topic (will auto-spawn a fresh session)\n` +
-        `• Use /restart to force a fresh start`
+        `I couldn't restore this conversation. Your message is saved.`
       ).catch(() => {});
       this.emit('triage:failed', { topicId, reason: failReason, actionsTaken });
       const result: TriageResult = {
@@ -822,9 +821,6 @@ export class StallTriageNurse extends EventEmitter {
         break;
 
       case 'restart':
-        await send().catch(err => {
-          console.warn(`[StallTriageNurse] sendToTopic failed:`, err);
-        });
         await this.deps.respawnSession(context.sessionName, context.topicId, { silent: true });
         break;
     }

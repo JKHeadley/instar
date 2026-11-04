@@ -1099,6 +1099,9 @@ export class SlackAdapter implements MessagingAdapter {
         if (now - entry.injectedAt > timeoutMs) {
           this.pendingStalls.delete(key);
 
+          const alive = this.onIsSessionAlive ? this.onIsSessionAlive(entry.sessionName) : true;
+          if (!alive) continue; // SessionMonitor owns dead-session recovery and failure notice.
+
           // Delegate to triage system if available
           if (this.onStallDetected) {
             this.onStallDetected(entry.channelId, entry.sessionName, entry.text, entry.injectedAt);
@@ -1107,15 +1110,13 @@ export class SlackAdapter implements MessagingAdapter {
 
           // Fallback: LLM-gated user-facing alert
           const minutesAgo = Math.round((now - entry.injectedAt) / 60000);
-          const alive = this.onIsSessionAlive ? this.onIsSessionAlive(entry.sessionName) : true;
           const shouldAlert = await this.confirmStallAlert({
             type: 'stall', sessionName: entry.sessionName,
             messageText: entry.text, minutesElapsed: minutesAgo, sessionAlive: alive,
           });
-          if (shouldAlert) {
-            const status = alive ? 'running but not responding' : 'no longer running';
+          if (shouldAlert && (!this.onIsSessionAlive || this.onIsSessionAlive(entry.sessionName))) {
             this.sendToChannel(entry.channelId,
-              `⚠️ No response after ${minutesAgo} minutes. "${entry.sessionName}" is ${status}.\n\n${alive ? 'Use `!interrupt` to nudge it, or `!restart` to start fresh.' : 'Send another message to start a new session.'}`
+              `No response yet after ${minutesAgo} minutes. I'm checking on it.`
             ).catch(() => {});
           }
         }
@@ -1129,6 +1130,7 @@ export class SlackAdapter implements MessagingAdapter {
 
           promise.alerted = true;
           const alive = this.onIsSessionAlive ? this.onIsSessionAlive(promise.sessionName) : true;
+          if (!alive) continue; // SessionMonitor owns dead-session recovery and failure notice.
 
           // Delegate to triage if available
           if (this.onStallDetected) {
@@ -1142,9 +1144,9 @@ export class SlackAdapter implements MessagingAdapter {
             type: 'promise-expired', sessionName: promise.sessionName,
             messageText: promise.promiseText, minutesElapsed: minutesAgo, sessionAlive: alive,
           });
-          if (shouldAlert) {
+          if (shouldAlert && (!this.onIsSessionAlive || this.onIsSessionAlive(promise.sessionName))) {
             this.sendToChannel(channelId,
-              `⚠️ The agent said "${promise.promiseText.slice(0, 80)}..." ${minutesAgo} minutes ago but hasn't followed up.\n\n${alive ? 'Use `!interrupt` to nudge or `!restart` to start fresh.' : 'Session has ended. Send a new message to start.'}`
+              `I haven't followed up on "${promise.promiseText.slice(0, 80)}" yet. I'm checking on it.`
             ).catch(() => {});
           }
         }

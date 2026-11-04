@@ -3448,6 +3448,14 @@ export class TelegramAdapter implements MessagingAdapter {
 
       pending.alerted = true;
 
+      // SessionMonitor is the sole owner of dead-session recovery and its
+      // failure notice. Triage can itself send a stopped notice, so do not
+      // invoke it for an already dead session.
+      if (!alive) {
+        console.log(`[telegram] Dead session ${pending.sessionName} awaits monitor recovery for topic ${pending.topicId}`);
+        continue;
+      }
+
       // Try LLM-powered triage first if available
       if (this.onStallDetected) {
         try {
@@ -3463,6 +3471,8 @@ export class TelegramAdapter implements MessagingAdapter {
           console.warn(`[telegram] Triage nurse error:`, err);
         }
       }
+
+      if (this.onIsSessionAlive && !this.onIsSessionAlive(pending.sessionName)) continue;
 
       // Classify the stall — check if it's a quota death
       let isQuotaDeath = false;
@@ -3497,11 +3507,11 @@ export class TelegramAdapter implements MessagingAdapter {
           sessionAlive: alive,
         });
 
-        if (shouldAlert) {
+        if (shouldAlert && (!this.onIsSessionAlive || this.onIsSessionAlive(pending.sessionName))) {
           const status = alive ? 'running but not responding' : 'no longer running';
           this.sendToTopic(
             pending.topicId,
-            `\u26a0\ufe0f No response after ${minutesAgo} minutes. "${pending.sessionName}" is ${status}.\n\nYour message: "${pending.messageText}..."${alive ? '\n\nTry /interrupt to nudge it, or /restart to start fresh.' : '\n\nSend another message and a new session will start automatically.'}`,
+            `\u26a0\ufe0f No response after ${minutesAgo} minutes. "${pending.sessionName}" is ${status}.\n\nYour message: "${pending.messageText}..."`,
           ).catch(err => {
             console.error(`[telegram] Stall alert failed: ${err}`);
           });
@@ -3525,6 +3535,7 @@ export class TelegramAdapter implements MessagingAdapter {
         const alive = this.onIsSessionAlive
           ? this.onIsSessionAlive(promise.sessionName)
           : true;
+        if (!alive) continue; // SessionMonitor owns dead-session recovery and failure notice.
 
         // Delegate to triage nurse if available
         if (this.onStallDetected) {
@@ -3549,6 +3560,8 @@ export class TelegramAdapter implements MessagingAdapter {
           }
         }
 
+        if (this.onIsSessionAlive && !this.onIsSessionAlive(promise.sessionName)) continue;
+
         // Fallback: LLM-gated user-facing alert
         const promiseMinutesAgo = Math.round((now - promise.promisedAt) / 60000);
         const shouldAlertPromise = await this.confirmStallAlert({
@@ -3559,16 +3572,10 @@ export class TelegramAdapter implements MessagingAdapter {
           sessionAlive: alive,
         });
 
-        if (shouldAlertPromise) {
-          if (!alive) {
-            await this.sendToTopic(topicId,
-              `The session stopped unexpectedly after saying "${promise.promiseText}". Sending a new message will auto-spawn a fresh session.`
-            ).catch(() => {});
-          } else {
-            await this.sendToTopic(topicId,
-              `It's been ${promiseMinutesAgo} minutes since the session said "${promise.promiseText}" — checking on it now...`
-            ).catch(() => {});
-          }
+        if (shouldAlertPromise && (!this.onIsSessionAlive || this.onIsSessionAlive(promise.sessionName))) {
+          await this.sendToTopic(topicId,
+            `It's been ${promiseMinutesAgo} minutes since the session said "${promise.promiseText}" — checking on it now...`
+          ).catch(() => {});
         }
       }
 
@@ -3595,6 +3602,9 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   private async handleSharedStallEvent(event: StallEvent, alive: boolean): Promise<void> {
     const topicId = parseInt(event.channelId, 10);
+    // The shared detector may still hold an old session name while a
+    // replacement answers. Leave dead-session handling to SessionMonitor.
+    if (!alive || (this.onIsSessionAlive && !this.onIsSessionAlive(event.sessionName))) return;
 
     // Phase 1e: Emit to event bus
     if (this.eventBus) {
@@ -3632,6 +3642,8 @@ export class TelegramAdapter implements MessagingAdapter {
         }
       }
 
+      if (this.onIsSessionAlive && !this.onIsSessionAlive(event.sessionName)) return;
+
       // Classify — check if it's a quota death
       let isQuotaDeath = false;
       if (this.onClassifySessionDeath) {
@@ -3658,11 +3670,11 @@ export class TelegramAdapter implements MessagingAdapter {
           sessionAlive: alive,
         });
 
-        if (shouldAlert) {
+        if (shouldAlert && (!this.onIsSessionAlive || this.onIsSessionAlive(event.sessionName))) {
           const status = alive ? 'running but not responding' : 'no longer running';
           this.sendToTopic(
             topicId,
-            `\u26a0\ufe0f No response after ${event.minutesElapsed} minutes. Session "${event.sessionName}" is ${status}.\n\nMessage: "${event.messageText}..."${alive ? '\n\nTry /interrupt to unstick, or /restart to respawn.' : '\n\nSend another message to auto-respawn.'}`,
+            `\u26a0\ufe0f No response after ${event.minutesElapsed} minutes. Session "${event.sessionName}" is ${status}.\n\nMessage: "${event.messageText}..."`,
           ).catch(err => console.error(`[telegram] Stall alert failed: ${err}`));
         }
       }
@@ -3679,6 +3691,8 @@ export class TelegramAdapter implements MessagingAdapter {
         }
       }
 
+      if (this.onIsSessionAlive && !this.onIsSessionAlive(event.sessionName)) return;
+
       const shouldAlert = await this.confirmStallAlert({
         type: 'promise-expired',
         sessionName: event.sessionName,
@@ -3687,16 +3701,10 @@ export class TelegramAdapter implements MessagingAdapter {
         sessionAlive: alive,
       });
 
-      if (shouldAlert) {
-        if (!alive) {
-          await this.sendToTopic(topicId,
-            `The session stopped unexpectedly after saying "${event.messageText}". Sending a new message will auto-spawn a fresh session.`
-          ).catch(() => {});
-        } else {
-          await this.sendToTopic(topicId,
-            `It's been ${event.minutesElapsed} minutes since the session said "${event.messageText}" — checking on it now...`
-          ).catch(() => {});
-        }
+      if (shouldAlert && (!this.onIsSessionAlive || this.onIsSessionAlive(event.sessionName))) {
+        await this.sendToTopic(topicId,
+          `It's been ${event.minutesElapsed} minutes since the session said "${event.messageText}" — checking on it now...`
+        ).catch(() => {});
       }
     }
   }

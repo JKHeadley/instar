@@ -2,7 +2,7 @@
 
 ## What Changed
 
-A failed session resume can now start its fresh replacement under the name already registered to the conversation. Slack and Telegram health checks use current session, startup, reply, and ownership evidence before claiming a conversation stopped. A genuinely dead unanswered conversation gets one automatic fresh restart; only a failed recovery sends one plain failure notice. Slack thread recovery reads the correct thread history.
+A failed session resume can now start its fresh replacement under the name already registered to the conversation. Slack and Telegram health checks use current session, startup, reply, and ownership evidence before claiming a conversation stopped. A genuinely dead unanswered conversation gets one automatic fresh restart; only a failed recovery sends one plain failure notice. Slack and Telegram stall paths leave dead sessions to the monitor, and triage restarts quietly without asking people to operate session controls. Slack thread recovery reads the correct thread history.
 
 ## Evidence
 

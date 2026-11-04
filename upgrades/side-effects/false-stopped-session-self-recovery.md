@@ -3,7 +3,7 @@
 **Version / slug:** `false-stopped-session-self-recovery`
 **Date:** 2026-11-04
 **Author:** Echo
-**Second-pass reviewer:** `/root/second_pass` — concurred after three rounds of concrete fixes
+**Second-pass reviewer:** `/root/second_pass` — concurred after follow-up review of adapter stall routes
 
 ## Summary of the change
 
@@ -12,8 +12,12 @@ An automatic fresh spawn after a failed resume now keeps the original registered
 ## Decision-point inventory
 
 - Resume fallback session naming — modified: retains the bridge's registered name.
-- Monitor dead-session recovery and notice — modified: checks live/starting/replied/ownership state, retries once per unanswered turn, then sends one failure notice.
+- Monitor dead-session recovery and notice — modified: checks live/starting/replied/ownership state, bypasses user-facing triage for a dead process, retries a fresh restart once per unanswered turn, then sends one failure notice.
 - Proxy Tier 3 death claim — modified: suppresses it and leaves recovery to SessionMonitor.
+- Telegram adapter stall and promise alerts — modified: dead sessions bypass triage and user notices; a second liveness check guards live-stall notices after asynchronous triage. Live-stall text no longer asks people to interrupt or restart.
+- Slack adapter stall and promise alerts — modified: dead sessions bypass triage and user notices; live notices have no manual session commands. Server stall callback logs evidence without publishing another notice.
+- Triage Orchestrator and Stall Triage Nurse — modified: automatic restarts no longer announce death before recovery; suggestions to operate session controls stay internal. Nurse escalation failure uses one plain message without session commands.
+- System Reviewer session-health wording — modified: the operator attention alert records the check without asking someone to restart sessions.
 - Foreign owner gate — modified: non-owner machines do not announce a local session death.
 - Slack routing-key resolution — modified: watcher evidence and thread replies use the conversation's routing key.
 
@@ -43,14 +47,14 @@ No new text heuristic is added at a competing-signals decision point. The stop r
 
 ## 5. Interactions
 
-- **Shadowing:** SessionMonitor remains the sole dead-session recovery and failure-notice voice; PresenceProxy no longer shadows it with a second notice.
-- **Double-fire:** The monitor rechecks ownership and current session after asynchronous mechanical recovery and triage. A per-user-message attempt record bounds fresh restarts within one process; the persisted notice ledger bounds messages across restarts.
-- **Races:** A replacement can register during triage or recovery. The monitor rechecks starting, current live session, and logged reply before restart and before notice.
+- **Shadowing:** SessionMonitor remains the sole dead-session recovery and failure-notice voice; PresenceProxy, adapters, and triage no longer shadow it with competing notices.
+- **Double-fire:** The monitor rechecks ownership and current session after asynchronous mechanical recovery. A per-user-message attempt record bounds fresh restarts within one process; the persisted notice ledger bounds messages across restarts.
+- **Races:** A replacement can register during recovery. The monitor rechecks starting, current live session, and logged reply before restart and before notice.
 - **Feedback loops:** The fresh restart reads conversation history and may produce a reply. That reply suppresses later death notices. A failed fresh restart produces one notice, not repeated restarts each poll.
 
 ## 6. External surfaces
 
-Slack and Telegram users no longer receive “unstick”, “restart”, or “send a new message” instructions from these automated death paths. They receive one plain failure message only if self-recovery fails. Slack thread messages remain scoped to their thread. No new operator action or URL is introduced. Existing dead-notice and context-notice ledgers retain their formats; the new attempt record is process-local.
+Slack and Telegram users no longer receive “unstick”, “restart”, or “send a new message” instructions from these automated death paths. They receive one plain failure message only if self-recovery fails. The System Reviewer no longer asks the operator to restart sessions from a health-check alert. Slack thread messages remain scoped to their thread. No new operator action or URL is introduced. Existing dead-notice and context-notice ledgers retain their formats; the new attempt record is process-local.
 
 ## 6b. Operator-surface quality
 
@@ -71,7 +75,7 @@ The source fix addresses the recorded Indra split between a failed registered re
 ## Second-pass review
 
 **Reviewer:** `/root/second_pass`
-**Independent read of the artifact:** Concur with the review. The reviewer first identified thread routing gaps in monitor and recovery history, context-exhaustion notices on live sessions, and an old notice ledger blocking self-recovery. A second pass found raw channel/thread mixing and missing cold thread replies; a third found that one cached reply could hide earlier thread history. Each concern was fixed with regression coverage. The reviewer re-read the final paths and found no remaining concrete blocker.
+**Independent read of the artifact:** Concur with the review. The reviewer first identified thread routing gaps in monitor and recovery history, context-exhaustion notices on live sessions, and an old notice ledger blocking self-recovery. A second pass found raw channel/thread mixing and missing cold thread replies; a third found that one cached reply could hide earlier thread history. Each concern was fixed with regression coverage. The reviewer re-read the final paths and found no remaining concrete blocker. A follow-up review identified the adapter and triage notice paths; those were fixed and the reviewer concurred with the extension.
 
 ## Evidence pointers
 
@@ -81,4 +85,4 @@ The source fix addresses the recorded Indra split between a failed registered re
 
 ## Class-Closure Declaration (display-only mirror)
 
-The self-triggered restart loop is bounded to one fresh attempt per unanswered user message in the process; the existing persisted notice ledger sends one failure notice per user message across restarts. `tests/unit/SessionMonitor.test.ts` proves a second death on the same turn does not respawn indefinitely. The ratchet is `tests/unit/self-action-convergence.test.ts`.
+For the `unbounded-self-action` defect class, the self-triggered restart loop is bounded to one fresh attempt per unanswered user message in the process; the existing persisted notice ledger sends one failure notice per user message across restarts. `tests/unit/SessionMonitor.test.ts` proves a second death on the same turn does not respawn indefinitely. The ratchet is `tests/unit/self-action-convergence.test.ts`.

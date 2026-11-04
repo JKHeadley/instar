@@ -540,17 +540,9 @@ export class SessionMonitor extends EventEmitter {
     switch (snap.status) {
       case 'dead': {
         this.emit('monitor:recovery-triggered', { topicId, sessionName, reason: 'session_dead' });
-        if (this.deps.triggerTriage) {
-          const result = await this.deps.triggerTriage(topicId, sessionName, 'Session died while user was waiting');
-          if (this.stopIfOwnedByPeer(topicId)) return;
-          if (result.resolved) {
-            snap.status = 'healthy';
-            snap.notifiedAt = now;
-            return;
-          }
-        }
-        // Triage may be inconclusive when a resume UUID fails before it has a
-        // transcript. Restart from conversation history before telling anyone.
+        // Triage can itself publish a stopped-session notice and ask the user
+        // to act. For a dead process, use the quiet mechanical fresh restart
+        // directly, then report only its failure.
         if (this.stopIfOwnedByPeer(topicId)) return;
         const beforeRestart = this.deps.getActiveTopicSessions().get(topicId);
         if (this.deps.isSessionStarting?.(topicId) ||

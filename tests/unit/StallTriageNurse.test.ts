@@ -601,7 +601,7 @@ describe('StallTriageNurse', () => {
       expect(deps.sendToTopic).toHaveBeenCalledWith(4, expect.stringContaining('Unsticking'), expect.objectContaining({ model: expect.objectContaining({ status: 'unknown' }) }));
     });
 
-    it('restart calls sendToTopic then respawnSession', async () => {
+    it('restarts silently before reporting any failure', async () => {
       mockIntelligence = createMockIntelligence(JSON.stringify({
         summary: 'dead', action: 'restart', confidence: 'high', userMessage: 'Restarting...',
       }));
@@ -617,11 +617,11 @@ describe('StallTriageNurse', () => {
 
       await nurse.triage(5, 'sess', 'hello', Date.now());
 
-      expect(deps.sendToTopic).toHaveBeenCalledWith(5, expect.stringContaining('Restarting'), expect.objectContaining({ model: expect.objectContaining({ status: 'unknown' }) }));
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
       expect(deps.respawnSession).toHaveBeenCalledWith('sess', 5, { silent: true });
     });
 
-    it('restart notifies before respawning', async () => {
+    it('does not announce a recovery while respawning', async () => {
       mockIntelligence = createMockIntelligence(JSON.stringify({
         summary: 'dead', action: 'restart', confidence: 'high', userMessage: 'Restarting...',
       }));
@@ -636,10 +636,8 @@ describe('StallTriageNurse', () => {
 
       await nurse.triage(5, 'sess', 'hello', Date.now());
 
-      // sendToTopic should have been called before respawnSession
-      const sendToTopicOrder = (deps.sendToTopic as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
-      const respawnOrder = (deps.respawnSession as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
-      expect(sendToTopicOrder).toBeLessThan(respawnOrder);
+      expect(deps.respawnSession).toHaveBeenCalledTimes(1);
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
     });
   });
 

@@ -10753,24 +10753,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           console.error(`[server] Failed to ensure Slack Updates channel: ${err}`);
         });
 
-        // Wire stall detection — route stall alerts to Slack attention channel
+        // Record stalls for diagnosis. SessionMonitor owns recovery and any
+        // user-facing failure notice; a stall alone does not prove a death.
         slackAdapter.onStallDetected = (channelId, sessionName, messageText, injectedAt) => {
-          const slackAttentionChannel = state.get<string>('slack-attention-channel');
-          if (slackAttentionChannel) {
-            slackAdapter!.sendToChannel(slackAttentionChannel,
-              `⚠️ Stall detected in session "${sessionName}" (channel ${channelId}). Message may not have been answered: "${messageText.slice(0, 100)}"`
-            ).catch(err => {
-              // @silent-fallback-ok best-effort advisory; failure is surfaced in server logs
-              console.warn(`[slack] Failed to send stall notice to attention channel: ${err instanceof Error ? err.message : String(err)}`);
-            });
-          }
-          // Also notify in the originating channel
-          slackAdapter!.sendToChannel(channelId,
-            `⚠️ The session appears to have stalled. Use \`!restart\` to restart or \`!interrupt\` to nudge it.`
-          ).catch(err => {
-            // @silent-fallback-ok best-effort advisory; failure is surfaced in server logs
-            console.warn(`[slack] Failed to send stall notice to originating channel: ${err instanceof Error ? err.message : String(err)}`);
-          });
+          console.warn(`[slack] Stall observed in ${channelId} for ${sessionName} after ${Date.now() - injectedAt}ms: ${messageText.slice(0, 100)}`);
         };
 
         // Wire voice transcription (reuses Telegram's provider resolution: Groq → OpenAI)
