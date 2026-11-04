@@ -62,13 +62,20 @@ describe('claude key wiring', () => {
   it('the CLI writes a piped key, refuses a wrong shape, and prints neither', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-key-cli-'));
     fs.mkdirSync(path.join(dir, '.instar'));
+    // Config checks the selected framework binary before dispatching this command.
+    // The key-writing path never invokes Claude; a local stub keeps this test
+    // independent of whether the CI runner has the Claude CLI installed.
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const env = { ...process.env, INSTAR_FRAMEWORK: 'claude-code', PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` };
     const file = path.join(dir, '.instar', 'config.json');
     fs.writeFileSync(file, JSON.stringify({ projectName: 't', port: 4999 }));
     const cli = path.join(ROOT, 'dist/cli.js');
-    const out = execFileSync('node', [cli, 'set-claude-key', '--dir', dir], { input: `${KEY}\n`, encoding: 'utf-8' });
+    const out = execFileSync('node', [cli, 'set-claude-key', '--dir', dir], { input: `${KEY}\n`, encoding: 'utf-8', env });
     expect(out).not.toContain(KEY);
     expect(JSON.parse(fs.readFileSync(file, 'utf-8')).sessions.credentials.anthropic.value).toBe(KEY);
-    expect(() => execFileSync('node', [cli, 'set-claude-key', '--dir', dir], { input: 'nonsense\n', encoding: 'utf-8', stdio: 'pipe' })).toThrow();
+    expect(() => execFileSync('node', [cli, 'set-claude-key', '--dir', dir], { input: 'nonsense\n', encoding: 'utf-8', stdio: 'pipe', env })).toThrow();
     expect(JSON.parse(fs.readFileSync(file, 'utf-8')).sessions.credentials.anthropic.value).toBe(KEY);
   });
 });

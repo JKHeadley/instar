@@ -135,3 +135,9 @@ The full unit run exposed three integration points in the merged branch. The wat
 maintenance import allowlist now explicitly permits the pure formatter; the held-reply
 assertion expects the unresolved-name wording; and the release note remains under
 `upgrades/next/` so the release assembler consumes it. All three focused tests pass.
+
+The new GitHub run exposed a runner-specific failure in the existing Claude-key E2E test:
+the test's CLI child loaded Config before key handling, and Config requires the configured
+framework binary. GitHub's runner has no Claude CLI. The test now supplies a disposable
+stub binary on that child process's PATH, so it still exercises the real CLI key path
+without depending on a globally installed provider. Production behavior is unchanged.
