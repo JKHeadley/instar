@@ -1,0 +1,3 @@
+# Recording what switched-off features do, in plain words
+
+To judge a switched-off feature, you need a record of what it actually did. Most of them kept none, so the maturation ladder could only say "no data". This adds one line at the point where each of 113 features makes its decision: it fired, it held back, or it failed, with the reason and a few small facts. It changes nothing about what the feature does, and a failure to record can never break the feature. It never records message text, prompts or credentials. It's off on the fleet for now, like the ladder itself. Two features can't record this way, because they don't run inside the server, and they stay marked as needing it.

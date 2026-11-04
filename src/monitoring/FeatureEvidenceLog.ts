@@ -112,6 +112,10 @@ export class FeatureEvidenceLog {
 
 let shared: FeatureEvidenceLog | null = null;
 
+/** Per (feature, key) rate state for recordAtMostEvery; cleared whole at the cap, so it stays bounded. */
+const AT_MOST_EVERY_MAX_KEYS = 4096;
+const atMostEvery = new Map<string, { at: number; suppressed: number }>();
+
 /** Wire the process-wide log once, at server boot. */
 export function setFeatureEvidenceLog(log: FeatureEvidenceLog | null): void {
   shared = log;
@@ -124,5 +128,25 @@ export function setFeatureEvidenceLog(log: FeatureEvidenceLog | null): void {
 export const featureEvidence = {
   record(featureId: string, input: FeatureEvidenceInput): string | null {
     return shared ? shared.record(featureId, input) : null;
+  },
+  /**
+   * The same call for a decision taken once per message or send: one row per key
+   * per window, and that row says how many it stood for (`suppressedSinceLast`).
+   */
+  recordAtMostEvery(featureId: string, key: string, windowMs: number, input: FeatureEvidenceInput): string | null {
+    if (!shared) return null;
+    const mapKey = `${featureId}|${key}`;
+    const now = Date.now();
+    const seen = atMostEvery.get(mapKey);
+    if (seen && now - seen.at < windowMs) {
+      seen.suppressed++;
+      return null;
+    }
+    if (atMostEvery.size >= AT_MOST_EVERY_MAX_KEYS) atMostEvery.clear();
+    atMostEvery.set(mapKey, { at: now, suppressed: 0 });
+    return shared.record(featureId, {
+      ...input,
+      context: { ...input.context, suppressedSinceLast: seen?.suppressed ?? 0 },
+    });
   },
 };

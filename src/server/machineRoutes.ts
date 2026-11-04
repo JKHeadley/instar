@@ -16,6 +16,7 @@
  */
 
 import { Router } from 'express';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { sealIdentityForJoiner, readAgentIdentityForHandover } from '../core/AgentIdentityHandover.js';
 import crypto from 'node:crypto';
@@ -347,6 +348,11 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
       ? await Promise.resolve(ctx.resolveIdentityReannounceContext(proposed, req)).catch(() => failClosed)
       : failClosed;
     const result = ctx.identityReannounce.evaluate(claim, evidence);
+    featureEvidence.record('multiMachine.identityReannounce', {
+      kind: result.outcome !== 'refused' ? 'fired' : /error|unreadable/.test(result.reason) ? 'error' : 'held',
+      reason: result.outcome === 'refused' ? `received claim refused: ${result.reason}` : `received claim: ${result.outcome}`,
+      context: { side: 'challenger', outcome: result.outcome, machineId: proposed.machineId, keyEpoch: Number(proposed.keyEpoch ?? 0), code: result.outcome === 'refused' ? result.reason : null },
+    });
     const status = result.outcome === 'refused' ? 403 : result.outcome.includes('quarantine') ? 202 : 200;
     res.status(status).json(result);
   });

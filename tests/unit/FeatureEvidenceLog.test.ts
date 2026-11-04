@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -49,5 +49,50 @@ describe('FeatureEvidenceLog', () => {
     setFeatureEvidenceLog(log);
     expect(featureEvidence.record('x', { kind: 'fired', reason: 'r' })).toBeTypeOf('string');
     expect(rows(log)).toHaveLength(1);
+  });
+
+  it('recordAtMostEvery keeps one row per key per window and counts what it stood for', () => {
+    const log = make();
+    setFeatureEvidenceLog(log);
+    const clock = vi.spyOn(Date, 'now');
+    try {
+      const write = (key: string) => featureEvidence.recordAtMostEvery('rate-test', key, 1000, { kind: 'fired', reason: 'r', context: { n: 1 } });
+      clock.mockReturnValue(10_000);
+      expect(write('a')).toBeTypeOf('string');
+      clock.mockReturnValue(10_500);
+      expect(write('a')).toBeNull();
+      expect(write('a')).toBeNull();
+      expect(write('b')).toBeTypeOf('string');
+      clock.mockReturnValue(11_000);
+      expect(write('a')).toBeTypeOf('string');
+    } finally {
+      clock.mockRestore();
+    }
+    expect(rows(log).map((r) => r.context)).toEqual([
+      { n: 1, suppressedSinceLast: 0 },
+      { n: 1, suppressedSinceLast: 0 },
+      { n: 1, suppressedSinceLast: 2 },
+    ]);
+  });
+});
+
+describe('recordAtMostEvery', () => {
+  it('keeps one row a window and says how many it stood for', () => {
+    const log = make();
+    setFeatureEvidenceLog(log);
+    const first = featureEvidence.recordAtMostEvery('rate-x', 'k', 60_000, { kind: 'fired', reason: 'r' });
+    expect(first).toBeTypeOf('string');
+    expect(featureEvidence.recordAtMostEvery('rate-x', 'k', 60_000, { kind: 'fired', reason: 'r' })).toBeNull();
+    expect(featureEvidence.recordAtMostEvery('rate-x', 'k', 60_000, { kind: 'fired', reason: 'r' })).toBeNull();
+    expect(rows(log)).toHaveLength(1);
+    expect(rows(log)[0].context.suppressedSinceLast).toBe(0);
+    expect(featureEvidence.recordAtMostEvery('rate-x', 'other', 60_000, { kind: 'fired', reason: 'r' })).toBeTypeOf('string');
+    expect(featureEvidence.recordAtMostEvery('rate-x', 'zero', 0, { kind: 'fired', reason: 'r' })).toBeTypeOf('string');
+    featureEvidence.recordAtMostEvery('rate-x', 'zero', 0, { kind: 'fired', reason: 'r' });
+    expect(rows(log).at(-1).context.suppressedSinceLast).toBe(0);
+  });
+
+  it('does nothing before boot', () => {
+    expect(featureEvidence.recordAtMostEvery('rate-y', 'k', 1, { kind: 'fired', reason: 'r' })).toBeNull();
   });
 });

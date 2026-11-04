@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-04T03:50:00.226Z",
+  "slug": "constitution-alignment",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 294,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/check-constitution-pairing.mjs",
+      "scripts/safe-merge.mjs",
+      "src/monitoring/GreenPrAutoMerger.ts"
+    ],
+    "addedLines": 294,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

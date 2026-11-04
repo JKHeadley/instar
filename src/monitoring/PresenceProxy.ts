@@ -13,6 +13,7 @@
  */
 
 import * as fs from 'fs';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { execSync } from 'child_process';
@@ -1197,8 +1198,10 @@ export class PresenceProxy {
     if (!this.config.standbyHonestyTiers) return null;
     if (this.config.hasContextExhaustionLatch?.(topicId)) {
       if (this.config.isStuckRecoveryActive?.(sessionName)) {
+        featureEvidence.record('monitoring.standbyHonestyTiers', { kind: 'held', reason: 'latched-recovery-owns-voice', context: { tier: tierLabel, kind: 'context-exhaustion-latch' } });
         return PRESENCE_SUPPRESS;
       }
+      featureEvidence.record('monitoring.standbyHonestyTiers', { kind: 'fired', reason: 'honest-message:context-exhaustion-latch', context: { tier: tierLabel, kind: 'context-exhaustion-latch' } });
       const prefix = tierLabel === 1
         ? `${this.prefix} `
         : `${this.prefix} 2-minute update — `;
@@ -1210,6 +1213,7 @@ export class PresenceProxy {
       stuck = classifyStuckSignature(snapshot);
     } catch {
       // Fail toward today's behavior — never fabricate an honest claim.
+      featureEvidence.record('monitoring.standbyHonestyTiers', { kind: 'error', reason: 'stuck-classification-threw', context: { tier: tierLabel } });
       return null;
     }
     if (!stuck) return null;
@@ -1218,13 +1222,18 @@ export class PresenceProxy {
     // cannot does it raise a Terminal Attention defect (the sole surface).
     // Suppress here UNCONDITIONALLY (a consumer policy, not a classifier
     // contract inversion), with no lifecycle gap.
-    if (stuck.kind === 'approval-prompt-waiting') return PRESENCE_SUPPRESS;
+    if (stuck.kind === 'approval-prompt-waiting') {
+      featureEvidence.record('monitoring.standbyHonestyTiers', { kind: 'held', reason: 'approval-prompt-never-surfaced', context: { tier: tierLabel, kind: stuck.kind } });
+      return PRESENCE_SUPPRESS;
+    }
     // A recovery sentinel already messaging about this stuck state owns the
     // voice — mirror Tier 3's silent return (suppress, do NOT fall through to
     // the "actively working" fallback, which would re-introduce the lie).
     if (this.config.isStuckRecoveryActive?.(sessionName)) {
+      featureEvidence.record('monitoring.standbyHonestyTiers', { kind: 'held', reason: 'recovery-owns-voice', context: { tier: tierLabel, kind: stuck.kind } });
       return PRESENCE_SUPPRESS;
     }
+    featureEvidence.record('monitoring.standbyHonestyTiers', { kind: 'fired', reason: `honest-message:${stuck.kind}`, context: { tier: tierLabel, kind: stuck.kind } });
     const prefix = tierLabel === 1
       ? `${this.prefix} `
       : `${this.prefix} 2-minute update — `;

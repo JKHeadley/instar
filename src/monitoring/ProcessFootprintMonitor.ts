@@ -18,6 +18,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import { MCP_PROCESS_SIGNATURES } from './mcpProcessSignatures.js';
 import { withSyncOp } from '../core/InFlightSyncOpMarker.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
@@ -178,8 +179,21 @@ export class ProcessFootprintMonitor {
   sample(): FootprintSample {
     let procs: FootprintProcess[];
     try { procs = this.deps.listProcesses(); }
-    catch { return this.ring[this.ring.length - 1] ?? buildFootprintSample([], this.now()); } // fail-safe: keep last
+    catch {
+      featureEvidence.recordAtMostEvery('monitoring.processFootprintMonitor', 'list-failed', 3_600_000, { kind: 'error', reason: 'process-listing-failed', context: { samplesHeld: this.ring.length } });
+      return this.ring[this.ring.length - 1] ?? buildFootprintSample([], this.now()); // fail-safe: keep last
+    }
     const s = buildFootprintSample(procs, this.now());
+    // Sampling is a loop: an hourly reading is what survives a restart, not every sample.
+    if (procs.length === 0) {
+      featureEvidence.recordAtMostEvery('monitoring.processFootprintMonitor', 'list-empty', 3_600_000, { kind: 'error', reason: 'process-listing-empty', context: { samplesHeld: this.ring.length } });
+    } else {
+      featureEvidence.recordAtMostEvery('monitoring.processFootprintMonitor', 'sample', 3_600_000, {
+        kind: 'fired',
+        reason: 'hourly-sample',
+        context: { total: s.total, agentCli: s.byKind['agent-cli'], mcp: s.byKind.mcp, otherNode: s.byKind['other-node'], rssMb: Math.round(s.rssBytes / 1_048_576), alertThreshold: this.cfg.alertThreshold },
+      });
+    }
     this.ring.push(s);
     while (this.ring.length > this.cfg.windowSamples) this.ring.shift();
     this.maybeAlert(s);
@@ -191,6 +205,11 @@ export class ProcessFootprintMonitor {
     if (s.total >= this.cfg.alertThreshold) {
       if (!this.alerted && this.deps.emitAttention) {
         this.alerted = true; // one per episode
+        featureEvidence.record('monitoring.processFootprintMonitor', {
+          kind: 'fired',
+          reason: 'over-threshold-alert',
+          context: { total: s.total, agentCli: s.byKind['agent-cli'], mcp: s.byKind.mcp, otherNode: s.byKind['other-node'], alertThreshold: this.cfg.alertThreshold },
+        });
         this.deps.emitAttention({
           id: 'process-footprint:over-threshold',
           title: `Process footprint high (${s.total} processes)`,

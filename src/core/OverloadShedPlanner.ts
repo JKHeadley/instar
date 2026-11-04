@@ -40,6 +40,7 @@
  */
 
 import fs from 'node:fs';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import path from 'node:path';
 
 import { planRebalance, type RebalanceSession } from './RebalancePlanner.js';
@@ -235,6 +236,7 @@ export class OverloadShedPlanner {
       if (safe(() => this.d.ownerOf(e.sessionKey), undefined) === e.target) {
         this.counters.claimed += 1;
         this.audit({ event: 'claimed', sessionKey: e.sessionKey, target: e.target, episodeId: e.episodeId });
+        featureEvidence.record('monitoring.overloadShed', { kind: 'fired', reason: 'move-claimed', context: { topic: e.sessionKey, target: e.target, episodeId: e.episodeId, dryRun: cfg.dryRun } });
         this.state.reservations = this.state.reservations.filter((r) => r.sessionKey !== e.sessionKey);
         this.state.entry = null;
         dirty = true;
@@ -242,6 +244,7 @@ export class OverloadShedPlanner {
         // The transfer started and was aborted back (the target did not claim in time).
         this.counters.aborted += 1;
         this.audit({ event: 'aborted', sessionKey: e.sessionKey, target: e.target, episodeId: e.episodeId });
+        featureEvidence.record('monitoring.overloadShed', { kind: 'error', reason: 'move-aborted', context: { topic: e.sessionKey, target: e.target, episodeId: e.episodeId, dryRun: cfg.dryRun } });
         this.state.reservations = this.state.reservations.filter((r) => r.sessionKey !== e.sessionKey);
         this.state.entry = null;
         dirty = true;
@@ -263,6 +266,7 @@ export class OverloadShedPlanner {
           if (i >= 0) this.state.moveTimes.splice(i, 1);
         }
         this.audit({ event: 'expired', sessionKey: e.sessionKey, target: e.target, episodeId: e.episodeId, refunded: refund });
+        featureEvidence.record('monitoring.overloadShed', { kind: 'error', reason: 'move-expired-unstarted', context: { topic: e.sessionKey, target: e.target, episodeId: e.episodeId, refunded: refund, dryRun: cfg.dryRun } });
         this.state.reservations = this.state.reservations.filter((r) => r.sessionKey !== e.sessionKey);
         this.state.entry = null;
         dirty = true;
@@ -279,6 +283,7 @@ export class OverloadShedPlanner {
     // ── Breaker (D3), checked before proposing.
     if (this.state.moveTimes.length >= cfg.maxMovesPerHour) {
       this.counters.breakerHeld += 1;
+      featureEvidence.recordAtMostEvery('monitoring.overloadShed', 'breaker-held', 3_600_000, { kind: 'held', reason: 'breaker-max-moves-per-hour', context: { movesLastHour: this.state.moveTimes.length, maxMovesPerHour: cfg.maxMovesPerHour, dryRun: cfg.dryRun } });
       if (now - this.breakerAuditedAt >= HOUR_MS) {
         this.breakerAuditedAt = now;
         this.audit({ event: 'breaker-held', movesLastHour: this.state.moveTimes.length });
@@ -320,12 +325,18 @@ export class OverloadShedPlanner {
       targetEligible,
     }, this.d.placement);
     const mv = moves[0];
-    if (!mv) { this.counters.noTarget += 1; if (dirty) this.save(); return; }
+    if (!mv) {
+      this.counters.noTarget += 1;
+      featureEvidence.recordAtMostEvery('monitoring.overloadShed', 'no-target', 3_600_000, { kind: 'held', reason: sessions.length === 0 ? 'no-movable-topic' : 'no-eligible-target', context: { movableTopics: sessions.length, ownedTopics: topics.length, machines: caps.length, dryRun: cfg.dryRun } });
+      if (dirty) this.save();
+      return;
+    }
 
     const episodeId = `${self}:${this.state.episode?.startedAt ?? this.closedSince}`;
     const live = !cfg.dryRun && adv?.enforced === true;
     if (!live) {
       this.counters.wouldMove += 1;
+      featureEvidence.recordAtMostEvery('monitoring.overloadShed', `would-move:${mv.sessionKey}>${mv.toMachine}`, WOULD_MOVE_AUDIT_EVERY_MS, { kind: 'fired', reason: cfg.dryRun ? 'would-move:dry-run' : 'would-move:admission-not-enforced', context: { topic: mv.sessionKey, target: mv.toMachine, episodeId, dryRun: cfg.dryRun, movableTopics: sessions.length } });
       const k = `${mv.sessionKey}>${mv.toMachine}`;
       if (now - (this.lastWouldMoveAudit.get(k) ?? 0) >= WOULD_MOVE_AUDIT_EVERY_MS) {
         this.lastWouldMoveAudit.set(k, now);
@@ -340,6 +351,7 @@ export class OverloadShedPlanner {
     const sink = adm.outcome === 'allow' ? consumeAdmissionToken(adm.token, 'overload-shed', { targetKey: target.key }) : null;
     if (adm.outcome !== 'allow' || !sink?.proceed) {
       this.counters.governorHeld += 1;
+      featureEvidence.recordAtMostEvery('monitoring.overloadShed', 'governor-held', 3_600_000, { kind: 'held', reason: `governor-${adm.outcome}`, context: { topic: mv.sessionKey, target: mv.toMachine, episodeId, outcome: adm.outcome } });
       this.audit({ event: 'governor-held', sessionKey: mv.sessionKey, target: mv.toMachine, episodeId, outcome: adm.outcome });
       if (dirty) this.save();
       return;
@@ -352,6 +364,7 @@ export class OverloadShedPlanner {
     this.state.entry = { sessionKey: mv.sessionKey, target: mv.toMachine, episodeId, proposedAt: now, expiresAt: now + cfg.entryTtlMs };
     this.counters.proposed += 1;
     this.audit({ event: 'proposed', sessionKey: mv.sessionKey, target: mv.toMachine, episodeId });
+    featureEvidence.record('monitoring.overloadShed', { kind: 'fired', reason: 'move-proposed', context: { topic: mv.sessionKey, target: mv.toMachine, episodeId, movesLastHour: this.state.moveTimes.length, dryRun: cfg.dryRun } });
     this.d.log?.(`overload-shed: proposing to move topic ${mv.sessionKey} to ${mv.toMachine} (this machine has been overloaded since ${new Date(this.closedSince!).toISOString()})`);
     this.save();
   }

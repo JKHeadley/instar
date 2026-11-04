@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "constitution-alignment",
+  "sessionId": "5d64ec71-904d-47d7-b933-ec981d537d0d",
+  "timestamp": "2026-11-04T07:30:32.829Z",
+  "artifactPath": "upgrades/side-effects/constitution-alignment.md",
+  "artifactSha256": "92f8020e165274f392294bf349fe18721c110659d83dc785b6ae8d349579c559",
+  "specPath": "docs/specs/constitution-alignment.md",
+  "coveredFiles": [
+    "docs/STANDARDS-DIRECTION-GUARD.md",
+    "docs/constitution-alignment-map.md",
+    "docs/specs/constitution-alignment.eli16.md",
+    "docs/specs/constitution-alignment.md",
+    "docs/specs/reports/constitution-alignment-convergence.md",
+    "scripts/check-constitution-pairing.mjs",
+    "scripts/safe-merge.mjs",
+    "src/monitoring/GreenPrAutoMerger.ts",
+    "tests/integration/safe-merge-constitution-counterpart.test.ts",
+    "tests/integration/safe-merge-no-checks-ran.test.ts",
+    "tests/unit/check-constitution-pairing.test.ts",
+    "tests/unit/feature-ladders-coverage.test.ts",
+    "upgrades/next/constitution-alignment.md",
+    "upgrades/side-effects/constitution-alignment.eli16.md",
+    "upgrades/side-effects/constitution-alignment.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Merge machinery refusal plus a pairing check; handed over from Mama PC.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

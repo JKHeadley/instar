@@ -34,6 +34,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { IntelligenceProvider } from './types.js';
 import { DP_UNJUSTIFIED_STOP_GATE } from '../data/provenanceCoverage.js';
 import type { StopGateBreakerState, StopGateBreakerStateStore } from './StopGateBreakerState.js';
@@ -693,6 +694,7 @@ export class UnjustifiedStopGate {
     try {
       parsed = JSON.parse(responseText.trim());
     } catch {
+      if (this.config.selfDeferralGuardEnabled) featureEvidence.record('monitoring.selfDeferralGuard', { kind: 'error', reason: 'authority-output-not-json', context: { latencyMs } });
       const opened = this.onProviderFailure();
       return opened ? {
         ok: false,
@@ -713,6 +715,7 @@ export class UnjustifiedStopGate {
 
     const validation = this.validateResponse(parsed, input.evidenceMetadata);
     if (!validation.ok) {
+      if (this.config.selfDeferralGuardEnabled) featureEvidence.record('monitoring.selfDeferralGuard', { kind: 'error', reason: `authority-output-invalid:${validation.failure.kind}`, context: { failureKind: validation.failure.kind, latencyMs } });
       const opened = this.onProviderFailure();
       return opened
         ? { ok: false, failure: { kind: 'breakerOpen', detail: `${validation.failure.kind} opened breaker after ${this.consecutiveProviderFailures} consecutive failures`, latencyMs } }
@@ -722,6 +725,24 @@ export class UnjustifiedStopGate {
     // A usable authority verdict (not merely transport reachability) closes the
     // durable unusable-authority breaker.
     this.onProviderReachable();
+
+    if (this.config.selfDeferralGuardEnabled) {
+      const v = validation.result;
+      const labelled = v.rule === 'U_SELF_DEFERRAL' || v.selfDeferral === true;
+      featureEvidence.record('monitoring.selfDeferralGuard', {
+        kind: labelled ? 'fired' : 'held',
+        reason: labelled ? 'self-deferral-labelled' : 'not-self-deferral',
+        context: {
+          rule: v.rule,
+          decision: v.decision,
+          selfDeferral: v.selfDeferral ?? null,
+          confidence: v.confidence ?? null,
+          deferredWorkIsAgentOwnable: v.deferredWorkIsAgentOwnable ?? null,
+          turnEnding: v.turnEnding ?? null,
+          latencyMs,
+        },
+      });
+    }
 
     // Carry the stable template hash on every result (§3.4). The route records
     // it only when the guard is on; here it is a cheap, always-attached field.
