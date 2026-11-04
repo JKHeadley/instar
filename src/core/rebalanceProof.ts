@@ -26,6 +26,9 @@ export const PROOF_REPLY_TIMEOUT_MS = 180_000;
 export const PROOF_OWNERSHIP_TIMEOUT_MS = 60_000;
 export const PROOF_SPAWN_TIMEOUT_MS = 120_000;
 export const PROOF_DUPLICATE_SETTLE_MS = 30_000;
+/** Longest wait on any one step that could otherwise never settle. */
+export const PROOF_MOVE_TIMEOUT_MS = 120_000;
+export const PROOF_IO_TIMEOUT_MS = 30_000;
 const POLL_MS = 3_000;
 const MAX_KEPT_RUNS = 20;
 
@@ -54,6 +57,12 @@ export interface RebalanceProofDeps {
   /** Start a session for the topic if none runs, and resolve once it is idle. False ⇒ it never got there. */
   ensureIdleSession: (topic: number, timeoutMs: number) => Promise<boolean>;
   move: (topic: number, to: string) => { refused: string } | { outcome: Promise<{ moved: boolean; outcome: MoveOutcome }> };
+  /**
+   * Hand the probe to the lease holder, the only machine that can forward: real inbound
+   * enters there, and a peer's forward is refused as not-router. Null means this machine
+   * is the holder, so `sendProbe` applies. `holder` lets a target that IS the holder count.
+   */
+  probeViaHolder?: (topic: number, nonce: string) => Promise<{ action: string; holder: string | null } | null>;
   /** Send the probe through routing. Resolves with the route's action. */
   sendProbe: (topic: number, text: string, messageId: string) => Promise<string>;
   /** Pool-wide topic history; `failed` lists machines that could not be read. */
@@ -79,6 +88,19 @@ export interface ProofRun {
   startedAt: string;
   finishedAt?: string;
   evidenceRef?: string;
+}
+
+/**
+ * Stop waiting, without stopping the work. A move that never settles keeps its planner slot
+ * by design, which is the safe direction; this only lets the run record what it knows.
+ */
+function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} timed out`)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([work, expired]).finally(() => { if (timer) clearTimeout(timer); });
 }
 
 export function proofProbeText(nonce: string): string {
@@ -115,6 +137,17 @@ export class RebalanceProofRunner {
     return this.runs.get(runId) ?? null;
   }
 
+  /**
+   * The holder's half of a peer's proof. Fixed text built here from a nonce only, so no caller
+   * words reach a session, and only for a listed proof topic. Records nothing: the run does.
+   */
+  async routeProbe(topic: number, nonce: string): Promise<{ action: string; holder: string | null } | { refused: string }> {
+    if (!this.d.isProofTopic(topic)) return { refused: 'not-a-proof-topic' };
+    if (!/^[a-f0-9]{8,64}$/.test(nonce)) return { refused: 'bad-nonce' };
+    const action = await this.d.sendProbe(topic, proofProbeText(nonce), `proof-probe-${nonce}`);
+    return { action, holder: this.d.selfMachineId() ?? null };
+  }
+
   /** Check the preconditions and start. A refusal records nothing. */
   start(topic: number, to: string): { refused: ProofRefusal } | { run: ProofRun; finished: Promise<ProofRun> } {
     const self = this.d.selfMachineId();
@@ -138,6 +171,7 @@ export class RebalanceProofRunner {
     const stageAtStart = this.d.stage();
     const t0 = this.now();
     let reason: string | null = null;
+    let moveStarted = false;
 
     try {
       steps.sessionReady = await this.d.ensureIdleSession(run.topic, PROOF_SPAWN_TIMEOUT_MS);
@@ -148,8 +182,9 @@ export class RebalanceProofRunner {
 
       // From here a real move has been asked for, so the run always leaves a row, even if
       // this process dies: the marker makes the next boot record the run as red.
+      moveStarted = true;
       this.d.markInFlight?.(run.runId);
-      const { moved, outcome } = await started.outcome;
+      const { moved, outcome } = await within(started.outcome, PROOF_MOVE_TIMEOUT_MS, 'move');
       steps.move = { moved, ...outcome, atMs: this.now() - t0 };
       if (!moved) reason = `move-${outcome.status}`;
 
@@ -159,9 +194,15 @@ export class RebalanceProofRunner {
 
       if (!reason) {
         const nonce = this.d.newNonce();
-        const action = await this.d.sendProbe(run.topic, proofProbeText(nonce), run.runId);
+        const viaHolder = this.d.probeViaHolder
+          ? await within(this.d.probeViaHolder(run.topic, nonce), PROOF_IO_TIMEOUT_MS, 'probe')
+          : null;
+        const action = viaHolder ? viaHolder.action : await within(this.d.sendProbe(run.topic, proofProbeText(nonce), run.runId), PROOF_IO_TIMEOUT_MS, 'probe');
         steps.probeAction = action;
-        if (action !== 'forwarded') reason = `probe-${action}`;
+        if (viaHolder) steps.probeVia = viaHolder.holder ?? 'holder';
+        // The move's target can be the holder itself, which handles the probe rather than forwarding.
+        const reached = action === 'forwarded' || (action === 'handled-locally' && viaHolder?.holder === run.to);
+        if (!reached) reason = `probe-${action}`;
         else {
           const reply = await this.awaitReply(run, nonce);
           steps.reply = { ...reply, atMs: this.now() - t0 };
@@ -175,7 +216,9 @@ export class RebalanceProofRunner {
     } catch (err) {
       // @silent-fallback-ok: not silent. The error becomes this run's recorded reason and evidence.
       reason = `error: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200);
-      if (!('move' in steps)) return this.finish(run, null, reason, steps, self);
+      // Keyed on the move having started, not on evidence of its result: a started run that
+      // ended in an error must leave a row, or an older green would stay in force.
+      if (!moveStarted) return this.finish(run, null, reason, steps, self);
     }
     return this.finish(run, reason === null ? 'green' : 'red', reason, steps, self);
   }
@@ -197,7 +240,7 @@ export class RebalanceProofRunner {
     let last = { total: 0, fromTarget: 0, targetUnreadable: false };
     for (;;) {
       try {
-        const h = await this.d.readHistory(run.topic);
+        const h = await within(this.d.readHistory(run.topic), PROOF_IO_TIMEOUT_MS, 'history read');
         const agentRows = h.rows.filter((m) => m.fromUser !== true && (m.text ?? '').includes(nonce) && !(m.text ?? '').includes('Automated machine-move check'));
         // A read that could not reach the target says nothing about its reply, so it never
         // replaces what an earlier read saw.

@@ -225,6 +225,17 @@ after a real move, a labelled message from Echo sent through real Telegram in th
 the screen captured as evidence. Slack does not apply: the shed moves Telegram topics only, and Slack
 conversations stay where they are.
 
+**The probe enters at the lease holder.** Only the holder receives real inbound, and a peer's forward is refused
+as `not-router`. So a proof on any other machine hands its nonce to the holder through
+`POST /session-pool/rebalance-proof/probe`, which builds the same fixed text and routes it. If the move's target
+is the holder, it handles the probe rather than forwarding it, and that counts. Found live on 2026-11-04: the Mini
+moved a conversation correctly and its proof went red with `probe-queued`.
+
+**What "exactly one reply" covers.** It is read across the machines that can be read, and the target must be one of
+them. A machine that is off cannot make the proof red: only the source and the target can receive the probe, and
+requiring every machine would fail a whole ring because one laptop is shut. Any step that could hang has its own
+deadline, and a started run that ends in an error still records red.
+
 Echo's proof topic is a labelled topic created by Echo. A weekly Echo job reruns the ring. Proofs last
 30 days and are not tied to a build, because each one moves a real conversation; the live measures
 cover the gap between them.

@@ -25241,6 +25241,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.status(202).json({ runId: started.run.runId });
   });
 
+  // POST /session-pool/rebalance-proof/probe — a peer's proof asks the lease holder to route
+  // its probe, because real inbound enters here and a peer cannot forward. Nonce only.
+  router.post('/session-pool/rebalance-proof/probe', async (req, res) => {
+    const runner = getActiveRebalanceProof();
+    if (!runner) {
+      res.status(503).json({ error: 'rebalance proof not available (overload shed is off on this agent)' });
+      return;
+    }
+    const body = (req.body ?? {}) as { topic?: unknown; nonce?: unknown };
+    const topic = Number(body.topic);
+    if (!Number.isInteger(topic) || topic <= 0 || typeof body.nonce !== 'string') {
+      res.status(400).json({ error: 'topic and nonce are required' });
+      return;
+    }
+    if (ctx.resolveRouterUrl?.()) {
+      res.status(409).json({ refused: 'not-the-lease-holder' });
+      return;
+    }
+    const out = await runner.routeProbe(topic, body.nonce);
+    res.status('refused' in out ? 409 : 200).json(out);
+  });
+
   // GET /session-pool/rebalance-proof/:runId — where a proof run stands.
   router.get('/session-pool/rebalance-proof/:runId', (req, res) => {
     const run = getActiveRebalanceProof()?.get(req.params.runId) ?? null;
