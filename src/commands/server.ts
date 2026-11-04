@@ -267,6 +267,7 @@ import { DispatchScopeEnforcer } from '../core/DispatchScopeEnforcer.js';
 import { TrustRecovery } from '../core/TrustRecovery.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { gitLeaseHasNoRemote, reportLeaseMediumSelection, selectLeaseMedium } from '../core/leaseMediumSelection.js';
+import { decideRoleRestart, readLastRoleRestart, requestRoleRestart } from '../core/roleFollowRestart.js';
 import { HumanAsDetectorLog, observeInboundMessage } from '../monitoring/HumanAsDetectorLog.js';
 import { creditUsherOnMiss } from '../core/UsherActedCorrelator.js';
 import { resolveStableNodeBinary } from '../utils/resolveNodeBinary.js';
@@ -8233,6 +8234,41 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
 
     let scheduler: JobScheduler | undefined;
+    // lease-takeover-role-restart: the scheduler below exists only on a machine awake at boot,
+    // so a role change restarts once and this same path builds what the new role needs.
+    // Losing authority stops jobs NOW, whatever a restart is waiting on: a throttled restart
+    // must never mean jobs running in two places.
+    const bootAwake = coordinator.isAwake;
+    const reconcileRole = (): void => {
+      try {
+        const nowAwake = coordinator.isAwake;
+        if (nowAwake === bootAwake) return;
+        const lease = config.multiMachine?.leaseSelfHeal;
+        const peer = Object.entries(coordinator.managers.identityManager.loadRegistry().machines ?? {})
+          .some(([id, entry]) => id !== coordinator.identity?.machineId && !entry.revokedAt);
+        const decision = decideRoleRestart({
+          applies: !!lease?.soloCaptainHold?.enabled && !lease?.preferredAwakeMachineId && peer,
+          bootAwake, nowAwake, lastRestartAtMs: readLastRoleRestart(config.stateDir), nowMs: Date.now(),
+        });
+        if (decision === 'restart') {
+          console.log(pc.yellow(`  [lease] role is now ${coordinator.role}: restarting once so boot builds what it needs`));
+          requestRoleRestart({ stateDir: config.stateDir }, nowAwake);
+        }
+      } catch (err) {
+        console.warn(`  [lease] role restart check failed: ${err instanceof Error ? err.message : String(err)}`); // @silent-fallback-ok: logged, and the timer below retries
+      }
+    };
+    coordinator.on('roleChange', (_from, to) => {
+      const lease = config.multiMachine?.leaseSelfHeal;
+      if (lease?.soloCaptainHold?.enabled && !lease?.preferredAwakeMachineId) {
+        if (to === 'awake') scheduler?.resume();
+        else scheduler?.pause();
+      }
+      reconcileRole();
+    });
+    // A change inside the restart window, or a failed request, is retried until the role matches.
+    setInterval(reconcileRole, 60_000).unref?.();
+
     if (config.scheduler.enabled && coordinator.isAwake) {
       scheduler = new JobScheduler(config.scheduler, sessionManager, state, config.stateDir);
       scheduler.notifyDestinationHasOtherReaders = (job) => {
