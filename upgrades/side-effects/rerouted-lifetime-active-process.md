@@ -57,3 +57,7 @@ The live 6/6 cap is caused by a hard-lifetime attempt blocked by `active-process
 **Reviewer:** rerouted_lifetime_review
 
 Concur with the review. The module-private capability is accepted only for the literal timeout reason, saved rerouted lane and pattern mode, a finite positive limit, and an elapsed deadline. It bypasses three process-activity reasons; lease ownership and the other ReapGuard protections still apply. The real-guard expiry test fails on the old code, and the recent-message test checks a surviving higher-priority veto. The reviewer did not edit files or run broad tests.
+
+## Verification update — 2026-11-04
+
+The first exact-head merge-tree run at `552c8c492` passed all unit tests (57,053) and integration tests (5,507), but one general lifecycle E2E test failed among 3,747 E2E tests. The verifier correctly refused an isolation rerun because that test imports the changed session manager. A direct run of the same lifecycle file on this branch then passed all 10 tests. A separate PR's full verifier also failed that file at 09:00Z, so the first failure cannot yet be attributed to this patch. The full E2E suite is being rerun under the shared test limit; shipping still requires a green exact-head result and a live timeout receipt. This update changes no source or test behavior.
