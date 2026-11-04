@@ -34,7 +34,10 @@ Rules that apply whatever you find:
 - This job is entirely yours until the check below passes. The person only approves decisions, such as a payment, or supplies a credential. They never open a browser, fetch a key, visit a provider's site, run a command, edit a file or follow steps.
 - If a provider's flow has changed from what this says, research it and adapt. Routine failures are yours to diagnose, retry and repair, quietly.
 - Credentials only ever come through a one-time Secret Drop link, never chat or a file. Ask for one thing at a time, in plain words.
+- If you have to hold a key for a moment, keep it in your session's private temporary folder, never a shared one, and delete it as soon as it's stored.
 - Whose account is the person's choice: you can fully manage their own accounts, use accounts of your own, or both. Follow what they have said. If they haven't said, ask once and present both as good options.
+- Never open an account on a disposable or temporary email address, because the account is lost when that inbox goes. If you have no lasting address to use, say so and ask for the smallest thing you need.
+- Close any browser window you opened as soon as you're done with it. A no can end this session without warning, and whatever is still open stays open.
 - Talk to the person in this conversation's topic, $INSTAR_TELEGRAM_TOPIC. It is yours for this job, and replies there reach you.
 - No spending and no permission grants without their yes. Nothing checks your browser clicks, so this is on you: stop and ask before any page that charges or grants.
 - Your calls to this server need the header "Authorization: Bearer $INSTAR_AUTH_TOKEN".

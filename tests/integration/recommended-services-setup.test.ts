@@ -235,6 +235,30 @@ describe('recommended services setup', () => {
       expect((await put(a, 'another')).body.error).toBe('already-held');
     });
 
+    it('a yes after a no can replace the key setup stored, and still never one that was already here', async () => {
+      const a = app();
+      await say(a, 'yes');
+      await started();
+      await put(a, 'first-key');
+      await verify(a);
+      await say(a, 'no');
+      answer = { ok: false, status: 401 };
+      await say(a, 'yes');
+      expect((await put(a, 'second-key')).body.stored).toBe(true);
+      expect(secret).toBe('second-key');
+    });
+
+    it('a key that was here before setup stays protected through a no and a yes', async () => {
+      const a = app();
+      secret = 'live-key';
+      answer = { ok: false, status: 401 };
+      await say(a, 'yes');
+      await say(a, 'no');
+      await say(a, 'yes');
+      expect((await put(a, 'new-key')).body.error).toBe('already-held');
+      expect(secret).toBe('live-key');
+    });
+
     it('needs a yes on this machine, a real value and the header', async () => {
       const a = app();
       expect((await put(a, 'k')).body.error).toBe('not-granted-here');
@@ -436,6 +460,10 @@ describe('recommended services setup', () => {
         expect(RECOMMENDED_SERVICE_CATALOG.some((r) => r.id === recipe.service), recipe.id).toBe(true);
         const brief = recipe.brief({ port: 1 });
         expect(brief).toContain('They never open a browser');
+        // Each of these was something a real session did, or nearly did, in the first live run.
+        expect(brief).toContain('never a shared one');
+        expect(brief).toContain('disposable or temporary email');
+        expect(brief).toContain('Close any browser window');
         expect(brief).not.toMatch(/ask (the person|them) to (open|go|visit|sign|run|paste|get|fetch)/i);
       }
     });
