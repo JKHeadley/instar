@@ -21,6 +21,7 @@ import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
 import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
 import { getActiveRebalanceProof, getActiveRebalanceProofStore } from '../core/rebalanceProof.js';
+import { seatNotMovedReason } from '../core/poolTransferReason.js';
 import { getActiveDrainRehearsal } from '../monitoring/machineMaintenance/DrainRehearsal.js';
 import { getActiveBrowserCare } from '../monitoring/machineMaintenance/BrowserCare.js';
 import { getActiveWedgeMonitor } from '../monitoring/machineMaintenance/WedgeMonitor.js';
@@ -25070,10 +25071,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         seatMoved = true;
       } else {
         seatMoved = false;
-        seatMoveReason =
-          drainLeg.attempted && drainLeg.ok === false
-            ? 'drain failed — the seat did not move (topic stays whole on its current machine)'
-            : 'ownership did not transfer to the target (the pin is set, but the target is not the active owner)';
+        seatMoveReason = seatNotMovedReason(drainLeg);
       }
     }
     if (seatMoved && plan.action !== 'noop') {
