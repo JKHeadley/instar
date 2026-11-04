@@ -114,8 +114,11 @@ function channelLine(c: MachineCapacity | null, scopes: ChannelScope[]): Readine
   if (!heardDirectly(c)) return line('unknown', 'peer not reached yet');
   // A peer that is reachable and reports no channels cannot answer: absent is `no` here,
   // unlike placement, which stays open for older peers during a rolling update.
-  const missing = scopes.filter((s) => machineServesChannel(c?.servesChannels ?? {}, s) !== 'yes').length;
-  return missing === 0 ? line('ok', 'serves every channel this agent uses') : line('failing', `cannot serve ${missing} of ${scopes.length} channels`);
+  const missing = scopes.filter((s) => machineServesChannel(c?.servesChannels ?? {}, s) !== 'yes');
+  if (missing.length === 0) return line('ok', 'serves every channel this agent uses');
+  // Name the platform: "1 of 2" read as "this machine cannot answer" when it was only Slack.
+  const platforms = [...new Set(missing.map((s) => s.platform))].join(', ');
+  return line('failing', `cannot serve ${missing.length} of ${scopes.length} channels (${platforms})`);
 }
 
 function followUpLine(c: MachineCapacity | null): ReadinessLine {

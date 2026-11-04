@@ -75,6 +75,14 @@ describe('computePoolReadiness', () => {
     expect(r.peers[0].lines.channels.state).toBe('ok');
   });
 
+  it('the failing line names the platform, so a Slack gap does not read as a dead machine', () => {
+    const two = { telegram: { chatIds: ['-100'] }, slack: { workspaceIds: ['T1'] } };
+    const reason = computePoolReadiness(deps({ ownChannels: () => two })).peers[0].lines.channels.reason;
+    expect(reason).toContain('1 of 2');
+    expect(reason).toContain('slack');
+    expect(reason).not.toContain('telegram');
+  });
+
   it('a peer serving one of two channels fails, and no channels anywhere is unknown', () => {
     const two = { telegram: { chatIds: ['-100', '-200'] } };
     expect(computePoolReadiness(deps({ ownChannels: () => two })).peers[0].lines.channels.state).toBe('failing');
