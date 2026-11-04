@@ -118,6 +118,12 @@ and the self-action worst-case model both built the planner without the new gate
 the model's bound checked nothing. Both now open every gate; the route test also asserts a source below
 stage `rebalance` stays held.
 
+## Ladder
+
+The spec's ladder line names the existing `monitoring.overloadShed` entry, which gains the alias
+`session-pool-rebalancing` and this spec's bars read from `logs/overload-shed.jsonl`. `multiMachine.sessionPool.stage`
+gains the alias `session-pool-default-on`.
+
 ## Class-Closure Declaration
 
 Defect class `unbounded-self-action`, closure `guard`, enforcement `ratchet`, citing

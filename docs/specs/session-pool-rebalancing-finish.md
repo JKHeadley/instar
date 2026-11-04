@@ -231,7 +231,7 @@ cover the gap between them.
 
 ## Maturation plan
 
-- **ladder:** session-pool-rebalancing
+- **ladder:** monitoring.overloadShed
 
 The audit gains two row types, each carrying a capacity snapshot (source and target active/max, target
 verdict) and `workState`: `would-move` (now one row per episode per topic) and `move-outcome` (status,

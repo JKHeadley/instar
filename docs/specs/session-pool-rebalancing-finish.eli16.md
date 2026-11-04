@@ -30,3 +30,5 @@ CPU, and it says so.
 
 **What you need to decide.** Nothing for this part. The numbers that decide when it is ready for other
 agents are in the plan, and the maturation review reads them.
+
+The measured bars for this work live on the Overload shed entry of the maturation ladder.
