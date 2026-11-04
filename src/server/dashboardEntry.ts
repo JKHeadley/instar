@@ -26,6 +26,9 @@ const PAIR_FILES: Record<string, { file: string; type: string }> = {
   '/dashboard/pair.js': { file: 'pair.js', type: 'application/javascript' },
   '/dashboard/pair-model.js': { file: 'pair-model.js', type: 'application/javascript' },
   '/dashboard/pair.css': { file: 'pair.css', type: 'text/css' },
+  // A recommended service's confirm page: the same strict policy, because a PIN is typed here.
+  '/dashboard/service-yes': { file: 'service-yes.html', type: 'html' },
+  '/dashboard/service-yes.js': { file: 'service-yes.js', type: 'application/javascript' },
 };
 
 /**

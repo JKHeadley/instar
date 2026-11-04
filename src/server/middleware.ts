@@ -263,6 +263,14 @@ export function authMiddleware(
       return;
     }
 
+    // A recommended service's confirm page (docs/specs/recommended-services.md, Yes): a phone holds
+    // no token. Reading shows only public catalog text, and a yes needs the single-use token and
+    // the operator's PIN, both checked in the handler. Exact path shape and methods only.
+    if ((req.method === 'GET' || req.method === 'POST') && /^\/recommended-services\/[a-z][a-z0-9-]{0,63}\/confirm$/.test(req.path)) {
+      next();
+      return;
+    }
+
     // Mobile pairing (docs/specs/mobile-pairing-link.md): the redeem and the self-probe
     // ping are public by exact path+method; mint and devices stay behind the bearer gate.
     if ((req.path === '/mobile/pairing-codes/redeem' && req.method === 'POST')

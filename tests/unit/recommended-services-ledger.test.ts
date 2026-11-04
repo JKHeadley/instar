@@ -49,7 +49,7 @@ describe('recommended services ledger', () => {
   it('a yes replaces only the nos standing when it was confirmed', () => {
     const l = make();
     l.recordNo({ service: 'tailscale', shutdown: 'none', reason: 'none', origin: 'first-offer' });
-    const yes = l.recordYes({ service: 'tailscale', origin: 'person-asked', offerTextHash: 'h' });
+    const yes = l.recordYes({ service: 'tailscale', origin: 'person-asked', offerTextHash: 'h', grantMachine: 'm_a', principal: '1' });
     expect(l.effective('tailscale').choice).toBe('yes');
     l.recordNo({ service: 'tailscale', shutdown: 'none', reason: 'none', origin: 'cool-off' });
     expect(l.effective('tailscale').choice).toBe('no');
@@ -59,14 +59,14 @@ describe('recommended services ledger', () => {
   it('a delayed yes with a newer clock cannot undo a no it never saw', () => {
     const a = make('m_a');
     const no = a.recordNo({ service: 'tailscale', shutdown: 'none', reason: 'none', origin: 'first-offer' });
-    const skewedYes = { ...a.recordYes({ service: 'email', origin: 'first-offer', offerTextHash: 'h' }), service: 'tailscale', at: '2099-01-01T00:00:00.000Z', supersedes: [] } as LedgerRow;
+    const skewedYes = { ...a.recordYes({ service: 'email', origin: 'first-offer', offerTextHash: 'h', grantMachine: 'm_a', principal: '1' }), service: 'tailscale', at: '2099-01-01T00:00:00.000Z', supersedes: [] } as LedgerRow;
     expect(foldChoice('tailscale', [no, skewedYes]).choice).toBe('no');
   });
 
   it('every machine folds to the same answer, in any order', () => {
     const a = make('m_a');
     const n = a.recordNo({ service: 'jev', shutdown: 'none', reason: 'none', origin: 'first-offer' });
-    const y = a.recordYes({ service: 'jev', origin: 'person-asked', offerTextHash: 'h' });
+    const y = a.recordYes({ service: 'jev', origin: 'person-asked', offerTextHash: 'h', grantMachine: 'm_a', principal: '1' });
     const n2 = a.recordNo({ service: 'jev', shutdown: 'none', reason: 'cost', origin: 'change' });
     const orders = [[n, y, n2], [n2, y, n], [y, n2, n]];
     for (const o of orders) expect(foldChoice('jev', o)).toEqual(foldChoice('jev', orders[0]));
@@ -145,7 +145,7 @@ describe('recommended services ledger', () => {
       const l = make();
       importLegacyDeclines(l, () => 'declined');
       expect(l.effective('github-state-backup')).toMatchObject({ choice: 'unset', shutdown: 'none', legacyDeclined: true });
-      l.recordYes({ service: 'github-state-backup', origin: 'person-asked', offerTextHash: 'h' });
+      l.recordYes({ service: 'github-state-backup', origin: 'person-asked', offerTextHash: 'h', grantMachine: 'm_a', principal: '1' });
       expect(l.effective('github-state-backup').choice).toBe('yes');
     });
 
@@ -155,5 +155,74 @@ describe('recommended services ledger', () => {
       expect(isRetiredLegacyOffer('dispatches')).toBe(false);
       expect(isRetiredLegacyOffer('constructor')).toBe(false);
     });
+  });
+
+  it('a yes grants one named machine, and any no at or after it voids that grant', () => {
+    let t = Date.parse('2026-11-04T00:00:00Z');
+    const tick = () => { t += 1000; return new Date(t); };
+    const dir2 = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'rec-grant-'));
+    try {
+      const l = new RecommendedServicesLedger({ stateDir: dir2, signer: signerFor('m_a'), keyLookup: lookup, now: tick });
+      expect(l.activeGrant('jev', 'm_a')).toBeNull();
+      const first = l.recordYes({ service: 'jev', origin: 'person-asked', offerTextHash: 'h', grantMachine: 'm_a', principal: '1' });
+      expect(l.activeGrant('jev', 'm_a')?.eventId).toBe(first.eventId);
+      expect(l.activeGrant('jev', 'm_b')).toBeNull();
+      // A second machine's yes does not take the first machine's grant away.
+      l.recordYes({ service: 'jev', origin: 'person-asked', offerTextHash: 'h', grantMachine: 'm_b', principal: '1' });
+      expect(l.activeGrant('jev', 'm_a')?.eventId).toBe(first.eventId);
+      expect(l.activeGrant('jev', 'm_b')).not.toBeNull();
+      l.recordNo({ service: 'jev', shutdown: 'none', reason: 'none', origin: 'owner-surface' });
+      expect(l.activeGrant('jev', 'm_a')).toBeNull();
+      // A new yes for one machine leaves the other void, because the no came after its grant.
+      l.recordYes({ service: 'jev', origin: 'person-asked', offerTextHash: 'h', grantMachine: 'm_b', principal: '1' });
+      expect(l.activeGrant('jev', 'm_b')).not.toBeNull();
+      expect(l.activeGrant('jev', 'm_a')).toBeNull();
+    } finally {
+      SafeFsExecutor.safeRmSync(dir2, { recursive: true, force: true, operation: 'tests/unit/recommended-services-ledger.test.ts' });
+    }
+  });
+
+  it('clock skew cannot bring a voided grant back', () => {
+    const dir2 = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'rec-grant-'));
+    try {
+      // A's clock is ahead. A says yes at 12:00. B then records a no at 11:55 and its own yes at 11:58.
+      let at = new Date('2026-11-04T12:00:00Z');
+      const a = new RecommendedServicesLedger({ stateDir: `${dir2}/a`, signer: signerFor('m_a'), keyLookup: lookup, now: () => at });
+      const b = new RecommendedServicesLedger({ stateDir: `${dir2}/b`, signer: signerFor('m_b'), keyLookup: lookup, now: () => at });
+      const yesA = a.recordYes({ service: 'jev', origin: 'person-asked', offerTextHash: 'h', grantMachine: 'm_a', principal: '1' });
+      expect(b.ingestReplicated(yesA)).toBe('added');
+      at = new Date('2026-11-04T11:55:00Z');
+      const no = b.recordNo({ service: 'jev', shutdown: 'none', reason: 'none', origin: 'owner-surface' });
+      at = new Date('2026-11-04T11:58:00Z');
+      const yesB = b.recordYes({ service: 'jev', origin: 'person-asked', offerTextHash: 'h', grantMachine: 'm_b', principal: '1' });
+      expect(a.ingestReplicated(no)).toBe('added');
+      expect(a.ingestReplicated(yesB)).toBe('added');
+      expect(a.effective('jev').choice).toBe('yes');
+      expect(a.activeGrant('jev', 'm_a')).toBeNull();
+      expect(a.activeGrant('jev', 'm_b')?.eventId).toBe(yesB.eventId);
+    } finally {
+      SafeFsExecutor.safeRmSync(dir2, { recursive: true, force: true, operation: 'tests/unit/recommended-services-ledger.test.ts' });
+    }
+  });
+
+  it('a grant survives a restart and travels with its row', () => {
+    const dir2 = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'rec-grant-'));
+    try {
+      const l = new RecommendedServicesLedger({ stateDir: dir2, signer: signerFor('m_a'), keyLookup: lookup });
+      l.recordYes({ service: 'jev', origin: 'person-asked', offerTextHash: 'h', grantMachine: 'm_a', principal: '1' });
+      const again = new RecommendedServicesLedger({ stateDir: dir2, signer: signerFor('m_a'), keyLookup: lookup });
+      expect(again.activeGrant('jev', 'm_a')).toMatchObject({ grantMachine: 'm_a', principal: '1' });
+    } finally {
+      SafeFsExecutor.safeRmSync(dir2, { recursive: true, force: true, operation: 'tests/unit/recommended-services-ledger.test.ts' });
+    }
+  });
+
+  it('a no cannot carry a grant', () => {
+    const base = { type: 'choice', eventId: 'a'.repeat(32), service: 'jev', choice: 'no', shutdown: 'none', reason: 'none', origin: 'owner-surface', offerTextHash: '', supersedes: [], at: '2026-11-04T00:00:00Z', machineId: 'm', signerKeyHash: 'h', sig: 's' };
+    expect(validateRow(base)).not.toBeNull();
+    expect(validateRow({ ...base, grantMachine: 'm_a' })).toBeNull();
+    const yes = { ...base, choice: 'yes' };
+    expect(validateRow({ ...yes, grantMachine: 'm_a' })).toBeNull();
+    expect(validateRow({ ...yes, grantMachine: 'm_a', principal: '1', knownNos: [] })).not.toBeNull();
   });
 });

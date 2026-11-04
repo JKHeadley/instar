@@ -2189,6 +2189,21 @@
       }
     },
     {
+      "category": "recommended-service-tokens",
+      "description": "Hashes of the single-use tokens for open recommended-service confirm pages. Local by design: a token belongs to the machine that served the page.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": ["state/recommended-service-tokens/tokens.json"],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One replace-in-place file, capped per service, with expired tokens pruned on write."
+      }
+    },
+    {
       "category": "ecosystem-ideas",
       "description": "The ecosystem idea pipeline (docs/specs/ecosystem-idea-pipeline.md): an append-only event ledger that replicates as the ecosystemIdeas store, a per-machine framework admission record and notice dedupe. Source mirrors and index.db in the same directory are a rebuildable cache.",
       "scope": "must-be-coherent",

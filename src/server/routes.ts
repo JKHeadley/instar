@@ -1,5 +1,6 @@
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
 import { registerRecommendedServiceRoutes } from './recommendedServiceRoutes.js';
+import { GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS } from '../core/PinAttemptStore.js';
 import { isRetiredLegacyOffer } from '../recommended/legacyDeclines.js';
 import { recordDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -1589,6 +1590,8 @@ export interface RouteContext {
   ecosystemIdeas?: () => import('../ecosystem/buildEcosystemIdeas.js').EcosystemRouteContext | { unavailable: 'no-source' } | null;
   /** docs/specs/recommended-services.md. Null when this machine has no identity; the routes answer 503. */
   recommendedServicesLedger?: import('../recommended/RecommendedServicesLedger.js').RecommendedServicesLedger | null;
+  /** Only tests set this, because no real service has a proven setup yet. */
+  recommendedServicesCatalog?: readonly import('../recommended/catalog.js').CatalogRow[];
   /**
    * The money-layer OPERATOR ENABLE surface
    * (docs/specs/money-layer-operator-enable-surface.md). Unlike every field
@@ -1602,6 +1605,8 @@ export interface RouteContext {
   requestSupervisedRestart?: (reason: string, requestedBy?: string) => Promise<boolean> | boolean;
   /** Durable per-IP PIN-attempt lockout (S2-1) — undefined/null degrades to in-memory-only. */
   pinAttemptStore?: import('../core/PinAttemptStore.js').PinAttemptStore | null;
+  /** The dashboard unlock's rule: this connection may not carry a PIN. */
+  pinEntryRefusedHere?: (req: import('express').Request) => boolean;
   /** Layer 1c provider-report store (reporting-only; FD-21 — never a gate input). Null when the spend view is dark. */
   providerCostReportStore?: import('../monitoring/ProviderCostReportStore.js').ProviderCostReportStore | null;
   resourceLedger: import('../monitoring/ResourceLedger.js').ResourceLedger | null;
@@ -16076,7 +16081,41 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ action: 'ignore-live', ...plan });
   });
 
-  registerRecommendedServiceRoutes(router, { ledger: () => ctx.recommendedServicesLedger ?? null, stateDir: ctx.config.stateDir, checkPin: (req, res) => checkMandatePin(req, res) });
+  registerRecommendedServiceRoutes(router, {
+    ledger: () => ctx.recommendedServicesLedger ?? null,
+    stateDir: ctx.config.stateDir,
+    catalog: ctx.recommendedServicesCatalog,
+    pinEntryRefused: (req) => ctx.pinEntryRefusedHere?.(req) ?? false,
+    checkPin: (req, res) => checkMandatePin(req, res),
+    // Reachable with no bearer token, so it holds the unlock route's limits too: the same refusal on
+    // an insecure connection, and the same cap across every source address.
+    checkConfirmPin: (req, res) => {
+      if (ctx.pinEntryRefusedHere?.(req)) {
+        res.status(403).json({ error: 'insecure-connection' });
+        return false;
+      }
+      if (ctx.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS)) {
+        res.status(429).json({ error: 'Too many PIN attempts. Try again later.' });
+        return false;
+      }
+      const ok = checkMandatePin(req, res);
+      // Only a wrong PIN counts. An empty one guesses nothing, and charging it would let one address lock out unlock.
+      const { pin } = (req.body ?? {}) as { pin?: unknown };
+      if (!ok && res.statusCode === 403 && typeof pin === 'string' && pin) ctx.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS);
+      return ok;
+    },
+    owner: () => { const uid = callbackApprover(); return uid === undefined ? null : String(uid); },
+    recordApproval: (subject, evidenceRef) => {
+      if (!ctx.approvalLedger) throw new Error('approval ledger unavailable');
+      ctx.approvalLedger.recordApproval({ subject, decisionClass: 'recommended-service', surface: 'other', approver: 'owner', mode: 'approved-as-is', evidenceRef });
+    },
+    openCommitment: (name, service) => {
+      if (!ctx.commitmentTracker) throw new Error('commitment tracker unavailable');
+      // The beacon only follows a commitment that has a topic to report to.
+      const topicId = ctx.telegram?.getLifelineTopicId?.();
+      ctx.commitmentTracker.record({ type: 'one-time-action', source: 'agent', topicId, beaconEnabled: topicId !== undefined, cadenceMs: 86_400_000, userRequest: `Set up ${name}, after the owner said yes`, agentResponse: `I own setup of ${service} until it passes verification or the owner says no. The person only approves decisions or supplies credentials.` });
+    },
+  });
   registerEcosystemIdeaRoutes(router, { ecosystem: () => ctx.ecosystemIdeas?.() ?? null, checkPin: (req, res) => checkMandatePin(req, res) });
 
   router.post('/feedback-factory/triage/commit', (req, res) => {
