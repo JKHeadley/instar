@@ -105,7 +105,7 @@ No flag, by design: the change is read-only, returns a strict subset of what the
 - **fleet:** the routes ride `mobilePairing.enabled` (device headers authenticate nothing when it is off; the bearer path works regardless).
 - **graduation criterion:** one week after release, the `MobileOpsScreens.read` degradation count is zero or matches console read failures in the same window, and the dev-agent-live PASS/FAIL record shows every screen passing.
 - **dark-window:** none: the routes are live on release (read-only, no flag).
-- **ladder:** none (no flag, rides mobilePairing.enabled)
+- **ladder:** mobilePairing
 
 ## Open questions
 
