@@ -62,7 +62,7 @@ Set `maturation.ladder.enabled` false, read live with no restart: routes 503, ra
 
 ## Evidence
 
-Unit, integration and E2E tests as listed in the spec, including the E2E wiring test against a real commitment store and scorer; the discoverability and section-tracking tests updated for the new routes and section; second-family read of the thresholds; live check on Echo recorded in the PR.
+Unit, integration and E2E tests as listed in the spec, including the E2E wiring test against a real commitment store and scorer; a public docs page for the ladder; the discoverability and section-tracking tests updated for the new routes and section; second-family read of the thresholds; live check on Echo recorded in the PR.
 
 ## Second-pass review
 
