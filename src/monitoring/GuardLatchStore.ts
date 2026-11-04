@@ -4,7 +4,9 @@
  *
  * Two independent gate families decide whether the GreenPrAutoMerger may act:
  *   - `rollback`        — set by POST /green-pr-automerge/rollback, cleared by
- *                         POST /green-pr-automerge/enable (PIN-gated re-arm)
+ *                         POST /green-pr-automerge/enable (PIN-gated re-arm), or
+ *                         for an agent's own stop only, /release after a
+ *                         server-verified condition (green-pr-agent-stop-release)
  *   - `emergency-pause` — set by the MessageSentinel emergency stop, cleared by
  *                         its own resume path
  * BOTH must be open for a merge. A third family, `pool-armed`, is a posture
@@ -36,6 +38,7 @@ import path from 'node:path';
 
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import type { CoherenceJournal, GuardLatchAction } from '../core/CoherenceJournal.js';
+import { markerFor, readStoredOrigin, type AgentStopOrigin, type AgentStopReleaseRecord } from './agentStopRelease.js';
 
 /** A single latch transition (own or peer), as merged for resolution. */
 export interface GuardLatchEntry {
@@ -71,7 +74,31 @@ interface OwnTransition {
   seq: number;
   reason?: string;
   ts: string;
+  /**
+   * Set once, when an agent-class stop is minted, and kept across its clear so
+   * the history shows who stopped. Machine-local: never sent to the journal, so
+   * a peer sees no origin and treats the latch as operator-class.
+   */
+  origin?: unknown;
+  /** Who released an agent-class stop, on the clearing transition. */
+  release?: AgentStopReleaseRecord;
 }
+
+/** One rollback stop as the status route and the surfacer read it. */
+export interface RollbackStopView {
+  latchId: string;
+  class: 'operator' | 'agent';
+  reason?: string;
+  since?: string;
+  marker?: string;
+  origin?: AgentStopOrigin;
+}
+
+/** What the release route needs to know about one named latch. */
+export type StopClassRead =
+  | { known: false }
+  | { known: true; active: boolean; class: 'operator' }
+  | { known: true; active: boolean; class: 'agent'; origin: AgentStopOrigin };
 
 interface LocalFile {
   machineId: string;
@@ -127,19 +154,23 @@ export class GuardLatchStore {
    * Set (mint) a latch in `latchKind`. Returns the fresh, globally-unique
    * latchId. Use for the absorbing families (rollback, emergency-pause): every
    * call introduces a NEW latchId that no prior clear could have named.
+   *
+   * `origin` is the ONLY way a stop becomes agent-class, and it can only describe
+   * the fresh id this call mints. Nothing writes an origin onto an existing latch,
+   * so no caller can downgrade a stop.
    */
-  set(latchKind: string, reason?: string): string {
+  set(latchKind: string, reason?: string, origin?: AgentStopOrigin): string {
     const seq = ++this.local.ownSeq;
     const latchId = `${this.machineId}:${seq}`;
-    this.record(latchKind, latchId, 'set', seq, reason);
+    this.record(latchKind, latchId, 'set', seq, reason, origin);
     return latchId;
   }
 
   /** Clear the SPECIFIC named latchId(s) in `latchKind` (the /enable semantics). */
-  clear(latchKind: string, latchIds: string[], reason?: string): void {
+  clear(latchKind: string, latchIds: string[], reason?: string, release?: AgentStopReleaseRecord): void {
     for (const latchId of latchIds) {
       const seq = ++this.local.ownSeq;
-      this.record(latchKind, latchId, 'clear', seq, reason);
+      this.record(latchKind, latchId, 'clear', seq, reason, undefined, release);
     }
   }
 
@@ -149,11 +180,18 @@ export class GuardLatchStore {
     this.record(latchKind, latchId, on ? 'set' : 'clear', seq, reason);
   }
 
-  private record(latchKind: string, latchId: string, action: GuardLatchAction, seq: number, reason?: string): void {
+  private record(latchKind: string, latchId: string, action: GuardLatchAction, seq: number, reason?: string, origin?: AgentStopOrigin, release?: AgentStopReleaseRecord): void {
     const epoch = safeEpoch(this.leaseEpoch);
     const ts = this.now().toISOString();
     const fam = this.local.transitions[latchKind] ?? (this.local.transitions[latchKind] = {});
-    fam[latchId] = { action, epoch, seq, ...(reason ? { reason: reason.slice(0, 80) } : {}), ts };
+    const keptOrigin = action === 'clear' ? fam[latchId]?.origin : origin;
+    fam[latchId] = {
+      action, epoch, seq,
+      ...(reason ? { reason: reason.slice(0, 80) } : {}),
+      ts,
+      ...(keptOrigin !== undefined ? { origin: keptOrigin } : {}),
+      ...(release ? { release } : {}),
+    };
     // Durable local write FIRST (safety never waits on the journal/network).
     this.persist();
     // Then replicate (best-effort; non-blocking inside the journal).
@@ -197,6 +235,47 @@ export class GuardLatchStore {
       if (e.action === 'set') out.push(latchId);
     }
     return out;
+  }
+
+  /**
+   * What class is this stop, and is it active? Read from the store and never from
+   * a request. Only a latch this machine minted, whose own transition won, and
+   * whose stored origin is exactly valid reads as agent-class. A peer's row, a
+   * missing origin and a malformed origin all read as operator-class.
+   * @throws if the peer view is unreadable (the release route refuses).
+   */
+  stopClass(latchKind: string, latchId: string): StopClassRead {
+    const winner = this.resolveFamily(latchKind).get(latchId);
+    if (!winner) return { known: false };
+    const active = winner.action === 'set';
+    const origin = this.ownOrigin(latchKind, latchId, winner);
+    if (origin) return { known: true, active, class: 'agent', origin };
+    return { known: true, active, class: 'operator' };
+  }
+
+  /** Active rollback stops with their class. Never throws: unreadable reads as none. */
+  rollbackStops(): RollbackStopView[] {
+    let winners: Map<string, GuardLatchEntry>;
+    try { winners = this.resolveFamily(ROLLBACK_FAMILY); }
+    catch { /* @silent-fallback-ok: the gate verdict already reports the unreadable view */ return []; }
+    const out: RollbackStopView[] = [];
+    for (const [latchId, e] of winners) {
+      if (e.action !== 'set') continue;
+      const origin = this.ownOrigin(ROLLBACK_FAMILY, latchId, e);
+      out.push({
+        latchId,
+        class: origin ? 'agent' : 'operator',
+        ...(e.reason ? { reason: e.reason } : {}),
+        ...(e.ts ? { since: e.ts } : {}),
+        ...(origin ? { origin, marker: markerFor(latchId) } : {}),
+      });
+    }
+    return out;
+  }
+
+  private ownOrigin(latchKind: string, latchId: string, winner: GuardLatchEntry): AgentStopOrigin | null {
+    if (winner.machine !== this.machineId || !latchId.startsWith(`${this.machineId}:`)) return null;
+    return readStoredOrigin(this.local.transitions[latchKind]?.[latchId]?.origin);
   }
 
   /**
@@ -250,7 +329,7 @@ export class GuardLatchStore {
   // ---- status -------------------------------------------------------------
 
   /** Snapshot for the status route + posture grading. Never throws. */
-  snapshot(): { rollback: string[]; emergencyPause: string[]; poolArmed: boolean; mergeAllowed: boolean; reason: MergeGateReason } {
+  snapshot(): { rollback: string[]; rollbackStops: RollbackStopView[]; emergencyPause: string[]; poolArmed: boolean; mergeAllowed: boolean; reason: MergeGateReason } {
     const verdict = this.isMergeAllowed();
     let rollback: string[] = [];
     let pause: string[] = [];
@@ -260,6 +339,7 @@ export class GuardLatchStore {
     } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */ /* unreadable — leave empty; verdict already reflects it */ }
     return {
       rollback,
+      rollbackStops: this.rollbackStops(),
       emergencyPause: pause,
       poolArmed: this.isPoolArmed(),
       mergeAllowed: verdict.allowed,

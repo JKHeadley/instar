@@ -136,6 +136,12 @@ describe('Shipping', () => {
     expect(stale.tone).toBe('muted');
     expect(watcherLine({ lastTickAt: minsAgo(25) }, NOW)).toEqual({ text: 'Merge watcher last checked 25 min ago, usually every 10 min.', tone: 'attn' });
     expect(watcherLine({ lastTickAt: minsAgo(1), breaker: { open: true } }, NOW).tone).toBe('bad');
+    // green-pr-agent-stop-release: the words follow who holds the stop.
+    const agent = { class: 'agent' }, operator = { class: 'operator' };
+    expect(watcherLine({ gate: { rollback: ['a'], rollbackStops: [agent] } }, NOW)).toMatchObject({ stopped: true, tone: 'attn', text: expect.stringMatching(/stopped by the agent for its own reason/) });
+    expect(watcherLine({ gate: { rollback: ['a', 'b'], rollbackStops: [agent, operator] } }, NOW).text).toMatch(/you or the agent/);
+    expect(watcherLine({ gate: { rollback: ['a'], rollbackStops: [operator] } }, NOW).text).toMatch(/you or the agent/);
+    expect(watcherLine({ gate: { rollback: ['a'] } }, NOW).text).toMatch(/you or the agent/);
     expect(watcherLine({ lastTickAt: minsAgo(1), invariantOk: false }, NOW).text).toContain('safety invariant failed');
     expect(watcherLine({ lastTickAt: minsAgo(1), gate: { rollback: ['L1'] } }, NOW)).toMatchObject({ tone: 'attn', stopped: true });
     expect(watcherLine({}, NOW).text).toBe('Merge watcher has not checked yet.');

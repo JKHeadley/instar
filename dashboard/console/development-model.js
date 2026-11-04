@@ -79,6 +79,8 @@ export function watcherLine(w, now = Date.now()) {
   if (w.invariantOk === false) return { text: 'Merge watcher: its safety invariant failed; it will not arm anything until that clears.', tone: 'bad' };
   if (w.breaker && w.breaker.open) return { text: 'Merge watcher paused itself after repeated failures.', tone: 'bad' };
   const gate = w.gate || {};
+  const stops = Array.isArray(gate.rollbackStops) ? gate.rollbackStops : [];
+  if (stops.length && stops.every((s) => s && s.class === 'agent')) return { text: 'Auto-merging is stopped by the agent for its own reason. It releases this itself when its condition is met; you can also turn it back on below.', tone: 'attn', stopped: true };
   if (Array.isArray(gate.rollback) && gate.rollback.length) return { text: 'Auto-merging is stopped (you or the agent rolled it back). Turn it back on below.', tone: 'attn', stopped: true };
   if (!w.lastTickAt) return { text: 'Merge watcher has not checked yet.', tone: 'unknown' };
   const age = now - w.lastTickAt;
