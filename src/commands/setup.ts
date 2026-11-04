@@ -17,6 +17,7 @@
  */
 
 import { execFileSync, execSync, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { telegramFetch } from '../messaging/telegram-egress.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -1169,6 +1170,11 @@ SHADOW="${shadowCli}"
 SHADOW_DIR="${shadowDir}"
 CRASH_FILE="${crashFile}"
 
+if [ ! -d "$SHADOW_DIR" ] && [ -f "$SHADOW_DIR.previous/node_modules/instar/dist/cli.js" ]; then
+  mv "$SHADOW_DIR.previous" "$SHADOW_DIR" || exit 1
+  echo "[instar-boot] Restored previous install after interrupted update" >&2
+fi
+
 if [ ! -f "$SHADOW" ]; then
   # Attempt one-shot reinstall before giving up. Debounced via marker file so
   # launchd KeepAlive throttling doesn't trigger 30+ reinstalls per minute.
@@ -1433,6 +1439,11 @@ function selfHealNodeSymlink() {
   }
 }
 
+if (!fs.existsSync(SHADOW_DIR) && fs.existsSync(SHADOW_DIR + '.previous')) {
+  fs.renameSync(SHADOW_DIR + '.previous', SHADOW_DIR);
+  process.stderr.write('[instar-boot] Restored previous install after interrupted update\\n');
+}
+
 selfHealNodeSymlink();
 
 // Verify shadow install exists — attempt one-shot reinstall before giving up.
@@ -1578,8 +1589,14 @@ child.on('error', (err) => {
 `;
 
   fs.mkdirSync(stateDir, { recursive: true });
-  fs.writeFileSync(shPath, bashWrapper, { mode: 0o755 });
-  fs.writeFileSync(jsPath, jsWrapper, { mode: 0o755 });
+  // A promotion can request this regeneration immediately before switching
+  // installs. Never leave a half-written launchd wrapper after interruption.
+  const shTemp = `${shPath}.tmp-${randomUUID()}`;
+  const jsTemp = `${jsPath}.tmp-${randomUUID()}`;
+  fs.writeFileSync(shTemp, bashWrapper, { mode: 0o755 });
+  fs.writeFileSync(jsTemp, jsWrapper, { mode: 0o755 });
+  fs.renameSync(shTemp, shPath);
+  fs.renameSync(jsTemp, jsPath);
   return { sh: shPath, js: jsPath };
 }
 
