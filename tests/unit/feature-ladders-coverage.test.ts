@@ -32,13 +32,8 @@ describe('the shipped ladder registry', () => {
     expect(wrong).toEqual([]);
   });
 
-  it('uses no preference final until the article amendment merges', () => {
-    // Today the article has one enumerated exit from the ladder. The amendment PR removes this test.
-    expect(list.filter(e => e.final === 'default-off-by-preference').map(e => e.id)).toEqual([]);
-  });
-
   it('keeps every ladder entry on a fleet rung unless it composes or retires', () => {
-    const bad = list.filter(e => e.disposition === 'ladder' && !e.rungs.fleet).map(e => e.id);
+    const bad = list.filter(e => e.disposition === 'ladder' && e.final === 'default-on' && !e.rungs.fleet).map(e => e.id);
     expect(bad).toEqual([]);
   });
 
