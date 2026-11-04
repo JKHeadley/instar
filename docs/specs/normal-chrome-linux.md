@@ -258,18 +258,18 @@ The macOS care sweep (`BrowserCareSweep`) runs only on macOS. On Linux the ledge
 
 ## Later slices
 
-Each moves out of v1 and is tracked under ACT-138 ("Linux path for the normal-Chrome browser skill", due 2026-11-18), the item this spec builds. The markers point at CMT-1265, the topic-136880 commitment that started ACT-138, because the deferral lint resolves only commitment carriers.
+Each moves out of v1 and is tracked under ACT-138 ("Linux path for the normal-Chrome browser skill", due 2026-11-18), the item this spec builds. The markers point at CMT-1270, the commitment that owns building ACT-138 (v1 and these slices), because the deferral lint resolves only commitment carriers.
 
-> **Carrier (frozen excerpt — the work the markers below point at):** <!-- tracked: CMT-1265 -->
+> **Carrier (frozen excerpt — the work the markers below point at):** <!-- tracked: CMT-1270 -->
 >
-> **CMT-1265** — "Fresh small Hetzner server: new-user install, Claude token via Secret Drop, Slack, phone pairing, 24h real scheduled use with a pass/fail list; start ACT-138; plain pass/fail report in topic 136880 and a Threadline reply to Luna by Thu 2026-11-05."
+> **CMT-1270** — "Build ACT-138 v1 per docs/specs/normal-chrome-linux.md (agent-private display, AT-SPI read, hit-tested click, type/key/nav/close behind one input backend interface), then the spec later slices (dashboard take-over, secret typing, downloads, full command surface, Wayland backend, recovery extras). Draft PR #2676."
 
-- Watching and take-over from a phone: the "Agent browser" screen on the dashboard Desktop page, a VNC socket, a handover gate serialized with in-flight desktop input, an engineer `ssh -L` path. (ACT-138) <!-- tracked: CMT-1265 -->
-- Secret typing (`typesecret`, `typesecretedit`) with the expected-host check on the destination document, and a content-free recovery read for an interrupted one-time-code entry. (ACT-138) <!-- tracked: CMT-1265 -->
-- Downloads and the browser's download prompts. (ACT-138) <!-- tracked: CMT-1265 -->
-- The rest of the command surface: `invoke`, `clickxy`, `editfields` / `typeedit`, `ctrl`, `tree`, `shot`, `target`, `windows` / `switch` and popup windows, `find browser`. (ACT-138) <!-- tracked: CMT-1265 -->
-- The Wayland / Hyprland input backend behind the input interface (virtual pointer, `wtype` on stdin, window-relative boxes). (ACT-138) <!-- tracked: CMT-1265 -->
-- Close and recovery extras: `close --force`, `display` / `display-stop`, an idle bound for a forgotten Chrome, activity-log rotation in `ndrive.sh` and `chrome-js.sh`. (ACT-138) <!-- tracked: CMT-1265 -->
+- Watching and take-over from a phone: the "Agent browser" screen on the dashboard Desktop page, a VNC socket, a handover gate serialized with in-flight desktop input, an engineer `ssh -L` path. (ACT-138) <!-- tracked: CMT-1270 -->
+- Secret typing (`typesecret`, `typesecretedit`) with the expected-host check on the destination document, and a content-free recovery read for an interrupted one-time-code entry. (ACT-138) <!-- tracked: CMT-1270 -->
+- Downloads and the browser's download prompts. (ACT-138) <!-- tracked: CMT-1270 -->
+- The rest of the command surface: `invoke`, `clickxy`, `editfields` / `typeedit`, `ctrl`, `tree`, `shot`, `target`, `windows` / `switch` and popup windows, `find browser`. (ACT-138) <!-- tracked: CMT-1270 -->
+- The Wayland / Hyprland input backend behind the input interface (virtual pointer, `wtype` on stdin, window-relative boxes). (ACT-138) <!-- tracked: CMT-1270 -->
+- Close and recovery extras: `close --force`, `display` / `display-stop`, an idle bound for a forgotten Chrome, activity-log rotation in `ndrive.sh` and `chrome-js.sh`. (ACT-138) <!-- tracked: CMT-1270 -->
 
 ## Decision points touched
 
