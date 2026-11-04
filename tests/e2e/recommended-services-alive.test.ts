@@ -82,6 +82,10 @@ describe('recommended services: production wiring', () => {
     const yes = await request(app).post('/recommended-services/jev/confirm').set('X-Instar-Request', '1').send({ token: 'forged', pin: PIN, answer: 'yes' });
     expect(yes.status).toBe(409);
     expect(makeLedger().effective('jev').choice).toBe('no');
+    // Verifying needs a recipe, and this agent is proving none.
+    const verify = await request(app).post('/recommended-services/jev/verify').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
+    expect(verify.status).toBe(409);
+    expect(verify.body.error).toBe('no-recipe');
     const pageFile = await request(app).get('/dashboard/service-yes');
     expect(pageFile.status).toBe(200);
     expect(pageFile.headers['content-security-policy']).toContain("default-src 'none'");

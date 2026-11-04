@@ -4848,6 +4848,8 @@ export interface InstarConfig {
   /** Dispatch (intelligence broadcast) config */
   dispatches?: DispatchConfig;
   /** Git backup config (opt-in for standalone agents) */
+  /** docs/specs/recommended-services.md: setup recipes this agent is proving. Only a test agent or the development agent sets it. */
+  recommendedServices?: { provingRecipes?: string[] };
   gitBackup?: {
     /** Whether git backup is enabled. Defaults to true if .git/ exists, false otherwise. */
     enabled: boolean;

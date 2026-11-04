@@ -22,6 +22,7 @@
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { decideSetupRestart, MAX_SETUP_STARTS } from '../recommended/setupRestart.js';
 import { MAX_GUARD_REPLACEMENTS, RESPAWNS_PER_REQUEST, decideGuardReplacement, decideLockedRespawn } from '../core/DesktopLockedController.js';
 import { OverloadShedPlanner, DEFAULT_OVERLOAD_SHED } from '../core/OverloadShedPlanner.js';
 import { PlacementExecutor } from '../core/PlacementExecutor.js';
@@ -3701,6 +3702,44 @@ function preparingRunWatchdogModel(f: PressureFixture, sink: ActionSink): { tick
 }
 
 /**
+ * recommended-service-setup-restart — the check that restarts a dead setup session
+ * (docs/specs/recommended-services.md; recommendedServiceRoutes reconcile). The pressure: a session
+ * that dies at once, every time, forever. Convergence shape: durable starts count through
+ * decideSetupRestart, capped at MAX_SETUP_STARTS with growing waits, then one notice and a durable
+ * stop. A fresh yes needs the operator's PIN, so it can't re-arm this on its own.
+ */
+const recommendedServiceSetupRestart: SelfActionController = {
+  id: 'recommended-service-setup-restart',
+  actionVerb: 'spawn',
+  models: 'src/recommended/setupRestart.ts (decideSetupRestart — durable start count, growing waits, one notice, durable stop)',
+  modelsPath: 'src/recommended/setupRestart.ts',
+  boundK: MAX_SETUP_STARTS + 1, perTargetBoundK: MAX_SETUP_STARTS + 1, ticks: 288, tickMs: 5 * 60_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => recommendedServiceSetupRestartModel(f, sink) },
+  makeUnderPressure: (f, sink) => recommendedServiceSetupRestartModel(f, sink),
+};
+
+function recommendedServiceSetupRestartModel(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered++;
+    if (f.durableState.get('setup-exhausted')) return;
+    const nowMs = f.clock.nowMs();
+    const decision = decideSetupRestart({
+      starts: (f.durableState.get('setup-starts') as number | undefined) ?? 0,
+      lastStartMs: (f.durableState.get('setup-last-start') as number | undefined) ?? null,
+      nowMs,
+    });
+    if (decision === 'restart') {
+      f.durableState.set('setup-starts', ((f.durableState.get('setup-starts') as number | undefined) ?? 0) + 1);
+      f.durableState.set('setup-last-start', nowMs);
+      sink.emit({ verb: 'spawn', target: 'jev' });
+    } else if (decision === 'give-up') {
+      f.durableState.set('setup-exhausted', true);
+      sink.emit({ verb: 'notify', target: 'jev' });
+    }
+  } };
+}
+
+/**
  * machine-wedge-notice — the wedge dry-run operator notice (machine-self-maintenance
  * Part E rung 7; WedgeMonitor + MachineWedgeNotice). Off by default (its own flag);
  * modelled here with the flag ON, the worst case. The pressure: two evidence families
@@ -3845,4 +3884,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   replicatedStoreReconcilerRetry,
   preparingRunWatchdog,
   machineWedgeNotice,
+  recommendedServiceSetupRestart,
 ];
