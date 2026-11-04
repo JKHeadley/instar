@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "lease-takeover-no-shared-medium",
+  "sessionId": "0b1cf086-601b-4df3-9b64-491f85f91aeb",
+  "timestamp": "2026-11-04T12:32:05.414Z",
+  "artifactPath": "upgrades/side-effects/lease-takeover-no-shared-medium.md",
+  "artifactSha256": "e6447895f809dd8af511b5b1ece9849f184f2f16192757a8b4c83c87e7acf110",
+  "specPath": "docs/specs/lease-takeover-no-shared-medium.md",
+  "coveredFiles": [
+    "docs/specs/lease-takeover-no-shared-medium.eli16.md",
+    "docs/specs/lease-takeover-no-shared-medium.md",
+    "docs/specs/reports/lease-takeover-no-shared-medium-convergence.md",
+    "src/commands/server.ts",
+    "src/core/GitLeaseStore.ts",
+    "src/core/LeaseCoordinator.ts",
+    "tests/e2e/lease-takeover-wiring.test.ts",
+    "tests/integration/lease-takeover-no-remote.test.ts",
+    "tests/unit/lease-takeover-no-shared-medium.test.ts",
+    "upgrades/next/lease-takeover-no-shared-medium.md",
+    "upgrades/side-effects/lease-takeover-no-shared-medium.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
