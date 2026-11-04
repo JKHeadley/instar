@@ -210,6 +210,23 @@ Runs only on the drain owner, and only where `feedbackFactory.execute.sourceRepo
 
 The queue, summary, merges and agreement figures are a pull surface: the dashboard Triage section and the GET routes. Nothing routine is pushed.
 
+The deployed HTTP surface exposes the following reads and governed operator actions. All routes use the server's normal API authentication. Mutations also enforce their route-specific intent, owner and, where applicable, PIN-backed plan/commit gates; listing a route here does not grant authority to invoke it.
+
+| Route | What it returns or changes |
+|---|---|
+| `GET /feedback-factory/readiness-authorities/proposal` | Shows a candidate readiness authority and any blockers before an operator decision. |
+| `GET /feedback-factory/triage/queue` | Lists ranked work items with their priority and execution state. |
+| `GET /feedback-factory/triage/summary` | Shows triage counts, authority state and recent decisions. |
+| `GET /feedback-factory/triage/authority/proposal` | Shows a candidate triage authority and its blockers. |
+| `POST /feedback-factory/triage/authority` | Creates, replaces, revokes or restores the governed triage authority. |
+| `POST /feedback-factory/triage/plan` | Creates a reviewable plan for live ignores, approver-dependence acceptance or a held secret-shaped change. |
+| `POST /feedback-factory/triage/commit` | Consumes an approved plan and applies its named action through the PIN-backed gate. |
+| `GET /feedback-factory/execute/status` | Shows executor availability, admission, attempts and recent tick outcomes. |
+| `POST /feedback-factory/execute/stop` | Stops one Initiative's attempts and disarms any armed PR. |
+| `POST /feedback-factory/execute/revoke-acceptance` | Withdraws the executor's recorded approver-dependence acceptance. |
+| `POST /feedback-factory/execute/release` | Returns a parked Initiative to triage. |
+| `POST /feedback-factory/execute/canary-retry` | Clears the canary wait so the next attempt reruns the sandbox check; it does not bypass the check. |
+
 The only proactive message is an **action list**, sent by built-in job `feedback-factory-action-list` at most once a day at 08:00 in the agent's configured timezone (host timezone when unset), never between 23:00 and 07:30 (enforced in code), to `feedbackFactory.execute.actionTopicId` (the Attention hub when unset). It is sent only when there is something new needing the operator, each with a direct link:
 - a build PR or spec PR awaiting the operator's approval;
 - `needs-review` holds where the model rated `critical`/`high` or the cluster has ≥ 2 reports (other `needs-review` holds appear only as a count with a link to the queue).
