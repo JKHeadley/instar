@@ -14,7 +14,7 @@
  * Pinned here, both sides of the boundary:
  *  - a live replacement is picked up and watched normally (no alarm);
  *  - a spawn in progress is not "stopped" (no alarm while it starts);
- *  - a genuinely dead session with no replacement is still reported;
+ *  - a genuinely dead session is left to SessionMonitor for self-recovery;
  *  - "5-minute check" is never printed before ~5 minutes have passed.
  */
 
@@ -109,7 +109,19 @@ describe('PresenceProxy follows the replacement session', () => {
     expect(proxy.getState(-4242)?.sessionName).toBe('new-session');
   });
 
-  it('really dead, no replacement: still reported, and an early report claims no false time', async () => {
+  it('a logged brief agent reply never leads to a stopped notice', async () => {
+    const { proxy, sent } = createProxy({
+      getSessionForTopic: () => 'failed-resume',
+      isSessionAlive: () => false,
+      hasAgentRepliedSince: () => true,
+    });
+    userMessage(proxy);
+    await vi.advanceTimersByTimeAsync(T2 + 20_000);
+    expect(sent.some(stoppedAlarm)).toBe(false);
+    expect(sent.some(t => /unstick|restart/i.test(t))).toBe(false);
+  });
+
+  it('really dead, no replacement: the proxy leaves recovery and notification to SessionMonitor', async () => {
     const { proxy, sent } = createProxy({
       getSessionForTopic: () => 'old-session',
       isSessionAlive: () => false,
@@ -120,16 +132,12 @@ describe('PresenceProxy follows the replacement session', () => {
     await vi.advanceTimersByTimeAsync(T1 + 12_000);
     expect(sent.some(stoppedAlarm)).toBe(false);
 
-    // By the Tier 2 mark nothing replaced it — the real alarm goes out.
+    // By the Tier 2 mark nothing replaced it — the proxy stays quiet.
     await vi.advanceTimersByTimeAsync(T2 + 20_000);
-    const alarm = sent.find(stoppedAlarm);
-    expect(alarm).toBeDefined();
-    expect(alarm).toContain('restart');
-    // Fired well before the 5-minute mark, so it must not say "5-minute check".
-    expect(alarm).not.toContain('5-minute check');
+    expect(sent.some(stoppedAlarm)).toBe(false);
   });
 
-  it('really dead at the true 5-minute mark keeps the "5-minute check" wording', async () => {
+  it('really dead at the true 5-minute mark remains quiet', async () => {
     let starting = true;
     const { proxy, sent } = createProxy({
       getSessionForTopic: () => 'old-session',
@@ -139,11 +147,9 @@ describe('PresenceProxy follows the replacement session', () => {
     userMessage(proxy);
     await vi.advanceTimersByTimeAsync(T3 - 1_000);
     expect(sent.some(stoppedAlarm)).toBe(false);
-    // A spawn that never lands does not hold the alarm off forever.
+    // A spawn that never lands is handled by the monitor's recovery path.
     await vi.advanceTimersByTimeAsync(T3 + 20_000);
-    const alarm = sent.find(stoppedAlarm);
-    expect(alarm).toBeDefined();
-    expect(alarm).toContain('5-minute check');
+    expect(sent.some(stoppedAlarm)).toBe(false);
     starting = false;
   });
 });
@@ -194,7 +200,7 @@ describe('server wires the spawn-in-progress signal (both channels)', () => {
     expect(start).toBeGreaterThan(-1);
     const block = SRC.slice(start, start + 8_000);
     expect(block).toContain('isSessionStarting: (topicId) => {');
-    expect(block).toContain('_slackSpawningChannels.get(slackChId)');
+    expect(block).toContain('_slackSpawningChannels.get(channelId)');
     expect(block).toContain('_spawningTopicsRegistryRef?.has(topicId)');
   });
 

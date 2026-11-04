@@ -812,6 +812,30 @@ export class SlackAdapter implements MessagingAdapter {
     }
   }
 
+  /** Return only messages belonging to a channel or thread routing key. */
+  async getConversationMessagesWithFallback(routingKey: string, limit = 30): Promise<SlackMessage[]> {
+    const target = this.parseRoutingKey(routingKey);
+    const belongs = (m: SlackMessage) =>
+      this.resolveRoutingKey(target.channelId, m.thread_ts, m.ts) === routingKey ||
+      (target.threadTs !== undefined && m.ts === target.threadTs);
+    const cached = this.getChannelMessages(target.channelId, 200).filter(belongs);
+    if (!target.threadTs) {
+      if (cached.length > 0) return cached.slice(-limit);
+      return (await this.getChannelMessagesWithFallback(target.channelId, limit)).filter(belongs);
+    }
+    // A new inbound reply can make the cache nonempty immediately after a
+    // restart, while all preceding thread context is still absent. Read the
+    // thread API for recovery even when that one reply is cached.
+    try {
+      const remote = await this.channelManager.getThreadHistory(target.channelId, target.threadTs, limit);
+      const merged = new Map([...remote, ...cached].map(m => [m.ts, m]));
+      return [...merged.values()].filter(belongs).sort((a, b) => Number(a.ts) - Number(b.ts)).slice(-limit);
+    } catch (err) {
+      console.warn(`[slack] Thread history fallback failed for ${routingKey}: ${(err as Error).message}`);
+      return cached.slice(-limit);
+    }
+  }
+
   /** Get user info (cached for 5 minutes). */
   async getUserInfo(userId: string): Promise<{ id: string; name: string }> {
     const cached = this.userCache.get(userId);

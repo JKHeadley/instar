@@ -22,6 +22,14 @@ import path from 'node:path';
 import type { SessionRecovery, RecoveryResult } from './SessionRecovery.js';
 import { detectContextExhaustion } from './QuotaExhaustionDetector.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import type { SessionOwnershipRecord } from '../core/SessionOwnership.js';
+
+export function isForeignTopicOwner(
+  record: Pick<SessionOwnershipRecord, 'ownerMachineId' | 'status'> | null | undefined,
+  selfMachineId: string | null | undefined,
+): boolean {
+  return !!record && !!selfMachineId && record.status !== 'released' && record.ownerMachineId !== selfMachineId;
+}
 
 export interface SessionMonitorConfig {
   /** Enable the session monitor (default: true) */
@@ -61,8 +69,12 @@ export interface SessionMonitorDeps {
   captureSessionOutput: (sessionName: string, lines: number) => string | null;
   /** Check if a session is alive */
   isSessionAlive: (sessionName: string) => boolean;
+  /** A replacement is being launched for this conversation. */
+  isSessionStarting?: (topicId: number) => boolean;
   /** Get recent messages for a topic */
   getTopicHistory: (topicId: number, limit: number) => Array<{ text: string; fromUser: boolean; timestamp: string }>;
+  /** Durable outbound log check; Slack's inbound ring may omit its bot replies. */
+  hasAgentRepliedSince?: (topicId: number, sinceMs: number) => boolean;
   /** Send a message to a topic */
   sendToTopic: (topicId: number, text: string) => Promise<any>;
   /** Trigger triage recovery for a session */
@@ -137,6 +149,7 @@ export class SessionMonitor extends EventEmitter {
    *  deps.deadNoticeStatePath so one death is announced once, not once per boot. */
   private deadNotified = new Map<number, DeadNoticeEntry>();
   private deadPersistWarned = false;
+  private deadRecoveryAttempts = new Map<number, number>();
 
   constructor(deps: SessionMonitorDeps, config?: Partial<SessionMonitorConfig>) {
     super();
@@ -330,9 +343,18 @@ export class SessionMonitor extends EventEmitter {
     }
   }
 
+  private stopIfOwnedByPeer(topicId: number): boolean {
+    if (!this.ownedByPeer(topicId)) return false;
+    this.snapshots.delete(topicId);
+    return true;
+  }
+
   private async checkSession(topicId: number, sessionName: string): Promise<void> {
     const now = Date.now();
     const alive = this.deps.isSessionAlive(sessionName);
+    // A registry entry can still name the failed resume while its replacement
+    // is launching. Do not recover or announce the old name in that window.
+    if (!alive && this.deps.isSessionStarting?.(topicId)) return;
 
     // Get or create snapshot
     let snap = this.snapshots.get(topicId);
@@ -413,6 +435,7 @@ export class SessionMonitor extends EventEmitter {
           } catch (err) {
             console.error(`[SessionMonitor] Context exhaustion recovery error for topic ${topicId}:`, err);
           }
+          if (this.stopIfOwnedByPeer(topicId)) return;
           // DEFERRED ≠ dead. The work-check found the session alive and actively
           // producing work, so the kill was deferred — the session is FINE.
           // Telling the user it "hit conversation too long and can't continue"
@@ -431,9 +454,17 @@ export class SessionMonitor extends EventEmitter {
             console.log(`[SessionMonitor] Context-exhaustion already notified for topic ${topicId} session "${sessionName}" — suppressing duplicate`);
             return;
           }
+          const recent = this.deps.getTopicHistory(topicId, 5);
+          const latestUser = Math.max(0, ...recent.filter(m => m.fromUser).map(m => new Date(m.timestamp).getTime()));
+          const latestAgent = Math.max(0, ...recent.filter(m => !m.fromUser).map(m => new Date(m.timestamp).getTime()));
+          const current = this.deps.getActiveTopicSessions().get(topicId);
+          if (latestUser === 0 || latestAgent > latestUser ||
+              this.deps.hasAgentRepliedSince?.(topicId, latestUser) ||
+              this.deps.isSessionStarting?.(topicId) ||
+              (current && this.deps.isSessionAlive(current))) return;
           snap.status = 'dead';
           await this.deps.sendToTopic(topicId,
-            `Session hit "conversation too long" and can't continue. Send a new message to start a fresh session with your recent history.`
+            `I couldn't restore this conversation after it reached its context limit. Your message is saved.`
           ).catch(() => {});
           this.emit('monitor:user-notified', { topicId, message: 'context_exhausted' });
           this.ctxNotifiedSessions.set(topicId, { sessionName, at: now });
@@ -481,19 +512,10 @@ export class SessionMonitor extends EventEmitter {
     // A session sitting idle after the agent responded is NORMAL — the user
     // just hasn't sent a new message yet. "Recently active" is not a reason
     // to escalate; only an unanswered user message is.
-    const userExpectsResponse = snap.lastUserMessageAt > snap.lastAgentMessageAt;
+    const userExpectsResponse = snap.lastUserMessageAt > snap.lastAgentMessageAt &&
+      !this.deps.hasAgentRepliedSince?.(topicId, snap.lastUserMessageAt);
 
     if (!userExpectsResponse) return; // Session idle but no unanswered message — normal state
-
-    // A death already announced (no user message newer than the one the last
-    // notice answered) is not news: no repeat notice, no
-    // repeat triage. The in-memory guards above reset on every server boot;
-    // this ledger is what keeps one death to one notice across restarts.
-    if (snap.status === 'dead' && this.deadAlreadyAnnounced(topicId, snap.lastUserMessageAt)) {
-      snap.notifiedAt = now;
-      this.notificationCooldowns.set(topicId, now);
-      return;
-    }
 
     // Try mechanical recovery first (fast, no LLM) before escalating to triage.
     // Run for ALL unhealthy statuses — context exhaustion can occur in alive sessions
@@ -512,6 +534,7 @@ export class SessionMonitor extends EventEmitter {
       } catch (err) {
         console.error(`[SessionMonitor] Mechanical recovery error for topic ${topicId}:`, err);
       }
+      if (this.stopIfOwnedByPeer(topicId)) return;
     }
 
     switch (snap.status) {
@@ -519,17 +542,49 @@ export class SessionMonitor extends EventEmitter {
         this.emit('monitor:recovery-triggered', { topicId, sessionName, reason: 'session_dead' });
         if (this.deps.triggerTriage) {
           const result = await this.deps.triggerTriage(topicId, sessionName, 'Session died while user was waiting');
+          if (this.stopIfOwnedByPeer(topicId)) return;
           if (result.resolved) {
             snap.status = 'healthy';
             snap.notifiedAt = now;
             return;
           }
         }
-        // If triage didn't resolve or isn't available, notify user
-        if (userExpectsResponse) {
+        // Triage may be inconclusive when a resume UUID fails before it has a
+        // transcript. Restart from conversation history before telling anyone.
+        if (this.stopIfOwnedByPeer(topicId)) return;
+        const beforeRestart = this.deps.getActiveTopicSessions().get(topicId);
+        if (this.deps.isSessionStarting?.(topicId) ||
+            (beforeRestart && this.deps.isSessionAlive(beforeRestart)) ||
+            this.deps.hasAgentRepliedSince?.(topicId, snap.lastUserMessageAt)) {
+          snap.status = 'healthy';
+          return;
+        }
+        if (this.deadRecoveryAttempts.get(topicId) !== snap.lastUserMessageAt) {
+          this.deadRecoveryAttempts.set(topicId, snap.lastUserMessageAt);
+          try {
+            await this.deps.sessionRecovery?.restartStoppedConversation?.(topicId, sessionName);
+          } catch (err) {
+            console.error(`[SessionMonitor] Fresh restart failed for topic ${topicId}:`, err);
+          }
+        }
+        if (this.stopIfOwnedByPeer(topicId)) return;
+        const currentName = this.deps.getActiveTopicSessions().get(topicId);
+        const historyNow = this.deps.getTopicHistory(topicId, 5);
+        const latestUser = Math.max(0, ...historyNow.filter(m => m.fromUser).map(m => new Date(m.timestamp).getTime()));
+        const latestAgent = Math.max(0, ...historyNow.filter(m => !m.fromUser).map(m => new Date(m.timestamp).getTime()));
+        if (this.deps.isSessionStarting?.(topicId) ||
+            (currentName && this.deps.isSessionAlive(currentName)) ||
+            latestAgent > latestUser ||
+            this.deps.hasAgentRepliedSince?.(topicId, latestUser) ||
+            this.ownedByPeer(topicId)) {
+          snap.status = 'healthy';
+          return;
+        }
+        // Only a failed self-recovery with an unanswered user message merits one notice.
+        if (userExpectsResponse && !this.deadAlreadyAnnounced(topicId, snap.lastUserMessageAt)) {
           let delivered = true;
           await this.deps.sendToTopic(topicId,
-            `The session has stopped. Send a new message to start a fresh session with full conversation context.`
+            `I couldn't restore this conversation. Your message is saved.`
           ).catch(() => { delivered = false; });
           this.emit('monitor:user-notified', { topicId, message: 'session_dead' });
           // Record only a notice that went out: a failed send must stay
