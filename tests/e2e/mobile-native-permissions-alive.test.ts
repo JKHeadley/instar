@@ -26,6 +26,8 @@ import { permissionPresenceMessage, actionLine } from '../../src/server/mobilePe
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { allowTestIdentities } from '../helpers/allow-test-identities.js';
+import { FeatureRegistry } from '../../src/core/FeatureRegistry.js';
+import { BUILTIN_FEATURES } from '../../src/core/FeatureDefinitions.js';
 
 const HOST = 'echo-permissions-e2e.example.dev';
 const PIN = '424242';
@@ -59,7 +61,12 @@ async function boot() {
   const sessionManager = createMockSessionManager() as any;
   sessionManager.on = () => undefined;
   const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, on: () => undefined } as any;
-  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel });
+  // As server.ts builds it: open, register the built-ins, bootstrap from config.
+  const featureRegistry = new FeatureRegistry(stateDir);
+  await featureRegistry.open();
+  for (const def of BUILTIN_FEATURES) featureRegistry.register(def);
+  featureRegistry.bootstrap(config as unknown as Record<string, unknown>);
+  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, featureRegistry } as never);
   servers.push(server);
   return { server, stateDir };
 }
@@ -107,8 +114,9 @@ describe('native permissions — production wiring', () => {
     expect((await signed('POST', '/mobile/device/presence-key', { publicKey: presence.publicKey, proof: presence.sign(presenceEnrollMessage(deviceId, HOST, presence.publicKey)) })).status).toBe(200);
 
     // Two waiting requests from the agent (bearer; inert until approved).
-    const propose = async () => {
-      const r = await bearer(request(app).post('/authorization-requests')).send({ createdByAgent: 'echo', proposal: { floorAction: 'prod-deploy', grantedToSlackUserId: MIA, durationMs: 3_600_000 }, reason: 'release' });
+    // Each request differs (a declined proposal has a re-proposal cooldown).
+    const propose = async (floorAction = 'prod-deploy') => {
+      const r = await bearer(request(app).post('/authorization-requests')).send({ createdByAgent: 'echo', proposal: { floorAction, grantedToSlackUserId: MIA, durationMs: 3_600_000 }, reason: 'release' });
       expect(r.status).toBe(201);
       return r.body.id as string;
     };
@@ -140,7 +148,7 @@ describe('native permissions — production wiring', () => {
     expect(after.body.slips.active.some((s: { summary: string }) => s.summary === 'Mia may deploy to production')).toBe(true);
 
     // Decline another.
-    const b = await propose();
+    const b = await propose('external-send');
     const bRow = (await signed('GET', '/mobile/permissions/slips')).body.approvals.rows.find((r: { id: string }) => r.id === b);
     expect(bRow).toBeTruthy();
     const reason = 'Not this week.';
@@ -155,9 +163,10 @@ describe('native permissions — production wiring', () => {
     const sw = await act({ action: 'set-feature', target: 'dashboard-file-viewer', value: 'disabled' }, '/mobile/permissions/features/dashboard-file-viewer', { to: 'disabled' }, 'set-feature dashboard-file-viewer disabled none');
     expect(sw.status, JSON.stringify(sw.body)).toBe(200);
     expect(sw.body).toMatchObject({ success: true, viaOperatorSwitch: true, newState: 'disabled' });
-    const events = await bearer(request(app).get('/features/events?featureId=dashboard-file-viewer&limit=5'));
-    expect(events.body.events[0]).toMatchObject({ trigger: 'operator-switch', newState: 'disabled' });
-    expect(events.body.events[0].context).toContain(deviceId);
+    const events = await bearer(request(app).get('/features/events?featureId=dashboard-file-viewer&limit=50'));
+    const ev = (events.body.events as Array<{ trigger?: string; newState: string; context?: string }>).find((e) => e.trigger === 'operator-switch');
+    expect(ev).toMatchObject({ trigger: 'operator-switch', newState: 'disabled' });
+    expect(ev!.context).toContain(deviceId);
 
     // The phone audit file records each one.
     const rows = fs.readFileSync(path.join(stateDir, 'state', 'mobile-permission-actions.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
@@ -168,7 +177,7 @@ describe('native permissions — production wiring', () => {
       expect((await signed(method, p)).status, p).toBe(403);
     }
     expect((await bearer(request(app).post('/mobile/permissions/challenge')).send({ action: 'approve-request', target: a, proposalHash: row.proposalHash })).status).toBe(403);
-    const c = await propose();
+    const c = await propose('destructive-data');
     const viaPin = await bearer(request(app).post(`/authorization-requests/${c}/approve`)).send({ pin: PIN });
     expect(viaPin.status).toBe(201);
   });

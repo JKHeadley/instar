@@ -135,7 +135,8 @@ describe('reads', () => {
     }
   });
   it('actions say why a phone is read-only', async () => {
-    const off = setup({ developmentAgent: false });
+    // Mobile pairing itself is dev-gated, so the writes' own switch is turned off explicitly here.
+    const off = setup({ mobilePairing: { multiRoute: { enabled: false }, permissionActions: { enabled: false } } });
     expect((await send(off.app, off.pair(), 'GET', '/mobile/permissions/slips')).body.actions.reason).toBe('off');
     const noPin = setup({ dashboardPin: undefined });
     expect((await send(noPin.app, noPin.pair(), 'GET', '/mobile/permissions/slips')).body.actions.reason).toBe('no-pin');
@@ -276,7 +277,7 @@ describe('writes: refusals', () => {
     const noPin = setup({ dashboardPin: undefined });
     const np = await send(noPin.app, noPin.pair(), 'POST', '/mobile/permissions/challenge', { action: 'approve-request', target: 'authreq-1', proposalHash: HASH });
     expect([np.status, np.body.error]).toEqual([503, 'console-pin-not-set']);
-    const fleet = setup({ developmentAgent: false });
+    const fleet = setup({ mobilePairing: { multiRoute: { enabled: false }, permissionActions: { enabled: false } } });
     const f = await send(fleet.app, fleet.pair(), 'POST', '/mobile/permissions/challenge', { action: 'approve-request', target: 'authreq-1', proposalHash: HASH });
     expect([f.status, f.body.error]).toEqual([503, 'permission-actions-off']);
     expect(c.calls).toHaveLength(0);
