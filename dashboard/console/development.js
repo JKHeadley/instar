@@ -13,7 +13,7 @@ import {
   buildShipping, buildPace, buildFeedback, developmentHeadline, stoppedLead, foldFromHash, maintainerMode, authorityCard, holdWords, verifyWords, rollbackWords,
   readinessAuthorityRequest, triageAuthorityRequest, commitRequest, authorityResultWords, commitResultWords, newDecisionRef, PACE_METRICS, DEV_TOOLS_KEY,
 } from './development-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, firstPaint, arrivalScroll } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, firstPaint, arrivalScroll, markNeed } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const EYEBROW = 'Work · Development';
@@ -120,7 +120,10 @@ function paint() {
   // The one thing that needs the operator comes first; the rest wait as a counted line.
   const todos = feedback.todos;
   const first = todos[0] || null;
-  const lead = first ? todoCard(first, deps, true) : null;
+  const lead = first ? markNeed(todoCard(first, deps, true), 'feedback') : null;
+  const approvals = shipping.rows ? shipping.rows.filter((r) => r.group === 'needs').length : 0;
+  // Approvals live in the Shipping fold, which is often closed: the lead line opens it and goes there.
+  const approvalsLine = approvals ? markNeed(el('button', { class: 'btn-primary btn-inline need-line', type: 'button', text: `${approvals === 1 ? 'A pull request needs' : `${approvals} pull requests need`} your approval: show ${approvals === 1 ? 'it' : 'them'}`, onclick: () => { view.open = 'shipping'; paint(); arrivalScroll(main.querySelector('#sec-shipping'), { key: `tap:${Date.now()}` }); } }), 'shipping-approvals') : null;
   const stopped = stoppedCard(shipping, deps);
   const moreLine = todos.length > 1 ? el('button', { class: 'link-btn older-line', type: 'button', text: `${todos.length - 1} more ${todos.length === 2 ? 'thing needs' : 'things need'} you ›`, onclick: () => openMore(todos.slice(1), deps) }) : null;
 
@@ -128,7 +131,7 @@ function paint() {
   if (!view.open) view.open = feedback.tone === 'attn' || feedback.state === 'cant-tell' ? 'feedback' : 'shipping';
   setKids(main, el('div', { class: 'dev-page' },
     pageHead({ eyebrow: EYEBROW, headline: h.text, sub: h.sub, tone: h.tone }),
-    stopped, lead, moreLine,
+    stopped, approvalsLine, lead, moreLine,
     el('div', { class: 'page-sections' },
       fold({ id: 'shipping', title: 'Shipping', line: shipping.line, tone: shipping.tone, body: () => shippingBody(shipping, deps) }),
       fold({ id: 'feedback', title: 'Feedback', line: feedback.line, tone: feedback.tone, body: () => feedbackBody(feedback, deps) }),
@@ -176,7 +179,7 @@ function backOnButton(s, deps, primary = false) {
 function stoppedCard(s, deps) {
   const c = stoppedLead(s);
   if (!c) return null;
-  return el('div', { class: 'need-card stopped-lead' }, el('span', { class: 'need-title', text: c.title }), el('span', { class: 'need-sub', text: c.detail }), el('span', { class: 'need-sub', text: c.why }), backOnButton(s, deps, true));
+  return el('div', { class: 'need-card stopped-lead', 'data-operator-need': 'merging' }, el('span', { class: 'need-title', text: c.title }), el('span', { class: 'need-sub', text: c.detail }), el('span', { class: 'need-sub', text: c.why }), backOnButton(s, deps, true));
 }
 
 // ── to-dos (Feedback approvals and links) ────────────────────────────────────

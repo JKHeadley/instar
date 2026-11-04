@@ -7,7 +7,7 @@
 import {
   buildPlansPage, roundsTrack, projectActions, resultWords, refusalWords, driftSentence, linkChips, stepList, blockerStory, reasonWord, statusWord, PROJECT_DETAIL_CAP, OPEN_STATUSES,
 } from './plans-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, cantTell, firstPaint, arrivalScroll } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, cantTell, firstPaint, arrivalScroll, markNeed } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { topicNameMap } from './topic-names.js';
 import { topicLink } from './promises.js';
@@ -49,6 +49,7 @@ function paint() {
 
   // Needs you: fresh items as rows; older ones waiting on you are a counted line, never dropped.
   const needs = section({ id: 'needsYou', title: 'Needs you', tone: 'attn', rows: s.needsYou, empty: 'Nothing is waiting on you.', onRow: open });
+  if (s.needsYou.length) markNeed(needs, 'plans');
   if (n.olderNeedsYou) needs.querySelector('.list-rows').append(el('a', { class: 'link-btn older-line', href: '#/work/plans?s=older', text: `+${n.olderNeedsYou} older, still waiting on you ›` }));
 
   // In the way, above In flight. Off and failed are one dashed line each, not a page.

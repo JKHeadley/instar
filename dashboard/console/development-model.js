@@ -81,7 +81,7 @@ export function watcherLine(w, now = Date.now()) {
   const gate = w.gate || {};
   const stops = Array.isArray(gate.rollbackStops) ? gate.rollbackStops : [];
   if (stops.length && stops.every((s) => s && s.class === 'agent')) return { text: 'Auto-merging is stopped by the agent for its own reason. It releases this itself when its condition is met; you can also turn it back on below.', tone: 'attn', stopped: true };
-  if (Array.isArray(gate.rollback) && gate.rollback.length) return { text: 'Auto-merging is stopped (you or the agent rolled it back). Turn it back on below.', tone: 'attn', stopped: true };
+  if (Array.isArray(gate.rollback) && gate.rollback.length) return { text: 'Auto-merging is stopped (you or the agent rolled it back).', tone: 'attn', stopped: true };
   if (!w.lastTickAt) return { text: 'Merge watcher has not checked yet.', tone: 'unknown' };
   const age = now - w.lastTickAt;
   if (age > 2 * WATCHER_CADENCE_MS) return { text: `Merge watcher last checked ${ago(w.lastTickAt, now)}, usually every ${Math.round(WATCHER_CADENCE_MS / 60000)} min.`, tone: 'attn' };
@@ -464,7 +464,7 @@ export function buildFeedback(res = {}, now = Date.now()) {
     state = 'cant-tell';
     const k = failed.find((x) => todoFeeds.includes(x));
     headline = `I can’t tell whether feedback needs you: ${names[k]} didn’t answer (${reasonOf(res[k])}).`; tone = 'muted';
-    if (todos.length) sub = `${plural(todos.length, 'thing')} that ${todos.length === 1 ? 'does' : 'do'} need you ${todos.length === 1 ? 'is' : 'are'} listed below from the reads that answered.`;
+    if (todos.length) sub = `${plural(todos.length, 'thing')} that ${todos.length === 1 ? 'does' : 'do'} need you ${todos.length === 1 ? 'is' : 'are'} shown, from the reads that answered.`;
   } else if (todos.length) {
     headline = todos[0].sentence; tone = 'attn';
     const more = todos.length - 1;

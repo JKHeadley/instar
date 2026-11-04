@@ -512,6 +512,7 @@ export const VALID_RULES = new Set([
   'B19_PARKED_ON_USER',
   'B20_INTERNAL_ID_LEAK',
   'B21_USER_TASK_SUBSTITUTION',
+  'B22_SURFACE_REFERRAL',
 ]);
 
 /**
@@ -569,6 +570,8 @@ export const RULE_CLASSES: Record<string, GateRuleClass> = {
   // agent-doable work) — meaning-judged like B15–B18, no deterministic detector.
   // Origin: operator correction 2026-07-18 (correction-derived-hardening spec).
   B21_USER_TASK_SUBSTITUTION: 'behavioral-judgment',
+  // Sends the operator to a surface without a link, on-screen words, or having looked at it first.
+  B22_SURFACE_REFERRAL: 'behavioral-judgment',
 };
 
 /**
@@ -622,6 +625,7 @@ export const RULE_DISPOSITIONS: Record<string, GateRuleDisposition> = {
   B19_PARKED_ON_USER: 'blocking',
   B20_INTERNAL_ID_LEAK: 'blocking',
   B21_USER_TASK_SUBSTITUTION: 'advisory',
+  B22_SURFACE_REFERRAL: 'advisory',
 };
 
 /**
@@ -870,6 +874,17 @@ export interface ToneReviewSignals {
     detected: boolean;
     /** First offending path, bounded to 120 chars by the detector. */
     match?: string;
+  };
+  /**
+   * Surface-referral signal (operator-needs-first-screen §6; src/core/operatorSurfaceReferral.ts).
+   * SIGNAL ONLY, anchors B22_SURFACE_REFERRAL. `renderConfirmed`: the agent re-sent with
+   * `toneAdvisoryComplied: B22_SURFACE_REFERRAL`, its own report that it loaded the page.
+   */
+  surfaceReferral?: {
+    phrase?: string;
+    hasLink: boolean;
+    hasOnScreenWords: boolean;
+    renderConfirmed: boolean;
   };
   /**
    * Parked-on-user detector signal (C1+C2 §4.3, B-PARK; src/core/parked-on-user.ts).
@@ -1471,7 +1486,7 @@ export class MessagingToneGate {
   }
 
   private renderSignals(signals?: ToneReviewSignals): string {
-    if (!signals || (!signals.junk && !signals.duplicate && !signals.paraphrase && !signals.jargon && !signals.selfHeal && !signals.arcCheck && !signals.filePath && !signals.parkedOnUser && !signals.internalIdLeak)) {
+    if (!signals || (!signals.surfaceReferral && !signals.junk && !signals.duplicate && !signals.paraphrase && !signals.jargon && !signals.selfHeal && !signals.arcCheck && !signals.filePath && !signals.parkedOnUser && !signals.internalIdLeak)) {
       return '\n=== UPSTREAM SIGNALS ===\n(no signals reported)\n';
     }
     const lines: string[] = ['', '=== UPSTREAM SIGNALS ==='];
@@ -1509,6 +1524,13 @@ export class MessagingToneGate {
       // is rendered as an inert quoted token, never instruction-shaped prose.
       lines.push(
         `- raw-file-path detector (signal-only, anchors B2_FILE_PATH): detected=${signals.filePath.detected}${signals.filePath.match ? ` detected path: ${JSON.stringify(signals.filePath.match.slice(0, 120))}` : ''}`,
+      );
+    }
+    if (signals.surfaceReferral) {
+      // SIGNAL ONLY. The phrase is an inert quoted token; B22 judges by meaning.
+      const r = signals.surfaceReferral;
+      lines.push(
+        `- surface-referral detector (signal-only, anchors B22_SURFACE_REFERRAL): hasLink=${r.hasLink} hasOnScreenWords=${r.hasOnScreenWords} renderConfirmed=${r.renderConfirmed}${r.phrase ? ` phrase: ${JSON.stringify(r.phrase)}` : ''}`,
       );
     }
     if (signals.parkedOnUser && signals.parkedOnUser.parked) {
@@ -1909,6 +1931,8 @@ These rules only fire when the producer has explicitly marked the candidate as a
   Do NOT apply B20 if: the user EXPLICITLY asked for the identifier (a direct answer to "what's the commitment id?" passes), or the message is discussing internals the user opted into.
 
   Severity: favor FALSE-NEGATIVES. Block ONLY unsolicited agent-initiated plumbing-leak with the signal set, and suggest restating in plain English the user can act on. When uncertain, PASS.
+
+- **B22_SURFACE_REFERRAL** — JUDGE BY MEANING. Applies ONLY when the surface-referral detector signal is present. The candidate sends the operator to a dashboard, console or app page to look at or do something, and is missing any of: a direct link (hasLink), the exact words they will see there in quotes (hasOnScreenWords), or the agent's confirmation that it loaded that page at the operator's screen size first (renderConfirmed). Do NOT apply B22 when the candidate only mentions a page in passing, describes what changed, reports what the agent itself did on a page, answers a question about where something lives, or discusses this rule. When you apply it, the issue names what is missing and the suggestion says: include the direct link and the on-screen words, load the link at 1280x728 and 390x844, read what is on the first screen, then resend with --tone-complied B22_SURFACE_REFERRAL; or, if it cannot be loaded from here, override with the reason. Severity: favor FALSE-NEGATIVES, exactly like B15–B18.
 
 - **B21_USER_TASK_SUBSTITUTION** — JUDGE BY MEANING, NOT BY LITERAL PHRASE. The candidate hands the USER a multi-step procedure — portal click-paths ("open X → go to Settings → add these scopes → reinstall"), UI navigation steps, command sequences — for work the AGENT could perform itself given at most a credential or an approval. This is the "user-task substitution" anti-pattern (operator correction 2026-07-18: any solution requiring step-by-step clicking on the user side is unacceptable; the agent owns browser tasks; the only acceptable asks are credentials and approvals). When the agent's self-unblock exhausts, the legitimate escalation SHAPES are: (a) a yes/no approval, (b) a credential request (e.g. a Secret Drop link the user opens once), (c) a single mid-flow challenge code. A procedure for the human to execute is NEVER an escalation shape — and offering the click list "as an option, whenever convenient" ALONGSIDE a legitimate ask is exactly the violation (the option itself outsources agent work; judge the offered procedure on its own, mirroring per-item bundling under B17).
 

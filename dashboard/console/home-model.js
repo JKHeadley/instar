@@ -466,29 +466,43 @@ export function pullRequestRefs(row) {
   return [...out];
 }
 
-export function combineNeeds(needs, promised) {
-  if (!needs || !Number.isFinite(needs.count)) return needs; // loading or can't tell: say so as-is
-  if (!promised || promised.state === 'loading') return needs;
-  const pCount = Number.isFinite(promised.count) ? promised.count : 0;
+/**
+ * The one count. Surfaced rows (needs-model.js) merge in even while the queue or the promises
+ * are unread, so a slow read cannot hide a known need. A row naming the same thing as a queue
+ * item (its refs appear in that item) is dropped by identity: the queue item carries the action.
+ */
+export function combineNeeds(needs, promised, surfaced) {
+  const known = surfaced && Array.isArray(surfaced.rows) ? surfaced : { rows: [], pending: [], failed: [] };
+  const pending = Array.isArray(known.pending) && known.pending.length > 0;
+  const failed = Array.isArray(known.failed) && known.failed.length > 0;
+  if (!needs || !Number.isFinite(needs.count)) {
+    if (!known.rows.length) return needs ? { ...needs, surfacedPending: pending } : needs; // loading or can't tell: say so as-is
+    needs = { ...(needs || {}), count: 0, all: [], rows: [], line: '', unreadQueue: true };
+  }
   const queue = needs.all || needs.rows || [];
+  const words = (r) => `${r.main || ''} ${r.sub || ''}`.toLowerCase();
+  const hasToken = (text, ref) => { const at = text.indexOf(ref); return at >= 0 && !/[\w.@-]/.test(text[at + ref.length] || ' ') && !/[\w.@-]/.test(text[at - 1] || ' '); };
+  const rows = known.rows.filter((r) => !(r.refs || []).some((ref) => queue.some((q) => hasToken(words(q), String(ref).toLowerCase()))));
   // A promise that waits on the same pull request as a queue item is the same
   // ask twice (the approval itself, and my promise to merge after it): show the
   // queue item, which carries the action, and drop the promise row.
   const queueRefs = new Set(queue.flatMap(pullRequestRefs));
-  const waitingAll = (promised.all || []).filter((r) => r.tone === 'attn').slice(0, pCount);
+  const promisesRead = promised && promised.state !== 'loading';
+  const pCount = promisesRead && Number.isFinite(promised.count) ? promised.count : 0;
+  const waitingAll = promisesRead ? (promised.all || []).filter((r) => r.tone === 'attn').slice(0, pCount) : [];
   const waiting = waitingAll.filter((r) => !pullRequestRefs(r).some((ref) => queueRefs.has(ref)))
     .map((r) => ({ ...r, sub: ['a promise', r.sub].filter(Boolean).join(' · ') }));
-  const promisesKnown = Number.isFinite(promised.count);
-  const count = needs.count + waiting.length;
-  // Urgent queue items lead (the headline names the first row), then promises, then the rest.
-  const all = [...queue.filter((r) => r.tone === 'bad'), ...waiting, ...queue.filter((r) => r.tone !== 'bad')];
+  const promisesKnown = !promisesRead || Number.isFinite(promised.count);
+  const count = needs.count + rows.length + waiting.length;
+  // Urgent queue items lead (the headline names the first row), then what is surfaced, then promises, then the rest.
+  const all = [...queue.filter((r) => r.tone === 'bad'), ...rows, ...waiting, ...queue.filter((r) => r.tone !== 'bad')];
   const notes = !promisesKnown ? "Couldn't check for promises waiting on you."
-    : promised.state === 'stale' ? 'Promise information is from the last successful check.' : '';
+    : promisesRead && promised.state === 'stale' ? 'Promise information is from the last successful check.' : '';
   const queueLine = needs.line === 'The queue is clear.' || needs.line === 'Waiting on you.' ? null : needs.line;
   const line = count ? '' : [notes, queueLine].filter(Boolean).join(' ') || 'Nothing is waiting on you.';
-  const partial = needs.state === 'partial' || !promisesKnown || promised.state === 'stale' || !!promised.coverage;
+  const partial = needs.state === 'partial' || !promisesKnown || needs.unreadQueue || failed || (promisesRead && (promised.state === 'stale' || !!promised.coverage));
   return {
-    ...needs, combined: true, count, all, rows: all.slice(0, MAX_ROWS), line,
+    ...needs, combined: true, count, all, rows: all.slice(0, MAX_ROWS), line, surfacedPending: pending,
     note: count ? null : needs.note,
     statusNote: count ? [needs.statusNote, notes, queueLine].filter(Boolean).join(' ') : needs.statusNote,
     coverage: partial ? 'partial view' : needs.coverage,
@@ -520,7 +534,7 @@ export function headline(allCards) {
   const otherAttn = attention.length;
   const loading = list.filter((c) => c.state === 'loading').length;
   // Never announce a count, or "all quiet", before both counting cards answered.
-  if (loading === list.length || (cards.needs && cards.needs.state === 'loading') || (cards.promised && cards.promised.state === 'loading')) return { text: 'Checking in…', tone: 'muted' };
+  if (loading === list.length || (cards.needs && cards.needs.state === 'loading' && !Number.isFinite(cards.needs.count)) || (cards.promised && cards.promised.state === 'loading' && !(cards.needs && cards.needs.count > 0)) || (cards.needs && cards.needs.surfacedPending && !(cards.needs.count > 0))) return { text: 'Checking in…', tone: 'muted' };
   // A known action survives incomplete coverage. Coverage belongs under agent
   // status, not in the sentence describing the action.
   const count = cards.needs && cards.needs.combined ? known(cards.needs) : known(cards.needs) + known(cards.promised);
@@ -537,7 +551,7 @@ export function headline(allCards) {
     const context = withContext ? `${withContext[2].replace(/,\s*/g, ' · ')}.` : null;
     return { text: title || 'Open what needs your attention', tone: 'attn',
       sub: [context, first?.action ? 'Tap to review and respond.' : null,
-        count > 1 ? `${count - 1 === 1 ? 'One more thing needs' : `${count - 1} more things need`} you, listed below.` : null].filter(Boolean).join(' '),
+        count > 1 ? `${count - 1 === 1 ? 'One more thing needs' : `${count - 1} more things need`} you.` : null].filter(Boolean).join(' '),
       action: first?.action || null };
   }
   // Only what the operator can act on takes the headline. My own areas

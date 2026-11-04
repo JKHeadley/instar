@@ -387,6 +387,18 @@ export function buildRouting(res) {
  * Build the whole page from the reads: { spend, caps, status, metrics, insights, tokens, claude, codex, orphans, chains, names }.
  * Returns { headline, sub, tone, facts, window, recorded, limits, checks, conversations, routing }.
  */
+/**
+ * Spending limits the operator turned on that are not enforcing: they believe money is capped
+ * and it is not. Only this counts: a route they froze is their own choice, and a pending
+ * restart is the agent's job. The only control is in the legacy Spend tab, so that is the action.
+ */
+export function spendingNeed(statusRes) {
+  if (!statusRes || !statusRes.ok) return null;
+  const st = (statusRes.data || {}).lifecycleState;
+  if (st !== 'probe-failed' && st !== 'construction-failed') return null;
+  return { title: 'Spending limits are on but not enforcing', why: 'Paid use is not capped right now, even though limits are turned on.' };
+}
+
 export function buildCostsPage(res, now = Date.now(), { window = DEFAULT_WINDOW } = {}) {
   const r = res || {};
   const w = windowParams(window, now);

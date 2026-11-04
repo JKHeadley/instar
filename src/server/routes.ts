@@ -681,6 +681,7 @@ import { credentialGuardMessage, detectOutboundCredential } from '../messaging/o
 import { detectJargon } from '../core/JargonDetector.js';
 import { detectRawFilePath } from '../core/raw-file-path.js';
 import { detectParkedOnUser } from '../core/parked-on-user.js';
+import { detectSurfaceReferral } from '../core/operatorSurfaceReferral.js';
 import { detectAskWhenAuthorized } from '../core/ask-when-authorized.js';
 import { detectInternalIdLeak } from '../core/internal-id-leak.js';
 import type { MessageKind } from '../core/MessagingToneGate.js';
@@ -4231,6 +4232,8 @@ export function createRoutes(ctx: RouteContext): Router {
        * model-sourced signal.
        */
       liveArtefactSignals?: boolean;
+      /** A resend nobody can react to (a sentinel redrive): advisory-only signals that need a reaction are skipped. */
+      noReactionPossible?: boolean;
       /**
        * WHY the agent is overriding — REQUIRED alongside `toneAdvisoryAck`.
        * Recorded as the evidence note on the `tone-agent-override-v1` outcome.
@@ -4349,6 +4352,25 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       } catch {
         // @silent-fallback-ok — detector errors never override the authority; skip the signal (outbound-jargon-filepath-gap §2.3).
+      }
+
+      // operator-needs-first-screen §6 — surface referral (B22). SIGNAL ONLY, and only for a
+      // sender that can react to a nudge: a caller that treats any hold as final never sees it.
+      // Fail-OPEN: a detector throw skips the signal, never withholds.
+      if (options.liveArtefactSignals === true && kindForSignals === 'reply' && options.noReactionPossible !== true) {
+        try {
+          const sr = detectSurfaceReferral(text);
+          if (sr.referral) {
+            signals.surfaceReferral = {
+              ...(sr.phrase ? { phrase: sr.phrase } : {}),
+              hasLink: sr.hasLink,
+              hasOnScreenWords: sr.hasOnScreenWords,
+              renderConfirmed: options.toneAdvisoryComplied === 'B22_SURFACE_REFERRAL',
+            };
+          }
+        } catch {
+          // @silent-fallback-ok — detector errors never override the authority; skip the signal.
+        }
       }
 
       // C1+C2 §4.3 — parked-on-user (B19) + internal-id-leak (B20) signals.
@@ -4884,6 +4906,8 @@ export function createRoutes(ctx: RouteContext): Router {
       toneAdvisoryComplied?: string;
       /** jev-signal-live opt-in — see evaluateOutbound's option doc. */
       liveArtefactSignals?: boolean;
+      /** A resend nobody can react to (a sentinel redrive); see evaluateOutbound. */
+      noReactionPossible?: boolean;
     },
   ): Promise<boolean> {
     // ── Self-Violation Signal (OBSERVE-ONLY) ──────────────────────────
@@ -19507,6 +19531,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         toneAdvisoryComplied,
         // jev-signal-live: this reply path carries the acknowledge-and-override fields.
         liveArtefactSignals: true,
+        // A sentinel redrive has nobody to react to a nudge, and the recovery policy treats any 422
+        // as final, so B22 must not hold it. A fabricated header does not buy this: it must match a queue row.
+        noReactionPossible: typeof deliveryId === 'string' && /^[0-9a-f-]{16,64}$/i.test(deliveryId) && ctx.pendingRelayLookup?.(deliveryId) === true,
       })) return false;
       ctx.telegramOrigin?.service.markCurrentSendPolicyReviewed();
       return true;
