@@ -33,6 +33,7 @@ import { BASELINE_PROCESS_PATTERNS, CLAUDE_TOOL_SHELL_PATTERN, isToolShellComman
 import { chunkLiteralForTmux, buildLiteralSendArgs } from './tmuxLiteralSend.js';
 import { isReadyPromptTail, classifyPaneReadiness, type PaneReadiness } from './claudeReadinessProbe.js';
 import { RerouteRefusedError } from './rerouteRefusedError.js';
+import { SessionCapacityRefusedError } from './sessionCapacityRefusedError.js';
 export { RerouteRefusedError } from './rerouteRefusedError.js';
 import { initialConfinedStartupState, stepConfinedStartup, classifyConfinedStartupPane, confinedPromptLine, LOGIN_REQUIRED, showsOtherPermissionMode, CONFINED_STARTUP_BUDGET_MS, type ConfinedStartupState, type ConfinedStartupObservation } from './confinedStartupDialogs.js';
 
@@ -722,6 +723,8 @@ export function applyClaudeToolConfinement(argv: string[], tools: string[]): voi
 }
 
 export class SessionManager extends EventEmitter {
+  private pendingHeadlessSpawns = 0;
+  private pendingScheduledSpawns = 0;
   private config: SessionManagerConfig;
   private state: StateManager;
   private monitorInterval: ReturnType<typeof setInterval> | null = null;
@@ -3805,7 +3808,36 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (!decision.allowed) throw new AdmissionRefusedError(decision.reason ?? 'overloaded', decision.detail ?? 'machine overloaded');
   }
 
-  async spawnSession(options: {
+  async spawnSession(options: Parameters<SessionManager['spawnSessionInternal']>[0]): Promise<Session> {
+    const running = this.listRunningSessions();
+    const effectiveCount = running.length + this.pendingHeadlessSpawns;
+    const scheduled = Boolean(options.jobSlug && options.triggeredBy?.startsWith('scheduler:'));
+    // Human conversations can exceed the soft autonomous cap. Permit exactly
+    // one scheduled job alongside them while memory is healthy and the hard
+    // absolute cap still has room. This remains a bounded loan, not an
+    // increase in parallel job capacity or the rerouted memory cap.
+    if (effectiveCount >= this.config.maxSessions
+      && !(scheduled && this.scheduledOverflowAvailable(running, this.currentMemoryPressure()))) {
+      throw new SessionCapacityRefusedError(effectiveCount, this.config.maxSessions);
+    }
+    this.pendingHeadlessSpawns++;
+    if (scheduled) this.pendingScheduledSpawns++;
+    try {
+      return await this.spawnSessionInternal(options);
+    } finally {
+      this.pendingHeadlessSpawns--;
+      if (scheduled) this.pendingScheduledSpawns--;
+    }
+  }
+
+  private scheduledOverflowAvailable(running: Session[], pressure: MemoryPressure): boolean {
+    return pressure !== 'high' && pressure !== 'critical'
+      && running.length + this.pendingHeadlessSpawns < this.config.maxSessions * 3
+      && this.pendingScheduledSpawns === 0
+      && !running.some(s => s.jobSlug);
+  }
+
+  private async spawnSessionInternal(options: {
     name: string;
     prompt: string;
     /** Either a Claude tier name, a generic tier ('fast'|'balanced'|'capable'),
@@ -3937,14 +3969,6 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (options.omitAuthEnv && (this.config.anthropicApiKey ?? '').length > 0) {
       throw new Error('omit-auth-env-unsupported: the agent authenticates Claude through an env token');
     }
-    const runningSessions = this.listRunningSessions();
-    if (runningSessions.length >= this.config.maxSessions) {
-      throw new Error(
-        `Max sessions (${this.config.maxSessions}) reached. ` +
-        `Running: ${runningSessions.map(s => s.name).join(', ')}`
-      );
-    }
-
     const sessionId = this.generateId();
     const tmuxSession = this.plannedTmuxSessionName(options.name);
 
@@ -4475,10 +4499,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * nothing while the lane is full (docs/specs/confined-spawn-subscription-reroute.md, Cap contention).
    */
   confinedRerouteCapacity(): 'available' | 'saturated' | 'not-rerouted' {
+    const pressure = this.currentMemoryPressure();
+    const running = this.listRunningSessions();
+    if (running.length + this.pendingHeadlessSpawns >= this.config.maxSessions
+      && !this.scheduledOverflowAvailable(running, pressure)) return 'saturated';
     if ((this.config.subscriptionPathMode ?? 'off') !== 'force') return 'not-rerouted';
     const maxRerouted = this.config.subscriptionMaxRerouted ?? 3;
-    const pressure = this.currentMemoryPressure();
-    return this.countReroutedInteractiveSessions() >= maxRerouted || pressure === 'high' || pressure === 'critical' ? 'saturated' : 'available';
+    return this.countReroutedInteractiveSessions() >= maxRerouted
+      || pressure === 'high' || pressure === 'critical' ? 'saturated' : 'available';
   }
 
   private evaluateRerouteGate(spawnName: string, scheduledJob = false): { allow: boolean } {

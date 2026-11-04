@@ -7,7 +7,7 @@
 //   repair / retry / cancel   POST /subscription-relogin/repair-cell       operator session
 
 import { buildAccountsPage, frameworkName } from './accounts-model.js';
-import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell, askPin, forgetOperatorSession, firstPaint, arrivalScroll } from './ui.js';
+import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell, askPin, forgetOperatorSession, firstPaint, arrivalScroll, markNeed } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName } from './display-identity.js';
 
@@ -60,6 +60,7 @@ export async function renderAccounts(main, ctx) {
       return row;
     })))));
 
+  markNeed(needs, 'accounts');
   setKids(main,
     pageHead({ eyebrow: 'Capacity · Accounts', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
     page.partial ? note(page.partial) : null,

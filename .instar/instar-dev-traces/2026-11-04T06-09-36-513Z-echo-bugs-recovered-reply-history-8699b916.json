@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "slug": "echo-bugs-recovered-reply-history",
+  "sessionId": "fb124a4e-0f1e-44d1-8e64-de67c331c60d",
+  "timestamp": "2026-11-04T06:09:36.513Z",
+  "artifactPath": "upgrades/side-effects/echo-bugs-recovered-reply-history.md",
+  "artifactSha256": "59c2bc39b288cd458f1969f55753c391c40c5ce3cda3f59b8a99f9fcc5b8455d",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/telegram-origin/TelegramOriginBoot.ts",
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "src/server/routes.ts",
+    "tests/e2e/outbound-advisory-alive.test.ts",
+    "tests/integration/telegram-recovered-reply-history.test.ts",
+    "upgrades/next/echo-bugs-recovered-reply-history.eli16.md",
+    "upgrades/next/echo-bugs-recovered-reply-history.md",
+    "upgrades/side-effects/echo-bugs-recovered-reply-history.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Receipt-only history and alert visibility; no retry authority or durable schema change, fully reversible by revert.",
+  "eli16Path": "upgrades/next/echo-bugs-recovered-reply-history.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/echo-bugs-recovered-reply-history.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

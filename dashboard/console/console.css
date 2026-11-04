@@ -772,6 +772,7 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 /* ── Development (under-the-hood.md: Shipping + Feedback + Pace) ─────────── */
 .tiles-dev { margin-top: var(--s-3); }
 .dev-page .need-card { margin-bottom: var(--s-3); }
+.dev-page .need-line { display: block; margin-bottom: var(--s-3); }
 .ideas-page .need-card { margin: var(--s-3) 0; }
 .ideas-page .need-sub { margin: 0; }
 .ideas-page .need-sub:empty { display: none; }

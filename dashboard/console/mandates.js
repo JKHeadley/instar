@@ -9,7 +9,7 @@ import {
   issueRequest, revokeRequest, grantRequest, approveRequest, denyRequest, resultWords,
   FLOOR_ACTIONS, GRANT_DURATIONS, AUTHORITIES_TEMPLATE, humanAction, defaultExpiryLocal,
 } from './mandates-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, firstPaint } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, firstPaint, markNeed } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
 
@@ -50,7 +50,7 @@ export async function renderMandates(main, ctx) {
 
   const parts = [pageHead({ eyebrow: 'People · Permission slips', headline: h.text, tone: h.tone, facts: mandatesFacts({ slips, approvals, audit }) })];
   // A broken chain is an incident: it leads the page, above everything else.
-  if (audit.ok && audit.chain.state === 'broken') parts.push(el('section', { class: 'incident', role: 'alert' }, el('span', { class: 'incident-title', text: 'Treat as an incident' }), el('p', { class: 'incident-text', text: `${audit.chain.words} Every decision below is suspect until the record is checked.` })));
+  if (audit.ok && audit.chain.state === 'broken') parts.push(el('section', { class: 'incident', role: 'alert' }, el('span', { class: 'incident-title', text: 'Treat as an incident' }), el('p', { class: 'incident-text', text: `${audit.chain.words} Every decision on this page is suspect until the record is checked.` })));
   const sections = [];
   if (!approvals.hidden) sections.push(approvalsBlock(approvals, deps));
   if (!slips.ok) sections.push(el('section', { class: 'list-section', id: 'sec-active' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Active slips' })), cantTell(slips.reason)));
@@ -70,7 +70,7 @@ function approvalsBlock(approvals, deps) {
   if (!approvals.ok) { wrap.append(el('p', { class: 'card-note', text: approvals.reason })); return wrap; }
   if (!approvals.rows.length) { wrap.append(el('p', { class: 'empty-line', text: 'Nothing is waiting for your approval.' })); return wrap; }
   for (const r of approvals.rows) wrap.append(approvalCard(r, deps));
-  return wrap;
+  return markNeed(wrap, 'approvals');
 }
 
 function approvalCard(r, deps) {
