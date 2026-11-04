@@ -6,7 +6,7 @@
 import path from 'node:path';
 import readline from 'node:readline';
 import pc from 'picocolors';
-import { loadConfig } from '../core/Config.js';
+import { detectProjectDir } from '../core/Config.js';
 import { looksLikeClaudeToken, writeClaudeKeyToConfig } from '../core/claudeChildAuth.js';
 
 async function readPiped(): Promise<string> {
@@ -25,13 +25,15 @@ function readHidden(): Promise<string> {
 }
 
 export async function setClaudeKey(opts: { dir?: string }): Promise<void> {
-  const config = loadConfig(opts.dir);
+  // Only the state dir is needed. loadConfig also demands the Claude CLI, which a
+  // key-only headless install (the case this command exists for) may not have.
+  const stateDir = path.join(opts.dir || detectProjectDir(), '.instar');
   const value = (process.stdin.isTTY ? await readHidden() : await readPiped()).trim();
   if (!looksLikeClaudeToken(value)) {
     console.error(pc.red("That doesn't look like a key from claude setup-token. It starts with sk-ant-oat. Nothing was changed."));
     process.exitCode = 1;
     return;
   }
-  writeClaudeKeyToConfig(path.join(config.stateDir, 'config.json'), value);
+  writeClaudeKeyToConfig(path.join(stateDir, 'config.json'), value);
   console.log(pc.green('Key saved. Your agent picks it up by itself, and open conversations recover without anything more from you.'));
 }
