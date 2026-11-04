@@ -27,17 +27,26 @@ export interface OperationOutcomeVerdict {
 
 const TERMINAL_UNDELIVERED = new Set(['known-failed', 'suppressed', 'expired']);
 
-function receiptMessageId(receiptJson: string | null): string | null {
-  if (!receiptJson) return null;
-  try { const id = (JSON.parse(receiptJson) as { messageId?: unknown }).messageId; return typeof id === 'string' || typeof id === 'number' ? String(id) : null; }
-  catch { return null; }
+export function receiptMessageIds(receiptJson: string | null): string[] {
+  if (!receiptJson) return [];
+  try {
+    const receipt = JSON.parse(receiptJson) as { messages?: unknown[] };
+    const values = Array.isArray(receipt.messages) ? receipt.messages : [receipt];
+    const ids = values.map(value => {
+      const row = value as { messageId?: unknown; message_id?: unknown; result?: { message_id?: unknown } };
+      const id = row?.messageId ?? row?.result?.message_id ?? row?.message_id;
+      const text = typeof id === 'string' || typeof id === 'number' ? String(id) : '';
+      return /^[1-9]\d*$/.test(text) && Number.isSafeInteger(Number(text)) ? text : null;
+    });
+    return ids.every((value): value is string => value !== null) ? ids : [];
+  } catch { return []; }
 }
 
 export function classifyOperationOutcome(operationId: string, audit: OriginAuditRecord | null, captured: UnrecordedReceiptEntry[]): OperationOutcomeVerdict {
   const capturedByChild = new Map(captured.map(entry => [entry.childId, entry]));
   if (!audit || !audit.operation) {
-    if (captured.length) return { operationId, outcome: 'delivered', safeToResend: false, source: 'unrecorded-receipt',
-      messageIds: captured.map(entry => entry.messageId).filter((id): id is string => !!id), state: audit?.operation?.state ?? null,
+    if (captured.length && captured.every(entry => typeof entry.messageId === 'string' && /^[1-9]\d*$/.test(entry.messageId) && Number.isSafeInteger(Number(entry.messageId)))) return { operationId, outcome: 'delivered', safeToResend: false, source: 'unrecorded-receipt',
+      messageIds: captured.map(entry => entry.messageId).filter((id): id is string => typeof id === 'string'), state: audit?.operation?.state ?? null,
       detail: 'Telegram accepted it and returned a message id; the receipt is in the fallback record.' };
     return { operationId, outcome: 'unknown', safeToResend: false, source: 'none', messageIds: [], state: null,
       detail: audit ? 'This machine holds the evidence only; the send ran on another machine.' : 'No record of this operation on this machine.' };
@@ -45,11 +54,13 @@ export function classifyOperationOutcome(operationId: string, audit: OriginAudit
   const messageIds: string[] = [];
   let fromStore = 0, fromFallback = 0, unresolvedDispatch = 0;
   for (const child of audit.children) {
-    const accepted = audit.attempts.find(a => a.childId === child.childId && a.outcome === 'accepted' && a.receiptJson);
-    if (accepted) { fromStore++; const id = receiptMessageId(accepted.receiptJson); if (id) messageIds.push(id); continue; }
+    const accepted = audit.attempts.find(a => a.childId === child.childId && a.outcome === 'accepted' && receiptMessageIds(a.receiptJson).length > 0);
+    if (accepted) { fromStore++; messageIds.push(...receiptMessageIds(accepted.receiptJson)); continue; }
     const entry = capturedByChild.get(child.childId);
-    if (entry) { fromFallback++; if (entry.messageId) messageIds.push(entry.messageId); continue; }
-    if (audit.attempts.some(a => a.childId === child.childId && a.phase === 'dispatched' && (a.outcome === null || a.outcome === 'outcome-unknown' || a.outcome === 'expired-unresolved'))) unresolvedDispatch++;
+    if (entry && typeof entry.messageId === 'string' && /^[1-9]\d*$/.test(entry.messageId) && Number.isSafeInteger(Number(entry.messageId))) { fromFallback++; messageIds.push(entry.messageId); continue; }
+    if (audit.attempts.some(a => a.childId === child.childId && a.phase === 'dispatched' &&
+      (a.outcome === null || a.outcome === 'outcome-unknown' || a.outcome === 'expired-unresolved' ||
+        (a.outcome === 'accepted' && receiptMessageIds(a.receiptJson).length === 0)))) unresolvedDispatch++;
   }
   const delivered = fromStore + fromFallback;
   const source = fromStore && fromFallback ? 'origin-store+unrecorded-receipt' : fromFallback ? 'unrecorded-receipt' : 'origin-store';

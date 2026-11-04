@@ -39,7 +39,7 @@ describe('origin delivery resolution', () => {
     audit.children = [{ childId: 'child-1', deliveryId: 'delivery-1', destinationJson: '{}', generation: 0, state: 'accepted', attempts: 1 }];
     expect(originAuditDeliveryConfirmed(audit)).toBe(false);
     audit.attempts = [{ attemptId: 'attempt-1', childId: 'child-1', materializationId: 'materialization-1', ownerBootId: 'boot-1',
-      deliveryMachineId: 'owner', phase: 'resolved', outcome: 'accepted', receiptJson: '{}', createdAt: 1, resolvedAt: 2 }];
+      deliveryMachineId: 'owner', phase: 'resolved', outcome: 'accepted', receiptJson: '{"messageId":"1508"}', createdAt: 1, resolvedAt: 2 }];
     expect(originAuditDeliveryConfirmed(audit)).toBe(true);
     audit.children.push({ ...audit.children[0], childId: 'child-2', deliveryId: 'delivery-2' });
     expect(originAuditDeliveryConfirmed(audit)).toBe(false);
