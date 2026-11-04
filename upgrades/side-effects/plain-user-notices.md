@@ -64,6 +64,8 @@ Revert the commit. No data, config or migration to undo.
 
 ## Second-pass review
 
+**Reviewer:** independent reviewer subagent (general-purpose, Opus 5.5), given the diff and this artifact with no conclusions.
+
 Not required by Phase 5's list in the strict sense (no block/allow decision on messaging), but the classifier and the dropped post-respawn notice touch session-lifecycle messaging, so an independent reviewer subagent read the diff and this artifact.
 
 **Result: concur, with four findings, all addressed.**
