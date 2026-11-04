@@ -774,6 +774,7 @@ export const TONE_ADVISORY_FLAG_POSITION_CLAUDEMD_SECTION = `- **How to send the
   \`\`\`
   Use \`--tone-complied <RULE>\` instead of \`--tone-ack\`/\`--tone-reason\` when you agreed and revised. A flag in the wrong position is now REFUSED (it used to be sent to the user as literal text with its effect silently dropped, which is exactly how a correct check once got graded \`wrong\`). If such a token is genuinely part of your message, pipe the text on stdin — the check only inspects arguments.`;
 
+export const SURFACE_REFERRAL_CLAUDEMD_SECTION = `**Sending the operator to a page: link, words, and look first.** A message that sends the operator to a dashboard, console or app page carries a direct link and the exact words they will see there in quotes, and I load that link at their screen size (1280x728 and 390x844) and read the first screen before sending. The outbound gate nudges (\`B22_SURFACE_REFERRAL\`) until that holds: after loading the page, resend with \`--tone-complied B22_SURFACE_REFERRAL\` (its flags go before the topic id). If it cannot be loaded from here, override with \`--tone-ack\` and the reason. Anything that needs the operator also belongs on the first screen of its page and in Home's count, through \`dashboard/console/needs-model.js\`.`;
 export const TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION = `**File-path feedback is always a NUDGE, never a wall; most other checks become nudges under the advisory migration.** B2_FILE_PATH is advisory on every agent (operator decision 2026-09-03): file paths are sometimes necessary and acceptable, so the check may suggest clearer wording but must accept an explicit override even when decision-quality recording is unavailable. For the other eligible judgment rules, \`toneGate.advisoryMigration\` remains dev-gated live / fleet-dark. A nudge returns \`422 tone-gate-advisory\` with \`notSent: true\` and a \`decisionRef\` when available — the message is handed back to YOU, not dropped. Two ways forward, and **both are recorded when the evidence seam is available**:
 - **You agree** → revise and re-send with \`metadata.toneAdvisoryComplied: "<RULE>"\` + \`metadata.toneAdvisoryDecisionRef: "<decisionRef>"\` → the check is graded \`right\`.
 - **You disagree** → re-send unchanged with \`metadata.toneAdvisoryAck: "<RULE>"\` **and** \`metadata.toneAdvisoryAckReason: "<why the nudge is wrong here>"\` → the check is graded \`wrong\`. **The reason is required** — a reasonless ack is refused (\`tone-gate-advisory-reason-required\`) and nothing sends. That reason IS the evidence that tunes this gate; without it every tone decision grades \`unknown\` forever.
@@ -8909,6 +8910,14 @@ setTimeout(() => process.exit(0), 2000);
     // GET /external-hog status + the PIN-gated arm / Bearer disarm routes, the two-key
     // floor+model kill rule, the watch-only/PIN-arm posture, and the proactive triggers.
     // Tone-gate advisory migration (operator approval 2026-07-19, topic 33368) —
+    // operator-needs-first-screen §6: the B22 nudge needs its reaction flag known, or an agent
+    // reads the nudge as a wall. Content-sniffed for idempotency.
+    if (!content.includes('Sending the operator to a page: link, words, and look first')) {
+      content += `\n${SURFACE_REFERRAL_CLAUDEMD_SECTION}\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added how to send the operator to a page');
+    }
+
     // Agent Awareness Standard + Migration Parity: an existing agent that does not
     // know about `toneAdvisoryAckReason` / `toneAdvisoryComplied` will keep treating
     // a nudge as a wall and will never produce the override evidence the whole
@@ -14670,6 +14679,8 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // and either loop or silently drop the message, which is the pre-migration
       // failure reproduced on the frameworks that never learned the fix.
       '**File-path feedback is always a NUDGE',
+      // B22 is server-side too, so every framework's agents meet the same nudge.
+      '**Sending the operator to a page: link, words, and look first',
       // Owned-Identities Registry (correction-derived-hardening): framework-
       // agnostic — a Codex/Gemini agent provisions identities too, and its
       // self-unblock exhaustion consults the same server-side probe. It must

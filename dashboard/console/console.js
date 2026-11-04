@@ -10,6 +10,7 @@ import {
 } from './home-model.js';
 import { GROUPS, legacyHref, icon, tabHref, LEGACY_DASHBOARD } from './nav-model.js';
 import { fillPartial } from './home-model.js';
+import { NEED_SOURCES, surfacedNeeds } from './needs-model.js';
 import { renderPromises, topicLink } from './promises.js';
 import { renderMachines } from './machines.js';
 import { renderAccounts } from './accounts.js';
@@ -91,11 +92,12 @@ function toggleTheme() {
 // told "can't tell". Cross-machine reads in particular can be slow for a moment.
 const MIN_TIMEOUT_MS = 20000;
 const RETRY_DELAY_MS = 0; // retry at once: a timeout already waited MIN_TIMEOUT_MS
-async function getOnce(path, timeoutMs) {
+async function getOnce(path, timeoutMs, soft403 = false) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
     const r = await fetch(path, { headers: { Authorization: `Bearer ${token}` }, signal: ctl.signal, cache: 'no-store' });
+    if (r.status === 403 && soft403) return failure('the server answered 403');
     if (r.status === 401 || r.status === 403) { signOut(); return failure('not signed in'); }
     if (r.status === 503) return failure('switched off on this agent');
     if (!r.ok) return { ...failure(`the server answered ${r.status}`), retryable: r.status >= 500 };
@@ -468,7 +470,8 @@ function loadHome() {
   const { models, raw, results } = run;
   const paint = (id) => {
     // "What needs you" is the one answer: queue items plus promises waiting on the operator.
-    const model = id === 'needs' ? combineNeeds(raw.needs, raw.promised) : raw[id];
+    const model = id === 'needs' ? combineNeeds(raw.needs, raw.promised, surfacedNeeds(run.sources)) : raw[id];
+    if (!model) return; // nothing read yet for this card
     const shown = paintCard(CARDS.find((c) => c.id === id), model) || model;
     models[id] = shown;
     // The action queue must use the same last-known promise reading as its
@@ -527,6 +530,24 @@ function loadHome() {
     };
     attempt();
   };
+  // What needs the operator on other pages (needs-model.js): one in-flight read per source, no
+  // retry timer of its own (the next tick is the retry), and a 403 here never signs anyone out.
+  run.tick = (run.tick || 0) + 1;
+  for (const source of NEED_SOURCES) {
+    if (run.sourceBusy[source.id]) continue;
+    if (source.when && !source.when(run.sources)) continue;
+    if (source.everyTicks && run.sourceAt[source.id] && run.tick - run.sourceAt[source.id] < source.everyTicks) continue;
+    run.sourceAt[source.id] = run.tick;
+    run.sourceBusy[source.id] = true;
+    const keys = Object.keys(source.reads);
+    Promise.all(keys.map((k) => getOnce(source.reads[k], Math.max(TIMEOUT_MS, MIN_TIMEOUT_MS), true))).then((reads) => {
+      run.sourceBusy[source.id] = false;
+      if (!run.active || run.document !== document) return;
+      run.sources[source.id] = { ...(run.sources[source.id] || {}), results: Object.fromEntries(keys.map((k, i) => [k, reads[i]])) };
+      paint('needs');
+      paintHeadline(models);
+    });
+  }
   // Every source has one in-flight request and its own bounded retry timer.
   // A slow source cannot block another card or start overlapping refreshes.
   read('pool', '/pool', POOL_TIMEOUT_MS);
@@ -542,7 +563,7 @@ function loadHome() {
 }
 
 function renderHome(main) {
-  homeRun = { active: true, document, models: Object.fromEntries(CARDS.map((c) => [c.id, { state: 'loading' }])), raw: {}, results: {}, pending: {}, failures: {} };
+  homeRun = { active: true, document, models: Object.fromEntries(CARDS.map((c) => [c.id, { state: 'loading' }])), raw: {}, results: {}, pending: {}, failures: {}, sources: {}, sourceBusy: {}, sourceAt: {} };
   main.replaceChildren(
     el('section', { class: 'hero' },
       el('div', { class: 'eyebrow', id: 'heroTime', text: 'Checking in' }),
