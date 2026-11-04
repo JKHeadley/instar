@@ -68,7 +68,7 @@ import { decideReplay, type ForwardOutcome } from './replayPolicy.js';
 import { writeStartupMarker } from './startupMarker.js';
 import { acquireLockFile, startLockHeartbeat } from './lifelineLock.js';
 import { shouldOwnTelegramPoll } from './telegramPollOwnership.js';
-import { decidePollAction, type PollOverride } from './pollDecision.js';
+import { bootHoldStep, decidePollAction, holdPollAtBoot, type PollOverride } from './pollDecision.js';
 import { readPollIntent, effectivePollIntent, writePollActive, pidAlive } from '../core/pollIntent.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { writeLease as writePollOwnerLease } from './TelegramPollOwnerLease.js';
@@ -184,6 +184,13 @@ export class TelegramLifeline {
    * out a flap). Reset to 0 whenever the intent is not awake / we already poll.
    */
   private pollIntentAwakeSinceMs = 0;
+  /** Non-zero while a boot waits for the lease's opinion; see holdPollAtBoot. */
+  private bootPollHeldSinceMs = 0;
+  /** One poll start at a time: a flush can outlast several reconciles, and loses to a newer stop. */
+  private pollStartGen = 0;
+  private pollStartPending = false;
+  /** Only the newest poll loop continues, so a restart cannot leave two running. */
+  private pollLoopId = 0;
   private pollBackoffMs = 2000; // Grows on 409/429 errors
 
   // Doctor session tracking (Crash Recovery UX)
@@ -442,7 +449,19 @@ export class TelegramLifeline {
     // unchanged — only a machine that explicitly opts out is suppressed. This is
     // a per-machine LOCAL flag, so a credential-less standby can honor it.
     const telegramPollingEnabled = shouldOwnTelegramPoll(this.projectConfig);
-    if (telegramPollingEnabled) {
+    const mmPoll = this.projectConfig.multiMachine as { pollFollowsLease?: { enabled?: boolean; dryRun?: boolean }; telegramPolling?: boolean; pollOverride?: string } | undefined;
+    const holdForLease = holdPollAtBoot({
+      followsLeaseEnabled: resolveDevAgentGate(mmPoll?.pollFollowsLease?.enabled, this.projectConfig as { developmentAgent?: boolean }),
+      dryRun: mmPoll?.pollFollowsLease?.dryRun,
+      telegramPolling: mmPoll?.telegramPolling,
+      pollOverride: mmPoll?.pollOverride,
+    });
+    if (holdForLease) {
+      // Poll-follows-lease is live: the lease decides, in reconcilePolling below.
+      this.polling = false;
+      this.bootPollHeldSinceMs = Date.now();
+      console.log(pc.yellow('  Telegram polling waiting for the lease (poll-follows-lease is live)'));
+    } else if (telegramPollingEnabled) {
       // Flush stale Telegram connections before starting poll loop.
       // After hard kills or sleep/wake, a previous long-poll connection may still be
       // held by Telegram's servers, causing 409 Conflict errors for ~30s.
@@ -612,6 +631,7 @@ export class TelegramLifeline {
     // budget), so anything after an await may never run. Timers, the registry entry,
     // the lock and the supervisor's grip on the server are settled before the first await.
     this.polling = false;
+    this.cancelPollStart();
     if (this.pollTimeout) clearTimeout(this.pollTimeout);
     if (this.replayInterval) { clearInterval(this.replayInterval); this.replayInterval = null; }
     if (this.restartSignalInterval) { clearInterval(this.restartSignalInterval); this.restartSignalInterval = null; }
@@ -1023,12 +1043,7 @@ export class TelegramLifeline {
     try { writePollActive(stateDir, this.polling); } catch { /* advisory */ }
 
     // Effective intent (freshness/dead-writer gated → null = no opinion → HOLD).
-    const rec = readPollIntent(stateDir);
-    const intentShouldPoll = effectivePollIntent(rec, {
-      nowMs: Date.now(),
-      maxStaleMs: 90_000,
-      serverPidAlive: rec ? pidAlive(rec.serverPid) : false,
-    });
+    const intentShouldPoll = this.currentPollIntent(stateDir);
 
     // Operator override (LOCAL config floor; Phase-0 telegramPolling:false survives
     // as force-mute; force-poll needs the explicit pollOverride).
@@ -1046,6 +1061,23 @@ export class TelegramLifeline {
     const POLL_START_DEBOUNCE_MS = 20_000;
     const startDebounceElapsed =
       this.pollIntentAwakeSinceMs > 0 && now - this.pollIntentAwakeSinceMs >= POLL_START_DEBOUNCE_MS;
+
+    const forcePoll = override === 'force-poll';
+    if (intentShouldPoll === false && !forcePoll) {
+      this.cancelPollStart();
+      this.bootPollHeldSinceMs = 0; // a real standby: the normal decision holds it
+    }
+    if (this.bootPollHeldSinceMs > 0) {
+      // The hold stays armed until a poll really starts, so an opinion that then
+      // disappears still reaches the bound.
+      const step = bootHoldStep({ heldSinceMs: this.bootPollHeldSinceMs, nowMs: now, intentShouldPoll });
+      if (step === 'wait') return;
+      if (step === 'expired') {
+        console.log('[Lifeline] [poll-follows-lease] no lease opinion after the boot hold, polling as a boot always did');
+        this.startPollAfterFlush(stateDir);
+        return;
+      }
+    }
 
     const action = decidePollAction({
       currentlyPolling: this.polling,
@@ -1069,19 +1101,52 @@ export class TelegramLifeline {
     // LIVE (dryRun:false) — apply. STOP is immediate; START flushes first.
     if (action === 'stop') {
       this.polling = false;
+      this.cancelPollStart();
       console.log('[Lifeline] [poll-follows-lease] stopping poll (lost the lease)');
     } else if (action === 'start') {
-      void this.flushStaleConnection().then(() => {
-        this.polling = true;
-        void this.poll();
-        console.log('[Lifeline] [poll-follows-lease] starting poll (became the awake holder)');
-      });
+      this.startPollAfterFlush(stateDir, forcePoll);
     }
     try { writePollActive(stateDir, this.polling); } catch { /* advisory */ }
   }
 
-  private async poll(): Promise<void> {
-    if (!this.polling) return;
+  private currentPollIntent(stateDir: string): boolean | null {
+    const rec = readPollIntent(stateDir);
+    return effectivePollIntent(rec, {
+      nowMs: Date.now(),
+      maxStaleMs: 90_000,
+      serverPidAlive: rec ? pidAlive(rec.serverPid) : false,
+    });
+  }
+
+  private cancelPollStart(): void {
+    this.pollStartGen += 1;
+    this.pollStartPending = false;
+  }
+
+  private startPollAfterFlush(stateDir: string, forcePoll = false): void {
+    if (this.pollStartPending || this.polling) return;
+    this.pollStartPending = true;
+    const gen = ++this.pollStartGen;
+    void this.flushStaleConnection().then(() => {
+      if (gen !== this.pollStartGen) return; // stopped or lost the lease meanwhile
+      this.pollStartPending = false;
+      if (!forcePoll && this.currentPollIntent(stateDir) === false) return; // the flush can take a minute
+      this.bootPollHeldSinceMs = 0;
+      this.polling = true;
+      this.pollLoopId += 1;
+      if (this.pollTimeout) clearTimeout(this.pollTimeout);
+      void this.poll();
+      console.log('[Lifeline] [poll-follows-lease] starting poll');
+      try { writePollActive(stateDir, true); } catch { /* advisory */ }
+    }).catch((err) => {
+      // @silent-fallback-ok: logged, and the next reconcile tries again.
+      if (gen === this.pollStartGen) this.pollStartPending = false;
+      console.warn(`[Lifeline] [poll-follows-lease] poll start failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+
+  private async poll(loopId: number = this.pollLoopId): Promise<void> {
+    if (!this.polling || loopId !== this.pollLoopId) return;
 
     try {
       const updates = await this.getUpdates();
@@ -1106,10 +1171,12 @@ export class TelegramLifeline {
       writePollOwnerLease(this.projectConfig.stateDir, this.config.token, process.pid, Date.now(),
         this.telegramOriginBoot ? 'instar-telegram-origin-v1' : undefined);
     } catch (err) {
+      if (loopId !== this.pollLoopId) return; // retired: its 401 or 409 belongs to nobody now
       const errMsg = err instanceof Error ? err.message : String(err);
       if (errMsg.includes('401') || errMsg.includes('Unauthorized')) {
         console.error('[Lifeline] FATAL: Bot token invalid. Stopping.');
         this.polling = false;
+        this.cancelPollStart();
         return;
       }
       // Handle 409 Conflict (multiple bot instances polling)
@@ -1157,7 +1224,8 @@ export class TelegramLifeline {
       }
     }
 
-    this.pollTimeout = setTimeout(() => this.poll(), this.pollBackoffMs);
+    if (loopId !== this.pollLoopId) return;
+    this.pollTimeout = setTimeout(() => this.poll(loopId), this.pollBackoffMs);
   }
 
   private async processUpdate(update: TelegramUpdate): Promise<void> {
