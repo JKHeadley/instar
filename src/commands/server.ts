@@ -6940,6 +6940,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     };
     sessionManager.on('sessionComplete', (session) => sessionManager.releaseMemorySession(session));
     await _memoryWiring.ready.catch((err) => console.error('[memory-privacy] boot probe failed; scoped conversations stay refused:', err));
+    await sessionManager.retireBoundedSessionsWhenPrivacyOff()
+      .then((names) => { if (names.length) console.log(`[memory-privacy] off: ended ${names.length} bounded session(s)`); })
+      .catch((err) => console.error('[memory-privacy] could not end bounded sessions:', err));
 
     // Native hook events (docs/specs/native-hook-events.md D4): reconcile the
     // reporter entries in .claude/settings.json to this machine's decision at
@@ -26192,6 +26195,25 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (deliverSeenFallback.has(messageId)) return false;
             deliverSeenFallback.add(messageId);
             return true;
+          },
+          // session-pool-no-silent-drop: mirrors every silent return in onAccepted below.
+          // A dashboard start needs no channel. Anything else needs the pool on and the
+          // channel it belongs to, or it would be acked here and lost.
+          refusal: {
+            canServe: (cmd) => {
+              if (parseDashboardCreatePayload(cmd.payload) && typeof cmd.messageId === 'string'
+                && cmd.messageId.startsWith(`dashboard-create:${cmd.session}:`)) return true;
+              if (_sessionPoolStage() === 'dark') return false;
+              return isSlackSessionKey(cmd.session) ? !!_slackInboundDispatch : !!telegram;
+            },
+            alreadyReceived: (messageId, session) => {
+              try {
+                if (_inboundQueue) return _inboundQueue.hasRemoteReceipt(session, messageId);
+              } catch { /* @silent-fallback-ok — unreadable receipts fall through to the next tier */ }
+              if (messageLedger) return messageLedger.get(messageId) !== null;
+              return deliverSeenFallback.has(messageId);
+            },
+            onCannotServe: (cmd) => console.warn(`  [session-pool] refused forwarded message for ${cmd.session}: this machine cannot serve it (stage ${_sessionPoolStage()})`),
           },
           // §3.4 sender re-validation, hardened by the §2.D wiring gate: a carried
           // envelope whose userId no longer resolves on THIS machine NACKs

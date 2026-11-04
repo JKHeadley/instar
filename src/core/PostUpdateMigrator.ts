@@ -8418,6 +8418,11 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Memory privacy section');
     }
+    if (!content.includes('An update never turns it on')) {
+      content += `\n\n- **Memory privacy is opt-in here**: off unless the owner sets \`memoryPrivacy.enabled: true\` on every machine of this agent, then restarts. An update never turns it on, so the agent runs as it always did. Tell an owner with several people that their facts are not separated until they opt in. A machine joined later does not inherit the setting, so it must be set there too.`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: memory privacy is opt-in for existing agents');
+    }
 
     // Replace a shipped legacy section before any missing capability bullets
     // are appended. An appended bullet at EOF would otherwise become part of
@@ -14781,6 +14786,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     // sections preserve narrative ordering in the shadow.
     const markers = [
       '**Memory privacy**',
+      'An update never turns it on',
       '### Feature switches apply their setting (read `effective` before saying a feature is on)',
       '### Telegram message origin',
       // message-origin-all-platforms: server-side and framework-neutral (app + Slack recording).
@@ -16273,6 +16279,19 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     }
 
     let patched = false;
+
+    // Memory privacy never restricts an agent by update. Record that as a choice, and
+    // add only a missing value: an owner's opt-in stays, as do their people.
+    {
+      const memoryPrivacy = (config.memoryPrivacy && typeof config.memoryPrivacy === 'object')
+        ? config.memoryPrivacy as Record<string, unknown> : {};
+      if (memoryPrivacy.enabled === undefined) {
+        memoryPrivacy.enabled = false;
+        config.memoryPrivacy = memoryPrivacy;
+        patched = true;
+        result.upgraded.push('config.json: memory privacy stays off for this existing agent');
+      }
+    }
 
     // Account-specific feedback triage is dark until the staged live-evidence
     // route is enabled. Add only a missing value; never rewrite operator choice.

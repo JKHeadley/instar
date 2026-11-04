@@ -13,6 +13,53 @@ function deliver(over: Partial<Extract<MeshCommand, { type: 'deliverMessage' }>>
   return { type: 'deliverMessage', session: 's1', messageId: 'm1', payload: {}, ownershipEpoch: 5, ...over };
 }
 
+describe('session-pool-no-silent-drop', () => {
+  it('a machine that cannot serve refuses as stale ownership, records nothing and hands nothing on', () => {
+    const recordReceipt = vi.fn(() => true);
+    const onAccepted = vi.fn();
+    const onCannotServe = vi.fn();
+    const h = createDeliverMessageHandler({ ownerEpochOf: () => 5, recordReceipt, onAccepted, refusal: { canServe: () => false, alreadyReceived: () => false, onCannotServe } });
+    expect(h(deliver(), 'ROUTER', ENV)).toEqual({ messageId: 'm1', accepted: 'stale-ownership' });
+    expect(recordReceipt).not.toHaveBeenCalled();
+    expect(onAccepted).not.toHaveBeenCalled();
+    expect(onCannotServe).toHaveBeenCalledOnce();
+  });
+  it('after a refusal the same message is accepted once the machine can serve: the refusal left no receipt', () => {
+    let can = false;
+    const seen = new Set<string>();
+    const h = createDeliverMessageHandler({ ownerEpochOf: () => 5, recordReceipt: (id) => (seen.has(id) ? false : (seen.add(id), true)), refusal: { canServe: () => can, alreadyReceived: () => false } });
+    expect(h(deliver(), 'ROUTER', ENV)).toMatchObject({ accepted: 'stale-ownership' });
+    can = true;
+    expect(h(deliver(), 'ROUTER', ENV)).toMatchObject({ accepted: 'queued' });
+  });
+  it('a machine that can serve behaves as before, and an absent check means it can', () => {
+    expect(createDeliverMessageHandler({ ownerEpochOf: () => 5, recordReceipt: () => true, refusal: { canServe: () => true, alreadyReceived: () => false } })(deliver(), 'ROUTER', ENV)).toMatchObject({ accepted: 'queued' });
+    expect(createDeliverMessageHandler({ ownerEpochOf: () => 5, recordReceipt: () => true })(deliver(), 'ROUTER', ENV)).toMatchObject({ accepted: 'queued' });
+  });
+  it('a throwing trace does not change the answer', () => {
+    const h = createDeliverMessageHandler({ ownerEpochOf: () => 5, recordReceipt: () => true, refusal: { canServe: () => false, alreadyReceived: () => false, onCannotServe: () => { throw new Error('x'); } } });
+    expect(h(deliver(), 'ROUTER', ENV)).toMatchObject({ accepted: 'stale-ownership' });
+  });
+  it('processed, ack lost, then the machine can no longer serve: the retry is a duplicate, not handed back', () => {
+    let can = true;
+    const seen = new Set<string>();
+    const h = createDeliverMessageHandler({
+      ownerEpochOf: () => 5,
+      recordReceipt: (id) => (seen.has(id) ? false : (seen.add(id), true)),
+      refusal: { canServe: () => can, alreadyReceived: (id) => seen.has(id) },
+    });
+    expect(h(deliver(), 'ROUTER', ENV)).toMatchObject({ accepted: 'queued' });
+    can = false;
+    expect(h(deliver(), 'ROUTER', ENV)).toMatchObject({ accepted: 'duplicate' });
+    expect(h(deliver({ messageId: 'm2' }), 'ROUTER', ENV)).toMatchObject({ accepted: 'stale-ownership' });
+  });
+  it('a stale epoch still answers first', () => {
+    const canServe = vi.fn(() => false);
+    createDeliverMessageHandler({ ownerEpochOf: () => 9, recordReceipt: () => true, refusal: { canServe, alreadyReceived: () => false } })(deliver(), 'ROUTER', ENV);
+    expect(canServe).not.toHaveBeenCalled();
+  });
+});
+
 describe('createDeliverMessageHandler (§L4)', () => {
   it('first receipt → queued, and onAccepted fires once', () => {
     const onAccepted = vi.fn();
