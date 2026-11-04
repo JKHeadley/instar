@@ -1,17 +1,17 @@
-# False stopped-session notices
+# False stopped-session notices now self-recover
 
-## Outcome
+## What Changed
 
-Slack and Telegram conversations no longer get a stopped-session warning while a replacement is starting, a session is alive, or the agent has replied. A dead unanswered session is restarted automatically; one plain failure message is sent only when that recovery fails.
-
-## Cause
-
-On Indra, a failed resume retained the registered name while the successful fresh fallback generated a second name. The fallback answered Justin, but both health watchers followed the dead registered name. PresenceProxy also treated the first real reply as a brief acknowledgement and kept its timer running.
-
-## Fix
-
-The fallback now preserves the registered name. Both watchers check conversation state before death claims; SessionMonitor owns self-recovery and the single failure notice. Slack thread routing and foreign machine ownership use their actual routing and ownership records.
+A failed session resume can now start its fresh replacement under the name already registered to the conversation. Slack and Telegram health checks use current session, startup, reply, and ownership evidence before claiming a conversation stopped. A genuinely dead unanswered conversation gets one automatic fresh restart; only a failed recovery sends one plain failure notice. Slack thread recovery reads the correct thread history.
 
 ## Evidence
 
-Indra's read-only server and Slack logs establish the original ordering. The fallback-name regression failed before the fix and passed after it. Monitor and proxy tests cover live, starting, replied, truly dead, and foreign-owned conversations. Live Slack canary and post-update Indra observation are required before the production outcome is claimed.
+Read-only Indra logs showed the old registered session dying while a separately named fallback answered. The fallback-name regression failed before the fix and passed afterward. Focused monitor, proxy, routing, and recovery tests passed; a live Slack API contract suite passed on the demo workspace. The full throwaway-agent Slack restart and death canary, and post-update observation on Indra, remain required to confirm the production result.
+
+## What to Tell Your User
+
+If your session stops while you are waiting, the agent will try to resume the conversation itself. You will hear about it only if that recovery fails. You no longer need to reply with a session-management command.
+
+## Summary of New Capabilities
+
+Conversations recover automatically from a dead session and avoid false stopped notices while a replacement is answering.
