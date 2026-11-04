@@ -14,7 +14,8 @@ export function el(tag, attrs = {}, ...kids) {
     else if (k.startsWith('on') && typeof v === 'function') n.addEventListener(k.slice(2), v);
     else n.setAttribute(k, v === true ? '' : String(v));
   }
-  for (const kid of kids.flat()) if (kid != null && kid !== false) n.append(kid);
+  // Any depth: an array left inside the kids would otherwise be stringified into the page ("[object HTMLParagraphElement]").
+  for (const kid of kids.flat(Infinity)) if (kid != null && kid !== false) n.append(kid);
   return n;
 }
 
@@ -204,7 +205,7 @@ export function actionButton({ label, kind = 'primary', confirm, reason, run, do
 }
 
 /** replaceChildren that skips null/false (a bare null would render as the text "null"). */
-export function setKids(node, ...kids) { node.replaceChildren(...kids.flat().filter((k) => k != null && k !== false)); }
+export function setKids(node, ...kids) { node.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false)); }
 
 // ── PIN sheet (00-patterns.md §4: one look, per-action adapters) ───────────
 // adapter 'session': POST /dashboard/unlock → operator-session token, held in page

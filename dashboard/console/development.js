@@ -10,7 +10,7 @@
 // server requires it. Every value reaches the DOM through textContent.
 
 import {
-  buildShipping, buildPace, buildFeedback, developmentHeadline, maintainerMode, authorityCard, holdWords, verifyWords, rollbackWords,
+  buildShipping, buildPace, buildFeedback, developmentHeadline, stoppedLead, foldFromHash, maintainerMode, authorityCard, holdWords, verifyWords, rollbackWords,
   readinessAuthorityRequest, triageAuthorityRequest, commitRequest, authorityResultWords, commitResultWords, newDecisionRef, PACE_METRICS, DEV_TOOLS_KEY,
 } from './development-model.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin } from './ui.js';
@@ -19,8 +19,8 @@ import { legacyHref } from './nav-model.js';
 const EYEBROW = 'Work · Development';
 const TIMEOUT_MS = 5000;
 const PROBE_FRESH_MS = 5 * 60000;
-// The open fold, the Pace controls and any limits the operator typed, kept across refreshes (F9: a poll never rebuilds typed input).
-const view = { open: null, days: 14, person: 'team', metric: 'merges', day: null, envelope: { readiness: null, triage: null } };
+// The open fold, a link's section still to scroll to, the Pace controls and any limits the operator typed, kept across refreshes (F9: a poll never rebuilds typed input).
+const view = { open: null, scrollTo: null, days: 14, person: 'team', metric: 'merges', day: null, envelope: { readiness: null, triage: null } };
 let last = null;
 let probe = null; // { at, promise } — the maintainer-mode reads, once per page load
 
@@ -90,9 +90,13 @@ export function groupExtras(g, { get }) {
 
 // ── the page ─────────────────────────────────────────────────────────────────
 export async function renderDevelopment(main, ctx) {
-  if (!main.querySelector('.dev-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading development' })));
-  const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
-  if (want && !view.open) view.open = want;
+  // Each navigation gets a new <main>, so no page yet means someone just arrived: a `?s=` link wins over the
+  // remembered fold then. A 30-second refresh keeps the page, so it never overrides what the operator opened or closed.
+  if (!main.querySelector('.dev-page')) {
+    setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading development' })));
+    const want = foldFromHash(location.hash);
+    if (want) { view.open = want; view.scrollTo = want; }
+  }
   const [watcher, verify, release, readiness, triageSummary, triageProposal, execute, queue, drain, pace] = await Promise.all([
     read('/green-pr-automerge'), read('/local-verify'), read('/release-readiness'),
     read('/feedback-factory/readiness-authorities/proposal'), read('/feedback-factory/triage/summary'), read('/feedback-factory/triage/authority/proposal'),
@@ -117,13 +121,14 @@ function paint() {
   const todos = feedback.todos;
   const first = todos[0] || null;
   const lead = first ? todoCard(first, deps, true) : null;
+  const stopped = stoppedCard(shipping, deps);
   const moreLine = todos.length > 1 ? el('button', { class: 'link-btn older-line', type: 'button', text: `${todos.length - 1} more ${todos.length === 2 ? 'thing needs' : 'things need'} you ›`, onclick: () => openMore(todos.slice(1), deps) }) : null;
 
   // First arrival opens the section with the worst news (Shipping otherwise); 'none' is the operator's own collapse.
   if (!view.open) view.open = feedback.tone === 'attn' || feedback.state === 'cant-tell' ? 'feedback' : 'shipping';
   setKids(main, el('div', { class: 'dev-page' },
     pageHead({ eyebrow: EYEBROW, headline: h.text, sub: h.sub, tone: h.tone }),
-    lead, moreLine,
+    stopped, lead, moreLine,
     el('div', { class: 'page-sections' },
       fold({ id: 'shipping', title: 'Shipping', line: shipping.line, tone: shipping.tone, body: () => shippingBody(shipping, deps) }),
       fold({ id: 'feedback', title: 'Feedback', line: feedback.line, tone: feedback.tone, body: () => feedbackBody(feedback, deps) }),
@@ -131,8 +136,12 @@ function paint() {
     ),
     el('p', { class: 'foot-note' }, el('a', { href: legacyHref('pr-pipeline'), text: 'Legacy PR pipeline' }), document.createTextNode(' · '), el('a', { href: legacyHref('feedback-drain'), text: 'feedback drain' }), document.createTextNode(' · '), el('a', { href: legacyHref('throughput'), text: 'throughput' })),
   ));
-  const sec = main.querySelector(`#sec-${view.open}`);
-  if (sec && new URLSearchParams((location.hash.split('?')[1] || '')).get('s') === view.open) sec.scrollIntoView({ block: 'start' });
+  // Once per arrival: a refresh or a fold tap must not pull the page back to the linked section.
+  if (view.scrollTo) {
+    const sec = main.querySelector(`#sec-${view.scrollTo}`);
+    view.scrollTo = null;
+    if (sec) sec.scrollIntoView({ block: 'start' });
+  }
 }
 
 /** One of the three sections: a one-line summary that opens in place; one open at a time. */
@@ -158,6 +167,17 @@ function toneLine(l, extra) {
 }
 function block(title, ...kids) { return el('section', { class: 'sheet-block' }, el('h3', { class: 'eyebrow', text: title }), ...kids); }
 function sub(title, ...kids) { return el('div', { class: 'dev-sub' }, el('h3', { class: 'eyebrow sub-label', text: title }), ...kids); }
+
+/** The one way back on: the lead card and the Shipping fold both use it. */
+function backOnButton(s, deps, primary = false) {
+  return el('button', { class: primary ? 'btn-primary btn-inline' : 'btn-quiet', type: 'button', text: 'Turn auto-merge back on', onclick: () => enableAutoMerge(s, deps) });
+}
+/** Auto-merging is stopped: the first thing on the page, whichever fold is open. */
+function stoppedCard(s, deps) {
+  const c = stoppedLead(s);
+  if (!c) return null;
+  return el('div', { class: 'need-card stopped-lead' }, el('span', { class: 'need-title', text: c.title }), el('span', { class: 'need-sub', text: c.detail }), el('span', { class: 'need-sub', text: c.why }), backOnButton(s, deps, true));
+}
 
 // ── to-dos (Feedback approvals and links) ────────────────────────────────────
 function todoCard(todo, deps, lead = false) {
@@ -263,11 +283,8 @@ function shippingBody(s, deps) {
   const rows = s.rows.map((r) => ({ ...r, sub: r.sub, end: r.end }));
   const list = section({ id: 'prs', title: 'Pull requests', rows, empty: s.headline, onRow: (r) => openPr(r, s, deps) });
   const foot = el('div', { class: 'sheet-actions dev-foot' });
-  if (s.stopped) {
-    const back = el('button', { class: 'btn-quiet', type: 'button', text: 'Turn auto-merge back on' });
-    back.addEventListener('click', () => enableAutoMerge(s, deps));
-    foot.append(back);
-  } else {
+  if (s.stopped) foot.append(backOnButton(s, deps));
+  else {
     const stop = el('button', { class: 'btn-quiet btn-danger-outline', type: 'button', text: 'Stop auto-merging' });
     stop.addEventListener('click', () => stopAutoMerge(s, deps));
     foot.append(stop);
@@ -279,7 +296,8 @@ function shippingBody(s, deps) {
     release, toneLine(s.watcher),
     s.partial ? note('Partial: one of Shipping’s sources did not answer; its tile says why. The others are real.') : null,
     s.repoKnown ? null : note('GitHub links are off: the repository name comes from the Pace read, which did not answer.'),
-    list, foot,
+    // While stopped the way back on sits above the list, not under a long list of pull requests.
+    s.stopped ? [foot, list] : [list, foot],
   ];
 }
 

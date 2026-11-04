@@ -24,6 +24,7 @@ export const WATCHER_CADENCE_MS = 600000;                  // GreenPrAutoMerger 
 export const VERIFY_MINUTES = 45;                           // a full local verify takes about this long
 export const ARMED_OVERDUE_MS = 24 * 3600000;               // the watcher's own armed-confirm ceiling
 export const STALL_TICKS = 6;                               // readiness ticks in a row with no usable answer (about 3 h)
+export const DEV_FOLDS = ['shipping', 'feedback', 'pace'];
 export const PACE_WINDOWS = [7, 14, 30];
 export const PACE_PEOPLE = [{ key: 'team', label: 'Everyone' }, { key: 'codey', label: 'Codey' }, { key: 'echo', label: 'Echo' }, { key: 'other', label: 'Others' }];
 export const PACE_METRICS = [
@@ -183,12 +184,34 @@ export function buildShipping({ watcher, verify, release } = {}, now = Date.now(
   }
   const armedPrs = w && Array.isArray(w.armed) ? w.armed.map((a) => a.pr) : [];
   return {
-    state: 'ok', headline, tone, tiles, rows, watcher: wl, release: releaseLine(release, now),
+    state: 'ok', headline, tone: wl && wl.stopped && tone !== 'bad' ? 'attn' : tone, tiles, rows, moving, watcher: wl, release: releaseLine(release, now),
     partial: !w || !v, armedPrs, stopped: Boolean(wl && wl.stopped), rollbackLatches: (w && w.gate && Array.isArray(w.gate.rollback)) ? w.gate.rollback : [],
-    line: !w ? 'Shipping: can’t tell' : `Shipping: ${moving === 0 ? 'nothing on the way' : `${moving} on the way`}${needs ? `, ${needs} need${needs === 1 ? 's' : ''} you` : ''}${stuck ? `, ${needs ? '' : ''}${stuck} stuck` : ''}`,
+    line: !w ? 'Shipping: can’t tell' : `Shipping: ${wl && wl.stopped ? 'auto-merge stopped, ' : ''}${moving === 0 ? 'nothing on the way' : `${moving} on the way`}${needs ? `, ${needs} need${needs === 1 ? 's' : ''} you` : ''}${stuck ? `, ${needs ? '' : ''}${stuck} stuck` : ''}`,
     repoKnown: Boolean(repo),
   };
 }
+/**
+ * The lead card while auto-merging is stopped, or null when it is not. It is the first
+ * thing on the page because the stop is invisible otherwise: nothing merges, and the
+ * Shipping fold that used to be its only sign is often closed.
+ */
+export function stoppedLead(shipping) {
+  if (!shipping || !shipping.stopped) return null;
+  const n = shipping.moving || 0;
+  return {
+    title: 'Automatic merging is stopped',
+    detail: `No pull request merges on its own until it is back on.${n ? ` ${plural(n, 'pull request is', 'pull requests are')} on the way.` : ''}`,
+    why: shipping.watcher.text,
+    button: 'Turn auto-merge back on',
+  };
+}
+
+/** The section a `?s=` link names, from the location hash; null for none or an unknown one. */
+export function foldFromHash(hash) {
+  const s = new URLSearchParams(String(hash || '').split('?')[1] || '').get('s');
+  return DEV_FOLDS.includes(s) ? s : null;
+}
+
 function ordinal(n) { return n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : `${n}th`; }
 
 /** Words for the hold result (never a blanket "held": the server says whether an armed merge was disarmed). */
@@ -545,11 +568,14 @@ export function commitResultWords(status, data) {
 // ── The combined page ────────────────────────────────────────────────────────
 /** The page headline: the worst state first, coverage stated. */
 export function developmentHeadline({ shipping, feedback, pace } = {}) {
-  if (feedback && feedback.todos && feedback.todos.length) {
-    const n = feedback.todos.length + (shipping && shipping.rows ? shipping.rows.filter((r) => r.group === 'needs').length : 0);
-    return { text: n === 1 ? 'One thing needs you.' : `${n} things need you.`, tone: 'attn', sub: feedback.todos[0].sentence };
-  }
+  const stopped = Boolean(shipping && shipping.stopped);
   const needs = shipping && shipping.rows ? shipping.rows.filter((r) => r.group === 'needs') : [];
+  if (feedback && feedback.todos && feedback.todos.length) {
+    const n = feedback.todos.length + needs.length + (stopped ? 1 : 0);
+    return { text: n === 1 ? 'One thing needs you.' : `${n} things need you.`, tone: 'attn', sub: stopped ? 'Automatic merging is stopped.' : feedback.todos[0].sentence };
+  }
+  // Stopped is never "Nothing here needs you": it comes before every calmer reading below.
+  if (stopped) return { text: needs.length ? `${needs.length + 1} things need you.` : 'Automatic merging is stopped.', tone: 'attn', sub: needs.length ? 'Automatic merging is stopped.' : shipping.line };
   if (needs.length) return { text: needs.length === 1 ? 'One pull request needs your approval on GitHub.' : `${needs.length} pull requests need your approval on GitHub.`, tone: 'attn', sub: shipping.line };
   if (feedback && feedback.state === 'cant-tell') return { text: 'Can’t tell whether anything needs you.', tone: 'muted', sub: feedback.headline };
   const stuck = shipping && shipping.rows ? shipping.rows.filter((r) => r.group === 'stuck').length : 0;
