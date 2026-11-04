@@ -2,7 +2,7 @@
 
 ## What this is
 
-Instar can (once proven, and only when an owner turns it on) let you open a locked Mac from your phone: you see the lock screen, type your Mac password into a box, and the Mac relocks when you are done. Before any Mac is allowed to do this, we run a proof on a spare Mac with a throwaway user. On 4 November that proof, run on the Mac Mini, found three real problems. None of them could leak a password; each one made Instar look fine while it was actually stuck.
+Instar can (once proven, and only when an owner turns it on) let you open a locked Mac from your phone: you see the lock screen, type your Mac password into a box, and the Mac relocks when you are done. Before any Mac is allowed to do this, we run a proof on a spare Mac with a throwaway user. On 4 November that proof, run on the Mac Mini, found four real problems. None of them could leak a password; each one made Instar look fine while it was actually stuck.
 
 ## What was wrong, and what changes
 
@@ -11,6 +11,8 @@ Instar can (once proven, and only when an owner turns it on) let you open a lock
 **2. Status said "ready" when the password box could not work.** The status page said everything was fine while the box was impossible, for two reasons: the secure tunnel was down (Cloudflare had rate-limited it), and this install did not have the kept helper that password typing needs. The page simply hid the box. Now the status says, for the app and for the browser separately, whether a password could be typed once the Mac is locked, and if not, why: for example "tunnel not active" or "kept helper required". The viewer shows that sentence instead of a blank space. And when the tunnel comes back, any open viewer is told straight away, so the box appears without reconnecting.
 
 **3. Agents without Telegram never got a dashboard PIN.** The PIN is what unlocks the dashboard's owner controls. Instar only created one while setting up Telegram, so an agent without Telegram could never use those controls. Now every agent gets a PIN at start if it has none. An agent that already has a PIN keeps it exactly as it is, even if its secret store is briefly unreadable. The PIN is no longer printed in the start-up log.
+
+**4. Every password was refused, whatever it was.** Before typing a password, the helper checks that the Mac's own login screen is the thing listening for secret keystrokes. It looked for that answer in the wrong place in macOS's device registry (it asked for a property as if it were a folder), always got nothing back, and so refused every password with "lock screen not confirmed". It now asks in the right place, and the check itself is unchanged: it still refuses unless the login screen really holds the keyboard. The viewer now has a plain sentence for every reason a password can be refused, and the agent's logs record the reason (only the reason word, never the password).
 
 ## What stays the same
 

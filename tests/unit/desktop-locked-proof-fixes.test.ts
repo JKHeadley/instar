@@ -145,3 +145,36 @@ describe('persistDashboardPin', () => {
     expect(opened).toBe(false);
   });
 });
+
+describe('secure-input owner registry path', () => {
+  const swift = fs.readFileSync(path.resolve('src/native/remote-desktop/macos/InstarDesktopHost.swift'), 'utf8');
+
+  it('opens the IOResources entry and reads IOConsoleUsers as its property', () => {
+    // IOConsoleUsers is a property, not an entry: the old path returned no entry,
+    // read as "unreadable", and refused every password with shield-not-confirmed.
+    expect(swift).toContain('static let secureInputRegistryPath = "IOService:/IOResources"');
+    expect(swift).not.toContain('"IOService:/IOResources/IOConsoleUsers"');
+    expect(swift).toMatch(/IORegistryEntryFromPath\(kIOMainPortDefault, secureInputRegistryPath\)/);
+    expect(swift).toMatch(/IORegistryEntryCreateCFProperty\(root, "IOConsoleUsers" as CFString/);
+  });
+});
+
+describe('viewer has words for every password refusal', () => {
+  it('covers each word the helper and the target can send', () => {
+    const viewer = fs.readFileSync(path.resolve('dashboard/desktop.js'), 'utf8');
+    const swift = fs.readFileSync(path.resolve('src/native/remote-desktop/macos/InstarDesktopHost.swift'), 'utf8');
+    const start = swift.indexOf('static func reserve(');
+    const reserve = swift.slice(start, swift.indexOf('\n    }\n', start));
+    const words = new Set<string>([
+      ...[...swift.matchAll(/HostError\.refused\("([a-z-]+)"\)/g)].map(m => m[1]),
+      ...[...reserve.matchAll(/return "([a-z-]+)"/g)].map(m => m[1]),
+      // Target-side words (DirectDesktopAccess / DesktopLockedController).
+      'grant-ended', 'busy', 'state-unknown', 'relock-pending', 'relock-pending-unconfirmed', 'relock-failed',
+      'relock-failed-producer-alive', 'not-locked',
+    ]);
+    expect(words.has('shield-not-confirmed')).toBe(true);
+    expect(words.size).toBeGreaterThan(15);
+    const missing = [...words].filter(word => !viewer.includes(`'${word}':`) && !viewer.includes(`\n    ${word}:`) && !viewer.includes(` ${word}:`));
+    expect(missing).toEqual([]);
+  });
+});

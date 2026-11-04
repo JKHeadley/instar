@@ -441,7 +441,25 @@ function lockedMessage(reason) {
     'retained-helper-required': 'Password entry needs Instar\'s kept desktop helper on this Mac, and this install does not have one.',
     'own-input-grant-required': 'Password entry needs macOS Accessibility permission for Instar\'s own desktop helper on this Mac.',
     'unsupported-macos': 'Password entry is not available on this Mac\'s macOS version.',
-    'helper-unprobed': 'This Mac\'s desktop helper has not answered yet, so password entry is not ready.' }[reason]
+    'helper-unprobed': 'This Mac\'s desktop helper has not answered yet, so password entry is not ready.',
+    'shield-not-confirmed': 'This Mac\'s lock screen is not ready for a password right now. Wake the screen and try again.',
+    'not-at-the-lock-screen': 'This Mac is not at its lock screen, so the password was not typed.',
+    'not-locked': 'This Mac is not locked, so there is nothing to unlock.',
+    'not-available': 'Password entry is not available in this session.',
+    'grant-ended': 'This remote session has ended. Start a new one to try again.',
+    'repeat': 'That password was already sent. Type it again to retry.',
+    'too-long': 'That password is too long to type here.',
+    'character-not-typable': 'That password has a character this Mac\'s keyboard layout cannot type from here.',
+    'state-unavailable': 'This Mac could not read its relock record. Try again in a moment.',
+    'relock-not-owed': 'This Mac is not ready for a password in this session. Start a new session.',
+    relocking: 'This Mac is relocking now. Try again in a couple of minutes.',
+    'relock-pending-unconfirmed': 'This Mac is finishing a relock. Try again in a couple of minutes.',
+    'relock-failed': 'This Mac could not confirm its last relock. Check it before trying again.',
+    'relock-failed-producer-alive': 'This Mac could not confirm its last relock. Check it before trying again.',
+    'guard-not-alive': 'This Mac\'s relock guard is not running, so password entry is paused. Try again shortly.',
+    disabled: 'Locked-screen access is turned off on this Mac.',
+    busy: 'This Mac is busy with another password. Try again in a moment.',
+    'state-unknown': 'This Mac\'s lock state is unclear right now. Try again in a moment.' }[reason]
     ?? 'This Mac did not accept that. Try again.';
 }
 async function receiveControl(record) {

@@ -1198,8 +1198,13 @@ extension InstarDesktopHost {
     }
 
     /// `loginwindow`, `other`, `none` or `unreadable`.
+    /// IOConsoleUsers is a PROPERTY of the IOResources entry, not an entry of
+    /// its own: opening it as a child path of IOResources returns no entry, which
+    /// read as "unreadable" on every Mac and refused every password.
+    static let secureInputRegistryPath = "IOService:/IOResources"
+
     static func secureInputOwner() -> String {
-        let root = IORegistryEntryFromPath(kIOMainPortDefault, "IOService:/IOResources/IOConsoleUsers")
+        let root = IORegistryEntryFromPath(kIOMainPortDefault, secureInputRegistryPath)
         defer { IOObjectRelease(root) }
         guard root != 0, let users = IORegistryEntryCreateCFProperty(root, "IOConsoleUsers" as CFString,
             kCFAllocatorDefault, 0)?.takeRetainedValue() as? [[String: Any]] else { return "unreadable" }

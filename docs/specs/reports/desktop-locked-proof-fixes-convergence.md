@@ -51,6 +51,10 @@ Tier 2 (security-sensitive: the helper that types a password, and the dashboard 
 - Install wizard's `ensureViewingPin` keeps its own string-only rule.
 - `fix dashboard` still writes a newly generated PIN in plain text (pre-existing).
 
+## Post-convergence addition
+
+Section 4 (the secure-input owner registry path, the viewer's refusal sentences and server-side refusal logging) was added after round 2 at the coordinator's request, from a live finding on the Mac Mini. It is a one-line native path correction plus logging and copy; it was reviewed by an independent second-pass reviewer rather than a new convergence round.
+
 ## Convergence Verdict
 
 Converged at round 2. The final round found nothing that changes what gets built; four items left behind. Spec is ready for approval.

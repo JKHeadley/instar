@@ -59,6 +59,10 @@ The locked-Mac Remote Desktop proof on the Mac Mini (2026-11-04, topic 134088) m
 - An agent that already has a PIN is unchanged. A Telegram agent still gets its PIN in the dashboard broadcast, which reads `config.dashboardPin` after this runs.
 - Mobile-Complete: the owner of an agent without Telegram gets the PIN from the agent itself, in whatever conversation it has (the Instar app, Slack, iMessage): the CLAUDE.md template already tells every agent to read the PIN from its config and give it when the owner wants the dashboard. Before this change such an agent had no PIN at all, so no phone path could exist; this adds the credential the existing phone paths hand over. No new notice is added.
 
+### 4. The secure-input owner read (added after convergence, found live on the Mini 13:33-13:41)
+
+`secureInputOwner()` opened `IOService:/IOResources/IOConsoleUsers`, but `IOConsoleUsers` is a property of the `IOResources` entry, not an entry. `IORegistryEntryFromPath` returned 0, so the owner always read `unreadable`, `secureTargetHolds()` was always false, and `secretType` refused every password with `shield-not-confirmed` before reserving an attempt (path from #2564). The helper now opens `IOService:/IOResources` (a named constant) and keeps the `IOConsoleUsers` property read. The viewer gains a plain sentence for every refusal word the helper and the target can send (it showed only the fallback for `shield-not-confirmed`), and the target records each password refusal word server-side: a `[desktop] password refused on <machine>: <word>` warning and a `secret-refused` row in the screen-free desktop access audit (the word only; anything not matching a word is recorded as `other`).
+
 ### Agent awareness
 
 The `remoteDesktopBullet` in `generateClaudeMd` (rewritten by `PostUpdateMigrator` whenever it differs) and the CapabilityIndex desktop entry name `passwordReadiness`.
@@ -72,6 +76,7 @@ The `remoteDesktopBullet` in `generateClaudeMd` (rewritten by `PostUpdateMigrato
 | Which reason the browser box reports (`browser-box-off` / `tunnel-not-active` / `tunnel-not-first-tier`) | `invariant` | Enumerable from two booleans and a setting. It gates nothing new: the target already refused on the first-tier check; this only names it. |
 | Password readiness in status and in the viewer | `invariant` | Derived from the existing `passwordRefusal`; no new authority. The target's refusal at `secretType` is unchanged and remains the authority. |
 | Generate a dashboard PIN when none is set | `invariant` | Unset or empty only; any present value (including an unresolved vault ref) is kept. A policy change for agents that had none: named in the release note's What to Tell Your User. |
+| Which registry entry holds the secure-input owner | `invariant` | A fixed IOKit path; a read failure still reads `unreadable` and refuses, as before. |
 | Where a new PIN is stored | `invariant` | The vault when the agent has one, else config.json; a failed vault write falls back to config.json. |
 
 ## Verify the State, Not Its Symbol

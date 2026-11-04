@@ -13,6 +13,8 @@ Tier 2 (security-sensitive surroundings: the helper that types a Mac password, a
 2. `DesktopLockedController.ts`: `browserBoxRefusal()` (`browser-box-off` / `tunnel-not-active` / `tunnel-not-first-tier`), `passwordReadiness(probe)`, and `status()` gains `passwordReadiness`, `browserBoxShown`, `browserBoxRefusal`. `DirectDesktopAccess.ts`: state records carry `boxRefusal`, are recomputed after each grant probe and on tunnel transitions and sent when changed; `readinessProbe()` serves status from a 30 s cached host probe or one shared fresh `host.probe()`. `TunnelManager.ts` emits `lifecycle`; `AgentServer.ts` wires the status lever, the `tunnelActive` dep, and the listener (removed in `stop()`). Viewer (`dashboard/desktop.{js,html,css}`) shows the reason instead of a hidden box.
 3. `dashboardPin.ts`: `ensureDashboardPin` and `persistDashboardPin` (vault when present). `server.ts` calls them at boot outside the Telegram branch and no longer logs the PIN; the two file readers resolve a vault reference via `pickDashboardPin`. `PostUpdateMigrator.ts` uses the same helpers and stops logging the PIN.
 
+4. (Added after convergence, found live on the Mini.) `InstarDesktopHost.swift` `secureInputOwner()` opened `IOService:/IOResources/IOConsoleUsers`, which is a property, not a registry entry, so it always read `unreadable` and `secretType` refused every password with `shield-not-confirmed`. It now opens `IOService:/IOResources` and reads the `IOConsoleUsers` property. `dashboard/desktop.js` has a sentence for every refusal word; `DirectDesktopAccess` logs each refusal word and writes a `secret-refused` row to `DesktopAccessAudit` (word only, sanitized).
+
 Also: agent-awareness text (`templates.ts` remote desktop bullet, `CapabilityIndex.ts`), and `tests/vitest-setup.ts` allowlists three stripped test opt-in variables. About 20 files, ~600 lines; 2 review rounds; first commit attempt pending.
 
 ## Decision-point inventory
@@ -26,6 +28,8 @@ Also: agent-awareness text (`templates.ts` remote desktop bullet, `CapabilityInd
 ---
 
 ## 1. Over-block
+
+The secure-input fix removes an over-block: every password was refused at `shield-not-confirmed`. After it, `secureTargetHolds()` is true only when loginwindow really holds secure input, as designed; a non-loginwindow owner still refuses.
 
 The browser-box allow/refuse outcome is unchanged (`browserBoxShown` is the same predicate). The viewer now hides the box when `boxRefusal` is set; every such case was already refused at `secretType`, so no working path is hidden. A probe up to 30 s stale could show a refusal for a helper grant granted in the last 30 s in status only; the viewer path recomputes after each grant probe (500 ms).
 
@@ -53,6 +57,8 @@ No new static heuristic at a competing-signals decision point. All classified `i
 - `PostUpdateMigrator` and server boot can both mint; whichever runs first wins and the other sees a set value.
 
 ## 6. External surfaces
+
+- The desktop access audit gains a `secret-refused` kind with a `reason` word (sanitized to `[a-z0-9-]`, else `other`); still screen-free and keystroke-free.
 
 - `GET /desktop/locked/status` gains three fields (Bearer-only; fixed words). Error codes from state-op change from `mac-desktop-host-unavailable` to the named form; no caller matched the old string for state-op.
 - The viewer gets a reason note. Older viewers ignore `boxRefusal`.
@@ -90,10 +96,13 @@ Clear to ship after the second-pass review. Review changed the design twice (sid
 
 Concur with the review: stderr is read only for state-op, capped at 256 bytes, word allowlisted, exit code clamped; ensureDirectory makes only missing components 0700 and requires the root to be a real directory; a set `boxRefusal` hides the box, clears typed text and shows the plain reason; readinessProbe shares one in-flight probe and returns null on failure; an existing PIN (including a vault reference) is never replaced, a new one goes to the vault when present, and no log prints it. Noted: `lastFailure` is never reset, harmless because the helper exits after every state-op.
 
+**Delta review (item 4, secure-input path + refusal logging):** a second independent subagent read the delta and concurred: the fix only changes which registry entry is opened; `secureInputOwner()` still returns `loginwindow` only for that exact process and `secureTargetHolds()` is still checked before and between keystrokes; only the sanitized refusal word is logged or audited; viewer sentences match their words (a re-sent password gets a new sequence, so "type it again" is accurate for `repeat`).
+
 ---
 
 ## Evidence pointers
 
+- Secure-input owner, live on this Studio: the old path's probe reported `secureInputOwner: unreadable`; the fixed build reports `none`. On the Mini (coordinator): resolves to loginwindow as the proof user and as root.
 - Real helper built with `node scripts/build-native-desktop-host.mjs`; live: a deep missing root is created 0700 at each level; `{bad` → `state-op: request-invalid`; a file in the path → `state-op: store-root-uncreatable`; both exit 69.
 - `INSTAR_REAL_DESKTOP_HELPER_TESTS=1 npx vitest run tests/unit/desktop-helper-state-op.test.ts`: 8/8 (previously always skipped).
 - `tests/unit/desktop-locked-proof-fixes.test.ts`, `DesktopLockedController.test.ts`, `DirectDesktopAccess.locked.test.ts`, `tunnel-manager-rewrite.test.ts`.

@@ -186,6 +186,10 @@ describe('DirectDesktopAccess at the lock', () => {
     expect(f.secrets).toHaveLength(0);
     expect(Object.keys(f.markers)).toHaveLength(0);
     expect(sent.length).toBeGreaterThan(0);
+    // The refusal word is kept server-side too, never the secret.
+    const row = f.audits.find(event => event.kind === 'secret-refused');
+    expect(row).toMatchObject({ kind: 'secret-refused', machineId: 'machine-1', reason: 'browser-box-off' });
+    expect(JSON.stringify(row)).not.toContain('"ct"');
   });
 
   it('tells the viewer why the box cannot work, and re-sends it when that changes', async () => {

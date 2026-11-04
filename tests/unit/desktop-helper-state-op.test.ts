@@ -66,6 +66,13 @@ describe.skipIf(!usable)('helper state-op', () => {
     expect(spawnSync(helper, ['state-op'], { input: JSON.stringify({ root, op: 'read' }), encoding: 'utf8' }).stderr).toBe('state-op: store-unreadable\n');
   });
 
+  it('reads the secure-input owner from IOResources (never "unreadable" on a Mac with a console)', () => {
+    const run = spawnSync(helper, ['probe'], { encoding: 'utf8', env: { ...process.env, INSTAR_DESKTOP_LOCKED: '1' } });
+    expect(run.status).toBe(0);
+    const owner = JSON.parse(run.stdout.split('\n')[0]).lockInputs?.secureInputOwner;
+    expect(['none', 'loginwindow', 'other']).toContain(owner);
+  });
+
   it('holds up under many processes at once', async () => {
     await Promise.all(Array.from({ length: 12 }, (_, i) => new Promise<void>((resolve, reject) => {
       const child = spawn(helper, ['state-op'], { stdio: ['pipe', 'ignore', 'ignore'] });

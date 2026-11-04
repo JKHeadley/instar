@@ -12,7 +12,7 @@ import type { DesktopStreamSession } from '../server/DesktopStreamManager.js';
 import { DesktopAead, deriveDesktopKey } from './DesktopAead.js';
 import { desktopVideoContract } from './DesktopVideo.js';
 import { encodeDesktopH264 } from './DesktopVideo.js';
-import type { DesktopAccessAudit } from './DesktopAccessAudit.js';
+import { auditReason, type DesktopAccessAudit } from './DesktopAccessAudit.js';
 import { isLoopbackPeer } from './desktopTransport.js';
 
 const CHALLENGE_MS = 2 * 60_000;
@@ -828,7 +828,16 @@ export class DirectDesktopAccess {
         if (this.sealKey && row.lockedActive) row.emitControl({ type: 'seal', key: this.sealKey });
       },
       secret: async (secret: DesktopSealedSecret) => {
-        const refused = (reason: string) => row.emitControl?.({ type: 'secret-result', refused: reason });
+        const refused = (reason: string) => {
+          // The reason was only ever shown to the viewer; keep it here too, so a
+          // refused password can be explained from the logs (a word, never the secret).
+          console.warn(`[desktop] password refused on ${row.machineId}: ${auditReason(reason)}`);
+          try {
+            this.audit?.record({ kind: 'secret-refused', grantId: admittedGrantId, machineId: row.machineId,
+              operatorUid: row.operatorUid, authMethod: this.approvalMode, reason });
+          } catch { /* @silent-fallback-ok — the viewer is still told; an audit write failure must not hide the refusal */ }
+          row.emitControl?.({ type: 'secret-result', refused: reason });
+        };
         if (!row.lockedActive) throw new Error('desktop command invalid');
         await assertActive();
         if (row.grantId !== admittedGrantId || !this.validGrant(row) || !this.locked || !this.host.secretType) { refused('not-available'); return; }
