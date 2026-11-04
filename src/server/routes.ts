@@ -10,6 +10,7 @@ import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyO
 import { consolePageUrl } from './dashboardPaths.js';
 import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
 import { stripViewSignatures } from './mobilePairingRoutes.js';
+import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
 import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
 import type { AutoExpiryHold } from '../core/types.js';
@@ -16419,21 +16420,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   const routingSpendCfg = (ctx.config as { routingSpend?: { enabled?: boolean; tokenRollupRetentionDays?: number } }).routingSpend;
   const routingSpendRetentionDays = routingSpendCfg?.tokenRollupRetentionDays ?? 400;
 
-  router.get('/routing-spend/summary', (req, res) => {
+  // The /routing-spend/summary answer, shared with the phone's GET /mobile/spend
+  // (docs/specs/mobile-native-capacity-screens.md). 503 bodies are returned, not sent.
+  function routingSpendSummaryResult(grainRaw: string, sinceHours: number | undefined): { status: 200 | 503; body: Record<string, unknown> } {
     if (!resolveDevAgentGate(routingSpendCfg?.enabled, ctx.config)) {
-      res.status(503).json({ error: 'routing-spend view not enabled (dev-gated dark on the fleet; set routingSpend.enabled to flip)' });
-      return;
+      return { status: 503, body: { error: 'routing-spend view not enabled (dev-gated dark on the fleet; set routingSpend.enabled to flip)' } };
     }
     if (!ctx.featureMetricsLedger || !ctx.routingPriceAuthority) {
-      res.status(503).json({ error: 'routing-spend view unavailable (no feature-metrics ledger or price authority)' });
-      return;
+      return { status: 503, body: { error: 'routing-spend view unavailable (no feature-metrics ledger or price authority)' } };
     }
     ctx.routingPriceAuthority.reloadIfChanged();
-    const grainRaw = typeof req.query.grain === 'string' ? req.query.grain : 'day';
     const grain: SpendGrain = (['hour', 'day', 'month', 'total'] as const).includes(grainRaw as SpendGrain)
       ? (grainRaw as SpendGrain)
       : 'day';
-    const sinceHours = req.query.sinceHours ? Number(req.query.sinceHours) : undefined;
     const buckets =
       grain === 'hour'
         ? ctx.featureMetricsLedger.spendTokenRollupHourly(sinceHours && sinceHours > 0 ? { sinceHours } : { sinceHours: 24 })
@@ -16470,7 +16469,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // Operator-declared subscription costs (reporting-only — "show the math").
       subscriptions: ctx.config.routingSpend?.subscriptions,
     });
-    res.json(summary);
+    return { status: 200, body: summary as unknown as Record<string, unknown> };
+  }
+
+  router.get('/routing-spend/summary', (req, res) => {
+    const r = routingSpendSummaryResult(
+      typeof req.query.grain === 'string' ? req.query.grain : 'day',
+      req.query.sinceHours ? Number(req.query.sinceHours) : undefined,
+    );
+    res.status(r.status).json(r.body);
   });
 
   router.get('/routing-spend/caps', (_req, res) => {
@@ -36515,7 +36522,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         : 'account-record-missing-email',
     }));
 
-  router.get('/subscription-pool', async (req, res) => {
+  // The /subscription-pool?scope=pool view, shared with the phone's GET /mobile/accounts
+  // (docs/specs/mobile-native-capacity-screens.md).
+  async function subscriptionPoolScopeView(): Promise<Record<string, unknown>> {
     // WS5.1 — pool-scope read: "how much quota is left across ALL my machines /
     // accounts?" in ONE view. Mirrors GET /sessions?scope=pool exactly: fan out
     // to every ONLINE-registered peer's PLAIN /subscription-pool (NEVER
@@ -36527,130 +36536,137 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // individually visible — never P17-coalesced (differs from attention notices).
     // Single-machine / no resolvePeerUrls → the plain self-only view tagged
     // scope:'pool' with an empty pool.failed (a strict no-op superset).
-    if (req.query.scope === 'pool') {
-      const selfMachineId = ctx.meshSelfId ?? null;
-      const selfMachineNickname = selfMachineId
-        ? (ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null)
-        : null;
-      const localAvailability = subscriptionPoolAvailability();
-      const localReadable = !ctx.subscriptionPool || subscriptionPoolReadable();
-      const localRows = ctx.subscriptionPool && localReadable ? ctx.subscriptionPool.list() : [];
-      const selfAccounts = localRows.map((a) => ({
-        ...a,
-        // The login signal behind the status (spec skill-driven-signin-repair): never silent.
-        loginCheck: ctx.quotaPoller?.loginCheck?.(a.id) ?? 'unavailable',
-        // codex-device-limit-tripwire §8: always present on new code (null = no cause).
-        statusCause: a.statusCause ?? null,
-        machineId: selfMachineId,
-        machineNickname: selfMachineNickname ?? undefined,
-        remote: false,
-      }));
+    const selfMachineId = ctx.meshSelfId ?? null;
+    const selfMachineNickname = selfMachineId
+      ? (ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null)
+      : null;
+    const localAvailability = subscriptionPoolAvailability();
+    const localReadable = !ctx.subscriptionPool || subscriptionPoolReadable();
+    const localRows = ctx.subscriptionPool && localReadable ? ctx.subscriptionPool.list() : [];
+    const selfAccounts = localRows.map((a) => ({
+      ...a,
+      // The login signal behind the status (spec skill-driven-signin-repair): never silent.
+      loginCheck: ctx.quotaPoller?.loginCheck?.(a.id) ?? 'unavailable',
+      // codex-device-limit-tripwire §8: always present on new code (null = no cause).
+      statusCause: a.statusCause ?? null,
+      machineId: selfMachineId,
+      machineNickname: selfMachineNickname ?? undefined,
+      remote: false,
+    }));
 
-      const peers = ctx.resolvePeerUrls?.() ?? [];
-      const failed: Array<{ machineId: string; error: string }> = [];
-      if (ctx.subscriptionPool && !localReadable) {
-        failed.push({
-          machineId: selfMachineId ?? 'self',
-          error: localAvailability?.state === 'invalid'
-            ? 'peer-pool-invalid'
-            : 'peer-pool-unavailable',
-        });
-      } else if (localAvailability?.state === 'unconfigured') {
-        failed.push({ machineId: selfMachineId ?? 'self', error: 'peer-pool-unconfigured' });
-      }
-      const remote: Record<string, unknown>[] = [];
-      const remoteEmailGaps: Record<string, unknown>[] = [];
-      const remoteReconciliation: Array<{
-        state: 'running' | 'degraded' | 'complete';
-        unresolvedCount: number;
-      }> = [];
-      await Promise.all(peers.map(async (p) => {
-        try {
-          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/subscription-pool`, {
-            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
-            signal: AbortSignal.timeout(5000),
-          });
-          if (!r.ok) {
-            // Normalized reason — NEVER the peer URL or a raw body (no leak).
-            failed.push({ machineId: p.machineId, error: r.status === 401 || r.status === 403 ? 'unauthorized' : 'error' });
-            return;
-          }
-          const body = (await r.json()) as {
-            accounts?: Record<string, unknown>[];
-            emailGaps?: Record<string, unknown>[];
-            emailReconciliation?: {
-              state?: 'running' | 'degraded' | 'complete';
-              unresolvedCount?: number;
-            };
-          };
-          const nickname = ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null;
-          for (const a of body.accounts ?? []) {
-            remote.push({
-              ...a,
-              // A peer on older code never reports a cause: unknown, never "clear".
-              statusCause: 'statusCause' in a ? a.statusCause : 'unknown',
-              machineId: a.machineId ?? p.machineId,
-              machineNickname: a.machineNickname ?? nickname ?? undefined,
-              remote: true,
-            });
-          }
-          for (const gap of body.emailGaps ?? []) {
-            remoteEmailGaps.push({
-              ...gap,
-              machineId: gap.machineId ?? p.machineId,
-              machineNickname: gap.machineNickname ?? nickname ?? undefined,
-              remote: true,
-            });
-          }
-          if (body.emailReconciliation?.state) {
-            remoteReconciliation.push({
-              state: body.emailReconciliation.state,
-              unresolvedCount: Number(body.emailReconciliation.unresolvedCount ?? 0),
-            });
-          }
-        } catch (err) {
-          // @silent-fallback-ok — a peer being down/slow/unauth is the DESIGNED
-          // tolerant path (spec: degrade to a named failed row, never a 500); the
-          // failure is reported up-stack in pool.failed, not swallowed. Normalized
-          // reason only (never raw err.message → no URL/TLS/token leak).
-          const name = err instanceof Error ? err.name : '';
-          failed.push({ machineId: p.machineId, error: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable' });
-        }
-      }));
-
-      const localReconciliation = subscriptionEmailReconciliation();
-      const reconciliationRows = [localReconciliation, ...remoteReconciliation];
-      const aggregateState = reconciliationRows.some((row) => row.state === 'running')
-        ? 'running'
-        : reconciliationRows.some((row) => row.state === 'degraded') ? 'degraded' : 'complete';
-      res.json({
-        enabled: !!ctx.subscriptionPool,
-        accounts: [...selfAccounts, ...remote],
-        emailGaps: [
-          ...subscriptionEmailGaps().map((gap) => ({
-            ...gap,
-            machineId: selfMachineId,
-            machineNickname: selfMachineNickname ?? undefined,
-            remote: false,
-          })),
-          ...remoteEmailGaps,
-        ],
-        emailReconciliation: {
-          state: aggregateState,
-          unresolvedCount: reconciliationRows.reduce((sum, row) => sum + row.unresolvedCount, 0),
-          repairRunsFreshProbe: true,
-        },
-        pool: {
-          selfMachineId,
-          selfMachineNickname,
-          peersQueried: peers.length,
-          peersOk: peers.length - failed.length,
-          failed,
-        },
-        // This machine's device-limit counters (machine-local; peers report their own).
-        deviceLimit: getCodexDeviceLimitWiring()?.status() ?? null,
-        scope: 'pool',
+    const peers = ctx.resolvePeerUrls?.() ?? [];
+    const failed: Array<{ machineId: string; error: string }> = [];
+    if (ctx.subscriptionPool && !localReadable) {
+      failed.push({
+        machineId: selfMachineId ?? 'self',
+        error: localAvailability?.state === 'invalid'
+          ? 'peer-pool-invalid'
+          : 'peer-pool-unavailable',
       });
+    } else if (localAvailability?.state === 'unconfigured') {
+      failed.push({ machineId: selfMachineId ?? 'self', error: 'peer-pool-unconfigured' });
+    }
+    const remote: Record<string, unknown>[] = [];
+    const remoteEmailGaps: Record<string, unknown>[] = [];
+    const remoteReconciliation: Array<{
+      state: 'running' | 'degraded' | 'complete';
+      unresolvedCount: number;
+    }> = [];
+    await Promise.all(peers.map(async (p) => {
+      try {
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/subscription-pool`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!r.ok) {
+          // Normalized reason — NEVER the peer URL or a raw body (no leak).
+          failed.push({ machineId: p.machineId, error: r.status === 401 || r.status === 403 ? 'unauthorized' : 'error' });
+          return;
+        }
+        const body = (await r.json()) as {
+          accounts?: Record<string, unknown>[];
+          emailGaps?: Record<string, unknown>[];
+          emailReconciliation?: {
+            state?: 'running' | 'degraded' | 'complete';
+            unresolvedCount?: number;
+          };
+        };
+        const nickname = ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null;
+        for (const a of body.accounts ?? []) {
+          remote.push({
+            ...a,
+            // A peer on older code never reports a cause: unknown, never "clear".
+            statusCause: 'statusCause' in a ? a.statusCause : 'unknown',
+            // Attributed to the peer that was asked, named from this machine's registry: a peer
+            // cannot file its rows under another machine (mobile-native-capacity-screens §3.1).
+            machineId: p.machineId,
+            machineNickname: nickname ?? undefined,
+            remote: true,
+          });
+        }
+        for (const gap of body.emailGaps ?? []) {
+          remoteEmailGaps.push({
+            ...gap,
+            // Attributed to the peer that was asked, like its accounts (mobile-native-capacity-screens §3.1).
+            machineId: p.machineId,
+            machineNickname: nickname ?? undefined,
+            remote: true,
+          });
+        }
+        if (body.emailReconciliation?.state) {
+          remoteReconciliation.push({
+            state: body.emailReconciliation.state,
+            unresolvedCount: Number(body.emailReconciliation.unresolvedCount ?? 0),
+          });
+        }
+      } catch (err) {
+        // @silent-fallback-ok — a peer being down/slow/unauth is the DESIGNED
+        // tolerant path (spec: degrade to a named failed row, never a 500); the
+        // failure is reported up-stack in pool.failed, not swallowed. Normalized
+        // reason only (never raw err.message → no URL/TLS/token leak).
+        const name = err instanceof Error ? err.name : '';
+        failed.push({ machineId: p.machineId, error: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable' });
+      }
+    }));
+
+    const localReconciliation = subscriptionEmailReconciliation();
+    const reconciliationRows = [localReconciliation, ...remoteReconciliation];
+    const aggregateState = reconciliationRows.some((row) => row.state === 'running')
+      ? 'running'
+      : reconciliationRows.some((row) => row.state === 'degraded') ? 'degraded' : 'complete';
+    return {
+      enabled: !!ctx.subscriptionPool,
+      accounts: [...selfAccounts, ...remote],
+      emailGaps: [
+        ...subscriptionEmailGaps().map((gap) => ({
+          ...gap,
+          machineId: selfMachineId,
+          machineNickname: selfMachineNickname ?? undefined,
+          remote: false,
+        })),
+        ...remoteEmailGaps,
+      ],
+      emailReconciliation: {
+        state: aggregateState,
+        unresolvedCount: reconciliationRows.reduce((sum, row) => sum + row.unresolvedCount, 0),
+        repairRunsFreshProbe: true,
+      },
+      pool: {
+        selfMachineId,
+        selfMachineNickname,
+        peersQueried: peers.length,
+        peersOk: peers.length - failed.length,
+        failed,
+      },
+      // This machine's device-limit counters (machine-local; peers report their own).
+      deviceLimit: getCodexDeviceLimitWiring()?.status() ?? null,
+      scope: 'pool',
+    };
+  }
+
+  router.get('/subscription-pool', async (req, res) => {
+    if (req.query.scope === 'pool') {
+      res.json(await subscriptionPoolScopeView());
       return;
     }
 
@@ -37287,6 +37303,88 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ enabled: true, activeAccountId: null, activeEmail: null });
     }
   });
+
+  // Native Accounts / What thinking costs / Resource usage reads for the iPhone app
+  // (docs/specs/mobile-native-capacity-screens.md): owner phone or bearer; trimmed summaries of the
+  // same reads the console's Accounts, Spend and Resource usage views use. Read-only.
+  {
+    let mobileInUseResolver: NonNullable<typeof ctx.inUseAccountResolver> | null = null;
+    const spendPart = (r: { status: number; body: Record<string, unknown> }, gateOff: boolean): SpendPart =>
+      (r.status === 200 ? { ok: true, data: r.body } : { ok: false, off: gateOff });
+    const routingSpendGateOpen = () => resolveDevAgentGate(routingSpendCfg?.enabled, ctx.config);
+    // A peer's 503 reads as switched off only when its body says the view is not enabled there
+    // (`offOn503` for routes whose only 503 means "not tracked here"); any other 503 is unavailable.
+    const peerJson = async (p: Parameters<typeof poolPeerFetch>[1], path: string, offOn503 = false): Promise<SpendPart> => {
+      try {
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, path, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (r.status === 503) {
+          const body = await r.json().catch(() => ({})) as { error?: unknown };
+          return { ok: false, off: offOn503 || (typeof body.error === 'string' && body.error.startsWith('routing-spend view not enabled')) };
+        }
+        if (!r.ok) return { ok: false, off: false };
+        return { ok: true, data: await r.json() };
+      } catch {
+        // @silent-fallback-ok — a peer that is down/slow is named as not answering in the answer.
+        return { ok: false, off: false, unreached: true };
+      }
+    };
+    mountMobileCapacityRoutes(router, {
+      accountsView: () => subscriptionPoolScopeView(),
+      inUseAccountId: async () => {
+        if (!ctx.subscriptionPool) return null;
+        // One resolver for the life of the server (its 60 s cache and shared probe), never one per read.
+        mobileInUseResolver = mobileInUseResolver
+          ?? ctx.inUseAccountResolver
+          ?? new (await import('../core/InUseAccountResolver.js')).InUseAccountResolver();
+        const r = await mobileInUseResolver.resolve(ctx.subscriptionPool.list());
+        return r.activeAccountId ?? null;
+      },
+      offlineMachineIds: () => {
+        if (!ctx.meshSelfId) return [];
+        const online = new Set([...(ctx.resolvePeerUrls?.() ?? []).map((p) => p.machineId), ctx.meshSelfId]);
+        return (ctx.machinePoolRegistry?.getCapacities() ?? []).map((m) => m.machineId).filter((id) => !online.has(id));
+      },
+      localRepairs: () => (ctx.subscriptionRelogin?.store.list({}) ?? []).map((e) => ({ accountId: e.accountId, state: e.state })),
+      spendSummary: (hours) => spendPart(routingSpendSummaryResult('day', hours), !routingSpendGateOpen()),
+      tokens: (sinceMs) => (ctx.tokenLedger
+        ? { ok: true, data: { summary: ctx.tokenLedger.summary({ sinceMs }), codex: ctx.tokenLedger.codexSummary({ sinceMs }) } }
+        : { ok: false, off: true }),
+      peerSpend: async (hours, sinceMs) => {
+        const peers = ctx.resolvePeerUrls?.() ?? [];
+        const asked = new Set([...peers.map((p) => p.machineId), ctx.meshSelfId ?? '']);
+        // Registered machines the pool does not count as online are listed as offline (their spend is
+        // not in the totals), so a subset never reads as the whole.
+        // Without a known self id this machine could be listed as its own offline peer: list none.
+        const offline = (ctx.meshSelfId ? ctx.machinePoolRegistry?.getCapacities() ?? [] : []).filter((m) => !asked.has(m.machineId))
+          .map((m) => ({ name: m.nickname ?? null, machineId: m.machineId, isSelf: false, summary: { ok: false as const, off: false, offline: true }, tokens: { ok: false as const, off: false, offline: true } }));
+        const online = await Promise.all(peers.map(async (p) => {
+        const [summary, tokens] = await Promise.all([
+          peerJson(p, `/routing-spend/summary?grain=day&sinceHours=${hours}`),
+          peerJson(p, `/tokens/summary?since=${Math.floor(sinceMs)}`, true),
+        ]);
+          return { name: ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null, machineId: p.machineId, isSelf: false, summary, tokens };
+        }));
+        return [...online, ...offline];
+      },
+      spendCaps: () => (routingSpendGateOpen() ? { ok: true, data: composeCapsView() } : { ok: false, off: true }),
+      spendStatus: () => {
+        const surface = ctx.moneyLayerEnableSurface;
+        if (!surface) return { ok: false, off: true };
+        return { ok: true, data: surface.status() };
+      },
+      resourceSources: (sinceMs) => (ctx.resourceLedger ? ctx.resourceLedger.summary(sinceMs) : null),
+      runningSessionNames: () => new Map(ctx.sessionManager.listRunningSessions().map((x) => [x.id, x.name] as [string, string])),
+      nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+      selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
+      // The money layer designates machines by `config.machineId ?? 'single-machine'` (the same source
+      // its enable surface and go-live use); the mesh id is listed too.
+      selfMachineIds: () => [((ctx.config as { machineId?: string }).machineId ?? 'single-machine'), ...(ctx.meshSelfId ? [ctx.meshSelfId] : [])],
+      bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    });
+  }
 
   // P1.3 (pre-limit half) — proactive swap status + on-demand check. The monitor
   // moves a session OFF an account BEFORE it walls (vs. the reactive swap, which

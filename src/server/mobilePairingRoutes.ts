@@ -1509,6 +1509,12 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     // reads the name with its case kept.
     { method: 'GET', re: /^\/sessions\/[a-z0-9_-]{1,200}\/output$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 90, bucket: 'session-output' },
     { method: 'POST', re: /^\/sessions\/[a-z0-9_-]{1,200}\/input$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'session-input' },
+    // Native Accounts, What thinking costs and Resource usage (docs/specs/mobile-native-capacity-screens.md):
+    // read-only trimmed summaries, owner phones only. One shared bucket of their own, so pulling to
+    // refresh never uses up the chat list's read allowance and cannot multiply peer reads.
+    { method: 'GET', re: /^\/mobile\/accounts$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'capacity-reads' },
+    { method: 'GET', re: /^\/mobile\/spend$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'capacity-reads' },
+    { method: 'GET', re: /^\/mobile\/resources$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'capacity-reads' },
   ];
 })();
 

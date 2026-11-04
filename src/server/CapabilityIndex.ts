@@ -417,6 +417,17 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobileCapacityScreens',
+    // The routes live under the '/mobile' prefix already claimed by the mobilePairing entry, so this
+    // awareness entry claims no new top-level prefix (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Native Accounts, What thinking costs and Resource usage screens for the Instar iPhone app (docs/specs/mobile-native-capacity-screens.md): GET /mobile/accounts (subscription accounts across the machines that answer: signed in or needing sign-in per machine, usage windows with reset times), GET /mobile/spend?window=today|week|month (recorded pay-per-use cost across machines with its basis, this machine\'s paid-route limits, conversation token totals), GET /mobile/resources (CPU and memory for the agent, its server and sessions on this machine). Read-only trimmed summaries for an owner phone (device-signed, ownerOnly) or the bearer token; an MSP phone gets 403 owner-phone-required.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/accounts', 'GET /mobile/spend', 'GET /mobile/resources'],
+    }),
+  },
+  {
     key: 'releaseReadiness',
     prefixes: ['/release-readiness'],
     description: 'Release-readiness watchdog (instar-dev / maintainer environments). Surfaces a stalled release as one deduped, age-escalating Attention item. Null on installs with no analyzable instar repo.',
