@@ -162,6 +162,7 @@ const ageKillGov = governor.for('age-kill-backoff');
  * the lease-holder boundary unchanged.
  */
 const LOCAL_AGE_LIMIT_REAP_CAPABILITY = Symbol('local-age-limit-reap-capability');
+const REROUTED_LIFETIME_REAP_CAPABILITY = Symbol('rerouted-lifetime-reap-capability');
 
 /**
  * Closeout activeness bypass (docs/specs/closeout-activeness-bypass-confirmed-move.md).
@@ -2411,6 +2412,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
        *  It proves the request originated in THIS SessionManager's monitor over
        *  THIS machine's state tree and local tmux namespace. Never public. */
       localAgeLimitReapCapability?: typeof LOCAL_AGE_LIMIT_REAP_CAPABILITY;
+      /** Module-private proof from the rerouted-session monitor. The termination
+       * guard rechecks the saved session's lane and elapsed hard lifetime. */
+      reroutedLifetimeReapCapability?: typeof REROUTED_LIFETIME_REAP_CAPABILITY;
       /** Age-limit kill only: the age gate saw this session working after it
        *  passed its age limit. Passed through on `sessionReaped` so the resume
        *  queue does not count the revival as a kill-resume-kill loop. */
@@ -2467,6 +2471,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
     const isAuthorizedTopicMovedCloseout = reason.startsWith('topic moved')
       && opts?.localPostTransferCloseout === true;
+    const isAuthorizedReroutedLifetime = reason === 'rerouted-lifetime'
+      && opts?.reroutedLifetimeReapCapability === REROUTED_LIFETIME_REAP_CAPABILITY
+      && session.launchLane === 'rerouted-interactive'
+      && session.completionMode === 'pattern'
+      && typeof session.maxLifetimeMinutes === 'number'
+      && Number.isFinite(session.maxLifetimeMinutes)
+      && session.maxLifetimeMinutes > 0
+      && !!session.startedAt
+      && Date.now() - Date.parse(session.startedAt) > session.maxLifetimeMinutes * 60_000;
     const authorityScope = origin === 'operator'
       ? 'operator' as const
       : holdsServingLease
@@ -2530,6 +2543,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
         const bypassedReasons: string[] = [];
         if (opts?.bypassRecoveryFlag) bypassedReasons.push('recovery-in-flight');
         if (opts?.bypassActiveProcessKeep) bypassedReasons.push('active-process');
+        // A rerouted one-shot is an interactive REPL, so a live child process can
+        // remain after its hard deadline. The monitor's private capability and
+        // this second expiry check let the hard cap bypass only process-activity
+        // evidence. Protected sessions, user activity, commitments and other
+        // KEEP reasons still veto termination.
+        if (isAuthorizedReroutedLifetime) {
+          bypassedReasons.push('active-process', 'main-process-active', 'process-uninspectable');
+        }
         if (opts?.bypassRecentUserMessageForConfirmedMove || opts?.topicTransferClose === true) {
           bypassedReasons.push('recent-user-message');
         }
@@ -3125,12 +3146,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
             if (lifeElapsedMin > session.maxLifetimeMinutes &&
                 !this.config.protectedSessions.includes(session.tmuxSession) &&
                 !this.isStandingSession(session.tmuxSession)) {
-              console.warn(`[SessionManager] Rerouted session "${session.name}" exceeded its hard lifetime (${Math.round(lifeElapsedMin)}m > ${session.maxLifetimeMinutes}m) without a completion sentinel. Killing (timeout).`);
-              const killed = await this.terminateSession(session.id, 'rerouted-lifetime', {
+              const killed = await this.#terminateSessionInternal(session.id, 'rerouted-lifetime', {
                 finalStatus: 'killed',
                 disposition: 'terminal',
+                origin: 'autonomous',
+                reroutedLifetimeReapCapability: REROUTED_LIFETIME_REAP_CAPABILITY,
               });
               if (killed.terminated) {
+                console.warn(`[SessionManager] Rerouted session "${session.name}" exceeded its hard lifetime (${Math.round(lifeElapsedMin)}m > ${session.maxLifetimeMinutes}m) without a completion sentinel. Killed (timeout).`);
                 DegradationReporter.getInstance().report({
                   feature: 'SessionManager.monitorTick.reroutedLifetime',
                   primary: 'rerouted-interactive session completes via its sentinel within the lifetime cap',

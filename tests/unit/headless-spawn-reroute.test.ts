@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { ReapGuard } from '../../src/core/ReapGuard.js';
 
 const mockTmuxSessions = new Set<string>();
 /** What `tmux show-environment -t … CLAUDE_CONFIG_DIR` answers ('' = unparseable). */
@@ -478,6 +479,20 @@ describe('detectSessionCompletion (V3 decision boundary)', () => {
 describe('monitorTick rerouted-interactive branch', () => {
   let tmpDir: string;
 
+  const activityGuard = (recentUserMessage = false) => new ReapGuard({
+    protectedSessions: () => [],
+    isRecoveryActive: () => false,
+    hasPendingInjection: () => false,
+    isRelayLeaseActive: () => false,
+    topicBinding: () => recentUserMessage ? 18330 : null,
+    recentUserMessage: () => recentUserMessage,
+    activeCommitmentForTopic: () => false,
+    activeSubagentCount: () => 0,
+    buildOrAutonomousActive: () => false,
+    hasActiveProcesses: () => true,
+    mainProcessActive: () => true,
+  });
+
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-reroute-monitor-'));
     mockTmuxSessions.clear();
@@ -539,6 +554,44 @@ describe('monitorTick rerouted-interactive branch', () => {
     expect(saved.endedReason).toBe('rerouted-lifetime');
     expect(reportSpy).toHaveBeenCalled();
     reportSpy.mockRestore();
+  });
+
+  it('an expired rerouted session can pass the real activity guard and free its slot', async () => {
+    const { manager, state, maintenanceTick } = makeManager({}, tmpDir);
+    state.saveSession({
+      id: 'rr-expired', name: 'rr-expired', status: 'running', tmuxSession: 'proj-rr-expired',
+      startedAt: new Date(Date.now() - 50 * 60_000).toISOString(), framework: 'claude-code',
+      launchLane: 'rerouted-interactive', completionMode: 'pattern',
+      completionPatterns: ['INSTAR_JOB_COMPLETE_never'], maxLifetimeMinutes: 45,
+    });
+    mockTmuxSessions.add('proj-rr-expired');
+    manager.setReapGuard(activityGuard());
+    (manager as unknown as { isSessionAliveAsync: () => Promise<boolean> }).isSessionAliveAsync = async () => true;
+    (manager as unknown as { recordBuildContext: () => void }).recordBuildContext = () => {};
+    (manager as unknown as { captureOutput: () => string }).captureOutput = () => 'no completion sentinel';
+
+    await maintenanceTick();
+
+    expect(state.getSession('rr-expired')).toMatchObject({ status: 'killed', endedReason: 'rerouted-lifetime' });
+  });
+
+  it('an expired rerouted session still respects a recent user message', async () => {
+    const { manager, state, maintenanceTick } = makeManager({}, tmpDir);
+    state.saveSession({
+      id: 'rr-recent', name: 'rr-recent', status: 'running', tmuxSession: 'proj-rr-recent',
+      startedAt: new Date(Date.now() - 50 * 60_000).toISOString(), framework: 'claude-code',
+      launchLane: 'rerouted-interactive', completionMode: 'pattern',
+      completionPatterns: ['INSTAR_JOB_COMPLETE_never'], maxLifetimeMinutes: 45,
+    });
+    mockTmuxSessions.add('proj-rr-recent');
+    manager.setReapGuard(activityGuard(true));
+    (manager as unknown as { isSessionAliveAsync: () => Promise<boolean> }).isSessionAliveAsync = async () => true;
+    (manager as unknown as { recordBuildContext: () => void }).recordBuildContext = () => {};
+    (manager as unknown as { captureOutput: () => string }).captureOutput = () => 'no completion sentinel';
+
+    await maintenanceTick();
+
+    expect(state.getSession('rr-recent')?.status).toBe('running');
   });
 
   it('under lifetime, no sentinel → left running (re-check next tick)', async () => {
