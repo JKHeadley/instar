@@ -126,6 +126,7 @@ describe('Feature Delivery Completeness', () => {
       '### Who can answer my Telegram buttons', // ACT-115: owner checks fail closed
       '**Memory privacy**', // memory-privacy spec: audience by place
       'An update never turns it on', // memory-privacy spec: opt-in for existing agents
+      'one-time repair link', // memory-privacy spec: owner recovery
       '### Feature switches apply their setting', // feature-transition-applies-action (Echo Bugs 10000000857): POST /features/:id/transition applies the enableAction/disableAction + returns `apply` and the honest `effective` state — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key = the heading), framework-shadowed (a Codex/Gemini agent must read `effective.status` before telling the user a feature is on).
       '### Hand-started Codex: `instar codex connect <agent>`', // codex-connect-explicit: the explicit shared-Codex-config writer card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key = the heading), framework-shadowed (the audience IS a Codex operator).
       '### Normal-Chrome browser (account-bound web tasks, macOS + Windows)', // normal-chrome-builtin-skill + normal-chrome-cross-platform: awareness card for the /normal-chrome-browser skill + .instar/scripts/browser/ helpers — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key = the heading), framework-shadowed (the scripts are framework-neutral).

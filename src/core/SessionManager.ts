@@ -6,6 +6,7 @@
  * and can be monitored/reaped by the server.
  */
 
+import type { MemoryPrivacyRecovery } from '../users/MemoryPrivacyRecovery.js';
 import { isCredentialEnvName, CLAUDE_CONFINED_PERMISSION_ARGS } from './credentialEnvNames.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { applyMemorySessionLaunch, buildMemorySessionSettings, moveInboundFilesIntoScope } from './memorySessionPolicy.js';
@@ -1057,6 +1058,11 @@ export class SessionManager extends EventEmitter {
     telegramGroupKey: () => string | null;
     /** True when the boot probe proved the OS sandbox starts here. */
     sandboxReady: () => boolean;
+    /** Why scoped sessions cannot run, and the plain fix. Null when they can. */
+    blocker?: () => string | null;
+    fix?: () => string | null;
+    /** The owner's one-time repair link. */
+    recovery?: () => MemoryPrivacyRecovery;
     /** Scripts a scoped session runs, as absolute paths. */
     replyScripts: () => string[];
     /** Finds the Slack channel of a session started before places were recorded. */
@@ -1876,15 +1882,27 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /** What the status route reports. No people's names beyond the owner's id. */
-  memoryPrivacyStatus(): { enabled: boolean; multiPerson: boolean; ownerUserId: string | null; sandboxReady: boolean } {
+  memoryPrivacyStatus(): { enabled: boolean; multiPerson: boolean; ownerUserId: string | null; sandboxReady: boolean; blocker: string | null; fix: string | null } {
     const wiring = this.memoryPrivacyWiring;
-    if (!wiring) return { enabled: false, multiPerson: false, ownerUserId: null, sandboxReady: false };
+    if (!wiring) return { enabled: false, multiPerson: false, ownerUserId: null, sandboxReady: false, blocker: null, fix: null };
     return {
       enabled: wiring.privacy.enabled,
       multiPerson: wiring.privacy.isMultiPerson(),
       ownerUserId: wiring.privacy.ownerUserId(),
       sandboxReady: wiring.sandboxReady(),
+      blocker: wiring.blocker?.() ?? null,
+      fix: wiring.fix?.() ?? null,
     };
+  }
+
+  memoryPrivacyRecovery(): MemoryPrivacyRecovery | null {
+    return this.memoryPrivacyWiring?.recovery?.() ?? null;
+  }
+
+  /** New sessions launch from this binary. Live sessions keep the one they started with. */
+  setClaudeBinary(binaryPath: string): void {
+    this.config.claudePath = binaryPath;
+    if (this.config.frameworkBinaryPaths?.['claude-code']) this.config.frameworkBinaryPaths['claude-code'] = binaryPath;
   }
 
   /** True when memory privacy is on and more than one person can reach this agent. */

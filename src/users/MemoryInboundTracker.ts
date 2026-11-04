@@ -9,6 +9,7 @@
 
 import { audienceKey, OPERATOR_PERSON_ID, type MemoryPrivacy } from './MemoryPrivacy.js';
 import { isScopedAudience } from './MemoryAudience.js';
+import type { MemoryBlocker, MemoryPrivacyRecovery } from './MemoryPrivacyRecovery.js';
 
 export interface InboundFacts {
   placeKey: string;
@@ -32,6 +33,8 @@ export interface MemoryInboundDeps {
   sandboxReady: () => boolean;
   /** Framework new sessions would use. */
   framework: () => string;
+  /** The owner's way out of the fixed reply. */
+  recovery?: MemoryPrivacyRecovery;
 }
 
 export type InboundVerdict = 'deliver' | 'unavailable';
@@ -40,8 +43,45 @@ export type InboundVerdict = 'deliver' | 'unavailable';
 export const MEMORY_PRIVACY_UNAVAILABLE_REPLY =
   "I can't reply here yet: private memory isn't set up on this agent. Please ask the agent's owner to finish that setup.";
 
+/** A shared place sees this instead of the cause; the cause goes to the owner privately. */
+export const MEMORY_PRIVACY_OWNER_CHANNEL_REPLY =
+  "I can't reply here yet. I've sent you the reason and the fix in a private message.";
+
+/** Nothing is wrong with private memory, as on a session that could not be reset. */
+export const MEMORY_PRIVACY_RETRY_REPLY = "I can't reply yet. Please try again in a minute.";
+
+/** Sends to the owner's private chat. False or a throw means it did not go. */
+export type SendOwnerPrivately = (text: string) => Promise<boolean>;
+
 export class MemoryInboundTracker {
   constructor(private readonly deps: MemoryInboundDeps) {}
+
+  /**
+   * What the place sees after an 'unavailable' verdict, sending the owner the cause and
+   * link first when it should. Only the owner hears the cause, and only in private: it
+   * names paths and a link, and a shared place has other readers. The channel only
+   * claims a message that went.
+   */
+  async refuse(facts: InboundFacts, sendOwnerPrivately?: SendOwnerPrivately): Promise<string> {
+    const { privacy, recovery } = this.deps;
+    if (!recovery || !privacy.isOwnerSender(facts.senderKey, facts.personId)) return MEMORY_PRIVACY_UNAVAILABLE_REPLY;
+    // The owner's own private chat needs no boundary, so private memory is not the cause.
+    const audience = privacy.audienceFor(privacy.placeFor({ memoryPlaceKey: facts.placeKey }, null));
+    if (!isScopedAudience(audience)) return MEMORY_PRIVACY_RETRY_REPLY;
+    const blocker: MemoryBlocker | undefined = this.deps.framework() !== 'claude-code' ? 'framework' : undefined;
+    if (!recovery.hasCause(blocker)) return MEMORY_PRIVACY_RETRY_REPLY;
+    if (!sendOwnerPrivately) return MEMORY_PRIVACY_UNAVAILABLE_REPLY;
+    if (recovery.noticeIsRecent()) return MEMORY_PRIVACY_OWNER_CHANNEL_REPLY;
+    try {
+      if (await sendOwnerPrivately(recovery.ownerMessage(blocker))) {
+        recovery.markNoticeSent();
+        return MEMORY_PRIVACY_OWNER_CHANNEL_REPLY;
+      }
+    } catch (err) {
+      console.warn(`[memory-privacy] owner message failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return MEMORY_PRIVACY_UNAVAILABLE_REPLY;
+  }
 
   async onInbound(facts: InboundFacts): Promise<InboundVerdict> {
     const { privacy } = this.deps;

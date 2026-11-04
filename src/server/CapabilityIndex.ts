@@ -66,7 +66,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     key: 'memoryPrivacy',
     prefixes: ['/memory-privacy'],
     description: 'Whether memory is kept per person and per place on this agent, who the owner is, and whether the sandbox runs here.',
-    build: () => ({ configured: true, endpoints: ['GET /memory-privacy'] }),
+    build: () => ({ configured: true, endpoints: ['GET /memory-privacy', 'GET /memory-privacy/fix/:token', 'POST /memory-privacy/fix/:token'] }),
   },
   {
     key: 'capabilityRegistry',
