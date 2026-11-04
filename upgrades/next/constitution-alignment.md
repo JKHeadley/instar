@@ -1,9 +1,16 @@
-<!-- internal-only -->
 <!-- bump: patch -->
 
 ## What Changed
 
 Instar's own merge tool now refuses a pull request that changes the constitution registry unless its body names its counterpart in the other rule book, or says why it has none (`scripts/check-constitution-pairing.mjs`, used by `scripts/safe-merge.mjs`). The green-PR watcher treats that refusal as waiting on a body edit. Adds the map of differences between the two books and corrects the direction-guard document. Does nothing outside the two instar repositories.
+
+## What to Tell Your User
+
+Nothing changes for you. This only affects how Instar's own rule book is maintained.
+
+## Summary of New Capabilities
+
+None for agents outside the Instar repositories. For maintainers: a pairing check for changes to the two rule books.
 
 ## Evidence
 
