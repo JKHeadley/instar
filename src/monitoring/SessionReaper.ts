@@ -17,6 +17,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Session } from '../core/types.js';
@@ -2007,8 +2008,16 @@ export class SessionReaper extends EventEmitter {
       // feature is live; it is bounded + fail-open internally.
       const workEvidence: string[] = [];
       if (this.#deps.dirtyCheck && session.cwd) {
-        try { if (this.#deps.dirtyCheck(session.cwd)) workEvidence.push('uncommitted-worktree-work'); }
-        catch { /* @silent-fallback-ok: SPEC-MANDATED fail-open — evidence collection NEVER endangers the kill path; a dirty-check failure just omits the signal (the kill proceeds with the evidence gathered so far). */ }
+        try {
+          const dirty = this.#deps.dirtyCheck(session.cwd);
+          if (dirty) workEvidence.push('uncommitted-worktree-work');
+          featureEvidence.record('monitoring.yieldSafety', {
+            kind: dirty ? 'fired' : 'held',
+            reason: dirty ? 'dirty-worktree-resume-eligible' : 'worktree-clean-at-reap',
+            context: { sessionName: session.tmuxSession, relaxedActiveProcess },
+          });
+        }
+        catch { featureEvidence.record('monitoring.yieldSafety', { kind: 'error', reason: 'dirty-check-threw', context: { sessionName: session.tmuxSession } }); /* @silent-fallback-ok: SPEC-MANDATED fail-open — evidence collection NEVER endangers the kill path; a dirty-check failure just omits the signal (the kill proceeds with the evidence gathered so far). */ }
       }
       // A session reaped while its own tool shell still runs (reachable only via
       // a relax at critical pressure) was mid-work: tag it so it is eligible for

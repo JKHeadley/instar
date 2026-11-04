@@ -1,6 +1,7 @@
 import { sign, verify } from 'node:crypto';
 import { canonicalOrigin, wireDigest } from './CanonicalOrigin.js';
 import type { OriginAttestation, TelegramOriginRecord } from './types.js';
+import { legacyAttributionValid } from './OriginLegacy.js';
 export interface OriginVerificationKey {
   machineId: string;
   agentId: string;
@@ -26,7 +27,7 @@ export function verifyOriginAttestation(record: TelegramOriginRecord,
   const attestation = record.attestation;
   if (!attestation) return { valid: false, reason: 'missing-attestation' };
   const attestingMachine = record.producerKind === 'imported-legacy' ? record.importedByMachineId : record.originMachineId;
-  if (record.producerKind === 'imported-legacy' && (record.machine.status !== 'unknown' || record.harness.status !== 'unknown' || record.model.status !== 'unknown')) return { valid: false, reason: 'legacy-attribution-invented' };
+  if (record.producerKind === 'imported-legacy' && !legacyAttributionValid(record)) return { valid: false, reason: 'legacy-attribution-invented' };
   if (record.agentId !== authenticatedPeer.agentId || attestingMachine !== authenticatedPeer.machineId ||
     key.agentId !== record.agentId || key.machineId !== attestingMachine) return { valid: false, reason: 'origin-peer-mismatch' };
   if (key.keyId !== attestation.keyId || key.keyEpoch !== attestation.keyEpoch) return { valid: false, reason: 'key-epoch-mismatch' };

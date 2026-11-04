@@ -131,6 +131,7 @@ export interface TriageOrchestratorDeps extends TriageDeps {
   /** Trusted runtime lookup for the actual spawned tmux session, never model output. */
   readTriageAuthor?: (sessionName: string) => Promise<OriginAutomationAuthor>;
   /** Spawn a scoped triage session, returns tmux session name */
+  isMemoryScopedTopic?: (topicId: number) => boolean;
   spawnTriageSession: (name: string, options: {
     allowedTools: string[];
     permissionMode: string;
@@ -247,6 +248,12 @@ export class TriageOrchestrator extends EventEmitter {
     injectedAt?: number,
   ): Promise<TriageResult> {
     if (!this.config.enabled) {
+      return { resolved: false, checkCount: 0, followUpScheduled: false };
+    }
+
+    // Memory privacy: triage runs with owner reach, so it stays out of a place whose
+    // readers must not see owner memory.
+    if (this.deps.isMemoryScopedTopic?.(topicId)) {
       return { resolved: false, checkCount: 0, followUpScheduled: false };
     }
 

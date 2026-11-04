@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "green-pr-skip-unactionable-head",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-02T20:46:14.590Z",
+  "artifactPath": "upgrades/side-effects/green-pr-skip-unactionable-head.md",
+  "artifactSha256": "fd457c5519aaf604ca858e378044261a2c17d3a23b621ac1d64bdca7095f4fc9",
+  "coveredFiles": [
+    "src/monitoring/GreenPrAutoMerger.ts",
+    "tests/unit/green-pr-automerger.test.ts",
+    "upgrades/next/green-pr-skip-unactionable-head.md",
+    "upgrades/side-effects/green-pr-skip-unactionable-head.eli16.md",
+    "upgrades/side-effects/green-pr-skip-unactionable-head.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "selection order in one tick; still one merge attempt per tick; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/green-pr-skip-unactionable-head.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/green-pr-skip-unactionable-head.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "bounded scan over the current eligible list within one tick; still at most one merge attempt per tick; no new loop or trigger"
+  }
+}

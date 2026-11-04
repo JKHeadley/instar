@@ -3,7 +3,7 @@
  *
  * Runs only on the drain owner and only where a source checkout of the repository the feedback
  * is about exists. Each tick: refuses to run when the approver is not independent of the agent
- * (unless a PIN-bound acceptance exists) or the repository disallows auto-merge; reconciles live
+ * (unless a PIN-bound acceptance exists); reconciles live
  * attempts (lease, disk cap, finished sessions → verification and publication); drives open PRs
  * through the review gate (approval of the exact head by the approver → `safe-merge --auto
  * --match-head-commit`, `--disable-auto` on every stop path); follows merged fixes through
@@ -30,7 +30,7 @@ import { governor } from '../../monitoring/selfaction/governor.js';
 import type { DerivedTarget } from '../../monitoring/selfaction/types.js';
 import { FeedbackExecuteStore, OPEN_PR_STATES, type ExecutionRow, type ExecutionState } from './FeedbackExecuteStore.js';
 import {
-  CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, commandFailureTail, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL, PREVIOUS_REVIEW_FILE,
+  CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, CONFINED_RELATED_TIMEOUT_MS, commandFailureTail, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL, PREVIOUS_REVIEW_FILE,
   MERGE_ARMED_DEADLINE_MS, MERGE_RETRY_DELAY_MS, SANDBOX_RUNTIME_VERSION, VERIFY_QUIET_MS, WORKSPACE_DISK_CAP_BYTES,
   buildClaudeSandboxSettings, buildSandboxRuntimeSettings, clampProbeDetail, confinedCacheEnv, confinedEnv, effectiveLatchUntil, pathSlug, publishFork, safeSlug, type ConfinementPaths, type ExecuteLiveConfig,
 } from './executePolicy.js';
@@ -39,7 +39,7 @@ import {
 } from './changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, relativeImports, shq, testNamePattern, vitestPassedTestCount, type SessionResult } from './executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, codeownersOwned, deriveApprover, mapSafeMergeExit, type AgentIdentityFacts } from './reviewGate.js';
-import { REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, isSpecReviewHead, judgeIndependentReview, renderCloseComment, renderReviewComment, reviewFindingsText, reviewRefusalIsAboutTheChange, type IndependentReviewVerdict, type ReviewCommentNext, type ReviewerOutcome } from './independentReview.js';
+import { FEEDBACK_REVIEW_PASS_PREFIX, REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, feedbackReviewLead, isSpecReviewHead, judgeRoutedFeedbackReview, renderCloseComment, renderReviewComment, reviewFindingsText, reviewRefusalIsAboutTheChange, type FeedbackReviewLead, type IndependentReviewVerdict, type ReviewCommentNext, type ReviewerOutcome } from './independentReview.js';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
 import { RerouteRefusedError } from '../../core/rerouteRefusedError.js';
 import { PROBE_TAIL_CHARS, canaryStamp, evaluateSessionCanary, findSessionTranscript, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, verdictOf, type CanaryProbeResult } from './confinementCanary.js';
@@ -86,7 +86,7 @@ export interface ConfinedSessionPort {
 
 /** Runs the independent reviewers over one prompt (one outcome per family that was asked). */
 export interface IndependentReviewPort {
-  run(input: { prompt: string }): Promise<ReviewerOutcome[]>;
+  run(input: { prompt: string; lead?: FeedbackReviewLead }): Promise<ReviewerOutcome[]>;
 }
 
 /** Consecutive saturated admission checks before one degradation report (12 × 30 min ≈ 6 h). */
@@ -313,7 +313,6 @@ export class FeedbackExecutorService {
     if (!remote) return out('no-source-repo');
     const repo = await this.opts.github.repoInfo(remote.slug);
     if (!repo) return out('github-unavailable', { slug: remote.slug });
-    if (!repo.allowAutoMerge) return out('auto-merge-disabled', { slug: remote.slug });
     const approver = deriveApprover(repo, this.metaJson<{ login: string }>('exec:org_approver')?.login ?? null);
     if ('error' in approver) return out('approver-unset', { slug: remote.slug });
     const facts: AgentIdentityFacts = { ...this.opts.identityFacts(), agentGithubLogin: await this.opts.github.viewerLogin(), agentGithubAccounts: await this.opts.github.authAccounts() };
@@ -410,10 +409,24 @@ export class FeedbackExecutorService {
     const acted = new Set<string>();
     const sourceRepo = this.opts.config().sourceRepoPath;
     const slug = knownSlug ?? (sourceRepo ? (await this.opts.git.githubRemote(sourceRepo))?.slug ?? null : null);
+    // A crash after parking the execution row but before holding triage still must not
+    // offer another attempt. Repair the operator-visible hold and alert on every tick.
+    for (const row of this.opts.store.inStates('held')) {
+      if (row.reason === 'publish-outcome-unknown') await this.repairPublishUnknown(row, epoch);
+    }
     for (const row of this.opts.store.inStates('claimed', 'running', 'verifying')) {
       const triage = this.opts.triageStore.get(row.initiativeId);
       const awayFromWork = !triage || triage.state === 'hold' || triage.state === 'ignored';
-      const adoptable = row.sessionMachine === this.opts.selfMachineId && row.state === 'running' && Boolean(row.workspace && fs.existsSync(row.workspace));
+      // An external push or PR create may have completed before its DB receipt. Never replay it.
+      if (row.state === 'verifying' && row.reason === 'publishing' && row.ownerEpoch < epoch) {
+        await this.parkPublishUnknown(row, epoch);
+        acted.add(row.attemptId);
+        continue;
+      }
+      const reviewDir = this.attemptPaths(row).reviewDir;
+      const adoptable = row.sessionMachine === this.opts.selfMachineId &&
+        ((row.state === 'running' && Boolean(row.workspace && fs.existsSync(row.workspace))) ||
+          (row.state === 'verifying' && Boolean(((row.workspace && fs.existsSync(row.workspace)) || fs.existsSync(reviewDir)) && row.publishClone && fs.existsSync(row.publishClone))));
       if (row.ownerEpoch < epoch && !adoptable) {
         await this.stopSession(row);
         this.endAttempt(row, epoch, 'stopped', 'stale-epoch');
@@ -525,6 +538,7 @@ export class FeedbackExecutorService {
       // Two review-failed closes in the current recovery episode: the item is parked, never offered (the tick's repair writes the hold).
       if (this.needsReviewFailedPark(item.initiativeId)) continue;
       const latest = this.opts.store.latestFor(item.initiativeId);
+      if (latest?.state === 'held' && latest.reason === 'publish-outcome-unknown') continue;
       // A merged fix that regressed (new report after release, or a failed live proof) was re-triaged; a new attempt may start.
       const reopened = latest?.state === 'merged' && (latest.reason === 'reopened-new-report' || latest.reason === 'live-proof-failed');
       if (latest && busy.has(latest.state) && !reopened) continue;
@@ -885,11 +899,18 @@ export class FeedbackExecutorService {
 
   private async reconcileLive(rowIn: ExecutionRow, epoch: number, slug: string, approver: string): Promise<void> {
     let row = rowIn;
+    if (row.state === 'verifying' && row.reason === 'publishing') {
+      await this.parkPublishUnknown(row, epoch);
+      return;
+    }
     if (row.ownerEpoch < epoch) {
       // Same machine re-acquired the lease with the session still alive (or already finished with its
       // workspace intact): adopt it under the current epoch instead of killing a healthy build.
       const sameMachine = row.sessionMachine === this.opts.selfMachineId;
-      if (sameMachine && row.state === 'running' && row.workspace && fs.existsSync(row.workspace)) {
+      const reviewDir = this.attemptPaths(row).reviewDir;
+      if (sameMachine && (row.state === 'running' || row.state === 'verifying') &&
+        ((row.workspace && fs.existsSync(row.workspace)) || (row.state === 'verifying' && fs.existsSync(reviewDir))) &&
+        (row.state !== 'verifying' || (row.publishClone && fs.existsSync(row.publishClone)))) {
         row = this.opts.store.adopt(epoch, row.attemptId);
         this.opts.audit.append('execute:adopted', { attemptId: row.attemptId, epoch });
       } else {
@@ -938,6 +959,21 @@ export class FeedbackExecutorService {
     this.opts.audit.append('execute:ended', { attemptId: row.attemptId, state, reason });
     if (!keepClones) this.cleanup(row);
     return updated;
+  }
+
+  /** External publication may have succeeded without its DB receipt; preserve evidence and refuse an automatic retry. */
+  private async parkPublishUnknown(row: ExecutionRow, epoch: number): Promise<void> {
+    const held = this.endAttempt(row, epoch, 'held', 'publish-outcome-unknown', true);
+    await this.repairPublishUnknown(held, epoch);
+  }
+
+  private async repairPublishUnknown(row: ExecutionRow, epoch: number): Promise<void> {
+    const decision = this.opts.triageStore.latestDecisionFor(row.initiativeId)?.sequence ?? null;
+    await this.holdItem(epoch, row.initiativeId, 'publish-outcome-unknown', decision);
+    await this.attention({ id: `feedback-execute:publish-outcome-unknown:${row.attemptId}`,
+      title: `Feedback publication needs reconciliation for ${row.attemptId}`,
+      summary: `The executor may have pushed branch ${row.branch} or opened its PR before the owner changed. Check the fork and repository for that exact branch before retrying this item.`,
+      category: 'monitoring', priority: 'HIGH', sourceContext: 'feedback-execute:publish-outcome-unknown' });
   }
 
   private cleanup(row: Pick<ExecutionRow, 'initiativeId' | 'attempt' | 'attemptId'>): void {
@@ -1101,17 +1137,17 @@ export class FeedbackExecutorService {
     // One vitest run per config: the unit config collects only unit files, so an
     // integration or e2e test file needs its own lane config or it runs nothing.
     const testCmd = groupTestFilesByConfig(result.testFiles)
-      .map((g) => `npx vitest run --no-cache --config ${shq(g.config)} ${g.files.map(shq).join(' ')} -t ${shq(testNamePattern(result.testName))}`)
+      .map((g) => `./node_modules/.bin/vitest run --no-cache --config ${shq(g.config)} ${g.files.map(shq).join(' ')} -t ${shq(testNamePattern(result.testName))}`)
       .join(' && ');
     const diskOk = (clone: string) => treeBytes(clone, WORKSPACE_DISK_CAP_BYTES) + treeBytes(p.tmpDir, WORKSPACE_DISK_CAP_BYTES) <= WORKSPACE_DISK_CAP_BYTES;
     // Each run gets its own clone AND its own temp directory, and its sandbox may write only those:
     // a process left behind by one run (attempt test code) can never reach a tree a later check reads.
-    const run = async (cwd: string, label: string, command: string) => {
+    const run = async (cwd: string, label: string, command: string, timeoutMs = CONFINED_COMMAND_TIMEOUT_MS) => {
       const runTmp = path.join(p.tmpDir, `check-${label}`);
       fs.mkdirSync(runTmp, { recursive: true, mode: 0o700 });
       return this.opts.runner.run({
         command, cwd, settings: buildSandboxRuntimeSettings(this.confinementPaths(cwd, p.publishClone, runTmp, depsDir)),
-        env: confinedEnv(process.env, confinedCacheEnv(runTmp)), timeoutMs: CONFINED_COMMAND_TIMEOUT_MS,
+        env: confinedEnv(process.env, confinedCacheEnv(runTmp)), timeoutMs,
       });
     };
     const limit = (r: { timedOut: boolean; outputCapped: boolean }) => (r.timedOut ? 'limit:command-wall-clock' : r.outputCapped ? 'limit:output' : null);
@@ -1158,7 +1194,7 @@ export class FeedbackExecutorService {
       const sources = sourcePaths(changeSet).filter((s) => /\.[cm]?[jt]sx?$/.test(s));
       if (sources.length > 0) {
         // './' prefix: a changed file can never be read as a command-line option.
-        const related = await run(p.gateClone, 'related', `npx vitest related --run --no-cache ${sources.map((s) => shq(`./${s}`)).join(' ')}`);
+        const related = await run(p.gateClone, 'related', `./node_modules/.bin/vitest related --run --no-cache ${sources.map((s) => shq(`./${s}`)).join(' ')}`, CONFINED_RELATED_TIMEOUT_MS);
         if (limit(related)) return { ok: false, reason: limit(related)! };
         if (related.exitCode !== 0) return failed('gate:related-tests', related);
       }
@@ -1329,11 +1365,14 @@ export class FeedbackExecutorService {
       this.endAttempt(row, epoch, 'stopped', 'publish-fork-unset');
       return false;
     }
+    let externalStarted = false;
     try {
       applyChangeSet(p.publishClone, entries, { removeFile: (full) => removeAttemptTree(full, this.trashRoot(), 'feedback-execute publish clone delete') });
       let codeowners: string | null = null;
       try { codeowners = fs.readFileSync(path.join(p.publishClone, '.github', 'CODEOWNERS'), 'utf8'); } catch { codeowners = null; } // @silent-fallback-ok: no CODEOWNERS file → no owner note
       const outside = codeownersOutsideApprover(codeowners, entries.map((e) => e.path), approver);
+      if (row.state === 'verifying') this.opts.store.patch(epoch, row.attemptId, { reason: 'publishing' });
+      externalStarted = true;
       const headSha = await this.opts.git.commitAndPush(p.publishClone, { branch: row.branch, message: text.message, remoteUrl: `https://github.com/${fork.slug}.git`,
         authorName: identity.name, authorEmail: identity.email, credentialHelper: this.opts.ghCredentialHelper });
       const pr = await this.opts.github.createPr({ slug, head: `${fork.owner}:${row.branch}`, base: 'main', title: text.title, body: text.body, label: HOLD_LABEL });
@@ -1348,6 +1387,11 @@ export class FeedbackExecutorService {
       return true;
     } catch (error) {
       this.opts.audit.append('execute:publish-failed', { attemptId: row.attemptId, error: error instanceof Error ? error.message.slice(0, 120) : 'unknown' });
+      if (externalStarted) {
+        try { await this.parkPublishUnknown(row, epoch); }
+        catch (parkError) { if (!(parkError instanceof DrainConflictError)) throw parkError; /* The new owner parks the durable publishing marker. */ }
+        return false;
+      }
       this.endAttempt(row, epoch, 'failed', 'publish-failed');
       await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
       return false;
@@ -1433,6 +1477,13 @@ export class FeedbackExecutorService {
         this.opts.store.patch(epoch, row.attemptId, { state: 'pr-open', approvedSha: null, mergeDeadlineAt: null, headSha: pr.headRefOid, reason: 'merge-refused:head-moved', disarmFailed: false });
         return;
       }
+      if (row.reviewVerdict === 'pass' && !row.reviewReason?.startsWith(FEEDBACK_REVIEW_PASS_PREFIX)) {
+        // A pre-policy independent pass may already have armed GitHub auto-merge.
+        // Disarm it before a fresh exact-model review; an owner's approval can re-arm next tick.
+        if (!(await this.disarm(row, epoch, 'review-policy-changed'))) return;
+        this.opts.store.patch(epoch, row.attemptId, { state: 'pr-open', approvedSha: null, mergeDeadlineAt: null, reason: 'disarmed:review-policy-changed', disarmFailed: false });
+        return;
+      }
       if (row.mergeDeadlineAt !== null && this.now() > row.mergeDeadlineAt) await this.mergeRefused(row, epoch, 'deadline');
       return;
     }
@@ -1487,6 +1538,18 @@ export class FeedbackExecutorService {
       this.opts.store.patch(epoch, row.attemptId, { state: 'merge-armed', approvedSha: pr.headRefOid, approvedAt: this.now(), mergeDeadlineAt: this.now() + MERGE_ARMED_DEADLINE_MS, reason: 'merge-armed' });
       return;
     }
+    // CI queueing is not a failed merge attempt. Keep the reviewed PR open and
+    // retry on the executor cadence without consuming the one refusal retry.
+    // A durable deadline prevents a missing workflow from retrying forever.
+    if (merge.reason === 'deferred:checks-pending') {
+      if (row.mergeDeadlineAt !== null && this.now() > row.mergeDeadlineAt) {
+        await this.mergeRefused(this.opts.store.get(row.attemptId)!, epoch, 'checks-timeout');
+        return;
+      }
+      this.opts.store.patch(epoch, row.attemptId, { state: 'pr-open', reason: 'merge-deferred:checks-pending', mergeRetryAt: this.now() + 5 * 60_000,
+        mergeDeadlineAt: row.mergeDeadlineAt ?? this.now() + 3 * 60 * 60_000 });
+      return;
+    }
     await this.mergeRefused(this.opts.store.get(row.attemptId)!, epoch, merge.reason);
   }
 
@@ -1501,12 +1564,16 @@ export class FeedbackExecutorService {
   private async independentAdmission(row: ExecutionRow, epoch: number, slug: string, prNumber: number, headSha: string): Promise<'independent' | null> {
     if (row.codeownersOutside.length > 0) return null;
     if (row.reviewSha === headSha) {
-      if (row.reviewVerdict === 'pass') return 'independent';
-      // An unparseable reply is the reviewer's fault, not the change's: the same head is asked again
-      // after the merge-retry delay, up to UNPARSEABLE_REVIEW_REASKS more times, before it becomes close-eligible.
-      const reask = row.reviewVerdict === 'fail' && (row.reviewReason ?? '').startsWith('unparseable:') && row.reviewRetries < UNPARSEABLE_REVIEW_REASKS
-        && row.reviewedAt !== null && this.now() - row.reviewedAt >= MERGE_RETRY_DELAY_MS;
-      if (!reask) return null;
+      if (row.reviewVerdict === 'pass') {
+        if (row.reviewReason?.startsWith(FEEDBACK_REVIEW_PASS_PREFIX)) return 'independent';
+        // A pass from before this model policy has no exact-model proof; review it again.
+      } else {
+        // An unparseable reply is the reviewer's fault, not the change's: the same head is asked again
+        // after the merge-retry delay, up to UNPARSEABLE_REVIEW_REASKS more times, before it becomes close-eligible.
+        const reask = row.reviewVerdict === 'fail' && (row.reviewReason ?? '').startsWith('unparseable:') && row.reviewRetries < UNPARSEABLE_REVIEW_REASKS
+          && row.reviewedAt !== null && this.now() - row.reviewedAt >= MERGE_RETRY_DELAY_MS;
+        if (!reask) return null;
+      }
     }
     // Re-asks of the same head count up; a new head starts from zero.
     const retries = row.reviewSha === headSha ? row.reviewRetries + 1 : 0;
@@ -1535,16 +1602,17 @@ export class FeedbackExecutorService {
     else if (row.needsSpec && !isSpecReviewHead(files, diff, `docs/specs/feedback-${safeSlug(row.initiativeId)}.md`)) outcome = { pass: false, reason: 'spec-head-shape', reviewers: [] };
     else {
       const triage = this.opts.triageStore.get(row.initiativeId);
+      const lead = feedbackReviewLead({ severity: triage?.severity ?? null, effort: triage?.effort ?? null, needsSpec: triage?.needsSpec ?? null, changedPaths: files });
       const prompt = buildExecutorReviewPrompt({
         kind: row.needsSpec ? 'spec' : 'fix', prNumber, headSha, summary: triage?.summary ?? '', brief: triage?.brief ?? { component: '', symptom: '', expected: '', reproduction: '' }, changedPaths: files, diff,
       });
       let reviewers: ReviewerOutcome[];
-      try { reviewers = await this.opts.review.run({ prompt }); } catch (error) {
+      try { reviewers = await this.opts.review.run({ prompt, lead }); } catch (error) {
         // A throwing reviewer port is a degraded reviewer (every family, the cross-family one
         // included), never an aborted tick for every later row.
         reviewers = [{ family: 'review-port', model: null, status: 'degraded', verdict: null, crossFamily: true, reason: error instanceof Error ? error.name : 'threw', body: null }];
       }
-      outcome = { ...judgeIndependentReview(reviewers), reviewers };
+      outcome = { ...judgeRoutedFeedbackReview(reviewers, lead), reviewers };
     }
     this.opts.audit.append('execute:independent-review', { attemptId: row.attemptId, pr: prNumber, head: headSha, pass: outcome.pass, reason: outcome.reason,
       reviewers: outcome.reviewers.map((r) => ({ family: r.family, model: r.model, status: r.status, verdict: r.verdict })) });

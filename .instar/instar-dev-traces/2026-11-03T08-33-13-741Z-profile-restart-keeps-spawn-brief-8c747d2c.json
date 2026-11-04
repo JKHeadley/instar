@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "slug": "profile-restart-keeps-spawn-brief",
+  "sessionId": "5500167b-11f0-4842-8d71-61f985c86079",
+  "timestamp": "2026-11-03T08:33:13.741Z",
+  "artifactPath": "upgrades/side-effects/profile-restart-keeps-spawn-brief.md",
+  "artifactSha256": "fd454a35fc7f531bc6f15612a6353a54a17ce6b64317b37348e9e7d27e39b29c",
+  "coveredFiles": [
+    "docs/specs/TOPIC-PROFILE-SPEC.md",
+    "src/commands/server.ts",
+    "src/core/TopicProfileOrchestrator.ts",
+    "src/core/TopicSpawnBriefStore.ts",
+    "src/server/routes.ts",
+    "src/server/sessionSpawnTopicBinding.ts",
+    "tests/e2e/topic-profile-direct-spawn-lifecycle.test.ts",
+    "tests/helpers/topicProfileOrchestratorDeps.ts",
+    "tests/integration/sessions-spawn-topic-profile.test.ts",
+    "tests/unit/TopicProfileOrchestrator.test.ts",
+    "tests/unit/TopicSpawnBriefStore.test.ts",
+    "tests/unit/session-spawn-topic-binding.test.ts",
+    "tests/unit/topic-profile-server-wiring.test.ts",
+    "upgrades/eli16/profile-restart-keeps-spawn-brief.md",
+    "upgrades/next/profile-restart-keeps-spawn-brief.md",
+    "upgrades/side-effects/profile-restart-keeps-spawn-brief.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix in the topic-profile spawn/boot-sweep path; a revert fully undoes it; no migration",
+  "eli16Path": "upgrades/eli16/profile-restart-keeps-spawn-brief.md",
+  "sideEffectsPath": "upgrades/side-effects/profile-restart-keeps-spawn-brief.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "the change removes a self-triggered kill (boot sweep no longer restarts sessions with no launch record) and adds no new loop; the sweep stays once per boot"
+  }
+}

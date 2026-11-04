@@ -78,6 +78,7 @@ interface Harness {
   /** Controls what the kill deps RETURN — a failed kill must abort the respawn. */
   killResult: { value: boolean };
   spawns: Array<{
+    replacedSessionName?: string;
     topicKey: string;
     framework: IntelligenceFramework;
     model: string | undefined;
@@ -202,6 +203,7 @@ function makeHarness(cfgOverrides: Partial<OrchestratorConfig> = {}): Harness {
           model: resolved.model,
           method: directive.method,
           resumeId: directive.resumeId,
+          replacedSessionName: directive.replacedSessionName,
         });
         return outcome;
       },
@@ -955,9 +957,58 @@ describe('boot reconcile sweep', () => {
     });
     await h.store.mutate('7', { model: 'claude-fable-5', updatedBy: OP.updatedBy }, { shiftPrevious: true });
     h.orch.bootReconcileSweep();
-    expect(h.disclosures.some((d) => d.text.includes("wasn't applied before my last restart"))).toBe(true);
+    expect(h.disclosures.some((d) => d.text.includes("didn't take effect when I last restarted"))).toBe(true);
     await waitUntil(() => h.spawns.length === 1);
     expect(h.spawns[0].model).toBe('claude-fable-5');
+  });
+
+  it('a live session with NO record of its launch profile is left alone — unknown is not divergence', async () => {
+    // Regression (Echo Bugs topic 10000001430): sessions started by the direct
+    // spawn route recorded nothing, so every server restart read them as
+    // "pin not applied" and restarted them, losing their in-flight prompt.
+    const h = makeHarness();
+    liveSession(h);
+    await h.store.mutate('7', { model: 'claude-fable-5', updatedBy: OP.updatedBy }, { shiftPrevious: true });
+    h.orch.bootReconcileSweep();
+    await sleep(120);
+    expect(h.disclosures.some((d) => d.text.includes("didn't take effect when I last restarted"))).toBe(false);
+    expect(h.spawns.length).toBe(0);
+    expect(h.kills.length).toBe(0);
+    expect(h.audits.some((a) => a.type === 'boot-sweep-unknown-applied' && a.topic === '7')).toBe(true);
+    expect(h.audits.some((a) => a.type === 'boot-sweep-armed')).toBe(false);
+  });
+
+  it('a session whose recorded launch matches the pin is not restarted', async () => {
+    const h = makeHarness();
+    liveSession(h);
+    await h.store.mutate('7', { model: 'claude-fable-5', updatedBy: OP.updatedBy });
+    h.orch.recordSpawnSuccess('7', {
+      framework: 'claude-code',
+      model: 'claude-fable-5',
+      modelTier: null,
+      thinkingMode: null,
+      effort: null,
+    });
+    h.orch.bootReconcileSweep();
+    await sleep(120);
+    expect(h.spawns.length).toBe(0);
+    expect(h.audits.some((a) => a.type === 'boot-sweep-armed')).toBe(false);
+  });
+
+  it('a profile respawn tells the spawn port which session it replaces (brief carry)', async () => {
+    const h = makeHarness();
+    liveSession(h);
+    h.orch.recordSpawnSuccess('7', {
+      framework: 'claude-code',
+      model: null,
+      modelTier: null,
+      thinkingMode: null,
+    });
+    await h.store.mutate('7', { model: 'claude-fable-5', updatedBy: OP.updatedBy }, { shiftPrevious: true });
+    h.orch.bootReconcileSweep();
+    await waitUntil(() => h.spawns.length === 1);
+    expect(h.spawns[0].replacedSessionName).toBe(h.kills[0].name);
+    expect(h.spawns[0].replacedSessionName).toBeTruthy();
   });
 
   it('clears a STALE escalation marker (session gone) before computing expected-live', () => {

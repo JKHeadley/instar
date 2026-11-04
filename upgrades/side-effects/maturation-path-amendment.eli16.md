@@ -1,0 +1,7 @@
+# Maturation Path amendment, in plain words
+
+The constitution's Maturation Path article now says the last step for a switched-off feature is being on by default, unless a recorded decision says it's a matter of user preference. Every step has numbers to hit, read from what the feature actually did. Hitting the numbers raises the feature to the regular review, and the review's model decides; numbers never flip anything by themselves. Turning something on for everyone stays a reviewed code change. A feature kept off by preference still has to prove itself on the lower steps first, stays available to anyone who turns it on, and shows on the board with who decided and why. The article's note that three of its promises had no check comes out, replaced by a plain statement of what the new checks prove and what they do not: that a logged record is true, that a threshold is any good, or that a decision was recorded the day it was made.
+
+This change also adds a new article, One Constitution, Two Books Aligned: every change to the 1.x registry or the 2.0 rule book must name its counterpart in the other, or say why it has none. The check behind it has already merged. Two promises in the Maturation Path article stay marked as unenforced, because nothing checks them yet.
+
+Two tests change to match: the article count goes from 93 to 94, and the Maturation Path article now counts as backed by a test that fails the build.

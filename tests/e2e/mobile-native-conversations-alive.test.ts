@@ -98,6 +98,7 @@ describe('native app conversations — production wiring', () => {
     expect(m.status).toBe(200);
     const dms: string[] = [];
     server.mobilePairing!.deps.ownerDM = async (text) => { dms.push(text); return 1; };
+    server.mobilePairing!.deps.telegramOwnerPresent = () => true; // the Telegram path (no owner ⇒ the dashboard path, §4.4)
     const dev = makeDevice();
     const r = await request(app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code: m.body.code, deviceName: 'e2e phone', devicePublicKey: dev.publicKey });
     expect(r.status).toBe(200);
@@ -134,6 +135,10 @@ describe('native app conversations — production wiring', () => {
     const reply = await auth(request(app).post('/app/session-reply')).set('X-Instar-Bind-Token', token)
       .send({ conversationId: alias, text: 'Saturday is the farmers market at nine.' });
     expect(reply.status).toBe(200);
+    // The reply's notification preview is served on the production server (chat-media §4.11).
+    const preview = await send('GET', `/mobile/chat/app/${key}/preview/${reply.body.messageId as string}`);
+    expect(preview.status).toBe(200);
+    expect(preview.body.body).toBe('Saturday is the farmers market at nine.');
 
     // History shows both, the operator message verified against the ledger and the machine receipt.
     const hist = await send('GET', `/mobile/chat/app/${key}/messages`);
@@ -144,6 +149,17 @@ describe('native app conversations — production wiring', () => {
     ]);
     expect(hist.body.messages[0].originVerified).toBe('verified');
     expect(hist.body.messages[1].originVerified).toBe('none');
+    // The approval method rides the verified row (spec §4.6 display).
+    expect(hist.body.messages[0].originApprovedVia).toBe('telegram-dm');
+    // Pool reads are wired on the production server: a single machine answers with an empty
+    // pool.failed, the same rows, and one list cursor across every kind.
+    const poolHist = await send('GET', `/mobile/chat/app/${key}/messages?scope=pool`);
+    expect(poolHist.status).toBe(200);
+    expect(poolHist.body.pool).toEqual({ failed: [] });
+    expect(poolHist.body.messages.map((x: { text: string }) => x.text)).toEqual(hist.body.messages.map((x: { text: string }) => x.text));
+    const poolList = await send('GET', '/mobile/conversations?scope=pool');
+    expect(poolList.status).toBe(200);
+    expect(poolList.body).toMatchObject({ conversations: [expect.objectContaining({ id: key, platform: 'app' })], nextCursor: null, pool: { failed: [] } });
     const health = await auth(request(app).get('/health'));
     expect(health.body.appConversations).toMatchObject({ count: 1 });
 

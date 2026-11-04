@@ -39,6 +39,7 @@ import {
 import { installedSafeMergePath } from '../core/installedSafeMerge.js';
 import { DegradationReporter } from './DegradationReporter.js';
 import { GuardLatchStore, type GuardLatchEntry } from './GuardLatchStore.js';
+import type { AgentStopFacts } from './agentStopRelease.js';
 import { DefaultMergeRunner } from './MergeRunner.js';
 import {
   type GreenPrAutoMergerDeps,
@@ -107,6 +108,14 @@ export const GH_PR_JSON_FIELDS: readonly string[] = [
 /** The `refetchPr` projection (act-time pre-arm gate + armed-episode reconciliation read). */
 export const REFETCH_PR_JSON_FIELDS: readonly string[] = [
   'title', 'labels', 'isDraft', 'headRefOid', 'state', 'mergeCommit', 'autoMergeRequest',
+  // Belt-and-braces for the watcher's nudge of a verified PR listed as UNKNOWN: a direct
+  // read makes GitHub compute mergeability; requesting the field makes that explicit.
+  'mergeable',
+];
+
+/** The agent-stop condition's candidate read (green-pr-agent-stop-release). */
+export const AGENT_STOP_PR_JSON_FIELDS: readonly string[] = [
+  'number', 'body', 'state', 'mergedAt', 'baseRefName', 'mergeCommit',
 ];
 
 /** The `listOpenPrs` projection. */
@@ -244,6 +253,41 @@ export function buildGuardLatchStore(opts: GreenPrWiringOpts): GuardLatchStore {
     now: opts.now ? () => new Date(opts.now!()) : undefined,
     logger: opts.logger,
   });
+}
+
+/** Real GitHub reads behind an agent stop's release condition. A failed read is never "met". */
+export function buildAgentStopFacts(opts: GreenPrWiringOpts): AgentStopFacts {
+  const exec = opts.ghExec ?? createAuthenticatedGhExec({
+    stateDir: opts.stateDir,
+    resolveRuntime: opts.githubRuntime ?? createAuthenticatedGitHubCliRuntimeResolver({ stateDir: opts.stateDir }),
+  });
+  return {
+    mergedPrsCiting: async (marker) => {
+      const r = await exec(['pr', 'list', '--repo', opts.repo, '--state', 'merged', '--limit', '5', '--search', `"${marker}" in:body`, '--json', AGENT_STOP_PR_JSON_FIELDS.join(',')]);
+      if (r.code !== 0) return null;
+      try {
+        const rows = JSON.parse(r.stdout) as Array<Record<string, unknown>>;
+        if (!Array.isArray(rows)) return null;
+        return rows.map((row) => ({
+          number: Number(row.number),
+          body: typeof row.body === 'string' ? row.body : '',
+          state: String(row.state ?? ''),
+          mergedAt: typeof row.mergedAt === 'string' ? row.mergedAt : null,
+          baseRefName: String(row.baseRefName ?? ''),
+          mergeCommitOid: typeof (row.mergeCommit as { oid?: unknown } | null)?.oid === 'string' ? (row.mergeCommit as { oid: string }).oid : null,
+        }));
+      } catch { /* @silent-fallback-ok: an unparseable read is never "met" */ return null; }
+    },
+    commitInReleaseTag: async (commit, version) => {
+      if (!/^[0-9a-f]{7,64}$/i.test(commit) || !/^\d+\.\d+\.\d+$/.test(version)) return 'unreadable';
+      const r = await exec(['api', `repos/${opts.repo}/compare/${commit}...v${version}`, '--jq', '.status']);
+      if (r.code !== 0) return 'unreadable';
+      const status = r.stdout.trim();
+      if (status === 'ahead' || status === 'identical') return 'contained';
+      if (status === 'behind' || status === 'diverged') return 'not-contained';
+      return 'unreadable';
+    },
+  };
 }
 
 /** Build the full GreenPrAutoMerger deps (real gh adapters). */

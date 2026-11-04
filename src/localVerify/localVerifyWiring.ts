@@ -518,3 +518,16 @@ export function wireLocalVerifySwitches(
   svc.setLaneShards(() => liveConfig.get<unknown>('monitoring.localVerify.laneShards', null));
   svc.setPreflightMode(() => liveConfig.get<unknown>('monitoring.localVerify.preflightMode', 'off'));
 }
+
+/**
+ * Whether the merge watcher may treat a PR head as verified: a PASSING record
+ * only. A failed record used to count, so a PR whose verify failed was picked
+ * as the oldest eligible, refused by safe-merge, backed off and finally given
+ * up, holding the front of the merge line the whole time (2026-11-02).
+ */
+export function hasPassingRecord(
+  svc: { getRecord(pr: number, head: string, base: string): { outcome?: string } | null | undefined },
+  pr: number, head: string, base: string,
+): boolean {
+  return svc.getRecord(pr, head, base)?.outcome === 'success';
+}

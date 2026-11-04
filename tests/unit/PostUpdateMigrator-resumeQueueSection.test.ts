@@ -52,6 +52,36 @@ describe('PostUpdateMigrator — Mid-Work Resume Queue CLAUDE.md section', () =>
     });
   });
 
+  it('patches the installed lifeline sentence so routine job completions are described as reap-log only (idempotent)', () => {
+    const oldSentence = '(bursts coalesce per topic; unbound sessions + a cross-topic index go to the lifeline)';
+    fs.writeFileSync(claudeMdPath, `# CLAUDE.md\n\nEach topic gets ONE notice ${oldSentence}. /sessions/resume-queue\n`);
+    const first = runClaudeMdMigration(newMigrator(projectDir));
+    expect(first.upgraded).toContain('CLAUDE.md: reap notices — routine job completions stay in the reap-log');
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).not.toContain(oldSentence);
+    expect(after).toContain('except a background job whose work completed normally, which stays in the reap-log only');
+    const second = runClaudeMdMigration(newMigrator(projectDir));
+    expect(second.upgraded).not.toContain('CLAUDE.md: reap notices — routine job completions stay in the reap-log');
+    expect(fs.readFileSync(claudeMdPath, 'utf-8').match(/stays in the reap-log only/g)).toHaveLength(1);
+  });
+
+  it("patches the Reap-log section's own sentence too (idempotent)", () => {
+    const oldSentence = '(bursts coalesce per topic; the lifeline gets unbound sessions + a cross-topic index)';
+    fs.writeFileSync(claudeMdPath, `# CLAUDE.md\n\n- Notices are PER-TOPIC ${oldSentence}. /sessions/resume-queue\n`);
+    const first = runClaudeMdMigration(newMigrator(projectDir));
+    expect(first.upgraded).toContain('CLAUDE.md: reap-log section — routine job completions stay in the reap-log');
+    expect(fs.readFileSync(claudeMdPath, 'utf-8')).not.toContain(oldSentence);
+    const second = runClaudeMdMigration(newMigrator(projectDir));
+    expect(second.upgraded).not.toContain('CLAUDE.md: reap-log section — routine job completions stay in the reap-log');
+    expect(fs.readFileSync(claudeMdPath, 'utf-8').match(/stays in the reap-log only/g)).toHaveLength(1);
+  });
+
+  it('a freshly added section already carries the routine-completion wording', () => {
+    fs.writeFileSync(claudeMdPath, '# CLAUDE.md\n');
+    runClaudeMdMigration(newMigrator(projectDir));
+    expect(fs.readFileSync(claudeMdPath, 'utf-8')).toContain('which stays in the reap-log only');
+  });
+
   it('adds the section when CLAUDE.md does not contain it', () => {
     fs.writeFileSync(claudeMdPath, '# CLAUDE.md\n\nMy existing CLAUDE.md.\n');
     const result = runClaudeMdMigration(newMigrator(projectDir));

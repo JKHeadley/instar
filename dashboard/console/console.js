@@ -8,7 +8,9 @@
 import {
   failure, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, combineNeeds, machineNames,
 } from './home-model.js';
-import { GROUPS, legacyHref, icon, tabHref } from './nav-model.js';
+import { GROUPS, legacyHref, icon, tabHref, LEGACY_DASHBOARD } from './nav-model.js';
+import { fillPartial } from './home-model.js';
+import { NEED_SOURCES, surfacedNeeds } from './needs-model.js';
 import { renderPromises, topicLink } from './promises.js';
 import { renderMachines } from './machines.js';
 import { renderAccounts } from './accounts.js';
@@ -27,8 +29,10 @@ import { renderInside } from './inside.js';
 import { renderFiles } from './files.js';
 import { renderSessions } from './sessions.js';
 import { renderMaturation, maturationTile } from './maturation-board.js';
+import { renderIdeas, ideasTile } from './ideas.js';
 import { paceCard } from './pace.js';
-import { sheetIsOpen, closeSheet, unlockCheck } from './ui.js';
+import { takeTicket, signInAtBoot } from './ticket-model.js';
+import { sheetIsOpen, closeSheet, unlockCheck, machineIssue, MACHINES_PAGE, newArrival, refreshHeld } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
 const THEME_KEY = 'instar_console_theme';
@@ -46,6 +50,8 @@ const expanded = new Set();             // cards the operator expanded; kept acr
 const openRows = new Set();             // rows the operator opened; kept across refreshes
 let rowSeq = 0;
 let homeChatId = null;
+// The agent-wide Attention topic, where every attention item is posted.
+let attentionTopicId = null;
 let homeRun = null;
 
 // ── tiny DOM helpers ──────────────────────────────────────────────────────
@@ -87,11 +93,12 @@ function toggleTheme() {
 // told "can't tell". Cross-machine reads in particular can be slow for a moment.
 const MIN_TIMEOUT_MS = 20000;
 const RETRY_DELAY_MS = 0; // retry at once: a timeout already waited MIN_TIMEOUT_MS
-async function getOnce(path, timeoutMs) {
+async function getOnce(path, timeoutMs, soft403 = false) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
     const r = await fetch(path, { headers: { Authorization: `Bearer ${token}` }, signal: ctl.signal, cache: 'no-store' });
+    if (r.status === 403 && soft403) return failure('the server answered 403');
     if (r.status === 401 || r.status === 403) { signOut(); return failure('not signed in'); }
     if (r.status === 503) return failure('switched off on this agent');
     if (!r.ok) return { ...failure(`the server answered ${r.status}`), retryable: r.status >= 500 };
@@ -206,7 +213,7 @@ function navItems(active) {
     nav.append(a);
   }
   nav.append(el('div', { class: 'nav-group-label', text: 'Elsewhere' }));
-  const legacy = el('a', { href: '/dashboard', icon: 'external' });
+  const legacy = el('a', { href: LEGACY_DASHBOARD, icon: 'external' });
   legacy.append(el('span', { text: 'Legacy dashboard' }));
   legacy.classList.add('nav-sub-legacy');
   nav.append(legacy);
@@ -214,7 +221,7 @@ function navItems(active) {
 }
 
 function renderShell(active) {
-  const legacyChip = el('a', { class: 'chip chip-legacy', href: '/dashboard', text: 'Legacy' });
+  const legacyChip = el('a', { class: 'chip chip-legacy', href: LEGACY_DASHBOARD, text: 'Legacy' });
   const brand = el('a', { class: 'brand', href: '#/home' },
     el('img', { src: '/dashboard/logo.png', alt: '' }),
     el('span', { text: 'instar' }),
@@ -256,6 +263,8 @@ function actionHref(action) {
     return `#/work/promises?${params}`;
   }
   if (action.kind === 'topic') return topicLink(homeChatId, action.topicId);
+  if (action.kind === 'href') return action.href || null;
+  if (action.kind === 'attention') return attentionTopicId ? topicLink(homeChatId, attentionTopicId) : null;
   return null;
 }
 
@@ -387,6 +396,8 @@ function paintCard(def, model, repaint = false) {
     foot.append(b);
   } else foot.append(el('span', { class: 'card-age', text: extra > 0 ? `and ${extra} more` : '' }));
   if (def.href) foot.append(el('a', { href: def.href, text: 'Open', 'aria-label': `Open ${def.title} in the dashboard` }));
+  // An empty footer would leave a blank band (and its divider) under the rows.
+  foot.hidden = !foot.textContent.trim() && !foot.querySelector('a, button');
   return model;
 }
 
@@ -414,8 +425,11 @@ function paintHeadline(models) {
   }
   const statusNote = $('#homeStatusNote');
   if (statusNote) {
-    statusNote.textContent = models.needs?.statusNote || '';
-    statusNote.hidden = !statusNote.textContent;
+    const noteText = models.needs?.statusNote || '';
+    statusNote.replaceChildren(document.createTextNode(noteText));
+    // A machine that did not answer: link to where its state is shown.
+    if (noteText && machineIssue(noteText)) statusNote.append(' ', el('a', { href: MACHINES_PAGE, text: 'See machines' }));
+    statusNote.hidden = !noteText;
   }
   const issueLink = $('#heroIssueLink');
   if (issueLink) {
@@ -425,13 +439,40 @@ function paintHeadline(models) {
   $('#heroTime').textContent = `${h.tone === 'attn' ? 'What needs you' : 'Updated'} · ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 }
 
+// A machine that misses one pooled read (slow for a moment, or restarting)
+// should not turn Home into "part could not be checked". While it is retried,
+// its rows from the last complete answer stand in, for up to two minutes; the
+// machines that did answer always show their fresh rows.
+// Kept in session storage too, so reopening the app or reloading the page while a
+// machine is slow still has it (page memory alone is lost on reload). Storage can be
+// absent or full; then it is page memory only, as before.
+const lastComplete = {};
+const ROW_LISTS = { attention: 'items', sessions: 'sessions' };
+const LAST_COMPLETE_STORE = 'console.lastComplete.';
+function rememberComplete(key, result) {
+  if (!ROW_LISTS[key]) return;
+  lastComplete[key] = { result, at: Date.now() };
+  try { sessionStorage.setItem(LAST_COMPLETE_STORE + key, JSON.stringify(lastComplete[key])); } catch { /* @silent-fallback-ok: storage unavailable or full; page memory only, as before */ }
+}
+function storedComplete(key) {
+  try {
+    const v = JSON.parse(sessionStorage.getItem(LAST_COMPLETE_STORE + key) || 'null');
+    return v && typeof v.at === 'number' && v.result ? v : null;
+  } catch { return null; } // @silent-fallback-ok: unreadable storage means no stored answer
+}
+function fillFromLastComplete(key, fresh) {
+  const prev = lastComplete[key] || (lastComplete[key] = storedComplete(key) || undefined);
+  return ROW_LISTS[key] && prev ? fillPartial(fresh, prev.result, ROW_LISTS[key], Date.now(), prev.at) : null;
+}
+
 function loadHome() {
   const run = homeRun;
   if (!run || !run.active || run.document !== document) return;
   const { models, raw, results } = run;
   const paint = (id) => {
     // "What needs you" is the one answer: queue items plus promises waiting on the operator.
-    const model = id === 'needs' ? combineNeeds(raw.needs, raw.promised) : raw[id];
+    const model = id === 'needs' ? combineNeeds(raw.needs, raw.promised, surfacedNeeds(run.sources)) : raw[id];
+    if (!model) return; // nothing read yet for this card
     const shown = paintCard(CARDS.find((c) => c.id === id), model) || model;
     models[id] = shown;
     // The action queue must use the same last-known promise reading as its
@@ -448,7 +489,7 @@ function loadHome() {
     ? { ...model, retrying: true, line: [model.line, 'Checking again automatically.'].filter(Boolean).join(' ') } : model;
   const refresh = (key) => {
     const names = results.pool ? machineNames(results.pool) : {};
-    if ((key === 'attention' || key === 'pool') && results.attention) set('needs', annotate(buildNeeds(results.attention, Date.now(), names), results.attention));
+    if ((key === 'attention' || key === 'pool' || key === 'systemTopics') && results.attention) set('needs', annotate(buildNeeds(results.attention, Date.now(), names), results.attention));
     if ((key === 'sessions' || key === 'pool' || key === 'topics') && results.sessions) set('doing', annotate(buildDoing(results.sessions, Date.now(), names, topicNameMap(results.topics)), results.sessions));
     if (key === 'pool' && results.pool) set('running', annotate(buildRunning(results.pool), results.pool));
     if ((key === 'commitments' || key === 'pool') && results.commitments) {
@@ -470,7 +511,13 @@ function loadHome() {
       const partial = result.ok && (['attention', 'sessions'].includes(key) && Array.isArray(result.data?.pool?.failed) && result.data.pool.failed.length > 0
         || key === 'topics' && ((result.data?.pool?.failed?.length || 0) > 0 || (result.data?.pool?.unresolved?.length || 0) > 0));
       const retryable = partial || (!result.ok && !['not signed in', 'switched off on this agent'].includes(result.reason));
-      results[key] = partial ? { ...result, retrying: true } : result;
+      const filled = partial ? fillFromLastComplete(key, result) : null;
+      if (result.ok && !partial) rememberComplete(key, result);
+      results[key] = filled || (partial ? { ...result, retrying: true } : result);
+      if (key === 'systemTopics' && result.ok) {
+        const t = Number(result.data?.topics?.attention);
+        attentionTopicId = Number.isFinite(t) && t > 1 ? t : null;
+      }
       if (key === 'pool' && result.ok) {
         const self = (result.data?.machines || []).find((m) => m.isSelf || m.machineId === result.data.selfMachineId);
         homeChatId = self?.servesChannels?.telegram?.chatIds?.[0] || null;
@@ -484,10 +531,31 @@ function loadHome() {
     };
     attempt();
   };
+  // What needs the operator on other pages (needs-model.js): one in-flight read per source, no
+  // retry timer of its own (the next tick is the retry), and a 403 here never signs anyone out.
+  run.tick = (run.tick || 0) + 1;
+  for (const source of NEED_SOURCES) {
+    if (run.sourceBusy[source.id]) continue;
+    if (source.when && !source.when(run.sources)) continue;
+    if (source.everyTicks && run.sourceAt[source.id] && run.tick - run.sourceAt[source.id] < source.everyTicks) continue;
+    run.sourceAt[source.id] = run.tick;
+    run.sourceBusy[source.id] = true;
+    const keys = Object.keys(source.reads);
+    Promise.all(keys.map((k) => getOnce(source.reads[k], Math.max(TIMEOUT_MS, MIN_TIMEOUT_MS), true))).then((reads) => {
+      run.sourceBusy[source.id] = false;
+      if (!run.active || run.document !== document) return;
+      run.sources[source.id] = { ...(run.sources[source.id] || {}), results: Object.fromEntries(keys.map((k, i) => [k, reads[i]])) };
+      paint('needs');
+      paintHeadline(models);
+    });
+  }
   // Every source has one in-flight request and its own bounded retry timer.
   // A slow source cannot block another card or start overlapping refreshes.
   read('pool', '/pool', POOL_TIMEOUT_MS);
-  read('attention', '/attention?scope=pool', POOL_TIMEOUT_MS);
+  // Open items only: a machine's full history (closed items included) can be
+  // over a megabyte, enough to miss the per-machine time limit.
+  read('attention', '/attention?scope=pool&status=OPEN', POOL_TIMEOUT_MS);
+  read('systemTopics', '/telegram/system-topics');
   read('sessions', '/sessions?scope=pool', POOL_TIMEOUT_MS);
   read('topics', '/telegram/topics?scope=pool', POOL_TIMEOUT_MS);
   read('commitments', '/commitments?scope=mesh', COMMITMENTS_TIMEOUT_MS);
@@ -496,7 +564,7 @@ function loadHome() {
 }
 
 function renderHome(main) {
-  homeRun = { active: true, document, models: Object.fromEntries(CARDS.map((c) => [c.id, { state: 'loading' }])), raw: {}, results: {}, pending: {}, failures: {} };
+  homeRun = { active: true, document, models: Object.fromEntries(CARDS.map((c) => [c.id, { state: 'loading' }])), raw: {}, results: {}, pending: {}, failures: {}, sources: {}, sourceBusy: {}, sourceAt: {} };
   main.replaceChildren(
     el('section', { class: 'hero' },
       el('div', { class: 'eyebrow', id: 'heroTime', text: 'Checking in' }),
@@ -529,15 +597,23 @@ function tile(t, withIcon = true) {
 
 function renderGroup(main, g) {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  const extras = [
+    ...groupExtras(g, { get }), // the Development tile (Work, maintainer mode only) and the developer-tools switch (Settings)
+    ...(g.id === 'work' ? [maturationTile(get)] : []), // shown only when /maturation/board answers
+    ...(g.id === 'work' ? [ideasTile(get)] : []), // shown only when /ecosystem-ideas answers
+  ];
+  // A conditional tile arrives in its own `.tiles` wrapper (shown or hidden after its
+  // probe). Put the wrappers inside the one grid and let a shown wrapper's tile take a
+  // cell there, so every tile lines up (2026-11-02: each sat alone in its own row).
+  const tileHosts = extras.filter((n) => n && n.classList && n.classList.contains('tiles'));
+  for (const h of tileHosts) h.classList.add('tiles-inline');
   const parts = [
     el('section', { class: 'group-head' },
       el('div', { class: 'eyebrow', text: g.label }),
       el('h1', { text: g.question }),
-      el('p', { text: 'Each of these opens in the dashboard, where everything works exactly as before.' }),
     ),
-    el('div', { class: 'tiles' }, g.tabs.map((t) => tile(t))),
-    ...groupExtras(g, { get }), // the Development tile (Work, maintainer mode only) and the developer-tools switch (Settings)
-    ...(g.id === 'work' ? [maturationTile(get)] : []), // shown only when /maturation/board answers
+    el('div', { class: 'tiles' }, [...g.tabs.map((t) => tile(t)), ...tileHosts]),
+    ...extras.filter((n) => !tileHosts.includes(n)),
     ...(g.id === 'work' ? [paceCard(get)] : []), // the Pace card: shown only when /queue-pace answers
   ];
   if (g.hood && g.hood.length) {
@@ -552,8 +628,8 @@ function renderGroup(main, g) {
 
 function footNote() {
   return el('p', { class: 'foot-note' },
-    document.createTextNode('This is the new Instar console. Everything is still in the '),
-    el('a', { href: '/dashboard', text: 'legacy dashboard' }),
+    document.createTextNode('The older dashboard is still available: '),
+    el('a', { href: LEGACY_DASHBOARD, text: 'open the legacy dashboard' }),
     document.createTextNode('.'),
   );
 }
@@ -567,6 +643,7 @@ const NATIVE = {
   'work/schedule': renderSchedule,
   'work/development': renderDevelopment,
   'work/maturation': renderMaturation,
+  'work/ideas': renderIdeas,
   'work/sessions': renderSessions,
   'capacity/machines': renderMachines,
   'capacity/accounts': renderAccounts,
@@ -584,6 +661,7 @@ const NATIVE = {
 function route() {
   if (homeRun) { homeRun.active = false; for (const p of Object.values(homeRun.pending)) if (p && p !== true) clearTimeout(p); homeRun = null; }
   closeSheet();
+  newArrival();
   const path = (location.hash.replace(/^#\/?/, '') || 'home').split('?')[0];
   const id = path.split('/')[0];
   const group = GROUPS.find((g) => g.id === id);
@@ -592,9 +670,13 @@ function route() {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   if (NATIVE[path]) {
     NATIVE[path](main, { get, post, getCommitments });
-    // Pages refresh in place every 30 s while visible, never over an open sheet.
+    // Pages refresh in place every 30 s while visible, never over an open sheet or an
+    // interaction in progress, and one at a time: a slow read cannot paint over a newer one.
+    let refreshing = false;
     refreshTimer = setInterval(() => {
-      if (document.visibilityState === 'visible' && !sheetIsOpen() && (location.hash.replace(/^#\/?/, '').split('?')[0]) === path) NATIVE[path](main, { get, post, getCommitments });
+      if (refreshing || document.visibilityState !== 'visible' || sheetIsOpen() || refreshHeld(main) || (location.hash.replace(/^#\/?/, '').split('?')[0]) !== path) return;
+      refreshing = true;
+      Promise.resolve().then(() => NATIVE[path](main, { get, post, getCommitments })).catch(() => { /* @silent-fallback-ok: a failed refresh keeps the page on screen; the next tick tries again */ }).finally(() => { refreshing = false; });
     }, REFRESH_MS);
   } else if (group) renderGroup(main, group); else renderHome(main);
   window.scrollTo(0, 0);
@@ -636,5 +718,14 @@ function previewBanner() {
   applyTheme(readTheme());
   await loadPreviewInfo();
   try { token = localStorage.getItem(TOKEN_KEY) || ''; } catch { token = ''; }
-  if (await validToken(token)) start(); else renderUnlock();
+  // An owner's paired phone opens signed in without the PIN (mobile-console-device-signin §3.5).
+  let ticket = '';
+  try { ticket = takeTicket(sessionStorage); } catch { ticket = ''; }
+  const signIn = await signInAtBoot({ storedToken: token, validToken, ticket, fetchFn: (p, o) => fetch(p, o) });
+  if (signIn.via === 'ticket') {
+    // Stored exactly as the PIN unlock stores it.
+    try { localStorage.setItem(TOKEN_KEY, signIn.token); } catch { /* storage blocked */ }
+  }
+  token = signIn.token;
+  if (signIn.via === 'pin') renderUnlock(); else start();
 })();

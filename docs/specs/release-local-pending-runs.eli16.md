@@ -1,0 +1,9 @@
+# Local release sees publish runs that are waiting their turn — plain English
+
+Instar can be released two ways: GitHub's publish workflow, or `npm run release:local` on a workstation when GitHub's runners are slow. Only one of them may publish a given version, so the local command first asks GitHub whether any publish run is still unfinished, and refuses to start if one is. If it finds one, it tells the person to cancel it first.
+
+GitHub lets only one publish run go at a time. When a second run arrives while one is already waiting, GitHub marks the second one "pending". The local command only asked about runs that were queued, in progress, waiting for approval and similar states. It never asked about "pending", because an older version of GitHub's command-line tool refused that word as a filter. So on 2026-11-03 at 01:55 UTC, with one publish run queued and one pending, the command reported only the queued run. A person following its instructions would cancel that one run, and GitHub would then start the pending run, which publishes whatever main is at that moment, at the same time as the local release. That is the double-publish race the check exists to prevent.
+
+The fix adds one more question: list the 100 most recent publish runs with no filter, and treat any run that is not finished as active. That catches "pending" and any other unfinished state GitHub adds later, on every version of the tool. The old per-state questions stay, so an old queued run that has fallen out of the latest 100 is still seen. If the new question fails, the answer is "unknown", which already stops a real release.
+
+What this does not change: GitHub's own publish workflow, the release gates, the registry check after publishing, and the rule that an active run is never overridden. The only visible effect is that the command now names every run that has to be cancelled before a local release can start.

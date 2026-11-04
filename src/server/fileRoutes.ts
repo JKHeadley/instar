@@ -457,6 +457,9 @@ const NEVER_EDITABLE_PREFIXES = [
   // direct edits to instar/ would be overwritten on next update and risk
   // breaking the signed lock-file's body-hash verification.
   '.instar/jobs/instar/',
+  // claude-md-reference-layout spec: generated reference files are rewritten on
+  // every update, so a dashboard edit there would be silently lost.
+  '.instar/reference/',
   // Round-13 (security, grok-build spec §2.1): `.instar/config.json` selects
   // WHICH EXECUTABLE a session spawns (`sessions.frameworkBinaryPaths`), which
   // credentials a lane uses, and which features are enabled. `PATCH /config`

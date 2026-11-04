@@ -80,6 +80,13 @@ describe('keys held, the vault, and sync', () => {
     expect(JSON.stringify(k)).not.toContain('secret block text');
     expect(buildKeys(ok({ names: [], vaultState: 'absent' }), off())).toMatchObject({ ok: true, names: [], empty: true });
   });
+  it('saved Secret Drop entries (a token, not a name) show as one counted line', () => {
+    const h = (c: string) => c.repeat(64);
+    const k = buildKeys(ok({ names: ['github_token', `secretDrops.${h('a')} (+5 nested)`, `secretDrops.${h('b')} (+5 nested)`, 'secretDropsNote'], vaultState: 'ok' }), off());
+    expect(k.names).toEqual(['github_token', 'Saved Secret Drop submissions (2)', 'secretDropsNote']);
+    expect(JSON.stringify(k)).not.toContain(h('a'));
+    expect(buildKeys(ok({ names: [`secretDrops.${h('c')}`], vaultState: 'ok' }), off()).names).toEqual(['Saved Secret Drop submission (1)']);
+  });
   it('a switched-off key list falls back to the sync record’s names; with neither it is can’t tell with the reason', () => {
     expect(buildKeys(off(), ok({ localKeyPaths: ['telegram.token'] }))).toEqual({ ok: true, names: ['telegram.token'], source: 'sync' });
     expect(buildKeys(off(), off())).toMatchObject({ ok: false, decryptFailed: false, reason: 'Can’t tell which keys I hold: that list is switched off on this agent.' });

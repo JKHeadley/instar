@@ -78,6 +78,9 @@ export interface TelegramOriginRuntimeOptions {
   /** §4.2 — a DIRECT-path `lease-not-held` hold (owner = this machine, no forward
    * detail) was observed for the first time: the server sends the notice/item. */
   onLeaseHoldObserved?: (row: import('./StoreTypes.js').HeldOperationRow) => Promise<void> | void;
+  /** Mirror a recovered, receipt-confirmed Bot API message into topic history. */
+  onRecoveredMessage?: (input: { operationId: string; chatId: string; threadId: number | null; messageId: number; text: string; acceptedAt: number; producerKind: string }) => void;
+  onSessionDeliveryHeld?: (input: { operationId: string; reason: string; chatId: string | null; threadId: number | null }) => void;
   /** Synchronous diagnostics, independent of worker/transport authority. */
   readDetectorHealth?: () => Record<string, unknown>;
 }
@@ -157,7 +160,12 @@ export class TelegramOriginRuntime {
       reviewLegacyRecovery: options.reviewLegacyRecovery,
       peerEvidence: options.peerEvidence, diagnoseUnknown: options.diagnoseUnknown,
       diagnosticMode: options.diagnosticMode,
-      onHold: ({ reason }) => {
+      onHold: ({ operationId, reason, producerKind, destination }) => {
+        if (producerKind === 'session' && reason === 'telegram-connect-failed') {
+          console.warn(`[telegram-origin] session reply held before network: ${operationId}, chat ${destination.chatId}, thread ${destination.topicId}`);
+          options.onSessionDeliveryHeld?.({ operationId, reason, chatId: destination.chatId,
+            threadId: destination.topicId === null ? null : Number(destination.topicId) });
+        }
         if (!['all-durable-recording-sinks-unavailable', 'execution-admission-unavailable',
           'origin-execution-state-unavailable', 'held-payload-capacity-unavailable'].includes(reason)) return;
         for (const destination of options.alertDestinations()) {
@@ -288,12 +296,29 @@ export class TelegramOriginRuntime {
       browsers: [...this.browsers].map(([profileId, browser]) => ({ profileId, ...browser.executor.broker.readStatus() })),
       notices: this.options.alertDestinations().map(d => this.remoteNotices.get(d.id) ?? this.notifier.getState(d.id)) };
   }
+  /**
+   * The phone's Messages summary inputs (docs/specs/mobile-native-phones-messages.md): exactly the
+   * held, heldForward, expiredHolds, activation and metrics values status() returns, without the
+   * notice sockets, browser, detector, storage and retention reads the phone does not use.
+   */
+  async deliverySummaryInputs() {
+    const held = await this.#heldWithDurable();
+    return { held: held.rows, heldComplete: held.complete, heldForward: this.heldForwardHealth(), expiredHolds: this.service.expiredHeldStatus(),
+      activation: assessOriginActivation(this.closed ? null : this.enrollment), metrics: await this.service.metrics() };
+  }
   /** §4.2 — the in-memory held map is a CACHE of the store: durable held rows
    * (with their reason) are listed beside it, deduped on operation id. */
   async heldStatusWithDurable(): Promise<Array<Record<string, unknown>>> {
+    return (await this.#heldWithDurable()).rows;
+  }
+  /** The held rows, and whether the durable read was complete: false when it failed or filled its
+   * 200-row page (more may exist), so a count built from the rows is then a lower bound. */
+  async #heldWithDurable(): Promise<{ rows: Array<Record<string, unknown>>; complete: boolean }> {
+    const limit = 200;
     const memory = this.service.heldStatus() as Array<Record<string, unknown> & { operationId: string }>;
     let durable: import('./StoreTypes.js').HeldOperationRow[] = [];
-    try { durable = await this.store.listHeldOperations({ limit: 200 }); } catch { durable = []; }
+    let complete = true;
+    try { durable = await this.store.listHeldOperations({ limit }); complete = durable.length < limit; } catch { durable = []; complete = false; } // @silent-fallback-ok — not silent: `complete: false` reaches the phone summary, which marks the count incomplete; the store reports its own health
     const seen = new Set(memory.map(row => row.operationId));
     const rows: Array<Record<string, unknown>> = memory.map(row => {
       const match = durable.find(d => d.operationId === row.operationId);
@@ -305,8 +330,9 @@ export class TelegramOriginRuntime {
         payloadRetainedInMemory: false, durable: true, deadlineAt: row.deadlineAt, topicId: row.destination.topicId,
         holder: row.executionOwnerMachineId, recovery: row.recovery, producerKind: row.producerKind });
     }
-    return rows;
+    return { rows, complete };
   }
+
   #heldForward: { count: number; sessionReplies: number; automaticMessages: number; otherMessages: number; topics: string[]; oldestSince: number | null; observedAt: number | null; expiredUnreported: number } =
     { count: 0, sessionReplies: 0, automaticMessages: 0, otherMessages: 0, topics: [], oldestSince: null, observedAt: null, expiredUnreported: 0 };
   #heldForwardRefreshedAt = 0;
@@ -554,9 +580,25 @@ export class TelegramOriginRuntime {
         if (!await this.store.reserveRecoveryAttempt({ operationId: operation.record.operationId })) continue;
         processed++;
         const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson);
-        await telegramFetch(`https://api.telegram.org/bot${owners[0].token}/${request.method}`,
+        const response = await telegramFetch(`https://api.telegram.org/bot${owners[0].token}/${request.method}`,
           { method: 'POST', headers: { 'Content-Type': request.contentType }, body: request.body,
             networkTimeoutMs: 10_000 }, undefined, operation);
+        if (request.method === 'sendMessage' && this.options.onRecoveredMessage) {
+          try {
+            const receipt = await response.json() as { ok?: boolean; result?: { message_id?: number; date?: number } };
+            const body = JSON.parse(request.body) as { chat_id?: string | number; message_thread_id?: number; text?: string };
+            if (receipt.ok && Number.isSafeInteger(receipt.result?.message_id) && typeof body.text === 'string' && body.chat_id != null) {
+              this.options.onRecoveredMessage({ operationId: operation.record.operationId,
+                chatId: String(body.chat_id), threadId: body.message_thread_id ?? null,
+                messageId: receipt.result!.message_id!, text: body.text,
+                acceptedAt: Number.isSafeInteger(receipt.result?.date) ? receipt.result!.date! * 1000 : Date.now(),
+                producerKind: operation.record.producerKind });
+            }
+          } catch (error) {
+            console.warn('[telegram-origin] recovered message history unavailable', operation.record.operationId,
+              error instanceof Error ? error.name : 'unknown-error');
+          }
+        }
         recovered++;
         } catch (error) {
           // One held operation must not starve unrelated queued destinations.
@@ -578,7 +620,11 @@ export class TelegramOriginRuntime {
         // One row that cannot be prepared (e.g. an issues-group topic on a machine
         // without issuesChatId) must not block the rest of the queue.
         let operation: ReturnType<TelegramOriginService['prepareImportedLegacy']>;
-        try { operation = this.service.prepareImportedLegacy(snapshot, this.options.bot.accountId, this.options.bot.chatId); }
+        // Label the row with what this machine can truthfully say about its
+        // author (always its own machine; the session when the reply script
+        // recorded its credential digest). A failed lookup degrades to unknown.
+        const attribution = await this.service.attributeLegacy(snapshot).catch(() => undefined);
+        try { operation = this.service.prepareImportedLegacy(snapshot, this.options.bot.accountId, this.options.bot.chatId, attribution); }
         catch (error) { console.warn(`[telegram-origin] legacy row not imported: ${error instanceof Error ? error.message : String(error)}`); continue; }
         if (await this.store.importLegacy({ snapshot, admission: operation.admission })) imported++;
       }

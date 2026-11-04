@@ -32,7 +32,7 @@ export function buildExecutorPrompt(input: ExecutorPromptInput): string {
   const brief = input.brief;
   const task = input.needsSpec
     ? `This item needs a design first. Do NOT change any code. Write ONE new spec draft at ${input.specPath} describing the problem, the evidence and a proposed fix. Do not add review, approval or convergence tags to its frontmatter. Then write the result file with outcome "spec-drafted".`
-    : 'Reproduce the problem with a failing test (vitest, under tests/). Run that test before changing production code and confirm it fails because of the reported defect. After the fix, run it again with -t set to the exact test name you will put in testName. Check that Vitest reports at least one passed test; an all-skipped run is not proof. If it cannot be reproduced, write the result file with outcome "not-reproducible" and stop. Otherwise leave every change uncommitted in this directory and write the result file with outcome "fixed".';
+    : 'Reproduce the problem with a failing test (vitest, under tests/). Run that test before changing production code and confirm it fails because of the reported defect. For existing behavior, the old-code failure must be a Vitest assertion failure: an uncaught runtime exception or infrastructure error is rejected. If the defect throws, assert the desired behavior (for example, expect(() => operation()).not.toThrow()) instead of letting the error escape the test. The narrow exception is a test of a new source file or export that is missing from the old code. After the fix, run it again with -t set to the exact test name you will put in testName. Check that Vitest reports at least one passed test; an all-skipped run is not proof. If it cannot be reproduced, write the result file with outcome "not-reproducible" and stop. Otherwise leave every change uncommitted in this directory and write the result file with outcome "fixed".';
   return [
     'You are working on one feedback item in a sandboxed copy of the repository. You have no network and no credentials.',
     'Do NOT run git commit, git push or gh. Do NOT edit package.json, lockfiles, scripts/, .github/, .husky/, .claude/ or test-runner configs — such changes are never published.',
@@ -123,7 +123,7 @@ export function shq(value: string): string {
 export function classifyBaseFailure(output: string, exitCode: number | null, changedSources: string[], importedNames: Record<string, string> = {}): { ok: true; kind: 'assertion' | 'missing-new-source' } | { ok: false; reason: string } {
   const text = output.replace(/\u001b\[[0-9;]*m/g, '');
   if (exitCode === 0) return { ok: false, reason: vitestPassedTestCount(text) > 0 ? 'test-passes-at-base' : 'test-not-found-at-base' };
-  if (/No test files found|no tests? (found|ran)|0 passed.*0 failed|Tests\s+no tests/i.test(text)) return { ok: false, reason: 'test-not-found-at-base' };
+  if (/No test files found/i.test(text)) return { ok: false, reason: 'test-not-found-at-base' };
   const missing = [...text.matchAll(/(?:Cannot find module|Failed to (?:load|resolve) (?:url|import)|does not provide an export named|is not exported by)\s+['"]?([^'"\s)]+)['"]?/g)].map((m) => m[1]);
   const exportMissing = [...text.matchAll(/(?:module|file)\s+['"]([^'"]+)['"]\s+does not provide an export named/g)].map((m) => m[1]);
   const referenced = [...missing, ...exportMissing];
@@ -135,6 +135,10 @@ export function classifyBaseFailure(output: string, exitCode: number | null, cha
     });
     return allNew ? { ok: true, kind: 'missing-new-source' } : { ok: false, reason: 'import-error-at-base' };
   }
+  // Vitest collects zero tests when a test imports a newly added source file that is
+  // absent at base. The spec allows that precise failure, so check it before this
+  // generic zero-test summary. A missing unrelated import was rejected above.
+  if (/no tests? (found|ran)|0 passed.*0 failed|Tests\s+no tests/i.test(text)) return { ok: false, reason: 'test-not-found-at-base' };
   // ESM through vitest reports a missing NAMED export as "<name> is not a function/constructor":
   // allowed only when every such name was imported by the changed tests from a changed source file.
   const notCallable = [...text.matchAll(/TypeError: (?:\(0 , \w+\.)?(\w+)\)? is not a (?:function|constructor)/g)].map((m) => m[1]);

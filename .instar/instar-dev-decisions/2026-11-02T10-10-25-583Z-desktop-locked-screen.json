@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-02T10:10:25.583Z",
+  "slug": "desktop-locked-screen",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 6,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/MacDesktopHost.ts"
+    ],
+    "addedLines": 5,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

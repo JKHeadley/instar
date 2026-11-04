@@ -43,12 +43,26 @@ function fakeAccess(): DirectDesktopAccess {
     status: () => ({ status: 'approved', connectionNonce: 'nonce-1' }),
     resume: async (_id, _token, _input, attemptId) => ({ status: 'approved', connectionNonce: attemptId }),
     cursor: async () => ({ x: 0.25, y: 0.75 }),
+    displays: async () => ({ supported: true, platform: 'macos', canShowAll: false, currentDisplayId: '1',
+      displays: [{ id: '1', name: 'Built-in', width: 3024, height: 1964, main: true }] }),
     ticket: () => 'ticket-1',
     revoke: () => {},
   } as unknown as DirectDesktopAccess;
 }
 
 describe('remote desktop HTTP routes', () => {
+  it('says a changed helper needs a person, not just that the Mac is not ready', async () => {
+    const access = { ...fakeAccess(), probe: async () => ({
+      ready: false, screenPermission: false, inputPermission: false, displayCount: 1, sessionActive: true,
+      helperChange: { kind: 'source-changed', version: '1.3.1580', helperPath: '/Users/x/.instar/desktop-helper/instar-desktop-host' },
+    }) } as unknown as DirectDesktopAccess;
+    const { server } = app(access, desktopRouteAccess(access, 'machine-1', 'machine-1') as Partial<RouteContext>);
+    const response = await request(server).get('/desktop/availability').set('Authorization', `Bearer ${AUTH}`);
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(response.body)).toContain('changed in update 1.3.1580');
+    expect(JSON.stringify(response.body)).toContain('will not fix itself');
+  });
+
   it('permits only explicit enabled-state rollout through the config API', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-config-'));
     const stateDir = path.join(root, '.instar');
@@ -220,6 +234,12 @@ describe('remote desktop HTTP routes', () => {
     const cursor = await request(server).get('/desktop/requests/request-1/cursor').set(headers);
     expect(cursor.status).toBe(200);
     expect(cursor.body).toEqual({ x: 0.25, y: 0.75 });
+    expect((await request(server).get('/desktop/requests/request-1/displays')
+      .set({ Authorization: `Bearer ${AUTH}` })).status).toBe(403);
+    const displays = await request(server).get('/desktop/requests/request-1/displays').set(headers);
+    expect(displays.status).toBe(200);
+    expect(displays.headers['cache-control']).toBe('no-store');
+    expect(displays.body).toMatchObject({ supported: true, platform: 'macos', currentDisplayId: '1' });
     const ticket = await request(server).post('/desktop/requests/request-1/ticket')
       .set({ ...headers, 'X-Instar-Request': '1' }).send({ connectionNonce: 'nonce-1', signature: 'fixture' });
     expect(ticket.body).toMatchObject({ ticket: 'ticket-1', machineId: 'machine-1' });

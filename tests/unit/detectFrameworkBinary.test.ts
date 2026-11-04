@@ -106,6 +106,63 @@ describe('detectFrameworkBinary', () => {
     }
   });
 
+  it('finds a binary in ~/.local/bin even when that folder is not on PATH', async () => {
+    // Claude Code's native installer and `instar install` (non-writable npm prefix) both put
+    // the binary here; a login shell adds it to PATH only if it existed at login.
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'local-bin-home-test-'));
+    const prevHome = process.env.HOME;
+    try {
+      const binDir = path.join(tmpHome, '.local', 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const bin = path.join(binDir, 'plandex');
+      fs.writeFileSync(bin, '#!/bin/sh\necho stub\n', { mode: 0o755 });
+      process.env.HOME = tmpHome;
+      _resetFrameworkBinaryCache();
+      expect(detectFrameworkBinary('plandex')).toBe(bin);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+      _resetFrameworkBinaryCache();
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it('finds a mise shim in ~/.local/share/mise/shims (where Omarchy 4.5 puts claude and codex)', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'mise-shim-home-test-'));
+    const saved = { HOME: process.env.HOME, MISE_DATA_DIR: process.env.MISE_DATA_DIR, XDG_DATA_HOME: process.env.XDG_DATA_HOME };
+    try {
+      const shimDir = path.join(tmpHome, '.local', 'share', 'mise', 'shims');
+      fs.mkdirSync(shimDir, { recursive: true });
+      const bin = path.join(shimDir, 'plandex');
+      fs.writeFileSync(bin, '#!/bin/sh\necho stub\n', { mode: 0o755 });
+      process.env.HOME = tmpHome;
+      delete process.env.MISE_DATA_DIR;
+      delete process.env.XDG_DATA_HOME;
+      _resetFrameworkBinaryCache();
+      expect(detectFrameworkBinary('plandex')).toBe(bin);
+
+      // MISE_DATA_DIR wins when set.
+      const custom = fs.mkdtempSync(path.join(os.tmpdir(), 'mise-data-dir-test-'));
+      fs.mkdirSync(path.join(custom, 'shims'));
+      fs.renameSync(bin, path.join(custom, 'shims', 'plandex'));
+      process.env.MISE_DATA_DIR = custom;
+      _resetFrameworkBinaryCache();
+      expect(detectFrameworkBinary('plandex')).toBe(path.join(custom, 'shims', 'plandex'));
+      fs.rmSync(custom, { recursive: true, force: true });
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+      _resetFrameworkBinaryCache();
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
   it('source MUST search nvm version dirs (regression guard for bug #10)', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');

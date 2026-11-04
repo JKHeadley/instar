@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "same-agent-session-handoff",
+  "sessionId": "f6c840fa-11bd-40b9-a0c5-547968830ac2",
+  "timestamp": "2026-11-03T17:08:57.464Z",
+  "artifactPath": "upgrades/side-effects/same-agent-session-handoff.md",
+  "artifactSha256": "36e4887bb5aa83891523c8043d82bfb1b28a1938bbdc3f268dad88bd27f377ad",
+  "coveredFiles": [
+    "docs/specs/same-agent-session-handoff.eli16.md",
+    "src/core/MessagingToneGate.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/PostUpdateMigrator-sessionHandoff.test.ts",
+    "tests/unit/messaging-tone-gate-b21.test.ts",
+    "tests/unit/messaging-tone-gate-b22.test.ts",
+    "upgrades/next/same-agent-session-handoff.md",
+    "upgrades/side-effects/same-agent-session-handoff.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Removes the B22 tone-gate rule from this change (benchmark mirror needs an off-machine re-capture, tracked fb-245d23bf-1e2); the rest is wording. Revert fully undoes it.",
+  "eli16Path": "docs/specs/same-agent-session-handoff.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/same-agent-session-handoff.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

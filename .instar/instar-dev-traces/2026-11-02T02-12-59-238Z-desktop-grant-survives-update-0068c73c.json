@@ -1,0 +1,42 @@
+{
+  "version": 2,
+  "slug": "desktop-grant-survives-update",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T02:12:59.238Z",
+  "artifactPath": "upgrades/side-effects/desktop-grant-survives-update.md",
+  "artifactSha256": "c770cf3ea8a972a30be69576b4fd26587da51add909777d0b108631a5256b47c",
+  "coveredFiles": [
+    "docs/specs/desktop-grant-survives-update.eli16.md",
+    "docs/specs/desktop-grant-survives-update.md",
+    "scripts/build-native-desktop-host.mjs",
+    "scripts/check-native-desktop-release.mjs",
+    "src/core/DesktopHelperPermissionNotice.ts",
+    "src/core/DesktopHelperRetention.ts",
+    "src/core/DesktopHost.ts",
+    "src/core/DesktopProbeReadiness.ts",
+    "src/core/MacDesktopHost.ts",
+    "src/core/types.ts",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/desktop-boot-lifecycle.test.ts",
+    "tests/e2e/desktop-helper-retention-lifecycle.test.ts",
+    "tests/integration/desktop-routes.test.ts",
+    "tests/unit/DesktopHelperPermissionNotice.test.ts",
+    "tests/unit/DesktopHelperRetention.test.ts",
+    "tests/unit/MacDesktopHostIdentity.test.ts",
+    "upgrades/next/desktop-grant-survives-update.md",
+    "upgrades/side-effects/desktop-grant-survives-update.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A revert or remoteDesktop.retainedHelper:false fully undoes it; the kept folder is inert, nothing migrates, and no new authority to block or kill. It does change which binary runs on Macs, so an independent second pass was done anyway.",
+  "eli16Path": "docs/specs/desktop-grant-survives-update.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-grant-survives-update.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Not an unbounded loop: a 15-minute reader that raises at most one Attention item per helper source per Mac, held by an atomic marker and a stable conditionKey. A failed send retries at the next tick and lands on the same row. It restarts, kills and respawns nothing."
+  }
+}

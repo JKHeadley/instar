@@ -10,11 +10,14 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { PAIRING_WORDS, PAIRING_WORD_SET } from './pairingWords.js';
 
 export const DEVICE_SIG_VERSION = 'instar-device-v1';
 export const DEVICE_TIME_WINDOW_MS = 60_000;
 export const REPLAY_TTL_MS = 3 * 60_000;
 export const MAX_REPLAY_PER_DEVICE = 2_000;
+/** Entries only a send route may use (media spec §4.10). */
+export const REPLAY_SEND_RESERVE = 100;
 
 export type DeviceStatus = 'pending' | 'active' | 'declined' | 'expired' | 'revoked';
 
@@ -116,14 +119,18 @@ export class ReplayGuard {
   private seen = new Map<string, Map<string, number>>();
   constructor(private readonly now: () => number = Date.now) {}
 
-  admit(deviceId: string, canonical: string): 'ok' | 'replay' | 'full' {
+  /**
+   * `sendRoute`: the last entries are kept for send routes (media spec §4.10), so an emergency
+   * stop is never refused because a large upload filled the guard. The bound stays 2,000.
+   */
+  admit(deviceId: string, canonical: string, sendRoute = false): 'ok' | 'replay' | 'full' {
     const t = this.now();
     let m = this.seen.get(deviceId);
     if (!m) { m = new Map(); this.seen.set(deviceId, m); }
     for (const [k, at] of m) { if (t - at > REPLAY_TTL_MS) m.delete(k); else break; }
     const key = crypto.createHash('sha256').update(canonical).digest('hex');
     if (m.has(key)) return 'replay';
-    if (m.size >= MAX_REPLAY_PER_DEVICE) return 'full';
+    if (m.size >= (sendRoute ? MAX_REPLAY_PER_DEVICE : MAX_REPLAY_PER_DEVICE - REPLAY_SEND_RESERVE)) return 'full';
     m.set(key, t);
     return 'ok';
   }
@@ -140,6 +147,7 @@ export function verifyDeviceRequest(
   allowStatuses: ReadonlySet<DeviceStatus>,
   replay: ReplayGuard,
   now: number = Date.now(),
+  sendRoute = false,
 ): VerifyResult {
   const { deviceId, time, sig } = parts;
   if (typeof deviceId !== 'string' || !/^[A-Za-z0-9-]{8,64}$/.test(deviceId) || typeof time !== 'string' || !/^\d{10,16}$/.test(time) || typeof sig !== 'string') {
@@ -158,7 +166,7 @@ export function verifyDeviceRequest(
   let valid = false;
   try { valid = crypto.verify('sha256', Buffer.from(message), { key, dsaEncoding: 'der' }, sigBytes); } catch { valid = false; } // @silent-fallback-ok — a malformed DER signature is simply invalid
   if (!valid) return { ok: false, reason: 'bad-signature' };
-  const r = replay.admit(deviceId, message);
+  const r = replay.admit(deviceId, message, sendRoute);
   if (r === 'replay') return { ok: false, reason: 'replay' };
   if (r === 'full') return { ok: false, reason: 'rate-limited' };
   return { ok: true, deviceId };
@@ -166,7 +174,7 @@ export function verifyDeviceRequest(
 
 // ── Device registry (.instar/state/mobile-devices.json) ─────────────────────────────
 
-export const PENDING_TTL_MS = 15 * 60_000;
+export const PENDING_TTL_MS = 30 * 60_000; // was 15 min (mobile-pairing-tailscale-origin §3.4)
 export const MAX_PENDING = 10;
 export const MAX_WRONG_PER_DEVICE = 3;
 export const WRONG_BUDGET = 10;
@@ -191,6 +199,42 @@ export interface DeviceRecord {
   revokedAt?: string;
   /** HMACs of distinct wrong codes already tried (per-process key; cleared on activation). */
   wrongCodes?: string[];
+  /** Mobile push (docs/specs/mobile-push.md): APNs token, its environment, the notification
+   *  read token's SHA-256, the highest registration revision applied, and the stored version. */
+  pushToken?: string;
+  pushEnvironment?: 'sandbox' | 'production';
+  notifyTokenHash?: string;
+  pushRevision?: number;
+  pushVersion?: number;
+  pushUpdatedAt?: string;
+  /**
+   * The person this phone belongs to (docs/specs/mobile-app-people-and-roles.md): a `UserProfile.id`
+   * from the agent's user registry, and this phone's role with the agent. Absent ⇒ the owner's phone
+   * (every phone paired before people and roles was approved by the owner alone as the owner's).
+   */
+  userId?: string;
+  role?: 'owner' | 'msp';
+  /**
+   * The phone's presence key (docs/specs/mobile-console-device-signin.md §3.1): a second Secure
+   * Enclave P-256 public key that signs only after the device owner authenticates. Set once.
+   */
+  presenceKey?: string;
+}
+
+export interface PushRegistration {
+  token: string | null;
+  environment?: 'sandbox' | 'production';
+  notifyTokenHash?: string;
+  revision: number;
+}
+
+export type PushRegisterResult =
+  | { ok: true; revision: number; version: number }
+  | { ok: false; reason: 'not-active' | 'stale-revision' | 'revision-conflict' };
+
+function samePush(d: DeviceRecord, r: PushRegistration): boolean {
+  if (r.token === null) return !d.pushToken;
+  return d.pushToken === r.token && d.pushEnvironment === r.environment && d.notifyTokenHash === r.notifyTokenHash;
 }
 
 interface RegistryFile { devices: DeviceRecord[]; wrongCodeTimes?: number[] }
@@ -249,7 +293,7 @@ export class DeviceRegistry {
   pairingPaused(): boolean { return (this.normalize(this.read()).wrongCodeTimes ?? []).length >= WRONG_BUDGET; }
 
   /** Adds a pending device. Refuses a duplicate key, too many pending, or a paused budget. */
-  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string }):
+  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string; userId?: string | null; role?: 'owner' | 'msp' }):
     { ok: true; device: DeviceRecord } | { ok: false; reason: 'duplicate-key' | 'too-many-pending' | 'pairing-paused' } {
     const f = this.normalize(this.read());
     if ((f.wrongCodeTimes ?? []).length >= WRONG_BUDGET) return { ok: false, reason: 'pairing-paused' };
@@ -260,10 +304,44 @@ export class DeviceRegistry {
       id: crypto.randomUUID(), deviceName: row.deviceName, label: row.label, pairedAt: new Date(t).toISOString(),
       status: 'pending', publicKey: row.publicKey, fingerprint: deviceFingerprint(row.publicKey), host: row.host,
       expiresAt: new Date(t + PENDING_TTL_MS).toISOString(), wrongCodes: [],
+      ...(row.userId ? { userId: row.userId } : {}),
+      // Only a non-owner role is written: absent already means owner, so an owner phone's record
+      // stays byte-identical to the shape older builds read.
+      ...(row.role && row.role !== 'owner' ? { role: row.role } : {}),
     };
     f.devices.unshift(device);
     this.write(f);
     return { ok: true, device };
+  }
+
+  /**
+   * Assign a phone to a person (people and roles §3.2). Owner with no userId clears both fields
+   * (the absent-means-owner shape). Returns null when this machine holds no such device; a revoked
+   * device is never reassigned.
+   */
+  setPerson(id: string, person: { userId: string | null; role: 'owner' | 'msp' }): DeviceRecord | null {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || d.status === 'revoked') return null;
+    if (person.userId) d.userId = person.userId; else delete d.userId;
+    if (person.role === 'owner') delete d.role; else d.role = person.role;
+    this.write(f);
+    return d;
+  }
+
+  /**
+   * Record the phone's presence key once (mobile-console-device-signin §3.1). The same key again is
+   * a no-op ('same'); a different key is refused ('conflict'); only an active device may set it.
+   */
+  setPresenceKey(id: string, publicKey: string): 'set' | 'same' | 'conflict' | 'not-active' {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || d.status !== 'active') return 'not-active';
+    if (d.presenceKey === publicKey) return 'same';
+    if (d.presenceKey) return 'conflict';
+    d.presenceKey = publicKey;
+    this.write(f);
+    return 'set';
   }
 
   remove(id: string): void {
@@ -292,11 +370,14 @@ export class DeviceRegistry {
     return d;
   }
 
-  /** Boot and lease loss: no pending device can be confirmed any more. */
-  expireAllPending(): void {
+  /**
+   * Boot and lease loss: no pending device can be confirmed any more. `except` keeps the named
+   * devices pending (a lease move does not expire a dashboard-path device, mobile-native-conversations §4.4).
+   */
+  expireAllPending(except?: ReadonlySet<string>): void {
     const f = this.normalize(this.read());
     let changed = false;
-    for (const d of f.devices) if (d.status === 'pending') { d.status = 'expired'; d.expiresAt = new Date(this.now()).toISOString(); changed = true; }
+    for (const d of f.devices) if (d.status === 'pending' && !except?.has(d.id)) { d.status = 'expired'; d.expiresAt = new Date(this.now()).toISOString(); changed = true; }
     if (changed) this.write(f);
   }
 
@@ -314,9 +395,54 @@ export class DeviceRegistry {
     const f = this.normalize(this.read());
     const d = f.devices.find((x) => x.id === id);
     if (!d) return false;
-    if (d.status !== 'revoked') { d.status = 'revoked'; d.revokedAt = at ?? new Date(this.now()).toISOString(); this.write(f); }
+    if (d.status !== 'revoked') { d.status = 'revoked'; d.revokedAt = at ?? new Date(this.now()).toISOString(); clearPush(d); this.write(f); }
     return true;
   }
+
+  /**
+   * Register or clear this device's push token (mobile-push §2.2). A lower revision is refused;
+   * the same revision is accepted only with the same body (a retry). A token is held by at most
+   * one record on this machine.
+   */
+  setPush(id: string, r: PushRegistration): PushRegisterResult {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || d.status !== 'active') return { ok: false, reason: 'not-active' };
+    const prev = d.pushRevision ?? 0;
+    if (r.revision < prev) return { ok: false, reason: 'stale-revision' };
+    if (r.revision === prev) {
+      return samePush(d, r) ? { ok: true, revision: prev, version: d.pushVersion ?? 0 } : { ok: false, reason: 'revision-conflict' };
+    }
+    const changed = !samePush(d, r);
+    d.pushRevision = r.revision;
+    if (changed) {
+      if (r.token === null) clearPush(d);
+      else {
+        for (const other of f.devices) if (other.id !== d.id && other.pushToken === r.token) { clearPush(other); other.pushVersion = (other.pushVersion ?? 0) + 1; }
+        d.pushToken = r.token; d.pushEnvironment = r.environment; d.notifyTokenHash = r.notifyTokenHash;
+        d.pushUpdatedAt = new Date(this.now()).toISOString();
+      }
+      d.pushVersion = (d.pushVersion ?? 0) + 1;
+    }
+    this.write(f);
+    return { ok: true, revision: r.revision, version: d.pushVersion ?? 0 };
+  }
+
+  /** An APNs answer that retires a token clears it only if the record still holds that version. */
+  clearPushIfVersion(id: string, version: number): boolean {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || !d.pushToken || (d.pushVersion ?? 0) !== version) return false;
+    clearPush(d);
+    d.pushVersion = version + 1;
+    this.write(f);
+    return true;
+  }
+}
+
+function clearPush(d: DeviceRecord): void {
+  delete d.pushToken; delete d.pushEnvironment; delete d.notifyTokenHash;
+  d.pushUpdatedAt = new Date().toISOString();
 }
 
 // ── Confirmation codes (process memory only) ────────────────────────────────────────
@@ -326,32 +452,80 @@ export function codeHmac(code: string): string {
   return crypto.createHmac('sha256', CODE_KEY).update(code).digest('hex');
 }
 
+export type CodeFormat = 'digits' | 'word';
+
+/**
+ * mobile-pairing-word-code §3.3 — the one word-code form, shared by check() (anchored) and the
+ * leak scan (unanchored): 4–6 ASCII letters, at most 3 separators, 4 ASCII digits. Separators are
+ * whitespace, - – — _ : and . (no Unicode letter matching: e.g. the Kelvin sign is not a K).
+ */
+export const WORD_CODE_SEP = '[\\s\\-\\u2013\\u2014_:.]';
+export const WORD_CODE_FRAGMENT = `([A-Za-z]{4,6})${WORD_CODE_SEP}{0,3}([0-9]{4})`;
+const WORD_CODE_ANCHORED = new RegExp(`^\\s*${WORD_CODE_FRAGMENT}\\s*$`);
+const WORD_CODE_SCAN = new RegExp(`(?<![A-Za-z])${WORD_CODE_FRAGMENT}(?![0-9])`, 'g');
+
+/** ASCII-only uppercasing (no locale or Unicode case folding). */
+function asciiUpper(s: string): string { return s.replace(/[a-z]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 32)); }
+
+/** `KITE4172` for a word-code form, null for anything else (a PIN, digits, spaced letters, non-string). */
+export function parseWordCode(input: unknown): string | null {
+  if (typeof input !== 'string') return null;
+  const m = WORD_CODE_ANCHORED.exec(input);
+  return m ? asciiUpper(m[1]!) + m[2]! : null;
+}
+
+/** Display form: `KITE-4172` for a word code, `NNN NNN` for a digit code. */
+export function displayCode(code: string): string {
+  const m = /^([A-Z]{4,6})(\d{4})$/.exec(code);
+  if (m) return `${m[1]}-${m[2]}`;
+  return /^\d{6}$/.test(code) ? `${code.slice(0, 3)} ${code.slice(3)}` : code;
+}
+
 /** Live codes per pending device, in memory: a restart voids them all. */
 export class ConfirmationCodes {
-  private codes = new Map<string, { hmac: string; expiresAt: number }>();
+  private codes = new Map<string, { hmac: string; expiresAt: number; format: CodeFormat }>();
   constructor(private readonly now: () => number = Date.now) {}
 
-  issue(deviceId: string, expiresAt: number): string {
-    const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
-    this.codes.set(deviceId, { hmac: codeHmac(code), expiresAt });
+  /** Returns the code in its normalized form (`KITE4172` or `123456`); format it with displayCode(). */
+  issue(deviceId: string, expiresAt: number, format: CodeFormat = 'digits'): string {
+    const code = format === 'word'
+      ? PAIRING_WORDS[crypto.randomInt(0, PAIRING_WORDS.length)]! + String(crypto.randomInt(0, 10_000)).padStart(4, '0')
+      : String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+    this.codes.set(deviceId, { hmac: codeHmac(code), expiresAt, format });
     return code;
   }
 
-  /** 'ok' | 'wrong' (with its hmac) | 'none' (no live code for this device). */
-  check(deviceId: string, code: unknown): { result: 'ok' } | { result: 'wrong'; hmac: string } | { result: 'none' } {
+  formatOf(deviceId: string): CodeFormat | null { return this.codes.get(deviceId)?.format ?? null; }
+
+  /**
+   * 'ok' | 'wrong' (with its hmac) | 'wrong-format' (a word device given something that is not a
+   * word-code form: no HMAC, no strike) | 'none' (no live code for this device).
+   */
+  check(deviceId: string, code: unknown): { result: 'ok' } | { result: 'wrong'; hmac: string } | { result: 'wrong-format' } | { result: 'none' } {
     const e = this.codes.get(deviceId);
     if (!e || e.expiresAt <= this.now()) return { result: 'none' };
-    const normalized = typeof code === 'string' ? code.replace(/\D/g, '') : '';
+    let normalized: string;
+    if (e.format === 'word') {
+      const parsed = parseWordCode(code);
+      if (parsed === null) return { result: 'wrong-format' };
+      normalized = parsed;
+    } else {
+      // Digits device: today's rule exactly.
+      normalized = typeof code === 'string' ? code.replace(/\D/g, '') : '';
+    }
     const h = codeHmac(normalized);
     // Compare only: the caller consumes the code (drop) after the activation is written.
-    if (normalized.length === 6 && crypto.timingSafeEqual(Buffer.from(h), Buffer.from(e.hmac))) return { result: 'ok' };
+    if ((e.format === 'word' || normalized.length === 6) && crypto.timingSafeEqual(Buffer.from(h), Buffer.from(e.hmac))) return { result: 'ok' };
     return { result: 'wrong', hmac: h };
   }
 
   drop(deviceId: string): void { this.codes.delete(deviceId); }
 
-  /** Lease loss: no code issued before it may confirm anything. */
-  clearAll(): void { this.codes.clear(); }
+  /** Lease loss: no code issued before it may confirm anything (`except`: dashboard-path devices keep theirs). */
+  clearAll(except?: ReadonlySet<string>): void {
+    if (!except?.size) { this.codes.clear(); return; }
+    for (const id of [...this.codes.keys()]) if (!except.has(id)) this.codes.delete(id);
+  }
 
   /** Forget codes past their expiry (bounded memory). */
   prune(): void { const t = this.now(); for (const [id, e] of this.codes) if (e.expiresAt <= t) this.codes.delete(id); }
@@ -362,6 +536,12 @@ export class ConfirmationCodes {
     const t = this.now();
     const candidates = new Set<string>();
     for (const m of text.matchAll(/(?<!\d)(\d{3})[\s-]?(\d{3})(?!\d)/g)) candidates.add(m[1]! + m[2]!);
+    // Word codes (mobile-pairing-word-code §3.5): the same form check() accepts, only listed words,
+    // de-duplicated; no cap, so nothing in a message can push a real code out of the scan.
+    for (const m of text.matchAll(WORD_CODE_SCAN)) {
+      const word = asciiUpper(m[1]!);
+      if (PAIRING_WORD_SET.has(word)) candidates.add(word + m[2]!);
+    }
     const hits: string[] = [];
     for (const c of candidates) {
       const h = codeHmac(c);

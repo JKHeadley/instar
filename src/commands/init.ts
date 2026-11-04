@@ -29,6 +29,7 @@
  * Existing project adds .instar/ and appends to CLAUDE.md.
  */
 
+import { isBlankAgentHome, markNewAgent } from '../recommended/offerPrerequisites.js';
 import { applyInitPosture, decideInitPosture, parseTtl } from '../core/ThrowawayAgentGuard.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -37,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import pc from 'picocolors';
+import { ensureClaudeFirstRunAnswered } from '../core/ensureInteractiveReady.js';
 import {
   assertNotTccProtected,
   describeTccProtectedPath,
@@ -49,6 +51,7 @@ import { CANONICAL_FEEDBACK_URL } from '../core/canonicalFeedback.js';
 import { recordInstallProvenanceIfAbsent } from '../core/ApprenticeshipStallGate.js';
 import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT, SUBSCRIPTION_SIGNIN_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
+import { packageInstallCommand } from '../core/packageInstall.js';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS, INSTAR_WILDCARD_PRETOOLUSE_HOOKS, ensureInstarWildcardPreToolUseHooks, type SettingsMatcherEntry } from '../core/instarSettingsHooks.js';
@@ -56,6 +59,7 @@ import { allocatePort, registerAgent, validateAgentName } from '../core/AgentReg
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
 import { PostUpdateMigrator } from '../core/PostUpdateMigrator.js';
+import { findCoreRegion, REFERENCE_DIR_REL as CLAUDE_MD_REFERENCE_DIR_REL } from '../scaffold/claudeMdLayout.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
 import { ContextHierarchy } from '../core/ContextHierarchy.js';
 import { CanonicalState } from '../core/CanonicalState.js';
@@ -122,6 +126,10 @@ interface InitOptions {
   expiresIn?: string;
   /** Test-agent leak guard: never expire, even in a temporary folder. */
   keep?: boolean;
+  /** Installer: what this agent is for, in the person's own words. */
+  role?: string;
+  /** Installer: don't ask about cloud backup. The agent offers it later, when wanted. */
+  skipCloudBackup?: boolean;
 }
 
 /**
@@ -349,6 +357,8 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
 
   // Create .instar/ state directory
   const stateDir = path.join(projectDir, '.instar');
+  // An existing agent stays out of offers until its first list, so only a blank home counts as new.
+  if (isBlankAgentHome(stateDir)) markNewAgent(stateDir);
   ensureStateDir(stateDir);
   console.log(`  ${pc.green('✓')} Created .instar/`);
 
@@ -564,7 +574,8 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   if (claudeEnabled) {
     const claudeMd = generateClaudeMd(projectName, identity.name, port, false);
     fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), claudeMd);
-    console.log(`  ${pc.green('✓')} Created CLAUDE.md`);
+    applyClaudeMdReferenceLayout(projectDir, stateDir, port, projectName);
+    console.log(`  ${pc.green('✓')} Created CLAUDE.md (+ ${CLAUDE_MD_REFERENCE_DIR_REL}/ reference files)`);
   }
 
   // Additively render non-Claude identity shadows (AGENTS.md / GEMINI.md)
@@ -736,6 +747,8 @@ async function initExistingProject(options: InitOptions): Promise<void> {
 
   // Create state directory
   const stateDir = path.join(projectDir, '.instar');
+  // An existing agent stays out of offers until its first list, so only a blank home counts as new.
+  if (isBlankAgentHome(stateDir)) markNewAgent(stateDir);
   ensureStateDir(stateDir);
   console.log(pc.green('  Created:') + ' .instar/');
 
@@ -974,11 +987,12 @@ async function initExistingProject(options: InitOptions): Promise<void> {
     console.log(pc.dim('  Exists:') + ' machine identity (preserved)');
   }
 
-  // Append agency principles to CLAUDE.md if it exists
+  // Append agency principles to CLAUDE.md if it exists (not when the instar
+  // block of the reference layout is already there — it carries them).
   const claudeMdPath = path.join(projectDir, 'CLAUDE.md');
   if (fs.existsSync(claudeMdPath)) {
     const content = fs.readFileSync(claudeMdPath, 'utf-8');
-    if (!content.includes('## Agent Infrastructure')) {
+    if (!content.includes('## Agent Infrastructure') && findCoreRegion(content) === null) {
       fs.appendFileSync(claudeMdPath, getAgencyPrinciples(projectName, undefined));
       console.log(pc.green('  Updated:') + ' CLAUDE.md (added agency principles)');
     }
@@ -1095,11 +1109,14 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
 
   // Create directory structure
   fs.mkdirSync(projectDir, { recursive: true });
+  // An existing agent stays out of offers until its first list, so only a blank home counts as new.
+  if (isBlankAgentHome(stateDir)) markNewAgent(stateDir);
   ensureStateDir(stateDir);
   console.log(`  ${pc.green('✓')} Created ${projectDir}`);
 
   // Generate identity
   const identity = defaultIdentity(agentName);
+  if (options.role) identity.role = options.role;
   const authToken = randomUUID();
 
   // Write identity files
@@ -1180,7 +1197,8 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
       path.join(projectDir, 'CLAUDE.md'),
       generateClaudeMd(agentName, agentName, port, false),
     );
-    console.log(`  ${pc.green('✓')} Created CLAUDE.md`);
+    applyClaudeMdReferenceLayout(projectDir, stateDir, port, agentName);
+    console.log(`  ${pc.green('✓')} Created CLAUDE.md (+ ${CLAUDE_MD_REFERENCE_DIR_REL}/ reference files)`);
   }
 
   // Additively render non-Claude identity shadows (AGENTS.md / GEMINI.md)
@@ -1255,7 +1273,7 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
   }
 
   // Cloud backup setup (recommended — protects agent data from machine loss)
-  await setupCloudBackup(projectDir, stateDir, agentName);
+  if (!options.skipCloudBackup) await setupCloudBackup(projectDir, stateDir, agentName);
 
   // Generate manifest signing key
   const standaloneIntegrity = new ManifestIntegrity(path.join(stateDir, 'state'));
@@ -1550,9 +1568,11 @@ async function autoInstallPackage(pkg: string): Promise<string | null> {
         console.log(pc.dim('  Homebrew not found. Install it first: https://brew.sh'));
       }
     } else if (platform === 'linux') {
-      // Linux — try apt
-      console.log(pc.dim(`  Running: sudo apt install -y ${pkg}`));
-      execFileSync('sudo', ['apt', 'install', '-y', pkg], { stdio: 'inherit' });
+      // Linux — whichever package manager this computer has (apt, dnf, yum or pacman).
+      const command = packageInstallCommand([pkg]);
+      if (!command) return null;
+      console.log(pc.dim(`  Running: ${command.join(' ')}`));
+      execFileSync(command[0], command.slice(1), { stdio: 'inherit' });
       const installed = execFileSync('which', [pkg], { encoding: 'utf-8', stdio: 'pipe' }).trim();
       if (installed) {
         console.log(`  ${pc.green('✓')} Installed ${pkg}`);
@@ -3479,17 +3499,14 @@ If no actionable patterns found, exit silently.`,
 AGENT_ID="\${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
 PORT="\${INSTAR_PORT:-${port}}"
 
-Check for overdue commitments: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/actions/overdue
+Report only. Do not complete, cancel or edit any action, and do not message the user: this job keeps ONE dashboard row current, and the agent works the actions themselves in its normal sessions.
 
-For each overdue action:
-1. Assess: Can this be completed now? Is it still relevant?
-2. If actionable, attempt to complete it or advance it
-3. If no longer relevant, cancel it: curl -s -X PATCH -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/actions/ACT-XXX -H 'Content-Type: application/json' -d '{"status":"cancelled","resolution":"No longer relevant because..."}'
-4. If blocked, escalate to the user via Telegram (if configured)
+Check for overdue actions: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/actions/overdue
 
-Also check pending actions (curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/actions?status=pending") for items that have been pending more than 48 hours without a due date — these are forgotten commitments.
+Also count pending actions (curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/actions?status=pending") that have been pending more than 48 hours without a due date — these are forgotten commitments.
 
-Attention row (one per condition, never per run): if anything is overdue, raise or refresh the single item with id "evolution-overdue": curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/attention -H 'Content-Type: application/json' -d '{"id":"evolution-overdue","conditionKey":"evolution-overdue","title":"Evolution actions are overdue","body":"<count> overdue: <ids>","priority":"medium","source":"agent"}'
+Attention row (one per condition, never per run): if anything is overdue, raise or refresh the single item with id "evolution-overdue". Write the body in exactly this shape and nothing else: "<count> overdue, <stale> pending over 48h". The source is this job's name, never "agent": a scheduled job's row stays on the dashboard and is held back from the user's Attention topic.
+curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/attention -H 'Content-Type: application/json' -d '{"id":"evolution-overdue","conditionKey":"evolution-overdue","title":"Evolution actions are overdue","body":"<count> overdue, <stale> pending over 48h","priority":"medium","source":"evolution-overdue-check"}'
 When the overdue list is EMPTY, close that row instead: curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/attention/clear -H 'Content-Type: application/json' -d '{"conditionKey":"evolution-overdue","resolution":"no evolution actions are overdue"}'
 
 If no overdue or stale items, exit silently (after the clear above).`,
@@ -4154,7 +4171,7 @@ function refreshScripts(projectDir: string, stateDir: string): void {
  * of bugs where scaffold-time and migration-time versions drift out of sync.
  * PostUpdateMigrator.getTelegramReplyScript() uses the same loading pattern.
  */
-function loadRelayTemplate(filename: string, port: number): string {
+export function loadRelayTemplate(filename: string, port: number): string {
   const modDir = __dirname;
   const candidates = [
     // dev: src/commands → ../templates/scripts
@@ -4200,6 +4217,25 @@ function installWhatsAppRelay(projectDir: string, port: number): void {
  * Reads config.json for port, checks for known section headers, appends if missing.
  * Also adds Telegram relay section if Telegram is configured.
  */
+/**
+ * Split a freshly written full CLAUDE.md into the small instar block + the
+ * `.instar/reference/` files (docs/specs/claude-md-reference-layout.md), so the
+ * very first session already loads the small file. Same code path as the
+ * update migrator. Never fails init: on error the full file stays and the next
+ * update converts it.
+ */
+function applyClaudeMdReferenceLayout(projectDir: string, stateDir: string, port: number, projectName: string): void {
+  try {
+    const migrator = new PostUpdateMigrator({ projectDir, stateDir, port, hasTelegram: false, projectName });
+    const result = { upgraded: [] as string[], skipped: [] as string[], errors: [] as string[] };
+    migrator.migrateClaudeMdReferenceLayout(result, { freshInit: true });
+    for (const e of result.errors) console.log(`  ${pc.yellow('!')} CLAUDE.md reference layout: ${e} (the next update converts it)`);
+  } catch (err) {
+    // @silent-fallback-ok: reported on the console; the full CLAUDE.md stays and the next update converts it.
+    console.log(`  ${pc.yellow('!')} CLAUDE.md reference layout skipped: ${err instanceof Error ? err.message : String(err)} (the next update converts it)`);
+  }
+}
+
 function refreshClaudeMd(projectDir: string, stateDir: string): void {
   const claudeMdPath = path.join(projectDir, 'CLAUDE.md');
   if (!fs.existsSync(claudeMdPath)) return;
@@ -4208,6 +4244,9 @@ function refreshClaudeMd(projectDir: string, stateDir: string): void {
   const port = (config?.port as number) || 4040;
 
   const content = fs.readFileSync(claudeMdPath, 'utf-8');
+  // Reference layout: the instar block is regenerated by PostUpdateMigrator;
+  // appending here would land outside it as if the operator wrote it.
+  if (findCoreRegion(content) !== null) return;
   const additions: string[] = [];
 
   // Check for Self-Diagnosis section
@@ -5184,6 +5223,13 @@ function installSecretGet(projectDir: string): void {
 export const BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh'] as const;
 /** The three macOS (Apple Events) scripts: the ones that refuse with ERR macos-only off macOS. */
 export const MACOS_BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh'] as const;
+/**
+ * Browser-care helpers (machine self-maintenance, Part B): the instance ledger the launch and JS
+ * helpers keep current, and the close, renew and unsaved-input tools. Installed beside the helpers
+ * above by the same always-overwrite installer. The three user-facing ones refuse off macOS;
+ * chrome-ledger.sh is called by the others with an already-resolved profile.
+ */
+export const BROWSER_CARE_SCRIPT_NAMES = ['chrome-ledger.sh', 'chrome-close.sh', 'chrome-renew.sh', 'chrome-unsaved.sh'] as const;
 
 /**
  * Install the normal-Chrome helper scripts (.instar/scripts/browser/) used by the
@@ -5197,7 +5243,7 @@ export function installBrowserScripts(projectDir: string): string[] {
   const scriptsDir = path.join(projectDir, '.instar', 'scripts', 'browser');
   const modDir = __dirname;
   const written: string[] = [];
-  for (const name of BROWSER_SCRIPT_NAMES) {
+  for (const name of [...BROWSER_SCRIPT_NAMES, ...BROWSER_CARE_SCRIPT_NAMES]) {
     const candidates = [
       path.resolve(modDir, '..', 'templates', 'scripts', 'browser', name),
       path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'browser', name),
@@ -5538,6 +5584,14 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   // MCP Servers: Register Playwright in the correct locations
   // Claude Code reads MCP servers from ~/.claude.json and .mcp.json, NOT .claude/settings.json
   registerPlaywrightMcp(projectDir);
+
+  // Pre-answer Claude Code's first-run screens (welcome, folder trust, project
+  // MCP picker, bypass-permissions warning) for the login this agent will use.
+  // On a machine that never ran Claude Code they otherwise end every session.
+  const firstRun = ensureClaudeFirstRunAnswered(process.env.CLAUDE_CONFIG_DIR || null, path.resolve(projectDir));
+  if (!firstRun.patched && firstRun.reason !== 'already interactive-ready') {
+    console.log(pc.yellow(`  Could not pre-answer Claude Code's first-run screens: ${firstRun.reason}`));
+  }
 }
 
 /**

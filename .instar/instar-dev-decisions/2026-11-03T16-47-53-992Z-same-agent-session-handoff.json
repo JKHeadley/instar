@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-03T16:47:53.992Z",
+  "slug": "same-agent-session-handoff",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 136,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/MessagingToneGate.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/messaging/MessageFormatter.ts",
+      "src/messaging/MessageRouter.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 131,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

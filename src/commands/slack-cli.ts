@@ -52,6 +52,41 @@ async function checkEventSubscriptions(wsUrl: string): Promise<boolean> {
   });
 }
 
+/** A workspace member as returned by Slack's users.list (only the fields used here). */
+export interface SlackMemberSummary {
+  id: string;
+  name?: string;
+  real_name?: string;
+  deleted?: boolean;
+  is_bot?: boolean;
+  is_app_user?: boolean;
+  is_primary_owner?: boolean;
+}
+
+/**
+ * Who the agent should listen to by default. `auth.test` with a BOT token returns the bot's own
+ * user id, so it can never be the person (instar-proof-1, 2026-11-03: every human message was
+ * ignored). The only real person in the workspace, else the workspace's primary owner, else nobody.
+ */
+export function defaultAuthorizedUsers(members: SlackMemberSummary[], botUserId: string | undefined): SlackMemberSummary[] {
+  const people = members.filter((m) => m && typeof m.id === 'string' && !m.deleted && !m.is_bot && !m.is_app_user
+    && m.id !== 'USLACKBOT' && m.id !== botUserId);
+  if (people.length === 1) return people;
+  const owner = people.find((m) => m.is_primary_owner);
+  return owner ? [owner] : [];
+}
+
+/** Parses typed member ids (`U…`/`W…`, comma or space separated). Null when any entry is not an id. */
+export function parseMemberIds(input: string): string[] | null {
+  const parts = input.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+  if (parts.length === 0) return [];
+  return parts.every((x) => /^[UW][A-Z0-9]{2,}$/.test(x)) ? [...new Set(parts)] : null;
+}
+
+function memberLabel(m: SlackMemberSummary): string {
+  return `${m.real_name || m.name || m.id} (${m.id})`;
+}
+
 function readLine(prompt: string): Promise<string> {
   return new Promise((resolve) => {
     const rl = readline.createInterface({
@@ -81,6 +116,12 @@ export function generateSlackManifest(agentName: string): Record<string, unknown
         display_name: agentName,
         always_online: true,
       },
+      // Without the Messages tab a person cannot DM the agent ("restricted_action_read_only_channel").
+      app_home: {
+        home_tab_enabled: false,
+        messages_tab_enabled: true,
+        messages_tab_read_only_enabled: false,
+      },
     },
     oauth_config: {
       scopes: {
@@ -93,6 +134,7 @@ export function generateSlackManifest(agentName: string): Record<string, unknown
           'chat:write',
           'files:read',
           'groups:history',
+          'groups:read',
           'im:history',
           'im:read',
           'im:write',
@@ -186,7 +228,7 @@ export async function addSlack(): Promise<void> {
     // Check OAuth scopes — warn about missing required scopes
     const REQUIRED_SCOPES = [
       'app_mentions:read', 'channels:history', 'channels:join', 'channels:manage',
-      'channels:read', 'chat:write', 'files:read', 'groups:history', 'im:history',
+      'channels:read', 'chat:write', 'files:read', 'groups:history', 'groups:read', 'im:history',
       'im:read', 'im:write', 'pins:write', 'reactions:read', 'reactions:write', 'users:read',
     ];
     const scopeHeader = authResponse.headers.get('x-oauth-scopes') ?? '';
@@ -228,6 +270,34 @@ export async function addSlack(): Promise<void> {
     }
     console.log(pc.green('  Socket Mode connection verified'));
 
+    // Who the agent listens to. Never the bot itself (auth.test's user_id is the bot's id).
+    let members: SlackMemberSummary[] = [];
+    try {
+      // RULE 3: EXEMPT — one-shot setup lookup of workspace members to suggest a default person; not a runtime state detector, and a failure only removes the suggestion.
+      const listResponse = await fetch('https://slack.com/api/users.list?limit=200', {
+        headers: { 'Authorization': `Bearer ${botToken}` },
+      });
+      const listData = (await listResponse.json()) as { ok?: boolean; members?: SlackMemberSummary[] };
+      if (listData.ok && Array.isArray(listData.members)) members = listData.members;
+    } catch { /* @silent-fallback-ok — the person can still type their member id below */ }
+    const suggested = defaultAuthorizedUsers(members, authData.user_id as string | undefined);
+    console.log();
+    console.log(`${agentName} answers only the Slack people you name here; everyone else is ignored.`);
+    console.log(pc.dim('  A member id is in Slack: your profile → ⋯ → Copy member ID (starts with U).'));
+    const offer = suggested.length > 0 ? `Press Enter for ${suggested.map(memberLabel).join(', ')}, or type` : 'Type';
+    let authorizedUserIds: string[] = suggested.map((m) => m.id);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const typed = await readLine(`${offer} member ids, separated by commas: `);
+      if (!typed) break;
+      const parsed = parseMemberIds(typed);
+      if (parsed && !parsed.includes(authData.user_id as string)) { authorizedUserIds = parsed; break; }
+      console.log(pc.yellow(parsed ? 'That is the agent\'s own bot id. Type a person\'s member id.' : 'Member ids start with U (or W) followed by letters and digits.'));
+    }
+    if (authorizedUserIds.length === 0) {
+      console.log(pc.yellow(`  No one is authorized yet, so ${agentName} will ignore every Slack message.`));
+      console.log(pc.yellow('  Run instar add slack again to name someone.'));
+    }
+
     // Read and update config
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let config: any;
@@ -249,7 +319,7 @@ export async function addSlack(): Promise<void> {
         appToken,
         workspaceId: authData.team_id,
         workspaceName: authData.team,
-        authorizedUserIds: [authData.user_id],
+        authorizedUserIds,
         stallTimeoutMinutes: 5,
         logRetentionDays: 90,
       },
@@ -266,10 +336,29 @@ export async function addSlack(): Promise<void> {
       throw err;
     }
 
+    // The session reply relay. init and updates install it only when Slack is already configured,
+    // so an agent that adds Slack later refused every Slack message ("slack-relay-not-ready")
+    // until its next update (instar-proof-1, 2026-11-03).
+    const { loadRelayTemplate } = await import('./init.js');
+    const { ensureSlackReplyRelay } = await import('../core/SlackReplyRelayInstaller.js');
+    const relay = ensureSlackReplyRelay({
+      projectDir: process.cwd(),
+      stateDir: path.dirname(configPath),
+      config,
+      template: loadRelayTemplate('slack-reply.sh', Number(config.port) || 4040),
+      claudeCompatibility: fs.existsSync(path.join(process.cwd(), '.claude')),
+    });
+    const relayProblems = [...relay.errors, ...relay.degraded];
+    if (relayProblems.length > 0) {
+      console.log(pc.yellow(`  The Slack reply script could not be installed: ${relayProblems.join('; ')}`));
+      console.log(pc.yellow('  The agent will not answer in Slack until it is. Run instar migrate to retry.'));
+    }
+
     console.log();
     console.log(pc.green('Slack adapter configured successfully!'));
     console.log(`  Workspace: ${authData.team}`);
-    console.log(`  Authorized user: ${authData.user_id}`);
+    const named = authorizedUserIds.map((id) => { const m = members.find((x) => x.id === id); return m ? memberLabel(m) : id; });
+    console.log(`  Listens to: ${named.length > 0 ? named.join(', ') : 'nobody yet'}`);
     console.log();
 
     // Check if event subscriptions are configured by connecting via WebSocket

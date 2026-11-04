@@ -112,6 +112,7 @@ const PENDING_BASELINE = [
   'external-operation-gate::ExternalOperationGate::backlog:decision-quality-enrolment',
   // feedback-triage-and-execution Phase 1 (2026-10-08): dedicated cross-family provider bypasses the router seam.
   'feedback-triage-second-opinion::FeedbackTriageSecondOpinion::backlog:decision-quality-enrolment',
+  'ecosystem-idea-review::EcosystemIdeaReview::backlog:decision-quality-enrolment',
   'job-reflect::JobReflector::backlog:decision-quality-enrolment',
   'llm-sanitize::LLMSanitizer::backlog:decision-quality-enrolment',
   'override-detect::OverrideDetector::backlog:decision-quality-enrolment',

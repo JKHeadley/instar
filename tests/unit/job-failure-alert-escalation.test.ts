@@ -109,7 +109,7 @@ describe('JobScheduler bounded failure escalation', () => {
     await alert(scheduler, 253);
 
     expect(send).toHaveBeenCalledTimes(1);
-    expect(send.mock.calls[0][0].content).toContain('253 consecutive failures');
+    expect(send.mock.calls[0][0].content).toContain('failed 253 times in a row');
   });
 
   it('records a missing sink durably and retries on 5m, 15m, then 1h-capped backoff', async () => {

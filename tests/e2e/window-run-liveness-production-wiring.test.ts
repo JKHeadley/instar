@@ -221,8 +221,26 @@ describe('window run liveness production wiring', () => {
     expect(atRiskLocal).toContain('active: false');
     expect(atRiskLocal).toContain('status: at-risk');
     expect(atRiskLocal).toContain('Do not replace this body.');
-    const durable = JSON.parse(fs.readFileSync(path.join(project.stateDir, 'window-run-liveness', 'state.json'), 'utf8'));
+    const durable = JSON.parse(fs.readFileSync(path.join(project.stateDir, 'window-run-liveness', 'topics', '36966', 'state.json'), 'utf8'));
     expect(durable.recoveryAttempt.attemptId).toBe(atRisk.body.recoveryAttempt.attemptId);
+  });
+
+  it('uses a fresh at-risk ceiling when a later heartbeat loss follows recovered active', async () => {
+    writeTelegramPollOwnerLease(project.stateDir, telegramBotToken, process.pid, nowMs);
+    fs.utimesSync(transcript, new Date(nowMs), new Date(nowMs));
+    const restored = await auth(request(server.getApp()).post('/window-run-liveness/tick')).send({}).expect(200);
+    expect(restored.body.status).toBe('active');
+    const firstAttemptId = restored.body.recoveryAttempt.attemptId;
+
+    nowMs += 20 * 60_000;
+    writeTelegramPollOwnerLease(project.stateDir, telegramBotToken, process.pid, nowMs);
+    fs.utimesSync(transcript, new Date(baseMs), new Date(baseMs));
+    const later = await auth(request(server.getApp()).post('/window-run-liveness/tick')).send({}).expect(200);
+    expect(later.body.status).toBe('at-risk');
+    expect(later.body.predicates['heartbeat-fresh'].ok).toBe(false);
+    expect(later.body.recoveryAttempt.attemptId).toBe(firstAttemptId);
+    expect(later.body.atRiskSince).toBe(new Date(nowMs).toISOString());
+    expect(new AutonomousRunStore(project.stateDir).getByPair('36966', binding.autonomousRunId)?.status).toBe('at-risk');
   });
 
   it('fails within the ceiling and keeps the canonical Stop-hook driver inactive', async () => {
@@ -269,7 +287,7 @@ describe('window run liveness observe-only production boundary', () => {
         getStatus: () => ({ started: true, fatalReason: null, lastError: null, consecutivePollErrors: 0 }),
       } as never,
       windowLifecycleNow: () => new Date(baseMs + 1).toISOString(),
-      windowRunLivenessAuthority: { status: () => ({ enabled: true, dryRun: false, config: {}, state: liveness }), tick: async () => liveness } as never,
+      windowRunLivenessAuthority: { status: () => ({ enabled: true, dryRun: false, config: {}, state: liveness, states: [liveness] }), tick: async () => liveness } as never,
     });
     await server.start();
     try {

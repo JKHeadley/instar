@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "presence-follows-replacement-session",
+  "sessionId": "54397a3c-90cd-48e3-97cc-d4865ff2020c",
+  "timestamp": "2026-11-03T20:13:26.903Z",
+  "artifactPath": "upgrades/side-effects/presence-follows-replacement-session.md",
+  "artifactSha256": "2764ce85277e1170273f370e02195a7cd63e5448493260625f97f09178d4175d",
+  "coveredFiles": [
+    "docs/specs/presence-follows-replacement-session.eli16.md",
+    "src/commands/server.ts",
+    "src/monitoring/PresenceProxy.ts",
+    "tests/unit/presence-proxy-replacement-session.test.ts",
+    "upgrades/next/presence-follows-replacement-session.md",
+    "upgrades/side-effects/presence-follows-replacement-session.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow monitor fix: status-message timing/wording only, no block authority, no state or config change; a revert fully undoes it.",
+  "eli16Path": "docs/specs/presence-follows-replacement-session.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/presence-follows-replacement-session.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

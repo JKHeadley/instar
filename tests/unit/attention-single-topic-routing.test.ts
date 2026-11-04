@@ -494,6 +494,29 @@ describe('Attention hub filter (default "signal" mode, operator report 2026-10-2
     expect(rec.messagesByThread.get(HUB)).toHaveLength(2);
   });
 
+  // operator report 2026-11-02: the evolution-overdue-check job's row was raised as
+  // "agent" and reposted on every reworded run. Once the job names itself, its old
+  // row must stop reaching the hub; a row still raised as "agent" keeps posting.
+  for (const [label, nextSource, expectedPosts] of [
+    ['a row re-raised under a job source is held from then on', 'evolution-overdue-check', 1],
+    ['a row re-raised as "agent" still posts after the throttle window', 'agent', 2],
+  ] as const) {
+    it(label, async () => {
+      makeAdapter();
+      const rec = installApiStub(adapter);
+      const base = { id: 'evolution-overdue', conditionKey: 'evolution-overdue', title: 'Evolution actions are overdue', category: 'general', priority: 'NORMAL' as const };
+      await adapter.createAttentionItem({ ...base, summary: '125 overdue: ACT-1, ACT-2', sourceContext: 'agent' });
+      expect(rec.messagesByThread.get(HUB)).toHaveLength(1);
+      const later = Date.now() + 7 * 60 * 60 * 1000;
+      vi.spyOn(Date, 'now').mockReturnValue(later);
+      const row = await adapter.createAttentionItem({ ...base, summary: '126 overdue, 3 pending over 48h', sourceContext: nextSource });
+      expect(rec.messagesByThread.get(HUB)).toHaveLength(expectedPosts);
+      expect(row.sourceContext).toBe(nextSource);
+      expect(row.summary).toBe('126 overdue, 3 pending over 48h'); // the dashboard row still refreshes
+      expect(adapter.attentionHubAdmits('evolution-overdue')).toBe(nextSource === 'agent');
+    });
+  }
+
   it('a failed hub post does not start the repost throttle', async () => {
     makeAdapter();
     const rec = installApiStub(adapter);

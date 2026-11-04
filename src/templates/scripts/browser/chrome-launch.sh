@@ -1,12 +1,17 @@
 #!/bin/bash
 # chrome-launch.sh — open a NORMAL (non-automated) Chrome for one browser profile.
-# Usage: chrome-launch.sh [--new] <profile-id|/absolute/user-data-dir> [url]
+# Usage: chrome-launch.sh [--new] [--purpose <words>] [--ttl-minutes <n>] <profile-id|/absolute/user-data-dir> [url]
+# Every launch is recorded in this agent's browser ledger (.instar/state/browser-instances/) with the
+# session that opened it. --purpose says what it is for; --ttl-minutes declares how long its contents
+# matter (a long scheduled browser action), after which the cleanup sweep may treat it as disposable.
+# Close what you open with chrome-close.sh when the task ends.
 # A profile folder that does not exist is refused (it would open a signed-out browser that
 # looks like a lost login); pass --new to create one on purpose.
 # Launches through LaunchServices (`open -g -na`: in the background, never taking focus from the
 # operator), never a remote-debugging port, after switching on "Allow JavaScript from Apple Events"
 # in that profile's Preferences. The url argument must carry a scheme (https://, about:, ...): a
-# launch flag is never accepted there, in any form (this launcher adds no Chrome flags at all).
+# launch flag is never accepted there, in any form. The launcher itself adds only two fixed
+# rendering flags (keep drawing while the screen is locked); never an automation or debug flag.
 # Does nothing if that profile is already open. macOS only (Apple Events).
 # Installed by instar into .instar/scripts/browser/ — overwritten on every update.
 # See the /normal-chrome-browser skill for the method and its safety rules.
@@ -14,8 +19,16 @@ if [ "$(uname -s)" != "Darwin" ]; then
   echo "ERR macos-only: the normal-Chrome method uses macOS Apple Events; it does not run on $(uname -s)" >&2
   exit 2
 fi
-NEWOK=0; [ "$1" = "--new" ] && { NEWOK=1; shift; }
-[ -z "$1" ] && { echo "usage: chrome-launch.sh [--new] <profile-id|/absolute/user-data-dir> [url]" >&2; exit 64; }
+NEWOK=0; PURPOSE=""; TTL=""
+while :; do
+  case "$1" in
+    --new) NEWOK=1; shift ;;
+    --purpose) [ -n "$2" ] || { echo "ERR bad-purpose: --purpose needs a value" >&2; exit 64; }; PURPOSE="$(printf '%s' "$2" | tr -cd 'A-Za-z0-9 ._:-' | cut -c1-80)"; shift 2 ;;
+    --ttl-minutes) printf '%s' "$2" | grep -Eq '^[1-9][0-9]{0,5}$' || { echo "ERR bad-ttl: --ttl-minutes takes a whole number of minutes" >&2; exit 64; }; TTL="$2"; shift 2 ;;
+    *) break ;;
+  esac
+done
+[ -z "$1" ] && { echo "usage: chrome-launch.sh [--new] [--purpose <words>] [--ttl-minutes <n>] <profile-id|/absolute/user-data-dir> [url]" >&2; exit 64; }
 # The url slot is passed to Chrome after --args, so anything that is not a URL would become a Chrome
 # flag. Only a URL with a scheme is accepted; a flag (--remote-debugging-port=..., -flag, /flag) is
 # refused before anything is launched. The same rule the Windows driver enforces with its allowlist.
@@ -86,6 +99,11 @@ os.replace(t, f)  # atomic: Chrome never sees a half-written Preferences file
 # -g: do not bring Chrome to the foreground. The scripts never need the window in front, and a launch
 # from a job or a tmux session must not take focus from whoever is using the machine (the operator
 # brings the window forward themselves when a page needs their own click).
-open -g -na "Google Chrome" --args --user-data-dir="$P" "$URL" || { echo "ERR launch-failed (is Google Chrome installed?)" >&2; exit 1; }
+# Two fixed rendering flags, never automation flags: on a locked Mac, macOS reports every Chrome
+# window as hidden and Chrome stops drawing (requestAnimationFrame never fires), so pages that wait
+# for a frame hang on a spinner. Measured on the Studio 2026-11-03: Slack app settings spun forever;
+# with these two it rendered fully while still locked. They add no debug port and no webdriver flag.
+open -g -na "Google Chrome" --args --user-data-dir="$P" --disable-backgrounding-occluded-windows --disable-renderer-backgrounding "$URL" || { echo "ERR launch-failed (is Google Chrome installed?)" >&2; exit 1; }
+"$(dirname "$0")/chrome-ledger.sh" launch "$P" "$PURPOSE" "$TTL"
 [ "$NEW" = 1 ] && echo "note: new profile; Chrome ignores the Apple Events setting on its first run. Quit this Chrome once and run chrome-launch.sh again before chrome-js.sh." >&2
 exit 0

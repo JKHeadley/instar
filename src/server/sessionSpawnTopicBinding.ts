@@ -69,3 +69,61 @@ export function persistDiskTopicSessionBinding(opts: {
   fs.writeFileSync(tmpPath, JSON.stringify(registry, null, 2));
   fs.renameSync(tmpPath, registryPath);
 }
+
+/**
+ * Topic-profile resolution for a topic-bound direct spawn (POST /sessions/spawn).
+ *
+ * Mirrors spawnSessionForTopic's single resolution point: the topic's resolved
+ * profile supplies framework + model for every axis the request leaves unset
+ * (an explicit request value always wins). Returns `applied` — what the launch
+ * will actually carry, in the orchestrator's AppliedProfile shape — so the
+ * route can record it and the profile orchestrator never mistakes a freshly
+ * spawned session for one whose pin "wasn't applied".
+ *
+ * thinkingMode/effort are recorded as null: the direct spawn path has no
+ * launch control for them, and recording a value it did not apply would hide
+ * a real divergence.
+ */
+export function resolveTopicSpawnProfile(input: {
+  resolver?: { resolve(topicId: number): import('../core/TopicProfileResolver.js').ResolvedTopicProfile } | null;
+  topicId?: number;
+  requestedFramework?: import('../core/intelligenceProviderFactory.js').IntelligenceFramework;
+  requestedModel?: string;
+}): {
+  framework?: import('../core/intelligenceProviderFactory.js').IntelligenceFramework;
+  model?: string;
+  applied: import('../core/TopicProfileOrchestrator.js').AppliedProfile | null;
+} {
+  const passthrough = { framework: input.requestedFramework, model: input.requestedModel, applied: null };
+  if (!input.resolver || input.topicId === undefined) return passthrough;
+  let resolved: import('../core/TopicProfileResolver.js').ResolvedTopicProfile;
+  try {
+    resolved = input.resolver.resolve(input.topicId);
+  } catch {
+    // @silent-fallback-ok: an unresolvable profile degrades to the request's
+    // own values (today's behaviour) and records nothing.
+    return passthrough;
+  }
+  const framework = input.requestedFramework ?? resolved.framework;
+  // The profile's model only rides a launch on the framework it was resolved
+  // for; a local-model binding is applied by the topic spawn path, not here.
+  const profileModelUsable = framework === resolved.framework
+    && resolved.sources?.model !== 'local-model-binding';
+  const useProfileModel = input.requestedModel === undefined && profileModelUsable;
+  const model = input.requestedModel ?? (useProfileModel ? resolved.model : undefined);
+  return {
+    framework,
+    model,
+    applied: {
+      framework,
+      model: input.requestedModel !== undefined
+        ? input.requestedModel
+        : useProfileModel
+          ? (resolved.modelTier ? null : (resolved.model ?? null))
+          : null,
+      modelTier: useProfileModel ? (resolved.modelTier ?? null) : null,
+      thinkingMode: null,
+      effort: null,
+    },
+  };
+}

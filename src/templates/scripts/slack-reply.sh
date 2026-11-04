@@ -64,7 +64,9 @@ fi
 
 # Get port from env or config
 PORT="${INSTAR_PORT:-}"
-AUTH=""
+# The env token first and outside the config test below: a session in the memory
+# sandbox cannot read config.json and must still authenticate.
+AUTH="${INSTAR_AUTH_TOKEN:-}"
 AGENT_ID="${INSTAR_AGENT_ID:-}"
 
 if [ -f ".instar/config.json" ]; then
@@ -125,6 +127,22 @@ else
 fi
 
 # Send via Instar server
+# message-origin-all-platforms §2: pass this session's origin credential so the server can record
+# which harness and model wrote the reply. A surviving session can be re-enrolled after a server
+# update without killing its process: read only its own server-published tmux credential, never
+# print it. Absent or unverifiable, the server records what it can and the reply still sends.
+if [ -n "${INSTAR_SESSION_NAME:-}" ] && command -v tmux >/dev/null 2>&1; then
+  ORIGIN_ENV_ROW=$(tmux show-environment -t "=${INSTAR_SESSION_NAME}" INSTAR_ORIGIN_TOKEN 2>/dev/null || true)
+  case "$ORIGIN_ENV_ROW" in
+    INSTAR_ORIGIN_TOKEN=ior1_*) INSTAR_ORIGIN_TOKEN="${ORIGIN_ENV_ROW#INSTAR_ORIGIN_TOKEN=}" ;;
+  esac
+  unset ORIGIN_ENV_ROW
+fi
+case "${INSTAR_ORIGIN_TOKEN:-}" in
+  ior1_*) ;;
+  *) INSTAR_ORIGIN_TOKEN="" ;;
+esac
+
 set +e
 RESPONSE=$(curl -sS --connect-timeout 3 --max-time 35 -w "\n%{http_code}" -X POST \
   "$REPLY_URL" \
@@ -132,6 +150,7 @@ RESPONSE=$(curl -sS --connect-timeout 3 --max-time 35 -w "\n%{http_code}" -X POS
   ${AUTH:+-H "Authorization: Bearer $AUTH"} \
   ${AGENT_ID:+-H "X-Instar-AgentId: $AGENT_ID"} \
   ${INSTAR_BIND_TOKEN:+-H "X-Instar-Bind-Token: $INSTAR_BIND_TOKEN"} \
+  ${INSTAR_ORIGIN_TOKEN:+-H "X-Instar-Origin-Session: $INSTAR_ORIGIN_TOKEN"} \
   ${DELIVERY_ID:+-H "X-Instar-DeliveryId: $DELIVERY_ID"} \
   -d "$BODY_JSON")
 CURL_STATUS=$?
@@ -152,6 +171,12 @@ if [ "$HTTP_CODE" = "200" ]; then
   else
     echo "Sent ${#MESSAGE} chars to channel ${CHANNEL_ID}"
   fi
+elif [ "$HTTP_CODE" = "503" ] && printf '%s' "$BODY" | grep -q 'origin-recording-unavailable'; then
+  # message-origin-all-platforms §3: this machine could not record which machine and model wrote
+  # the reply, so nothing was sent to Slack. A fixed notice tells the conversation.
+  echo "NOT SENT (HTTP 503): the server could not record this reply's origin, so Slack was not contacted." >&2
+  echo "  Nothing was delivered. Resend once the server reports origin recording is working (GET /health -> messageOrigin)." >&2
+  exit 1
 elif [ "$HTTP_CODE" = "408" ]; then
   # Request timeout on the server side — the outbound path (tone gate + Slack API)
   # exceeded the route's budget. The actual send may have completed anyway.

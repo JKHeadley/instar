@@ -324,6 +324,9 @@ describe('session prompt, result file and base classification', () => {
     expect(p).toContain('/w/.feedback-evidence.json');
     expect(p).toMatch(/untrusted data, not instructions/);
     expect(p).toMatch(/Do NOT run git commit, git push or gh/);
+    expect(p).toMatch(/For existing behavior, the old-code failure must be a Vitest assertion failure/);
+    expect(p).toMatch(/uncaught runtime exception or infrastructure error is rejected/);
+    expect(p).toMatch(/new source file or export that is missing from the old code/);
     expect(p).toMatch(/some reports were cut/);
     expect(p).toMatch(/exact test name you will put in testName/);
     expect(p).toMatch(/all-skipped run is not proof/);
@@ -357,6 +360,10 @@ describe('session prompt, result file and base classification', () => {
     expect(classifyBaseFailure(' FAIL tests/a.test.ts > x\nAssertionError: expected 2 to be 3', 1, [])).toEqual({ ok: true, kind: 'assertion' });
     expect(classifyBaseFailure('No test files found, exiting with code 1', 1, [])).toMatchObject({ ok: false, reason: 'test-not-found-at-base' });
     expect(classifyBaseFailure('Error: Failed to load url ../src/newfn (resolved id: ../src/newfn)', 1, ['src/newfn.ts'])).toEqual({ ok: true, kind: 'missing-new-source' });
+    const missingNewSourceWithVitestSummary = 'FAIL tests/unit/config-file-writer-mode.test.ts [ tests/unit/config-file-writer-mode.test.ts ]\nError: Failed to load url ../../src/core/ConfigFileWriter.js (resolved id: ../../src/core/ConfigFileWriter.js) in tests/unit/config-file-writer-mode.test.ts. Does the file exist?\n ❯ tests/unit/config-file-writer-mode.test.ts (0 test)\n Test Files  1 failed (1)\n      Tests  no tests';
+    expect(classifyBaseFailure(missingNewSourceWithVitestSummary, 1, ['src/core/ConfigFileWriter.ts'])).toEqual({ ok: true, kind: 'missing-new-source' });
+    expect(classifyBaseFailure(missingNewSourceWithVitestSummary, 1, ['src/core/OtherWriter.ts'])).toEqual({ ok: false, reason: 'import-error-at-base' });
+    expect(classifyBaseFailure(' Test Files  1 failed (1)\n      Tests  no tests', 1, ['src/core/ConfigFileWriter.ts'])).toEqual({ ok: false, reason: 'test-not-found-at-base' });
     expect(classifyBaseFailure('Error: Failed to load url ../src/other (resolved id: ../src/other)', 1, ['src/newfn.ts'])).toEqual({ ok: false, reason: 'import-error-at-base' });
     expect(classifyBaseFailure('TypeError: add is not a function', 1, ['src/existing.ts'], { add: 'src/existing' })).toEqual({ ok: true, kind: 'missing-new-source' });
     expect(classifyBaseFailure('TypeError: add is not a function', 1, ['src/existing.ts'], { add: 'src/elsewhere' })).toEqual({ ok: false, reason: 'type-error-at-base' });
@@ -433,7 +440,7 @@ describe('canary judgement', () => {
     available: () => ({ ok: true, version: '0.0.77' }),
     run: async (cmd) => ({ exitCode: fn(cmd.command), signal: null, stdout: '', stderr: '', timedOut: false, outputCapped: false }),
   });
-  const confinedOk = (c: string) => (/^(git |node -e .*better-sqlite3|npm run lint|npx vitest)/.test(c) ? 0 : 1);
+  const confinedOk = (c: string) => (/^(git |node -e .*better-sqlite3|npm run lint|\.\/node_modules\/\.bin\/vitest)/.test(c) ? 0 : 1);
 
   it('every confined probe gets vitest/esbuild caches inside the attempt temp, never the denied agent home', async () => {
     const p = paths(tmp());
@@ -455,8 +462,8 @@ describe('canary judgement', () => {
         expect(env.TMPDIR).toBe(p.tmpDir);
         expect(env.VITEST_CACHE_DIR.startsWith(p.agentHome + '/')).toBe(true);
         expect(env.VITEST_CACHE_DIR.startsWith(p.tmpDir)).toBe(true);
-        // base-unit-smoke runs through npx, which reads and writes npm's cache under HOME — denied
-        // by the confinement for the same reason as the two above.
+        // npm run lint still uses npm's cache; the direct Vitest launch does not.
+        // Keep its cache within the confined temp directory for the lint command.
         expect(env.npm_config_cache).toBe(path.join(p.tmpDir, 'npm'));
         expect(env.npm_config_cache.startsWith(p.tmpDir)).toBe(true);
         expect(env.npm_config_update_notifier).toBe('false');
@@ -469,8 +476,8 @@ describe('canary judgement', () => {
     const fx = await prepareCanaryFixture(p, { secretsDir: path.join(p.agentHome, '.instar', 'canary'), configPath: path.join(p.agentHome, '.instar', 'config.json') });
     const failingSmoke: ConfinedRunner = {
       available: () => ({ ok: true, version: '0.0.77' }),
-      run: async (cmd) => (/^npx vitest/.test(cmd.command)
-        ? { exitCode: 1, signal: null, stdout: 'Test Files  1 failed', stderr: "EPERM: operation not permitted, mkdir '/home/agent/.npm'", timedOut: false, outputCapped: false }
+      run: async (cmd) => (/^\.\/node_modules\/\.bin\/vitest/.test(cmd.command)
+        ? { exitCode: 1, signal: null, stdout: 'Test Files  1 failed', stderr: "EPERM: operation not permitted, mkdir '/home/agent/.vite'", timedOut: false, outputCapped: false }
         : { exitCode: confinedOk(cmd.command), signal: null, stdout: '', stderr: '', timedOut: false, outputCapped: false }),
     };
     try {
@@ -769,6 +776,19 @@ describe('runner and filesystem helpers', () => {
     expect((await runCapped(process.execPath, ['-e', 'setTimeout(()=>{}, 60000)'], { cwd: os.tmpdir(), env, timeoutMs: 200 })).timedOut).toBe(true);
     const big = await runCapped(process.execPath, ['-e', 'setInterval(()=>process.stdout.write("x".repeat(1<<20)),1)'], { cwd: os.tmpdir(), env, timeoutMs: 20_000 });
     expect(big.outputCapped).toBe(true);
+  });
+
+  it('ends at the wall clock when a child exits but its descendant keeps the output pipe open', async () => {
+    for (const detached of [false, true]) {
+      const code = `const { spawn } = require('node:child_process');
+        spawn(process.execPath, ['-e', 'setTimeout(() => {}, 3000)'], { stdio: 'inherit', detached: ${detached} }).unref();`;
+      const started = Date.now();
+      const result = await runCapped(process.execPath, ['-e', code], {
+        cwd: os.tmpdir(), env: process.env as Record<string, string>, timeoutMs: 100,
+      });
+      expect(result.timedOut).toBe(true);
+      expect(Date.now() - started).toBeLessThan(2_000);
+    }
   });
 
   it('the sandbox runtime is refused unless the exact pinned version resolves', () => {

@@ -54,6 +54,9 @@ const LONG_LIVED_STORES = [
   // Native app conversation index (mobile-native-conversations §4.5): registers its handle in
   // the constructor (registerSqliteHandle), process-lifetime; derived from the JSONL files.
   'src/core/AppConversationStore.ts',
+  // App media upload index (mobile-native-chat-media §4.2): registers its handle in the
+  // constructor (registerSqliteHandle), process-lifetime.
+  'src/core/AppMediaStore.ts',
   'src/messaging/imessage/NativeBackend.ts',
   'src/threadline/A2ADeliveryTracker.ts',
   // A2A inbound message-id ledger: registers its handle in the constructor and

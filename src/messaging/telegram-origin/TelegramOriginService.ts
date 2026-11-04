@@ -12,7 +12,7 @@ import { randomUUID, randomBytes, createHash, createPublicKey } from 'node:crypt
 import { unknownAutomationAuthor } from './OriginAutomationAuthor.js';
 import { formatForTelegram } from '../TelegramMarkdownFormatter.js';
 import { redact } from '../secret-patterns.js';
-import type { OriginLegacySnapshot } from './OriginLegacy.js';
+import type { OriginLegacyAttribution, OriginLegacySnapshot } from './OriginLegacy.js';
 import type { OriginAutomationAuthor } from './OriginAutomationAuthor.js';
 import { bindBotCompanion } from './OriginBotCompanion.js';
 import { nextOriginKnownFailure, nextOriginLocalRefusal } from './OriginRetry.js';
@@ -25,12 +25,13 @@ import { planBotOrigin } from './OriginBotPlanner.js';
 import { resolveOriginDisplay } from './OriginPresentation.js';
 import { attestOrigin, verifyOriginAttestation } from './OriginAttestation.js';
 import { DEFAULT_ORIGIN_LIMITS, TelegramOriginHoldError } from './types.js';
-import type { BotParameters, OriginDisplaySettings, OriginLimits, OriginPlatformReceipt, SealedBotRequest, TelegramOriginProducer, TelegramOriginRecord } from './types.js';
+import type { BotParameters, OriginDisplaySettings, OriginEvidence, OriginLimits, OriginPlatformReceipt, SealedBotRequest, TelegramOriginProducer, TelegramOriginRecord } from './types.js';
 import type { OriginSessionRegistry } from './OriginSessionRegistry.js';
 import type { OriginUnrecordedReceipts } from './OriginUnrecordedReceipts.js';
 import type { RuntimeOriginObserver } from './RuntimeOriginObserver.js';
 import type { AdmissionResult, ClaimInput, ClaimResult, ClaimFence, ClaimedChild, EvidenceReceipt, OriginAdmission, OutcomeInput, OutcomeWriteResult, StoredOriginInput, OriginAuditRecord, OriginListQuery, OriginListPage, OriginMetrics } from './StoreTypes.js';
 import { mergeDefaults } from '../../core/mergeDefaults.js';
+import { HARNESS_NAMES } from '../messageOrigin.js';
 
 export interface OriginServiceStore {
   getOperation?(operationId: string): Promise<OriginAuditRecord | null>;
@@ -79,7 +80,7 @@ export interface OriginServiceOptions {
   reviewLegacyRecovery?: (text: string) => Promise<boolean>;
   spoolEvidence: (record: StoredOriginInput) => Promise<unknown>;
   peerEvidence?: (record: StoredOriginInput) => Promise<unknown>;
-  onHold: (input: { operationId: string; reason: string; destination: { accountId: string; chatId: string | null; topicId: string | null } }) => void;
+  onHold: (input: { operationId: string; reason: string; producerKind: string; destination: { accountId: string; chatId: string | null; topicId: string | null } }) => void;
   diagnoseUnknown?: (originId: string, reason: string) => Promise<string | void>;
   diagnosticMode?: 'local' | 'delegate';
   limits?: Partial<OriginLimits>;
@@ -95,7 +96,7 @@ function normalizedModel(value: { value: string | null; status: 'observed' | 'co
   return { value: value.value, status: value.status, sourceEventRef: value.sourceEventRef ?? null,
     observedAt: typeof value.observedAt === 'number' ? value.observedAt : value.observedAt ? Date.parse(value.observedAt) : null, reason: value.reason ?? null };
 }
-const harnessNames: Record<string, string> = { 'codex-cli': 'Codex', 'claude-code': 'Claude Code', 'gemini-cli': 'Gemini', 'pi-cli': 'Pi', 'grok-build': 'Grok' };
+const harnessNames: Readonly<Record<string, string>> = HARNESS_NAMES;
 async function within<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -177,6 +178,13 @@ export class TelegramOriginService {
     return this.#scope.run({ producer: entry.producer, operations: [], logicalSendKey: entry.logicalSendKey, logicalOrdinal: 0 }, fn);
   }
   async runWithSessionToken<T>(token: string, fn: () => Promise<T>): Promise<T> {
+    const producer = await this.sessionProducer(token);
+    return this.#scope.run({ producer, operations: [] }, fn);
+  }
+  /** The session producer a verified origin credential names (machine, harness, model evidence).
+   * Shared by the Telegram send scope and the app/Slack recorders (message-origin-all-platforms §2).
+   * Throws TelegramOriginHoldError when the credential does not verify or the observer is not bound. */
+  async sessionProducer(token: string): Promise<TelegramOriginProducer> {
     const verified = this.options.sessions.verify(token);
     if (!verified.ok) throw new TelegramOriginHoldError(verified.reason);
     const b = verified.binding;
@@ -194,7 +202,7 @@ export class TelegramOriginService {
       machine: { value: this.options.identity.originMachineName, status: 'observed', sourceEventRef: 'machine-identity', observedAt: now, reason: null },
       harness: { value: b.harnessId, status: 'observed', sourceEventRef: `session:${b.sessionId}`, observedAt: now, reason: null },
       model: normalizedModel(observation.model) };
-    return this.#scope.run({ producer, operations: [] }, fn);
+    return producer;
   }
   hasProducerContext(): boolean { return this.#scope.getStore() !== undefined; }
   runWithSendPolicyInput<T>(text: string, metadata: unknown, fn: () => T): T {
@@ -294,13 +302,42 @@ export class TelegramOriginService {
     return structuredClone(p);
   }
   currentOperationIds(): string[] { return [...(this.#scope.getStore()?.operations ?? [])]; }
-  prepareImportedLegacy(snapshot: OriginLegacySnapshot, accountId: string, chatId: string): OriginPreparedBotOperation {
+  /** What this machine can truthfully say about who wrote a queued legacy row.
+   * The queue lives in this agent's local state, so the machine is always this
+   * one. When the reply script recorded the digest of its session credential
+   * and that session is still live here (its current credential, or one it held
+   * before a restart re-issue), the session's harness and model are observed
+   * exactly as a direct session send would observe them. Attribution only: the
+   * row still recovers through the legacy path with its own review. */
+  async attributeLegacy(snapshot: OriginLegacySnapshot): Promise<OriginLegacyAttribution> {
+    const now = this.#now();
+    const machine: OriginEvidence = { value: this.options.identity.originMachineName, status: 'observed',
+      sourceEventRef: 'legacy-queue-custody', observedAt: now, reason: null };
+    const unattributed: OriginLegacyAttribution = { machine, session: null };
+    if (!snapshot.originSessionDigest) return unattributed;
+    let binding: ReturnType<OriginSessionRegistry['attributeVerifier']>;
+    try { binding = this.options.sessions.attributeVerifier(snapshot.originSessionDigest); } catch { return unattributed; }
+    if (!binding) return unattributed;
+    try { await this.options.observer.refresh(binding.sessionId); } catch { /* A stale or missing observation leaves the model unknown. */ }
+    const observation = this.options.observer.get(binding.sessionId);
+    const current = observation && observation.sessionIncarnation === binding.sessionIncarnation ? observation : null;
+    return { machine, session: { sessionId: binding.sessionId, sessionIncarnation: binding.sessionIncarnation,
+      turnId: current?.turnId ?? null, harnessId: binding.harnessId, harnessName: harnessNames[binding.harnessId] ?? binding.harnessId,
+      harness: { value: binding.harnessId, status: 'observed', sourceEventRef: `session:${binding.sessionId}`, observedAt: now, reason: null },
+      model: current ? normalizedModel(current.model)
+        : { value: null, status: 'unknown', sourceEventRef: null, observedAt: null, reason: 'origin-observer-not-bound' } } };
+  }
+  prepareImportedLegacy(snapshot: OriginLegacySnapshot, accountId: string, chatId: string,
+    attribution?: OriginLegacyAttribution): OriginPreparedBotOperation {
     const unknown = { value: null, status: 'unknown' as const, sourceEventRef: null, observedAt: null, reason: 'legacy-unattributed' };
+    const session = attribution?.session ?? null;
     const producer: TelegramOriginProducer = { ...this.options.identity,
-      originMachineId: 'legacy-unattributed', originMachineName: 'Unknown (legacy)',
-      sessionId: null, sessionIncarnation: null, turnId: null, producerKind: 'imported-legacy',
-      producerId: 'legacy-pending-relay', harnessId: null, harnessName: null,
-      machine: { ...unknown }, harness: { ...unknown }, model: { ...unknown } };
+      originMachineId: 'legacy-unattributed', originMachineName: attribution ? this.options.identity.originMachineName : 'Unknown (legacy)',
+      sessionId: session?.sessionId ?? null, sessionIncarnation: session?.sessionIncarnation ?? null, turnId: session?.turnId ?? null,
+      producerKind: 'imported-legacy',
+      producerId: 'legacy-pending-relay', harnessId: session?.harnessId ?? null, harnessName: session?.harnessName ?? null,
+      machine: attribution ? { ...attribution.machine } : { ...unknown },
+      harness: session ? { ...session.harness } : { ...unknown }, model: session ? { ...session.model } : { ...unknown } };
     const safeText = redact(snapshot.text);
     const formatted = snapshot.format === 'HTML' ? { text: safeText, parseMode: 'HTML' }
       : formatForTelegram(safeText, snapshot.format === 'plain' ? 'plain' : 'markdown');
@@ -390,13 +427,13 @@ export class TelegramOriginService {
     const id = operation.record.operationId;
     if (!this.#held.has(id)) {
       if (this.#held.size >= this.#limits.maxActiveOperations || this.#heldBytes + operation.admission.payloadBytes > this.#limits.maxActivePayloadBytes) {
-        this.options.onHold({ operationId: id, reason: 'held-payload-capacity-unavailable', destination: operation.record.destination });
+        this.options.onHold({ operationId: id, reason: 'held-payload-capacity-unavailable', producerKind: operation.record.producerKind, destination: operation.record.destination });
         throw new TelegramOriginHoldError('held-payload-capacity-unavailable', id);
       }
       this.#heldBytes += operation.admission.payloadBytes;
       this.#held.set(id, { reason, since: this.#now(), operation: structuredClone(operation) });
     } else this.#held.get(id)!.reason = reason;
-    this.options.onHold({ operationId: id, reason, destination: operation.record.destination });
+    this.options.onHold({ operationId: id, reason, producerKind: operation.record.producerKind, destination: operation.record.destination });
     throw new TelegramOriginHoldError(reason, id);
   }
   /** §4.2 — a refused destination is one of two facts: a foreign chat
@@ -614,6 +651,9 @@ export class TelegramOriginService {
           if (localRefusal || error instanceof OriginTransportCancelledBeforeNetwork || error instanceof OriginTransportUnsent) {
             const reason = localRefusal ? 'credential-capacity-unavailable'
               : error instanceof OriginTransportUnsent ? 'telegram-connect-failed' : 'telegram-request-cancelled-before-network';
+            if (error instanceof OriginTransportUnsent) {
+              console.warn(`[telegram-origin] connect failed before request for ${operation.record.operationId}: ${error.code}`);
+            }
             // Only a request-bound proof from the egress closure returns budget.
             // A crash without that proof remains uncertain on recovery.
             const nextAttemptAt = localRefusal

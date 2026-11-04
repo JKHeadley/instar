@@ -162,9 +162,27 @@ function recheckText(e, now) {
   return { text: `rechecking ${new Date(t).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}`, overdue: false };
 }
 
+// The deferral detector recorded whole reply commands (`cat <<'EOF' | <reply script> N`
+// + the message + `EOF`), signed links included (2026-11-02). Show the message's first line,
+// with credential-looking query values masked; a command with no message text is named, not
+// printed.
+const SECRET_QUERY = /([?&](?:sig|signature|token|key|auth|access_token)[^=&\s]*=)[^&\s]+/gi;
+const SHELL_START = /^\s*(?:cd|cat|curl|echo|node|bash|sh|gh|git|python3?|npx)\b/;
+export function blockerText(raw, topicNames = {}) {
+  const s = String(raw || '');
+  const doc = /<<-?\s*['"]?(\w+)['"]?[^\n]*\n([\s\S]*?)(?:\n[ \t]*\1[ \t]*(?:\n|$)|$)/.exec(s);
+  let body = doc ? doc[2] : s;
+  if (!doc && SHELL_START.test(body)) return 'Flagged in a command I ran (no message text)';
+  body = body.replace(SECRET_QUERY, '$1…');
+  // Names, never ids: "topic 136110" reads as that conversation's name when it is known.
+  body = body.replace(/\btopic #?(\d{2,})\b/gi, (m, id) => (topicNames[id] ? `“${topicNames[id]}”` : m));
+  const line = body.split('\n').map((l) => l.trim()).find(Boolean) || '';
+  return line.length > 220 ? `${line.slice(0, 219)}…` : line;
+}
+
 /** A blocker as a row: { key, main, sub, end, tone, kind, record }. */
-export function blockerRow(e, now = Date.now()) {
-  const main = e.detectedText || e.origin || 'A blocker';
+export function blockerRow(e, now = Date.now(), topicNames = {}) {
+  const main = blockerText(e.detectedText, topicNames) || e.origin || 'A blocker';
   let sub; let tone = null; let kind;
   if (e.state === 'true-blocker') { const r = recheckText(e, now); sub = `Truly stuck for now · ${r.text}`; tone = 'bad'; kind = 'stuck'; }
   else if (e.state === 'access-requested') { sub = 'Waiting on you for access'; tone = 'attn'; kind = 'needs-you'; }
@@ -177,7 +195,7 @@ export function blockerRow(e, now = Date.now()) {
  * The In the way model from GET /blockers.
  * { state: 'off'|'failed'|'ok', reason, needsYou, stuck, working, clearedWeek, clearedOlder }
  */
-export function buildInTheWay(res, now = Date.now()) {
+export function buildInTheWay(res, now = Date.now(), topicNames = {}) {
   if (!res || !res.ok) {
     if (res && /switched off/.test(res.reason || '')) return { state: 'off', reason: 'Blocker tracking is off on this agent.', needsYou: [], stuck: [], working: [], clearedWeek: [], clearedOlder: [] };
     return { state: 'failed', reason: `Couldn't read what is in the way: ${res ? res.reason : 'not read'}.`, needsYou: [], stuck: [], working: [], clearedWeek: [], clearedOlder: [] };
@@ -187,7 +205,7 @@ export function buildInTheWay(res, now = Date.now()) {
   const out = { state: 'ok', reason: null, needsYou: [], stuck: [], working: [], clearedWeek: [], clearedOlder: [], total: Number(res.data.total) || entries.length };
   for (const e of entries) {
     if (!e || typeof e.state !== 'string') continue;
-    const r = blockerRow(e, now);
+    const r = blockerRow(e, now, topicNames);
     if (r.kind === 'needs-you') out.needsYou.push(r);
     else if (r.kind === 'stuck') out.stuck.push(r);
     else if (WORKING_STATES.has(e.state)) out.working.push(r);
@@ -314,7 +332,7 @@ export function buildPlansPage(res, now = Date.now(), opts = {}) {
     else if (age <= MOVING_MS) s.inFlight.push(row);
     else s.idle.push(row);
   }
-  const inTheWay = buildInTheWay(r.blockers, now);
+  const inTheWay = buildInTheWay(r.blockers, now, opts.topicNames || {});
   // A blocker that asked for access is a needs-you item, not a working one.
   for (const b of inTheWay.needsYou) s.needsYou.push({ ...b, needs: 'I need access to continue', end: 'Open' });
 

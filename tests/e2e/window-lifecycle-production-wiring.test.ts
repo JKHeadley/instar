@@ -88,7 +88,7 @@ describe('Window lifecycle production wiring', () => {
       watchdog: { isEnabled: () => true, inspectSessionsForStall: watchdogObservation, verifyStallInspection: (observation: any) => observation.authorityEpoch === 'w28-test-epoch' && observation.authorityProof === crypto.createHash('sha256').update(JSON.stringify({ observedAt: observation.observedAt, authorityEpoch: observation.authorityEpoch, rows: observation.sessions })).digest('hex') } as any,
       windowLifecycleNow: () => clock,
       windowRunLivenessAuthority: {
-        status: () => ({ enabled: true, dryRun: w32RunLivenessDryRun, config: { heartbeatMaxAgeMs: 90_000, workEvidenceMaxAgeMs: 30 * 60_000, recoveryCeilingMs: 15 * 60_000 }, state: { ...w32RunLivenessState } }),
+        status: () => ({ enabled: true, dryRun: w32RunLivenessDryRun, config: { heartbeatMaxAgeMs: 90_000, workEvidenceMaxAgeMs: 30 * 60_000, recoveryCeilingMs: 15 * 60_000 }, state: { ...w32RunLivenessState }, states: [{ ...w32RunLivenessState }] }),
         tick: async () => w32RunLivenessState,
       } as any,
     });

@@ -11,7 +11,7 @@ import {
   buildCostsPage, buildRecordedCost, buildLimits, buildChecks, buildConversations, buildRouting, insightLine, costRow, checkRow, claudeRow, codexRow,
   windowParams, spendQuery, basisWord, routeStatusWord, committedLine, fmtTokens, fmtUsd, modelWord, doorWord, checkWord, WINDOWS, GRAINS,
 } from '../../dashboard/console/costs-model.js';
-import { NATIVE_PAGES, tabHref, GROUPS } from '../../dashboard/console/nav-model.js';
+import { NATIVE_PAGES, tabHref, GROUPS, MERGED } from '../../dashboard/console/nav-model.js';
 
 const NOW = Date.parse('2026-10-25T23:30:00Z');
 const ok = (data: unknown) => ({ ok: true, data });
@@ -293,13 +293,13 @@ describe('the whole page', () => {
 });
 
 describe('navigation', () => {
-  it('the four legacy tabs open the costs page; the page appears once as What thinking costs, the others say they live inside it', () => {
+  it('the four legacy tabs open the costs page; the page appears once as What thinking costs, the merged ones have no tile', () => {
     for (const id of ['spend', 'tokens', 'llm-activity', 'routing-map']) expect(tabHref(id)).toBe('#/capacity/costs');
     expect(NATIVE_PAGES.spend).toBe('#/capacity/costs');
     const cap = GROUPS.find((g) => g.id === 'capacity')!;
     expect(cap.tabs.filter((t) => t.label === 'What thinking costs')).toHaveLength(1);
-    const inside = [cap.tabs.find((t) => t.id === 'tokens')!, ...GROUPS.find((g) => g.id === 'settings')!.hood!.filter((t) => t.id === 'routing-map' || t.id === 'llm-activity')];
-    for (const t of inside) expect(t.desc).toMatch(/^Now inside What thinking costs/);
+    const tiles = GROUPS.flatMap((g) => [...g.tabs, ...(g.hood || [])]).map((t) => t.id);
+    for (const id of ['tokens', 'routing-map', 'llm-activity']) { expect(tiles).not.toContain(id); expect(MERGED).toContain(id); }
   });
 });
 
@@ -380,7 +380,7 @@ describe('costs page in a DOM', () => {
     expect(doc.querySelector('#sec-checks')!.textContent).not.toContain('$');
     // Spending controls are collapsed and read-only, pointing at the legacy tab.
     expect(doc.querySelector('#sec-controls .controls-body')!.hasAttribute('hidden')).toBe(true);
-    expect(doc.querySelector('#sec-controls a')!.getAttribute('href')).toBe('/dashboard?tab=spend');
+    expect(doc.querySelector('#sec-controls a')!.getAttribute('href')).toBe('/dashboard/legacy?tab=spend');
     expect(doc.querySelectorAll('#sec-controls button').length).toBe(1); // only the fold, no Freeze/arm buttons
     // The routing sheet opens from the header link.
     (doc.querySelector('.head-link') as HTMLButtonElement).click();

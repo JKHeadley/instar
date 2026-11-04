@@ -121,6 +121,50 @@ export function isInternalSession(s) {
   return (s.platform || 'headless') === 'headless' && s.triggeredBy !== OPERATOR_CREATED;
 }
 
+/** The History read for a session: its conversation record, a page at a time. A session
+ *  on another machine is read through this machine, which asks the owner. */
+export const HISTORY_PAGE = 150;
+export function historyUrl(s, before = null) {
+  const q = new URLSearchParams({ limit: String(HISTORY_PAGE) });
+  if (before != null) q.set('before', String(before));
+  if (s.remote && s.machineId) q.set('machineId', s.machineId);
+  return `/sessions/${encodeURIComponent(s.tmuxSession)}/transcript?${q}`;
+}
+
+/** After a session's own record runs out, History continues into its topic's earlier
+ *  messages (earlier sessions of the same conversation), a page at a time. */
+export const TOPIC_HISTORY_PAGE = 50;
+export function topicOf(s) {
+  const n = Number(s && s.platform === 'telegram' ? s.platformId : NaN);
+  return Number.isSafeInteger(n) && n > 1 ? n : null;
+}
+export function topicHistoryUrl(topicId, beforeMs) {
+  const q = new URLSearchParams({ limit: String(TOPIC_HISTORY_PAGE), scope: 'pool', before: String(Math.floor(beforeMs)) });
+  return `/telegram/topics/${encodeURIComponent(topicId)}/messages?${q}`;
+}
+/** A topic message as a History entry: who, when, what. */
+export function topicHistoryEntry(m) {
+  if (!m || typeof m.text !== 'string' || !m.text.trim()) return null;
+  const at = Date.parse(m.timestamp);
+  return { role: m.fromUser ? 'user' : 'assistant', text: m.text, at: Number.isFinite(at) ? m.timestamp : null, atMs: Number.isFinite(at) ? at : null };
+}
+
+/** Words for a failed History read: never "no history" when the read failed. */
+export function historyErrorWords(res) {
+  const d = (res && res.data) || {};
+  if (d.reason === 'no-transcript') return 'This session has no conversation record yet.';
+  if (d.reason === 'peer-unreachable' || d.reason === 'peer-unknown') return `Can’t tell: ${d.error || 'the session’s machine did not answer'}.`;
+  const why = d.error || (res && res.reason) || (res && res.status ? `the server answered ${res.status}` : 'the server could not be reached');
+  return `Can’t tell: ${String(why).replace(/\.$/, '')}.`;
+}
+
+/** A user line from a chat bridge carries a routing prefix; show only what was said. */
+export function historyText(e) {
+  let t = String((e && e.text) || '');
+  if (e && e.role === 'user') t = t.replace(/^\[(telegram|slack|whatsapp):[^\]]*\]\s*/, '');
+  return t;
+}
+
 export function buildSessions(sessionsRes, { ws = null, now = Date.now(), topicNames = {}, showInternal = false } = {}) {
   if (!sessionsRes || !sessionsRes.ok) return { ok: false, reason: `Couldn’t list sessions: ${(sessionsRes && sessionsRes.reason) || 'no answer'}.` };
   const data = sessionsRes.data || {};

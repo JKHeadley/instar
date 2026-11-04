@@ -61,7 +61,7 @@ describe('migrateClaudeMd appends the decision-quality section for existing agen
     projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'decision-quality-claudemd-'));
     stateDir = path.join(projectDir, '.instar');
     fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ projectName: 'x', port: 4042 }));
+    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ projectName: 'x', port: 4042 , claudeMd: { layout: 'full' } /* tests the legacy append chain; the reference-layout conversion is covered in claude-md-reference-layout.test.ts */ }));
     claudeMdPath = path.join(projectDir, 'CLAUDE.md');
     // A CLAUDE.md that does NOT yet carry the decision-quality section.
     fs.writeFileSync(claudeMdPath, '# CLAUDE.md — legacy agent\n\nSome existing content.\n');

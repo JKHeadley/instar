@@ -56,6 +56,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Advisory only: the deterministic floor (critical anomaly or a second consecutive failure) still starts a session whatever Jev answers, and every Jev failure falls to that floor. Inert without the vault typesafe_api_key; daily call cap; sessions are bounded by the triage caps and cooldown.',
   },
   {
+    name: 'machineMaintenance',
+    configPath: 'machineMaintenance.enabled',
+    description: 'Machine self-maintenance, watch-only (docs/specs/machine-self-maintenance.md): a nightly paper drain records what a scheduled restart would have done and how long work takes to yield.',
+    justification: 'Cannot act: it holds no restart path and no yield method, its OS commands are an allowlist of fixed probes, and a source lint fails the build if that changes. It writes its own audit logs and host-level rehearsal and wedge records. The wedge sampler (Part E, dry-run) adds one bounded judge call per wedge condition (at most 6 per 24 h, host maintainer only) and an operator notice that is OFF unless machineMaintenance.wedgeRestart.dryRunNotice is true.',
+  },
+  {
     name: 'workAdmission',
     configPath: 'monitoring.workAdmission.enabled',
     description: 'Overload admission (trustworthy-machine-load Part C): closes this machine to new automatic work while its own multi-signal load verdict is saturated/impaired, keeps one host-wide recovery slot for an operator session, advertises the state so placement skips it.',
@@ -852,6 +858,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Raw blocker lifecycle timing ledger and bounded summary/trend read surfaces.',
     justification: 'Observe-only and machine-local: records already-persisted commitment lifecycle events into a bounded SQLite ledger; no LLM spend, outbound messages, autonomous action, scalar score, or gating authority. Routes are reads and pool scope only proxies bounded per-origin results.',
   },  {
+    name: 'maturationLadder',
+    configPath: 'maturation.ladder.enabled',
+    description: 'The measured path to default-on: per-rung thresholds for every switched-off feature, evidence reads, D7 scoring and raising to the review (GET /maturation/ladder).',
+    justification: 'Measures and raises only: it reads logs off the event loop, adds in-memory subjects to the existing scorer, and records commitments with no beacon. It never moves a feature by itself; POST /maturation/moves applies only a decision the review model made, behind floors that can only refuse. No LLM spend, no outbound messages. Raising needs maturation.ladder.reviewTopic, unset by default.',
+  },
+  {
     name: 'maturationBoard',
     configPath: 'maturationBoard.enabled',
     description: 'Read-only maturation board: every maturing feature with its review verdict, live owner facts, follow-ups and recorded dates (GET /maturation/board, /dashboard/maturation/).',
@@ -864,16 +876,34 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Measure-only: reads existing owner stores (never writes to them), appends its own bounded ledger and tick rows, no LLM spend, no outbound messages while notices.dryRun holds (the default). The only acting part, the triage pace tuner, has its OWN explicit flag queuePace.tuner.enabled (default false, never dev-gated, dry-run by default), so this gate cannot start extra ticks.',
   },
   {
+    name: 'ecosystemIdeas',
+    configPath: 'ecosystemIdeas.enabled',
+    description: 'Ecosystem idea pipeline: a weekly review of similar projects that checks each idea against our own source and goals and ranks it. Advice only; it builds nothing and contacts no one. Reads outside text only through frameworks that pass a must-fail file-read probe.',
+    justification: 'Signal only: it gates no running agent and writes only its own ledger. Spend is capped per run and paused at the quota threshold. The one blocking piece, the adoption lint, runs on a development step.',
+  },
+  {
     name: 'mobilePairing',
     configPath: 'mobilePairing.enabled',
     description: 'Mobile pairing links and device keys: a one-time instar.sh link adds this agent to the Instar iPhone app; each phone gets its own owner-confirmed, individually revocable key (POST /mobile/pairing-codes, public redeem over the named tunnel, device-signed confirm/status, GET /mobile/devices, revoke), and operator chat from the app (POST /mobile/chat/:topicId).',
     justification: 'Phones never receive the API token or an operator session and may only make a fixed allowlist of signed requests (the one non-idempotent entry, chat, is made idempotent by requestId and never binds the topic operator); a phone becomes active only with a code sent privately to the owner. Dark on the fleet until the development-agent live proof passes.',
   },
   {
+    name: 'desktopGuidedSetup',
+    configPath: 'remoteDesktop.guidedSetup.enabled',
+    description: 'Guided Remote Desktop setup (docs/specs/desktop-guided-setup.md): a per-machine Set up flow on the Desktop page and in the app, driven by each machine\'s live check.',
+    justification: 'Every action needs a press behind the dashboard PIN session; nothing runs by itself. A paired machine can claim a machine with no front, so it stays dark on the fleet until proven on the development agent.',
+  },
+  {
     name: 'mobilePairingNative',
     configPath: 'mobilePairing.native.enabled',
     description: 'Native app conversations (docs/specs/mobile-native-conversations.md): the iPhone app starts, lists, reads and writes conversations stored by Instar itself (POST/GET /mobile/conversations, POST /mobile/chat/app/:key, its messages/events reads), the agent answers through app-reply.sh (POST /app/session-reply), and every app message is stored with its device signature and this machine\'s signed receipt, checked against a replicated, machine-signed device-key ledger (originVerified in history). The store and the ledger replicate to every machine whenever this is on.',
     justification: 'Device-signed only, behind the existing device allowlist; every mutation is idempotent by requestId; messages are persisted before dispatch and delivery is never claimed without a recorded outcome. Off ⇒ the new routes answer 503 and the Telegram chat route is unchanged. Dark on the fleet until the development-agent live proof passes.',
+  },
+  {
+    name: 'mobilePairingNativeMedia',
+    configPath: 'mobilePairing.native.media.enabled',
+    description: 'Media in app conversations (docs/specs/mobile-native-chat-media.md): the iPhone app uploads photos, videos, voice notes and files in signed chunks and sends them into a native conversation, the session receives local paths, the agent replies with files through app-reply.sh --file, and the phone\'s signature covers each file\'s hash.',
+    justification: 'Device-signed only, behind the existing allowlist; the server decides a file\'s type from its bytes and serves everything non-executable; reply files are confined to three roots and scanned by the existing credential wall; every admission is capped and a free-disk floor protects the machine. Off ⇒ the media routes answer 503, nothing is copied, and what is stored stays. Dark on the fleet until the development-agent live proof passes.',
   },
   {
     name: 'mobilePairingMultiRoute',

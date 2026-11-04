@@ -68,6 +68,8 @@ be healthy while the next stage is paused or at capacity.
 
 | Component | Responsibility |
 |---|---|
+| `FeedbackManager` | Stores an agent's submitted feedback locally and forwards it to the configured canonical webhook with agent and version identification. |
+| `FeedbackAnomalyDetector` | Applies per-agent burst, interval, and daily submission limits at intake using pseudonyms; its counters reset on server restart. |
 | `InboxDrainer` | Brings durable incoming reports into the canonical local store, deduplicating by feedback ID. |
 | `FeedbackProcessingService` | Reloads that store and runs a bounded clustering pass. |
 | `FeedbackDrainService` | Advances operated readiness work through bounded owner-run ticks. |
@@ -80,6 +82,7 @@ be healthy while the next stage is paused or at capacity.
 | `FeedbackTriageStore` | Holds triage decisions separately from report and cluster state. |
 | `FeedbackTriageArbiter` | Calls the registered model and checks the response contract. |
 | `FeedbackTriageService` | Runs the triage tick, applies decisions and quota pauses. |
+| `TriageOrigin` | Binds the producer and observed session author to Telegram messages sent by triage automation. |
 | `FeedbackExecutorService` | Starts bounded confined fix attempts and reconciles open PRs through review and merge. |
 
 Triage account selection must bind a verified subscription and a fresh quota reading to
@@ -109,6 +112,8 @@ names identify the code responsible for each observation when a stage stops adva
 
 A healthy intake count only proves reports arrived. For an end-to-end pace claim, inspect
 the triage decisions, reviewed fixes merged, and their rate against new high-priority work.
+The [delivery checks](./feedback-delivery-checks/) show where to look when a report or fix
+is waiting between those stages.
 
 ## How it is gated
 

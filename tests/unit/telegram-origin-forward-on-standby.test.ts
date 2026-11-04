@@ -13,7 +13,7 @@ import path from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
 import {
   classifyLeaseRoute, decideHolderForward, settleLeaseRoute, forwardReplyToHolder, recoverForwardedHold, submitOriginToHolder, nextLadderState, FORWARD_SETTLE_TIMEOUT_MS,
-  HeldForwardItemCollapser, heldExpiryItemId, expiredForwardWording, heldForwardNoticeText, HOLD_REASON_LEASE_NOT_HELD, UNRESOLVED_LEASE_HOLDER,
+  HeldForwardItemCollapser, heldExpiryItem, heldExpiryItemId, expiredForwardWording, heldForwardNoticeText, HOLD_REASON_LEASE_NOT_HELD, UNRESOLVED_LEASE_HOLDER,
 } from '../../src/messaging/telegram-origin/OriginForwardToHolder.js';
 import type { ForwardDeps, ForwardLeaseView, HolderSubmitResult, HeldForwardDetail } from '../../src/messaging/telegram-origin/OriginForwardToHolder.js';
 import type { OriginPreparedBotOperation } from '../../src/messaging/telegram-origin/TelegramOriginService.js';
@@ -400,6 +400,17 @@ describe('item collapse + wording + notice', () => {
     const row = { operationId: 'op-1', destination: { accountId: '1', chatId: '-1', topicId: '42' } };
     expect(heldExpiryItemId(row)).toBe('telegram-origin-held:42:expired:op-1');
     expect(heldExpiryItemId({ ...row, operationId: 'op-2' })).not.toBe(heldExpiryItemId(row));
+  });
+  it('expiries for one topic share a condition, so they land on one open row', () => {
+    const base: HeldOperationRow = { operationId: 'op-1', originId: 'o', state: 'expired', holdReason: HOLD_REASON_LEASE_NOT_HELD, holdDetail: null, preparedAt: 0, deadlineAt: 6 * 3_600_000,
+      executionOwnerMachineId: 'h', destination: { accountId: '1', chatId: '-1', topicId: '42' }, recovery: null, expiryReportedAt: null };
+    const a = heldExpiryItem(base); const b = heldExpiryItem({ ...base, operationId: 'op-2' });
+    expect(a.id).not.toBe(b.id);
+    expect(a.conditionKey).toBe('telegram-origin-held:42:expired');
+    expect(b.conditionKey).toBe(a.conditionKey);
+    expect(heldExpiryItem({ ...base, destination: { ...base.destination, topicId: '43' } }).conditionKey).not.toBe(a.conditionKey);
+    expect(heldExpiryItem({ ...base, destination: { accountId: '1', chatId: '-1' } as HeldOperationRow['destination'] }).conditionKey).toBe('telegram-origin-held:unknown:expired');
+    expect(a).toMatchObject({ category: 'telegram-origin', priority: 'HIGH', title: 'Held reply to topic 42 expired', summary: 'I could not deliver my reply to topic 42 within 6 h.', sourceContext: 'telegram-origin-forward-to-holder' });
   });
   it('expiry wording is honest about what is known', () => {
     const base: HeldOperationRow = { operationId: 'o', originId: 'o', state: 'expired', holdReason: HOLD_REASON_LEASE_NOT_HELD, holdDetail: null, preparedAt: 0, deadlineAt: 6 * 3_600_000,

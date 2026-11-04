@@ -343,6 +343,15 @@ program
 // ── Setup (explicit alias) ────────────────────────────────────────
 
 program
+  .command('set-claude-key')
+  .description('Put a new Claude sign-in key in place. Reads it from stdin or a hidden prompt.')
+  .option('-d, --dir <path>', 'Agent directory')
+  .action(async (opts) => {
+    const { setClaudeKey } = await import('./commands/setClaudeKey.js');
+    await setClaudeKey(opts);
+  });
+
+program
   .command('setup')
   .description('Interactive setup wizard (same as running `instar` with no args)')
   .option('--non-interactive', 'Run setup without LLM wizard (requires all flags)')
@@ -390,6 +399,26 @@ program
   });
 
 // ── Init ─────────────────────────────────────────────────────────
+
+program
+  .command('install')
+  .description('Install Instar and create your first agent: the path that needs the fewest choices')
+  .option('--resume', 'Continue an install that stopped or is waiting on you')
+  .option('--yes', 'Agree to what the installer lists, without asking')
+  .option('--answers <file>', 'A JSON file with name, purpose, door and autostart, for AI tools')
+  .option('--status', 'Print the install status as JSON')
+  .option('--restart', 'Begin again instead of continuing an unfinished install')
+  .action(async (opts) => {
+    const [major, minor] = process.versions.node.split('.').map(Number);
+    if (major < 20 || (major === 20 && minor < 12)) {
+      console.error(`\n  Instar needs Node.js 20.12 or later, and you're running ${process.versions.node}.`);
+      console.error(`  Upgrade: https://nodejs.org/en/download\n`);
+      process.exit(1);
+    }
+    const { runInstallCommand, INSTALL_EXIT_CODES } = await import('./commands/install.js');
+    const status = await runInstallCommand(opts);
+    process.exit(INSTALL_EXIT_CODES[status]);
+  });
 
 program
   .command('init [project-name]')

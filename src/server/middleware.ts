@@ -2,6 +2,8 @@
  * Express middleware — JSON parsing, CORS, auth, error handling.
  */
 
+import { memorySessionAllows } from './memorySessionGuard.js';
+import type { SessionTokenRecord } from '../users/MemoryPrivacy.js';
 import { THREADLINE_MCP_DEADLINES } from '../core/threadlineMcpSpawn.js';
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
@@ -198,6 +200,12 @@ export function authMiddleware(
    * principal set) or 'refused' (already answered).
    */
   deviceAuth?: (req: Request, res: Response) => 'none' | 'ok' | 'refused',
+  /**
+   * Memory privacy (docs/specs/memory-privacy.md §5): looks up a session token. A
+   * session token never counts as the agent's token; it reaches only the routes in
+   * memorySessionGuard. When absent, session tokens are refused like any bad token.
+   */
+  memorySessionLookup?: (token: string) => SessionTokenRecord | null,
 ) {
   return (req: Request, res: Response, next: NextFunction): void => {
     // Threadline MCP over local HTTP — ONE exact-path rule, FIRST: before the
@@ -244,6 +252,21 @@ export function authMiddleware(
 
     // Dashboard unlock (PIN → token exchange) is unauthenticated by design
     if (req.path === '/dashboard/unlock' && req.method === 'POST') {
+      next();
+      return;
+    }
+
+    // Console ticket redeem (docs/specs/mobile-console-device-signin.md §3.3): the single-use
+    // ticket in the body IS the auth, checked in the handler. Exact method + path only.
+    if (req.path === '/dashboard/console-ticket' && req.method === 'POST') {
+      next();
+      return;
+    }
+
+    // A recommended service's confirm page (docs/specs/recommended-services.md, Yes): a phone holds
+    // no token. Reading shows only public catalog text, and a yes needs the single-use token and
+    // the operator's PIN, both checked in the handler. Exact path shape and methods only.
+    if ((req.method === 'GET' || req.method === 'POST') && /^\/recommended-services\/[a-z][a-z0-9-]{0,63}\/confirm$/.test(req.path)) {
       next();
       return;
     }
@@ -386,6 +409,21 @@ export function authMiddleware(
     const header = req.headers.authorization;
     if (!header || !header.startsWith('Bearer ')) {
       res.status(401).json({ error: 'Missing or invalid Authorization header' });
+      return;
+    }
+
+    if (header.startsWith('Bearer mps_')) {
+      const session = memorySessionLookup?.(header.slice(7)) ?? null;
+      if (!session) {
+        res.status(401).json({ error: 'Invalid session token' });
+        return;
+      }
+      if (!memorySessionAllows(req.method, req.path, session)) {
+        res.status(403).json({ error: 'not-available-to-this-session' });
+        return;
+      }
+      res.locals.memorySession = session;
+      next();
       return;
     }
 
@@ -804,14 +842,17 @@ function verifyViewSignature(viewPath: string, sig: string, authToken: string): 
  * and restricts resource loading to trusted sources.
  */
 export function dashboardSecurityHeaders(req: Request, res: Response, next: NextFunction): void {
-  if (req.path === '/dashboard' || req.path.startsWith('/dashboard/')) {
+  // Express routes match case-insensitively (`/Dashboard/legacy` reaches the legacy page), so the
+  // headers must too (dashboard-console-default-and-pair-page round 2).
+  const p = req.path.toLowerCase();
+  if (p === '/dashboard' || p.startsWith('/dashboard/')) {
     res.header('X-Frame-Options', 'DENY');
     res.header('X-Content-Type-Options', 'nosniff');
     const host = req.get('host') ?? '';
     const desktopConnect = /^[A-Za-z0-9.:[\]-]+$/.test(host)
       ? `connect-src 'self' ws://${host} wss://${host}` : "connect-src 'self'";
     res.header('Content-Security-Policy',
-      req.path === '/dashboard/desktop.html' || req.path === '/dashboard/desktop.js'
+      p === '/dashboard/desktop.html' || p === '/dashboard/desktop.js'
         ? `default-src 'none'; script-src 'self'; style-src 'self'; img-src blob: 'self'; ${desktopConnect}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
         : "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'");
     res.header('Referrer-Policy', 'no-referrer');

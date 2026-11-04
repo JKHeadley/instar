@@ -778,7 +778,8 @@ describe('E2E: Multi-Agent Messaging (same machine)', () => {
         })
         .expect(201);
 
-      expect(res.body.phase).toBe('sent');
+      // Same agent, named session → typed into it now (was stuck at 'sent').
+      expect(res.body.phase).toBe('delivered');
     });
   });
 

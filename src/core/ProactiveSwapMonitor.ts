@@ -58,6 +58,7 @@ import type { SwapAntiThrashEngine, AntiThrashKnobs } from './SwapAntiThrash.js'
 import type { WorkProbeResult } from './SwapWorkGate.js';
 import { governor, consumeAdmissionToken } from '../monitoring/selfaction/governor.js';
 import type { DerivedTarget } from '../monitoring/selfaction/types.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 /* @self-action-controller: proactive-swap-monitor */
 // Unified self-action backpressure (Increment B, OBSERVE-ONLY): every executed
@@ -420,6 +421,9 @@ export class ProactiveSwapMonitor {
       dryRun: feature.dryRun,
     };
     feature.audit?.(record);
+    const repointEvidence = { fromAccountId: source.id, toAccountId: target.id, fromUtilPct: record.fromUtilPct, toUtilPct: record.toUtilPct, thresholdPct: this.thresholdPct, dryRun: feature.dryRun };
+    // This runs every tick while the pressure lasts: one row per distinct intended flip.
+    if (feature.dryRun) featureEvidence.recordAtMostEvery('subscriptionPool.proactiveSwap.defaultSlotRepoint', `would|${source.id}|${target.id}`, 6 * 60 * 60 * 1000, { kind: 'fired', reason: 'would-repoint', context: repointEvidence });
     if (feature.dryRun) {
       this.logger.log(`[ProactiveSwap] default slot would repoint ${source.id} → ${target.id} (${record.fromUtilPct}% → ${record.toUtilPct}%; dry-run; session binding untouched)`);
       return;
@@ -427,6 +431,7 @@ export class ProactiveSwapMonitor {
     try {
       const result = await feature.setDefaultAccount(target.id);
       feature.audit?.({ event: 'proactive-default-slot-repoint-result', fromAccountId: source.id, toAccountId: target.id, ...result });
+      featureEvidence.record('subscriptionPool.proactiveSwap.defaultSlotRepoint', { kind: result.ok ? 'fired' : 'error', reason: result.ok ? 'repointed' : `repoint-refused: ${result.reason ?? result.outcome ?? 'unknown'}`, context: repointEvidence });
       if (result.ok) {
         this.logger.log(`[ProactiveSwap] default slot repointed ${source.id} → ${target.id} (${record.fromUtilPct}% → ${record.toUtilPct}%; session binding untouched)`);
       } else {
@@ -435,6 +440,7 @@ export class ProactiveSwapMonitor {
     } catch (error) {
       const errorClass = error instanceof Error ? error.constructor.name : 'Error';
       feature.audit?.({ event: 'proactive-default-slot-repoint-error', fromAccountId: source.id, toAccountId: target.id, errorClass });
+      featureEvidence.record('subscriptionPool.proactiveSwap.defaultSlotRepoint', { kind: 'error', reason: `repoint-failed: ${errorClass}`, context: repointEvidence });
       this.logger.warn(`[ProactiveSwap] default slot repoint ${source.id} → ${target.id} failed (${errorClass})`);
     }
   }

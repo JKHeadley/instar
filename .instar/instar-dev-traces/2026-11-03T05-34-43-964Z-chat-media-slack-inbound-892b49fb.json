@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "chat-media-slack-inbound",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T05:34:43.964Z",
+  "artifactPath": "upgrades/side-effects/chat-media-slack-inbound.md",
+  "artifactSha256": "4f7055e58e26f081fc4b1f244ae167dd7b30f8063e71ee925561e66933949ad5",
+  "coveredFiles": [
+    "src/core/AppConversationStore.ts",
+    "src/core/appPlatformMedia.ts",
+    "src/messaging/slack/SlackAdapter.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobileMediaRoutes.ts",
+    "src/server/mobileSlackRoutes.ts",
+    "tests/e2e/mobile-native-media-alive.test.ts",
+    "tests/integration/slack-platform-media.test.ts",
+    "tests/unit/app-platform-media-slack.test.ts",
+    "upgrades/next/chat-media-slack-inbound.md",
+    "upgrades/side-effects/chat-media-slack-inbound.eli16.md",
+    "upgrades/side-effects/chat-media-slack-inbound.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Slack inbound files copied into the app's history; read-only device route behind existing gates; revert removes it",
+  "eli16Path": "upgrades/side-effects/chat-media-slack-inbound.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/chat-media-slack-inbound.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

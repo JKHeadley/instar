@@ -10,10 +10,10 @@ import { JSDOM } from 'jsdom';
 import {
   maintainerMode, sourceState, buildShipping, watcherLine, releaseLine, holdWords, verifyWords, rollbackWords,
   buildPace, paceFailure, pacificDay, buildFeedback, operatorTodos, authorityCard, authorityStatusLine, progressLine, queueRow,
-  readinessAuthorityRequest, triageAuthorityRequest, commitRequest, authorityResultWords, commitResultWords, developmentHeadline,
+  readinessAuthorityRequest, triageAuthorityRequest, commitRequest, authorityResultWords, commitResultWords, developmentHeadline, stoppedLead, foldFromHash,
   WATCHER_CADENCE_MS, STALL_TICKS, DEV_TOOLS_KEY,
 } from '../../dashboard/console/development-model.js';
-import { NATIVE_PAGES, tabHref, GROUPS } from '../../dashboard/console/nav-model.js';
+import { NATIVE_PAGES, tabHref, GROUPS, MERGED } from '../../dashboard/console/nav-model.js';
 
 const NOW = Date.parse('2026-10-25T23:30:00Z');
 const ok = (data: unknown) => ({ ok: true, status: 200, data });
@@ -65,7 +65,7 @@ describe('maintainer mode is visibility only', () => {
     expect(tabHref('throughput')).toBe('#/work/development?s=pace');
     expect(tabHref('feedback-drain')).toBe('#/work/development?s=feedback');
     const hood = GROUPS.find((g) => g.id === 'settings')!.hood!;
-    for (const id of ['pr-pipeline', 'throughput', 'feedback-drain']) expect(hood.find((t) => t.id === id)!.desc).toMatch(/^Now inside Development/);
+    for (const id of ['pr-pipeline', 'throughput', 'feedback-drain']) { expect(hood.find((t) => t.id === id)).toBeUndefined(); expect(MERGED).toContain(id); }
     // The Development tile is NOT a legacy tab: it is added by the page module, so the registry check stays exact.
     expect(GROUPS.flatMap((g) => g.tabs).some((t) => t.id === 'development')).toBe(false);
   });
@@ -136,6 +136,12 @@ describe('Shipping', () => {
     expect(stale.tone).toBe('muted');
     expect(watcherLine({ lastTickAt: minsAgo(25) }, NOW)).toEqual({ text: 'Merge watcher last checked 25 min ago, usually every 10 min.', tone: 'attn' });
     expect(watcherLine({ lastTickAt: minsAgo(1), breaker: { open: true } }, NOW).tone).toBe('bad');
+    // green-pr-agent-stop-release: the words follow who holds the stop.
+    const agent = { class: 'agent' }, operator = { class: 'operator' };
+    expect(watcherLine({ gate: { rollback: ['a'], rollbackStops: [agent] } }, NOW)).toMatchObject({ stopped: true, tone: 'attn', text: expect.stringMatching(/stopped by the agent for its own reason/) });
+    expect(watcherLine({ gate: { rollback: ['a', 'b'], rollbackStops: [agent, operator] } }, NOW).text).toMatch(/you or the agent/);
+    expect(watcherLine({ gate: { rollback: ['a'], rollbackStops: [operator] } }, NOW).text).toMatch(/you or the agent/);
+    expect(watcherLine({ gate: { rollback: ['a'] } }, NOW).text).toMatch(/you or the agent/);
     expect(watcherLine({ lastTickAt: minsAgo(1), invariantOk: false }, NOW).text).toContain('safety invariant failed');
     expect(watcherLine({ lastTickAt: minsAgo(1), gate: { rollback: ['L1'] } }, NOW)).toMatchObject({ tone: 'attn', stopped: true });
     expect(watcherLine({}, NOW).text).toBe('Merge watcher has not checked yet.');
@@ -246,7 +252,7 @@ describe('Feedback', () => {
     expect(f.tiles.find((t) => t.key === 'sorting')).toMatchObject({ n: 'Can’t tell', tone: 'unknown' });
     // A to-do the other reads DID show is still listed under the can't-tell headline.
     expect(f.todos.length).toBe(1);
-    expect(f.sub).toContain('listed below');
+    expect(f.sub).toContain('from the reads that answered');
     const q = buildFeedback(feedbackOk({ queue: fail(), readiness: ok(proposal()) }), NOW);
     expect(q.state).toBe('cant-tell');
     expect(q.todos[0].kind).toBe('readiness-authority');
@@ -328,9 +334,190 @@ describe('the combined headline', () => {
   });
 });
 
+describe('while auto-merging is stopped', () => {
+  const ship = (gate: Record<string, unknown>) => buildShipping({ watcher: ok(watcher({ gate })), verify: ok(verify()), release: ok(release()) }, NOW);
+  const calm = () => buildFeedback(feedbackOk({ queue: ok({ items: [] }) }), NOW);
+  it('stopped: the lead card, the Shipping line and the headline all say so, and the re-arm carries the same latch ids', () => {
+    const s = ship({ rollback: ['L1'] });
+    expect(s.stopped).toBe(true);
+    expect(s.rollbackLatches).toEqual(['L1']);
+    expect(s.line).toBe('Shipping: auto-merge stopped, 3 on the way, 1 needs you');
+    expect(s.tone).toBe('attn');
+    const card = stoppedLead(s)!;
+    expect(card).toMatchObject({ title: 'Automatic merging is stopped', button: 'Turn auto-merge back on', why: s.watcher!.text });
+    expect(card.detail).toBe('No pull request merges on its own until it is back on. 3 pull requests are on the way.');
+    expect(developmentHeadline({ shipping: s, feedback: calm() })).toMatchObject({ text: '2 things need you.', tone: 'attn', sub: 'Automatic merging is stopped.' });
+    expect(developmentHeadline({ shipping: s, feedback: buildFeedback(feedbackOk({ readiness: ok(proposal()) }), NOW) })).toMatchObject({ text: '4 things need you.', sub: 'Automatic merging is stopped.' });
+    const quiet = buildShipping({ watcher: ok(watcher({ gate: { rollback: ['L1'] }, snapshot: { at: minsAgo(1), entries: [] }, episodes: [], armed: [] })), verify: ok(verify({ queue: [] })), release: ok(release()) }, NOW);
+    expect(quiet.line).toBe('Shipping: auto-merge stopped, nothing on the way');
+    expect(stoppedLead(quiet)!.detail).toBe('No pull request merges on its own until it is back on.');
+    // The bug's shape: the page otherwise read "Nothing here needs you." while nothing could merge.
+    expect(developmentHeadline({ shipping: quiet, feedback: calm(), pace: buildPace(ok(series([])), {}, NOW) })).toMatchObject({ text: 'Automatic merging is stopped.', tone: 'attn' });
+    // A stuck pull request's red stays red: stopped never softens it.
+    const stuck = buildShipping({ watcher: ok(watcher({ gate: { rollback: ['L1'] }, snapshot: { at: minsAgo(1), entries: [] }, episodes: [], armed: [], stuckRed: [{ pr: 9, redForMs: 3600000 }] })), verify: ok(verify({ queue: [] })), release: ok(release()) }, NOW);
+    expect(stuck.tone).toBe('bad');
+  });
+  it('not stopped, or the watcher unread: no card, no stopped words, the headline unchanged', () => {
+    const s = ship({ rollback: [], poolArmed: true });
+    expect(s.stopped).toBe(false);
+    expect(stoppedLead(s)).toBeNull();
+    expect(s.line).toBe('Shipping: 3 on the way, 1 needs you');
+    expect(developmentHeadline({ shipping: s, feedback: calm() }).text).toBe('One pull request needs your approval on GitHub.');
+    const unread = buildShipping({ watcher: fail(), verify: ok(verify()), release: ok(release()) }, NOW);
+    expect(stoppedLead(unread)).toBeNull();
+    expect(unread.line).toBe('Shipping: can’t tell');
+    expect(stoppedLead(buildShipping({ watcher: off(), verify: off(), release: off() }, NOW))).toBeNull();
+    expect(stoppedLead(undefined)).toBeNull();
+  });
+  it('a ?s= link names one of the three sections; anything else names none', () => {
+    expect(foldFromHash('#/work/development?s=shipping')).toBe('shipping');
+    expect(foldFromHash('#/work/development?s=pace')).toBe('pace');
+    expect(foldFromHash('#/work/development')).toBeNull();
+    expect(foldFromHash('#/work/development?s=nonsense')).toBeNull();
+    expect(foldFromHash(undefined)).toBeNull();
+  });
+});
+
+describe('shared DOM builders', () => {
+  it('el and setKids place nodes from nested arrays at any depth, never their string form', async () => {
+    const d = new JSDOM('<!doctype html><html><body></body></html>');
+    Object.assign(globalThis as Record<string, unknown>, { document: d.window.document });
+    const { el, setKids, note } = await import('../../dashboard/console/ui.js');
+    const host = el('div', {}, [[note('a'), [note('b')]], null, false]);
+    expect(host.querySelectorAll('p')).toHaveLength(2);
+    expect(host.textContent).toBe('ab');
+    setKids(host, [note('c'), [note('d'), [note('e')]], null]);
+    expect(host.querySelectorAll('p')).toHaveLength(3);
+    expect(host.textContent).toBe('cde');
+    d.window.close();
+  });
+});
+
 describe('development page in a DOM', () => {
   let dom: JSDOM;
   afterEach(() => dom?.window.close());
+
+  /** Boots the shipped console on the page with a read table; posts are recorded, never acted on. */
+  async function bootPage(hash: string, over: Record<string, { status?: number; body: unknown }> = {}) {
+    const posted: Array<{ url: string; body: Record<string, unknown> }> = [];
+    dom = new JSDOM('<!doctype html><html><body></body></html>', { url: `http://localhost:4040/dashboard/console/${hash}` });
+    const g = globalThis as Record<string, unknown>;
+    Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, requestAnimationFrame: (f: () => void) => setTimeout(f, 0) });
+    dom.window.localStorage.setItem('instar_token', 't');
+    const scrolled: string[] = [];
+    (dom.window.Element.prototype as unknown as { scrollIntoView: () => void }).scrollIntoView = function (this: Element) { scrolled.push(this.id); };
+    dom.window.scrollTo = () => {};
+    const table: Record<string, { status?: number; body: unknown }> = {
+      '/sessions': { body: { sessions: [] } }, '/health': { body: { project: { name: 'echo' } } },
+      '/green-pr-automerge': { body: watcher() }, '/local-verify': { body: verify() }, '/release-readiness': { body: release() },
+      '/feedback-factory/readiness-authorities/proposal': { body: proposal() },
+      '/feedback-factory/triage/summary': { body: feedbackOk().triageSummary.data }, '/feedback-factory/triage/authority/proposal': { body: feedbackOk().triageProposal.data },
+      '/feedback-factory/execute/status': { body: feedbackOk().execute.data }, '/feedback-factory/triage/queue': { body: { items: [] } },
+      '/feedback-factory/drain/status': { body: feedbackOk().drain.data }, '/throughput/series?days=14': { status: 503, body: { error: 'github-auth-unavailable' } }, ...over,
+    };
+    g.fetch = async (url: string, opts?: { method?: string; body?: string }) => {
+      if (opts && opts.method === 'POST') { posted.push({ url, body: JSON.parse(opts.body || '{}') }); return { ok: true, status: 200, json: async () => ({ ok: true }) }; }
+      const hit = table[url];
+      if (!hit) return { ok: false, status: 404, json: async () => ({ error: 'no such route in the test' }) };
+      const status = hit.status || 200;
+      return { ok: status < 400, status, json: async () => JSON.parse(JSON.stringify(hit.body)) };
+    };
+    vi.resetModules();
+    await import('../../dashboard/console/console.js');
+    await settle();
+    return { doc: dom.window.document, posted, scrolled };
+  }
+  const settle = async () => { for (let i = 0; i < 25; i++) await new Promise((r) => setTimeout(r, 20)); };
+  const expanded = (doc: Document, id: string) => doc.querySelector(`#sec-${id} .list-head`)!.getAttribute('aria-expanded');
+  const stoppedGate = { gate: { rollback: ['L1', 'L2'], emergencyPause: [], poolArmed: true, mergeAllowed: false } };
+
+  it('stopped: the card leads the page, above a Feedback approval, and both buttons take the same PIN path to the same route', async () => {
+    const { doc, posted } = await bootPage('#/work/development', { '/green-pr-automerge': { body: watcher(stoppedGate) } });
+    const page = doc.querySelector('.dev-page')!;
+    const card = page.children[1];
+    expect(card.classList.contains('stopped-lead')).toBe(true);
+    expect(card.querySelector('.need-title')!.textContent).toBe('Automatic merging is stopped');
+    expect(page.children[2].classList.contains('authority-card')).toBe(true); // the approval follows it
+    // The fold the bug hid it behind: Feedback is open, Shipping shut, and its bar still says stopped.
+    expect(expanded(doc, 'feedback')).toBe('true');
+    expect(expanded(doc, 'shipping')).toBe('false');
+    expect(doc.querySelector('#sec-shipping .fold-line')!.textContent).toContain('auto-merge stopped');
+    expect(doc.querySelector('.page-title')!.textContent).toBe('3 things need you.');
+
+    const press = async (b: HTMLButtonElement) => {
+      b.click();
+      for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 10));
+      const pin = doc.querySelector('.sheet form.pin-form input.pin-input') as HTMLInputElement;
+      expect(pin).toBeTruthy();
+      pin.value = '246810';
+      pin.form!.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+      for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 20));
+      (doc.querySelector('.sheet-close') as HTMLButtonElement | null)?.click();
+    };
+    await press(card.querySelector('button') as HTMLButtonElement);
+    expect(posted).toEqual([{ url: '/green-pr-automerge/enable', body: { pin: '246810', latchIds: ['L1', 'L2'] } }]);
+
+    // In the fold: one button, above the pull request list, doing exactly the same thing.
+    (doc.querySelector('#sec-shipping .list-head') as HTMLButtonElement).click();
+    const buttons = [...doc.querySelectorAll('#fold-shipping button')].filter((b) => b.textContent === 'Turn auto-merge back on') as HTMLButtonElement[];
+    expect(buttons).toHaveLength(1);
+    const list = doc.querySelector('#sec-prs')!;
+    expect(buttons[0].compareDocumentPosition(list) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect([...doc.querySelectorAll('#fold-shipping button')].some((b) => b.textContent === 'Stop auto-merging')).toBe(false);
+    await press(buttons[0]);
+    expect(posted).toHaveLength(2);
+    expect(posted[1]).toEqual(posted[0]);
+  });
+
+  it('not stopped: no card, the stop button stays under the list, and the first thing on the page is the approval', async () => {
+    const { doc, posted } = await bootPage('#/work/development');
+    expect(doc.querySelector('.stopped-lead')).toBeNull();
+    expect(doc.querySelector('.dev-page')!.children[1].classList.contains('authority-card')).toBe(true);
+    expect(doc.querySelector('#sec-shipping .fold-line')!.textContent).toBe('Shipping: 3 on the way, 1 needs you');
+    expect(doc.body.textContent).not.toContain('Turn auto-merge back on');
+    (doc.querySelector('#sec-shipping .list-head') as HTMLButtonElement).click();
+    const stop = [...doc.querySelectorAll('#fold-shipping button')].find((b) => b.textContent === 'Stop auto-merging')!;
+    expect(doc.querySelector('#sec-prs')!.compareDocumentPosition(stop) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(posted).toEqual([]);
+  });
+
+  it('a ?s= link works on a tab that is already open, once: a refresh keeps what the operator chose and does not scroll again', async () => {
+    const { doc, scrolled } = await bootPage('#/work/development');
+    expect(expanded(doc, 'feedback')).toBe('true');
+    expect(scrolled).toEqual([]);
+    dom.window.location.hash = '#/work/development?s=shipping';
+    await settle();
+    expect(expanded(doc, 'shipping')).toBe('true');
+    expect(expanded(doc, 'feedback')).toBe('false');
+    expect(scrolled).toEqual(['sec-shipping']);
+    // The operator closes it; the 30-second refresh re-renders in place with the link still in the address.
+    (doc.querySelector('#sec-shipping .list-head') as HTMLButtonElement).click();
+    expect(expanded(doc, 'shipping')).toBe('false');
+    const { renderDevelopment } = await import('../../dashboard/console/development.js');
+    await renderDevelopment(doc.querySelector('main')!, {});
+    expect(expanded(doc, 'shipping')).toBe('false');
+    expect(scrolled).toEqual(['sec-shipping']);
+    // Leaving and coming back through the same link opens it again.
+    dom.window.location.hash = '#/home';
+    await settle();
+    dom.window.location.hash = '#/work/development?s=shipping';
+    await settle();
+    expect(expanded(doc, 'shipping')).toBe('true');
+    // A link naming no real section leaves the remembered one alone.
+    dom.window.location.hash = '#/work/development?s=nonsense';
+    await settle();
+    expect(expanded(doc, 'shipping')).toBe('true');
+  });
+
+  it('notes under the Feedback tiles arrive as notes, never "[object HTMLParagraphElement]"', async () => {
+    const summary = { ...(feedbackOk().triageSummary.data as Record<string, unknown>), quotaPause: { at: minsAgo(5) }, ignoreBrake: { engaged: true } };
+    const { doc } = await bootPage('#/work/development?s=feedback', { '/feedback-factory/triage/summary': { body: summary } });
+    const fold = doc.querySelector('#fold-feedback')!;
+    expect(fold.textContent).not.toContain('[object');
+    const notes = [...fold.querySelectorAll(':scope > p.card-note')].map((n) => n.textContent);
+    expect(notes).toEqual(['Triage is paused for now: the account serving it is near its usage limit.', 'Ignores are braked: the ignore rate rose sharply, so new ignores are being held.']);
+    expect(doc.body.textContent).not.toContain('[object');
+  });
 
   it('boots the shipped console, puts the approval card first, and drives Approve through the PIN sheet: the PIN is sent once, in that body, and the field is gone', async () => {
     const posted: Array<{ url: string; body: Record<string, unknown>; headers: Record<string, string> }> = [];

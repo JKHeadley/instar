@@ -1,4 +1,5 @@
 import type { ApprenticeshipCycleRecord, ApprenticeshipCycleStore } from './ApprenticeshipCycleStore.js';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 
 export interface ApprenticeshipCycleSlaConfig {
   enabled?: boolean;
@@ -99,16 +100,23 @@ export class ApprenticeshipCycleSlaMonitor {
       if (this.raisedCycleIds.has(cycle.id)) continue;
       this.raisedCycleIds.add(cycle.id);
       raised.push(cycle.id);
-      await this.raiseAttention({
-        id: `apprenticeship-cycle-overdue-${cycle.id}`,
-        title: 'Apprenticeship cycle overdue',
-        summary:
-          `Cycle ${cycle.cycleNumber} for ${cycle.instanceId} has been open for ` +
-          `${cycle.ageMinutes} minute(s), past the ${this.config.overdueAfterMinutes}-minute SLA.`,
-        category: 'apprenticeship',
-        priority: 'LOW',
-        sourceContext: 'apprenticeship-cycle-sla',
-      });
+      const evidenceContext = { cycleId: cycle.id, instanceId: cycle.instanceId, cycleNumber: cycle.cycleNumber, ageMinutes: cycle.ageMinutes, overdueAfterMinutes: this.config.overdueAfterMinutes };
+      try {
+        await this.raiseAttention({
+          id: `apprenticeship-cycle-overdue-${cycle.id}`,
+          title: 'Apprenticeship cycle overdue',
+          summary:
+            `Cycle ${cycle.cycleNumber} for ${cycle.instanceId} has been open for ` +
+            `${cycle.ageMinutes} minute(s), past the ${this.config.overdueAfterMinutes}-minute SLA.`,
+          category: 'apprenticeship',
+          priority: 'LOW',
+          sourceContext: 'apprenticeship-cycle-sla',
+        });
+      } catch (err) {
+        featureEvidence.record('monitoring.apprenticeshipCycleSla', { kind: 'error', reason: 'overdue raise failed', context: evidenceContext });
+        throw err;
+      }
+      featureEvidence.record('monitoring.apprenticeshipCycleSla', { kind: 'fired', reason: 'overdue cycle raised', context: evidenceContext });
     }
     return { enabled: true, overdue, raised };
   }

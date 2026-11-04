@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "prompt-gate-settle-before-relay",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T01:06:24.883Z",
+  "artifactPath": "upgrades/side-effects/prompt-gate-settle-before-relay.md",
+  "artifactSha256": "9f3134bd58cdbb1ebc58a37edad085cb7c296f165825655e1525ec5c47459802",
+  "coveredFiles": [
+    "src/monitoring/promptRelaySettle.ts",
+    "upgrades/side-effects/prompt-gate-settle-before-relay.eli16.md",
+    "upgrades/side-effects/prompt-gate-settle-before-relay.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "comment marker on an existing fail-toward-relay catch",
+  "eli16Path": "upgrades/side-effects/prompt-gate-settle-before-relay.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/prompt-gate-settle-before-relay.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

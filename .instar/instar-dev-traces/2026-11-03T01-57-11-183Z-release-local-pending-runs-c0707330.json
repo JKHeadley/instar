@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "release-local-pending-runs",
+  "sessionId": "2f841616-c6bb-45d1-9597-f0bbb9e55e8b",
+  "timestamp": "2026-11-03T01:57:11.183Z",
+  "artifactPath": "upgrades/side-effects/release-local-pending-runs.md",
+  "artifactSha256": "0168cdd1d5945b1e04e48bac5e772433c43005cae906e19a29a260d245761770",
+  "coveredFiles": [
+    "docs/specs/release-local-pending-runs.eli16.md",
+    "scripts/lib/release-local-steps.mjs",
+    "tests/unit/release-local-steps.test.ts",
+    "upgrades/next/release-local-pending-runs.md",
+    "upgrades/side-effects/release-local-pending-runs.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One function in the local release check; widens an existing exact fact (unfinished run) toward stopping; a revert fully undoes it; spec already requires counting any unfinished run.",
+  "eli16Path": "docs/specs/release-local-pending-runs.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/release-local-pending-runs.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

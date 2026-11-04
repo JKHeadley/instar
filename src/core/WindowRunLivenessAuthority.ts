@@ -281,19 +281,73 @@ function isTerminal(status: WindowRunLivenessStatus): boolean {
   return status === 'stalled' || status === 'failed' || status === 'closed';
 }
 
+/**
+ * Choose the one binding a single-binding reader sees: the newest registered
+ * live binding, else the newest binding of any status. Callers that care
+ * about a particular topic ask for that topic instead.
+ */
+export function primaryWindowRunBinding<T extends { status: string; registeredAt?: string; startedAt?: string }>(docs: readonly T[]): T | null {
+  const at = (doc: T) => Date.parse(doc.registeredAt ?? doc.startedAt ?? '') || 0;
+  const newest = (list: readonly T[]) => list.reduce<T | null>((best, doc) => !best || at(doc) >= at(best) ? doc : best, null);
+  return newest(docs.filter(doc => !isTerminal(doc.status as WindowRunLivenessStatus))) ?? newest(docs);
+}
+
+/**
+ * One binding per topic: each topic's run has its own state file and its own
+ * mutation lock under `topics/<topicId>/`, so a run in one topic never blocks
+ * a run in another. The pre-split single `state.json` is moved into its
+ * topic's directory on first read. Terminal-window markers stay shared: a
+ * finished window cannot be rebound from any topic.
+ */
 export class WindowRunLivenessStore {
   readonly file: string;
+  private readonly root: string;
   private readonly mutationTarget: string;
+  private readonly topicId: number | undefined;
+  private readonly stateDir: string;
 
-  constructor(stateDir: string) {
-    this.file = path.join(stateDir, 'window-run-liveness', 'state.json');
-    this.mutationTarget = path.join(stateDir, 'window-run-liveness', 'mutation-target');
+  constructor(stateDir: string, topicId?: number) {
+    this.root = path.join(stateDir, 'window-run-liveness');
+    this.topicId = topicId;
+    const dir = topicId === undefined ? this.root : path.join(this.root, 'topics', String(topicId));
+    this.file = path.join(dir, 'state.json');
+    this.mutationTarget = path.join(dir, 'mutation-target');
+    this.stateDir = stateDir;
+  }
+
+  /** The store holding one topic's binding. */
+  forTopic(topicId: number): WindowRunLivenessStore {
+    if (!Number.isSafeInteger(topicId) || topicId < 0) throw new Error('window-run-liveness-topic-invalid');
+    if (this.topicId === topicId) return this;
+    this.migrateLegacy();
+    return new WindowRunLivenessStore(this.stateDir, topicId);
+  }
+
+  /** Every topic with a binding on disk, ascending. */
+  topicIds(): number[] {
+    if (this.topicId !== undefined) return [this.topicId];
+    this.migrateLegacy();
+    let names: string[] = [];
+    try { names = fs.readdirSync(path.join(this.root, 'topics')); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    return names.filter(name => /^[0-9]+$/.test(name) && fs.existsSync(path.join(this.root, 'topics', name, 'state.json')))
+      .map(Number).filter(Number.isSafeInteger).sort((a, b) => a - b);
+  }
+
+  /** Every binding on disk (one per topic). */
+  loadAll(): WindowRunLivenessDocument[] {
+    if (this.topicId !== undefined) { const one = this.load(); return one ? [one] : []; }
+    return this.topicIds().map(id => this.forTopic(id).load()).filter((doc): doc is WindowRunLivenessDocument => !!doc);
   }
 
   load(): WindowRunLivenessDocument | null {
+    // The root store answers single-binding readers with the primary binding.
+    if (this.topicId === undefined) return primaryWindowRunBinding(this.loadAll());
     try {
       const parsed = JSON.parse(fs.readFileSync(this.file, 'utf8')) as WindowRunLivenessDocument;
       this.validate(parsed);
+      if (parsed.topicId !== this.topicId) throw new Error('window-run-liveness-topic-file-mismatch');
       return parsed;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
@@ -302,6 +356,8 @@ export class WindowRunLivenessStore {
   }
 
   save(state: WindowRunLivenessDocument): void {
+    if (this.topicId === undefined) { this.forTopic(state.topicId).save(state); return; }
+    if (state.topicId !== this.topicId) throw new Error('window-run-liveness-topic-file-mismatch');
     this.validate(state);
     fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
     const tmp = `${this.file}.${process.pid}.${randomUUID()}.tmp`;
@@ -334,7 +390,39 @@ export class WindowRunLivenessStore {
   }
 
   private terminalWindowPath(windowId: string): string {
-    return path.join(path.dirname(this.file), 'terminal-windows', `${digest(windowId)}.json`);
+    return path.join(this.root, 'terminal-windows', `${digest(windowId)}.json`);
+  }
+
+  /**
+   * Move the pre-split root `state.json` into its topic's directory. A rename
+   * is atomic; if the topic already has a binding the old file is a stale copy
+   * from before the split and is set aside, never merged.
+   */
+  private migrateLegacy(): void {
+    const legacy = path.join(this.root, 'state.json');
+    let parsed: WindowRunLivenessDocument;
+    try {
+      parsed = JSON.parse(fs.readFileSync(legacy, 'utf8')) as WindowRunLivenessDocument;
+      this.validate(parsed);
+    } catch (error) {
+      // Absent (or another process moved it first): nothing to do.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      // An unreadable pre-split file has no topic to move to. Set it aside so it
+      // cannot block every topic's reads and registrations, and say so loudly.
+      const aside = `${legacy}.unreadable-${Date.now()}`;
+      try { fs.renameSync(legacy, aside); } catch { /* @silent-fallback-ok — a concurrent mover already took it */ }
+      console.warn(`[window-run-liveness] pre-split state.json was unreadable and was set aside at ${aside}: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    // A readable file is moved, never set aside: a failure here is rethrown.
+    const target = path.join(this.root, 'topics', String(parsed.topicId), 'state.json');
+    fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+    try {
+      if (fs.existsSync(target)) fs.renameSync(legacy, `${legacy}.pre-split-${Date.now()}`);
+      else fs.renameSync(legacy, target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
   }
 
   withMutation<T>(mutate: () => T): T {
@@ -370,7 +458,7 @@ export class WindowRunLivenessStore {
 
 export class WindowRunLivenessAuthority {
   private readonly cfg: Required<WindowRunLivenessConfig>;
-  private readonly ticks = new TickSerializer<WindowRunLivenessDocument | null>();
+  private readonly ticks = new Map<number, TickSerializer<WindowRunLivenessDocument | null>>();
 
   constructor(
     private readonly store: WindowRunLivenessStore,
@@ -386,7 +474,12 @@ export class WindowRunLivenessAuthority {
     };
   }
 
-  status(): { enabled: boolean; dryRun: boolean; config: Omit<Required<WindowRunLivenessConfig>, 'enabled' | 'dryRun'>; state: WindowRunLivenessDocument | null } {
+  /**
+   * `state` is the given topic's binding, or (no topic) the primary binding for
+   * single-binding readers. `states` is every topic's binding.
+   */
+  status(topicId?: number): { enabled: boolean; dryRun: boolean; config: Omit<Required<WindowRunLivenessConfig>, 'enabled' | 'dryRun'>; state: WindowRunLivenessDocument | null; states: WindowRunLivenessDocument[] } {
+    const states = this.store.loadAll();
     return {
       enabled: this.cfg.enabled,
       dryRun: this.cfg.dryRun,
@@ -395,17 +488,29 @@ export class WindowRunLivenessAuthority {
         workEvidenceMaxAgeMs: this.cfg.workEvidenceMaxAgeMs,
         recoveryCeilingMs: this.cfg.recoveryCeilingMs,
       },
-      state: this.store.load(),
+      state: topicId === undefined ? primaryWindowRunBinding(states) : states.find(doc => doc.topicId === topicId) ?? null,
+      states,
     };
   }
 
   register(input: WindowRunLivenessRegistration): WindowRunLivenessDocument {
-    return this.store.withMutation(() => {
-      if (!this.cfg.enabled) throw new Error('window-run-liveness-dark');
-      if (!/^[A-Za-z0-9._:-]{1,200}$/.test(input.windowId) || !/^[A-Za-z0-9._:-]{1,200}$/.test(input.autonomousRunId) || !/^[A-Za-z0-9._:-]{1,200}$/.test(input.lifecycleRunId) || !/^[A-Za-z0-9._:-]{1,200}$/.test(input.executorId)) throw new Error('window-run-liveness-registration-invalid');
-      if (!Number.isSafeInteger(input.topicId) || input.topicId < 0) throw new Error('window-run-liveness-topic-invalid');
-      const existing = this.store.load();
-      if (this.store.hasTerminalWindow(input.windowId)) throw new Error('window-run-liveness-terminal-binding-closed');
+    if (!this.cfg.enabled) throw new Error('window-run-liveness-dark');
+    if (!Number.isSafeInteger(input.topicId) || input.topicId < 0) throw new Error('window-run-liveness-topic-invalid');
+    const store = this.store.forTopic(input.topicId);
+    return store.withMutation(() => {
+      // RegExp.test() coerces its argument, so a missing field (undefined) used
+      // to pass as the literal text "undefined" and was then projected onto a
+      // run that cannot exist. Require real strings and name the field.
+      for (const field of ['windowId', 'autonomousRunId', 'lifecycleRunId', 'executorId'] as const) {
+        const value: unknown = input[field];
+        if (typeof value !== 'string' || !/^[A-Za-z0-9._:-]{1,200}$/.test(value)) throw new Error(`window-run-liveness-registration-invalid:${field}`);
+      }
+      const existing = store.load();
+      if (store.hasTerminalWindow(input.windowId)) throw new Error('window-run-liveness-terminal-binding-closed');
+      // Each topic holds its own binding; only the same window cannot be live in two topics.
+      if (this.store.loadAll().some(doc => doc.topicId !== input.topicId && doc.windowId === input.windowId && !isTerminal(doc.status))) {
+        throw new Error('window-run-liveness-window-bound-elsewhere');
+      }
       if (existing && !isTerminal(existing.status)) {
         const same = existing.windowId === input.windowId && existing.autonomousRunId === input.autonomousRunId && existing.lifecycleRunId === input.lifecycleRunId && existing.executorId === input.executorId && existing.topicId === input.topicId;
         if (same) return existing;
@@ -420,11 +525,11 @@ export class WindowRunLivenessAuthority {
         if (!executorCorrection) throw new Error('window-run-liveness-active-binding-exists');
         const corrected: WindowRunLivenessDocument = { ...existing, executorId: input.executorId, bindingCorrection: { fromExecutorId: existing.executorId, at: this.now() } };
         this.project(corrected, 'preparing', corrected.bindingCorrection!.at);
-        this.store.save(corrected);
+        store.save(corrected);
         return corrected;
       }
       if (existing && isTerminal(existing.status)) {
-        this.store.recordTerminalWindow(existing.windowId, existing.finalSnapshot?.frozenAt ?? existing.lastEvaluatedAt ?? existing.registeredAt);
+        store.recordTerminalWindow(existing.windowId, existing.finalSnapshot?.frozenAt ?? existing.lastEvaluatedAt ?? existing.registeredAt);
         if (existing.windowId === input.windowId) throw new Error('window-run-liveness-terminal-binding-closed');
       }
       const state: WindowRunLivenessDocument = {
@@ -438,7 +543,7 @@ export class WindowRunLivenessAuthority {
         audit: { entries: [], headDigest: null },
       };
       this.project(state, 'preparing', state.registeredAt);
-      this.store.save(state);
+      store.save(state);
       return state;
     });
   }
@@ -448,9 +553,11 @@ export class WindowRunLivenessAuthority {
    * the server selects the exact open task and supplies every authority fact.
    */
   async recordWorkAdvance(input: WindowRunWorkAdvanceRequest): Promise<WindowRunWorkReceipt> {
-    return this.store.withMutationAsync(async () => {
-      if (!this.cfg.enabled) throw new Error('window-run-liveness-dark');
-      const state = this.store.load();
+    if (!this.cfg.enabled) throw new Error('window-run-liveness-dark');
+    if (!Number.isSafeInteger(input.topicId) || input.topicId < 0) throw new Error('window-run-liveness-binding-mismatch');
+    const store = this.store.forTopic(input.topicId);
+    return store.withMutationAsync(async () => {
+      const state = store.load();
       if (!state || isTerminal(state.status)) throw new Error('window-run-liveness-not-active');
       const bindingMatches = state.windowId === input.windowId
         && state.topicId === input.topicId
@@ -478,17 +585,41 @@ export class WindowRunLivenessAuthority {
       this.appendAudit(state, {
         kind: 'work-receipt', at: observedAt, status: state.status, workReceipt: structuredClone(receipt),
       });
-      this.store.save(state);
+      store.save(state);
       return receipt;
     });
   }
 
-  async tick(): Promise<WindowRunLivenessDocument | null> {
-    if (!this.cfg.enabled) return this.store.load();
+  /**
+   * Evaluate one topic's binding, or every topic's. Returns that topic's
+   * binding, or (no topic) the primary binding. A failure in one topic does not
+   * stop the others; the first failure is rethrown after all have run.
+   */
+  async tick(topicId?: number): Promise<WindowRunLivenessDocument | null> {
+    if (!this.cfg.enabled) return topicId === undefined ? this.store.load() : this.store.forTopic(topicId).load();
+    const ids = topicId === undefined ? this.store.topicIds() : [topicId];
+    const results: WindowRunLivenessDocument[] = [];
+    let firstError: unknown;
+    for (const id of ids) {
+      try {
+        const state = await this.tickTopic(id);
+        if (state) results.push(state);
+      } catch (error) {
+        firstError ??= error;
+      }
+    }
+    if (firstError !== undefined) throw firstError;
+    return topicId === undefined ? primaryWindowRunBinding(results) : results[0] ?? null;
+  }
+
+  private tickTopic(topicId: number): Promise<WindowRunLivenessDocument | null> {
+    let serializer = this.ticks.get(topicId);
+    if (!serializer) { serializer = new TickSerializer<WindowRunLivenessDocument | null>(); this.ticks.set(topicId, serializer); }
+    const store = this.store.forTopic(topicId);
     // An overlapping tick (HTTP vs. the server's background tick) waits for a
     // fresh evaluation rather than returning a stale mid-flight snapshot.
-    return this.ticks.run(() => this.store.withMutationAsync(async () => {
-      const state = this.store.load();
+    return serializer.run(() => store.withMutationAsync(async () => {
+      const state = store.load();
       if (!state) return state;
       if (isTerminal(state.status)) {
         if (state.status === 'failed' || state.status === 'stalled') {
@@ -501,9 +632,13 @@ export class WindowRunLivenessAuthority {
     }));
   }
 
-  freeze(reason: string, terminalStatus: 'closed' | 'failed' = 'closed'): WindowRunLivenessDocument {
-    return this.store.withMutation(() => {
-      const state = this.store.load();
+  /** Freeze one topic's binding; with no topic, the primary binding. */
+  freeze(reason: string, terminalStatus: 'closed' | 'failed' = 'closed', topicId?: number): WindowRunLivenessDocument {
+    const target = topicId ?? this.store.load()?.topicId;
+    if (target === undefined) throw new Error('window-run-liveness-not-registered');
+    const store = this.store.forTopic(target);
+    return store.withMutation(() => {
+      const state = store.load();
       if (!state) throw new Error('window-run-liveness-not-registered');
       if (state.finalSnapshot) return state;
       const now = this.now();
@@ -512,7 +647,7 @@ export class WindowRunLivenessAuthority {
       state.finalSnapshot = { frozenAt: now, reason: reason.slice(0, 500), statusBeforeFreeze: prior, predicateDigest: digest(state.predicates), exitProof: this.exitProof(state) };
       this.transition(state, prior, terminalStatus, `freeze:${reason.slice(0, 200)}`, now);
       this.project(state, terminalStatus, now);
-      this.store.save(state);
+      store.save(state);
       return state;
     });
   }
@@ -562,7 +697,17 @@ export class WindowRunLivenessAuthority {
     }
 
     if (state.recoveryAttempt) {
-      if (Date.parse(now) >= Date.parse(state.recoveryAttempt.deadlineAt)) return await this.fail(state, 'recovery-ceiling-exceeded', now);
+      // A completed recovery is spent: never actuate a second one. A later
+      // loss, however, must be bounded from its own at-risk transition rather
+      // than compared with the first episode's already-expired deadline.
+      const attempt = state.recoveryAttempt;
+      const laterEpisode = (attempt.outcome === 'succeeded' || attempt.outcome === 'executor-busy')
+        && attempt.completedAt !== undefined && state.atRiskSince !== undefined
+        && Date.parse(state.atRiskSince) >= Date.parse(attempt.completedAt);
+      const deadlineMs = laterEpisode
+        ? Date.parse(state.atRiskSince!) + this.cfg.recoveryCeilingMs
+        : Date.parse(attempt.deadlineAt);
+      if (!Number.isFinite(deadlineMs) || Date.parse(now) >= deadlineMs) return await this.fail(state, 'recovery-ceiling-exceeded', now);
       this.recordSample(state, now);
       this.store.save(state);
       return state;

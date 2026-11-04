@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-03T07:13:45.287Z",
+  "slug": "install-first-run-and-linux",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 370,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/init.ts",
+      "src/commands/install.ts",
+      "src/commands/setup-wizard/codex-driver.ts",
+      "src/commands/setup-wizard/gemini-driver.ts",
+      "src/commands/setup-wizard/state-machine.ts",
+      "src/commands/setup-wizard/telegram-bot-limit.ts",
+      "src/core/SessionManager.ts",
+      "src/core/SessionRefresh.ts",
+      "src/core/ensureInteractiveReady.ts"
+    ],
+    "addedLines": 354,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

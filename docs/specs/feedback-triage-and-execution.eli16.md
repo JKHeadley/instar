@@ -22,6 +22,7 @@ A ranked list of what is being worked on, and counts of what was held or ignored
 
 ## Tradeoffs
 
+- For feedback review, critical or complex changes lead with GPT-6 Astra; ordinary changes lead with Claude Opus 5.5 and receive a Codex Sol cross-read. Both actual model replies must pass before an automatic merge can be considered. A serious concern from another available reviewer still blocks the change. Echo's Fable review remains stopped. If Opus is unavailable, the change waits for review rather than silently switching models.
 - It costs usage: the sorter is capped at 150 model calls a day, and build sessions at 2 running and 6 started per day.
 - The sorter can be wrong. That is why ignoring is limited to low-risk items, every decision is logged, and a wrongly ignored problem that comes back gets counted as a mistake so we can see how accurate it is.
 - It runs first on a throwaway test agent, then on Echo. Everyone else gets it only after two weeks of measured results on Echo.
@@ -29,3 +30,7 @@ A ranked list of what is being worked on, and counts of what was held or ignored
 ## Why this matters
 
 Instar has a rule that anything it accepts must reach a deliberate end. Feedback reports were being accepted and then left to pile up. This design gives every work item an end: worked on, held with a reason, or set aside with a reason.
+
+## November 2026 timeout amendment
+
+For a fix that changes a central source file, the worker's related-test check can touch much of Instar. That one check may now run for up to 45 minutes; other individual test and gate commands still have a 20-minute limit. A command that reaches its limit records a failure promptly, even if a child process keeps an output pipe open. This avoids a worker sitting indefinitely in verification. The full attempt still has a six-hour lease, and a timed-out check cannot publish a fix.

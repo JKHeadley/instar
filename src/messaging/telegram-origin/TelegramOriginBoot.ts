@@ -26,9 +26,24 @@ import { projectOriginNoticePolicy } from './OriginNoticePolicy.js';
 import type { OriginNoticeDestinationPolicy } from './OriginNoticePolicy.js';
 import { OriginDetectorCanary } from './OriginDetectorCanary.js';
 import { browserSendAllowanceMatches, originDetectorCanaryInterval, readBrowserSendAllowance, type BrowserSendAllowance } from './OriginConfig.js';
-import { toWireParams, ISSUES_TOPIC_OFFSET } from '../telegramTopicSpace.js';
+import { toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from '../telegramTopicSpace.js';
+import { OriginConfigUnavailableError } from './types.js';
 import { OriginNativeCanaryLane, type OriginNativeCanary } from './OriginNativeCanaryLane.js';
 import { resolveCodexNativeCanaryBinary, runCodexNativeModelCanary } from './OriginCodexModelCanary.js';
+
+/** A config observation that was read but cannot be used; its code is the reason. */
+class OriginSnapshotRefusal extends Error {}
+/** A bounded, secret-free reason for a failed snapshot refresh. Parse errors can
+ * quote file bytes (and so a token), so only fixed codes are ever surfaced. */
+export function originSnapshotFailureReason(error: unknown): string {
+  if (error instanceof OriginSnapshotRefusal) return error.message;
+  const message = error instanceof Error ? error.message : '';
+  if (/^origin-config-[a-z-]+$/.test(message)) return message;
+  if (error instanceof SyntaxError) return 'origin-config-unparseable';
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (typeof code === 'string' && /^[A-Z_]{2,32}$/.test(code)) return `origin-config-fs-${code}`;
+  return 'origin-config-read-failed';
+}
 
 /** Production authorities are read independently of the origin/outbox workers.
  * A failed refresh invalidates the policy immediately; reads of the cached
@@ -55,6 +70,8 @@ export async function bootTelegramOrigin(options: {
   reviewLegacyRecovery?: (text: string) => Promise<boolean>;
   authorizeOrigin?: import('./TelegramOriginService.js').OriginServiceOptions['authorizeOrigin'];
   onNoticeState: (state: OutageNoticeState) => void;
+  onRecoveredMessage?: import('./TelegramOriginRuntime.js').TelegramOriginRuntimeOptions['onRecoveredMessage'];
+  onSessionDeliveryHeld?: import('./TelegramOriginRuntime.js').TelegramOriginRuntimeOptions['onSessionDeliveryHeld'];
   onBrowserRecoveryAttention?: (input: { id: string; profileId: string; publicTransportAlternative: boolean }) => Promise<void>;
   listLiveSessions?: () => Array<{ sessionId: string; harnessId: string | null }>;
   enrollmentObservations?: () => OriginActivationObservation[];
@@ -82,18 +99,23 @@ export async function bootTelegramOrigin(options: {
     browserSendAllowance: BrowserSendAllowance | null;
     conversationDisplays: Record<string, Partial<OriginDisplaySettings>> } | null = null;
   let closed = false, timer: ReturnType<typeof setTimeout> | undefined, configTimer: ReturnType<typeof setTimeout> | undefined;
+  // Why the last refresh failed (null after a good read). A failed read means the
+  // config state is UNKNOWN; it must never surface as "config has no issues group".
+  let snapshotFailure: string | null = 'origin-config-not-yet-read';
   const refresh = async () => {
     try {
       const observation = await configReader.read();
       const current = observation.config;
       const telegram = current.messaging?.find((m: { type?: string }) => m.type === 'telegram');
-      if (!telegram || typeof telegram.config?.chatId !== 'string' ||
-        (options.token && (typeof telegram.config.token !== 'string' || telegram.config.token !== options.token))) throw new Error('Telegram config unavailable');
+      if (!telegram || typeof telegram.config?.chatId !== 'string') throw new OriginSnapshotRefusal('telegram-config-missing');
+      if (options.token && (typeof telegram.config.token !== 'string' || telegram.config.token !== options.token)) {
+        throw new OriginSnapshotRefusal(typeof telegram.config.token === 'string' ? 'telegram-token-changed-since-boot' : 'telegram-token-unresolved');
+      }
       let hub: string | null = null;
       try {
         const value = JSON.parse(await readFile(path.join(config.stateDir, 'state', 'agent-attention-topic.json'), 'utf8'));
         if (Number.isSafeInteger(value) && value > 0) hub = String(value);
-      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new OriginSnapshotRefusal('origin-attention-topic-unreadable'); }
       const display = resolveOriginDisplay(telegram.config.messageOrigin?.display);
       const conversationDisplays: Record<string, Partial<OriginDisplaySettings>> = {};
       try {
@@ -102,10 +124,13 @@ export async function bootTelegramOrigin(options: {
           const raw = (entry as { current?: { messageOriginDisplay?: Partial<OriginDisplaySettings> } })?.current?.messageOriginDisplay;
           if (raw == null) continue;
           const validated = validateProfileFields({ messageOriginDisplay: raw }, 'claude-code');
-          if (!validated.ok) throw new Error('origin conversation display invalid');
+          if (!validated.ok) throw new OriginSnapshotRefusal('origin-conversation-display-invalid');
           conversationDisplays[topic] = validated.patch.messageOriginDisplay!;
         }
-      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      } catch (error) {
+        if (error instanceof OriginSnapshotRefusal) throw error;
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new OriginSnapshotRefusal('origin-topic-profiles-unreadable');
+      }
       snapshot = { observedAt: observation.observedAt, configRevision: observation.revision, chatId: telegram.config.chatId,
         browserSendAllowance: readBrowserSendAllowance(telegram.config.messageOrigin),
         issuesChatId: telegram.config.issuesChatId == null || telegram.config.issuesChatId === '' ? null : String(telegram.config.issuesChatId),
@@ -113,10 +138,23 @@ export async function bootTelegramOrigin(options: {
         ownerIds: [telegram.config.ownerUserId, telegram.config.promptGate?.ownerId, ...(telegram.config.authorizedUserIds ?? [])]
           .filter((id: unknown) => Number.isSafeInteger(id) && Number(id) > 0).map(String),
         hub, display, conversationDisplays, enabled: telegram.enabled === true };
-    } catch { snapshot = null; }
+      if (snapshotFailure !== null && snapshotFailure !== 'origin-config-not-yet-read') {
+        console.warn(`[telegram-origin] config snapshot recovered after: ${snapshotFailure}`);
+      }
+      snapshotFailure = null;
+    } catch (error) {
+      snapshot = null;
+      // Record WHY, once per change: the reason was previously discarded, which
+      // left "config missing" refusals undiagnosable on standbys.
+      const reason = originSnapshotFailureReason(error);
+      if (reason !== snapshotFailure) console.warn(`[telegram-origin] config snapshot unavailable: ${reason}`);
+      snapshotFailure = reason;
+    }
   };
   await refresh();
   const healthy = () => !closed && snapshot !== null && snapshot.configRevision === configReader.revision && Date.now() - snapshot.observedAt <= 30_000;
+  const unhealthyReason = (): string => closed ? 'origin-closed' : snapshot === null ? (snapshotFailure ?? 'origin-config-unavailable')
+    : snapshot.configRevision !== configReader.revision ? 'origin-config-changed-not-yet-reread' : 'origin-config-snapshot-stale';
   const currentChatId = () => snapshot?.chatId;
   const conversationChatId = (chatId: string | null): string | null => {
     if (chatId?.startsWith('channel:')) return `-100${chatId.slice(8)}`;
@@ -136,11 +174,13 @@ export async function bootTelegramOrigin(options: {
   const nativeCanary = new OriginNativeCanaryLane(canaryIntervalMs, nativeModelCanary);
   const runtime = await TelegramOriginRuntime.open({ storage: { stateDir: config.stateDir, agentId: config.projectName, auditRetentionDays: (originConfig as { auditRetentionDays?: number } | undefined)?.auditRetentionDays }, workerUrl: options.workerUrl,
     identity: { agentId: config.projectName, agentName: config.projectName, originMachineId: identity.machineId, originMachineName: publicMachineName },
+    onRecoveredMessage: options.onRecoveredMessage,
+    onSessionDeliveryHeld: options.onSessionDeliveryHeld,
     signingKey: { keyId: `${identity.machineId}:${identity.keyEpoch ?? 0}`, keyEpoch: identity.keyEpoch ?? 0, privateKey: identities.loadSigningKey() },
     bot: { token: options.token, accountId: options.token?.split(':')[0] ?? 'unresolved-tokenless-source', chatId: currentChatId() },
     additionalBots,
     isSessionLive: options.isSessionLive, attachSessionLifecycle: options.attachSessionLifecycle,
-    display: destination => { if (!healthy()) throw new Error('origin-display-authority-unavailable');
+    display: destination => { if (!healthy()) throw new OriginConfigUnavailableError(unhealthyReason());
       const chat = conversationChatId(destination.chatId);
       // Issues-group sends carry the real thread id; per-conversation settings are keyed
       // by the internal id (docs/specs/telegram-issues-group.md).
@@ -148,7 +188,12 @@ export async function bootTelegramOrigin(options: {
         : snapshot!.issuesChatId !== null && chat === snapshot!.issuesChatId
           ? String(ISSUES_TOPIC_OFFSET + Number(destination.topicId ?? 1)) : null;
       return { agent: snapshot!.display, conversation: conversationKey ? snapshot!.conversationDisplays[conversationKey] : undefined }; },
-    wireParams: params => toWireParams(params, { mainChatId: snapshot?.chatId, issuesChatId: snapshot?.issuesChatId }),
+    // No snapshot = config state unknown, not "no issues group": refuse with the
+    // honest, retryable reason before anything is admitted or sent.
+    wireParams: params => {
+      if (!snapshot && isIssuesTopicId(params.message_thread_id as number)) throw new OriginConfigUnavailableError(unhealthyReason());
+      return toWireParams(params, { mainChatId: snapshot?.chatId, issuesChatId: snapshot?.issuesChatId });
+    },
     authorize: request => healthy() && snapshot!.enabled && options.holdsLease() &&
       (additionalBots.some(bot => bot.accountId === request.accountId)
         ? request.destination.chatId === snapshot!.demoChatId

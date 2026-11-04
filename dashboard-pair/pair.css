@@ -1,0 +1,30 @@
+:root {
+  --bg: #0a0e17; --card: #121826; --text: #e8ecf3; --muted: #9aa4b5; --accent: #5b8cff; --line: #243049; --warn: #f2b84b;
+  color-scheme: dark light;
+}
+@media (prefers-color-scheme: light) {
+  :root { --bg: #f6f7fb; --card: #ffffff; --text: #141a26; --muted: #5b6577; --accent: #2f5fe0; --line: #d9deea; --warn: #9a6a00; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+#pair-root { max-width: 560px; margin: 0 auto; padding: 24px 16px 48px; }
+.pair-head h1 { font-size: 1.3rem; margin: 0 0 4px; }
+.pair-host { font-size: 1.6rem; font-weight: 700; margin: 0; word-break: break-all; }
+.pair-hint { color: var(--muted); margin: 4px 0 20px; font-size: .9rem; }
+.pair-pin { display: grid; gap: 10px; }
+.pair-pin input { font-size: 1.4rem; padding: 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--text); letter-spacing: .2em; }
+.pair-button { font: inherit; font-weight: 600; padding: 12px 18px; border-radius: 10px; border: 0; background: var(--accent); color: #fff; cursor: pointer; text-decoration: none; display: inline-block; text-align: center; }
+.pair-button:disabled { opacity: .6; }
+.pair-link-button { font: inherit; background: none; border: 0; color: var(--accent); padding: 8px 0; cursor: pointer; text-decoration: underline; }
+.pair-error { color: var(--warn); min-height: 1.5em; margin: 0; }
+.pair-card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin: 12px 0; }
+.pair-device { margin: 0 0 8px; color: var(--muted); }
+.pair-code { font: 700 2.6rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .06em; margin: 8px 0 12px; user-select: all; -webkit-user-select: all; word-break: break-all; }
+.pair-copied { margin-left: 12px; color: var(--muted); }
+.pair-fp { color: var(--muted); font-size: .85rem; word-break: break-all; }
+.pair-paired { margin-top: 32px; }
+.pair-paired h2, section h2 { font-size: 1.05rem; }
+.pair-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.pair-status { min-height: 1.5em; color: var(--muted); }
+.pair-foot { margin-top: 32px; font-size: .9rem; }
+.pair-foot a, section a { color: var(--accent); }

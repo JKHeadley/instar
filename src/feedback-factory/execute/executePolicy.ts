@@ -21,6 +21,9 @@ export const DAY_MS = 24 * HOUR_MS;
 export const EXECUTION_LEASE_MS = 6 * HOUR_MS;
 /** Each confined test or gate run (§4 step 4, resource limits). */
 export const CONFINED_COMMAND_TIMEOUT_MS = 20 * 60_000;
+/** Core modules can pull much of the unit suite into `vitest related`; keep it bounded
+ * while allowing the same breadth that the full unit gate already exercises. */
+export const CONFINED_RELATED_TIMEOUT_MS = 45 * 60_000;
 /** Captured output per confined command. */
 export const CONFINED_OUTPUT_CAP_BYTES = 5 * 1024 * 1024;
 /** Workspace plus temp directory, checked between steps. */
@@ -130,7 +133,8 @@ export function clampProbeDetail(text: string): string {
 export const DEPS_STATUS_LATENCY_MS = 300_000;
 export const EXECUTE_TICK_MIN_INTERVAL_MS = 30_000;
 /** Bump when a canary probe changes: a new stamp forces a fresh full-gate base canary. */
-export const CANARY_VERSION = 'feedback-canary-v3';
+// A launch-path change must invalidate the full-gate stamp so deployed agents rehearse it.
+export const CANARY_VERSION = 'feedback-canary-v4';
 /** The exact sandbox runtime version this feature is pinned to (package.json pins the same). */
 export const SANDBOX_RUNTIME_PACKAGE = '@anthropic-ai/sandbox-runtime';
 export const SANDBOX_RUNTIME_VERSION = '0.0.77';
@@ -474,7 +478,7 @@ export function buildClaudeSandboxSettings(input: ClaudeSettingsInput): Record<s
  * vitest, esbuild and npm all write caches next to the nearest package root or under HOME — both
  * denied by the confinement — so a healthy sandbox looks like a failing one (`EPERM … open
  * '<agentHome>/package.json'`, a denied `~/.npm`). ONE helper on purpose: the canary rehearses the
- * very commands `verifyFix` later runs (`cfg.lintCommand`, `cfg.baseSmokeTests`, `npx vitest`), so
+ * very commands `verifyFix` later runs (`cfg.lintCommand`, `cfg.baseSmokeTests`, the local Vitest executable), so
  * a redirect present in one and missing in the other would let the rehearsal pass on a condition
  * the real gate still hits — burning attempts under a misattributed reason instead of latching once
  * and honestly. Shared, they cannot drift.

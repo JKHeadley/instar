@@ -7,6 +7,12 @@
  *   created  {title}                          label {title, setAt}          tombstone {}
  *   message  {messageId, role, text, origin?, receivedAt?, receipt?}
  *   delivery {messageId, state}
+ *   media-message {…message fields, attachments}      purge {attachmentIds}
+ *   platform-media {messageId, platformMessageId, attachments}
+ *     (§4.9: files that arrived in a Telegram topic or Slack conversation, copied into the blob
+ *     store; the reference that authorizes downloads and drives pulls. Never a chat message.)
+ *     (docs/specs/mobile-native-chat-media.md §4.1, §4.7: a new kind on purpose, so a version that
+ *     does not know it refuses the event instead of storing a message with no files)
  * plus, on each row, this machine's `ingestSeq` for that file (a replicated row gets the next
  * local seq when it lands, so a local feed never skips a late arrival).
  *
@@ -24,6 +30,7 @@
  * RETENTION: kept until the operator deletes the conversation (a `tombstone` event); the file then
  * moves to `app-conversations/deleted/` and is kept, never destroyed by this feature.
  */
+import { validateMessageOriginEvidence, type MessageOriginEvidence } from '../messaging/messageOrigin.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -31,9 +38,11 @@ import Database from 'better-sqlite3';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { registerSqliteHandle } from './SqliteRegistry.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
-import { canonicalConversationKey, cleanConversationTitle } from './appConversationText.js';
+import { canonicalConversationKey, cleanConversationTitle, derivedEventId } from './appConversationText.js';
+import { type AppAttachment, validateAttachments, MAX_PURGE_BATCH, mediaPreview } from './appMediaTypes.js';
+import { validConversationOwner, type ConversationOwner } from './MobilePeople.js';
 
-export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery';
+export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media' | 'transcript';
 export type DeliveryEventState = 'delivered' | 'refused' | 'intercepted' | 'unknown';
 export type ReducedDeliveryState = DeliveryEventState | 'pending';
 
@@ -56,11 +65,11 @@ export interface DeviceSignedOrigin {
    * Present only when redacted: the accepting machine's identity-key signature over
    * (bodySha256, sha256(stored text), kinds) — the removed token itself is never stored.
    */
-  redaction?: { kinds: string[]; machineId: string; signerKeyHash?: string; sig?: string };
+  redaction?: { v?: 1 | 2; kinds: string[]; machineId: string; signerKeyHash?: string; sig?: string };
 }
 
 /** The accepting machine's receipt (§4.6): its signature over (sha256(canonical request), receivedAt, machineId). */
-export interface MachineReceipt { machineId: string; signerKeyHash: string; sig: string }
+export interface MachineReceipt { machineId: string; signerKeyHash: string; sig: string; v?: 2; conversationKey?: string }
 
 export interface AppEventBase {
   eventId: string;
@@ -70,7 +79,11 @@ export interface AppEventBase {
   at: string;
   machineId: string;
 }
-export interface CreatedEvent extends AppEventBase { kind: 'created'; title: string }
+/**
+ * `ownerPerson` (people and roles §3.4): set when an MSP phone created the conversation, namespaced
+ * by the machine whose user registry the id belongs to. Absent ⇒ the owner's conversation.
+ */
+export interface CreatedEvent extends AppEventBase { kind: 'created'; title: string; ownerPerson?: ConversationOwner }
 export interface LabelEvent extends AppEventBase { kind: 'label'; title: string; setAt: string }
 export interface TombstoneEvent extends AppEventBase { kind: 'tombstone' }
 export interface MessageEvent extends AppEventBase {
@@ -81,9 +94,56 @@ export interface MessageEvent extends AppEventBase {
   origin?: DeviceSignedOrigin;
   receivedAt?: string;
   receipt?: MachineReceipt;
+  /**
+   * People and roles §3.3: who sent an operator message, recorded at accept time. Absent on older
+   * events, which were necessarily sent by an owner phone (no other kind existed).
+   */
+  senderName?: string;
+  senderRole?: 'owner' | 'msp';
+  senderPerson?: ConversationOwner;
+  /**
+   * message-origin-all-platforms §3: which machine, harness and model wrote an AGENT reply,
+   * recorded in the same append as the reply. Information only; nothing decides on it.
+   */
+  agentOrigin?: MessageOriginEvidence;
 }
 export interface DeliveryEvent extends AppEventBase { kind: 'delivery'; messageId: string; state: DeliveryEventState }
-export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent;
+/** A message with files (media spec §4.1): every field of `message` plus 1-10 attachments. */
+export interface MediaMessageEvent extends Omit<MessageEvent, 'kind'> { kind: 'media-message'; attachments: AppAttachment[] }
+/** The operator's permanent removal of these exact attachments' bytes (media spec §4.7). */
+export interface PurgeEvent extends AppEventBase { kind: 'purge'; attachmentIds: string[] }
+/**
+ * Files that arrived in a Telegram topic or Slack conversation (media spec §4.9), copied into the
+ * blob store. `messageId` is derived from the platform message id (so the same platform message
+ * appends once); it is NOT a chat message: browse, previews and delivery states ignore it.
+ */
+export interface PlatformMediaEvent extends AppEventBase { kind: 'platform-media'; messageId: string; platformMessageId: string; attachments: AppAttachment[] }
+/**
+ * A server-made transcript of one voice attachment (media spec §4.5.1): machine-produced and
+ * UNSIGNED (the phone never saw it), so it is its own event and never part of the signed
+ * `media-message`. `late` marks a transcript that finished after the 60 s dispatch deadline.
+ */
+export interface TranscriptEvent extends AppEventBase { kind: 'transcript'; messageId: string; attachmentId: string; text: string; provider: string; late?: true }
+export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent | MediaMessageEvent | PurgeEvent | PlatformMediaEvent | TranscriptEvent;
+
+/** A transcript event's id: one per attachment per machine (the index picks one winner, §4.5.1). */
+export function transcriptEventId(attachmentId: string, machineId: string): string {
+  return derivedEventId('tr', attachmentId, machineId);
+}
+const PROVIDER_RE = /^[a-z0-9][a-z0-9._-]{0,31}$/;
+
+/** A platform conversation's canonical key (the same shapes the purge route accepts). */
+/**
+ * A Slack key is the conversation registry's canonical key: `slack:<team>:<channel>[:<thread>]`,
+ * where `<team>` is a workspace id or `_` (the registry's unknown-workspace placeholder, which a
+ * mint uses until the workspace is known), `<channel>` a `C`/`D`/`G` id and `<thread>` a Slack ts.
+ */
+export const PLATFORM_CONVERSATION_KEY_RE = /^(telegram:\d+|slack:(_|[A-Za-z0-9]+):[A-Za-z0-9]+(:[0-9.]+)?)$/;
+
+/** The stable message id (and event id) of the platform-media event for one platform message. */
+export function platformMediaMessageId(conversationKey: string, platformMessageId: string): string {
+  return derivedEventId('pm', canonicalConversationKey(conversationKey), platformMessageId);
+}
 export type StoredAppEvent = AppEvent & { ingestSeq: number };
 
 export interface ConversationSummary {
@@ -94,6 +154,8 @@ export interface ConversationSummary {
   lastActivity: string | null;
   lastPreview: string | null;
   tombstoned: boolean;
+  /** People and roles: the MSP who created it; null ⇒ the owner's conversation. */
+  ownerPerson: ConversationOwner | null;
 }
 
 export interface BrowsedMessage {
@@ -107,6 +169,15 @@ export interface BrowsedMessage {
   origin?: DeviceSignedOrigin;
   receivedAt?: string;
   receipt?: MachineReceipt;
+  attachments?: AppAttachment[];
+  senderName?: string;
+  senderRole?: 'owner' | 'msp';
+  agentOrigin?: MessageOriginEvidence;
+}
+
+/** One attachment reference as the index holds it. */
+export interface MediaRef {
+  attachmentId: string; sha256: string; size: number; canonicalKey: string; messageId: string; idx: number; purged: boolean; tombstoned: boolean;
 }
 
 export const MAX_STORED_TEXT = 16_000;
@@ -124,6 +195,17 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS deliveries_msg ON deliveries(messageId)`,
   `CREATE TABLE IF NOT EXISTS conversations (canonicalKey TEXT PRIMARY KEY, conversationKey TEXT NOT NULL, title TEXT, titleAt TEXT, titleMachine TEXT, createdAt TEXT, lastActivity TEXT, lastPreview TEXT, tombstoned INTEGER NOT NULL DEFAULT 0)`,
   `CREATE INDEX IF NOT EXISTS conversations_activity ON conversations(tombstoned, lastActivity)`,
+  // Media references (media spec §4.7): kept incrementally as events are indexed, tombstoned or
+  // purged, so agent usage is one row read, never a rescan. `liveRefs` counts references from
+  // unpurged attachments of live conversations; `allRefs` also counts deleted conversations.
+  `CREATE TABLE IF NOT EXISTS media_refs (attachmentId TEXT PRIMARY KEY, sha256 TEXT NOT NULL, size INTEGER NOT NULL, canonicalKey TEXT NOT NULL, messageId TEXT NOT NULL, idx INTEGER NOT NULL, purged INTEGER NOT NULL DEFAULT 0)`,
+  `CREATE INDEX IF NOT EXISTS media_refs_sha ON media_refs(sha256)`,
+  `CREATE INDEX IF NOT EXISTS media_refs_conv ON media_refs(canonicalKey)`,
+  `CREATE TABLE IF NOT EXISTS media_blobs (sha256 TEXT PRIMARY KEY, size INTEGER NOT NULL, liveRefs INTEGER NOT NULL DEFAULT 0, allRefs INTEGER NOT NULL DEFAULT 0)`,
+  `CREATE TABLE IF NOT EXISTS media_purged (attachmentId TEXT PRIMARY KEY)`,
+  `CREATE TABLE IF NOT EXISTS media_totals (id INTEGER PRIMARY KEY CHECK (id = 1), liveBytes INTEGER NOT NULL DEFAULT 0)`,
+  // Server transcripts (media spec §4.5.1): the one winning transcript event per attachment.
+  `CREATE TABLE IF NOT EXISTS transcripts (attachmentId TEXT PRIMARY KEY, canonicalKey TEXT NOT NULL, eventId TEXT NOT NULL, at TEXT NOT NULL, machineId TEXT NOT NULL)`,
 ];
 
 /**
@@ -157,7 +239,9 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
   switch (r.kind) {
     case 'created': {
       const title = cleanConversationTitle(r.title);
-      return title ? { ...base, kind: 'created', title } : null;
+      if (!title) return null;
+      const ownerPerson = validConversationOwner(r.ownerPerson);
+      return { ...base, kind: 'created', title, ...(ownerPerson ? { ownerPerson } : {}) };
     }
     case 'label': {
       const title = cleanConversationTitle(r.title);
@@ -166,17 +250,37 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
     }
     case 'tombstone':
       return { ...base, kind: 'tombstone' };
-    case 'message': {
+    case 'message':
+    case 'media-message': {
       const messageId = str(r.messageId, 128);
       const text = typeof r.text === 'string' && r.text.length <= MAX_STORED_TEXT ? r.text : null;
       if (!messageId || text === null || (r.role !== 'operator' && r.role !== 'agent')) return null;
-      const out: MessageEvent = { ...base, kind: 'message', messageId, role: r.role, text };
+      const common = { ...base, messageId, role: r.role, text } as const;
+      let out: MessageEvent | MediaMessageEvent;
+      if (r.kind === 'media-message') {
+        const attachments = validateAttachments(r.attachments, messageId);
+        if (!attachments) return null;
+        out = { ...common, kind: 'media-message', attachments };
+      } else {
+        out = { ...common, kind: 'message' };
+      }
       const origin = validateOrigin(r.origin);
       if (origin) out.origin = origin;
       const receivedAt = str(r.receivedAt, 64);
       if (receivedAt) out.receivedAt = receivedAt;
       const receipt = validateReceipt(r.receipt);
       if (receipt) out.receipt = receipt;
+      const senderName = typeof r.senderName === 'string' && r.senderName.length > 0 && r.senderName.length <= 128 ? r.senderName : null;
+      if (senderName) out.senderName = senderName;
+      if (r.senderRole === 'owner' || r.senderRole === 'msp') out.senderRole = r.senderRole;
+      const senderPerson = validConversationOwner(r.senderPerson);
+      if (senderPerson) out.senderPerson = senderPerson;
+      // Only an agent reply carries origin, only a valid one, and only one recorded by the machine
+      // that wrote the event (a peer cannot attach another machine's identity to it).
+      if (r.role === 'agent' && r.agentOrigin !== undefined) {
+        const agentOrigin = validateMessageOriginEvidence(r.agentOrigin);
+        if (agentOrigin && agentOrigin.machineId === machineId) out.agentOrigin = agentOrigin;
+      }
       return out;
     }
     case 'delivery': {
@@ -184,6 +288,29 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       const s = r.state;
       if (!messageId || (s !== 'delivered' && s !== 'refused' && s !== 'intercepted' && s !== 'unknown')) return null;
       return { ...base, kind: 'delivery', messageId, state: s };
+    }
+    case 'platform-media': {
+      const messageId = str(r.messageId, 128);
+      const platformMessageId = typeof r.platformMessageId === 'string' && /^[0-9A-Za-z._:-]{1,64}$/.test(r.platformMessageId) ? r.platformMessageId : null;
+      // The event id IS the message id, so a media reference resolves to its event by one lookup.
+      if (!messageId || messageId !== eventId || !platformMessageId || !PLATFORM_CONVERSATION_KEY_RE.test(conversationKey)) return null;
+      const attachments = validateAttachments(r.attachments, messageId);
+      return attachments ? { ...base, kind: 'platform-media', messageId, platformMessageId, attachments } : null;
+    }
+    case 'transcript': {
+      const messageId = str(r.messageId, 128);
+      const attachmentId = typeof r.attachmentId === 'string' && /^[0-9a-f]{64}$/.test(r.attachmentId) ? r.attachmentId : null;
+      const text = typeof r.text === 'string' && r.text.length <= MAX_STORED_TEXT ? r.text : null;
+      const provider = typeof r.provider === 'string' && PROVIDER_RE.test(r.provider) ? r.provider : null;
+      if (!messageId || !attachmentId || text === null || !provider) return null;
+      if (r.late !== undefined && r.late !== true) return null;
+      return { ...base, kind: 'transcript', messageId, attachmentId, text, provider, ...(r.late === true ? { late: true as const } : {}) };
+    }
+    case 'purge': {
+      const ids = r.attachmentIds;
+      if (!Array.isArray(ids) || ids.length < 1 || ids.length > MAX_PURGE_BATCH) return null;
+      if (!ids.every((i) => typeof i === 'string' && /^[0-9a-f]{64}$/.test(i))) return null;
+      return { ...base, kind: 'purge', attachmentIds: [...ids] as string[] };
     }
     default:
       return null;
@@ -208,7 +335,7 @@ function validateOrigin(raw: unknown): DeviceSignedOrigin | undefined {
     const kinds = Array.isArray(rd.kinds) ? rd.kinds.filter((k): k is string => typeof k === 'string' && k.length <= 32).slice(0, 8) : [];
     const machineId = s(rd.machineId, 256);
     if (machineId) {
-      out.redaction = { kinds, machineId };
+      out.redaction = { ...(rd.v === 1 || rd.v === 2 ? { v: rd.v } : {}), kinds, machineId };
       const signerKeyHash = s(rd.signerKeyHash, 64);
       const sig = s(rd.sig, 512);
       if (signerKeyHash && sig) { out.redaction.signerKeyHash = signerKeyHash; out.redaction.sig = sig; }
@@ -224,7 +351,13 @@ function validateReceipt(raw: unknown): MachineReceipt | undefined {
   const machineId = s(o.machineId, 256);
   const signerKeyHash = s(o.signerKeyHash, 64);
   const sig = s(o.sig, 512);
-  return machineId && signerKeyHash && sig ? { machineId, signerKeyHash, sig } : undefined;
+  if (!machineId || !signerKeyHash || !sig) return undefined;
+  // A v2 receipt (§4.9) also signs the canonical conversation key; both fields travel together.
+  if (o.v === 2) {
+    const conversationKey = s(o.conversationKey, 256);
+    return conversationKey ? { machineId, signerKeyHash, sig, v: 2, conversationKey } : undefined;
+  }
+  return { machineId, signerKeyHash, sig };
 }
 
 export interface AppConversationStoreOptions {
@@ -270,6 +403,11 @@ export class AppConversationStore {
       db.pragma('synchronous = NORMAL');
       db.pragma('busy_timeout = 5000');
       for (const ddl of SCHEMA) db.exec(ddl);
+      // People and roles: the conversation's MSP owner (added in place; an index built before this
+      // column existed held only owner conversations, so NULL is the truthful value for its rows).
+      const cols = new Set((db.prepare('PRAGMA table_info(conversations)').all() as Array<{ name: string }>).map((c) => c.name));
+      if (!cols.has('ownerMachine')) db.exec('ALTER TABLE conversations ADD COLUMN ownerMachine TEXT');
+      if (!cols.has('ownerUser')) db.exec('ALTER TABLE conversations ADD COLUMN ownerUser TEXT');
       const ok = db.pragma('quick_check', { simple: true });
       if (ok !== 'ok') throw new Error(`index quick_check: ${String(ok)}`);
       return db;
@@ -289,7 +427,7 @@ export class AppConversationStore {
 
   /** Drop the index and rebuild it from the files (tests and the operator's repair path). */
   rebuildIndex(): void {
-    this.db.exec('DELETE FROM files; DELETE FROM events; DELETE FROM messages; DELETE FROM deliveries; DELETE FROM conversations;');
+    this.db.exec('DELETE FROM files; DELETE FROM events; DELETE FROM messages; DELETE FROM deliveries; DELETE FROM conversations; DELETE FROM media_refs; DELETE FROM media_blobs; DELETE FROM media_purged; DELETE FROM media_totals; DELETE FROM transcripts;');
     this.catchUp();
   }
 
@@ -311,6 +449,8 @@ export class AppConversationStore {
     let from = row?.indexedBytes ?? 0;
     if (row && from > size) {
       // The file is shorter than what was indexed (should not happen): re-index it from the start.
+      this.dropMediaRefsOf(row.canonicalKey); // re-derived with the events
+      this.db.prepare('DELETE FROM transcripts WHERE canonicalKey = ?').run(row.canonicalKey);
       this.db.prepare('DELETE FROM events WHERE canonicalKey = ?').run(row.canonicalKey);
       from = 0;
     }
@@ -479,16 +619,37 @@ export class AppConversationStore {
           this.db.prepare('UPDATE conversations SET title = ?, titleAt = ?, titleMachine = ? WHERE canonicalKey = ?').run(ev.title, setAt, ev.machineId, canonicalKey);
         }
         if (ev.kind === 'created' && (!cur.createdAt || ev.at < cur.createdAt)) {
-          this.db.prepare('UPDATE conversations SET createdAt = ? WHERE canonicalKey = ?').run(ev.at, canonicalKey);
+          // The earliest `created` decides both the creation time and the owner (one rule, any arrival order).
+          this.db.prepare('UPDATE conversations SET createdAt = ?, ownerMachine = ?, ownerUser = ? WHERE canonicalKey = ?')
+            .run(ev.at, ev.ownerPerson?.machineId ?? null, ev.ownerPerson?.userId ?? null, canonicalKey);
         }
         return;
       }
       case 'tombstone':
+        this.tombstoneMediaRefs(canonicalKey);
         this.db.prepare('UPDATE conversations SET tombstoned = 1 WHERE canonicalKey = ?').run(canonicalKey);
         return;
-      case 'message': {
+      case 'purge':
+        for (const id of ev.attachmentIds) this.purgeMediaRef(id);
+        return;
+      case 'platform-media':
+        // A reference only (§4.9): never a chat message, so no messages row and no preview.
+        this.indexMediaRefs(canonicalKey, ev);
+        return;
+      case 'transcript': {
+        // Never a chat message either. One winner per attachment, independent of arrival order:
+        // the earliest `at`, then the lowest machine id (two machines can each transcribe once).
+        const cur = this.db.prepare('SELECT at, machineId FROM transcripts WHERE attachmentId = ?').get(ev.attachmentId) as { at: string; machineId: string } | undefined;
+        if (!cur || ev.at < cur.at || (ev.at === cur.at && ev.machineId < cur.machineId)) {
+          this.db.prepare('INSERT OR REPLACE INTO transcripts (attachmentId, canonicalKey, eventId, at, machineId) VALUES (?, ?, ?, ?, ?)').run(ev.attachmentId, canonicalKey, ev.eventId, ev.at, ev.machineId);
+        }
+        return;
+      }
+      case 'message':
+      case 'media-message': {
         const state = this.reduceFor(ev.messageId);
-        const preview = ev.text.replace(/\s+/g, ' ').trim().slice(0, PREVIEW_CHARS);
+        const preview = (ev.kind === 'media-message' ? mediaPreview(ev.attachments, ev.text) : ev.text.replace(/\s+/g, ' ').trim()).slice(0, PREVIEW_CHARS);
+        if (ev.kind === 'media-message') this.indexMediaRefs(canonicalKey, ev);
         this.db.prepare('INSERT OR IGNORE INTO messages (messageId, canonicalKey, eventId, at, deliveryState, lastPreview) VALUES (?, ?, ?, ?, ?, ?)')
           .run(ev.messageId, canonicalKey, ev.eventId, ev.at, state, preview);
         const cur = this.db.prepare('SELECT lastActivity FROM conversations WHERE canonicalKey = ?').get(canonicalKey) as { lastActivity: string | null };
@@ -503,6 +664,136 @@ export class AppConversationStore {
         return;
       }
     }
+  }
+
+  // ── Media references (media spec §4.7) ──────────────────────────────────────────────
+
+  private isTombstoned(canonicalKey: string): boolean {
+    const r = this.db.prepare('SELECT tombstoned FROM conversations WHERE canonicalKey = ?').get(canonicalKey) as { tombstoned: number } | undefined;
+    return r?.tombstoned === 1;
+  }
+
+  /** Move one blob's counts; the agent total changes only when `liveRefs` crosses zero. */
+  private bumpBlob(sha256: string, size: number, liveDelta: number, allDelta: number): void {
+    this.db.prepare('INSERT OR IGNORE INTO media_blobs (sha256, size) VALUES (?, ?)').run(sha256, size);
+    const cur = this.db.prepare('SELECT size, liveRefs FROM media_blobs WHERE sha256 = ?').get(sha256) as { size: number; liveRefs: number };
+    const nextLive = Math.max(0, cur.liveRefs + liveDelta);
+    this.db.prepare('UPDATE media_blobs SET liveRefs = ?, allRefs = MAX(0, allRefs + ?) WHERE sha256 = ?').run(nextLive, allDelta, sha256);
+    this.db.prepare('INSERT OR IGNORE INTO media_totals (id, liveBytes) VALUES (1, 0)').run();
+    if (cur.liveRefs === 0 && nextLive > 0) this.db.prepare('UPDATE media_totals SET liveBytes = liveBytes + ? WHERE id = 1').run(cur.size);
+    if (cur.liveRefs > 0 && nextLive === 0) this.db.prepare('UPDATE media_totals SET liveBytes = MAX(0, liveBytes - ?) WHERE id = 1').run(cur.size);
+  }
+
+  private indexMediaRefs(canonicalKey: string, ev: MediaMessageEvent | PlatformMediaEvent): void {
+    const tombstoned = this.isTombstoned(canonicalKey);
+    for (const a of ev.attachments) {
+      const purged = !!this.db.prepare('SELECT 1 FROM media_purged WHERE attachmentId = ?').get(a.attachmentId);
+      const ins = this.db.prepare('INSERT OR IGNORE INTO media_refs (attachmentId, sha256, size, canonicalKey, messageId, idx, purged) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(a.attachmentId, a.sha256, a.size, canonicalKey, ev.messageId, a.index, purged ? 1 : 0);
+      if (ins.changes > 0 && !purged) this.bumpBlob(a.sha256, a.size, tombstoned ? 0 : 1, 1);
+    }
+  }
+
+  private tombstoneMediaRefs(canonicalKey: string): void {
+    if (this.isTombstoned(canonicalKey)) return;
+    const refs = this.db.prepare('SELECT sha256, size FROM media_refs WHERE canonicalKey = ? AND purged = 0').all(canonicalKey) as Array<{ sha256: string; size: number }>;
+    for (const r of refs) this.bumpBlob(r.sha256, r.size, -1, 0);
+  }
+
+  private purgeMediaRef(attachmentId: string): void {
+    this.db.prepare('INSERT OR IGNORE INTO media_purged (attachmentId) VALUES (?)').run(attachmentId);
+    const r = this.db.prepare('SELECT sha256, size, canonicalKey, purged FROM media_refs WHERE attachmentId = ?').get(attachmentId) as { sha256: string; size: number; canonicalKey: string; purged: number } | undefined;
+    if (!r || r.purged === 1) return;
+    this.db.prepare('UPDATE media_refs SET purged = 1 WHERE attachmentId = ?').run(attachmentId);
+    this.bumpBlob(r.sha256, r.size, this.isTombstoned(r.canonicalKey) ? 0 : -1, -1);
+  }
+
+  private dropMediaRefsOf(canonicalKey: string): void {
+    const tombstoned = this.isTombstoned(canonicalKey);
+    const refs = this.db.prepare('SELECT sha256, size, purged FROM media_refs WHERE canonicalKey = ?').all(canonicalKey) as Array<{ sha256: string; size: number; purged: number }>;
+    for (const r of refs) if (r.purged === 0) this.bumpBlob(r.sha256, r.size, tombstoned ? 0 : -1, -1);
+    this.db.prepare('DELETE FROM media_refs WHERE canonicalKey = ?').run(canonicalKey);
+  }
+
+  /** Bytes the agent's live references hold, from replicated metadata (one row read). */
+  mediaLiveBytes(): number {
+    const r = this.db.prepare('SELECT liveBytes FROM media_totals WHERE id = 1').get() as { liveBytes: number } | undefined;
+    return r?.liveBytes ?? 0;
+  }
+
+  /** The reference counts of one blob, or null when no event names it. */
+  mediaBlobRefs(sha256: string): { size: number; liveRefs: number; allRefs: number } | null {
+    return (this.db.prepare('SELECT size, liveRefs, allRefs FROM media_blobs WHERE sha256 = ?').get(sha256) as { size: number; liveRefs: number; allRefs: number } | undefined) ?? null;
+  }
+
+  /** Every hash an event on this machine references, unpurged. */
+  mediaReferencedHashes(): Array<{ sha256: string; size: number; liveRefs: number }> {
+    return this.db.prepare('SELECT sha256, size, liveRefs FROM media_blobs WHERE allRefs > 0').all() as Array<{ sha256: string; size: number; liveRefs: number }>;
+  }
+
+  mediaRef(attachmentId: string): MediaRef | null {
+    const r = this.db.prepare('SELECT m.*, COALESCE(c.tombstoned, 0) AS tomb FROM media_refs m LEFT JOIN conversations c ON c.canonicalKey = m.canonicalKey WHERE m.attachmentId = ?').get(attachmentId) as (Omit<MediaRef, 'purged' | 'tombstoned'> & { purged: number; tomb: number }) | undefined;
+    if (!r) return null;
+    return { attachmentId: r.attachmentId, sha256: r.sha256, size: r.size, canonicalKey: r.canonicalKey, messageId: r.messageId, idx: r.idx, purged: r.purged === 1, tombstoned: r.tomb === 1 };
+  }
+
+  /** The first unpurged attachment of `sha256` in this live conversation, or null. */
+  mediaRefInConversation(conversationKey: string, sha256: string): MediaRef | null {
+    const canonicalKey = canonicalConversationKey(conversationKey);
+    if (this.isTombstoned(canonicalKey)) return null;
+    const r = this.db.prepare('SELECT attachmentId FROM media_refs WHERE canonicalKey = ? AND sha256 = ? AND purged = 0 LIMIT 1').get(canonicalKey, sha256) as { attachmentId: string } | undefined;
+    return r ? this.mediaRef(r.attachmentId) : null;
+  }
+
+  /** The conversations (canonical keys) with an unpurged attachment of this hash. */
+  mediaConversationsFor(sha256: string): string[] {
+    return (this.db.prepare('SELECT DISTINCT canonicalKey FROM media_refs WHERE sha256 = ? AND purged = 0 ORDER BY canonicalKey').all(sha256) as Array<{ canonicalKey: string }>).map((r) => r.canonicalKey);
+  }
+
+  /** Unpurged attachments held for a conversation right now (the exact set a purge names). */
+  mediaAttachmentIds(conversationKey: string): string[] {
+    return (this.db.prepare('SELECT attachmentId FROM media_refs WHERE canonicalKey = ? AND purged = 0 ORDER BY attachmentId').all(canonicalConversationKey(conversationKey)) as Array<{ attachmentId: string }>).map((r) => r.attachmentId);
+  }
+
+  /** Purged attachments, for the sweep's idempotent re-apply (session copies). */
+  mediaPurgedRefs(): Array<{ messageId: string; idx: number }> {
+    return this.db.prepare('SELECT messageId, idx FROM media_refs WHERE purged = 1').all() as Array<{ messageId: string; idx: number }>;
+  }
+
+  isAttachmentPurged(attachmentId: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM media_purged WHERE attachmentId = ?').get(attachmentId);
+  }
+
+  /** The stored message event by message id (the attachment lookup behind app-media-path). */
+  getMessageEvent(conversationKey: string, messageId: string): StoredAppEvent | null {
+    const row = this.db.prepare('SELECT eventId FROM messages WHERE messageId = ?').get(messageId) as { eventId: string } | undefined;
+    return row ? this.getEvent(conversationKey, row.eventId) : null;
+  }
+
+  /**
+   * The attachments recorded under a media reference's message id: a `media-message` (through the
+   * messages table) or a `platform-media` event (whose event id IS its message id). Null otherwise.
+   */
+  getMediaAttachments(conversationKey: string, messageId: string): AppAttachment[] | null {
+    const msg = this.getMessageEvent(conversationKey, messageId);
+    if (msg && msg.kind === 'media-message') return msg.attachments;
+    const pm = this.getEvent(conversationKey, messageId);
+    return pm && pm.kind === 'platform-media' && pm.messageId === messageId ? pm.attachments : null;
+  }
+
+  /** The stored server transcript of one attachment (§4.5.1), or null. */
+  transcriptFor(attachmentId: string): (TranscriptEvent & { ingestSeq: number }) | null {
+    const row = this.db.prepare('SELECT canonicalKey, eventId FROM transcripts WHERE attachmentId = ?').get(attachmentId) as { canonicalKey: string; eventId: string } | undefined;
+    if (!row) return null;
+    const loc = this.db.prepare('SELECT byteOffset, byteLength FROM events WHERE canonicalKey = ? AND eventId = ?').get(row.canonicalKey, row.eventId) as { byteOffset: number; byteLength: number } | undefined;
+    const ev = loc ? this.readEventAt(row.canonicalKey, loc.byteOffset, loc.byteLength) : null;
+    return ev && ev.kind === 'transcript' ? ev : null;
+  }
+
+  /** The platform-media event recorded for one platform message (§4.9), or null. */
+  getPlatformMedia(conversationKey: string, platformMessageId: string): (PlatformMediaEvent & { ingestSeq: number }) | null {
+    const ev = this.getEvent(conversationKey, platformMediaMessageId(conversationKey, platformMessageId));
+    return ev && ev.kind === 'platform-media' && ev.platformMessageId === platformMessageId ? ev : null;
   }
 
   private reduceFor(messageId: string): ReducedDeliveryState {
@@ -626,12 +917,15 @@ export class AppConversationStore {
     for (const r of page) {
       const loc = this.db.prepare('SELECT byteOffset, byteLength FROM events WHERE canonicalKey = ? AND eventId = ?').get(canonicalKey, r.eventId) as { byteOffset: number; byteLength: number } | undefined;
       const ev = loc ? this.readEventAt(canonicalKey, loc.byteOffset, loc.byteLength) : null;
-      if (!ev || ev.kind !== 'message') continue;
+      if (!ev || (ev.kind !== 'message' && ev.kind !== 'media-message')) continue;
       out.push({
         eventId: ev.eventId, messageId: ev.messageId, role: ev.role, text: ev.text, at: ev.at, machineId: ev.machineId,
         deliveryState: this.deliveryState(ev.messageId) ?? 'pending',
         ...(ev.origin ? { origin: ev.origin } : {}), ...(ev.receivedAt ? { receivedAt: ev.receivedAt } : {}),
         ...(ev.receipt ? { receipt: ev.receipt } : {}),
+        ...(ev.kind === 'media-message' ? { attachments: ev.attachments } : {}),
+        ...(ev.senderName ? { senderName: ev.senderName } : {}), ...(ev.senderRole ? { senderRole: ev.senderRole } : {}),
+        ...(ev.agentOrigin ? { agentOrigin: ev.agentOrigin } : {}),
       });
     }
     out.reverse();
@@ -660,5 +954,6 @@ function toSummary(r: Record<string, unknown>): ConversationSummary {
     title: (r.title as string | null) ?? null, createdAt: (r.createdAt as string | null) ?? null,
     lastActivity: (r.lastActivity as string | null) ?? null, lastPreview: (r.lastPreview as string | null) ?? null,
     tombstoned: r.tombstoned === 1,
+    ownerPerson: typeof r.ownerMachine === 'string' && typeof r.ownerUser === 'string' ? { machineId: r.ownerMachine, userId: r.ownerUser } : null,
   };
 }

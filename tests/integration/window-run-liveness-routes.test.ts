@@ -59,6 +59,22 @@ describe('window run liveness HTTP integration', () => {
     await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, taskRef: 'task-1', artifactRef: 'src/a.ts', digest: 'b'.repeat(64) }).expect(400);
   });
 
+  it('refuses a misnamed or missing binding field by name and keeps the existing binding', async () => {
+    // The 2026-11-01 shape: runId instead of autonomousRunId, no lifecycleRunId.
+    const misnamed = await auth(request(server.getApp()).post('/window-run-liveness/register'))
+      .send({ windowId: 'desktop-131439', runId: 'run-131439', topicId: '131439', executorId: 'echo-desktop' }).expect(400);
+    expect(misnamed.body.error).toBe('window-run-liveness-unknown-field:runId (did you mean autonomousRunId?)');
+    expect(misnamed.body.allowed).toEqual(['windowId', 'topicId', 'autonomousRunId', 'lifecycleRunId', 'executorId']);
+    const missing = await auth(request(server.getApp()).post('/window-run-liveness/register'))
+      .send({ windowId: 'desktop-131439', topicId: '131439', autonomousRunId: 'run-131439', executorId: 'echo-desktop' }).expect(400);
+    expect(missing.body.error).toBe('window-run-liveness-missing-field:lifecycleRunId');
+    await auth(request(server.getApp()).post('/window-run-liveness/register')).send({ ...binding, topicId: null }).expect(400);
+    const work = await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactPath: 'src/a.ts' }).expect(400);
+    expect(work.body.error).toBe('window-run-liveness-unknown-field:artifactPath (did you mean artifactRef?)');
+    const status = await auth(request(server.getApp()).get('/window-run-liveness')).expect(200);
+    expect(status.body.state).toMatchObject({ windowId: 'w32', autonomousRunId: 'run-w32' });
+  });
+
   it('mints a receipt, evaluates all five predicates, and exposes durable state', async () => {
     const minted = await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactRef: 'src/a.ts' }).expect(201);
     expect(minted.body.receipt).toMatchObject({ sequence: 1, observedAt: now, digest: 'b'.repeat(64), taskRef: 'autonomous:run-w32:1' });
@@ -67,11 +83,11 @@ describe('window run liveness HTTP integration', () => {
     expect(Object.values(active.body.predicates).every((entry: any) => entry.ok)).toBe(true);
     const status = await auth(request(server.getApp()).get('/window-run-liveness')).expect(200);
     expect(status.body.state.lastWorkReceipt.receiptId).toBe(minted.body.receipt.receiptId);
-    expect(fs.existsSync(path.join(project.stateDir, 'window-run-liveness', 'state.json'))).toBe(true);
+    expect(fs.existsSync(path.join(project.stateDir, 'window-run-liveness', 'topics', '36966', 'state.json'))).toBe(true);
     await auth(request(server.getApp()).post('/window-run-liveness/cadence/tick')).send({}).expect(200);
     const cadence = await auth(request(server.getApp()).get('/window-run-liveness/cadence')).expect(200);
     expect(cadence.body).toMatchObject({ enabled: true, dryRun: true, config: { receiptIntervalMs: 1_800_000, reportIntervalMs: 10_800_000 }, state: { windowId: 'w32', autonomousRunId: 'run-w32' } });
-    expect(fs.existsSync(path.join(project.stateDir, 'window-run-cadence', 'state.json'))).toBe(true);
+    expect(fs.existsSync(path.join(project.stateDir, 'window-run-cadence', 'topics', '36966', 'state.json'))).toBe(true);
   });
 
   it('continues the HTTP work receipt chain on a still-open task after every task was receipted', async () => {
@@ -83,5 +99,76 @@ describe('window run liveness HTTP integration', () => {
     expect(unchanged.body.error).toBe('window-run-liveness-artifact-unchanged');
     const replayed = await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactRef: 'src/b.ts' }).expect(409);
     expect(replayed.body.error).toBe('window-run-liveness-artifact-replayed');
+  });
+
+  // 2026-11-01 (topic 10000001256): a live run in one topic used to refuse a
+  // run in any other topic. Each topic now holds its own binding.
+  it('registers a second topic alongside the first and reads each by topic', async () => {
+    const other = { windowId: 'desktop-131439', topicId: 131439, autonomousRunId: 'run-131439', lifecycleRunId: 'run-131439', executorId: 'echo-desktop' };
+    await auth(request(server.getApp()).post('/window-run-liveness/register')).send(other).expect(201);
+    const all = await auth(request(server.getApp()).get('/window-run-liveness')).expect(200);
+    expect(all.body.states.map((state: { topicId: number }) => state.topicId)).toEqual([36966, 131439]);
+    const one = await auth(request(server.getApp()).get('/window-run-liveness?topicId=36966')).expect(200);
+    expect(one.body.state).toMatchObject({ windowId: 'w32', autonomousRunId: 'run-w32' });
+    const second = await auth(request(server.getApp()).get('/window-run-liveness?topicId=131439')).expect(200);
+    expect(second.body.state).toMatchObject({ windowId: 'desktop-131439', status: 'preparing' });
+    await auth(request(server.getApp()).get('/window-run-liveness?topicId=abc')).expect(400);
+    const sameWindow = await auth(request(server.getApp()).post('/window-run-liveness/register')).send({ ...other, topicId: 7, windowId: 'w32' }).expect(409);
+    expect(sameWindow.body.error).toBe('window-run-liveness-window-bound-elsewhere');
+    const ticked = await auth(request(server.getApp()).post('/window-run-liveness/tick?topicId=131439')).expect(200);
+    expect(ticked.body).toMatchObject({ topicId: 131439 });
+  });
+});
+
+describe('window run liveness recovered-episode HTTP boundary', () => {
+  it('keeps a later transient loss at-risk until its own ceiling through the authenticated tick route', async () => {
+    const project = createTempProject();
+    const token = 'w32-later-episode';
+    const baseMs = Date.parse('2026-09-05T20:00:00.000Z');
+    let nowMs = baseMs;
+    let deliveryReachable = true;
+    let heartbeatAt = new Date(baseMs).toISOString();
+    let recoveryCalls = 0;
+    const authority = new WindowRunLivenessAuthority(new WindowRunLivenessStore(project.stateDir), {
+      now: () => new Date(nowMs).toISOString(),
+      sample: state => ({ sampledAt: new Date(nowMs).toISOString(),
+        executor: { id: state.executorId, running: true, heartbeatAt }, deliveryReachable,
+        work: state.lastWorkReceipt ?? null,
+        lifecycle: { lifecycleRunId: state.lifecycleRunId, state: 'active_start', admitted: true,
+          expiresAt: new Date(baseMs + 24 * 60 * 60_000).toISOString() } }),
+      resolveRecoveryTask: () => 'autonomous:run-episode:1',
+      recover: async ({ taskRef }) => { recoveryCalls++; deliveryReachable = true;
+        return { succeeded: true, detail: 'delivery recovered', receipt: 'recovery-1', resumedTaskRef: taskRef }; },
+      verifyWorkArtifact: (_state, input) => ({ artifact: input.artifactRef, digest: 'b'.repeat(64), taskRef: 'autonomous:run-episode:1' }),
+    }, { enabled: true, dryRun: false, heartbeatMaxAgeMs: 60_000, workEvidenceMaxAgeMs: 30 * 60_000, recoveryCeilingMs: 15 * 60_000 });
+    const config: InstarConfig = {
+      projectName: 'w32-episode', projectDir: project.dir, stateDir: project.stateDir, port: 0, authToken: token,
+      requestTimeoutMs: 5000, version: '1.3.1223',
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 2, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], monitoring: {}, updates: {},
+    };
+    const server = new AgentServer({ config, sessionManager: createMockSessionManager() as never,
+      state: project.state, windowRunLivenessAuthority: authority });
+    try {
+      await server.start();
+      const auth = (call: request.Test) => call.set('Authorization', `Bearer ${token}`).set('X-Instar-AgentId', 'w32-episode');
+      const binding = { windowId: 'episode', topicId: 36966, autonomousRunId: 'run-episode',
+        lifecycleRunId: 'run-episode', executorId: 'echo-episode' };
+      await auth(request(server.getApp()).post('/window-run-liveness/register')).send(binding).expect(201);
+      await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactRef: 'src/a.ts' }).expect(201);
+      expect((await auth(request(server.getApp()).post('/window-run-liveness/tick')).send({}).expect(200)).body.status).toBe('active');
+      deliveryReachable = false;
+      const recovered = await auth(request(server.getApp()).post('/window-run-liveness/tick')).send({}).expect(200);
+      expect(recovered.body.status).toBe('active');
+      expect(recoveryCalls).toBe(1);
+      nowMs += 20 * 60_000;
+      heartbeatAt = new Date(baseMs).toISOString();
+      const later = await auth(request(server.getApp()).post('/window-run-liveness/tick')).send({}).expect(200);
+      expect(later.body.status).toBe('at-risk');
+      expect(later.body.recoveryAttempt.attemptId).toBe(recovered.body.recoveryAttempt.attemptId);
+      expect(recoveryCalls).toBe(1);
+      heartbeatAt = new Date(nowMs).toISOString();
+      expect((await auth(request(server.getApp()).post('/window-run-liveness/tick')).send({}).expect(200)).body.status).toBe('active');
+    } finally { await server.stop(); project.cleanup(); }
   });
 });

@@ -9,7 +9,7 @@ import {
   buildPreferences, buildCorrections, buildConflicts, machineNames, learnedHeadline, learnedFacts,
   correctionsUrl, kindWords, confidenceWords, correctionStatusWords, ADVISORY_LINE,
 } from './learned-model.js';
-import { el, setKids, pageHead, section, sheet, story, details, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, section, sheet, story, details, note, cantTell, firstPaint } from './ui.js';
 
 const PAGE = 20;
 // The last good preferences build, so a failed refresh shows it with its age (stale) instead of nothing.
@@ -21,7 +21,7 @@ const CORRECTION_KEYS = ['id', 'kind', 'status', 'occurrenceCount', 'detectedAt'
 
 export async function renderLearned(main, ctx) {
   const { get } = ctx;
-  if (!main.querySelector('.learned-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Settings · What I’ve learned about you' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Settings · What I’ve learned about you' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
   const [prefsRes, firstPage, conflictsRes, poolRes] = await Promise.all([
     get('/preferences/session-context'), get(correctionsUrl(null, PAGE)), get('/state/conflicts'), get('/pool'),
   ]);

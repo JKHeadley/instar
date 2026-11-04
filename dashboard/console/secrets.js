@@ -9,7 +9,7 @@ import {
   topicNameMap, conversationChoices, requestCard, requestBody, testRequestBody, resultWords, shareWords,
   leftWords, TTL_CHOICES,
 } from './secrets-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, firstPaint, markNeed } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const RECORD_KEYS = ['token', 'topicId', 'createdAt', 'expiresAt'];
@@ -55,7 +55,7 @@ async function share(url, title, status) {
 
 export async function renderSecrets(main, ctx) {
   const { get } = ctx;
-  if (!main.querySelector('.secrets-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'People · Passwords & keys' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'People · Passwords & keys' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
   const [pendingRes, ctxRes, syncRes, topicsRes, poolRes] = await Promise.all([
     get('/secrets/pending'), get('/self-knowledge/session-context?full=1'), get('/secrets/sync-status'), get('/telegram/topics?scope=pool'), get('/pool'),
   ]);
@@ -90,7 +90,7 @@ function waitingBlock(requests, deps, multi) {
   const wrap = el('section', { class: 'list-section', id: 'sec-waiting' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Waiting' }), requests.ok ? el('span', { class: 'list-count', text: String(requests.waiting.length) }) : null));
   if (!requests.ok) { wrap.append(cantTell(requests.reason)); return wrap; }
   if (!requests.waiting.length) wrap.append(el('p', { class: 'empty-line', text: 'Nothing is waiting. When the agent needs a password or key, it asks here with a one-time link.' }));
-  else wrap.append(el('div', { class: 'secret-cards' }, requests.waiting.map((c) => waitingCard(c, deps))));
+  else { markNeed(wrap, 'secrets'); wrap.append(el('div', { class: 'secret-cards' }, requests.waiting.map((c) => waitingCard(c, deps)))); }
   wrap.append(note('Once someone submits, it moves to the agent; it doesn’t stay listed here.'));
   if (multi) wrap.append(note('These are this machine’s requests. Each machine keeps its own.'));
   return wrap;

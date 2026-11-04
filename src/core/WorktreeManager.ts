@@ -735,7 +735,33 @@ export class WorktreeManager extends EventEmitter {
           break;
         }
       }
-      if (!evicted) throw new Error(`Max active bindings (${MAX_ACTIVE_BINDINGS}) reached`);
+      // Nothing ever marks a binding merged or abandoned, so at the cap every
+      // record is still 'active' and the check above evicts nothing: once 30
+      // topics had a workspace, no new topic could get one. Evict the oldest
+      // binding that no session currently holds a live lock on. Only the
+      // record goes: the worktree stays on disk, and a later resolve for that
+      // topic adopts the existing path (see "Adopt existing" below).
+      if (!evicted) {
+        const idle = [...this.bindings.entries()]
+          .filter(([, b]) => {
+            const lock = this.locks.get(b.worktreePath);
+            return !lock || !this.isLockLive(lock);
+          })
+          .sort(([, a], [, b]) => a.createdAt.localeCompare(b.createdAt));
+        if (idle.length > 0) {
+          const [k, b] = idle[0]!;
+          this.bindings.delete(k);
+          evicted = true;
+          this.appendHistoryEvent({
+            kind: 'binding-evicted-idle',
+            topicId: b.topicId,
+            mode: b.mode,
+            branch: b.branch,
+            worktreePath: b.worktreePath,
+          });
+        }
+      }
+      if (!evicted) throw new Error(`Max active bindings (${MAX_ACTIVE_BINDINGS}) reached, all held by live sessions`);
     }
 
     const branch = args.mode === 'platform'

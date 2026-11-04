@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-04T03:34:03.950Z",
+  "slug": "feedback-confined-vitest-direct",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/confinementCanary.ts",
+      "src/feedback-factory/execute/executePolicy.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

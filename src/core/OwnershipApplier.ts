@@ -32,6 +32,7 @@
 
 import type { SessionOwnershipRecord } from './SessionOwnership.js';
 import type { SessionOwnershipStore } from './SessionOwnershipRegistry.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 /** The minimal slice of CoherenceJournalReader the applier needs (for testability). */
 /** One entry as returned by the reader. `ts`/`seq` are the cursor key fields. */
@@ -326,6 +327,7 @@ export class OwnershipApplier {
         // Epoch fence (Finding SE2): a corrupt huge epoch jump can't wedge a topic forever.
         if (best.epoch - localEpoch > maxEpochJump) {
           this.log(`epoch-fence: refusing topic ${sessionKey} epoch ${best.epoch} (local ${localEpoch}, jump > ${maxEpochJump})`);
+          featureEvidence.recordAtMostEvery('multiMachine.durableOwnership', `epoch-fence|${sessionKey}|${best.epoch}`, 60 * 60_000, { kind: 'error', reason: 'refused placement: epoch jump over the fence', context: { topic: sessionKey, epoch: best.epoch, localEpoch, maxEpochJump, owner: best.owner } });
           continue;
         }
         const now = this.now();
@@ -386,12 +388,16 @@ export class OwnershipApplier {
                   ? ' (peer — route forwards there)'
                   : ''),
           );
+          featureEvidence.record('multiMachine.durableOwnership', { kind: 'fired', reason: 'adopted placement from the journal', context: { topic: sessionKey, owner: best.owner, epoch: best.epoch, localEpoch, status, ownedBySelf: !!self && best.owner === self } });
+        } else {
+          featureEvidence.recordAtMostEvery('multiMachine.durableOwnership', `cas|${sessionKey}|${best.epoch}`, 60 * 60_000, { kind: 'error', reason: 'placement apply refused by the store', context: { topic: sessionKey, owner: best.owner, epoch: best.epoch, localEpoch, status } });
         }
       }
     } catch (err) {
       // NOT silent: logged. The applier is best-effort replication; a failure means
       // this tick adopted fewer records — the next tick (or the reconciler) converges.
       this.log(`tick failed: ${err instanceof Error ? err.message : String(err)}`);
+      featureEvidence.recordAtMostEvery('multiMachine.durableOwnership', 'tick-failed', 60 * 60_000, { kind: 'error', reason: 'applier tick failed', context: { error: (err instanceof Error ? err.message : String(err)).slice(0, 80), materialized } });
     }
     return {
       examined,

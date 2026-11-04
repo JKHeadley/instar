@@ -1,0 +1,47 @@
+{
+  "ts": "2026-11-03T19:02:11.324Z",
+  "slug": "mobile-app-people-and-roles",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 16,
+  "loc": 831,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AppConversationService.ts",
+      "src/core/AppConversationStore.ts",
+      "src/core/MobileDeviceKeys.ts",
+      "src/core/MobileMspGrants.ts",
+      "src/core/MobilePairing.ts",
+      "src/core/MobilePeople.ts",
+      "src/core/MobilePush.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobileMediaRoutes.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobileSlackRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 773,
+    "deletedLines": 58
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-triggered action: the only push-adjacent change is a recipient FILTER (mayNotify) that skips sends; it adds no restart/retry/respawn/notify trigger or loop."
+  },
+  "verdict": "pass"
+}

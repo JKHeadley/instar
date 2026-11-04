@@ -8,8 +8,10 @@
  * WebSocket connections for real-time terminal streaming.
  */
 
+import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import express, { type Express, type Request, type Response } from 'express';
+import { setMoveAftercare } from '../core/OverloadShedPlanner.js';
 import { getAspClassifierRef } from '../core/aspClassifierRef.js';
 import type { Server } from 'node:http';
 import fs from 'node:fs';
@@ -49,6 +51,7 @@ import { isHeavyMcpSignature } from '../monitoring/mcpIdleLiveOffload.js';
 import { McpIdleOffloadSweep, type HeavyLiveMcpProc } from '../monitoring/McpIdleOffloadSweep.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { AutonomousRunStore } from '../core/AutonomousRunStore.js';
+import { PreparingRunWatchdog, telegramTopicNotifier } from '../core/AutonomousStartAdmission.js';
 import { parseContinuationTasks } from '../core/CodexTaskContinuationStore.js';
 import { EchoWindowLedgerStore } from '../core/WindowLifecycleObligationLedger.js';
 import { WindowRunLivenessAuthority, WindowRunLivenessStore, resolveWindowRunSampleLifecycle, windowRunRecoveryResultFromRefresh } from '../core/WindowRunLivenessAuthority.js';
@@ -90,6 +93,7 @@ import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/Feedba
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
 import { buildFeedbackTriage } from '../feedback-factory/triage/buildFeedbackTriage.js';
+import { buildEcosystemIdeas } from '../ecosystem/buildEcosystemIdeas.js';
 import { buildFeedbackExecutor, disarmExecutorPrsWithoutExecutor, executorUpdatePending, isInstarSourceCheckout } from '../feedback-factory/execute/buildFeedbackExecutor.js';
 import { resolveExecuteConfig } from '../feedback-factory/execute/executePolicy.js';
 import { BackupManager } from '../core/BackupManager.js';
@@ -175,17 +179,32 @@ import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
 import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
+import { getMigrationDefaults } from '../config/ConfigDefaults.js';
+import { createMaturationLadderRoutes, isMaturationLadderEnabled } from './maturationLadderRoutes.js';
+import { MaturationLadderService, readShippedRegistry, type MetricsSummaryRow } from '../monitoring/MaturationLadderService.js';
+import { FeatureEvidenceLog, featureEvidence, setFeatureEvidenceLog } from '../monitoring/FeatureEvidenceLog.js';
+import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
-import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled } from './mobilePairingRoutes.js';
+import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
+import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
-import { AppConversationService } from '../core/AppConversationService.js';
+import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
+import { createMobileMediaRouter } from './mobileMediaRoutes.js';
+import { createMobileSessionRouter } from './mobileSessionRoutes.js';
+import { createMobileSessionTerminalRouter, peerRowsMatch, PEER_LOOKUP_MAX, PEER_LOOKUP_TIMEOUT_MS, type PeerLookup } from './mobileSessionTerminalRoutes.js';
+import { poolPeerFetch } from './poolPeerFetch.js';
+import { AppConversationService, VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS } from '../core/AppConversationService.js';
+import { transcribeAudioFile, configuredVoiceProvider, resolveTranscriptionProvider } from '../core/VoiceTranscription.js';
 import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
 import { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
-import { createAppInboundDispatch, type AppInboundDispatch } from '../core/appInboundDispatch.js';
+import { createAppFollowUpInjector, createAppInboundDispatch, type AppInboundDispatch } from '../core/appInboundDispatch.js';
 import { appReplyRelayReadiness, ensureAppReplyRelay, packagedAppReplyRelayTemplate } from '../core/AppReplyRelayInstaller.js';
 import { defaultTailscaleExec } from '../core/MobileOwnNames.js';
+import { MobilePushService } from '../core/MobilePush.js';
+import { LocalAttentionItems } from '../core/LocalAttentionItems.js';
 import { QueuePaceLedger, QueuePaceTickLog, isQueuePaceEnabled } from '../monitoring/QueuePaceLedger.js';
 import { QueuePaceTuner } from '../monitoring/QueuePaceTuner.js';
 import { commitmentsAdapter, evolutionAdapter, feedbackFixAdapter, feedbackTriageAdapter, maturationAdapter, readExecutorFacts } from '../monitoring/QueuePaceAdapters.js';
@@ -199,18 +218,30 @@ import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
-import { poolPeerFetch } from './poolPeerFetch.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
 import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
+import { DesktopHelperRetention } from '../core/DesktopHelperRetention.js';
+import { getInstarVersion } from '../core/Config.js';
+import { DesktopHelperPermissionNotice } from '../core/DesktopHelperPermissionNotice.js';
+import { GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS } from '../core/PinAttemptStore.js';
 import { dashboardUnlockRefused, isLoopbackPeer, wslWindowsHostAddress } from '../core/desktopTransport.js';
+import { mountDashboardEntryRoutes, mountPairPage, resolvePairDir } from './dashboardEntry.js';
 import { mountDashboardPreview } from './dashboardPreview.js';
-import { MacDesktopHost } from '../core/MacDesktopHost.js';
+import { execFile } from 'node:child_process';
+import { DEFAULT_MAC_DESKTOP_HELPER, MacDesktopHost, macDesktopHelperPath } from '../core/MacDesktopHost.js';
+import { DesktopLockedController, type DesktopLockedSettings } from '../core/DesktopLockedController.js';
+import { parseScreenLockPolicy } from '../core/DesktopLockState.js';
+import { verifyDesktopLockedAssertion, type DesktopLockedAssertion } from '../core/DesktopOperatorAssertion.js';
+import { DesktopSetupTarget } from '../core/DesktopSetupTarget.js';
+import { isWslHost } from '../core/wslPlatform.js';
+import { LinuxAutoDesktopHost } from '../core/HyprlandDesktopHost.js';
 import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
 import { windowsDesktopLocalSend } from '../core/WindowsDesktopLocalTransport.js';
 import { discoverWindowsDesktopCompanion } from '../core/WindowsDesktopCompanionDiscovery.js';
 import { readWindowsDesktopBootstrapStatus } from '../core/WindowsDesktopBootstrapStatus.js';
-import { desktopPeerUrlAllowed } from './DesktopPeerUrlGate.js';
+import { desktopPeerRopes, fetchDesktopPeerOverRopes } from './desktopPeerRopeFetch.js';
 import { desktopRouteAccess } from './desktopRouteContext.js';
+import { parsePeerDesktopSetup, readBoundedText } from './desktopSetupRoutes.js';
 import type { DesktopHost } from '../core/DesktopHost.js';
 import { FileRemoteStepUpLockouts } from '../core/RemoteStepUpLockouts.js';
 import { DesktopAccessAudit } from '../core/DesktopAccessAudit.js';
@@ -259,6 +290,7 @@ import { DesktopDelegatedSessionStore } from '../core/DesktopDelegatedSessionSto
 import { DesktopAssertionReplayStore } from '../core/DesktopAssertionReplayStore.js';
 import { verifyDesktopOperatorAssertion, type DesktopOperatorAssertion } from '../core/DesktopOperatorAssertion.js';
 import { signRequest } from './machineAuth.js';
+import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { DesktopMeshBroker } from './DesktopMeshBroker.js';
 import { PendingRelayStore as SpendAlertRelayStore } from '../messaging/pending-relay-store.js';
 import { ProviderCostReportStore } from '../monitoring/ProviderCostReportStore.js';
@@ -450,7 +482,57 @@ export class AgentServer {
   private poolStreamConnector?: import('./WebSocketManager.js').PoolStreamConnector;
   private desktopStreamManager: DesktopStreamManager | null = null;
   private directDesktopAccess: DirectDesktopAccess | null = null;
+  private desktopLockedController: DesktopLockedController | null = null;
+  /** Attention list for an agent with no Telegram adapter (security items only today). */
+  private localAttention: LocalAttentionItems | null = null;
+
+  /**
+   * The locked-screen security item ("a Mac may still be unlocked", "turned off").
+   * With Telegram it is an attention topic; without, it is stored on the local
+   * attention list and pushed to paired phones. Returns true only when the owner
+   * can now see it, so the controller retries otherwise.
+   */
+  private async raiseLockedSecurityItem(item: { key: string; title: string; body: string }): Promise<boolean> {
+    if (!this.telegramAdapter) {
+      // No Telegram: the item goes to the local attention list (GET /attention, the app)
+      // and buzzes paired phones. True only once the row is on disk, so a failed write
+      // is retried by the next sweep instead of being marked reported.
+      const id = `agent:${item.key}`;
+      const stored = this.localAttention?.raise({ id, title: item.title, summary: item.body,
+        description: item.body, priority: 'HIGH', category: 'security', source: 'agent',
+        sourceContext: 'desktop-locked' }) ?? false;
+      if (!stored) {
+        console.warn('[instar] locked-screen security item could not be stored; the next sweep tries again');
+        DegradationReporter.getInstance().report({ feature: 'DesktopLocked.securityItem',
+          primary: 'Locked-screen security item on the local attention list', fallback: 'Retried by the next locked-screen sweep',
+          reason: 'local attention list write failed', impact: 'The owner is not yet told about a locked-screen security event.' });
+        return false;
+      }
+      try {
+        this.mobilePairing?.push?.onHubPost({ kind: 'item', itemId: id, dedupeKey: `local-attention:${id}:${Date.now()}`, priority: 'HIGH' });
+      } catch { /* @silent-fallback-ok — the item is stored; the push is best-effort and reports its own degradation */ }
+      return true;
+    }
+    try {
+      await this.telegramAdapter.createAttentionItem({ id: `agent:${item.key}`, conditionKey: item.key,
+        title: item.title, summary: item.body, description: item.body, priority: 'HIGH', source: 'agent',
+        category: 'security', sourceContext: 'desktop-locked' } as never);
+      return true;
+    } catch (error) {
+      console.warn('[instar] locked-screen security item could not be raised; the next sweep tries again');
+      DegradationReporter.getInstance().report({ feature: 'DesktopLocked.securityItem',
+        primary: 'Locked-screen security item on the attention surface', fallback: 'Retried by the next locked-screen sweep',
+        reason: `attention item failed: ${error instanceof Error ? error.message : String(error)}`,
+        impact: 'The owner is not yet told about a locked-screen security event.' });
+      return false;
+    }
+  }
+
+  private desktopLockedOsMajor: number | undefined;
+  private desktopHelperNotice: DesktopHelperPermissionNotice | null = null;
+  private macDesktopHost: MacDesktopHost | null = null;
   private desktopMeshBroker: DesktopMeshBroker | null = null;
+  private desktopSetupTarget: DesktopSetupTarget | null = null;
   private poolLink?: import('./routes.js').RouteContext['poolLink'];
   private poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
   private meshSelfId?: string;
@@ -534,6 +616,8 @@ export class AgentServer {
   /** Feedback executor stop path while the executor is not built (triage dark): disarm open executor PRs. */
   private feedbackExecuteDisarmTimer: ReturnType<typeof setInterval> | null = null;
   /** Queue pace (docs/specs/queue-pace.md): tick-row sink, ledger, tuner and their timers. */
+  private ecosystemIdeas: import('../ecosystem/buildEcosystemIdeas.js').EcosystemRouteContext | { unavailable: 'no-source' } | null = null;
+  private ecosystemTimers: Array<ReturnType<typeof setInterval>> = [];
   private queuePaceTicks: QueuePaceTickLog | null = null;
   private queuePaceLedger: QueuePaceLedger | null = null;
   private queuePaceTuner: QueuePaceTuner | null = null;
@@ -544,6 +628,9 @@ export class AgentServer {
   private claimObservationHousekeeperTimer: ReturnType<typeof setInterval> | null = null;
   private windowLifecycleTimer: ReturnType<typeof setInterval> | null = null;
   private windowRunLivenessTimer: ReturnType<typeof setInterval> | null = null;
+  private preparingRunWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+  /** Exposed for wiring-integrity tests. */
+  preparingRunWatchdog: PreparingRunWatchdog | null = null;
   private jobTriageBackupTimer: ReturnType<typeof setInterval> | null = null;
   private jobAnomalyTimer: ReturnType<typeof setInterval> | null = null;
   private checkInReminderTimer: ReturnType<typeof setInterval> | null = null;
@@ -678,6 +765,9 @@ export class AgentServer {
   private growthMilestoneAnalyst: GrowthMilestoneAnalyst | null = null;
   /** The analyst's dark-flag registry, hoisted for the read-only maturation board (null when the analyst is off). */
   private darkFlagRegistry: DarkFlagMaturationRegistry | null = null;
+  private maturationLadder: MaturationLadderService | null = null;
+  private maturationLadderOn: (() => boolean) | null = null;
+  private featureEvidenceLog: FeatureEvidenceLog | null = null;
   private growthDigestPublisher: GrowthDigestPublisher | null = null;
   /** Dashboard Live-LLM-Insights engine (docs/specs/dashboard-live-insights.md).
    *  Null when the feature is dark (dashboard.liveInsights.enabled resolves false
@@ -796,6 +886,33 @@ export class AgentServer {
     }
   }
 
+
+  /** The target's three levers. Null where the feature cannot exist. */
+  private desktopLockedLevers(): NonNullable<import('./routes.js').RouteContext['desktopLocked']> | null {
+    const controller = this.desktopLockedController;
+    const access = this.directDesktopAccess;
+    const machineId = this.meshSelfId;
+    if (!controller || !access || !machineId) return null;
+    const osMajor = async () => {
+      this.desktopLockedOsMajor ??= (await access.probe()).osMajor;
+      return this.desktopLockedOsMajor;
+    };
+    return {
+      machineId,
+      status: async () => controller.status(await osMajor()),
+      settings: async patch => {
+        if (patch.enabled === true) {
+          const refusal = controller.enableRefusal(await osMajor());
+          if (refusal) throw new Error(refusal);
+        }
+        return { ...await controller.applySettings(patch) };
+      },
+      disable: async () => {
+        await controller.disable(() => access.endLockedGrants());
+      },
+    };
+  }
+
   constructor(options: {
     config: InstarConfig;
     sessionManager: SessionManager;
@@ -878,6 +995,7 @@ export class AgentServer {
     localVerify?: import('../localVerify/LocalVerifyService.js').LocalVerifyService;
     localVerifyStatus?: import('../localVerify/StatusReconciler.js').StatusReconciler;
     guardLatchStore?: import('../monitoring/GuardLatchStore.js').GuardLatchStore;
+    agentStopSurfacer?: import('../monitoring/agentStopRelease.js').AgentStopSurfacer;
     workingMemory?: import('../memory/WorkingMemoryAssembler.js').WorkingMemoryAssembler;
     quotaManager?: import('../monitoring/QuotaManager.js').QuotaManager;
     messageRouter?: MessageRouter;
@@ -1002,6 +1120,12 @@ export class AgentServer {
     spawnAdmission?: import('../core/SpawnAdmission.js').SpawnAdmission;
     /** Native app conversations: the bootstrap-wired service (server.ts). Absent ⇒ default-constructed when the gate is on. */
     appConversations?: AppConversationService;
+    /** The bootstrap-built idea ledger (server.ts), already hooked to replication. Absent ⇒ built here. */
+    ecosystemLedger?: import('../ecosystem/EcosystemLedger.js').EcosystemLedger;
+    /** docs/specs/recommended-services.md: the bootstrap-built choice ledger. Absent means the routes answer 503. */
+    recommendedServicesLedger?: import('../recommended/RecommendedServicesLedger.js').RecommendedServicesLedger;
+    /** Test seams for the idea pipeline: external I/O only. */
+    ecosystemDeps?: import('../ecosystem/buildEcosystemIdeas.js').BuildEcosystemInput['overrides'];
     judgmentProvenance?: import('../core/JudgmentProvenanceLog.js').JudgmentProvenanceLog;
     /** U4.4 — the lease hand-back reconciler + the operator-flip latch levers. */
     leaseHandback?: {
@@ -1037,12 +1161,19 @@ export class AgentServer {
     autonomousRunOnMachine?: (machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>;
     /** Kick the working-set carrier on the machine that just acquired a topic. */
     kickWorkingSetOnMachine?: (machineId: string, topic: number) => void;
+    /** Ownership Follows Live Work Part B for POST /sessions/spawn: record THIS
+     *  machine as the topic's owner when a topic-bound session is started here,
+     *  so a peer's router never treats the topic as unowned and starts a second
+     *  copy. Never force-claims a peer-owned topic. */
+    claimTopicOwnershipOnSpawn?: (topicId: number) => import('../core/ownershipFollowsLiveWork.js').ClaimOnSpawnOutcome;
     /** Every other active machine with a known URL — backs GET /sessions?scope=pool. */
     resolvePeerUrls?: () => Array<{
       machineId: string;
       url: string;
       kind: PeerEndpointKind;
       ropeRefusals?: Array<{ url: string; kind: PeerEndpointKind; reason?: string }>;
+      /** Every rope this peer advertises, in priority order (remote-desktop fallback). */
+      ropes?: Array<{ url: string; kind: PeerEndpointKind }>;
     }>;
     /** Rope-health feedback for pool dials — see RouteContext.recordRopeResult. */
     recordRopeResult?: import('./poolPeerFetch.js').RopeResultRecorder;
@@ -1159,6 +1290,12 @@ export class AgentServer {
     ) => { applied: boolean; reason: string } | void;
     whatsapp?: import('../messaging/WhatsAppAdapter.js').WhatsAppAdapter;
     slack?: import('../messaging/slack/SlackAdapter.js').SlackAdapter;
+    /**
+     * The Slack inbound dispatch (set when Slack starts), so a message sent from the Instar app
+     * into a Slack conversation takes the same path a Slack message does
+     * (mobile-native-conversations §4.9). A getter: it is assigned after the server is built.
+     */
+    slackInboundDispatch?: () => import('./mobileSlackRoutes.js').SlackInboundDispatchFn | null;
     imessage?: import('../messaging/imessage/IMessageAdapter.js').IMessageAdapter;
     whatsappBusinessBackend?: import('../messaging/backends/BusinessApiBackend.js').BusinessApiBackend;
     messageBridge?: import('../messaging/shared/MessageBridge.js').MessageBridge;
@@ -1197,6 +1334,8 @@ export class AgentServer {
     /** Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md): the
      *  service behind POST /mcp/threadline. Mounted whenever Threadline runs. */
     threadlineMcpHttp?: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService;
+    /** Memory privacy: resolves session tokens at the auth layer. */
+    memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacy;
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
     a2aDeliveryTracker?: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker;
     /** Honest-delivery verdict counters (spec §1) for the authed branch of /health. */
@@ -1342,6 +1481,7 @@ export class AgentServer {
     this.subscriptionEmailBarrier = options.subscriptionEmailBarrier ?? null;
     this.meshBindActive = options.meshBindActive ?? false;
     this.telegramAdapter = options.telegram ?? null;
+    this.localAttention = this.telegramAdapter ? null : new LocalAttentionItems(options.config.stateDir);
     this.slackAdapter = options.slack ?? null;
     this.startTime = new Date();
     this.sessionManager = options.sessionManager;
@@ -1375,6 +1515,8 @@ export class AgentServer {
     this.app.use(NATIVE_HOOK_EVENTS_PATH, this.nativeHookIngest.admissionGuard(), this.nativeHookIngest.bodyParser());
     // Public pairing redeem (docs/specs/mobile-pairing-link.md): a tiny body, parsed first.
     this.app.use('/mobile/pairing-codes/redeem', express.json({ limit: '4kb', verify: keepRawBody }));
+    // Media chunks (mobile-native-chat-media §4.10): the signature covers the raw chunk bytes.
+    this.app.use('/mobile/media/uploads', express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }));
     this.app.use(express.json({ limit: '12mb', verify: keepRawBody }));
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
@@ -1399,16 +1541,11 @@ export class AgentServer {
     // fresh index.html with a stale glance.js. Header logic lives in
     // dashboardCacheControl / DASHBOARD_STATIC_OPTIONS (middleware.ts), exercised by
     // the same object in the integration test (no wiring drift).
-    this.app.get('/dashboard', (_req, res) => {
-      dashboardCacheControl(res);
-      // cacheControl:false so send() does not re-stamp `public, max-age=0` over the
-      // no-cache header above; etag/lastModified stay on for cheap 304 revalidation.
-      res.sendFile(path.join(dashboardDir, 'index.html'), {
-        cacheControl: false,
-        etag: true,
-        lastModified: true,
-      });
-    });
+    // /dashboard opens the console; the legacy page lives at /dashboard/legacy, and any
+    // /dashboard?… deep link opens there (docs/specs/dashboard-console-default-and-pair-page.md).
+    mountDashboardEntryRoutes(this.app, { dashboardDir });
+    // The pairing code page: its own strict policy, files outside the static mount (§3.2, §3.5).
+    mountPairPage(this.app, { pairDir: resolvePairDir() });
     this.app.get('/dashboard/desktop.html', (_req, res) => {
       dashboardCacheControl(res);
       const label = this.directDesktopAccess?.targetInfo().label ?? 'this machine';
@@ -1420,6 +1557,7 @@ export class AgentServer {
         .replaceAll('__INSTAR_DESKTOP_ASSET_VERSION__',
           createHash('sha256')
             .update(fs.readFileSync(path.join(dashboardDir, 'desktop.js')))
+            .update(fs.readFileSync(path.join(dashboardDir, 'desktop-setup.js')))
             .update(fs.readFileSync(path.join(dashboardDir, 'desktop.css')))
             .digest('hex').slice(0, 16));
       res.setHeader('Cache-Control', 'no-store');
@@ -1428,6 +1566,10 @@ export class AgentServer {
     this.app.get('/dashboard/desktop.js', (_req, res) => {
       res.setHeader('Cache-Control', 'no-store');
       res.sendFile(path.join(dashboardDir, 'desktop.js'), { cacheControl: false });
+    });
+    this.app.get('/dashboard/desktop-setup.js', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.sendFile(path.join(dashboardDir, 'desktop-setup.js'), { cacheControl: false });
     });
     this.app.get('/dashboard/desktop.css', (_req, res) => {
       res.setHeader('Cache-Control', 'no-store');
@@ -1447,8 +1589,7 @@ export class AgentServer {
     const pinAttempts = new Map<string, { count: number; resetAt: number }>();
     const MAX_ATTEMPTS = 5;
     const WINDOW_MS = 5 * 60 * 1000; // 5-minute window
-    const GLOBAL_MAX_ATTEMPTS = 20;
-    const GLOBAL_PIN_KEY = '__dashboard_unlock_global__';
+    const GLOBAL_MAX_ATTEMPTS = GLOBAL_PIN_MAX_ATTEMPTS;
     let globalPinAttempts = { count: 0, resetAt: 0 };
     const configRef = this.config;
 
@@ -1555,14 +1696,26 @@ export class AgentServer {
           }));
         } catch { return []; } // @silent-fallback-ok — an unreadable registry falls back to the self-probes
       },
-      reportDegradation: (what, err) => DegradationReporter.getInstance().report({
-        feature: what, primary: 'record the phone device state', fallback: 'the request was refused or a pending pairing was cancelled',
-        reason: err instanceof Error ? err.message : String(err), impact: 'A phone pairing step failed and must be retried.',
-      }),
+      reportDegradation: (what, err) => DegradationReporter.getInstance().report(what === 'MobileChat.mirror'
+        ? {
+          feature: what, primary: 'copy the message sent from the Instar app into its Telegram topic',
+          fallback: 'the message reached the agent; only the Telegram copy is missing',
+          reason: err instanceof Error ? err.message : String(err), impact: 'The Telegram topic does not show a message the operator sent from the app.',
+        }
+        : {
+          feature: what, primary: 'record the phone device state', fallback: 'the request was refused or a pending pairing was cancelled',
+          reason: err instanceof Error ? err.message : String(err), impact: 'A phone pairing step failed and must be retried.',
+        }),
       ownerDM: async (text, declineData) => {
         if (!options.telegram) return null;
         return options.telegram.sendOwnerDMWithButton(text, declineData ? { text: 'Decline', data: declineData } : null);
       },
+      // Without a Telegram owner, pairing codes are confirmed on the dashboard (mobile-native-conversations §4.4).
+      telegramOwnerPresent: () => !!options.telegram?.getOwnerUserId?.(),
+      // People and roles: the Telegram owner id decides which registry profile is the owner.
+      telegramOwnerId: () => { const id = options.telegram?.getOwnerUserId?.(); return typeof id === 'number' ? id : null; },
+      // The same namespace the app conversation store stamps (people and roles §5).
+      peopleMachineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
       holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
       // Multi-route: the real Tailscale CLI only outside a test run (a test injects its own).
       tailscaleExec: options.mobileRoutes && 'tailscaleExec' in options.mobileRoutes
@@ -1579,12 +1732,46 @@ export class AgentServer {
       },
     });
     mountPublicMobilePairingRoutes(this.app, this.mobilePairing);
+    // Console sign-in from an owner phone: the public, single-use ticket redeem (mobile-console-device-signin §3.3).
+    mountConsoleTicketRedeemRoute(this.app, this.mobilePairing, () => configRef.authToken);
     // Multi-route own names: the tailscale-serve boot step + the bounded probe loop (§4.1).
     if (this.mobilePairing.ownNames && (options.mobileRoutes?.start ?? !process.env.VITEST)) this.mobilePairing.ownNames.start();
-    if (options.telegram) {
+    {
       const mp = this.mobilePairing;
-      options.telegram.mobileDeclineHandler = (nonce) => mp.declineByNonce(nonce);
-      options.telegram.mobileInboundScan = (text) => mp.scanInbound(text);
+      // Mobile push (docs/specs/mobile-push.md): APNs key from the vault, read before each send.
+      // Built on every agent, Telegram or not: the status route and the machine-to-machine trigger
+      // need it, and an agent with no Telegram can still have a paired phone. Only the hub-post
+      // hook below needs Telegram.
+      const pushKeys = new SecretStore({ stateDir: options.config.stateDir, forceFileKey: options.config.secrets?.forceFileKey });
+      // Runs on every agent now, so a config with no project name must not stop the server starting.
+      const agentId = options.config.projectName ?? 'agent';
+      mp.push = new MobilePushService({
+        stateDir: options.config.stateDir,
+        registry: mp.devices,
+        agentId,
+        agentName: agentId.charAt(0).toUpperCase() + agentId.slice(1),
+        machineId: options.coordinator?.identity?.machineId ?? 'local',
+        enabled: () => isMobilePushEnabled(this.config),
+        // People and roles: a reply push goes only to phones that may use that conversation.
+        mayNotify: (deviceId, conversationKey) => mp.deviceMayUseConversation(deviceId, conversationKey),
+        credentials: () => {
+          const keyPem = pushKeys.get('apns_key_p8');
+          const keyId = pushKeys.get('apns_key_id');
+          const teamId = this.config.mobilePairing?.push?.teamId;
+          return typeof keyPem === 'string' && typeof keyId === 'string' && typeof teamId === 'string' && teamId ? { keyPem, keyId, teamId } : null;
+        },
+        fanOut: (t) => fanOutPushTrigger(mp.pushPoolCtx, t),
+        reportDegradation: (what, err) => DegradationReporter.getInstance().report({
+          feature: what, primary: 'send a push notification to a paired phone', fallback: 'no push for this event; the item is still in Telegram and the app',
+          reason: err instanceof Error ? err.message : String(err), impact: 'A phone notification was not sent.',
+        }),
+      });
+      mp.push.start();
+      if (options.telegram) {
+        options.telegram.mobileDeclineHandler = (nonce) => mp.declineByNonce(nonce);
+        options.telegram.mobileInboundScan = (text) => mp.scanInbound(text);
+        options.telegram.onHubPost = (t) => mp.push?.onHubPost(t);
+      }
     }
 
     // Machine-to-machine routes — mounted BEFORE auth middleware because they use
@@ -1617,7 +1804,15 @@ export class AgentServer {
           return { ...target, ready: probe.ready,
             ...(!probe.ready ? { unavailableReason: reason } : {}) };
         },
+        onDesktopSetup: async (untrustedBody, senderId) => {
+          if (!this.desktopSetupTarget) throw new Error('desktop-setup-unavailable');
+          const request = parsePeerDesktopSetup(untrustedBody, senderId);
+          if (!request) throw Object.assign(new Error('desktop-setup-invalid'), { httpStatus: 400 });
+          return this.desktopSetupTarget.run(request, senderId);
+        },
         onDesktopOperatorBegin: async (untrustedBody, frontId) => {
+          // Turn off takes effect here at once; the restart may be deferred.
+          if (options.config.remoteDesktop?.enabled !== true) throw new Error('desktop access unavailable');
           if (!this.directDesktopAccess || !this.meshSelfId) throw new Error('desktop-target-unavailable');
           const body = untrustedBody as Record<string, unknown> | null;
           const assertion = body?.assertion as DesktopOperatorAssertion | undefined;
@@ -1645,13 +1840,37 @@ export class AgentServer {
               operatorSessionToken: delegated.token, browserPublicKey,
               browserEcdhPublicKey: typeof body?.browserEcdhPublicKey === 'string' ? body.browserEcdhPublicKey : '',
               browserNonce, videoCodec: body?.videoCodec === 'h264' ? 'h264' : 'jpeg',
-              scopeConfirmed: true,
+              scopeConfirmed: true, client: body?.client === 'app' ? 'app' : 'browser',
+              controlRecords: body?.controlRecords === true,
             });
             return { ...result, targetSessionToken: delegated.token };
           } catch (error) {
             this.desktopDelegatedSessions.revoke(delegated.token);
             throw error;
           }
+        },
+        onDesktopOperatorLocked: async (untrustedBody, frontId) => {
+          const levers = this.desktopLockedLevers();
+          if (!levers || !this.meshSelfId || options.config.remoteDesktop?.frontMachineId !== frontId) {
+            throw new Error('desktop pool front not authorized');
+          }
+          const body = untrustedBody as Record<string, unknown> | null;
+          if (body?.status === true) return levers.status();
+          const assertion = body?.assertion as DesktopLockedAssertion | undefined;
+          const settings = (body?.settings ?? {}) as Record<string, unknown>;
+          this.desktopAssertionReplay ??= new DesktopAssertionReplayStore(
+            path.join(options.config.stateDir, 'state', 'desktop-operator-replay.json'));
+          const verdict = verifyDesktopLockedAssertion({
+            assertion: assertion!, expectedTargetMachineId: this.meshSelfId, expectedIssuerMachineId: frontId,
+            settings, nowMs: Date.now(),
+            resolveIssuerKey: machineId => coord.managers.identityManager.getSigningPublicKeyPem(machineId),
+            verifySignature: (canonical, signature, publicKey) => verifyMachinePayload(canonical, signature, publicKey),
+            seenJti: jti => this.desktopAssertionReplay!.seen(jti),
+          });
+          if (!verdict.ok) throw new Error(`desktop-operator-${verdict.reason}`);
+          this.desktopAssertionReplay.record(verdict.jti, assertion!.expiresAtMs);
+          if (assertion!.operation === 'locked-disable') { await levers.disable(); return { disabled: true }; }
+          return levers.settings(settings);
         },
         onDesktopOperatorKeepAlive: (untrustedBody, frontId) => {
           const body = untrustedBody as Record<string, unknown> | null;
@@ -1669,6 +1888,7 @@ export class AgentServer {
           switch (body?.operation) {
             case 'status': return this.directDesktopAccess.status(requestId, token);
             case 'cursor': return this.directDesktopAccess.cursor(requestId, token);
+            case 'displays': return this.directDesktopAccess.displays(requestId, token) as unknown as Promise<Record<string, unknown>>;
             case 'ticket': return { ...this.directDesktopAccess.targetInfo(),
               ticket: this.directDesktopAccess.ticket(requestId, token,
                 typeof payload?.connectionNonce === 'string' ? payload.connectionNonce : '',
@@ -1777,6 +1997,7 @@ export class AgentServer {
         return false;
       },
       this.mobilePairing ? deviceAuthenticator(this.mobilePairing) : undefined,
+      options.memoryPrivacy ? (token) => options.memoryPrivacy!.sessionForToken(token) : undefined,
     ));
     // Per-path request-timeout overrides for LLM-backed / third-party routes
     // (outbound messaging + the standards-conformance gate). The map and its
@@ -2757,9 +2978,12 @@ export class AgentServer {
       this.topicOperatorStore = null;
     }
 
+    // Guided setup exists while desktop is off: it is how desktop comes on.
+    const desktopConfiguredAtBoot = options.config.remoteDesktop?.enabled === true;
     // Every host remains dark without explicit opt-in. WSL delegates to the
     // separately installed interactive Windows companion; it never captures
-    // the Linux guest display as a substitute for the Windows desktop.
+    // the Linux guest display as a substitute for the Windows desktop. Native
+    // Linux captures its own X11 session through LinuxDesktopHost.
     if (options.config.remoteDesktop?.enabled === true
       && (process.platform === 'darwin' || process.platform === 'linux')
       && this.meshSelfId && this.pinAttemptStore) {
@@ -2775,9 +2999,48 @@ export class AgentServer {
           if (!publicKeyPem || !verifyMachinePayload(proof, signMachinePayload(proof, privateKey), publicKeyPem)) {
             throw new Error('machine signing key mismatch');
           }
-          const host: DesktopHost = process.platform === 'darwin'
-            ? new MacDesktopHost()
-            : (() => {
+          const helperRetention = process.platform === 'darwin'
+            ? new DesktopHelperRetention({
+              packagedBinary: DEFAULT_MAC_DESKTOP_HELPER, packageVersion: getInstarVersion(),
+              // Only a real install takes the Mac's one kept copy by default: a
+              // source checkout or a test must never replace what is granted.
+              enabled: options.config.remoteDesktop?.retainedHelper
+                ?? (!process.env.VITEST && DEFAULT_MAC_DESKTOP_HELPER.includes(`${path.sep}node_modules${path.sep}instar${path.sep}`)),
+            }) : null;
+          this.macDesktopHost = process.platform === 'darwin' ? new MacDesktopHost(undefined, helperRetention) : null;
+          const macHost = this.macDesktopHost;
+          const lockedSettings = (): DesktopLockedSettings => {
+            const stored = (typeof options.liveConfig?.get === 'function'
+              ? options.liveConfig.get<DesktopLockedSettings | undefined>('remoteDesktop.lockedScreen', undefined)
+              : undefined) ?? options.config.remoteDesktop?.lockedScreen;
+            return { enabled: stored?.enabled === true, browserBox: stored?.browserBox === true, chime: stored?.chime !== false };
+          };
+          this.desktopLockedController = macHost ? new DesktopLockedController({
+            host: macHost, agentId: options.config.projectName ?? 'agent', settings: lockedSettings,
+            saveSettings: next => {
+              options.liveConfig?.set('remoteDesktop.lockedScreen', next);
+              if (options.config.remoteDesktop) options.config.remoteDesktop.lockedScreen = next;
+            },
+            readPolicy: () => new Promise((resolve, reject) => {
+              execFile('/usr/sbin/sysadminctl', ['-screenLock', 'status'], { timeout: 3_000 }, (error: Error | null, stdout: string, stderr: string) => {
+                if (error) reject(error);
+                else resolve(parseScreenLockPolicy(`${stdout}${stderr}`));
+              });
+            }),
+            tunnelFirstTierActive: () => {
+              const lifecycle = options.tunnel?.lifecycleState;
+              return lifecycle?.lastState === 'active' && String(lifecycle.activeProvider).startsWith('cloudflare');
+            },
+            raiseSecurity: item => this.raiseLockedSecurityItem(item),
+          }) : null;
+          if (macHost && this.desktopLockedController) macHost.setLockedRoot(this.desktopLockedController.root);
+          const host: DesktopHost = macHost
+            // Native Linux (not WSL) captures its own X11 or Hyprland session; a
+            // server with neither reports an inactive session and admission refuses it.
+            ?? (process.platform === 'linux' && !isWslHost()
+              ? new LinuxAutoDesktopHost({ display: options.config.remoteDesktop?.linuxDisplay ?? null })
+              : null)
+            ?? (() => {
                 const companion = discoverWindowsDesktopCompanion();
                 // PowerShell interop can reach the Windows-local companion even
                 // when WSL's TCP path to the host is filtered by Windows.
@@ -2807,8 +3070,28 @@ export class AgentServer {
           new DesktopAccessAudit(options.config.stateDir),
           'pin',
           (token, machineId) => this.desktopDelegatedSessions.belongsTo(token, machineId),
+          this.desktopLockedController,
         );
+        void this.desktopLockedController?.sweep(true).catch(() => { console.warn('[instar] locked-screen boot sweep failed'); });
         this.desktopStreamManager = new DesktopStreamManager(request => this.directDesktopAccess!.admit(request));
+        if (helperRetention) {
+          const access = this.directDesktopAccess;
+          const telegram = options.telegram;
+          this.desktopHelperNotice = new DesktopHelperPermissionNotice({
+            machineLabel: label, machineId: this.meshSelfId,
+            probe: () => access.probe(),
+            sourceHash: () => helperRetention.currentSourceHash(),
+            // An agent that cannot post must leave the notice for one that can.
+            claim: () => !!telegram && helperRetention.claimNotice(),
+            release: () => helperRetention.releaseNotice(),
+            raise: item => telegram!.createAttentionItem({
+              id: item.id, conditionKey: item.conditionKey, title: item.title, summary: item.body, description: item.body,
+              priority: 'HIGH', category: 'desktop', source: 'agent', needsUser: true, sourceContext: 'desktop-helper-permission',
+            } as Parameters<NonNullable<typeof telegram>['createAttentionItem']>[0]),
+            clear: (conditionKey, resolution) => { telegram?.clearAttentionCondition({ conditionKey }, resolution); },
+          });
+          if (!process.env.VITEST) this.desktopHelperNotice.start();
+        }
         } catch (error) {
           // @silent-fallback-ok — warn and leave desktop admission dark when target identity cannot be proven.
           console.warn('[instar] remote desktop target identity unavailable; access stays dark:', error instanceof Error ? error.message : String(error));
@@ -4717,6 +5000,7 @@ export class AgentServer {
         }
       })();
     });
+    setMoveAftercare(kickWorkingSetOnMachine);
     const resolveWindowFirstUnreceiptedTask = (state: Readonly<import('../core/WindowRunLivenessAuthority.js').WindowRunLivenessDocument>): string | null => {
       const localPath = path.join(options.config.stateDir, 'autonomous', `${state.topicId}.local.md`);
       const content = fs.readFileSync(localPath, 'utf8');
@@ -4942,6 +5226,7 @@ export class AgentServer {
         {
           now: () => options.windowLifecycleNow?.() ?? new Date().toISOString(),
           getLiveness: () => windowRunLivenessAuthority.status().state,
+          getLivenessAll: () => windowRunLivenessAuthority.status().states,
           canAct: (state) => {
             const registry = options.sessionOwnershipRegistry;
             if (!registry) return options.coordinator?.enabled !== true;
@@ -4964,7 +5249,7 @@ export class AgentServer {
             }), Buffer.from(identity.privateKey, 'base64'), Buffer.from(identity.publicKey, 'base64'));
           },
           findDeliveredSynthesis: ({ topicId, report, expectedText }) => {
-            const state = windowRunLivenessAuthority.status().state;
+            const state = windowRunLivenessAuthority.status(topicId).state;
             if (!state || !report.bodyHash || !report.producerSignature) return null;
             let publicKey: Buffer;
             try {
@@ -5018,6 +5303,7 @@ export class AgentServer {
       // `initialized: false` honestly on a build that never wired it).
       selfActionGovernor: getSelfActionGovernor(),
       telegram: options.telegram ?? null,
+      localAttention: this.localAttention,
       telegramOrigin: options.telegramOrigin ?? null,
       relationships: options.relationships ?? null,
       feedback: options.feedback ?? null,
@@ -5075,6 +5361,7 @@ export class AgentServer {
       localVerify: options.localVerify ?? null,
       localVerifyStatus: options.localVerifyStatus ?? null,
       guardLatchStore: options.guardLatchStore ?? null,
+      agentStopSurfacer: options.agentStopSurfacer ?? null,
       workingMemory: options.workingMemory ?? null,
       quotaManager: options.quotaManager ?? null,
       messageRouter: options.messageRouter ?? null,
@@ -5179,6 +5466,7 @@ export class AgentServer {
       moneyLayerAudit: this.moneyLayerAudit,
       requestSupervisedRestart: (reason: string, requestedBy?: string) => this.requestSupervisedRestart(reason, requestedBy),
       pinAttemptStore: this.pinAttemptStore,
+      pinEntryRefusedHere: (req) => dashboardUnlockRefused(Boolean(this.directDesktopAccess), req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']),
       providerCostReportStore: this.providerCostReportStore,
       resourceLedger: this.resourceLedger,
       processFootprintMonitor: this.processFootprintMonitor,
@@ -5244,6 +5532,8 @@ export class AgentServer {
       completionClaimVerifier: this.completionClaimVerifier,
       blockerLedger: this.blockerLedger,
       ...desktopRouteAccess(this.directDesktopAccess, options.config.remoteDesktop?.frontMachineId, this.meshSelfId),
+      desktopLocked: this.desktopLockedLevers(),
+      desktopTargets: () => (options.resolvePeerUrls?.() ?? []).map(peer => peer.machineId),
       desktopLocalDiagnostics: async () => {
         const configured = options.config.remoteDesktop?.enabled === true;
         if (!configured || !this.directDesktopAccess) {
@@ -5260,6 +5550,10 @@ export class AgentServer {
             screenPermission: probe.screenPermission, inputPermission: probe.inputPermission,
             displayCount: probe.displayCount, sessionActive: probe.sessionActive,
             ...(probe.screenGrant ? { screenGrant: probe.screenGrant, inputGrant: probe.inputGrant } : {}),
+            ...(probe.helperSource ? { helperSource: probe.helperSource } : {}),
+            ...(probe.helperFallback ? { helperFallback: probe.helperFallback } : {}),
+            ...(probe.helperChange ? { helperChange: probe.helperChange,
+              permissionStep: desktopProbeUnavailableReason(probe) } : {}),
             ...(['consoleSessionPresent', 'onConsole', 'loginDone', 'screenLocked'] as const)
               .reduce((details, key) => {
                 if (typeof probe[key] === 'boolean') details[key] = probe[key];
@@ -5279,6 +5573,33 @@ export class AgentServer {
         }
       },
       desktopMeshBroker: this.desktopMeshBroker,
+      desktopSetupPeerCall: async (machineId, body) => {
+        const peer = options.resolvePeerUrls?.().find(candidate => candidate.machineId === machineId);
+        if (!peer || !this.meshSelfId || !options.coordinator?.enabled) {
+          throw new Error('desktop-peer-unreachable');
+        }
+        const key = options.localSigningKeyPem || options.coordinator.managers.identityManager.loadSigningKey();
+        // Every rope in order: a dead first rope (e.g. a WSL-internal LAN
+        // address) no longer hides a live Tailscale rope. Signed once — a rope
+        // is only skipped when the request provably never reached a server.
+        const { response } = await fetchDesktopPeerOverRopes({
+          machineId, ropes: desktopPeerRopes(peer), path: '/api/desktop/setup',
+          init: {
+            method: 'POST', headers: { 'Content-Type': 'application/json', ...signRequest(this.meshSelfId, key, body) },
+            body: JSON.stringify(body), redirect: 'manual',
+          },
+          budgetMs: 8_000, connectCheckCapMs: 2_000, record: options.recordRopeResult,
+        });
+        const raw = await readBoundedText(response, 8_192);
+        let parsed: unknown = null;
+        try { parsed = JSON.parse(raw); } catch { /* @silent-fallback-ok — handled as an invalid reply just below. */ }
+        const reply = (parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}) as Record<string, unknown>;
+        if (!response.ok) {
+          throw Object.assign(new Error('desktop-setup-refused'), { status: response.status,
+            code: typeof reply.code === 'string' && /^[a-z-]{1,32}$/.test(reply.code) ? reply.code : undefined });
+        }
+        return reply;
+      },
       desktopTargetSigningKey: machineId => {
         if (this.directDesktopAccess?.targetInfo().machineId === machineId) {
           return this.directDesktopAccess.targetSigningPublicKey();
@@ -5290,16 +5611,18 @@ export class AgentServer {
       },
       desktopProbePeer: async machineId => {
         const peer = options.resolvePeerUrls?.().find(candidate => candidate.machineId === machineId);
-        if (!peer || !this.meshSelfId || !options.coordinator?.enabled
-          || !await desktopPeerUrlAllowed(peer)) {
+        if (!peer || !this.meshSelfId || !options.coordinator?.enabled) {
           throw new Error('desktop-peer-unreachable');
         }
         const key = options.localSigningKeyPem || options.coordinator.managers.identityManager.loadSigningKey();
         const body = {};
-        const response = await poolPeerFetch(options.recordRopeResult,
-          { ...peer, url: peer.url.replace(/\/+$/, '') }, '/api/desktop/availability', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', ...signRequest(this.meshSelfId, key, body) },
-          body: JSON.stringify(body), redirect: 'manual', signal: AbortSignal.timeout(3_000),
+        const { response } = await fetchDesktopPeerOverRopes({
+          machineId, ropes: desktopPeerRopes(peer), path: '/api/desktop/availability',
+          init: {
+            method: 'POST', headers: { 'Content-Type': 'application/json', ...signRequest(this.meshSelfId, key, body) },
+            body: JSON.stringify(body), redirect: 'manual',
+          },
+          budgetMs: 3_000, connectCheckCapMs: 1_000, record: options.recordRopeResult,
         });
         if (!response.ok) throw new Error('desktop-peer-unavailable');
         const reader = response.body?.getReader();
@@ -5447,6 +5770,7 @@ export class AgentServer {
       sendDrain: options.sendDrain ?? null,
       autonomousRunOnMachine,
       kickWorkingSetOnMachine,
+      claimTopicOwnershipOnSpawn: options.claimTopicOwnershipOnSpawn ?? null,
       resolvePeerUrls: options.resolvePeerUrls ?? null,
       guardRegistry: options.guardRegistry ?? null,
       listPoolMachines: options.listPoolMachines ?? null,
@@ -5568,6 +5892,13 @@ export class AgentServer {
               try { stopAutonomousTopic(options.config.stateDir, String(alias)); } catch { /* @silent-fallback-ok — best-effort, as on the Telegram path */ }
               try { options.operatorStopRecorder?.(alias); } catch { /* @silent-fallback-ok — the stop record is observability */ }
             },
+            mediaMaxStoreBytes: () => options.config.mobilePairing?.native?.media?.maxStoreBytes,
+            // §4.5.1: voice notes the phone did not transcribe use Telegram's transcriber (same provider).
+            // The dispatch waits 60 s; the provider call itself may run longer (a late transcript).
+            transcribeVoice: (filePath, mediaType, timeoutMs) => transcribeAudioFile(filePath, { explicit: configuredVoiceProvider(options.config), mediaType, timeoutMs: timeoutMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }),
+            voiceProviderName: () => resolveTranscriptionProvider({ explicit: configuredVoiceProvider(options.config) })?.name,
+            raiseAttention: (item) => { void options.telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-media' }); },
+            clearAttention: (conditionKey) => { options.telegram?.clearAttentionCondition({ conditionKey }, 'cleared: the app media store has room again'); },
             reportDegradation: (what, detail) => DegradationReporter.getInstance().report({
               feature: what, primary: 'record and deliver native app conversations', fallback: 'the request was refused or reported outcome-unknown',
               reason: detail, impact: 'An app conversation step needs attention.',
@@ -5589,6 +5920,8 @@ export class AgentServer {
         // reconciled against the device registry in both directions (a crash between the writes).
         const keyLedger = svc.deps.keyLedger ?? null;
         this.mobilePairing.keyLedger = keyLedger;
+        // People and roles §3.4: who owns each app conversation (undefined ⇒ no such conversation).
+        this.mobilePairing.useAppConversationStore(svc.store);
         if (keyLedger) {
           try {
             const rec = keyLedger.reconcile(this.mobilePairing.devices);
@@ -5607,6 +5940,18 @@ export class AgentServer {
             reason: 'this machine has no identity key', impact: 'Signed app messages read "couldn\'t check" on this machine.',
           });
         }
+        // The "now available" follow-up line of media copied after dispatch (media spec §4.12):
+        // typed into the conversation's live session only, never a spawn.
+        if (options.sessionManager) {
+          svc.setFollowUp(createAppFollowUpInjector({ sessions: options.sessionManager as unknown as Parameters<typeof createAppFollowUpInjector>[0]['sessions'], channels: svc.channels }));
+        }
+        // Push without Telegram (§4.7): every agent reply appended to an app conversation sends one
+        // push through the push service's budgets, folding and dedupe (fanned out to peers).
+        const pairing = this.mobilePairing;
+        svc.pushHook = (conversationKey, messageId) => { pairing.push?.onAppReply(conversationKey, messageId); };
+        // Server voice transcripts get the phone transcript's scan (§4.5.1): a dictated pending
+        // pairing code declines that pairing, exactly as in a caption or a phone transcript.
+        svc.setInboundScan((text) => pairing.scanInbound(text));
         svc.start();
         this.appConversations = svc;
         routeCtx.appConversations = svc;
@@ -5617,6 +5962,32 @@ export class AgentServer {
         });
       }
     }
+    routeCtx.recommendedServicesLedger = options.recommendedServicesLedger ?? null;
+    this.startEcosystemIdeas(options, routeCtx);
+    this.desktopSetupTarget = new DesktopSetupTarget({
+      peerClaimAllowed: resolveDevAgentGate(options.config.remoteDesktop?.guidedSetup?.enabled, options.config),
+      stateDir: options.config.stateDir, platform: process.platform, wsl: isWslHost(),
+      config: options.config, configuredAtBoot: desktopConfiguredAtBoot,
+      diagnostics: () => routeCtx.desktopLocalDiagnostics!(),
+      requestPermission: routeCtx.desktopRequestPermission ?? null,
+      requestRestart: () => this.requestSupervisedRestart('remote desktop guided setup', 'remote-desktop-setup'),
+      // The setup fallback must name the copy a permission request targets, which
+      // is the one this host serves right now, kept or installed.
+      helperPath: () => (process.platform === 'darwin' ? this.macDesktopHost?.setupHelperPath() ?? macDesktopHelperPath() : null),
+      endLiveAccess: () => this.directDesktopAccess?.killSwitch(),
+      onPeerEnable: async senderId => {
+        const name = verifiedEntityName(senderId, options.listPoolMachines?.().find(peer => peer.machineId === senderId)?.nickname) ?? 'Another paired machine';
+        const self = verifiedEntityName(this.meshSelfId ?? '', options.listPoolMachines?.().find(peer => peer.machineId === this.meshSelfId)?.nickname) ?? 'This machine';
+        const body = `${name} turned on Remote Desktop for ${self}, after a PIN on its dashboard. If that was not you, turn it off from the Desktop page.`;
+        if (!options.telegram) throw new Error('desktop-setup-no-notice-channel');
+        await options.telegram.createAttentionItem({
+          // One per claim: an open row with the same id would swallow a repeat.
+          id: `desktop-setup:peer-enabled:${senderId}:${Date.now()}`, title: `Remote Desktop turned on for ${self}`,
+          summary: body, description: body, priority: 'HIGH', category: 'security', sourceContext: 'desktop-setup', source: 'agent',
+        } as Parameters<NonNullable<typeof options.telegram>['createAttentionItem']>[0]);
+      },
+    });
+    routeCtx.desktopSetupTarget = this.desktopSetupTarget;
     const routes = createRoutes(routeCtx);
     // Runs the LLM-free check-in reminder pass with no session. The first tick
     // waits one interval: Telegram may not be up yet at this point in boot.
@@ -5625,6 +5996,43 @@ export class AgentServer {
       this.checkInReminderTimer = setInterval(() => { void checkInReminderTicker.tick(); }, checkInReminderTicker.status().intervalMs);
       this.checkInReminderTimer.unref?.();
       checkInReminderTicker.setArmed(true);
+    }
+    // The native session screen (docs/specs/mobile-native-session-screen.md): owner-phone requests
+    // for GET /sessions/:name/output and POST /sessions/:name/input. Mounted BEFORE the main routes;
+    // every non-device request passes straight on to the Bearer handlers there, unchanged.
+    if (this.mobilePairing) {
+      const pairingForTerminal = this.mobilePairing;
+      this.app.use(createMobileSessionTerminalRouter({
+        pairing: pairingForTerminal,
+        listSessions: () => options.state.listSessions(),
+        captureOutputAsync: (tmux, lines) => options.sessionManager.captureOutputAsync(tmux, lines),
+        sendInput: (tmux, text) => options.sessionManager.sendInput(tmux, text),
+        lookupPeers: async (name) => {
+          const peers = routeCtx.resolvePeerUrls?.() ?? [];
+          const asked = peers.slice(0, PEER_LOOKUP_MAX);
+          const answers: PeerLookup[] = await Promise.all(asked.map(async (p): Promise<PeerLookup> => {
+            try {
+              const r = await poolPeerFetch(routeCtx.recordRopeResult ?? undefined, p, '/sessions', {
+                headers: { Authorization: `Bearer ${options.config.authToken}` },
+                signal: AbortSignal.timeout(PEER_LOOKUP_TIMEOUT_MS),
+              });
+              if (!r.ok) return { machineId: p.machineId, failed: true };
+              return { machineId: p.machineId, found: peerRowsMatch(await r.json(), name) };
+            } catch { return { machineId: p.machineId, failed: true }; } // @silent-fallback-ok — an unanswered peer makes the location unknown
+          }));
+          // Peers beyond the ones asked count as unanswered: absence is then never claimed.
+          if (peers.length > asked.length) answers.push({ machineId: 'not-asked', failed: true });
+          return answers;
+        },
+        nicknameOf: (id) => routeCtx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+        selfNickname: () => {
+          const id = routeCtx.meshSelfId ?? this.meshSelfId ?? null;
+          return id ? verifiedEntityName(id, routeCtx.machinePoolRegistry?.getCapacity(id)?.nickname) ?? null : null;
+        },
+        selfMachineId: () => routeCtx.meshSelfId ?? this.meshSelfId ?? null,
+        secrets: () => [options.config.authToken, options.config.dashboardPin],
+        stateDir: options.config.stateDir,
+      }));
     }
     this.app.use(routes);
     // The cost surface reads the same live ledgers and scheduler as production
@@ -5942,23 +6350,149 @@ export class AgentServer {
       }, 60_000);
       this.windowRunLivenessTimer.unref?.();
     }
+    if (options.telegram && options.config.autonomousSessions?.preparingWatchdog?.enabled !== false) {
+      const telegram = options.telegram;
+      const watchdog = new PreparingRunWatchdog({
+        store: new AutonomousRunStore(options.config.stateDir),
+        notify: telegramTopicNotifier((topic, text) => telegram.sendToTopic(topic, text, { provenance: 'automation' })),
+        boundRuns: () => (windowRunLivenessAuthority?.status().states ?? [])
+          .filter(state => !['stalled', 'failed', 'closed'].includes(state.status))
+          .map(state => ({ topicId: String(state.topicId), runId: state.autonomousRunId, boundAt: state.registeredAt })),
+      });
+      this.preparingRunWatchdog = watchdog;
+      this.preparingRunWatchdogTimer = setInterval(() => {
+        void watchdog.tick().catch((error) => console.warn('[preparing-run-watchdog] tick failed:', error));
+      }, 60_000);
+      this.preparingRunWatchdogTimer.unref?.();
+    }
     this.app.use(createThroughputRoutes({ stateDir: options.config.stateDir }));
     // Maturation board (docs/specs/maturation-board.md): read-only, dev-gated; 503 when off.
-    this.app.use(createMaturationBoardRoutes({ ...routeCtx, darkFlagRegistry: this.darkFlagRegistry }));
+    this.startMaturationLadder(options, routeCtx);
+    this.app.use(createMaturationBoardRoutes({ ...routeCtx, darkFlagRegistry: this.darkFlagRegistry, maturationLadder: () => this.maturationLadder }));
+    this.app.use(createMaturationLadderRoutes({
+      enabled: () => (this.maturationLadderOn ? this.maturationLadderOn() : isMaturationLadderEnabled(options.config)),
+      ladder: () => this.maturationLadder,
+      evidence: () => this.featureEvidenceLog,
+    }));
     // Queue pace (docs/specs/queue-pace.md): measure-only ledger + route (dev-gated, read each
     // tick) and the bounded triage tuner (its own explicit flag, dry-run by default).
     this.startQueuePace(options);
     this.app.use(createQueuePaceRoutes({ ...routeCtx, queuePace: () => this.queuePaceLedger }));
+    // Slack from the app (§4.9): built only when Slack and the conversation registry exist here.
+    const slackBridge = this.mobilePairing && options.slack && routeCtx.conversationRegistry
+      ? buildMobileSlackBridge({
+        adapter: options.slack,
+        registry: routeCtx.conversationRegistry,
+        dispatch: () => options.slackInboundDispatch?.() ?? null,
+        killAllSessions: () => {
+          let any = false;
+          for (const sess of options.sessionManager.listRunningSessions()) { try { options.sessionManager.killSession(sess.id); any = true; } catch { /* @silent-fallback-ok — already gone */ } }
+          return any;
+        },
+        sendEscape: (session) => { options.sessionManager.sendKey(session, 'Escape'); },
+        holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
+      })
+      : null;
     if (this.mobilePairing) {
-      this.app.use(createMobileConversationRouter({
+      this.app.use(createMobileSlackRouter({
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
+        slack: slackBridge ? () => slackBridge : null, sentinel: options.sentinel ?? null,
+        // The same machine id the conversation list puts on its rows.
+        machineId: () => this.appConversations?.deps.machineId() ?? 'local',
+        originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
+      }));
+      this.app.use(createMobileConversationRouter({
+        slackConversations: slackBridge ? () => (slackOwnerUserId(options.config) ? slackListRows(slackBridge) : null) : undefined,
+        config: options.config, pairing: this.mobilePairing, service: this.appConversations,
+        mediaEnabled: isMobileMediaEnabled(options.config),
         machineId: () => this.appConversations?.deps.machineId() ?? 'local',
         sentinel: options.sentinel ?? null,
+        // `?scope=pool` on the list and browse reads (§4.8): the same peer fan-out other pool reads use.
+        pool: routeCtx,
+        originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
         telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => {
           const last = options.telegram!.getTopicHistory(m.topicId, 1)[0];
-          return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? last.text.slice(0, 140) : null };
+          return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
         }) : undefined,
       }));
+      const slackRegistry = options.slack ? routeCtx.conversationRegistry ?? null : null;
+      this.app.use(createMobileMediaRouter({
+        pairing: this.mobilePairing, service: this.appConversations, mediaEnabled: isMobileMediaEnabled(options.config),
+        // A Slack file downloads only through the machine whose registry minted the conversation (§4.9).
+        // Same gate as the Slack history route: nothing is served until the owner's Slack id is set.
+        ...(slackRegistry ? { slackHeld: (key: string) => slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, key) } : {}),
+        // Files sent from the app into a Telegram topic upload under `telegram:<topicId>` (§4.9).
+        ...(options.telegram ? { telegramTopicExists: (topicId: number) => options.telegram!.getAllTopicMappings().some((m) => m.topicId === topicId) } : {}),
+      }));
+      // "Open session" (GET /mobile/conversations/session): the session driving a conversation on
+      // this machine and a dashboard link focused on it. The same "held here" checks as media.
+      const appSvcForSession = this.appConversations;
+      const leaseHolderNow = (): string | null => (options.coordinator?.enabled ? options.coordinator.getSyncStatus().leaseHolder ?? null : null);
+      const selfIdNow = (): string | null => routeCtx.meshSelfId ?? this.meshSelfId ?? appSvcForSession?.deps.machineId() ?? null;
+      this.app.use(createMobileSessionRouter({
+        pairing: this.mobilePairing,
+        conversationKnown: (ref) => {
+          if (ref.kind === 'app') return !!appSvcForSession?.liveConversation(ref.key);
+          if (ref.kind === 'telegram') return !!options.telegram && options.telegram.getAllTopicMappings().some((m) => m.topicId === ref.topicId);
+          return !!slackRegistry && slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, ref.ref);
+        },
+        sessionNameFor: (ref) => {
+          if (ref.kind === 'app') return appSvcForSession?.sessionFor(ref.key) ?? null;
+          if (ref.kind === 'telegram') return options.telegram?.getSessionForTopic(ref.topicId) ?? null;
+          const conv = slackRegistry?.resolveByKey(ref.ref);
+          if (!conv || conv.platform !== 'slack' || !options.slack) return null;
+          const routingKey = conv.threadTs ? `${conv.channelId}:${conv.threadTs}` : conv.channelId;
+          return options.slack.getSessionForChannel(routingKey) ?? options.slack.getSessionForChannel(conv.channelId);
+        },
+        runningSession: (name) => {
+          const s = options.sessionManager.listRunningSessions().find((x) => x.tmuxSession === name);
+          return s ? { startedAt: s.startedAt ?? null, framework: s.framework ?? null } : null;
+        },
+        ownerMachineFor: (ref) => {
+          // A Slack conversation is held by the machine whose registry minted it (checked above).
+          if (ref.kind === 'slack') return null;
+          if (ref.kind === 'app') return appSvcForSession?.isOwner() ? null : leaseHolderNow();
+          return routeCtx.sessionOwnershipRegistry?.ownerOf(String(ref.topicId)) ?? leaseHolderNow();
+        },
+        selfMachineId: selfIdNow,
+        nicknameOf: (id) => routeCtx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+      }));
+      // Telegram media in the app's history (media spec §4.9): each file a Telegram topic receives is
+      // also copied into the blob store as a replicated `platform-media` event. Media on only.
+      const appSvc = this.appConversations;
+      if (appSvc && options.telegram && isMobileMediaEnabled(options.config) && typeof options.telegram.setInboundMediaHook === 'function') {
+        options.telegram.setInboundMediaHook(async (info) => {
+          const r = await recordPlatformMedia(appSvc, {
+            conversationKey: `telegram:${info.topicId}`, platformMessageId: String(info.platformMessageId), filePath: info.filePath,
+            declaredKind: info.declaredKind, filename: info.filename, declaredType: info.declaredType, at: info.at,
+            durationMs: info.durationMs, width: info.width, height: info.height,
+          });
+          if (!r.recorded && r.reason !== 'duplicate') {
+            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (topic ${info.topicId}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. The session still received it.`);
+          }
+        });
+      }
+      // Slack media in the app's history (media spec §4.9, the Slack half): each file the Slack
+      // adapter downloads for an inbound message is also copied in, under the conversation's
+      // canonical key (the registry mint the Slack dispatch performs for its routing key).
+      const slackAdapter = options.slack;
+      if (appSvc && slackAdapter && slackRegistry && isMobileMediaEnabled(options.config) && typeof slackAdapter.setInboundMediaHook === 'function') {
+        slackAdapter.setInboundMediaHook(async (info) => {
+          const routingKey = slackAdapter.resolveRoutingKey(info.channelId, info.threadTs ?? undefined, info.platformMessageId);
+          const conversationKey = slackMediaConversationKey(slackRegistry, routingKey);
+          const r = conversationKey
+            ? await recordPlatformMedia(appSvc, {
+              conversationKey, platformMessageId: slackPlatformMessageId(info.platformMessageId, info.fileIndex), filePath: info.filePath,
+              declaredKind: info.declaredKind, filename: info.filename, declaredType: info.declaredType, at: info.at,
+              durationMs: info.durationMs, width: info.width, height: info.height,
+            })
+            : { recorded: false as const, reason: 'no-conversation', detail: 'the conversation registry has no durable id for it' };
+          if (!r.recorded && r.reason !== 'duplicate') {
+            appSvc.deps.reportDegradation?.('AppMedia.slackInbound', `a Slack file (channel ${info.channelId}, message ${info.platformMessageId}, file ${info.fileIndex}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. The session still received it.`);
+          }
+        });
+      }
+      this.mobilePairing.pushPoolCtx = routeCtx;
       this.app.use(createMobilePairingRouter(this.mobilePairing, this.mobilePairing.deps, routeCtx));
     }
 
@@ -6449,6 +6983,7 @@ export class AgentServer {
         // by the time we detect completion, so captureOutput returns empty).
         let reply = '';
         let sessionId = '';
+        let menteeTimedOut = false;
         const spawnTs = Date.now();
         try {
           const session = await self.sessionManager.spawnSession({
@@ -6473,6 +7008,7 @@ export class AgentServer {
             await new Promise((r) => setTimeout(r, pollIntervalMs));
           }
           if (!finished) {
+            menteeTimedOut = true;
             try { self.sessionManager.killSession(session.id); } catch { /* best-effort */ }
             console.warn(
               `[mentee] session ${session.id} timed out at ${sessionTimeoutMs}ms (corr=${msg.corr}); sending best-effort partial reply`,
@@ -6488,6 +7024,7 @@ export class AgentServer {
             `[mentee] mentor-message handler spawn failed (corr=${msg.corr}, sessionId=${sessionId}):`,
             err instanceof Error ? err.message : String(err),
           );
+          featureEvidence.record('mentee', { kind: 'error', reason: sessionId ? 'mentor message handling failed' : 'session spawn failed', context: { from: msg.from, corr: msg.corr, sessionId, durationMs: Date.now() - spawnTs, errorName: err instanceof Error ? err.name : 'unknown' } });
           return;
         }
 
@@ -6495,6 +7032,7 @@ export class AgentServer {
           console.warn(
             `[mentee] mentee session produced empty reply for corr=${msg.corr}; skipping reply-out`,
           );
+          featureEvidence.record('mentee', { kind: 'error', reason: 'empty reply: nothing sent back', context: { from: msg.from, corr: msg.corr, sessionId, timedOut: menteeTimedOut, durationMs: Date.now() - spawnTs } });
           return;
         }
 
@@ -6502,20 +7040,28 @@ export class AgentServer {
         // mentor is a local peer; Telegram fallback otherwise). The handler
         // stays capture-only — deliverA2aMessage is an orchestrator method,
         // not a capability handed into the handler.
-        await self.deliverA2aMessage({
-          fromAgent: localAgent,
-          toAgent: msg.from,
-          role: 'mentor-reply',
-          corr: msg.corr || msg.id,
-          body: reply,
-          allowedRoles: new Set(['mentor-reply']),
-          telegramTopicId: menteeCfg.replyTopicId,
-          // fromBotId = THIS agent's own bot id, so the mentor's allowlist
-          // (knownAgents[instar-codey].botId === senderBotId) passes.
-          fromBotId: self.ownPrimaryBotId(),
-          toBotId: menteeCfg.knownMentors[msg.from]?.botId,
-          targetMachineId: menteeCfg.knownMentors[msg.from]?.machineId,
-        });
+        const menteeEvidence = { from: msg.from, corr: msg.corr, sessionId, timedOut: menteeTimedOut, durationMs: Date.now() - spawnTs, replyChars: reply.length };
+        let replyDelivered: boolean;
+        try {
+          replyDelivered = await self.deliverA2aMessage({
+            fromAgent: localAgent,
+            toAgent: msg.from,
+            role: 'mentor-reply',
+            corr: msg.corr || msg.id,
+            body: reply,
+            allowedRoles: new Set(['mentor-reply']),
+            telegramTopicId: menteeCfg.replyTopicId,
+            // fromBotId = THIS agent's own bot id, so the mentor's allowlist
+            // (knownAgents[instar-codey].botId === senderBotId) passes.
+            fromBotId: self.ownPrimaryBotId(),
+            toBotId: menteeCfg.knownMentors[msg.from]?.botId,
+            targetMachineId: menteeCfg.knownMentors[msg.from]?.machineId,
+          });
+        } catch (err) {
+          featureEvidence.record('mentee', { kind: 'error', reason: 'reply delivery threw', context: menteeEvidence });
+          throw err;
+        }
+        featureEvidence.record('mentee', { kind: replyDelivered ? 'fired' : 'error', reason: replyDelivered ? 'mentor message handled: reply delivered' : 'reply not delivered', context: menteeEvidence });
       };
       roleHandlers.set('mentor', mentorMessageHandler);
     }
@@ -7804,12 +8350,14 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    this.mobilePairing?.push?.stop();
     this.mobilePairing?.stop();
     this.appConversations?.stop();
     this.desktopMeshBroker?.close();
     this.directDesktopAccess?.killSwitch();
     if (this.directDesktopAccess) this.telegramAdapter?.setDesktopApprovalHandler?.(null);
     this.desktopStreamManager?.closeAll();
+    this.desktopHelperNotice?.stop();
     try { this.routeContext?.subscriptionRelogin?.close?.(); }
     catch (error) { console.warn('[subscription-relogin] clean stop failed:', error); }
     try { this.agentIdentityRuntime?.coherence.stop(); } catch { /* best-effort teardown */ }
@@ -7821,6 +8369,10 @@ export class AgentServer {
     if (this.windowRunLivenessTimer) {
       clearInterval(this.windowRunLivenessTimer);
       this.windowRunLivenessTimer = null;
+    }
+    if (this.preparingRunWatchdogTimer) {
+      clearInterval(this.preparingRunWatchdogTimer);
+      this.preparingRunWatchdogTimer = null;
     }
     if (this.jobTriageBackupTimer) {
       clearInterval(this.jobTriageBackupTimer);
@@ -7969,6 +8521,11 @@ export class AgentServer {
       clearInterval(this.feedbackExecuteDisarmTimer); // clearInterval cannot throw
       this.feedbackExecuteDisarmTimer = null;
     }
+    for (const t of this.ecosystemTimers) clearInterval(t); // clearInterval cannot throw
+    this.ecosystemTimers = [];
+    if (this.ecosystemIdeas && 'stop' in this.ecosystemIdeas) {
+      try { this.ecosystemIdeas.stop(); } catch { /* @silent-fallback-ok: closing a derived search index at shutdown */ }
+    }
     for (const t of this.queuePaceTimers) clearInterval(t); // clearInterval cannot throw
     this.queuePaceTimers = [];
     if (this.followMeConsumerTimer) {
@@ -8061,6 +8618,136 @@ export class AgentServer {
   }
 
   /** Build the queue-pace ledger + tuner over the owners this machine actually runs. */
+  /** docs/specs/ecosystem-idea-pipeline.md: dev-gated server service; reviews run on the lease holder only. */
+  private startEcosystemIdeas(options: ConstructorParameters<typeof AgentServer>[0], routeCtx: import('./routes.js').RouteContext): void {
+    const config = options.config;
+    if (!config.stateDir || !resolveDevAgentGate(config.ecosystemIdeas?.enabled, config)) return;
+    try {
+      const coordinator = options.coordinator;
+      const isHolder = () => { try { return coordinator?.enabled ? coordinator.holdsLease() : true; } catch { return false; } };
+      const built = buildEcosystemIdeas({
+        config,
+        ledger: options.ecosystemLedger,
+        machineId: () => this.meshSelfId ?? config.projectName,
+        isHolder,
+        holderName: () => { try { return coordinator?.enabled ? coordinator.getSyncStatus().leaseHolder ?? null : (this.meshSelfId ?? config.projectName); } catch { return null; } },
+        epoch: () => (coordinator?.enabled ? coordinator.getLeaseEpoch() : 0),
+        raiseAttention: async (notice) => {
+          const enqueue = this.telegramAdapter?.createAttentionItem;
+          if (!enqueue) throw new Error('durable attention enqueue unavailable');
+          await enqueue.call(this.telegramAdapter, notice);
+        },
+        closeAttention: async (conditionKey, resolution) => { this.telegramAdapter?.clearAttentionCondition({ conditionKey }, resolution); },
+        startSession: async (name, brief) => { await options.sessionManager.spawnSession({ name, prompt: brief }); },
+        sessionExists: async (name) => options.sessionManager.listRunningSessions().some((s) => s.name === name || s.tmuxSession === name),
+        overrides: options.ecosystemDeps,
+      });
+      this.ecosystemIdeas = built;
+      routeCtx.ecosystemIdeas = () => this.ecosystemIdeas;
+      if ('service' in built) {
+        const service = built.service;
+        const tick = () => { void service.tick(); };
+        const first = setTimeout(tick, 5 * 60_000);
+        first.unref?.();
+        const hourly = setInterval(tick, 60 * 60_000);
+        hourly.unref?.();
+        this.ecosystemTimers.push(hourly, first as unknown as ReturnType<typeof setInterval>);
+      }
+    } catch (error) { /* @silent-fallback-ok: logged; the routes answer 503 and nothing else depends on this */
+      console.warn(`[ecosystem-ideas] not started: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** The measured path to default-on (docs/specs/feature-maturation-ladder.md). Dev-gated; never moves a feature. */
+  private startMaturationLadder(
+    options: { config: InstarConfig; liveConfig?: { set(path: string, value: unknown): void }; commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker; coordinator?: import('../core/MultiMachineCoordinator.js').MultiMachineCoordinator | null },
+    routeCtx: { guardRegistry?: GuardRegistry | null },
+  ): void {
+    const config = options.config;
+    if (!config.stateDir || !isMaturationLadderEnabled(config)) return;
+    try {
+      const projectDir = config.projectDir;
+      const machine = this.meshSelfId ?? config.projectName;
+      const configPath = path.join(config.stateDir, 'config.json');
+      this.featureEvidenceLog = new FeatureEvidenceLog({ projectDir, machine, instarVersion: config.version ?? '0.0.0' });
+      setFeatureEvidenceLog(this.featureEvidenceLog);
+      const d7 = this.blockerLifecycleService;
+      const shipped = getMigrationDefaults('standalone');
+      const coherenceCritical = new Set(COHERENCE_CRITICAL_FLAGS.map(f => f.configPath));
+      const ladder = new MaturationLadderService({
+        projectDir,
+        machine,
+        readRegistry: readShippedRegistry,
+        readLiveConfig: () => {
+          try {
+            const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+            return { developmentAgent: config.developmentAgent, ...raw };
+          } catch { return null; } // @silent-fallback-ok — an unreadable config reads as nothing running; rungs fall to dark and moves refuse
+        },
+        shippedDefaults: () => shipped,
+        d7: d7 ? {
+          registerMaturationProjection: (ref, read) => d7.registerMaturationProjection(ref, read),
+          readMaturationProjection: ref => d7.readMaturationProjection(ref),
+          maturationContractHash: c => d7.maturationContractHash(c),
+          evaluations: since => d7.maturationEvaluationRows(since),
+        } : null,
+        featureMetrics: this.featureMetricsLedger
+          ? hours => this.featureMetricsLedger!.summary({ sinceHours: hours }).features as unknown as MetricsSummaryRow[]
+          : null,
+        guardEffective: () => {
+          const snapshot = resolveGuardConfigSnapshot(projectDir);
+          const inventory = buildGuardInventory({
+            snapshot,
+            bootSnapshot: readGuardPostureBootSnapshot(config.stateDir),
+            registry: routeCtx.guardRegistry ?? new GuardRegistry(),
+            now: Date.now(),
+            acceptedFallbacks: scopeAcceptedFallbacks(readAcceptedFallbacks(config.stateDir), this.meshSelfId ?? null),
+          });
+          return new Map(inventory.guards.map(g => [g.key, g.effective as string]));
+        },
+        commitments: options.commitmentTracker
+          ? {
+            record: input => options.commitmentTracker!.record(input as unknown as Parameters<import('../monitoring/CommitmentTracker.js').CommitmentTracker['record']>[0]),
+            getActive: () => options.commitmentTracker!.getActive(),
+          }
+          : null,
+        holdsLease: () => options.coordinator ? options.coordinator.holdsLease() : true,
+        reviewTopic: () => {
+          try {
+            const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as { maturation?: { ladder?: { reviewTopic?: unknown } } };
+            const t = raw.maturation?.ladder?.reviewTopic;
+            return typeof t === 'number' && Number.isInteger(t) ? t : null;
+          } catch { return null; } // @silent-fallback-ok — no readable topic means nothing is raised, the safe side
+        },
+        isCoherenceCritical: p => coherenceCritical.has(p),
+        setConfig: (dotPath, value) => {
+          if (!options.liveConfig) throw new Error('live config unavailable');
+          options.liveConfig.set(dotPath, value);
+        },
+        isDevelopmentAgent: () => config.developmentAgent === true,
+      });
+      this.maturationLadder = ladder;
+      // Re-read each time, so switching it off takes effect without a restart.
+      const on = (): boolean => {
+        try {
+          const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as { maturation?: { ladder?: { enabled?: boolean } } };
+          return resolveDevAgentGate(raw.maturation?.ladder?.enabled, config);
+        } catch { return isMaturationLadderEnabled(config); } // @silent-fallback-ok — an unreadable config falls back to how this server booted
+      };
+      this.maturationLadderOn = on;
+      d7?.setMaturationHooks({
+        prepare: async () => { if (on()) await ladder.refresh(); },
+        subjects: initiatives => (on() ? ladder.subjects(initiatives) : initiatives),
+        after: () => { if (on()) ladder.raise(); },
+      });
+      // A pass can be up to six hours away; the numbers should not read empty until then.
+      setTimeout(() => { void ladder.refresh().catch(() => { /* @silent-fallback-ok — the next pass reads again */ }); }, 15_000).unref?.();
+    } catch (err) {
+      console.warn('[maturation-ladder] init failed (non-fatal):', err);
+      this.maturationLadder = null;
+    }
+  }
+
   private startQueuePace(options: { config: InstarConfig; commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker; evolution?: EvolutionManager }): void {
     const config = options.config;
     if (!config.stateDir) return;

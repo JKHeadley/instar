@@ -37,7 +37,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import pc from 'picocolors';
-import { loadConfig, ensureStateDir, detectTmuxPath, getInstarVersion } from '../core/Config.js';
+import { loadConfig, ensureStateDir, detectTmuxPath, getInstarVersion, readClaudeChildAuthEnabled, readConfiguredAnthropicKey } from '../core/Config.js';
+import { claudeAuthShellPrefix, configureClaudeChildAuth, removeClaudeAuthEnvFile, writeClaudeAuthEnvFile } from '../core/claudeChildAuth.js';
 import { registerAgent, unregisterAgent, startHeartbeat } from '../core/AgentRegistry.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import {
@@ -65,7 +66,7 @@ import {
 } from './forwardErrors.js';
 import { decideReplay, type ForwardOutcome } from './replayPolicy.js';
 import { writeStartupMarker } from './startupMarker.js';
-import { acquireLockFile } from './lifelineLock.js';
+import { acquireLockFile, startLockHeartbeat } from './lifelineLock.js';
 import { shouldOwnTelegramPoll } from './telegramPollOwnership.js';
 import { decidePollAction, type PollOverride } from './pollDecision.js';
 import { readPollIntent, effectivePollIntent, writePollActive, pidAlive } from '../core/pollIntent.js';
@@ -136,6 +137,9 @@ interface TelegramUpdate {
     message_thread_id?: number;
     text?: string;
     caption?: string;
+    forum_topic_created?: { name?: string };
+    forum_topic_edited?: { name?: string };
+    reply_to_message?: { message_id?: number; forum_topic_created?: { name?: string } };
     photo?: Array<{ file_id: string; file_size?: number; width: number; height: number }>;
     document?: {
       file_id: string;
@@ -165,6 +169,7 @@ export class TelegramLifeline {
   private pollTimeout: ReturnType<typeof setTimeout> | null = null;
   private offsetPath: string;
   private stopHeartbeat: (() => void) | null = null;
+  private stopLockHeartbeat: (() => void) | null = null;
   private replayInterval: ReturnType<typeof setInterval> | null = null;
   private restartSignalInterval: ReturnType<typeof setInterval> | null = null;
   private sessionRecoveryInterval: ReturnType<typeof setInterval> | null = null;
@@ -188,6 +193,13 @@ export class TelegramLifeline {
 
   constructor(projectDir?: string) {
     this.projectConfig = loadConfig(projectDir);
+    // This process outlives a key change, so it reads the file rather than its frozen copy.
+    let lastClaudeKey = this.projectConfig.sessions?.anthropicApiKey;
+    configureClaudeChildAuth(() => {
+      const read = readConfiguredAnthropicKey(this.projectConfig.stateDir);
+      if (read !== undefined) lastClaudeKey = read ?? undefined;
+      return readClaudeChildAuthEnabled(this.projectConfig.stateDir) ? lastClaudeKey : undefined;
+    }, () => this.projectConfig.sessions?.anthropicBaseUrl);
     ensureStateDir(this.projectConfig.stateDir);
 
     // Find Telegram config
@@ -362,6 +374,7 @@ export class TelegramLifeline {
       console.error(pc.red('[Lifeline] Another lifeline instance is already running. Exiting.'));
       process.exit(0); // Clean exit — launchd will restart after ThrottleInterval, acting as a watchdog
     }
+    this.stopLockHeartbeat = startLockHeartbeat(this.lockPath);
 
     // Register in agent registry (lifeline entry — uses project dir + "-lifeline" suffix).
     // Registry operations are NON-CRITICAL — the lifeline must survive ELOCKED errors
@@ -609,6 +622,7 @@ export class TelegramLifeline {
     // generation's late shutdown must not delete the successor's fresh entry
     // (registry lost-update race; same shape as the server-side fix).
     try { unregisterAgent(this.projectConfig.projectDir + '-lifeline', { onlyIfPid: process.pid }); } catch { /* non-critical */ }
+    if (this.stopLockHeartbeat) { this.stopLockHeartbeat(); this.stopLockHeartbeat = null; }
     try { releaseLockFile(this.lockPath); } catch { /* non-critical */ }
     const keepServer = opts.keepServer === true;
     if (keepServer) {
@@ -1168,6 +1182,14 @@ export class TelegramLifeline {
     // so every forwarded topicId is internal (docs/specs/telegram-issues-group.md).
     normalizeInboundThread(msg, { mainChatId: this.config.chatId, issuesChatId: this.config.issuesChatId });
 
+    // A topic created or renamed in Telegram carries its name only in this service
+    // message, which has no text. Pass the name on, or the server never learns it.
+    const serviceName = msg.forum_topic_created?.name ?? msg.forum_topic_edited?.name;
+    if (serviceName && !msg.text) {
+      await this.forwardTopicName(msg.message_thread_id ?? 1, serviceName, Boolean(msg.forum_topic_edited?.name));
+      return;
+    }
+
     // Handle photo messages
     if (msg.photo && msg.photo.length > 0 && !msg.text) {
       await this.handlePhotoMessage(msg);
@@ -1585,6 +1607,20 @@ export class TelegramLifeline {
     }
   }
 
+  /** Name-only forward: a topic's name from its created/renamed service message. Best effort. */
+  private async forwardTopicName(topicId: number, name: string, renamed: boolean): Promise<void> {
+    if (!this.supervisor.healthy) return; // the next message in the topic carries the name again
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.projectConfig.authToken) headers['Authorization'] = `Bearer ${this.projectConfig.authToken}`;
+    this.addIngressSecretHeader(headers);
+    try {
+      await fetch(`http://127.0.0.1:${this.projectConfig.port}/internal/telegram-forward`, {
+        method: 'POST', headers, signal: AbortSignal.timeout(5000),
+        body: JSON.stringify({ topicId, text: '', topicName: name, topicRenamed: renamed, nameOnly: true, lifelineVersion: this.lifelineVersion }),
+      });
+    } catch { /* @silent-fallback-ok: a later message in the topic carries its name again */ }
+  }
+
   private addIngressSecretHeader(headers: Record<string, string>): void {
     const secret = this.ingressSecret.get();
     if (secret) headers[LIFELINE_SECRET_HEADER] = secret;
@@ -1709,6 +1745,11 @@ export class TelegramLifeline {
         timestamp: new Date(rawMsg.date * 1000).toISOString(),
         senderIsBot,
         ...(typeof replyToMessageId === 'number' ? { replyToMessageId } : {}),
+        // A message in a topic replies to the topic's creation message, which
+        // carries the topic's name: pass it on so the server can name the topic.
+        ...(typeof (rawMsg as TelegramUpdate['message'])?.reply_to_message?.forum_topic_created?.name === 'string'
+          ? { topicName: (rawMsg as TelegramUpdate['message'])!.reply_to_message!.forum_topic_created!.name }
+          : {}),
         ...(isForwarded ? { forwarded: true } : {}),
         ...(senderChatId !== undefined ? { senderChatId } : {}),
         ...(senderBotId !== undefined ? { senderBotId } : {}),
@@ -2659,7 +2700,10 @@ export class TelegramLifeline {
     }
 
     // Use shell to pipe the prompt file to claude via --message flag
-    const shellCmd = `cat "${promptPath}" | ${claudePath} ${permFlag} --message -`;
+    // The configured sign-in key, through a private file (this string is tmux argv). A key-only
+    // agent has no stored login, so the doctor could not start (spec cloud-key-internal-calls).
+    const authFile = writeClaudeAuthEnvFile(stateDir);
+    const shellCmd = `${authFile ? `${claudeAuthShellPrefix(authFile)} ` : ''}cat "${promptPath}" | ${claudePath} ${permFlag} --message -`;
 
     const tmuxArgs = [
       'new-session', '-d',
@@ -2686,7 +2730,7 @@ export class TelegramLifeline {
 
     await new Promise<void>((resolve, reject) => {
       execFile(tmuxPath, tmuxArgs, { encoding: 'utf-8' }, (err) => {
-        if (err) reject(new Error(`Failed to create doctor tmux session: ${err}`));
+        if (err) { removeClaudeAuthEnvFile(authFile); reject(new Error(`Failed to create doctor tmux session: ${err}`)); }
         else resolve();
       });
     });

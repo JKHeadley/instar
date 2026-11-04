@@ -54,6 +54,8 @@ export interface Session {
   tmuxSession: string;
   /** Telegram topic routing ID, retained with the session so display-name reads can verify its title. */
   telegramTopicId?: number;
+  /** The Slack channel this session serves, when it serves one. */
+  slackChannelId?: string;
   /** When the session was created */
   startedAt: string;
   /** When the session ended (if completed) */
@@ -89,6 +91,14 @@ export interface Session {
    *  with). Set at spawn + updated on a quota-aware account swap. Undefined on
    *  legacy records and single-account agents. */
   subscriptionAccountId?: string;
+  /** Memory privacy: the audience this session was started for (`audienceKey`). */
+  memoryAudience?: string;
+  /** Memory privacy: this session's own folder; set only inside the boundary. */
+  memoryScopeDir?: string;
+  /** Memory privacy: the launch settings file, removed at session end. */
+  memorySettingsPath?: string;
+  /** Memory privacy: what the place was computed from, so a recheck uses the same inputs. */
+  memoryPlaceInput?: import('../users/MemoryPrivacy.js').SessionPlaceInput;
   /** Why the session ended. Set by the single-writer terminateSession() path
    *  (e.g. 'idle-zombie', 'reaped-idle', 'manual-kill'). Undefined on records
    *  ended before this field existed. */
@@ -454,6 +464,10 @@ export interface SessionManagerConfig {
    * `credentials` via `getProviderCredential()`.
    */
   anthropicApiKey?: string;
+  /** Off switch for handing the sign-in key to server-side `claude` children (spec cloud-key-internal-calls). */
+  claudeChildAuth?: { enabled?: boolean };
+  /** Off switch for dead-key detection and recovery (spec cloud-key-internal-calls). */
+  claudeKeyHealth?: { enabled?: boolean };
   /**
    * @deprecated v1.0.0 — use `credentials.anthropic.baseUrl` instead.
    * Anthropic base URL for spawned sessions.
@@ -1140,7 +1154,9 @@ export interface IntelligenceOptions {
    * word resolves to opus, the penalized pair). Other providers ignore this
    * field (they are already hardened by their own scratch/stdin/env allowlist).
    */
-  reviewerHardening?: { model: string; jsonSchema?: string };
+  reviewerHardening?: { model: string; jsonSchema?: string; noTools?: boolean };
+  /** Codex: run with its local tools disabled, for a call whose prompt holds outside text. */
+  noLocalTools?: boolean;
   /** Audited decisions require one CLI model attempt per durable call row. */
   strictModelPin?: boolean;
   /** Execute this call only on the named CLI door and exact model, without router fallbacks. */
@@ -3222,11 +3238,16 @@ export interface SessionPoolConfig {
   promotionModel?: 'auto-climb' | 'operator' | 'off';
   /** Highest stage either promotion model may reach. Default dark (fail-closed). */
   promotionCeiling?: 'dark' | 'shadow' | 'live-transfer' | 'rebalance';
+  /**
+   * Telegram topics the rebalance proof may move (session-pool-rebalancing-finish). Empty ⇒
+   * POST /session-pool/rebalance-proof refuses everything. Listed topics are never shed.
+   */
+  rebalanceProofTopics?: number[];
   /** Auto-climb cadence in ms; runtime floor 60000. Default 60000. */
   promotionTickMs?: number;
   /**
    * Graduated rollout stage (spec §Rollout). 'dark' (code shipped, placement
-   * dry-run, always local) → 'shadow' (real placement + ownership, no transfer)
+   * dry-run, always local) → 'shadow' (real placement: a conversation can start on another machine; no moves of running ones)
    * → 'live-transfer' (failover + pin transfers) → 'rebalance' (load-driven).
    * Written ONLY by StageAdvancer via a Config.ts write-guard (Track H);
    * a direct write is rejected. Default 'dark'.
@@ -3592,9 +3613,51 @@ export interface ExternalServicePermissions {
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface InstarConfig {
+  /**
+   * message-origin-all-platforms §5: the agent-wide origin display bits for an agent with no
+   * enabled Telegram entry (with one, the Telegram entry's messageOrigin.display is the setting),
+   * and the operator exception for the Slack recording refusal (§3). Absent ⇒ shown, fail-closed.
+   */
+  messageOrigin?: {
+    display?: { enabled?: boolean; machine?: boolean; harness?: boolean; model?: boolean };
+    recording?: { slackFailClosed?: boolean };
+  };
+  /** Machine self-maintenance (docs/specs/machine-self-maintenance.md). Watch-only: `enabled` is dev-gated, omit it to follow the gate. */
+  machineMaintenance?: {
+    enabled?: boolean;
+    cadenceDays?: number;
+    window?: { start: string; end: string };
+    maxIntervalDays?: number;
+    maxEpisodeDelayMinutes?: number;
+    /** tmux sessions that are not agent work: exact name, or a prefix ending in `*`. Default empty. */
+    nonAgentTmuxSessions?: string[];
+    /** Browser care (Part B). Watch-only in this build: the sweep records what it would close and closes nothing. */
+    browserCare?: {
+      enabled?: boolean;
+      maxPerAgent?: number;
+      maxPerHost?: number;
+      idleMinutes?: number;
+      ttlMinutes?: number;
+      /** Profile ids (folders under playwright-profiles) the sweep never picks. */
+      keepProfiles?: string[];
+    };
+  };
   /** Operator-initiated native desktop access. Explicit opt-in on a
    * development agent only; omitted and false both leave every route dark. */
-  remoteDesktop?: { enabled?: boolean; frontMachineId?: string };
+  remoteDesktop?: {
+    enabled?: boolean;
+    frontMachineId?: string;
+    /** macOS: keep one helper copy per Mac so an update with unchanged helper source keeps its grant. Default true. */
+    retainedHelper?: boolean;
+    /** Native Linux: the X display to share, e.g. ":1". Absent: this user's own lowest-numbered X server. */
+    linuxDisplay?: string;
+    /** Set when Remote Desktop was turned off on this machine itself: a peer cannot turn it back on. */
+    peerClaimRefused?: boolean;
+    /** Guided setup (docs/specs/desktop-guided-setup.md). `enabled` omitted ⇒ live on a development agent, dark on the fleet. */
+    guidedSetup?: { enabled?: boolean };
+    /** Absent is off everywhere. Set only by the PIN route, never PATCH /config. */
+    lockedScreen?: { enabled?: boolean; browserBox?: boolean; chime?: boolean };
+  };
   /** Project name (used in logging, tmux session names, etc.) */
   projectName: string;
   /** Project root directory */
@@ -3916,7 +3979,15 @@ export interface InstarConfig {
      * Native app conversations (docs/specs/mobile-native-conversations.md). `enabled` omitted ⇒
      * the developmentAgent gate decides; read at boot.
      */
-    native?: { enabled?: boolean };
+    native?: {
+      enabled?: boolean;
+      /**
+       * Media in app conversations (docs/specs/mobile-native-chat-media.md). `enabled` omitted ⇒
+       * the developmentAgent gate decides, read at boot; needs `native.enabled`.
+       * `maxStoreBytes` (default 20 GiB, read live) is the agent-wide admission cap.
+       */
+      media?: { enabled?: boolean; maxStoreBytes?: number };
+    };
     /**
      * Several routes per agent (docs/specs/mobile-multi-route.md): accept a phone's signature on
      * any of this machine's proven own names (Cloudflare tunnel + Tailscale HTTPS) and serve
@@ -3924,6 +3995,31 @@ export interface InstarConfig {
      * Read at boot.
      */
     multiRoute?: { enabled?: boolean };
+    /** Mobile push (docs/specs/mobile-push.md). `enabled` omitted ⇒ follows mobilePairing. */
+    push?: { enabled?: boolean; teamId?: string };
+    /**
+     * Console sign-in from an owner phone without the PIN (docs/specs/mobile-console-device-signin.md).
+     * `enabled` omitted ⇒ on wherever mobile pairing is on. Read live.
+     */
+    consoleTicket?: { enabled?: boolean };
+    /**
+     * The operator's Slack user id (`U…`), the sender a message typed in the Instar app speaks as
+     * in a Slack conversation (mobile-native-conversations §4.9). Never inferred: the agent
+     * proposes it from the Slack channel's verified operator and sets it after the operator says
+     * yes. Unset ⇒ the app's Slack routes answer 503 `slack-owner-unset` and Slack rows are withheld.
+     */
+    slackOwnerUserId?: string;
+  };
+  /** The measured path to default-on (docs/specs/feature-maturation-ladder.md). */
+  maturation?: {
+    ladder?: {
+      /** Omitted: the development-agent gate decides. */
+      enabled?: boolean;
+      /** Where a review reads what gets raised. Unset: this agent raises nothing. */
+      reviewTopic?: number;
+      /** Features this agent's operator holds, with the reason. Stops a move; never ends the ladder. */
+      holds?: Record<string, string>;
+    };
   };
   maturationBoard?: {
     enabled?: boolean;
@@ -3936,6 +4032,15 @@ export interface InstarConfig {
    * developmentAgent gate decides (measure-only). The tuner has its OWN explicit flag, never
    * dev-gated, because extra ticks spend real quota.
    */
+  /** docs/specs/ecosystem-idea-pipeline.md. Omitted `enabled` resolves through the dev gate. */
+  ecosystemIdeas?: {
+    enabled?: boolean;
+    sourceRoots?: Array<{ repo: string; ref?: string; docGlobs?: string[] }>;
+    purposeDoc?: { repo: string; file: string } | null;
+    cadenceHours?: number;
+    limits?: Partial<{ tokensPerProject: number; tokensPerRun: number; candidatesPerProject: number; charsPerPacket: number; charsPerFile: number; filesPerRun: number }>;
+    agentStartsSpecs?: boolean;
+  };
   queuePace?: {
     enabled?: boolean;
     tuner?: {
@@ -5178,6 +5283,12 @@ export interface InstarConfig {
   autonomousSessions?: {
     /** Max concurrent autonomous jobs (default 5). New starts beyond this are refused. */
     maxConcurrent?: number;
+    /**
+     * Tell the operator, once, in the run's own topic when a registered run is
+     * still 'preparing' a few minutes after it started (it is not running and
+     * nothing revives it). Default on; `enabled: false` silences it.
+     */
+    preparingWatchdog?: { enabled?: boolean };
     /**
      * Codex autonomous-loop driver (codex/Claude parity). When enabled, the standing
      * codex Stop hook (`autonomous-stop-hook.sh --codex`, installed by installCodexHooks)
@@ -6796,6 +6907,8 @@ export interface MonitoringConfig {
     maxMovesPerHour?: number;
     /** Same-topic cooldown, and how long a machine seen refusing work is not a target (default 1800000). */
     recentShedMs?: number;
+    /** A topic that arrived or moved is left alone this long; follows the topic across machines (default 6 h). */
+    topicCooldownMs?: number;
   };
   /**
    * ProcessFootprintMonitor — observe-only per-machine process-count measurement
@@ -7945,6 +8058,11 @@ export interface MonitoringConfig {
     ownerId?: number;
     /** Relay timeout in seconds (default: 300) */
     relayTimeoutSeconds?: number;
+    /**
+     * Wait this long after detecting a prompt, then relay it only if it is
+     * still on screen (default 45000; 0 relays immediately, as before).
+     */
+    relaySettleMs?: number;
   };
   /**
    * Episodic memory sentinel — periodic mid-session activity digestion.

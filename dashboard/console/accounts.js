@@ -7,7 +7,7 @@
 //   repair / retry / cancel   POST /subscription-relogin/repair-cell       operator session
 
 import { buildAccountsPage, frameworkName } from './accounts-model.js';
-import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell, askPin, forgetOperatorSession } from './ui.js';
+import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell, askPin, forgetOperatorSession, firstPaint, arrivalScroll, markNeed } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName } from './display-identity.js';
 
@@ -22,7 +22,7 @@ async function postJson(path, body, headers = {}) {
 
 export async function renderAccounts(main, ctx) {
   const { get } = ctx;
-  if (!main.querySelector('.acct-list')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Accounts' }), el('h1', { class: 'page-title skeleton', text: 'Loading accounts' })));
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Accounts' }), el('h1', { class: 'page-title skeleton', text: 'Loading accounts' })));
   const [pool, relogin, inUse, machines] = await Promise.all([get('/subscription-pool?scope=pool', 8000), get('/subscription-relogin?scope=pool', 8000), get('/subscription-pool/in-use'), get('/pool')]);
   const names = machines.ok && Array.isArray(machines.data && machines.data.machines) ? Object.fromEntries(machines.data.machines.map((m) => [m.machineId, m.nickname])) : {};
   const episodes = relogin.ok && Array.isArray(relogin.data && relogin.data.episodes) ? relogin.data.episodes : [];
@@ -60,13 +60,14 @@ export async function renderAccounts(main, ctx) {
       return row;
     })))));
 
+  markNeed(needs, 'accounts');
   setKids(main,
     pageHead({ eyebrow: 'Capacity · Accounts', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
     page.partial ? note(page.partial) : null,
     !relogin.ok ? note(`Couldn't read sign-in repairs: ${relogin.reason}.`) : null,
     needs, list, legacyLink());
   const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
-  if (want === 'needs' && needs) needs.scrollIntoView({ block: 'start' });
+  if (want === 'needs') arrivalScroll(needs);
 }
 
 function legacyLink() {

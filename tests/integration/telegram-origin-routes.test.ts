@@ -3,7 +3,7 @@ import { AutoUpdater } from '../../src/core/AutoUpdater.js';
 import { NotificationBatcher } from '../../src/messaging/NotificationBatcher.js';
 import { wireTelegramSendSide } from '../../src/messaging/telegramSendSideComposition.js';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { generateKeyPairSync, randomUUID } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import express from 'express';
 import request from 'supertest';
@@ -59,7 +59,7 @@ async function appHarness(extra: Record<string, unknown> = {}, configExtra: Reco
       return { messageId: json.result.message_id, timestamp: new Date().toISOString() };
     } }, sessionManager: { clearInjectionTracker: () => undefined }, ...extra,
   } as never));
-  return { app, runtime, sessionToken, network, stateDir, botToken };
+  return { app, runtime, sessionToken, network, stateDir, botToken, lifecycle: lifecycle! };
 }
 async function browserHarness(extra: Record<string, unknown> = {}) {
   const h = await appHarness(extra), asp = generateIdentityKeyPair();
@@ -542,9 +542,29 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
       .set('X-Instar-Operator-Session', 'operator-test').expect(200);
     expect(localStatus.body.activation).toMatchObject({ complete: false, inventoryComplete: false });
     expect(JSON.parse(audit.body.records[0].record.envelopeJson)).toMatchObject({ producerKind: 'imported-legacy',
-      deliveryId: 'old-http-uncertain', machine: { status: 'unknown' }, harness: { status: 'unknown' }, model: { status: 'unknown' } });
+      deliveryId: 'old-http-uncertain', machine: { status: 'observed', value: 'Mac Studio' }, harness: { status: 'unknown' }, model: { status: 'unknown' } });
     await h.runtime.recoverHeld();
     expect(h.network).not.toHaveBeenCalled();
+  });
+  it('labels a reply queued during boot with its session once the runtime imports it', async () => {
+    const h = await appHarness();
+    // The server restart re-enrolled the session: the queued digest is of its previous credential.
+    const fresh = await h.lifecycle.issue({ sessionId: 'source-session', harnessId: 'codex-cli',
+      projectDir: process.cwd(), configuredModel: 'gpt-6-astra' });
+    expect(fresh).not.toBe(h.sessionToken);
+    const queue = PendingRelayStore.open('echo', h.runtime.options.storage.stateDir);
+    try {
+      queue.enqueue({ delivery_id: 'boot-queued', topic_id: 42, text: 'Sent while the server was starting', text_hash: 'fixture',
+        http_code: 503, error_body: '{"status":"warming","phase":"booting"}',
+        origin_session_digest: createHash('sha256').update(h.sessionToken).digest('hex') });
+    } finally { queue.close(); }
+    expect(await h.runtime.importLegacyQueue()).toBe(1);
+    const audit = await request(h.app).get('/telegram/origins').set('Authorization', 'Bearer agent-test')
+      .set('X-Instar-Operator-Session', 'operator-test').expect(200);
+    expect(JSON.parse(audit.body.records[0].record.envelopeJson)).toMatchObject({ producerKind: 'imported-legacy',
+      deliveryId: 'boot-queued', sessionId: 'source-session', originMachineName: 'Mac Studio',
+      machine: { status: 'observed', value: 'Mac Studio' }, harness: { status: 'observed', value: 'codex-cli' },
+      model: { status: 'configured', value: 'gpt-6-astra' } });
   });
   it('authors the setup greeting on the server and restricts its destination and producer', async () => {
     const h = await appHarness();

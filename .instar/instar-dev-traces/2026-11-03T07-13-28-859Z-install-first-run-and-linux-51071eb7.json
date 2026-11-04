@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "install-first-run-and-linux",
+  "sessionId": "aa5fb5e1-36c1-42fe-bd65-8305d8971a17",
+  "timestamp": "2026-11-03T07:13:28.859Z",
+  "artifactPath": "upgrades/side-effects/install-first-run-and-linux.md",
+  "artifactSha256": "1c317eda8da1ef5591ee0860abdae87710cf3f3d2abe3e80e01ea9d15f07e774",
+  "specPath": "docs/specs/install-experience.md",
+  "coveredFiles": [
+    ".claude/skills/setup-wizard/SKILL.md",
+    "src/commands/init.ts",
+    "src/commands/install.ts",
+    "src/commands/setup-wizard/codex-driver.ts",
+    "src/commands/setup-wizard/gemini-driver.ts",
+    "src/commands/setup-wizard/state-machine.ts",
+    "src/commands/setup-wizard/telegram-bot-limit.ts",
+    "src/core/SessionManager.ts",
+    "src/core/SessionRefresh.ts",
+    "src/core/ensureInteractiveReady.ts",
+    "tests/unit/claude-first-run-answered.test.ts",
+    "tests/unit/folder-trust-seed-wiring.test.ts",
+    "tests/unit/install-flow.test.ts",
+    "tests/unit/telegram-bot-limit.test.ts",
+    "upgrades/next/install-core.md",
+    "upgrades/side-effects/install-first-run-and-linux.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Touches session launch and writes Claude Code settings on every machine; reviewer concerns fixed, then concurred",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

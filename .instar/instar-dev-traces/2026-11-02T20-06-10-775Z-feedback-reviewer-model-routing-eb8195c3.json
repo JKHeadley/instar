@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "feedback-reviewer-model-routing",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-02T20:06:10.775Z",
+  "artifactPath": "upgrades/side-effects/feedback-reviewer-model-routing.md",
+  "artifactSha256": "618db737860ef35c16c57395289873dc20ef8c0619ab620235eb3409fd271bc7",
+  "specPath": "docs/specs/feedback-triage-and-execution.md",
+  "coveredFiles": [
+    "src/core/crossModelReviewer.ts",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/independentReview.ts",
+    "tests/unit/feedback-factory/execute-review-failed-recovery.test.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "upgrades/next/feedback-reviewer-model-routing.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

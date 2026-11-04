@@ -1,0 +1,136 @@
+/**
+ * The load-bearing guarantee of Increment 1: this build cannot restart a machine or
+ * stop any work. A test of behaviour cannot prove an absence, so this reads the
+ * source. It also walks the yield contract against the real spawn chokepoints.
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { WORK_YIELD_REGISTRY } from '../../src/monitoring/machineMaintenance/WorkYieldRegistry.js';
+
+const dir = path.resolve('src/monitoring/machineMaintenance');
+const files = fs.readdirSync(dir, { recursive: true }).map(String).filter((f) => f.endsWith('.ts'));
+const code = (f: string) => fs.readFileSync(path.join(dir, f), 'utf-8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+describe('machine maintenance cannot act', () => {
+  it('holds no restart command', () => {
+    for (const f of files) expect(code(f), f).not.toMatch(/\b(shutdown|reboot|sudo|systemctl|osascript|launchctl)\b/);
+  });
+
+  it('holds no way to signal or end a process', () => {
+    for (const f of files) expect(code(f), f).not.toMatch(/process\.kill|\.kill\(|killSession|send-keys|sendKeys|sendInput|\bspawn\(|(?<![.\w])exec\(|execSync|spawnSync/);
+  });
+
+  it('imports only from an allowlist, so a new reach into the system fails here', () => {
+    const allowed = new Set(['node:fs', 'node:os', 'node:path', 'node:crypto', '../../core/hostSemaphoreCore.js', '../../core/SafeFsExecutor.js', '../../core/pollIntent.js']);
+    for (const f of files) {
+      const source = code(f);
+      for (const m of source.matchAll(/(?:from|import\()\s*['"]([^'"]+)['"]/g)) {
+        const spec = m[1];
+        // readings.ts runs the command table and resolves the shipped canary bundle beside its own module.
+        if (spec.startsWith('./') || allowed.has(spec) || (f === 'readings.ts' && (spec === 'node:child_process' || spec === 'node:url'))) continue;
+        throw new Error(`${f} imports ${spec}`);
+      }
+      expect(source, f).not.toMatch(/\bfetch\(|\brequire\(/);
+    }
+  });
+
+  it('runs commands only through the one named table, with exact arguments', () => {
+    const users = files.filter((f) => /execFile\b/.test(code(f)));
+    expect(users).toEqual(['readings.ts']);
+    expect(code('readings.ts').match(/execFile\(/g)).toHaveLength(1);
+    const table = /READ_ONLY_CALLS = \{([\s\S]*?)\n\} as const/.exec(code('readings.ts'))![1];
+    expect([...table.matchAll(/command: '([\w./-]+)', args: \[([^\]]*)\]/g)].map((m) => `${m[1]} ${m[2]}`).sort()).toEqual([
+      // F1 on macOS: LaunchServices opens Instar's own shipped no-UI canary, which quits at once.
+      "/usr/bin/open '-g', '-j', WEDGE_CANARY_APP",
+      "/usr/bin/stat '-f', '%Su', '/dev/console'",
+      "/usr/bin/zprint '-L', 'data.kalloc.1024'",
+      "cmd.exe '/c', 'exit', '0'", "ioreg '-c', 'IOHIDSystem', '-d', '4'", "pmset '-g', 'batt'", "ps '-axo', 'args='", "ps '-axo', 'pid=,lstart=,args='",
+      "ps '-axo', 'stat='", "sysctl '-n', 'kern.boottime'", "systemd-run '--user', '--quiet', '--wait', '--collect', '/bin/true'",
+      "tasklist.exe '/NH', '/FO', 'CSV'", "tmux 'list-sessions', '-F', '#{session_name}'", "who '-u'",
+    ]);
+    // Every entry is matched above, so nothing else can hide in the table.
+    expect(table.match(/command:/g)).toHaveLength(14);
+  });
+
+  it('declares no callable yield on any kind', () => {
+    for (const entry of WORK_YIELD_REGISTRY) {
+      const members = Object.keys(entry).filter((k) => typeof (entry as unknown as Record<string, unknown>)[k] === 'function');
+      expect(members, entry.kind).toEqual(['discover']);
+    }
+  });
+
+  it('has dependencies that are all reads, with the session manager not among them', () => {
+    const source = code('DrainRehearsal.ts');
+    const deps = /export interface DrainRehearsalDeps \{([\s\S]*?)\n\}/.exec(source)![1];
+    expect(deps).not.toMatch(/SessionManager|LocalVerifyService|JobScheduler|ResumeQueue\b/);
+    for (const f of files) expect(code(f), f).not.toMatch(/from '.*(SessionManager|LocalVerifyService|JobScheduler|ResumeQueue|workAdmission)\.js'/);
+  });
+
+  it('gives server.ts no path from this feature to an actor', () => {
+    const server = fs.readFileSync(path.resolve('src/commands/server.ts'), 'utf-8');
+    const start = server.indexOf('── Machine self-maintenance, watch-only');
+    const block = server.slice(start, server.indexOf('── Overload admission (trustworthy-machine-load Part C)', start));
+    expect(block.length).toBeGreaterThan(500);
+    expect(block).not.toMatch(/\.(kill\w*|stop\w*|cancel\w*|enqueue|pause|refresh\w*|restart\w*|sendInput|injectMessage|shutdown)\(/);
+    expect(block).not.toMatch(/setAdmissionGate|canRunJob/);
+  });
+
+  it('is consulted by no admission path', () => {
+    const uses = ['src/core/workAdmission.ts', 'src/scheduler/JobScheduler.ts', 'src/core/SessionManager.ts', 'src/localVerify/LocalVerifyService.ts', 'src/core/hostTestRunnerSemaphore.ts']
+      .filter((f) => /machineMaintenance|host-maintenance/.test(fs.readFileSync(path.resolve(f), 'utf-8')));
+    expect(uses).toEqual([]);
+  });
+});
+
+describe('the two reads kept outside the maintenance folder cannot act either', () => {
+  const read = (f: string) => fs.readFileSync(path.resolve(f), 'utf-8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const probes = read('src/core/BrowserCareProbes.ts');
+  const lock = read('src/core/MachineLockStateReader.ts');
+
+  it('hold no restart command and no way to signal or end a process', () => {
+    for (const [f, src] of [['BrowserCareProbes.ts', probes], ['MachineLockStateReader.ts', lock]]) {
+      expect(src, f).not.toMatch(/\b(shutdown|reboot|sudo|systemctl|launchctl|osascript)\b/);
+      expect(src, f).not.toMatch(/process\.kill|\.kill\(|killSession|send-keys|sendKeys|sendInput|\bspawn\(|(?<![.\w])exec\(|execSync|spawnSync|\bfetch\(|\brequire\(/);
+      expect(src, f).not.toMatch(/writeFileSync|appendFileSync|renameSync|unlinkSync|rmSync|SafeFsExecutor/);
+    }
+  });
+
+  it('run only their named read-only commands, with fixed arguments', () => {
+    expect(probes.match(/execFile\(/g)).toHaveLength(1);
+    expect(probes).toMatch(/execFile\('\/bin\/bash', \[script, userDataDir\]/);
+    expect(probes).toMatch(/'chrome-unsaved\.sh'\)/);
+    expect(lock.match(/execFile\(/g)).toHaveLength(2);
+    expect(lock).toMatch(/execFile\(DEFAULT_MAC_DESKTOP_HELPER, \['probe'\]/);
+    expect(lock).toMatch(/execFile\('\/usr\/sbin\/sysadminctl', \['-screenLock', 'status'\]/);
+  });
+
+  it('imports only from an allowlist', () => {
+    const allowed: Record<string, string[]> = {
+      'BrowserCareProbes.ts': ['node:child_process', 'node:fs', 'node:os', 'node:path', '../monitoring/machineMaintenance/BrowserCare.js'],
+      'MachineLockStateReader.ts': ['node:child_process', 'node:fs', './MacDesktopHost.js', './wslPlatform.js', '../monitoring/machineMaintenance/lockState.js'],
+    };
+    for (const [f, src] of [['BrowserCareProbes.ts', probes], ['MachineLockStateReader.ts', lock]] as const) {
+      for (const m of src.matchAll(/(?:from|import\()\s*['"]([^'"]+)['"]/g)) expect(allowed[f], `${f} imports ${m[1]}`).toContain(m[1]);
+    }
+  });
+});
+
+describe('the yield contract covers the spawn chokepoints', () => {
+  const CHOKEPOINTS = ['src/core/SessionManager.ts', 'src/scheduler/JobScheduler.ts', 'src/localVerify/LocalVerifyService.ts', 'src/core/hostTestRunnerSemaphore.ts', 'src/core/AutonomousSessions.ts'];
+
+  it('declares a kind at each chokepoint, pointing at a file that exists', () => {
+    const declared = new Set(WORK_YIELD_REGISTRY.map((e) => e.spawnChokepoint));
+    for (const c of CHOKEPOINTS) expect(declared.has(c), c).toBe(true);
+    for (const c of declared) expect(fs.existsSync(path.resolve(c)), c).toBe(true);
+  });
+
+  it('gives every kind an offset on the drain sequence and a way back', async () => {
+    const { DRAIN_PHASES } = await import('../../src/monitoring/machineMaintenance/planner.js');
+    const offsets = DRAIN_PHASES.map((p) => p.offsetMinutes);
+    for (const e of WORK_YIELD_REGISTRY) {
+      expect(offsets, e.kind).toContain(e.askOffsetMinutes);
+      expect(e.maxYieldSeconds, e.kind).toBeGreaterThan(0);
+    }
+  });
+});

@@ -4,9 +4,9 @@
 import { spawn } from 'node:child_process';
 
 const MAX_REPLY_CHARS = 1_800_000;
-const ALLOWED = new Set(['probe', 'capture', 'cursor', 'input', 'start', 'heartbeat', 'stop', 'release']);
+const ALLOWED = new Set(['probe', 'displays', 'capture', 'cursor', 'input', 'start', 'heartbeat', 'stop', 'release']);
 
-type LocalReply = { status?: unknown; type?: unknown; body?: unknown };
+type LocalReply = { status?: unknown; type?: unknown; body?: unknown; ms?: unknown };
 
 function parseReply(text: string): Response {
   const reply = JSON.parse(text.trim()) as LocalReply;
@@ -17,7 +17,13 @@ function parseReply(text: string): Response {
   }
   const bytes = Buffer.from(reply.body, 'base64');
   if (bytes.length > 1_250_000) throw new Error('large');
-  return new Response(bytes, { status: reply.status as number, headers: { 'Content-Type': reply.type } });
+  const headers: Record<string, string> = { 'Content-Type': reply.type as string };
+  // The relay's own timing of the Windows-side request: helper work plus the
+  // local HTTP hop, without the WSL crossing.
+  if (Number.isInteger(reply.ms) && (reply.ms as number) >= 0 && (reply.ms as number) < 60_000) {
+    headers['X-Instar-Relay-Ms'] = String(reply.ms);
+  }
+  return new Response(bytes, { status: reply.status as number, headers });
 }
 
 type ServeChild = ReturnType<typeof spawn>;

@@ -22,6 +22,7 @@
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { MAX_GUARD_REPLACEMENTS, RESPAWNS_PER_REQUEST, decideGuardReplacement, decideLockedRespawn } from '../core/DesktopLockedController.js';
 import { OverloadShedPlanner, DEFAULT_OVERLOAD_SHED } from '../core/OverloadShedPlanner.js';
 import { PlacementExecutor } from '../core/PlacementExecutor.js';
 import type { MachineCapacity } from '../core/types.js';
@@ -43,8 +44,12 @@ import { MAIN_FAIR_SHARE_MS, decideMergeHandoff, decideStart, decideStarved, dec
 import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/laneReport.js';
 import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
+import { decideKeyRefresh, REFRESH_MAX_ATTEMPTS } from '../core/ClaudeKeyHealth.js';
+import { raiseDue } from '../monitoring/MaturationLadder.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
 import { nextBreakerState, RECONCILE_LIMITS } from '../core/ReplicatedStoreReconciler.js';
+import { findStuckPreparingRuns, PREPARING_NOTICE_MAX_ATTEMPTS } from '../core/AutonomousStartAdmission.js';
+import type { AutonomousRunRecord } from '../core/AutonomousRunStore.js';
 import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, passBackoffDelay, postRetryDue } from '../localVerify/StatusReconciler.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
@@ -281,6 +286,61 @@ const codexArmSessionSweep: SelfActionController = {
           if (f.targetAlwaysRejects()) failures.set(name, (failures.get(name) ?? 0) + 1);
           else failures.delete(name);
         }
+      },
+    };
+  },
+};
+
+/** desktop-relock-guard-replacement: the sweep replaces a dead relock guard for
+ * one duty, then fails that duty loudly. The count lives on the durable marker. */
+const desktopRelockGuardReplacement: SelfActionController = {
+  id: 'desktop-relock-guard-replacement',
+  actionVerb: 'respawn',
+  models: 'src/core/DesktopLockedController.ts (replaceGuard — decideGuardReplacement cap per duty)',
+  modelsPath: 'src/core/DesktopLockedController.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The count is on the durable marker, so a restart cannot reset it, and a marker from another boot closes.' },
+  boundK: MAX_GUARD_REPLACEMENTS,
+  perTargetBoundK: MAX_GUARD_REPLACEMENTS,
+  ticks: 40,
+  tickMs: 10_000,
+  eternalSentinel: undefined,
+  makeUnderPressure(_f, sink) {
+    let replacements = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (decideGuardReplacement(replacements) === 'give-up') return;
+        replacements += 1;
+        sink.emit({ verb: 'respawn', target: 'relock-guard' });
+      },
+    };
+  },
+};
+
+/** desktop-locked-helper-respawn: a lock ends the helper; Node respawns it a
+ * bounded number of times per request, however often the state flaps. */
+const desktopLockedHelperRespawn: SelfActionController = {
+  id: 'desktop-locked-helper-respawn',
+  actionVerb: 'respawn',
+  models: 'src/core/DirectDesktopAccess.ts (spendRespawn — decideLockedRespawn, per change and per request)',
+  modelsPath: 'src/core/DirectDesktopAccess.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart revokes every grant, so no request survives to respawn for.' },
+  boundK: RESPAWNS_PER_REQUEST,
+  perTargetBoundK: RESPAWNS_PER_REQUEST,
+  ticks: 40,
+  tickMs: 1_000,
+  eternalSentinel: undefined,
+  makeUnderPressure(_f, sink) {
+    let thisChange = 0;
+    let total = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        thisChange = 0; // Worst case: the state flaps on every tick.
+        if (!decideLockedRespawn(thisChange, total)) return;
+        thisChange += 1;
+        total += 1;
+        sink.emit({ verb: 'respawn', target: 'desktop-helper' });
       },
     };
   },
@@ -702,6 +762,76 @@ const spendReconSweep: SelfActionController = {
   },
 };
 
+/**
+ * app-media-capacity-notice — the app media store's capacity notice (mobile-native-chat-media
+ * §4.7, AppConversationService.updateMediaNotices after each hourly sweep). Under the pinned
+ * worst case (the store full and every admission refused, forever) the notice is raised ONCE per
+ * episode: the raised-set latch refuses every later raise, and only the condition clearing
+ * re-arms it. Horizon-independent: one notice, however many sweeps run.
+ */
+const appMediaCapacityNotice: SelfActionController = {
+  id: 'app-media-capacity-notice',
+  actionVerb: 'capacity-notify',
+  models: 'src/core/AppConversationService.ts (updateMediaNotices: raisedNotices latch; cleared only when usage drops under 90% of the cap)',
+  modelsPath: 'src/core/AppConversationService.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'After a restart the latch is empty, so a still-full store raises at most one notice; the attention item is deduplicated by its condition key.' },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 48,
+  tickMs: 60 * 60_000,
+  makeUnderPressure(_f, sink) {
+    const raised = new Set<string>();
+    return {
+      tick() {
+        sink.considered += 1;
+        const key = 'app-media:store-full';
+        const stillFull = true; // the pinned pressure: never clears
+        if (stillFull && !raised.has(key)) {
+          raised.add(key);
+          sink.emit({ verb: 'capacity-notify', target: key });
+        }
+      },
+    };
+  },
+};
+
+/**
+ * app-media-replication — the app media copier's self-raised actions (mobile-native-chat-media
+ * §4.12, AppMediaReplicator.evaluateAlarms / evaluateUnrecoverable / verifyFailure). Under the
+ * pinned worst case (a file held on one machine forever while every peer is online, polled every
+ * hour) the copier nudges each peer ONCE per episode (`nudgedAt` is set before the sends and is
+ * reset only when the count clears) and raises the single-copy notice ONCE (the `raised` latch,
+ * keyed by condition and reason; re-armed only when the condition clears). Per-blob pull retries
+ * are bounded by the 30 s → 1 h backoff and the 7-day give-up, and are not notices.
+ */
+const appMediaReplication: SelfActionController = {
+  id: 'app-media-replication',
+  actionVerb: 'nudge-and-notify',
+  models: 'src/core/AppMediaReplicator.ts (evaluateAlarms: nudgedAt once per episode, raised latch per condition+reason)',
+  modelsPath: 'src/core/AppMediaReplicator.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'After a restart the latch and episode clocks are empty: the count must be measured fresh (null until peer inventories arrive), then at most one nudge and one notice per episode; the attention item is deduplicated by its condition key.' },
+  boundK: 2,
+  perTargetBoundK: 1,
+  ticks: 48,
+  tickMs: 60 * 60_000,
+  makeUnderPressure(_f, sink) {
+    let nudged = false;
+    const raised = new Set<string>();
+    let hours = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        hours += 1; // the pinned pressure: one file held alone, every peer online, forever
+        if (hours >= 2 && !nudged) { nudged = true; sink.emit({ verb: 'nudge-and-notify', target: 'peer-B' }); return; }
+        if (nudged && hours >= 3 && !raised.has('app-media:single-copy:A')) {
+          raised.add('app-media:single-copy:A');
+          sink.emit({ verb: 'nudge-and-notify', target: 'app-media:single-copy:A' });
+        }
+      },
+    };
+  },
+};
+
 const evolutionActionExpirySweep: SelfActionController = {
   id: 'evolution-action-expiry-sweep',
   actionVerb: 'reap-expired-actions',
@@ -1029,6 +1159,53 @@ const feedbackTriageTick: SelfActionController = {
 };
 
 /**
+ * ecosystem-idea-review — retrying a failed project review (docs/specs/ecosystem-idea-pipeline.md, Failure handling).
+ *
+ * Convergence argument: under sustained pressure (the project never reviews cleanly) the service
+ * makes at most 3 attempts in a cycle with backoff, waits out the week through the durable
+ * cycleExhaustedUntil, and opens a breaker after 3 failed cycles, after which it stops until the
+ * operator retries or a review succeeds. The counters live in the replicated ledger, so a restart
+ * buys no fresh attempts. Nine attempts in total, then silence.
+ */
+const ecosystemIdeaReview: SelfActionController = {
+  id: 'ecosystem-idea-review',
+  actionVerb: 'retry-project-review',
+  models: 'src/ecosystem/EcosystemIdeaService.ts (3 attempts per cycle with backoff, durable cycleExhaustedUntil, breaker after 3 failed cycles)',
+  modelsPath: 'src/ecosystem/EcosystemIdeaService.ts',
+  boundK: 9,
+  perTargetBoundK: 9,
+  ticks: 24 * 7 * 8,
+  tickMs: 60 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return ecosystemIdeaReview.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const WEEK = 7 * 24 * 60 * 60_000;
+    const BACKOFF = [30 * 60_000, 2 * 60 * 60_000];
+    return { tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const failedCycles = (f.durableState.get('ecosystem-failed-cycles') as number | undefined) ?? 0;
+      if (failedCycles >= 3) return;
+      const notBefore = (f.durableState.get('ecosystem-not-before') as number | undefined) ?? 0;
+      if (now < notBefore) return;
+      const attempt = ((f.durableState.get('ecosystem-attempt') as number | undefined) ?? 0) + 1;
+      sink.emit({ verb: 'retry-project-review', target: 'failing-project' });
+      sink.emitTimesMs.push(now);
+      if (attempt >= 3) {
+        f.durableState.set('ecosystem-attempt', 0);
+        f.durableState.set('ecosystem-failed-cycles', failedCycles + 1);
+        f.durableState.set('ecosystem-not-before', now + WEEK);
+      } else {
+        f.durableState.set('ecosystem-attempt', attempt);
+        f.durableState.set('ecosystem-not-before', now + BACKOFF[attempt - 1]);
+      }
+    } };
+  },
+};
+
+/**
  * queue-pace-extra-run — the queue-pace tuner's extra feedback-triage ticks (docs/specs/queue-pace.md §3).
  *
  * Convergence argument: under sustained pressure (the triage queue keeps falling behind with a
@@ -1040,6 +1217,41 @@ const feedbackTriageTick: SelfActionController = {
  * delegated give-up. Each extra tick still passes the triage service's own single flight, rate
  * limit, quota pause and daily call cap.
  */
+/**
+ * maturation-ladder-raise — the ladder records a commitment for a feature worth a
+ * decision after each six-hour scoring pass. Worst case: one feature stays `harmed`
+ * and the review closes its commitment every time. The durable last-raised row
+ * brakes it to once a day; the commitment key dedupes while one is open.
+ */
+const maturationLadderRaise: SelfActionController = {
+  id: 'maturation-ladder-raise',
+  actionVerb: 'notify-review-by-commitment',
+  models: 'src/monitoring/MaturationLadderService.ts raise() (raiseDue cooldown from the durable audit log, 5 per pass, lease only, no beacon: a record, never a message)',
+  modelsPath: 'src/monitoring/MaturationLadderService.ts',
+  delegatedGiveUp: 'raiseDue: at most once a day per harmed feature and once a week per ready feature, read back from the audit log across restarts, and capped at 5 per pass',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 4 * 60,
+  tickMs: 6 * 60 * 60_000,
+  eternalSentinel: { reason: 'a feature that stays harmed is raised for a decision at most once a day, as a record with no message', rateFloorMs: 24 * 60 * 60_000 },
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return maturationLadderRaise.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const raw = f.durableState.get('maturation-last-raised');
+      const last = raw === undefined ? undefined : Number(raw);
+      if (!raiseDue('harmed', last, now)) return;
+      f.durableState.set('maturation-last-raised', now);
+      sink.emit({ verb: 'notify-review-by-commitment', target: 'maturation:feature' });
+      sink.emitTimesMs.push(now);
+    } };
+  },
+};
+
 const queuePaceExtraRun: SelfActionController = {
   id: 'queue-pace-extra-run',
   actionVerb: 'nudge-triage-extra-tick',
@@ -1387,6 +1599,36 @@ const jobFailureAlertDelivery: SelfActionController = {
         f.durableState.set(ATTEMPTS_KEY, attempts);
         const delay = RETRY_MS[Math.min(attempts - 1, RETRY_MS.length - 1)];
         f.durableState.set(NEXT_KEY, f.clock.nowMs() + delay);
+      },
+    };
+  },
+};
+
+/**
+ * job-capacity-episode — sustained saturation polls every 15 seconds but
+ * launches nothing until admission opens. One persisted episode alert may be
+ * sent after the critical wait threshold; subsequent ticks stay silent.
+ */
+const jobCapacityEpisode: SelfActionController = {
+  id: 'job-capacity-episode',
+  actionVerb: 'job-alert-notify',
+  models: 'src/scheduler/JobScheduler.ts (capacity poll and one persisted episode notice)',
+  modelsPath: 'src/scheduler/JobScheduler.ts',
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 80,
+  tickMs: 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return jobCapacityEpisode.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    return {
+      tick() {
+        sink.considered += 1;
+        if (f.clock.nowMs() < 10 * 60_000 || f.durableState.get('capacity-episode-alerted')) return;
+        sink.emit({ verb: 'job-alert-notify', target: 'capacity-episode' });
+        f.durableState.set('capacity-episode-alerted', true);
       },
     };
   },
@@ -2907,6 +3149,38 @@ const interactiveLoginExpiredSwap: SelfActionController = {
 };
 
 /**
+ * claude-key-session-refresh — spec cloud-key-internal-calls. After a working sign-in key is proven,
+ * a session at the login screen is restarted so it can answer. Under the pinned fixture every refresh
+ * is refused. The REAL brake is `decideKeyRefresh`: at most 3 attempts, then the session leaves the
+ * list and is reported. Nothing re-adds it within the episode, and a session already refreshed onto
+ * this key is never queued again.
+ */
+const claudeKeySessionRefresh: SelfActionController = {
+  id: 'claude-key-session-refresh',
+  actionVerb: 'session-refresh',
+  models: 'src/core/ClaudeKeyHealth.ts (decideKeyRefresh: 3-attempt cap per session per episode)',
+  modelsPath: 'src/core/ClaudeKeyHealth.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Attempt counts are persisted with the pending list, so a restart resets nothing, and the list only fills after a key is proven working.' },
+  boundK: REFRESH_MAX_ATTEMPTS,
+  perTargetBoundK: REFRESH_MAX_ATTEMPTS,
+  ticks: 60,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const TARGET = 'stuck-session';
+    let attempts = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (decideKeyRefresh({ attempts, maxAttempts: REFRESH_MAX_ATTEMPTS }) !== 'attempt') return;
+        attempts += 1;
+        sink.emit({ verb: 'session-refresh', target: TARGET });
+        if (!f.targetAlwaysRejects()) { attempts = 0; } // a real refresh (never under the fixture)
+      },
+    };
+  },
+};
+
+/**
  * device-limit-session-move — codex-device-limit-tripwire §4. A live interactive Codex session on
  * an account benched for a (suspected) device limit is moved to another Codex account. Under the
  * pinned fixture every move is refused, so the bench never clears its sessions. The REAL brake is
@@ -2948,10 +3222,10 @@ const deviceLimitSessionMove: SelfActionController = {
  * closed and enforced on every sample, forever; a healthy peer always has room;
  * and the peer NEVER claims a proposed topic (every move expires). Brakes, all in
  * the planner: one live move at a time (10 min entry TTL), 2 moves per hour, a
- * 30 min per-topic cooldown, MAX_ATTEMPTS_PER_TOPIC (2) per overload episode, and
+ * 6 h per-topic cooldown, MAX_ATTEMPTS_PER_TOPIC (2) per overload episode, and
  * at most MAX_REFUNDS_PER_TOPIC (2) refunds for proposals whose transfer never
  * started (the worst case modelled here). The episode never ends under pressure,
- * so the total settles at 4 × the topics (5 topics → 20 proposals) and the
+ * so the total settles at no more than 4 × the topics (5 topics → 20 proposals) and the
  * per-topic count at 4, independent of the horizon. The reconciler (the actuator)
  * additionally initiates at most ONE transfer per topic per episode. The episode,
  * attempt and refund counts are durable, so a restart continues the same episode.
@@ -2981,6 +3255,11 @@ function makeOverloadShedPlanner(f: PressureFixture, sink: ActionSink): { tick()
     placement: new PlacementExecutor(),
     statePath,
     now: () => f.clock.nowMs(),
+    // Every live-move gate open, or the planner proposes nothing and the bound proves nothing.
+    poolStage: () => 'rebalance',
+    proofFresh: () => true,
+    quietTopics: () => new Set(topics.map((t) => t.sessionKey)),
+    moveActuatorLive: () => true,
   });
   let proposedSeen = 0; // per-process counter (the planner's counters are in memory)
   return {
@@ -3000,7 +3279,7 @@ function makeOverloadShedPlanner(f: PressureFixture, sink: ActionSink): { tick()
 const overloadShed: SelfActionController = {
   id: 'overload-shed',
   actionVerb: 'converge-overload-transfer',
-  models: 'src/core/OverloadShedPlanner.ts (OverloadShedPlanner.tick — one live move, 2/hour breaker, 30 min topic cooldown, 2 attempts + 2 never-started refunds per topic per durable overload episode)',
+  models: 'src/core/OverloadShedPlanner.ts (OverloadShedPlanner.tick — one live move, 2/hour breaker, 6 h topic cooldown, 2 attempts + 2 never-started refunds per topic per durable overload episode)',
   modelsPath: 'src/core/OverloadShedPlanner.ts',
   boundK: 20,
   perTargetBoundK: 4,
@@ -3345,7 +3624,106 @@ function sessionPoolStagePromotionModel(f: PressureFixture, sink: ActionSink): {
   };
 }
 
+/**
+ * Preparing-run watchdog (topic 10000001225): a run stuck in 'preparing' gets
+ * one notice in its topic. Under a delivery path that always rejects, each
+ * failed send bumps the run record's durable attempt counter and the REAL
+ * findStuckPreparingRuns stops selecting the run at PREPARING_NOTICE_MAX_ATTEMPTS,
+ * so the count settles at the cap and stays there across a restart.
+ */
+const preparingRunWatchdog: SelfActionController = {
+  id: 'preparing-run-watchdog',
+  actionVerb: 'notify',
+  models: 'src/core/AutonomousStartAdmission.ts (PreparingRunWatchdog — claim-before-send once per run, durable preparingNoticeAttempts cap)',
+  modelsPath: 'src/core/AutonomousStartAdmission.ts',
+  boundK: PREPARING_NOTICE_MAX_ATTEMPTS, perTargetBoundK: PREPARING_NOTICE_MAX_ATTEMPTS, ticks: 120, tickMs: 60_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => preparingRunWatchdogModel(f, sink) },
+  makeUnderPressure: (f, sink) => preparingRunWatchdogModel(f, sink),
+};
+
+function preparingRunWatchdogModel(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered++;
+    const nowMs = f.clock.nowMs();
+    const run = {
+      topicId: '9210', runId: 'run-stuck', status: 'preparing', registeredAt: new Date(nowMs - 60 * 60_000).toISOString(),
+      preparingNoticeAttempts: (f.durableState.get('preparing-notice-attempts') as number | undefined) ?? 0,
+      preparingNoticeAt: f.durableState.get('preparing-notice-at') as string | undefined,
+    } as AutonomousRunRecord;
+    if (findStuckPreparingRuns([run], { nowMs }).length === 0) return;
+    // Claim: count the attempt and mark it sent before sending; a rejected send releases the mark.
+    f.durableState.set('preparing-notice-attempts', run.preparingNoticeAttempts! + 1);
+    f.durableState.set('preparing-notice-at', new Date(nowMs).toISOString());
+    sink.emit({ verb: 'notify', target: run.runId });
+    if (f.targetAlwaysRejects()) f.durableState.delete('preparing-notice-at');
+  } };
+}
+
+/**
+ * machine-wedge-notice — the wedge dry-run operator notice (machine-self-maintenance
+ * Part E rung 7; WedgeMonitor + MachineWedgeNotice). Off by default (its own flag);
+ * modelled here with the flag ON, the worst case. The pressure: two evidence families
+ * positive at every 2-minute sample, forever. Convergence shape: the judge and the
+ * notice are keyed on a durable wedge CONDITION held in the host store, which closes
+ * only on a real negative observation of one of its families or a new boot. A server
+ * restart starts a fresh in-memory window, so the candidate re-forms 20 minutes later
+ * as a new episode, but it is the same condition: no second notice. Across conditions
+ * (a flapping machine, not this fixture) it is also capped at one ordinary and one
+ * breaker notice per 24 hours.
+ */
+const machineWedgeNotice: SelfActionController = {
+  id: 'machine-wedge-notice',
+  actionVerb: 'wedge-notify',
+  models: 'src/monitoring/machineMaintenance/WedgeMonitor.ts (considerCandidate + sendNotice: durable condition latch, 24 h notice cap) via src/monitoring/MachineWedgeNotice.ts',
+  modelsPath: 'src/monitoring/MachineWedgeNotice.ts',
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 720,
+  tickMs: 2 * 60_000, // 2-minute sampling while evidence is positive — 24 h of a wedge that never clears
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeMachineWedgeNotice(f, sink),
+  },
+  makeUnderPressure(f, sink) {
+    return makeMachineWedgeNotice(f, sink);
+  },
+};
+
+function makeMachineWedgeNotice(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const WINDOW_MS = 20 * 60_000;
+  const MIN_OBS = 3;
+  const DAY_MS = 24 * 60 * 60_000;
+  // In-memory: the evidence window (lost on restart, as in the real monitor).
+  let run: { startAt: number; observations: number } | null = null;
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      // The pressure: both families positive at every sample (targetAlwaysRejects — the wedge never clears).
+      const bothPositive = f.targetAlwaysRejects();
+      if (!bothPositive) {
+        // A real negative closes the durable condition (never reached under this fixture).
+        f.durableState.delete('machine-wedge:condition');
+        run = null;
+        return;
+      }
+      run = run ? { startAt: run.startAt, observations: run.observations + 1 } : { startAt: now, observations: 1 };
+      if (run.observations < MIN_OBS || now - run.startAt < WINDOW_MS) return;
+      const condition = f.durableState.get('machine-wedge:condition') as { judged: boolean } | undefined;
+      if (condition?.judged) return; // the same condition after a restart: no second notice
+      f.durableState.set('machine-wedge:condition', { judged: true });
+      const sent = ((f.durableState.get('machine-wedge:notices') as number[] | undefined) ?? []).filter((t) => now - t < DAY_MS);
+      if (sent.length > 0) return;
+      sink.emit({ verb: 'wedge-notify', target: 'machine:self' });
+      f.durableState.set('machine-wedge:notices', [...sent, now]);
+    },
+  };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  claudeKeySessionRefresh,
+  desktopRelockGuardReplacement,
+  desktopLockedHelperRespawn,
   sessionPoolStagePromotion,
   jobSupervisionProviderRetry,
   jobSupervisionCensusRepair,
@@ -3368,7 +3746,9 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   overloadAdmissionSelfHelp,
   overloadShed,
   feedbackTriageTick,
+  ecosystemIdeaReview,
   queuePaceExtraRun,
+  maturationLadderRaise,
   jobScriptTriageEpisode,
   jobScriptTriageBackup,
   feedbackTriageActionList,
@@ -3386,6 +3766,8 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   subscriptionReloginRedrive,
   standDownMaintenance,
   evolutionActionExpirySweep,
+  appMediaCapacityNotice,
+  appMediaReplication,
   spendReconSweep,
   spendDoorDarkBrakes,
   spendFallbackSpike,
@@ -3399,6 +3781,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   externalHogKillBreaker,
   meteredReserveExpirySweep,
   jobFailureAlertDelivery,
+  jobCapacityEpisode,
   checkInReminderPass,
   undatedActionResurfacer,
   spendStalePriceAlert,
@@ -3418,4 +3801,6 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   interactiveLoginExpiredSwap,
   deviceLimitSessionMove,
   replicatedStoreReconcilerRetry,
+  preparingRunWatchdog,
+  machineWedgeNotice,
 ];

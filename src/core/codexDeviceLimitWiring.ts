@@ -6,6 +6,7 @@
  * monitor, the sign-in repair and the routes need.
  */
 import path from 'node:path';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { IntelligenceProvider } from './types.js';
 import type { SubscriptionAccount, SubscriptionPool } from './SubscriptionPool.js';
 import { isDeviceLimitBenched, isLocallyExecutable } from './SubscriptionPool.js';
@@ -113,6 +114,10 @@ export function buildCodexDeviceLimitWiring(deps: CodexDeviceLimitWiringDeps): C
             fallbackRung: r.decidedBy === 'none' ? 'deterministic' : r.decidedBy,
           });
         } catch { /* @silent-fallback-ok — provenance is observability, never part of the decision */ }
+        if (r.verdict === 'undecided' && r.decidedBy === 'none') {
+          const code = (r as { reason?: string }).reason ?? 'no-decider';
+          featureEvidence.recordAtMostEvery('subscriptionPool.codexDeviceLimit', `judge-failed|${code}`, 60 * 60 * 1000, { kind: 'error', reason: `judgement-failed: ${code}`, context: { source: job.source, deciders: r.deciders, code } });
+        }
         onVerdict(r);
       });
     },
@@ -190,6 +195,13 @@ export function buildCodexDeviceLimitWiring(deps: CodexDeviceLimitWiringDeps): C
     log: (row) => {
       try { appendDeviceLimitLog(logPath, { at: new Date(now()).toISOString(), machineId: deps.machineId, ...row } as never); }
       catch { /* @silent-fallback-ok — the audit log is best-effort and never blocks a decision */ }
+      if (row.action === 'benched' || row.action === 'released' || row.action === 'floor-blocked') {
+        featureEvidence.record('subscriptionPool.codexDeviceLimit', {
+          kind: row.action === 'floor-blocked' ? 'held' : 'fired',
+          reason: row.action === 'released' ? `released: ${String(row.observed ?? 'unknown')}` : String(row.action),
+          context: { accountId: typeof row.accountId === 'string' ? row.accountId : null, action: String(row.action), observed: typeof row.observed === 'string' ? row.observed : null },
+        });
+      }
     },
     now,
     logger,

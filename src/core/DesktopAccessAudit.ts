@@ -5,12 +5,14 @@ import crypto from 'node:crypto';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 export interface DesktopAuditEvent {
-  kind: 'start' | 'stop';
+  kind: 'start' | 'stop' | 'leave-unlocked';
   grantId: string;
   machineId: string;
   operatorUid: string;
   authMethod?: 'pin' | 'telegram';
   inputBucket?: 'none' | '1-9' | '10-99' | '100+';
+  /** leave-unlocked only: true when the tap beat the relock guard. */
+  acknowledged?: boolean;
 }
 
 export class DesktopAccessAudit {
@@ -30,6 +32,7 @@ export class DesktopAccessAudit {
       operatorRef: crypto.createHash('sha256').update(event.operatorUid).digest('hex').slice(0, 16),
       ...(event.authMethod ? { authMethod: event.authMethod } : {}),
       ...(event.inputBucket ? { inputBucket: event.inputBucket } : {}),
+      ...(event.acknowledged !== undefined ? { acknowledged: event.acknowledged } : {}),
     };
     fs.appendFileSync(file, JSON.stringify(entry) + '\n', { mode: 0o600 });
   }

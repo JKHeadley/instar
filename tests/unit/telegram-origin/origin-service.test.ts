@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { OriginStore } from '../../../src/messaging/telegram-origin/OriginStore.js';
 import { OriginSessionRegistry } from '../../../src/messaging/telegram-origin/OriginSessionRegistry.js';
 import { RuntimeOriginObserver } from '../../../src/messaging/telegram-origin/RuntimeOriginObserver.js';
@@ -9,6 +9,7 @@ import { compileOriginWorker, temporaryState } from '../../helpers/telegramOrigi
 import { PendingRelayStore } from '../../../src/messaging/pending-relay-store.js';
 import { OriginCapacityUnavailable } from '../../../src/messaging/telegram-origin/OriginEgressCapacity.js';
 import { fixtureOriginContentDedup } from '../../helpers/originContentDedup.js';
+import { isBootBeaconBody } from '../../../src/messaging/telegram-origin/OriginLegacy.js';
 
 const key = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 let worker: URL;
@@ -216,6 +217,131 @@ describe('origin service durable delivery', () => {
       expect(await h.store.recoverableAdmissions()).toEqual([]);
       expect(queue.selectClaimable(new Date().toISOString())).toEqual([]);
     } finally { queue.close(); }
+  });
+  it('a reply refused by the boot beacon (server still starting) is replayable; any other 503 stays uncertain', async () => {
+    const h = await harness(), queue = PendingRelayStore.open('echo', h.stateDir);
+    try {
+      const beacon = '{"status":"warming","phase":"booting"}';
+      queue.enqueue({ delivery_id: 'boot-refused', topic_id: 42, text_hash: 'h1', text: 'Sent while starting', http_code: 503, error_body: beacon });
+      queue.enqueue({ delivery_id: 'real-503', topic_id: 42, text_hash: 'h2', text: 'Handler failed', http_code: 503, error_body: '{"error":"origin-unavailable"}' });
+      queue.enqueue({ delivery_id: 'beacon-lookalike', topic_id: 42, text_hash: 'h3', text: 'Extra field', http_code: 503,
+        error_body: '{"status":"warming","phase":"booting","sent":true}' });
+      queue.enqueue({ delivery_id: 'beacon-body-wrong-code', topic_id: 42, text_hash: 'h4', text: 'Odd code', http_code: 502, error_body: beacon });
+      const byId = new Map((await h.store.legacyCandidates()).map(row => [row.deliveryId, row]));
+      expect(byId.get('boot-refused')?.replaySafe).toBe(true);
+      expect(byId.get('real-503')?.replaySafe).toBe(false);
+      expect(byId.get('beacon-lookalike')?.replaySafe).toBe(false);
+      expect(byId.get('beacon-body-wrong-code')?.replaySafe).toBe(false);
+      const safe = byId.get('boot-refused')!;
+      const operation = h.service.prepareImportedLegacy(safe, 'bot-1', '-100123');
+      expect(await h.store.importLegacy({ snapshot: safe, admission: operation.admission })).toBe(true);
+      expect((await h.store.getOrigin(operation.record.originId))?.operation?.state).not.toBe('outcome-unknown');
+      h.service.options.reviewLegacyRecovery = async () => true;
+      await h.service.executePreparedBot(operation, h.network);
+      expect(h.network).toHaveBeenCalledOnce();
+    } finally { queue.close(); }
+  });
+  it('replays a row refused while being prepared (config unreadable / issues routing) exactly once', async () => {
+    const h = await harness();
+    const queue = PendingRelayStore.open('echo', h.stateDir);
+    try {
+      const at = new Date(Date.now() - 60_000).toISOString();
+      // The exact bodies the reply route returns for these pre-dispatch refusals.
+      queue.enqueue({ delivery_id: 'refused-unknown', topic_id: 42, text_hash: 'h1', text: 'Backlog note', attempted_at: at, http_code: 503,
+        error_body: JSON.stringify({ error: 'origin-config-unavailable', reason: 'origin-config-reader-timeout', retryable: true,
+          message: 'This machine could not read its current messaging config, so nothing was sent. It will be retried.' }) });
+      queue.enqueue({ delivery_id: 'refused-issues', topic_id: 42, text_hash: 'h2', text: 'Issues note', attempted_at: at, http_code: 500,
+        error_body: JSON.stringify({ error: 'issues-chat-not-configured: topic 10000000001 belongs to the issues group, but this process has no messaging config issuesChatId. Refusing to send it to the main group.' }) });
+      queue.enqueue({ delivery_id: 'refused-display', topic_id: 42, text_hash: 'h5', text: 'Display note', attempted_at: at, http_code: 500,
+        error_body: JSON.stringify({ error: 'origin-display-authority-unavailable' }) });
+      queue.enqueue({ delivery_id: 'display-503', topic_id: 42, text_hash: 'h6', text: 'Wrong code', attempted_at: at, http_code: 503,
+        error_body: JSON.stringify({ error: 'origin-display-authority-unavailable' }) });
+      // Lookalikes stay uncertain: a generic 500, a relayed body, an extra key.
+      queue.enqueue({ delivery_id: 'generic-500', topic_id: 42, text_hash: 'h3', text: 'Maybe sent', attempted_at: at, http_code: 500,
+        error_body: JSON.stringify({ error: 'telegram send failed' }) });
+      queue.enqueue({ delivery_id: 'relayed-503', topic_id: 42, text_hash: 'h4', text: 'Relayed', attempted_at: at, http_code: 503,
+        error_body: JSON.stringify({ error: 'origin-config-unavailable', reason: 'x', retryable: true, message: 'm', relayedFromHolder: true }) });
+      const snapshots = await h.store.legacyCandidates();
+      const safe = Object.fromEntries(snapshots.map(row => [row.deliveryId, row.replaySafe]));
+      expect(safe).toEqual({ 'refused-unknown': true, 'refused-issues': true, 'refused-display': true, 'display-503': false,
+        'generic-500': false, 'relayed-503': false });
+      const row = snapshots.find(item => item.deliveryId === 'refused-unknown')!;
+      const operation = h.service.prepareImportedLegacy(row, 'bot-1', '-100123');
+      expect(await h.store.importLegacy({ snapshot: row, admission: operation.admission })).toBe(true);
+      expect((await h.store.getOrigin(operation.record.originId))?.operation?.state).not.toBe('outcome-unknown');
+      expect(queue.findByDeliveryId('refused-unknown')?.state).not.toBe('delivered-ambiguous');
+      await h.service.executePreparedBot(operation, h.network);
+      expect(h.network).toHaveBeenCalledOnce();
+    } finally { queue.close(); }
+  });
+  it('a reply queued during boot recovers with its real session label, even after the restart re-issued the credential', async () => {
+    const h = await harness(), queue = PendingRelayStore.open('echo', h.stateDir);
+    try {
+      const launch = { sessionId: 'instar-app', harnessId: 'claude-code' as const, projectDir: h.stateDir, configuredModel: 'claude-opus-5-5' };
+      const before = await h.service.options.sessions.issue(launch);
+      // The server restart re-enrolls the surviving session with a NEW credential.
+      await h.service.options.sessions.issue(launch);
+      h.service.options.observer.track(h.service.options.sessions.getBinding('instar-app')!);
+      const digest = createHash('sha256').update(before).digest('hex');
+      const beacon = '{"status":"warming","phase":"booting"}';
+      queue.enqueue({ delivery_id: 'boot-session', topic_id: 42, text_hash: 'h1', text: 'Sent while starting', http_code: 503,
+        error_body: beacon, origin_session_digest: digest });
+      queue.enqueue({ delivery_id: 'boot-no-session', topic_id: 42, text_hash: 'h2', text: 'Old script row', http_code: 503, error_body: beacon });
+      queue.enqueue({ delivery_id: 'boot-foreign', topic_id: 42, text_hash: 'h3', text: 'Unknown credential', http_code: 503,
+        error_body: beacon, origin_session_digest: 'f'.repeat(64) });
+      const byId = new Map((await h.store.legacyCandidates()).map(row => [row.deliveryId, row]));
+      expect(byId.get('boot-session')?.originSessionDigest).toBe(digest);
+
+      const attributed = await h.service.attributeLegacy(byId.get('boot-session')!);
+      const operation = h.service.prepareImportedLegacy(byId.get('boot-session')!, 'bot-1', '-100123', attributed);
+      expect(operation.record).toMatchObject({ producerKind: 'imported-legacy', originMachineId: 'legacy-unattributed', sessionId: 'instar-app',
+        originMachineName: 'Mac Studio', machine: { status: 'observed', value: 'Mac Studio' },
+        harness: { status: 'observed', value: 'claude-code' }, model: { status: 'configured', value: 'claude-opus-5-5' } });
+      expect(operation.admission.children[0].materializations[0].requestJson).toContain('Echo · Mac Studio · Claude Code · claude-opus-5-5 (configured)');
+      expect(await h.store.importLegacy({ snapshot: byId.get('boot-session')!, admission: operation.admission })).toBe(true);
+      await h.service.executePreparedBot(operation, h.network);
+      expect(h.network).toHaveBeenCalledOnce();
+
+      // No digest (older script) and an unmatched digest: the machine is still known.
+      for (const id of ['boot-no-session', 'boot-foreign']) {
+        const snapshot = byId.get(id)!;
+        const machineOnly = h.service.prepareImportedLegacy(snapshot, 'bot-1', '-100123', await h.service.attributeLegacy(snapshot));
+        expect(machineOnly.record).toMatchObject({ sessionId: null, machine: { status: 'observed', value: 'Mac Studio' },
+          harness: { status: 'unknown' }, model: { status: 'unknown' } });
+        expect(machineOnly.admission.children[0].materializations[0].requestJson).toContain('Echo · Mac Studio · unknown · unknown');
+        expect(await h.store.importLegacy({ snapshot, admission: machineOnly.admission })).toBe(true);
+      }
+    } finally { queue.close(); }
+  });
+  it('an ended session no longer attributes, and harness/model are never claimed without a session', async () => {
+    const h = await harness(), queue = PendingRelayStore.open('echo', h.stateDir);
+    try {
+      const token = await h.service.options.sessions.issue({ sessionId: 'gone', harnessId: 'codex-cli', projectDir: h.stateDir });
+      await h.service.options.sessions.revoke('gone');
+      queue.enqueue({ delivery_id: 'ended', topic_id: 42, text_hash: 'h1', text: 'After the session ended', http_code: 401,
+        origin_session_digest: createHash('sha256').update(token).digest('hex') });
+      const snapshot = (await h.store.legacyCandidates())[0];
+      expect((await h.service.attributeLegacy(snapshot)).session).toBeNull();
+      // A forged record claiming a harness without a session is refused by the import fence.
+      const forged = h.service.prepareImportedLegacy(snapshot, 'bot-1', '-100123', { machine: (await h.service.attributeLegacy(snapshot)).machine,
+        session: null });
+      const record = JSON.parse(forged.admission.record.envelopeJson);
+      record.harness = { value: 'codex-cli', status: 'observed', sourceEventRef: null, observedAt: null, reason: null };
+      const envelopeJson = JSON.stringify(record);
+      await expect(h.store.importLegacy({ snapshot, admission: { ...forged.admission, record: { ...forged.admission.record, envelopeJson } } }))
+        .rejects.toThrow(/legacy-origin-required/);
+    } finally { queue.close(); }
+  });
+  it('isBootBeaconBody accepts only the beacon body', () => {
+    expect(isBootBeaconBody('{"status":"warming","phase":"booting"}')).toBe(true);
+    expect(isBootBeaconBody('{"phase":"booting","status":"warming"}')).toBe(true);
+    expect(isBootBeaconBody('{"status":"ok","phase":"booting"}')).toBe(false);
+    // A standby relaying the lease holder's booting answer adds a key: the send may
+    // have reached the holder path, so it stays uncertain.
+    expect(isBootBeaconBody('{"status":"warming","phase":"booting","relayedFromHolder":true}')).toBe(false);
+    expect(isBootBeaconBody(null)).toBe(false);
+    expect(isBootBeaconBody('not json')).toBe(false);
+    expect(isBootBeaconBody('[]')).toBe(false);
   });
   it('imports a claimed legacy row as uncertain and fences the old worker without granting a new attempt', async () => {
     const h = await harness(), queue = PendingRelayStore.open('echo', h.stateDir);

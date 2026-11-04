@@ -124,8 +124,18 @@ export function buildRequests(res, opts = {}) {
  * (names only); falls back to the secret-sync key list when that is switched off. Lengths
  * and values are never read into the model.
  */
+// A saved Secret Drop is stored under `secretDrops.<64-hex token>` (often with
+// "(+N nested)"): a token, not a name. Show them as one counted line instead.
+const DROP_KEY = /^secretDrops\.[0-9a-f]{16,}\b/;
+function groupDrops(names) {
+  const drops = names.filter((n) => DROP_KEY.test(n)).length;
+  if (!drops) return names;
+  const rest = names.filter((n) => !DROP_KEY.test(n));
+  return [...rest, drops === 1 ? 'Saved Secret Drop submission (1)' : `Saved Secret Drop submissions (${drops})`].sort((a, b) => a.localeCompare(b));
+}
+
 export function buildKeys(ctxRes, syncRes) {
-  const clean = (arr) => [...new Set(arr.filter((n) => typeof n === 'string' && n.trim()).map((n) => n.trim()))].sort((a, b) => a.localeCompare(b));
+  const clean = (arr) => groupDrops([...new Set(arr.filter((n) => typeof n === 'string' && n.trim()).map((n) => n.trim()))]).sort((a, b) => a.localeCompare(b));
   if (ctxRes && ctxRes.ok && ctxRes.data && Array.isArray(ctxRes.data.names)) {
     const vaultState = ctxRes.data.vaultState;
     if (vaultState === 'decrypt-failed') return { ok: false, decryptFailed: true, names: [], reason: 'Can’t open the saved keys on this machine.' };

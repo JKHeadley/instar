@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-02T21:28:34.161Z",
+  "slug": "stacked-pr-and-ci-timeouts",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 55,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/safe-merge.mjs",
+      "src/monitoring/GreenPrAutoMerger.ts",
+      "src/monitoring/greenPrLogic.ts"
+    ],
+    "addedLines": 54,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -34,3 +34,43 @@ export function verifiedChannelIdentity(platform: ChannelPlatform, id: string | 
 export function isVerifiedChannelName(platform: ChannelPlatform, id: string | number, candidate: unknown): candidate is string {
   return verifiedChannelIdentity(platform, id, candidate) !== null;
 }
+
+export interface IdNameResolvers {
+  topicName?: (topicId: number) => string | null | undefined;
+  machineName?: (machineId: string) => string | null | undefined;
+}
+
+/**
+ * Replace raw topic and machine ids in operator-facing text with their names.
+ * "topic 127504" / "telegram:127504" → 'topic "Instar dashboard makeover"';
+ * "m_03b3…" → "Mac Studio". An id with no verified name is left as written,
+ * so the text never claims a name it does not have.
+ */
+export function nameIdsInText(text: string, resolve: IdNameResolvers): string {
+  if (!text) return text;
+  let out = text;
+  if (resolve.topicName) {
+    const name = (id: string) => verifiedEntityName(id, safe(() => resolve.topicName!(Number(id))));
+    out = out.replace(/\b(Topic|topic)(\s+#?)(\d{2,})(?!\d)/g, (m, word: string, _sp: string, id: string) => {
+      const n = name(id); return n ? `${word} "${n}"` : m;
+    });
+    out = out.replace(/\b(Conversation|conversation)\s+telegram:(\d{2,})\b/g, (m, word: string, id: string) => {
+      const n = name(id); return n ? `${word} "${n}"` : m;
+    });
+    out = out.replace(/\btelegram:(\d{2,})\b/g, (m, id: string) => {
+      const n = name(id); return n ? `"${n}"` : m;
+    });
+  }
+  if (resolve.machineName) {
+    out = out.replace(/\b(?:[Mm]achine\s+)?(m_[0-9a-f]{12,})\b/g, (m, id: string) => {
+      const n = verifiedEntityName(id, safe(() => resolve.machineName!(id)));
+      // "Machine m_…" becomes just the nickname ("Mac Studio is flapping").
+      return n ?? m;
+    });
+  }
+  return out;
+}
+
+function safe<T>(fn: () => T): T | null {
+  try { return fn(); } catch { return null; }
+}

@@ -18,6 +18,7 @@ import path from 'node:path';
 import type { SessionChannelRegistry } from '../messaging/shared/SessionChannelRegistry.js';
 import type { AppConversationStore } from './AppConversationStore.js';
 import { cleanConversationTitle } from './appConversationText.js';
+import { historyLine } from './appMediaTypes.js';
 
 export interface AppDispatchInput {
   conversationKey: string;
@@ -29,6 +30,13 @@ export interface AppDispatchInput {
   ownerName: string;
   /** The origin verdict; increment 1 always passes 'unknown' (never 'verified'). */
   originVerdict: 'verified' | 'redacted' | 'failed' | 'unknown' | 'none';
+  /**
+   * Lines the session missed (media spec §4.12): files that finished copying after an earlier
+   * delivery with no live session to tell, and files that could not be copied within 7 days.
+   */
+  notes?: string[];
+  /** Memory privacy: the phone's person, `null` for the owner's own phone. */
+  memoryPersonId?: string | null;
 }
 
 export type AppDispatchOutcome = 'delivered' | 'refused';
@@ -40,7 +48,7 @@ export interface AppDispatchSessions {
   waitForClaudeReady?(tmuxSession: string, timeoutMs?: number): Promise<boolean>;
   injectMessage(tmuxSession: string, text: string, opts?: { conversationId?: string }): boolean;
   killSession?(sessionId: string): boolean;
-  spawnInteractiveSession(initialMessage?: string, name?: string, options?: { bootstrapConversationIds?: number[] }): Promise<string>;
+  spawnInteractiveSession(initialMessage?: string, name?: string, options?: { memoryPlaceKey?: string; bootstrapConversationIds?: number[] }): Promise<string>;
 }
 
 export interface AppDispatchAdmission {
@@ -58,6 +66,8 @@ export interface AppInboundDispatchDeps {
   log?: (line: string) => void;
   /** Ready-wait budget for an existing session (ms). */
   readyTimeoutMs?: number;
+  /** Memory privacy: runs before routing. False means this message was refused. */
+  memoryInbound?: (input: AppDispatchInput) => Promise<boolean>;
 }
 
 const HISTORY = 30;
@@ -69,9 +79,26 @@ export function appInjectionTag(alias: number, title: string, ownerName: string,
   return `[app:${alias} "${t}" from ${o}${verdict === 'verified' ? ' (📱 signed)' : ''}]`;
 }
 
+/**
+ * One line into the conversation's LIVE session, never a spawn (the "now available" follow-up of
+ * media spec §4.12). False when no live session serves the conversation; the line then waits for
+ * the next delivery's context.
+ */
+export function createAppFollowUpInjector(deps: { sessions: Pick<AppDispatchSessions, 'listRunningSessions' | 'injectMessage'>; channels: SessionChannelRegistry }): (alias: number, line: string) => boolean {
+  return (alias, line) => {
+    const name = deps.channels.getSessionForChannel(String(alias));
+    if (!name || !deps.sessions.listRunningSessions().some((s) => s.tmuxSession === name)) return false;
+    try { return deps.sessions.injectMessage(name, line, { conversationId: String(alias) }); } catch { return false; } // @silent-fallback-ok — false keeps the line for the next delivery
+  };
+}
+
 export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInboundDispatch {
   const log = deps.log ?? (() => undefined);
   return async (input) => {
+    if (deps.memoryInbound && !(await deps.memoryInbound(input))) {
+      log('[app→session] refused: this conversation needs private memory, which is not available here');
+      return 'refused';
+    }
     const channelKey = String(input.alias);
     const tag = appInjectionTag(input.alias, input.title, input.ownerName, input.originVerdict);
 
@@ -79,15 +106,25 @@ export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInbou
     const history = deps.store.browseMessages(input.conversationKey, null, HISTORY).messages
       .filter((m) => m.messageId !== input.messageId);
     const lines: string[] = [];
+    if (input.notes && input.notes.length > 0) {
+      lines.push('--- Files from earlier messages ---');
+      for (const n of input.notes) lines.push(n);
+      lines.push('---');
+      lines.push('');
+    }
     if (history.length > 0) {
       lines.push('CONTINUATION — You are resuming an EXISTING app conversation. Read the context below before responding. Do NOT ask what was being discussed.');
       lines.push('');
       lines.push(`--- Conversation History (last ${history.length} messages) ---`);
       for (const m of history) {
         const time = new Date(m.at).toISOString().slice(11, 19);
-        lines.push(`[${time}] ${m.role === 'agent' ? 'Agent' : (cleanConversationTitle(input.ownerName) ?? 'Operator')}: ${m.text}`);
+        const who = m.role === 'agent' ? 'Agent' : (cleanConversationTitle(input.ownerName) ?? 'Operator');
+        // Lazy on purpose (media spec §4.5): earlier files are named, never copied or pulled here.
+        for (const a of m.attachments ?? []) lines.push(`[${time}] ${who}: ${historyLine(a)}`);
+        if (m.text || !m.attachments) lines.push(`[${time}] ${who}: ${m.text}`);
       }
       lines.push('--- End Conversation History ---');
+      if (history.some((m) => m.attachments)) lines.push('To open an earlier file, run: .instar/scripts/app-media-path <attachment id>');
       lines.push('');
     }
     lines.push('CRITICAL: You MUST relay your response back to the app after responding.');
@@ -98,7 +135,8 @@ export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInbou
     lines.push('EOF');
     lines.push('');
     lines.push('Strip the [app:] prefix before interpreting the message.');
-    lines.push('Only relay conversational text — not tool output, file contents, or internal reasoning.');
+    lines.push('To send files, add --file <path> before the text (repeat it for several); the text can be an argument or piped in as usual.');
+    lines.push('Only relay conversational text and the files you mean to send — not tool output or internal reasoning.');
     lines.push(`Conversation id: ${input.alias} — the durable identity of THIS app conversation on this machine. Use it as the topicId when opening durable state (e.g. POST /commitments).`);
     const contextData = lines.join('\n');
     const tmpDir = path.join(deps.stateDir, 'state', 'app-dispatch');
@@ -142,7 +180,7 @@ export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInbou
         log(`[app→session] admission error (fail-open): ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-    const name = await deps.sessions.spawnInteractiveSession(bootstrap, undefined, { bootstrapConversationIds: [input.alias] });
+    const name = await deps.sessions.spawnInteractiveSession(bootstrap, undefined, { bootstrapConversationIds: [input.alias], memoryPlaceKey: `app:${input.conversationKey}` });
     if (!name) return 'refused';
     deps.channels.register(channelKey, name, input.title);
     log(`[app→session] spawned ${name} for app conversation ${input.alias}`);

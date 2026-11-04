@@ -5,15 +5,16 @@
 // Layout, top to bottom: one answer sentence · a square per feature (the glance) ·
 // plain groups (Broken, Stuck, …) with one plain line per feature · details on tap.
 
-import { el, cantTell } from './ui.js';
+import { el, cantTell, setKids, firstPaint, arrivalScroll } from './ui.js';
 import { maturationPaceNode } from './pace.js';
 import {
   GROUPS, groupOf, groupCounts, headline, subline, parseState, stateQuery, openGroups,
-  filterRows, orderInGroup, sortRows, SORTS, squares, humanName, humanArea, ownerChip, statusLine, timeline, fmtDate, card, isNobody,
+  filterRows, orderInGroup, sortRows, SORTS, squares, humanName, humanArea, ownerChip, statusLine, timeline, fmtDate, metricText, ladderOf, card, isNobody,
 } from './maturation-board-model.js';
 
 const POOL_TIMEOUT_MS = 12_000;
 let lastBoard = null;
+let ladderApi = null;
 
 /**
  * @param main   container element
@@ -21,16 +22,17 @@ let lastBoard = null;
  * @param nav    { read() → query string, write(query) } — where view state lives in the URL
  */
 export async function renderMaturation(main, api, nav = consoleNav()) {
-  if (!lastBoard) main.replaceChildren(el('p', { class: 'mb-loading', text: 'Reading every machine…' }));
+  ladderApi = api;
+  if (!lastBoard) firstPaint(main, el('p', { class: 'mb-loading', text: 'Reading every machine…' }));
   const r = await api.get('/maturation/board?scope=pool', POOL_TIMEOUT_MS);
   if (!r.ok) {
     if (r.reason === 'switched off on this agent') {
-      main.replaceChildren(el('section', { class: 'mb-hero' },
+      setKids(main, el('section', { class: 'mb-hero' },
         el('div', { class: 'eyebrow', text: 'Feature maturation' }),
         el('h1', { class: 'mb-answer', text: 'The maturation board is not switched on for this agent.' })));
       return;
     }
-    if (!lastBoard) { main.replaceChildren(cantTell(r.reason)); return; }
+    if (!lastBoard) { setKids(main, cantTell(r.reason)); return; }
   } else {
     lastBoard = r.data;
   }
@@ -111,13 +113,12 @@ function draw(main, board, nav, pace = null) {
     return el('section', { class: 'mb-group' }, head, body);
   }).filter(Boolean);
 
-  main.replaceChildren(hero, glance, tools,
+  setKids(main, hero, glance, tools,
     sections.length ? el('div', { class: 'mb-groups' }, sections) : el('p', { class: 'mb-sub', text: 'Nothing matches.' }),
     sourcesNote(board));
 
   if (st.f) {
-    const target = main.querySelector('.mb-row[aria-expanded="true"]');
-    if (target && typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center' });
+    arrivalScroll(main.querySelector('.mb-row[aria-expanded="true"]'), { key: `row:${st.f}`, block: 'center' });
   }
 }
 
@@ -140,11 +141,14 @@ function detail(f) {
   const steps = timeline(f, Date.now());
   const fus = (f.followUp && f.followUp.items) || [];
   const rows = card(f);
+  const numbers = ladderOf(f) ? el('ul', { class: 'mb-numbers', 'aria-label': 'The numbers it must hit' }) : null;
+  if (numbers && ladderApi) fillNumbers(numbers, f);
   return el('div', { class: 'mb-detail' },
     rows.length ? el('dl', { class: 'mb-card' }, rows.flatMap((x) => [
       el('dt', { text: x.label }),
       el('dd', { text: x.text, 'data-tone': x.tone || null }),
     ])) : el('p', { class: 'mb-detail-line', text: 'The review hasn’t described this one in plain words yet.' }),
+    numbers,
     steps.length ? el('ol', { class: 'mb-steps', 'aria-label': 'What happened, by date' },
       steps.map((p) => el('li', { class: `${p.overdue ? 'overdue' : ''}${p.future ? ' future' : ''}` },
         el('span', { class: 'mb-when', text: p.when }), el('span', { text: p.label })))) : null,
@@ -161,6 +165,17 @@ function detail(f) {
         ...kv('Live records', (f.owners || []).map((o) => `${o.machine} · ${o.source}: ${Object.entries(o.facts).filter(([, v]) => v !== null && v !== '').map(([k, v]) => `${k} ${v}`).join(', ')}`).join('\n')),
         ...kv('Sources disagree', (f.conflicts || []).map((c) => `${c.machine}: ${c.a} vs ${c.b}`).join('\n')),
       )));
+}
+
+/** Thresholds, read on tap so the board stays light. A failed read just leaves the list empty. */
+async function fillNumbers(list, f) {
+  const r = await ladderApi.get(`/maturation/ladder?id=${encodeURIComponent(f.id)}`, 8_000);
+  const row = r.ok && r.data && r.data.features && r.data.features[0];
+  if (!row) return;
+  setKids(list, ...row.metrics.map((m) => el('li', {
+    text: metricText(m),
+    'data-tone': m.pass === false ? 'bad' : m.pass === true ? 'ok' : null,
+  })));
 }
 
 function kv(k, v) { return v ? [el('dt', { text: k }), el('dd', { text: v })] : []; }

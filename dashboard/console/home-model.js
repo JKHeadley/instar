@@ -115,6 +115,23 @@ export function needsOperator(item) {
   return /decision|approval|review|sign-?in|relogin/i.test(cat);
 }
 
+/**
+ * Where the operator acts on an item. Every row in "needs you" gets one: its
+ * own conversation; the Desktop page for that machine; the Accounts page for a
+ * sign-in; otherwise the Attention topic, where the item was posted and can be
+ * answered.
+ */
+export function needAction(item) {
+  if (item && item.topicId != null && Number.isFinite(Number(item.topicId))) return { kind: 'topic', topicId: Number(item.topicId) };
+  const cat = String((item && item.category) || '');
+  if (/^desktop$/i.test(cat)) {
+    const q = item.machineId ? `?machineId=${encodeURIComponent(item.machineId)}` : '';
+    return { kind: 'href', href: `/dashboard/desktop.html${q}` };
+  }
+  if (/sign-?in|relogin/i.test(cat)) return { kind: 'href', href: '#/capacity/accounts' };
+  return { kind: 'attention' };
+}
+
 export const STALE_DAYS = 14;
 const DAY = 86400000;
 
@@ -149,12 +166,15 @@ export function buildNeeds(res, now = Date.now(), names = {}) {
     return {
       key: groupKey(top), stale, last: g.last, prio: PRIORITY[top.priority] ?? 9,
       main: top.title || top.summary || 'Untitled item',
-      sub: [g.items.length > 1 ? `${g.items.length} copies` : null, [...g.machines].join(', ') || null, String(top.priority || '').toLowerCase()].filter(Boolean).join(' · '),
+      // The machine only when the title does not already start with it; the
+      // priority word is the queue's bookkeeping, not something to act on.
+      sub: [g.items.length > 1 ? `${g.items.length} copies` : null,
+        [...g.machines].filter((m) => !String(top.title || top.summary || '').startsWith(`${m}:`)).join(', ') || null].filter(Boolean).join(' · '),
       end: (ago(g.last, now) || '').replace(' ago', '') ? `${ago(g.last, now)}` : '',
       tone: stale ? 'unknown' : (top.priority === 'URGENT' ? 'bad' : 'attn'),
       detail: top.description || top.body || '',
       expandable: true,
-      action: Number.isFinite(Number(top.topicId)) ? { kind: 'topic', topicId: Number(top.topicId) } : null,
+      action: needAction(top),
     };
   }).sort((a, b) => Number(a.stale) - Number(b.stale) || a.prio - b.prio || b.last - a.last);
   const current = all.filter((g) => !g.stale);
@@ -247,6 +267,14 @@ export function isMissed(c, now = Date.now()) {
   return Number.isFinite(hard) && hard < now && isActiveCommitment(c, now);
 }
 
+/** How close to its due date a promise waiting on the operator must be to reach Home. */
+export const PROMISE_DUE_SOON_MS = 24 * 60 * 60 * 1000;
+/** Due within a day, or already past due. No recorded due date is never "soon". */
+export function promiseDueSoon(c, now = Date.now()) {
+  const due = Date.parse(c && c.hardDeadlineAt);
+  return Number.isFinite(due) && due - now <= PROMISE_DUE_SOON_MS;
+}
+
 /** A failed verification without a passed deadline needs review, not an invented due date. */
 export function needsPromiseReview(c, now = Date.now()) {
   return !!c && c.status === 'violated' && !isMissed(c, now);
@@ -261,7 +289,10 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
   const open = list.filter((c) => isActiveCommitment(c, now));
   const fresh = (c) => now - lastTouched(c) <= STALE_DAYS * DAY;
   const yoursAll = open.filter(waitsOnOperator).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-  const yours = yoursAll;
+  // Home puts a promise in front of the operator only when it is close to its
+  // recorded due date or past it (Justin, 2026-11-02). One with no due date, or
+  // a date further out, stays on the Promises page under "Waiting on you".
+  const yours = yoursAll.filter((c) => promiseDueSoon(c, now));
   // Echo-owned missed dates and failed checks are Echo's follow-up queue. A
   // deadline alone never makes the operator responsible for chasing the work.
   const violated = [];
@@ -298,7 +329,7 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
     : "Only this machine's promises are visible.";
   const line = [
     yours.length ? `${plural(yours.length, 'promise')} waiting on you.` : null,
-    !yours.length ? (rest > 0 ? 'I’m handling the open work.' : 'Nothing open.') : null,
+    !yours.length ? (rest > 0 || yoursAll.length > 0 ? 'I’m handling the open work.' : 'Nothing open.') : null,
   ].filter(Boolean).join(' ');
   // Only a blind read makes the operator's list partial: no other machine's
   // promises arrived at all while other machines exist. One machine that is
@@ -435,29 +466,45 @@ export function pullRequestRefs(row) {
   return [...out];
 }
 
-export function combineNeeds(needs, promised) {
-  if (!needs || !Number.isFinite(needs.count)) return needs; // loading or can't tell: say so as-is
-  if (!promised || promised.state === 'loading') return needs;
-  const pCount = Number.isFinite(promised.count) ? promised.count : 0;
+/**
+ * The one count. Surfaced rows (needs-model.js) merge in even while the queue or the promises
+ * are unread, so a slow read cannot hide a known need. A row naming the same thing as a queue
+ * item (its refs appear in that item) is dropped by identity: the queue item carries the action.
+ */
+export function combineNeeds(needs, promised, surfaced) {
+  // Nothing surfaced was asked for: the queue alone, exactly as before.
+  if (!surfaced && (!needs || !Number.isFinite(needs.count) || !promised || promised.state === 'loading')) return needs;
+  const known = surfaced && Array.isArray(surfaced.rows) ? surfaced : { rows: [], pending: [], failed: [] };
+  const pending = Array.isArray(known.pending) && known.pending.length > 0;
+  const failed = Array.isArray(known.failed) && known.failed.length > 0;
+  if (!needs || !Number.isFinite(needs.count)) {
+    if (!known.rows.length) return needs ? { ...needs, surfacedPending: pending } : needs; // loading or can't tell: say so as-is
+    needs = { ...(needs || {}), count: 0, all: [], rows: [], line: '', unreadQueue: true };
+  }
   const queue = needs.all || needs.rows || [];
+  const words = (r) => `${r.main || ''} ${r.sub || ''}`.toLowerCase();
+  const hasToken = (text, ref) => { const at = text.indexOf(ref); return at >= 0 && !/[\w.@-]/.test(text[at + ref.length] || ' ') && !/[\w.@-]/.test(text[at - 1] || ' '); };
+  const rows = known.rows.filter((r) => !(r.refs || []).some((ref) => queue.some((q) => hasToken(words(q), String(ref).toLowerCase()))));
   // A promise that waits on the same pull request as a queue item is the same
   // ask twice (the approval itself, and my promise to merge after it): show the
   // queue item, which carries the action, and drop the promise row.
   const queueRefs = new Set(queue.flatMap(pullRequestRefs));
-  const waitingAll = (promised.all || []).filter((r) => r.tone === 'attn').slice(0, pCount);
+  const promisesRead = promised && promised.state !== 'loading';
+  const pCount = promisesRead && Number.isFinite(promised.count) ? promised.count : 0;
+  const waitingAll = promisesRead ? (promised.all || []).filter((r) => r.tone === 'attn').slice(0, pCount) : [];
   const waiting = waitingAll.filter((r) => !pullRequestRefs(r).some((ref) => queueRefs.has(ref)))
     .map((r) => ({ ...r, sub: ['a promise', r.sub].filter(Boolean).join(' · ') }));
-  const promisesKnown = Number.isFinite(promised.count);
-  const count = needs.count + waiting.length;
-  // Urgent queue items lead (the headline names the first row), then promises, then the rest.
-  const all = [...queue.filter((r) => r.tone === 'bad'), ...waiting, ...queue.filter((r) => r.tone !== 'bad')];
+  const promisesKnown = !promisesRead || Number.isFinite(promised.count);
+  const count = needs.count + rows.length + waiting.length;
+  // Urgent queue items lead (the headline names the first row), then what is surfaced, then promises, then the rest.
+  const all = [...queue.filter((r) => r.tone === 'bad'), ...rows, ...waiting, ...queue.filter((r) => r.tone !== 'bad')];
   const notes = !promisesKnown ? "Couldn't check for promises waiting on you."
-    : promised.state === 'stale' ? 'Promise information is from the last successful check.' : '';
+    : promisesRead && promised.state === 'stale' ? 'Promise information is from the last successful check.' : '';
   const queueLine = needs.line === 'The queue is clear.' || needs.line === 'Waiting on you.' ? null : needs.line;
   const line = count ? '' : [notes, queueLine].filter(Boolean).join(' ') || 'Nothing is waiting on you.';
-  const partial = needs.state === 'partial' || !promisesKnown || promised.state === 'stale' || !!promised.coverage;
+  const partial = needs.state === 'partial' || !promisesKnown || needs.unreadQueue || failed || (promisesRead && (promised.state === 'stale' || !!promised.coverage));
   return {
-    ...needs, combined: true, count, all, rows: all.slice(0, MAX_ROWS), line,
+    ...needs, combined: true, count, all, rows: all.slice(0, MAX_ROWS), line, surfacedPending: pending, surfacedCount: rows.length,
     note: count ? null : needs.note,
     statusNote: count ? [needs.statusNote, notes, queueLine].filter(Boolean).join(' ') : needs.statusNote,
     coverage: partial ? 'partial view' : needs.coverage,
@@ -489,7 +536,7 @@ export function headline(allCards) {
   const otherAttn = attention.length;
   const loading = list.filter((c) => c.state === 'loading').length;
   // Never announce a count, or "all quiet", before both counting cards answered.
-  if (loading === list.length || (cards.needs && cards.needs.state === 'loading') || (cards.promised && cards.promised.state === 'loading')) return { text: 'Checking in…', tone: 'muted' };
+  if (loading === list.length || (cards.needs && cards.needs.state === 'loading' && !Number.isFinite(cards.needs.count)) || (cards.promised && cards.promised.state === 'loading' && !(cards.needs && cards.needs.surfacedCount > 0)) || (cards.needs && cards.needs.surfacedPending && !(cards.needs.count > 0))) return { text: 'Checking in…', tone: 'muted' };
   // A known action survives incomplete coverage. Coverage belongs under agent
   // status, not in the sentence describing the action.
   const count = cards.needs && cards.needs.combined ? known(cards.needs) : known(cards.needs) + known(cards.promised);
@@ -506,7 +553,7 @@ export function headline(allCards) {
     const context = withContext ? `${withContext[2].replace(/,\s*/g, ' · ')}.` : null;
     return { text: title || 'Open what needs your attention', tone: 'attn',
       sub: [context, first?.action ? 'Tap to review and respond.' : null,
-        count > 1 ? `${count - 1 === 1 ? 'One more thing needs' : `${count - 1} more things need`} you, listed below.` : null].filter(Boolean).join(' '),
+        count > 1 ? `${count - 1 === 1 ? 'One more thing needs' : `${count - 1} more things need`} you.` : null].filter(Boolean).join(' '),
       action: first?.action || null };
   }
   // Only what the operator can act on takes the headline. My own areas
@@ -555,4 +602,24 @@ export function headline(allCards) {
   }
   if (bad || otherAttn || blind) return { text: 'Nothing needs you.', tone: 'ok', sub: 'I’m handling the rest. It’s under “See agent status”.' };
   return { text: 'All quiet.', tone: 'ok', sub: 'Nothing needs you right now.' };
+}
+
+// ── Partial pooled reads ──────────────────────────────────────────────────
+/** How long a machine's last complete rows may stand in while it is retried. */
+export const PARTIAL_GRACE_MS = 2 * 60 * 1000;
+
+/**
+ * Merge a partial pooled answer (some machines did not answer) with the last
+ * complete one: fresh rows from the machines that answered, plus the missing
+ * machines' rows from the last complete answer, if it is recent. Returns null
+ * when that is not possible, so the partial answer is shown as it is.
+ */
+export function fillPartial(fresh, previous, listKey, now, at) {
+  const failed = fresh?.data?.pool?.failed;
+  if (!previous || !Array.isArray(failed) || !failed.length || now - at > PARTIAL_GRACE_MS) return null;
+  const missing = new Set(failed.map((f) => f && f.machineId).filter(Boolean));
+  if (missing.size !== failed.length) return null; // a failure we cannot attribute to a machine stays visible
+  const rows = (previous.data?.[listKey] || []).filter((r) => r && missing.has(r.machineId));
+  return { ...fresh, retrying: true, filledFrom: at,
+    data: { ...fresh.data, [listKey]: [...(fresh.data?.[listKey] || []), ...rows], pool: { ...fresh.data.pool, failed: [] } } };
 }

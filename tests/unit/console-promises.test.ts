@@ -69,8 +69,10 @@ describe('promises page model', () => {
   });
 
   it('agrees with Home on what is waiting on the operator', () => {
-    const rows = [c({ blockedOn: 'user-input' }), c({ owner: 'user', blockedOn: 'user-authorization', actionClass: 'deploy' }), c({ blockedOn: 'user-input', createdAt: minsAgo(60 * 24 * 20) })];
-    expect(buildPromisesPage(mesh(rows), NOW, { expectedPeers: 0 }).counts.waiting).toBe(buildPromised(mesh(rows), NOW, 0).count);
+    // The Promises page lists everything waiting on the operator; Home shows only those near or past due.
+    const rows = [c({ blockedOn: 'user-input', hardDeadlineAt: minsAgo(10) }), c({ owner: 'user', blockedOn: 'user-authorization', actionClass: 'deploy' }), c({ blockedOn: 'user-input', createdAt: minsAgo(60 * 24 * 20) })];
+    expect(buildPromisesPage(mesh(rows), NOW, { expectedPeers: 0 }).counts.waiting).toBe(3);
+    expect(buildPromised(mesh(rows), NOW, 0).count).toBe(1);
   });
 
   it('says when other machines are not covered', () => {
@@ -238,7 +240,9 @@ describe('promises page in a DOM', () => {
     const confirmGo = [...doc.querySelectorAll('.confirm-row button')].find((b) => b.textContent === 'I handled this') as HTMLButtonElement;
     confirmGo.click();
     for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 10));
-    expect(posted).toEqual(['/commitments/CMT-1/deliver']);
+    // The holding machine is always named: the same id can exist on several machines and a
+    // bare id is refused as ambiguous (the 2026-11-01 Approve bug).
+    expect(posted).toEqual(['/commitments/CMT-1/deliver?origin=m1']);
     expect(doc.querySelector('.action-status')!.textContent).toBe('Marked as done.');
     await new Promise((r) => setTimeout(r, 750));
     expect(dom.window.location.hash).toBe('#/work/promises');
@@ -276,3 +280,10 @@ describe('a machine that sent no promises is named, without claiming it failed',
     expect(JSON.stringify(page)).not.toContain('not represented');
   });
 });
+
+describe('a promise waiting on the operator offers no Approve / Decline (Justin 2026-11-02)', () => {
+  it('points to the conversation instead', () => {
+    expect(nextStepOf({ status: 'pending', blockedOn: 'user-authorization', owner: 'user' }, Date.now())).toBe('This is waiting on you. Reply in the conversation when you can.');
+  });
+});
+

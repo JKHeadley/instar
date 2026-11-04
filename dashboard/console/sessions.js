@@ -11,9 +11,9 @@ import {
   buildSessions, sessionsHeadline, sessionsFacts, partialWords, titleLine, closeRequest, closeConfirmWords,
   closeResultWords, doorChoices, modelChoices, doorModelWords, regimeWords, machineChoices, PLATFORMS,
   platformAllowsDoor, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded,
-  canSwitchDoor, attachmentMessage, KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, modelWords, HISTORY_FIRST,
+  canSwitchDoor, attachmentMessage, historyUrl, historyErrorWords, historyText, topicOf, topicHistoryUrl, topicHistoryEntry, TOPIC_HISTORY_PAGE, KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, modelWords, HISTORY_FIRST,
 } from './sessions-model.js';
-import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, sheet, closeSheet, story, details, note, noteLinked, cantTell, MACHINES_PAGE } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { topicNameMap } from './topic-names.js';
 
@@ -122,13 +122,14 @@ function paintList(box, m, openKey) {
     parts.push(cantTell(m.reason));
   } else {
     const pw = partialWords(m);
-    if (pw) parts.push(el('p', { class: 'card-note', text: pw }));
+    // A machine that did not answer links to the Machines page, where its state and reachability are shown.
+    if (pw) parts.push(noteLinked(pw));
     if (!m.rows.length) parts.push(el('p', { class: 'empty-line', text: m.multi ? 'Nothing is running on any machine.' : 'Nothing is running on this machine.' }));
     if (m.needsLook.length) parts.push(group('Needs a look', 'look', m.needsLook, openKey));
     if (m.working.length) parts.push(group('Working', 'working', m.working, openKey));
     if (m.unanswered.length || m.idleMachines.length) {
       parts.push(el('section', { class: 'list-section', id: 'sec-idle' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Other machines' })),
-        m.unanswered.map((u) => el('p', { class: 'machine-line dashed', text: `${u.name}: ${u.words}` })),
+        m.unanswered.map((u) => el('a', { class: 'machine-line dashed machine-line-link', href: MACHINES_PAGE, text: `${u.name}: ${u.words} ›` })),
         m.idleMachines.map((i) => el('p', { class: `machine-line${i.ok ? '' : ' dashed'}`, text: `${i.name}: ${i.words}` }))));
     }
   }
@@ -239,7 +240,7 @@ function openView(box, row) {
   const termBox = el('div', { class: 'sess-term', 'aria-label': 'Live terminal' });
   const resume = el('button', { class: 'btn-primary btn-inline sess-resume', type: 'button', text: '▼ Back to live', hidden: true });
   const more = el('button', { class: 'btn-quiet sess-more', type: 'button', 'aria-label': 'More', text: '⋯', 'data-more': '1' });
-  const input = el('textarea', { class: 'reason-input sess-input', rows: '1', placeholder: 'Type a message…', 'aria-label': 'Message to the session' });
+  const input = el('textarea', { class: 'reason-input sess-input', rows: '1', placeholder: 'Message…', 'aria-label': 'Message to the session' });
   const sendBtn = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Send', 'data-send': '1' });
   const keysBtn = el('button', { class: 'btn-quiet', type: 'button', text: 'Keys', 'aria-expanded': 'false', 'data-keys': '1' });
   // Attach: a screenshot or file, picked, pasted or dropped. Saved on this machine, so a
@@ -266,7 +267,13 @@ function openView(box, row) {
   attachBtn.addEventListener('click', () => filePick.click());
   filePick.addEventListener('change', () => { addFiles([...filePick.files]); filePick.value = ''; });
   const tray = el('div', { class: 'keys-tray', hidden: true });
-  const view = { key: row.key, s, titleSub, statusLine, termBox, resume, following: true, pending: null, loaded: HISTORY_FIRST, exhausted: false, loading: false, term: null, fit: null, pre: null };
+  // Live (the terminal) or History (the conversation record, which goes back to the start:
+  // a full-screen session keeps no terminal scrollback).
+  const historyBox = el('div', { class: 'sess-history', hidden: true, 'aria-label': 'Conversation history' });
+  const liveTab = el('button', { class: 'chip sess-tab', type: 'button', text: 'Live', 'aria-pressed': 'true', 'data-tab': 'live' });
+  const historyTab = el('button', { class: 'chip sess-tab', type: 'button', text: 'History', 'aria-pressed': 'false', 'data-tab': 'history' });
+  const tabs = el('div', { class: 'sess-tabs', role: 'group', 'aria-label': 'View' }, liveTab, historyTab);
+  const view = { key: row.key, s, titleSub, statusLine, termBox, historyBox, history: null, resume, following: true, pending: null, loaded: HISTORY_FIRST, exhausted: false, loading: false, term: null, fit: null, pre: null };
   st.view = view;
 
   // Keys: the ordinary ones, then Stop separated, red, and asked once.
@@ -316,14 +323,24 @@ function openView(box, row) {
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendText(); } });
   more.addEventListener('click', () => moreSheet(view));
   resume.addEventListener('click', () => backToLive());
+  const showTab = (which) => {
+    const hist = which === 'history';
+    liveTab.setAttribute('aria-pressed', hist ? 'false' : 'true'); historyTab.setAttribute('aria-pressed', hist ? 'true' : 'false');
+    termBox.hidden = hist; historyBox.hidden = !hist; if (hist) resume.hidden = true;
+    if (hist && !view.history) openHistory(view);
+    if (!hist && view.fit) requestAnimationFrame(() => { try { view.fit.fit(); } catch { /* not visible yet */ } });
+  };
+  liveTab.addEventListener('click', () => showTab('live'));
+  historyTab.addEventListener('click', () => showTab('history'));
 
   setKids(box, el('div', { class: 'sess-open', 'data-open': row.key },
     el('div', { class: 'sess-bar' },
       el('a', { class: 'chip icon-btn sess-back', href: listHref, 'aria-label': 'All sessions', text: '‹' }),
       el('div', { class: 'sess-titles' }, el('h1', { class: 'sess-title', text: row.title }), titleSub),
       more),
+    tabs,
     statusLine,
-    el('div', { class: 'sess-term-wrap' }, termBox, resume),
+    el('div', { class: 'sess-term-wrap' }, termBox, historyBox, resume),
     chips,
     composer,
     tray));
@@ -414,6 +431,85 @@ function writeHistory(msg) {
 function sendKey(key) {
   if (!st.view) return;
   if (!wsSend(frame('key', st.view.s, { key }))) setStatus('Not sent: live updates are paused.');
+}
+
+// ── History: the conversation record, newest at the bottom, older on scroll-up ──
+async function openHistory(view) {
+  view.history = { before: null, done: false, loading: false, count: 0, phase: 'session', oldestMs: null, topicBefore: null };
+  view.historyBox.addEventListener('scroll', () => { if (view.historyBox.scrollTop < 200) loadHistory(view); });
+  await loadHistory(view);
+}
+
+function historyRow(e) {
+  const text = historyText(e);
+  if (!text) return null;
+  const when = e.at ? new Date(e.at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null;
+  return e.role === 'tool'
+    ? el('p', { class: 'sess-h sess-h-tool', text: `→ ${text}` })
+    : el('div', { class: `sess-h sess-h-${e.role}` }, el('div', { class: 'sess-h-who', text: [e.role === 'user' ? 'Message in' : 'Session', when].filter(Boolean).join(' · ') }), el('div', { class: 'sess-h-text', text }));
+}
+
+async function loadHistory(view) {
+  const h = view.history;
+  if (!h || h.loading || h.done || st.view !== view) return;
+  h.loading = true;
+  const box = view.historyBox;
+  const marker = el('p', { class: 'sess-history-note', text: h.count ? 'Loading earlier messages…' : 'Loading the conversation…' });
+  box.prepend(marker);
+  const topicPhase = h.phase === 'topic';
+  const res = await send('GET', topicPhase ? topicHistoryUrl(topicOf(view.s), h.topicBefore) : historyUrl(view.s, h.before));
+  marker.remove();
+  h.loading = false;
+  if (st.view !== view) return;
+  const list = topicPhase ? res.data && res.data.messages : res.data && res.data.entries;
+  if (!res.ok || !Array.isArray(list)) {
+    h.done = true;
+    box.prepend(el('p', { class: 'sess-history-note', text: topicPhase ? `Can’t load earlier messages: ${res.reason || 'the server did not answer'}.` : historyErrorWords(res) }));
+    return;
+  }
+  const first = !h.count;
+  const prevHeight = box.scrollHeight, prevTop = box.scrollTop;
+  const frag = document.createDocumentFragment();
+  // A server without scroll-back support ignores `before` and returns the newest
+  // messages: keep only what is strictly older than the cursor, so nothing repeats.
+  const entries = topicPhase
+    ? list.map(topicHistoryEntry).filter((e) => e && e.atMs != null && e.atMs < h.topicBefore)
+    : list;
+  for (const e of entries) {
+    const row = historyRow(e);
+    if (row) frag.append(row);
+    const ms = e.atMs ?? (e.at ? Date.parse(e.at) : NaN);
+    if (Number.isFinite(ms)) h.oldestMs = h.oldestMs == null ? ms : Math.min(h.oldestMs, ms);
+  }
+  h.count += entries.length;
+  if (topicPhase) {
+    h.topicCount += entries.length;
+    // Nothing earlier after all: the divider would introduce an empty section.
+    if (!h.topicCount && h.divider) { h.divider.remove(); h.divider = null; }
+    h.topicBefore = h.oldestMs;
+    if (list.length < TOPIC_HISTORY_PAGE || entries.length === 0 || h.topicBefore == null) { h.done = true; frag.prepend(el('p', { class: 'sess-history-note', text: 'The start of this conversation.' })); }
+  } else {
+    h.before = res.data.nextBefore;
+    if (h.before == null) {
+      // This session's own record ends here. A conversation keeps going back
+      // through its earlier sessions: continue with the topic's messages.
+      if (topicOf(view.s)) {
+        h.phase = 'topic';
+        h.topicBefore = h.oldestMs ?? Date.now();
+        h.divider = el('p', { class: 'sess-history-note', text: 'Earlier, from this conversation’s previous sessions:' });
+        h.topicCount = 0;
+        frag.prepend(h.divider);
+      } else {
+        h.done = true;
+        frag.prepend(el('p', { class: 'sess-history-note', text: h.count ? 'The start of this conversation.' : 'Nothing has been said in this session yet.' }));
+      }
+    }
+  }
+  box.prepend(frag);
+  if (first) box.scrollTop = box.scrollHeight;
+  else box.scrollTop = prevTop + (box.scrollHeight - prevHeight);
+  // A short page may not fill the box: keep loading until it scrolls.
+  if (!h.done && box.scrollHeight <= box.clientHeight + 200) loadHistory(view);
 }
 
 function leaveView() {

@@ -12,30 +12,30 @@
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-09-07T03:58:13.637Z",
-      "auditRef": "docs/audits/telegram-message-origin-interaction-family.json",
-      "auditSha256": "0e3f891eb8f329d68cc50202f825579ef718c2087197ecc9d3cea04ae898d735",
-      "areaSha256": "e83a01a0c25843f89ed07600e594ed4fdd68fa0777aad288b2afde3b4d07b9c1",
+      "lastAuditedAt": "2026-11-04T01:31:00.000Z",
+      "auditRef": "docs/audits/message-origin-all-platforms-interaction-family-2026-11-03.json",
+      "auditSha256": "7c202e4a259acf30626806e2d824674e964159380e027c5b66fb7fab2f609ca6",
+      "areaSha256": "2a93dd9f0ce33f615611e26700fed66baec9eb2b3cfefc1f9c9571af2d13c163",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13
       }
     },
     "Shipping": {
-      "lastAuditedAt": "2026-09-22T15:45:22.000Z",
-      "auditRef": "docs/audits/standards-deadline-family-review-2026-09-22.json",
-      "auditSha256": "0c89b560d696465f0a2275dec6904a32e421d92d25740db67224c172729a14d8",
-      "areaSha256": "4691ffb2f80681d3d29078cde9752576aa58a6a7034c80e9e2435a0b5b81149c",
+      "lastAuditedAt": "2026-11-04T07:59:34.000Z",
+      "auditRef": "docs/audits/maturation-path-and-alignment-2026-11-04.json",
+      "auditSha256": "7b2b785c5e8cc33dfe65754dc45a04e5a46e5d7a84c715a8aa4ddfe4f538bdac",
+      "areaSha256": "ac00e8f2cb6881cdbfe54c278267f9d4c12b8a4370d57e864cb68c281308f8a8",
       "refResolutionFloor": {
         "enforced": 5,
         "total": 7
       }
     },
     "The Fractal": {
-      "lastAuditedAt": "2026-08-13T17:48:50.000Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-13c.json",
-      "auditSha256": "89a056b6d6804b3df6a9664acdcd16e3b0c876cce142257cff5d4db6a04bc8e8",
-      "areaSha256": "b6a5b408d865803a48b25f68a44cbdf79b5d789f7f938b43f58a14179354bd14",
+      "lastAuditedAt": "2026-11-04T07:59:34.000Z",
+      "auditRef": "docs/audits/maturation-path-and-alignment-2026-11-04.json",
+      "auditSha256": "7b2b785c5e8cc33dfe65754dc45a04e5a46e5d7a84c715a8aa4ddfe4f538bdac",
+      "areaSha256": "f5a580b9834ff1450600c1526409bf2df628c7e1154d8035f0bfd87234c40d5a",
       "refResolutionFloor": {
         "enforced": 1,
         "total": 1

@@ -51,6 +51,8 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   CoherenceReviewer: { task: 'gate-triage' },
   FeedbackReadinessArbiter: { task: 'feedback-readiness' },
   FeedbackTriageArbiter: { pending: 'wave-3' },
+  EcosystemIdeaReview: { pending: 'wave-3' }, // advisory idea review, graded by its monthly audit and adoption predictions
+  MachineWedgeJudge: { pending: 'wave-3' }, // dry-run wedge proposal; the spec requires a 30-fixture benchmark before restart-now graduates
   FeedbackTriageSecondOpinion: { pending: 'wave-3' },
   GoalPriorityExtractor: { pending: 'wave-3' },
   AlignmentReviewer: { pending: 'wave-3' },
@@ -199,6 +201,8 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   TelegramAdapter: true,
   FeedbackReadinessArbiter: true,
   FeedbackTriageArbiter: true,
+  EcosystemIdeaReview: true, // files from other projects
+  MachineWedgeJudge: { false: 'structured probe readings only: fixed result and reason codes, numbers and booleans this agent measured itself' },
   FeedbackTriageSecondOpinion: true,
   GoalPriorityExtractor: true,
   AlignmentReviewer: true,
@@ -396,6 +400,8 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   TaskClassifier: false, // classifies task type
   ResumeValidator: false, // matches a resume UUID against a topic — a state match, not a claim
   FeedbackReadinessArbiter: false, // judges whether cluster evidence warrants work, not a completion/health claim
+  EcosystemIdeaReview: false, // judges whether another project's idea fits, not a completion/health claim
+  MachineWedgeJudge: false, // proposes a ladder entry point from probe readings; it does not credit a claim
   FeedbackTriageArbiter: false, // judges whether a feedback work item is worth work, not a completion/health claim
   FeedbackTriageSecondOpinion: false, // re-judges an ignore decision, not a completion/health claim
   GoalPriorityExtractor: false, // extracts durable operator priorities; it does not credit a completion/progress/health claim
@@ -520,6 +526,8 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   CoherenceReviewer: { pending: 'contract-wave-2' }, // gate-triage — closed coherence verdict
   FeedbackReadinessArbiter: { contractTest: 'tests/unit/feedback-factory/readiness-arbiter.test.ts' },
   FeedbackTriageArbiter: { contractTest: 'tests/unit/feedback-factory/triage-arbiter.test.ts' },
+  EcosystemIdeaReview: { contractTest: 'tests/unit/ecosystem/idea-prompts.test.ts' },
+  MachineWedgeJudge: { contractTest: 'tests/unit/machine-wedge-judge.test.ts' },
   FeedbackTriageSecondOpinion: { contractTest: 'tests/unit/feedback-factory/triage-arbiter.test.ts' },
   GoalPriorityExtractor: { pending: 'contract-wave-2' },
   AlignmentReviewer: { pending: 'contract-wave-2' },
@@ -848,6 +856,10 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   OverrideDetector: exposed(EXPOSED_USER),
   TaskClassifier: exposed(EXPOSED_USER), // classifies a user task (R8 input-classifier — must stay exposed)
   FeedbackReadinessArbiter: exposed(EXPOSED_USER_TOOL), // feedback titles + canonical cluster metadata
+  EcosystemIdeaReview: exposed(EXPOSED_USER_TOOL), // scrubbed files from other projects
+  MachineWedgeJudge: notExposed(
+    'structured probe readings only: fixed result and reason codes, numbers and booleans this agent measured; no external, user or model text reaches the prompt',
+  ),
   FeedbackTriageArbiter: exposed(EXPOSED_USER_TOOL), // scrubbed feedback report text + cluster metadata
   FeedbackTriageSecondOpinion: exposed(EXPOSED_USER_TOOL), // the same scrubbed triage packet
   GoalPriorityExtractor: exposed(EXPOSED_USER), // verified operator message + quoted context

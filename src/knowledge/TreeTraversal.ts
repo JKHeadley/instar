@@ -22,6 +22,7 @@ import type {
 import { CACHE_TTL_MS, layerToTier } from './types.js';
 import type { ProbeRegistry } from './ProbeRegistry.js';
 import type { IntegrityManager } from './IntegrityManager.js';
+import { REFERENCE_DIR_REL } from '../scaffold/claudeMdLayout.js';
 
 const DEFAULT_SOURCE_TIMEOUT_MS = 5_000;
 const CHARS_PER_TOKEN = 4; // rough estimate
@@ -262,6 +263,25 @@ export class TreeTraversal {
   }
 
   private readFileSection(filePath: string, section: string): string | null {
+    const found = this.readFileSectionIn(filePath, section);
+    if (found !== null || path.basename(filePath) !== 'CLAUDE.md') return found;
+    // CLAUDE.md reference layout (docs/specs/claude-md-reference-layout.md):
+    // most sections now live in the generated reference files.
+    let entries: string[] = [];
+    try {
+      entries = fs.readdirSync(path.join(this.deps.projectDir, REFERENCE_DIR_REL)).filter(f => f.endsWith('.md')).sort();
+    } catch {
+      // @silent-fallback-ok: no reference directory → the agent uses the full CLAUDE.md layout; the section is genuinely absent.
+      return null;
+    }
+    for (const entry of entries) {
+      const hit = this.readFileSectionIn(`${REFERENCE_DIR_REL}/${entry}`, section);
+      if (hit !== null) return hit;
+    }
+    return null;
+  }
+
+  private readFileSectionIn(filePath: string, section: string): string | null {
     const content = this.readFile(filePath);
     if (!content) return null;
 

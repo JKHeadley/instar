@@ -14,7 +14,7 @@ describe('dashboard edit rejection installation parity', () => {
   it.each([false, true])('updates an existing agent idempotently (already present: %s)', alreadyPresent => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-edit-migration-'));
     const stateDir = path.join(projectDir, '.instar'), md = path.join(projectDir, 'CLAUDE.md');
-    fs.mkdirSync(stateDir); fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ projectName: 'echo', port: 4042 }));
+    fs.mkdirSync(stateDir); fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ projectName: 'echo', port: 4042 , claudeMd: { layout: 'full' } /* tests the legacy append chain; the reference-layout conversion is covered in claude-md-reference-layout.test.ts */ }));
     fs.writeFileSync(md, '# Existing custom instructions\n' + (alreadyPresent ? telegramDashboardEditAwareness() : ''));
     for (const shadow of ['AGENTS.md', 'GEMINI.md']) fs.writeFileSync(path.join(projectDir, shadow), '# Custom framework instructions\n');
     try {

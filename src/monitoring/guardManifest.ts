@@ -823,6 +823,16 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'CPU/memory sampling + rate-limit-event ledger (read-only observability).',
   },
   {
+    key: 'machineMaintenance.enabled',
+    kind: 'config',
+    configPath: 'machineMaintenance.enabled',
+    defaultEnabled: false, // dark on the fleet; ON for dev agents via the developmentAgent gate
+    process: 'server',
+    expectRuntime: false,
+    component: 'DrainRehearsal',
+    description: 'Machine self-maintenance, watch-only: a nightly paper drain records what a scheduled restart would have done. It cannot restart a machine or stop work.',
+  },
+  {
     key: 'monitoring.workAdmission.enabled',
     kind: 'config',
     configPath: 'monitoring.workAdmission.enabled',
@@ -1268,6 +1278,7 @@ export interface NotAGuardEntry {
 }
 
 export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
+  { component: 'WedgeMonitor', reason: 'Machine self-maintenance Part E wedge sampler, dry-run. It has no enable flag of its own: it is constructed inside the same machineMaintenance.enabled gate as DrainRehearsal, whose GUARD_MANIFEST row already reports that posture, and it can act on nothing (no rung exists). Its live state is GET /machine-maintenance -> wedge.' },
   { component: 'ThrowawayAgentGuard', reason: 'Pure classification module + init/teardown helpers called inline by installAutoStart, the scheduler admission gate and the server/lifeline startup decision (test-agent-leak-guard). Always-on safety floor with no enabled flag and no boot-constructed monitor, so the /guards inventory has no posture to report for it.' },
   { component: 'OriginToolGuard', reason: 'Generates an always-on harness hook, not a boot-constructed server monitor. Actual installed hook enrollment is reported by the Telegram origin activation matrix.' },
   { component: 'AgentIdentityDivergenceDetector', reason: 'Pure decision function over injected peer observations (agree / disagree / cannot-tell). It IS wired at boot in AgentServer and raises one deduped Attention item on a real split, but it registers no runtime getter and carries no enabled flag, so there is nothing for the /guards inventory to report a posture FOR. It moves to GUARD_MANIFEST if it ever gains a config gate or a status surface.' },

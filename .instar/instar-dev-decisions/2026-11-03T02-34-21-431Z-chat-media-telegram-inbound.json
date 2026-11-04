@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-03T02:34:21.431Z",
+  "slug": "chat-media-telegram-inbound",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 373,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AppConversationService.ts",
+      "src/core/AppConversationStore.ts",
+      "src/core/AppConversationsReplicatedStore.ts",
+      "src/core/appMediaReplyFiles.ts",
+      "src/core/appPlatformMedia.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/AgentServer.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobileMediaRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 340,
+    "deletedLines": 33
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

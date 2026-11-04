@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 import { resolveCliFlag } from './models.js';
 import { assertClaudeAllowed } from './claudeForbiddenGuard.js';
+import { applyClaudeChildAuth, classifyClaudeAuthFailure, reportClaudeCallOutcome } from './claudeChildAuth.js';
 
 const DEFAULT_MODEL = 'fast';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -84,9 +85,11 @@ export function buildClaudeReviewerChildEnv(
  * `--strict-mcp-config` refuses user MCP servers. `--setting-sources user`
  * excludes project/local CLAUDE.md (kept from the base door).
  */
-export function buildClaudeReviewerArgs(model: string, jsonSchema?: string): string[] {
+export function buildClaudeReviewerArgs(model: string, jsonSchema?: string, noTools = false): string[] {
   return [
     '--print',
+    // An empty allow-list still lets a model ATTEMPT a tool; --tools '' offers it none.
+    ...(noTools ? ['--tools', ''] : []),
     '--allowedTools', '',
     '--strict-mcp-config',
     '--model', model,
@@ -125,7 +128,7 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
 
     return new Promise((resolve, reject) => {
       const args = hardened
-        ? buildClaudeReviewerArgs(model, hardened.jsonSchema)
+        ? buildClaudeReviewerArgs(model, hardened.jsonSchema, hardened.noTools === true)
         : [
             '-p', prompt,
             '--model', model,
@@ -144,14 +147,16 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
       // Env: hardened calls use the ALLOWLIST-only env (agent secrets never
       // cross); the default path strips only the Claude Code session markers so a
       // nested session can't wedge it (unchanged behavior).
-      const childEnv = hardened
+      // The configured sign-in key goes on after the allowlist: it is what `claude -p` itself needs
+      // on an agent with no stored login (spec cloud-key-internal-calls).
+      const childEnv = applyClaudeChildAuth(hardened
         ? buildClaudeReviewerChildEnv(process.env, Boolean(hardened.jsonSchema))
         : (() => {
             const e = { ...process.env };
             delete e.CLAUDECODE;
             delete e.CLAUDE_SESSION_ID;
             return e;
-          })();
+          })());
 
       const child = execFile(this.claudePath, args, {
         // Honor a caller-supplied per-call budget (IntelligenceOptions.timeoutMs);
@@ -171,10 +176,14 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
           // classifier (isRateLimitError) can see usage/limit language that
           // often appears past the first 200 chars. (Rate-limit detection reads
           // stderr, so the stdout text→json switch does not affect it.)
-          reject(new Error(`Claude CLI error: ${error.message}${stderr ? ` — ${stderr.slice(0, 600)}` : ''}`));
+          // The auth verdict is only in stdout. It is logged as a category, never as CLI text.
+          const authFailure = classifyClaudeAuthFailure(stdout);
+          if (authFailure) reportClaudeCallOutcome(authFailure);
+          reject(new Error(`Claude CLI error: ${error.message}${stderr ? ` — ${stderr.slice(0, 600)}` : ''}${authFailure ? ` — auth: ${authFailure}` : ''}`));
           return;
         }
 
+        reportClaudeCallOutcome('ok');
         resolve(parseJsonResult(stdout, options?.onUsage, Boolean(hardened?.jsonSchema), options?.onServedModel));
       });
 

@@ -67,6 +67,14 @@ export interface MessageRouterConfig {
    * when it cannot (no identity, or `from.agent` is not this agent).
    */
   envelopeSigner?: LocalEnvelopeSigner;
+  /**
+   * Same-agent delivery guard: true when `tmuxSession` is a RUNNING session this
+   * agent owns. A same-agent message to any other name is marked 'failed' and
+   * never typed — so a wrong name cannot land in another agent's (or the
+   * operator's own) tmux session on this host. Absent ⇒ no ownership check
+   * (tests and embedders without a SessionManager).
+   */
+  isOwnSession?: (tmuxSession: string) => boolean;
 }
 
 /** What the target's server said to a same-machine relay POST. */
@@ -215,9 +223,16 @@ export class MessageRouter implements IMessageRouter {
     } else if (!isLocalMachine) {
       // Cross-machine → relay via HTTP with Ed25519 or queue to outbound
       await this.routeCrossMachine(envelope);
+    } else if (to.session !== '*' && to.session !== 'best') {
+      // Same agent, same machine, a NAMED session: type it into that session
+      // now. Before this branch the envelope sat at 'sent' forever — nothing
+      // reads a same-agent 'sent' row, and DeliveryRetryManager only retries
+      // 'queued'/'undelivered' — so sessions had no working private channel to
+      // each other and fell back to posting in the user's Telegram topic
+      // (bug 2026-11-03, Echo Bugs topic 10000001474).
+      await this.deliverSameAgentLocal(envelope);
     }
-    // If isLocalMachine && isLocalAgent → already saved locally, delivery is handled
-    // by the local agent's session delivery mechanism
+    // Broadcast ('*') and an unresolved 'best' stay saved locally as before.
 
     return {
       messageId,
@@ -474,6 +489,58 @@ export class MessageRouter implements IMessageRouter {
    *    with Bearer token from ~/.instar/agent-tokens/{agentName}.token
    * 4. If agent server is down → write to drop directory with HMAC
    */
+  /**
+   * Deliver a same-agent message into its named local session. A target that
+   * is not a running session of this agent (config.isOwnSession) → 'failed',
+   * never typed. Otherwise success → 'delivered'; any delivery failure
+   * (unsafe foreground process, send-keys error, or a throw) → 'queued', which
+   * DeliveryRetryManager's Layer-2 loop retries every 30s for ~5 minutes and
+   * then dead-letters. Never throws: the message is already saved.
+   */
+  private async deliverSameAgentLocal(envelope: MessageEnvelope): Promise<void> {
+    const target = envelope.message.to.session;
+    let success = false;
+    let reason = '';
+    let owned = true;
+    try {
+      owned = this.config.isOwnSession ? this.config.isOwnSession(target) : true;
+    } catch (err) {
+      owned = false;
+      reason = `ownership check failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    if (!owned) {
+      // Terminal: never typed, never retried (the retry loop skips 'failed').
+      reason = reason || `"${target}" is not a running session of this agent`;
+    } else {
+      try {
+        const result = await this.delivery.deliverToSession(target, envelope);
+        success = result.success;
+        reason = result.failureReason ?? '';
+      } catch (err) {
+        reason = err instanceof Error ? err.message : String(err);
+      }
+    }
+    const now = new Date().toISOString();
+    const to = success ? 'delivered' : owned ? 'queued' : 'failed';
+    envelope.delivery = {
+      ...envelope.delivery,
+      phase: to,
+      transitions: [
+        ...envelope.delivery.transitions,
+        { from: envelope.delivery.phase, to, at: now, reason: success ? `injected into session ${target}` : `same-agent delivery deferred: ${reason}` },
+      ],
+      attempts: envelope.delivery.attempts + 1,
+      ...(success ? {} : { failureReason: reason }),
+    };
+    try {
+      await this.store.updateDelivery(envelope.message.id, envelope.delivery);
+    } catch (err) {
+      // @silent-fallback-ok: the envelope is already saved; a failed phase write
+      // leaves it at 'sent' (today's behaviour) and is logged, never thrown.
+      console.warn(`[message-router] same-agent delivery phase write failed for ${envelope.message.id}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
   private async routeCrossAgentLocal(envelope: MessageEnvelope): Promise<void> {
     const targetAgent = envelope.message.to.agent;
 

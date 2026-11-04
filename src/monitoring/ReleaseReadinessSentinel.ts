@@ -39,6 +39,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
 
 /** Parsed subset of `analyze-release.js --json` the sentinel needs. */
@@ -169,6 +170,8 @@ const HOUR_MS = 60 * 60 * 1000;
 export class ReleaseReadinessSentinel extends EventEmitter {
   private readonly cfg: Required<ReleaseReadinessSentinelConfig>;
   private tickHandle: ReturnType<typeof setInterval> | null = null;
+  /** Set by failLoud, so a failed tick records its error row and no outcome row. */
+  private evalFailedThisTick = false;
 
   constructor(
     private readonly deps: ReleaseReadinessSentinelDeps,
@@ -207,11 +210,27 @@ export class ReleaseReadinessSentinel extends EventEmitter {
     state.lastTickAt = this.deps.now();
     if (state.disabled) {
       this.deps.audit({ kind: 'release-readiness', event: 'tick-skipped-disabled' });
+      featureEvidence.record('monitoring.releaseReadiness', { kind: 'held', reason: 'rolled-back-disabled', context: { rollbacks: state.rollbackHistory?.length ?? 0 } });
       this.deps.saveState(state);
       return;
     }
     try {
+      const signalBefore = state.lastSignalAt;
+      this.evalFailedThisTick = false;
       await this.evaluate(state);
+      if (!this.evalFailedThisTick) {
+        const raised = state.lastSignalAt !== signalBefore;
+        const open = state.episodes.filter((e) => !e.resolvedMs);
+        featureEvidence.record('monitoring.releaseReadiness', {
+          kind: raised ? 'fired' : 'held',
+          reason: raised ? 'signal-raised' : open.length > 0 ? 'blocked-no-new-signal' : 'release-not-blocked',
+          context: {
+            openEpisodes: open.length,
+            surfacedEpisodes: open.filter((e) => e.openedMs).length,
+            priorities: open.map((e) => e.lastPriority ?? 'silent').join(','),
+          },
+        });
+      }
       this.deps.saveState(state);
     } catch (err) {
       // Fail-loud — a silent catch here would re-create the very silent-failure
@@ -239,6 +258,7 @@ export class ReleaseReadinessSentinel extends EventEmitter {
     state.rollbackHistory ??= [];
     state.rollbackHistory.push({ ts: this.deps.now(), sessionId: meta.sessionId, sourceIp: meta.sourceIp, reason: 'rollback' });
     this.deps.audit({ kind: 'release-readiness', event: 'rollback', sessionId: meta.sessionId, sourceIp: meta.sourceIp });
+    featureEvidence.record('monitoring.releaseReadiness', { kind: 'error', reason: 'alarm-rolled-back', context: { rollbacks: state.rollbackHistory.length, sessionId: meta.sessionId ?? null } });
     await this.deps.postAttention({
       id: 'release-readiness-rolled-back',
       title: 'Release-readiness alarm disabled',
@@ -391,6 +411,12 @@ export class ReleaseReadinessSentinel extends EventEmitter {
     // evaluator-self-failures. Both the dedup-suppressed and the un-suppressed
     // paths produce an audit line so frequency is countable from disk.
     this.deps.audit({ kind: 'release-readiness', event: 'eval-failed', stage, error: String(err) });
+    this.evalFailedThisTick = true;
+    featureEvidence.record('monitoring.releaseReadiness', {
+      kind: 'error',
+      reason: `check-failed:${stage}`,
+      context: { stage, repeatOfLastFailure: state.lastFailureKey === key, errorName: err instanceof Error ? err.name : 'unknown' },
+    });
     if (state.lastFailureKey === key) return; // dedupe per failure episode
     state.lastFailureKey = key;
     // HOUSEKEEPING by default: do NOT post a per-stage Attention item (which

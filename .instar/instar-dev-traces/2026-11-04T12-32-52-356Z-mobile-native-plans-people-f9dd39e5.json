@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "mobile-native-plans-people",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-04T12:32:52.356Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-plans-people.md",
+  "artifactSha256": "bfc4c898ca3f4df21a97f7b15778257782894ca2c03f664394fd2f40b4d54e78",
+  "specPath": "docs/specs/mobile-native-plans-people.md",
+  "coveredFiles": [
+    "docs/specs/mobile-native-plans-people.eli16.md",
+    "docs/specs/mobile-native-plans-people.md",
+    "docs/specs/reports/mobile-native-plans-people-convergence.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobilePlansPeopleRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/mobile-native-plans-people-alive.test.ts",
+    "tests/integration/mobile-native-plans-people.test.ts",
+    "tests/unit/mobile-native-plans-people-claudemd.test.ts",
+    "tests/unit/mobile-native-plans-people.test.ts",
+    "tests/unit/mobile-session-terminal.test.ts",
+    "upgrades/next/mobile-native-plans-people.md",
+    "upgrades/side-effects/mobile-native-plans-people.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Widens device-key read access (three owner-only GET routes) and adds a cross-machine read fan-out; converged spec, second pass, all three test tiers.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

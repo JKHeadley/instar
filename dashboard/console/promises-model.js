@@ -176,7 +176,7 @@ export function updateQuestionOf(c, now = Date.now()) {
 
 /** A concrete next step without assigning the agent's work to the operator. */
 export function nextStepOf(c, now = Date.now()) {
-  if (waitsOnOperator(c)) return 'Your answer or approval is needed. Open the conversation to respond.';
+  if (waitsOnOperator(c)) return 'This is waiting on you. Reply in the conversation when you can.';
   if (isMissed(c, now) || needsPromiseReview(c, now)) return 'This follow-up is mine: I need to verify the current outcome. No action is needed from you.';
   return 'The next step is mine. No action is needed from you.';
 }

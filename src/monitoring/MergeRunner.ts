@@ -87,15 +87,14 @@ export interface MergeRunnerConfig {
    */
   resolveGitHubEnv: () => NodeJS.ProcessEnv | null;
   /**
-   * Merge strategy (mergerunner-auto-arm-handoff). `auto` (default) arms GitHub
-   * native auto-merge via `safe-merge … --auto` and returns in seconds; `admin`
+   * Merge strategy. `auto` (default) checks the full CI floor via
+   * `safe-merge … --auto`, defers while pending, and merges synchronously; `admin`
    * is the legacy synchronous poll+merge via `--admin`. Absent → 'auto'.
    */
   mergeStrategy?: 'auto' | 'admin' | 'sync';
   /**
-   * The `--auto` spawn deadline (default ~60s). Arming is a single API call, so
-   * the 25-min `mergeTimeoutMs` is vestigial on the auto path — a hung arm
-   * should trip in minutes, not ~26 min. The admin path keeps `mergeTimeoutMs`.
+   * The `--auto` spawn deadline (default ~60s). This path does one CI preflight
+   * and one immediate merge command, so a hung call trips quickly.
    */
   armTimeoutMs?: number;
   /** node executable (default process.execPath). */
@@ -252,8 +251,8 @@ export class DefaultMergeRunner implements MergeRunner {
       return { outcome: 'skipped:github-runtime-unavailable', confirmedMerged: false, ...(priorRecord ? { priorRecord } : {}) };
     }
 
-    // Strategy select (mergerunner-auto-arm-handoff). The default arm path spawns
-    // `safe-merge … --auto` (GitHub native auto-merge; returns in seconds) with a
+    // Strategy select. The default CI-floor path spawns
+    // `safe-merge … --auto` (preflight then immediate merge or deferral) with a
     // SHORT armTimeoutMs deadline; the legacy admin path keeps `--admin` + the
     // 25-min mergeTimeoutMs deadline.
     // `sync` (local-verify-merge-authority §2 "Merge deadline and flags"): the

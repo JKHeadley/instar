@@ -2,16 +2,16 @@
 // Reads only; the one frequent write is Rename (bearer). Identity reviews stay in
 // the legacy tab until their PIN sheet is rebuilt (the plan's first cut).
 
-import { buildMachinesPage, ropesFor, healthOf, usageOf } from './machines-model.js';
-import { el, setKids, pageHead, sheet, closeSheet, story, note, cantTell } from './ui.js';
+import { buildMachinesPage, ropesFor, healthOf, usageOf, machineCarePool } from './machines-model.js';
+import { el, setKids, pageHead, sheet, closeSheet, story, note, cantTell, firstPaint } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const STATE_DOT = { ok: 'dot live', attn: 'dot attn', bad: 'dot bad', stale: 'dot unknown', unknown: 'dot unknown' };
 
 export async function renderMachines(main, ctx) {
   const { get } = ctx;
-  if (!main.querySelector('.machine-cards')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Machines' }), el('h1', { class: 'page-title skeleton', text: 'Loading machines' })));
-  const [pool, health, guards, sessions] = await Promise.all([get('/pool'), get('/health'), get('/guards'), get('/sessions?scope=pool', 8000)]);
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Machines' }), el('h1', { class: 'page-title skeleton', text: 'Loading machines' })));
+  const [pool, health, guards, sessions, care] = await Promise.all([get('/pool'), get('/health'), get('/guards'), get('/sessions?scope=pool', 8000), get('/machine-maintenance?scope=pool', 8000)]);
   const live = sessions.ok && Array.isArray(sessions.data && sessions.data.sessions) ? sessions.data.sessions.filter((s) => s.status === 'running' || s.status === 'starting') : [];
   const byMachine = {};
   const names = {};
@@ -21,6 +21,8 @@ export async function renderMachines(main, ctx) {
   const page = buildMachinesPage(pool, health, Date.now(), { sessionsByMachine: sessions.ok ? byMachine : undefined, needsLook });
   if (!page.ok) { setKids(main, pageHead({ eyebrow: 'Capacity · Machines', headline: 'Machines', tone: 'muted' }), cantTell(page.reason), legacyLink()); return; }
 
+  const carePool = machineCarePool(care);
+  const careFor = (m) => (carePool ? (carePool.byMachine[m.id] || (m.isSelf ? carePool.selfLine : null)) : null);
   const cards = el('div', { class: 'machine-cards' }, page.machines.map((m) => {
     const card = el('button', { class: 'machine-card', type: 'button', 'data-state': m.state, 'data-focus-key': `m:${m.id}` },
       el('span', { class: 'mc-top' },
@@ -31,6 +33,7 @@ export async function renderMachines(main, ctx) {
         el('span', { class: 'mc-state', text: m.label })),
       el('span', { class: 'mc-line', text: [m.verdict ? `${m.verdict}${typeof m.perCore === 'number' ? ` · load ${m.perCore.toFixed(1)} per core` : ''}` : 'no load reading', typeof m.sessions === 'number' ? `${m.sessions} ${m.sessions === 1 ? 'session' : 'sessions'}` : null].filter(Boolean).join(' · ') }),
       el('span', { class: 'mc-evidence', text: m.age ? `last evidence ${m.age}${m.estimated && !page.single ? ' (estimated)' : ''}` : 'no evidence since this server started' }),
+      careFor(m) ? el('span', { class: 'mc-evidence', text: `Restart care: ${careFor(m)}` }) : null,
     );
     card.addEventListener('click', () => openMachine(m, { get, health, guards, names }));
     return card;
@@ -38,6 +41,7 @@ export async function renderMachines(main, ctx) {
   setKids(main, 
     pageHead({ eyebrow: 'Capacity · Machines', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
     !sessions.ok ? note(`Couldn't count sessions: ${sessions.reason}.`) : null,
+    carePool ? note([carePool.header, ...carePool.missing].join(' · ')) : null,
     cards,
     legacyLink(),
   );

@@ -20,6 +20,7 @@ import {
   type MentorDeliveryOutcome,
 } from './MentorOnboardingTick.js';
 import { llmCircuitAvailable } from '../core/LlmCircuitBreaker.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import {
   runAutonomousGuardian,
   type AutonomousGuardianReason,
@@ -228,6 +229,9 @@ export class MentorOnboardingRunner {
   }
 
   private inFlight = false;
+  /** Autonomous-fix evidence: whether a loop session was alive last tick, and when this runner spawned it. */
+  private loopWasAlive = false;
+  private loopSpawnedAt: number | null = null;
   private lastResult: (MentorRunResult & { at: number }) | null = null;
 
   /** Single write funnel for lastResult: assigns + persists best-effort. */
@@ -298,6 +302,7 @@ export class MentorOnboardingRunner {
         } as MentorRunResult & { at: number });
         // eslint-disable-next-line no-console
         console.warn('[mentor] tick failed:', message);
+        featureEvidence.record(autonomous ? 'mentor.autonomousFix' : 'mentor', { kind: 'error', reason: 'tick threw', context: { mode: cfg.mode, framework: cfg.menteeFramework, errorName: err instanceof Error ? err.name : 'unknown' } });
       })
       .finally(() => {
         this.inFlight = false;
@@ -332,6 +337,11 @@ export class MentorOnboardingRunner {
       now: this.services.now,
     });
     if (result.ran) this.services.onTickRan?.();
+    featureEvidence.record('mentor', {
+      kind: result.reason === 'ran' ? 'fired' : result.reason === 'stage-a-failed' || result.reason === 'canary-failed' ? 'error' : 'held',
+      reason: `round: ${result.reason}`,
+      context: { mode, framework, delivered: result.delivered ?? null, deliveryReason: result.deliveryReason ?? null, leakDetected: result.leakDetected ?? null, observationsWritten: result.observationsWritten ?? null, findingsCount: result.findingsCount ?? null },
+    });
     return result;
   }
 
@@ -347,11 +357,16 @@ export class MentorOnboardingRunner {
   private async autonomousTick(cfg: MentorConfig): Promise<MentorRunResult> {
     const af = cfg.autonomousFix!;
     const framework = cfg.menteeFramework;
+    const loopSessionAlive = this.services.loopSessionAlive?.() ?? false;
+    if (this.loopWasAlive && !loopSessionAlive) {
+      featureEvidence.record('mentor.autonomousFix', { kind: 'fired', reason: 'fix cycle ended: loop session gone', context: { framework, model: af.model || 'opus', cycleMs: this.loopSpawnedAt === null ? null : (this.services.now ?? Date.now)() - this.loopSpawnedAt } });
+    }
+    this.loopWasAlive = loopSessionAlive;
     const result = await runAutonomousGuardian({
       framework,
       enabled: af.enabled,
       budgetOk: this.services.budgetOk(),
-      loopSessionAlive: this.services.loopSessionAlive?.() ?? false,
+      loopSessionAlive,
       minIntervalElapsed: this.services.minIntervalElapsed(),
       model: af.model || 'opus',
       buildGoal: () =>
@@ -366,7 +381,15 @@ export class MentorOnboardingRunner {
       now: this.services.now,
     });
     // A spawned cycle counts as a run (advances the per-day cap + interval clock).
-    if (result.reason === 'spawned') this.services.onTickRan?.();
+    if (result.reason === 'spawned') {
+      this.services.onTickRan?.();
+      this.loopWasAlive = true;
+      this.loopSpawnedAt = (this.services.now ?? Date.now)();
+    }
+    // 'loop-active' is the tick finding its one session still running: nothing decided, no row.
+    if (result.reason !== 'loop-active' && result.reason !== 'disabled') {
+      featureEvidence.record('mentor.autonomousFix', { kind: result.reason === 'spawned' ? 'fired' : result.reason === 'spawn-failed' ? 'error' : 'held', reason: `guardian: ${result.reason}`, context: { framework, model: af.model || 'opus', sessionName: result.sessionName ?? null } });
+    }
     return {
       ran: result.ran,
       reason: result.reason,

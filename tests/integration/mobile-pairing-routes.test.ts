@@ -168,12 +168,42 @@ describe('mobile pairing routes', () => {
     expect(ctx.svc.devices.get(deviceId)!.wrongCodes ?? []).toHaveLength(0);
   });
 
-  it('revoke: a device only itself, bearer any; a revoked device is refused', async () => {
+  it('revoke: an active owner phone may remove another phone here; an MSP or pending phone only itself; no forwarding from a device', async () => {
+    // docs/specs/mobile-native-phones-messages.md §3.3.
+    const ctx = setup();
+    const owner = await pairDevice(ctx);
+    await signed(ctx.app, owner.dev, owner.deviceId, 'POST', '/mobile/device/confirm', { code: codeFrom(ctx.dms[0]) });
+    // A pending phone (owner person, not yet confirmed) cannot remove another phone.
+    const pending = await pairDevice(ctx);
+    const third = await pairDevice(ctx);
+    await signed(ctx.app, third.dev, third.deviceId, 'POST', '/mobile/device/confirm', { code: codeFrom(ctx.dms[ctx.dms.length - 1]) });
+    const byPending = await signed(ctx.app, pending.dev, pending.deviceId, 'POST', `/mobile/devices/${third.deviceId}/revoke`, {});
+    expect(byPending.status).toBe(403);
+    expect(byPending.body.error).toBe('owner-phone-required');
+    // An MSP phone cannot either.
+    fs.writeFileSync(path.join(ctx.config.stateDir, 'users.json'), JSON.stringify([{ id: 'helper', name: 'Helper', channels: [], permissions: ['user'] }]));
+    ctx.svc.devices.setPerson(third.deviceId, { userId: 'helper', role: 'msp' });
+    const byMsp = await signed(ctx.app, third.dev, third.deviceId, 'POST', `/mobile/devices/${pending.deviceId}/revoke`, {});
+    expect(byMsp.status).toBe(403);
+    expect(byMsp.body.error).toBe('owner-phone-required');
+    expect(ctx.svc.devices.get(pending.deviceId)!.status).toBe('pending');
+    // The active owner phone removes the MSP phone, which is then refused.
+    const byOwner = await signed(ctx.app, owner.dev, owner.deviceId, 'POST', `/mobile/devices/${third.deviceId}/revoke`, {});
+    expect(byOwner.status).toBe(200);
+    expect(byOwner.body.revoked).toBe(true);
+    expect(ctx.svc.devices.get(third.deviceId)!.status).toBe('revoked');
+    expect((await signed(ctx.app, third.dev, third.deviceId, 'GET', '/sessions')).status).toBe(401);
+    // An id this machine does not hold: 404 from a device, never forwarded.
+    const unknown = await signed(ctx.app, owner.dev, owner.deviceId, 'POST', '/mobile/devices/dev-elsewhere/revoke', {});
+    expect(unknown.status).toBe(404);
+    expect(unknown.body.error).toBe('unknown-device');
+  });
+
+  it('revoke: a device itself, bearer any; a revoked device is refused', async () => {
     const ctx = setup();
     const a = await pairDevice(ctx);
     await signed(ctx.app, a.dev, a.deviceId, 'POST', '/mobile/device/confirm', { code: codeFrom(ctx.dms[0]) });
     const b = await pairDevice(ctx);
-    expect((await signed(ctx.app, a.dev, a.deviceId, 'POST', `/mobile/devices/${b.deviceId}/revoke`, {})).status).toBe(403);
     expect((await request(ctx.app).post(`/mobile/devices/${a.deviceId}/revoke`).set('Authorization', 'Bearer tok-1').send({})).body.revoked).toBe(true);
     expect((await signed(ctx.app, a.dev, a.deviceId, 'GET', '/sessions')).status).toBe(401);
     const list = await request(ctx.app).get('/mobile/devices').set('Authorization', 'Bearer tok-1');
@@ -275,5 +305,49 @@ describe('mobile pairing routes', () => {
     expect((await redeem(app, 'a'.repeat(22))).status).toBe(503);
     expect((await request(app).get('/mobile/pairing-codes/ping?n=' + 'a'.repeat(20))).status).toBe(503);
     expect((await request(app).get('/mobile/devices').set('Authorization', 'Bearer tok-1')).status).toBe(503);
+  });
+});
+
+describe('word codes on the Telegram path (mobile-pairing-word-code)', () => {
+  const redeemWith = (app: express.Express, code: string, dev: ReturnType<typeof makeDevice>, extra: Record<string, unknown>) =>
+    request(app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code, deviceName: 'iPhone', devicePublicKey: dev.publicKey, ...extra });
+
+  it('codeFormats:["word"] gets a WORD-NNNN DM; the raw typed text confirms; a 6-digit entry is wrong-format with no strike', async () => {
+    const ctx = setup();
+    const dev = makeDevice();
+    const m = await mint(ctx.app);
+    const r = await redeemWith(ctx.app, m.body.code, dev, { codeFormats: ['word'] });
+    expect(r.body).toMatchObject({ status: 'pending', approval: 'telegram', codeFormat: 'word' });
+    const word = /is ([A-Z]{4,6}-\d{4})\./.exec(ctx.dms[0]!.text)![1]!;
+    expect(ctx.dms[0]!.text).not.toMatch(/\d{3} \d{3}/);
+    // A PIN-shaped entry is not a word-code form: 422 with the format hint, and no strike.
+    const pin = await signed(ctx.app, dev, r.body.deviceId, 'POST', '/mobile/device/confirm', { code: '123456' });
+    expect(pin.status).toBe(422);
+    expect(pin.body).toEqual({ error: 'wrong-format', detail: 'That is not the pairing code. The code looks like KITE-4172: a word, then four digits.' });
+    expect(ctx.svc.devices.get(r.body.deviceId)!.wrongCodes ?? []).toHaveLength(0);
+    const ok = await signed(ctx.app, dev, r.body.deviceId, 'POST', '/mobile/device/confirm', { code: ` ${word.toLowerCase().replace('-', '')} ` });
+    expect(ok.body.status).toBe('active');
+  });
+
+  it('no opt-in (or an unknown/garbled one) keeps today\'s 6-digit code exactly', async () => {
+    for (const extra of [{}, { codeFormats: ['emoji'] }, { codeFormats: 'word' }, { codeFormats: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'word'] }]) {
+      const ctx = setup();
+      const dev = makeDevice();
+      const m = await mint(ctx.app);
+      const r = await redeemWith(ctx.app, m.body.code, dev, extra);
+      expect(r.body.codeFormat).toBe('digits');
+      expect(ctx.dms[0]!.text).toMatch(/is \d{3} \d{3}\./);
+      expect((await signed(ctx.app, dev, r.body.deviceId, 'POST', '/mobile/device/confirm', { code: codeFrom(ctx.dms[0]!) })).body.status).toBe('active');
+    }
+  });
+
+  it('a word code pasted into a conversation cancels that pairing', async () => {
+    const ctx = setup();
+    const dev = makeDevice();
+    const m = await mint(ctx.app);
+    const r = await redeemWith(ctx.app, m.body.code, dev, { codeFormats: ['word'] });
+    const word = /is ([A-Z]{4,6}-\d{4})\./.exec(ctx.dms[0]!.text)![1]!;
+    expect(ctx.svc.scanInbound(`my code is ${word.toLowerCase()}`)).toEqual([r.body.deviceId]);
+    expect((await signed(ctx.app, dev, r.body.deviceId, 'POST', '/mobile/device/confirm', { code: word })).status).not.toBe(200);
   });
 });

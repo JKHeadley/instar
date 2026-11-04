@@ -303,6 +303,9 @@ export const DP_WARRANTS_REPLY_GATE = 'warrants-reply-gate';
 /** Long-running command evidence → stuck or legitimate. */
 export const DP_WATCHDOG_STUCK_JUDGE = 'watchdog-stuck-judge';
 
+/** Structured wedge evidence → a proposed ladder entry point (machine self-maintenance, Part E). */
+export const DP_MACHINE_WEDGE_JUDGE = 'machine-wedge-judge';
+
 /** User/agent exchange set → detected durable commitment kinds. */
 export const DP_COMMITMENT_DETECT = 'commitment-detect';
 
@@ -435,6 +438,14 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'A registered frontier-model triage authority decides work/hold/ignore within deterministic floors; provenance stores packet identity and enumerated options, never report text or model output.',
+  },
+  {
+    decisionPoint: 'ecosystem-idea-review',
+    component: 'EcosystemIdeaReview',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Advisory reads of ideas from other projects: gap verdict, goal review and effect class. They decide nothing alone; the ledger records each read, a monthly sampled audit counts overturned verdicts, and adoption predictions are graded.',
   },
   {
     decisionPoint: 'feedback-triage-second-opinion',
@@ -598,6 +609,21 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'evidence without treating elapsed time or the parser as ground truth.',
     reason:
       'Stuck-command judgment over bounded command and terminal evidence; identity-only context stores exact prompt and constituent digests, never terminal text.',
+  },
+  {
+    decisionPoint: DP_MACHINE_WEDGE_JUDGE,
+    component: 'MachineWedgeJudge',
+    status: 'wired',
+    // At most one call per wedge candidate and six per 24 hours, on the host maintainer only.
+    volumeClass: 'budget:20',
+    contentClass: 'metadata',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Dry-run: the proposal acts on nothing, so no outcome follows from it. The spec grades a restart right only when ' +
+      'gentle rungs had already failed and evidence was still present before it; until rungs exist, rows bank the ' +
+      'proposal beside its structured evidence for the graduation benchmark.',
+    reason:
+      'Wedge judge over structured family results, ages, uptime and a session count; never window titles, dialog text or command output.',
   },
   {
     decisionPoint: DP_RESUME_SANITY_CHECK,

@@ -28,9 +28,10 @@ import fs from 'node:fs';
 import type { IntelligenceProvider, MessagingAdapter, Message, OutgoingMessage } from '../../core/types.js';
 import { DP_SLACK_STALL_CONFIRM } from '../../data/provenanceCoverage.js';
 import { SlackApiClient, SlackApiError } from './SlackApiClient.js';
+import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
 import { SocketModeClient, type SocketModeHandlers } from './SocketModeClient.js';
 import { ChannelManager } from './ChannelManager.js';
-import { FileHandler } from './FileHandler.js';
+import { FileHandler, type SlackUploadOptions } from './FileHandler.js';
 import { RingBuffer } from './RingBuffer.js';
 import { MessageLogger, type LogEntry } from '../shared/MessageLogger.js';
 import { verifiedChannelIdentity } from '../shared/channelIdentity.js';
@@ -41,6 +42,8 @@ import type { SlackApiResponse } from './SlackApiClient.js';
 import type { SlackPermissionObserver } from '../../permissions/SlackPermissionObserver.js';
 import type { AmbientContributionGate } from '../../permissions/AmbientContributionGate.js';
 import { buildStallAlertDecisionContext } from '../shared/StallAlertDecisionContext.js';
+// CONTRACT-EVIDENCE: EXEMPT — message-origin-all-platforms adds no Slack API method, parameter or response field: the origin ledger wraps the existing calls (reading only `ts`) and the footer is one more line of `text`. Echo's Slack bot token was revoked 2026-07-01, so no live contract run is available.
+import { ORIGIN_OUTAGE_NOTICE_TEXT, RECORDED_SLACK_METHODS, SlackOriginLedger, SlackOriginRecordingError, refusalWarrantsNotice } from './SlackOriginLedger.js';
 
 export const SLACK_STALL_CONFIRM_PROMPT_ID = 'slack-stall-confirm-v1';
 
@@ -101,6 +104,34 @@ export function classifyFilesInfoSelfTest(
   return { status: 'fail', detail: `Unexpected error: ${probeError}` };
 }
 
+/** One file the Slack inbound path downloaded (docs/specs/mobile-native-chat-media.md §4.9). */
+export interface SlackInboundMedia {
+  channelId: string;
+  /** The message's thread ts (absent for a top-level message). */
+  threadTs: string | null;
+  /** The Slack message ts (for a standalone `file_shared` file, the id its log row carries). */
+  platformMessageId: string;
+  /** The file's position in the message's `files` list. */
+  fileIndex: number;
+  filePath: string;
+  /** The tag the session received for it: `[image:]` → photo, `[document:]` → file, `[voice]` → voice. */
+  declaredKind: 'photo' | 'file' | 'voice';
+  filename: string;
+  declaredType: string;
+  at: string;
+  durationMs?: number;
+  width?: number;
+  height?: number;
+}
+export type SlackInboundMediaHook = (info: SlackInboundMedia) => Promise<void> | void;
+
+/** Longest the inbound media copy is waited on before delivery stops caring about it. */
+const INBOUND_MEDIA_WAIT_MS = 30_000;
+
+function finiteNonNegative(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
+}
+
 export class SlackAdapter implements MessagingAdapter {
   readonly platform = 'slack';
 
@@ -149,6 +180,7 @@ export class SlackAdapter implements MessagingAdapter {
   private started = false;
   private channelNameLookups = new Set<string>();
   private authorizedUsers: Set<string>;
+  private inboundThreads = new Map<string, string>();
   private channelHistory: Map<string, RingBuffer<SlackMessage>> = new Map();
   private pendingPrompts: Map<string, PendingPrompt> = new Map();
   private seenMessageTs: Set<string> = new Set();
@@ -196,6 +228,34 @@ export class SlackAdapter implements MessagingAdapter {
   onListSessions: (() => Array<{ name: string; tmuxSession: string; status: string; alive: boolean }>) | null = null;
   /** Called to check if a session is alive */
   onIsSessionAlive: ((tmuxSession: string) => boolean) | null = null;
+  // Inbound media copy (docs/specs/mobile-native-chat-media.md §4.9): wired by the server only
+  // when native app media is on. Called after a successful download, beside delivery (the
+  // download stays on disk). Failures never affect delivery to the session.
+  private inboundMediaHook: SlackInboundMediaHook | null = null;
+
+  setInboundMediaHook(hook: SlackInboundMediaHook | null): void { this.inboundMediaHook = hook; }
+
+  /**
+   * Hand one downloaded file to the inbound media hook. Bounded: at most 30 s is waited, and any
+   * failure is logged and swallowed — the Slack delivery to the session goes on regardless.
+   */
+  private async copyInboundMedia(info: SlackInboundMedia): Promise<void> {
+    const hook = this.inboundMediaHook;
+    if (!hook) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      await Promise.race([
+        Promise.resolve().then(() => hook(info)),
+        new Promise<void>((resolve) => { timer = setTimeout(() => { console.warn(`[slack] inbound media copy for message ${info.platformMessageId} took over 30 s; delivery continues`); resolve(); }, INBOUND_MEDIA_WAIT_MS); }),
+      ]);
+    } catch (err) {
+      // @silent-fallback-ok — the hook reports its own degradation; delivery to the session is unaffected
+      console.warn(`[slack] inbound media copy failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   /** Called to transcribe a voice/audio file (via Whisper API) */
   transcribeVoice: ((filePath: string) => Promise<string>) | null = null;
   /** Called to handle standby commands (unstick, quiet, resume, restart) */
@@ -206,6 +266,18 @@ export class SlackAdapter implements MessagingAdapter {
   onClassifySessionDeath: ((sessionName: string) => Promise<{ cause: string; detail: string } | null>) | null = null;
   /** Intelligence provider for LLM-gated stall confirmation */
   intelligence: IntelligenceProvider | null = null;
+
+  /** message-origin-all-platforms §3: the origin ledger every outbound call writes to first. */
+  readonly originLedger: SlackOriginLedger;
+  private originContext: { machine: () => { id: string | null; name: string | null }; failClosed: () => boolean; report: (feature: string, detail: string) => void } = {
+    machine: () => ({ id: null, name: null }), failClosed: () => true,
+    report: (feature, detail) => console.warn(`[slack] ${feature}: ${detail}`),
+  };
+
+  /** Wired at server boot: this machine's identity, the live fail-closed switch and the degradation reporter. */
+  setOriginContext(ctx: Partial<SlackAdapter['originContext']>): void {
+    this.originContext = { ...this.originContext, ...ctx };
+  }
 
   constructor(config: Record<string, unknown>, stateDir: string) {
     this.config = config as unknown as SlackConfig;
@@ -245,7 +317,14 @@ export class SlackAdapter implements MessagingAdapter {
     const rawAgentName = this.config.workspaceName?.replace(/-agent$/i, '') || 'agent';
     const agentName = rawAgentName.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
     this.channelManager = new ChannelManager(this.apiClient, agentName);
-    this.fileHandler = new FileHandler(this.apiClient, this.config.botToken, stateDir);
+    // message-origin-all-platforms §3: every Slack send records its origin before it leaves.
+    this.originLedger = new SlackOriginLedger({
+      file: path.join(stateDir, 'state', 'slack-origins.jsonl'),
+      machine: () => this.originContext.machine(),
+      failClosed: () => this.originContext.failClosed(),
+      report: (feature, detail) => this.originContext.report(feature, detail),
+    });
+    this.fileHandler = new FileHandler(this.apiClient, this.config.botToken, stateDir, this.originLedger);
     this.logger = new MessageLogger({
       logPath: path.join(stateDir, 'slack-messages.jsonl'),
       maxLines: 100_000,
@@ -313,6 +392,7 @@ export class SlackAdapter implements MessagingAdapter {
       this.connectedTeamId = typeof authResult.team_id === 'string' ? authResult.team_id : null;
       if (this.botUserId) {
         console.log(`[slack] Bot user ID: ${this.botUserId}${this.connectedTeamId ? ` (team ${this.connectedTeamId})` : ''}`);
+        reportBotOnlyAuthorization(this.config.authorizedUserIds, this.botUserId);
       }
     } catch {
       console.warn('[slack] Could not fetch bot user ID — mention detection may not work');
@@ -420,9 +500,41 @@ export class SlackAdapter implements MessagingAdapter {
    * mrkdwn. Non-send methods and Block Kit payloads pass through unchanged —
    * see applySlackFormatter for the exact skip rules.
    */
-  private formattedApiCall(method: string, params: Record<string, unknown>): Promise<SlackApiResponse> {
-    const { outgoingParams } = applySlackFormatter(method, params, this.config.formatMode);
-    return this.apiClient.call(method, outgoingParams);
+  private async formattedApiCall(method: string, params: Record<string, unknown>): Promise<SlackApiResponse> {
+    // The origin footer is already-escaped mrkdwn: appended after formatting, never re-processed.
+    const { _originFooter: footer, ...rest } = params;
+    const { outgoingParams } = applySlackFormatter(method, rest, this.config.formatMode);
+    if (typeof footer === 'string' && footer && typeof outgoingParams.text === 'string') {
+      outgoingParams.text = `${outgoingParams.text}\n${footer}`;
+    }
+    if (!RECORDED_SLACK_METHODS.has(method)) return this.apiClient.call(method, outgoingParams);
+    const channel = String(outgoingParams.channel ?? '');
+    const threadTs = typeof outgoingParams.thread_ts === 'string' ? outgoingParams.thread_ts : null;
+    let intent: ReturnType<SlackOriginLedger['beginIntent']>;
+    try {
+      intent = this.originLedger.beginIntent(method, channel, threadTs);
+    } catch (err) {
+      if (err instanceof SlackOriginRecordingError && refusalWarrantsNotice(method)) void this.sendOriginOutageNotice(channel, threadTs);
+      throw err;
+    }
+    const result = await this.apiClient.call(method, outgoingParams);
+    const ts = method === 'chat.update' ? String(outgoingParams.ts ?? '') || null
+      : typeof result.ts === 'string' ? result.ts : null;
+    this.originLedger.completeReceipt(intent, ts);
+    return result;
+  }
+
+  /** The pre-recorded reachability notice for a conversation whose send was refused (§3). Never throws. */
+  private async sendOriginOutageNotice(channel: string, threadTs: string | null): Promise<void> {
+    const notice = this.originLedger.takeOutageNotice(channel, threadTs);
+    if (!notice) return;
+    try {
+      const result = await this.apiClient.call('chat.postMessage', { channel, text: ORIGIN_OUTAGE_NOTICE_TEXT, ...(threadTs ? { thread_ts: threadTs } : {}) });
+      this.originLedger.completeReceipt({ id: notice.reserveId, method: 'chat.postMessage', channel, threadTs, evidence: notice.evidence },
+        typeof result.ts === 'string' ? result.ts : null, notice.reserveId);
+    } catch (err) {
+      console.warn(`[slack] origin outage notice not sent: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   onMessage(handler: (message: Message) => Promise<void>): void {
@@ -553,9 +665,53 @@ export class SlackAdapter implements MessagingAdapter {
     return { channelId: routingKey.slice(0, idx), threadTs: routingKey.slice(idx + 1) };
   }
 
+  /**
+   * Human readers of a channel, for memory privacy. Null for any channel where the
+   * count cannot prove who reads it: a public channel is readable by the workspace
+   * without joining, and a shared channel by another organization.
+   */
+  async channelReaderCount(channelId: string): Promise<number | null> {
+    const channel = await this.channelManager.getChannelInfo(channelId, { includeMembers: true }) as unknown as {
+      is_private?: boolean; is_ext_shared?: boolean; num_members?: number;
+    };
+    if (!channel.is_private || channel.is_ext_shared || typeof channel.num_members !== 'number') return null;
+    return channel.num_members - 1;
+  }
+
+  /**
+   * The thread a channel's latest inbound message came from. A session serves the
+   * whole channel, so without this a reply to a thread lands at channel level
+   * (fb-99bf432a-05f). An explicit thread on the reply still wins.
+   */
+  noteInboundThread(channelId: string, threadTs: string | undefined): void {
+    if (threadTs) this.inboundThreads.set(channelId, threadTs);
+    else this.inboundThreads.delete(channelId);
+  }
+
+  inboundThreadFor(channelId: string): string | undefined {
+    return this.inboundThreads.get(channelId);
+  }
+
   /** Check if a user is authorized. */
   isAuthorized(userId: string): boolean {
     return this.authorizedUsers.has(userId);
+  }
+
+  /**
+   * Was this cached channel message written by a user the agent answers?
+   * False for the agent's own posts (its notices included), any other bot,
+   * people who are not authorized, and messages the agent deliberately did
+   * not take (a mention-only channel's unaddressed chatter). When the agent's own user id is not
+   * known yet, the answer is false: a monitor must never invent a waiting
+   * user (2026-11-02: every message, the agent's own included, counted as a
+   * user message, so the agent's notice re-armed itself forever).
+   */
+  isMessageFromUser(m: Pick<SlackMessage, 'user' | 'bot_id' | 'unaddressed' | 'subtype'>): boolean {
+    if (m.bot_id || m.unaddressed) return false;
+    if (m.subtype && m.subtype !== 'file_share') return false; // joins, edits, system events
+    if (!m.user || m.user.startsWith('B')) return false;
+    if (!this.botUserId || m.user === this.botUserId) return false;
+    return this.isAuthorized(m.user);
   }
 
   /**
@@ -572,7 +728,7 @@ export class SlackAdapter implements MessagingAdapter {
   async sendToChannel(
     channelId: string,
     text: string,
-    options?: { thread_ts?: string; formatMode?: SlackFormatMode },
+    options?: { thread_ts?: string; formatMode?: SlackFormatMode; originFooter?: string },
   ): Promise<string> {
     const parsed = this.parseRoutingKey(channelId);
     const params: Record<string, unknown> = { channel: parsed.channelId, text };
@@ -581,6 +737,7 @@ export class SlackAdapter implements MessagingAdapter {
     // Per-call formatter opt-out for callers that already author mrkdwn
     // (stripped from params inside the formatting funnel, never sent to Slack).
     if (options?.formatMode) params._formatMode = options.formatMode;
+    if (options?.originFooter) params._originFooter = options.originFooter;
     const result = await this.formattedApiCall('chat.postMessage', params);
     return result.ts as string;
   }
@@ -680,8 +837,8 @@ export class SlackAdapter implements MessagingAdapter {
   }
 
   /** Upload a file. */
-  async uploadFile(channelId: string, filePath: string, title?: string): Promise<void> {
-    return this.fileHandler.uploadFile(channelId, filePath, title);
+  async uploadFile(channelId: string, filePath: string, title?: string, options?: SlackUploadOptions): Promise<void> {
+    return this.fileHandler.uploadFile(channelId, filePath, title, options);
   }
 
   /** Download a file. */
@@ -1135,7 +1292,7 @@ export class SlackAdapter implements MessagingAdapter {
     // This ensures spawned sessions see the full conversation (both sides).
     if (event.bot_id) {
       const buffer = this.channelHistory.get(channelId) ?? new RingBuffer<SlackMessage>(RING_BUFFER_CAPACITY);
-      buffer.push({ ts, user: userId, text, channel: channelId, thread_ts: threadTs });
+      buffer.push({ ts, user: userId, text, channel: channelId, thread_ts: threadTs, bot_id: event.bot_id as string });
       this.channelHistory.set(channelId, buffer);
       // Bot replied in this channel — clear stall tracking (the agent answered)
       this.clearStallTracking(channelId);
@@ -1206,8 +1363,10 @@ export class SlackAdapter implements MessagingAdapter {
 
       if (!ambientSpeak) {
         // Still populate ring buffer for context, but don't process
+        // Marked unaddressed: the agent deliberately did not take this message,
+        // so it must never read as "a user is waiting for a reply".
         const buffer = this.channelHistory.get(channelId) ?? new RingBuffer<SlackMessage>(RING_BUFFER_CAPACITY);
-        buffer.push({ ts, user: userId, text, channel: channelId, thread_ts: threadTs });
+        buffer.push({ ts, user: userId, text, channel: channelId, thread_ts: threadTs, unaddressed: true });
         this.channelHistory.set(channelId, buffer);
         return;
       }
@@ -1239,7 +1398,7 @@ export class SlackAdapter implements MessagingAdapter {
     // Download attached files (images, documents, voice/audio) and append appropriate tags
     const filePaths: string[] = [];
     if (files && files.length > 0) {
-      for (const file of files) {
+      for (const [fileIndex, file] of files.entries()) {
         // Prefer url_private_download (direct download URL) over url_private (preview URL)
         const url = (file.url_private_download as string) || (file.url_private as string);
         const mimetype = file.mimetype as string ?? '';
@@ -1253,6 +1412,15 @@ export class SlackAdapter implements MessagingAdapter {
           const destPath = path.join(this.fileHandler.downloadDir, destName);
           const savedPath = await this.fileHandler.downloadFile(url, destPath);
           filePaths.push(savedPath);
+          // §4.9: the app's copy, recorded under the tag the session received (a shared text file
+          // inlined into the message is not recorded: its content is already in the text).
+          const keepForApp = (declaredKind: SlackInboundMedia['declaredKind']) => {
+            void this.copyInboundMedia({
+              channelId, threadTs: threadTs ?? null, platformMessageId: ts, fileIndex, filePath: savedPath, declaredKind,
+              filename, declaredType: mimetype || 'application/octet-stream', at: new Date(parseFloat(ts) * 1000).toISOString(),
+              width: finiteNonNegative(file.original_w), height: finiteNonNegative(file.original_h), durationMs: finiteNonNegative(file.duration_ms),
+            });
+          };
 
           // Detect text-based content (snippets, plain text, code, markdown, CSV, etc.)
           const isText = mimetype.startsWith('text/') ||
@@ -1340,22 +1508,27 @@ export class SlackAdapter implements MessagingAdapter {
             const imageValid = this._validateImageFile(savedPath);
             if (imageValid) {
               cleanText = cleanText ? `${cleanText} [image:${savedPath}]` : `[image:${savedPath}]`;
+              keepForApp('photo');
             } else {
               // File exists but isn't a valid/processable image — fall back to document
               console.warn(`[slack] Downloaded image failed validation, treating as document: ${savedPath}`);
               cleanText = cleanText ? `${cleanText} [document:${savedPath}]` : `[document:${savedPath}]`;
+              keepForApp('file');
             }
           } else if (isAudio && this.transcribeVoice) {
             // Voice message: transcribe and inject as [voice] transcript
             try {
               const transcript = await this.transcribeVoice(savedPath);
               cleanText = cleanText ? `${cleanText} [voice] ${transcript}` : `[voice] ${transcript}`;
+              keepForApp('voice');
             } catch (transcribeErr) {
               console.warn(`[slack] Voice transcription failed: ${(transcribeErr as Error).message}`);
               cleanText = cleanText ? `${cleanText} [document:${savedPath}]` : `[document:${savedPath}]`;
+              keepForApp('file');
             }
           } else {
             cleanText = cleanText ? `${cleanText} [document:${savedPath}]` : `[document:${savedPath}]`;
+            keepForApp('file');
           }
         } catch (err) {
           console.warn(`[slack] Failed to download file ${filename}: ${(err as Error).message}`);
@@ -1414,6 +1587,7 @@ export class SlackAdapter implements MessagingAdapter {
       senderName: sanitizeDisplayName(senderName),
       platformUserId: userId,
       platform: 'slack',
+      ...(threadTs && threadTs !== ts ? { threadTs } : {}),
     };
     this.logger.append(logEntry);
     this.onMessageLogged?.(logEntry);
@@ -1559,10 +1733,12 @@ export class SlackAdapter implements MessagingAdapter {
       const destName = `${isImage ? 'photo' : isAudio ? 'voice' : 'file'}-${Date.now()}-${fileId}.${filename.split('.').pop() ?? 'bin'}`;
       const destPath = path.join(this.fileHandler.downloadDir, destName);
       const savedPath = await this.fileHandler.downloadFile(url, destPath);
+      let keptAs: SlackInboundMedia['declaredKind'] = 'file';
 
       if (isImage) {
         const imageValid = this._validateImageFile(savedPath);
         cleanText = imageValid ? `[image:${savedPath}]` : `[document:${savedPath}]`;
+        if (imageValid) keptAs = 'photo';
         if (!imageValid) {
           console.warn(`[slack] Downloaded image failed validation, treating as document: ${savedPath}`);
         }
@@ -1570,6 +1746,7 @@ export class SlackAdapter implements MessagingAdapter {
         try {
           const transcript = await this.transcribeVoice(savedPath);
           cleanText = `[voice] ${transcript}`;
+          keptAs = 'voice';
         } catch (transcribeErr) {
           console.warn(`[slack] Voice transcription failed: ${(transcribeErr as Error).message}`);
           cleanText = `[document:${savedPath}]`;
@@ -1577,6 +1754,12 @@ export class SlackAdapter implements MessagingAdapter {
       } else {
         cleanText = `[document:${savedPath}]`;
       }
+      // §4.9: the app's copy, keyed by the id this file's log row carries (it has no message ts).
+      void this.copyInboundMedia({
+        channelId, threadTs: null, platformMessageId: ts, fileIndex: 0, filePath: savedPath, declaredKind: keptAs,
+        filename, declaredType: mimetype || 'application/octet-stream', at: new Date().toISOString(),
+        width: finiteNonNegative(fileInfo.original_w), height: finiteNonNegative(fileInfo.original_h), durationMs: finiteNonNegative(fileInfo.duration_ms),
+      });
     } catch (err) {
       console.error(`[slack] Failed to download standalone file ${filename}: ${(err as Error).message}`);
       cleanText = `[document:download-failed]`;
@@ -1696,6 +1879,28 @@ export class SlackAdapter implements MessagingAdapter {
   }
 
   // ── Message Search ──
+
+  /**
+   * Append a row to slack-messages.jsonl that did not arrive from Slack's event stream: the
+   * agent's own reply (Slack never echoes the bot's messages back), or a message the operator
+   * sent from the Instar app (mobile-native-conversations §4.9; it carries the app store's
+   * `eventId`). Without these rows the app's Slack history would show only one side.
+   */
+  logMessage(entry: { messageId: string; channelId: string; threadTs?: string | null; text: string; fromUser: boolean; senderName?: string; platformUserId?: string; eventId?: string; deviceId?: string }): void {
+    const row: LogEntry = {
+      messageId: entry.messageId, channelId: entry.channelId, text: entry.text, fromUser: entry.fromUser,
+      timestamp: new Date().toISOString(), sessionName: null, platform: 'slack',
+      ...(entry.senderName ? { senderName: sanitizeDisplayName(entry.senderName) } : {}),
+      ...(entry.platformUserId ? { platformUserId: entry.platformUserId } : {}),
+      ...(entry.threadTs ? { threadTs: entry.threadTs } : {}),
+      ...(entry.eventId ? { eventId: entry.eventId, via: 'mobile-device' as const } : {}),
+      ...(entry.deviceId ? { deviceId: entry.deviceId } : {}),
+    };
+    this.logger.append(row);
+  }
+
+  /** The path of slack-messages.jsonl (bounded tail reads by the app's history route). */
+  getLogPath(): string { return path.join(this.stateDir, 'slack-messages.jsonl'); }
 
   /** Search the JSONL message log. */
   searchLog(params: { query?: string; channelId?: string; since?: Date; limit?: number }): LogEntry[] {
@@ -2053,7 +2258,7 @@ export class SlackAdapter implements MessagingAdapter {
           if (!user || !ts) continue;
           // Skip join/leave subtypes
           if (subtype && subtype !== 'file_share') continue;
-          buffer.push({ ts, user, text, channel: channelId });
+          buffer.push({ ts, user, text, channel: channelId, bot_id: m.bot_id as string | undefined });
           count++;
         }
         this.channelHistory.set(channelId, buffer);
@@ -2206,7 +2411,10 @@ export class SlackAdapter implements MessagingAdapter {
               const user = m.user as string ?? m.bot_id as string;
               const ts = m.ts as string;
               if (!user || !ts) continue;
-              buffer.push({ ts, user, text: m.text as string ?? '', channel: channelId });
+              const subtype = m.subtype as string | undefined;
+              const rawText = m.text as string ?? '';
+              const unaddressed = this.respondMode === 'mention-only' && !channelId.startsWith('D') && !this._isBotMentioned(rawText);
+              buffer.push({ ts, user, text: rawText, channel: channelId, bot_id: m.bot_id as string | undefined, ...(unaddressed ? { unaddressed: true } : {}), ...(subtype ? { subtype } : {}) });
             }
             this.channelHistory.set(channelId, buffer);
 
@@ -2481,3 +2689,24 @@ export class SlackAdapter implements MessagingAdapter {
     return chunks;
   }
 }
+
+/**
+ * Signal only: `instar add slack` before 1.3.1633 stored the BOT's own user id as the only
+ * authorized user, so every person's message is ignored and nothing says why. Says it loudly at
+ * start; never changes who is authorized. True when the condition was found.
+ */
+export function reportBotOnlyAuthorization(authorizedUserIds: readonly string[], botUserId: string): boolean {
+  const people = authorizedUserIds.filter((id) => id !== botUserId);
+  if (people.length > 0 || authorizedUserIds.length === 0) return false;
+  const reason = `the only authorized Slack user is this agent's own bot (${botUserId}), so every person's message is ignored`;
+  console.warn(`[slack] ${reason}. Run instar add slack again and name the people it should answer.`);
+  DegradationReporter.getInstance().report({
+    feature: 'SlackAdapter.authorizedUsers',
+    primary: 'Answer the Slack people named in authorizedUserIds',
+    fallback: 'Ignore every inbound Slack message (fail-closed)',
+    reason,
+    impact: 'Nobody can talk to the agent over Slack until a person is authorized (instar add slack).',
+  });
+  return true;
+}
+

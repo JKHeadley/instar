@@ -126,6 +126,83 @@ nor treated as a user action or a failed agent.
 the user see a verified current name or an explicit missing-name state, with
 the identifier confined to links and diagnostic details?
 
+### Rule 8: Plain and Complete — Every Message Is Easy to Digest and Worth Reading
+
+Justin, 2026-11-03, on an automated "moved machines" notice (voice-typed; he
+said "pitfall" and "distinct"):
+
+> "This is a common pitfall with automated messages like this, and we really
+> need to improve our standard. Such that automated messages are very easy to
+> digest while having just the right amount of information to be valuable to
+> the user. All INSTAR communication with the user should balance ease of
+> digestion and information. If there's too little information, the message
+> is too vague and useless. If it's too technical, it's too hard to digest and
+> also useless. It should aim always to give the most distinct and critical
+> amount of information while being extremely easy to digest in plain language."
+
+Every message Instar sends a person, automated or written by a session, gives
+the most distinct and critical information in plain language:
+
+1. **What happened** — in the person's terms, naming the real thing (the
+   machine's name, the conversation, the setting they chose).
+2. **What it means for them** — the consequence, stated once.
+3. **What they need to do, if anything** — or nothing at all, if nothing is needed.
+
+The test has two sides, and a message can fail either one:
+
+- **Too vague** — it does not say what happened, why it matters, or what to do.
+  The reader cannot act on it.
+- **Too technical** — internal reasons, timeouts, ids, code names, file paths,
+  counters. The reader cannot digest it.
+
+Internal detail belongs in logs and the dashboard, never in the message. A
+reason code is translated into what happened, not pasted in. Say each thing
+once. Never promise something nothing will do (if nothing checks the step that
+was cut off, do not say "I'll check it"). A rewrite must keep the meaning
+accurate: plain wording never hides a real problem or makes an alarm sound fine.
+Whether a message should be sent at all is decided first, by **Near-Silent
+Notifications** and **Conservative Outbound** in the Standards Registry; this rule
+governs how a message that does go out is written.
+
+**Before and after** (real messages):
+
+| Before | Fails | After |
+|---|---|---|
+| "This conversation moved machines mid-task (drain bound (30000ms) reached — final turn may be partial). Work resumes on the new machine — the final turn before the move may be partial." | Too technical: a raw internal reason, a millisecond count, "final turn"; says the same thing twice; does not name the machine. | "I moved this conversation to the Mac Studio before I'd finished my last step, so that step may be incomplete. The conversation carries on there. If that step matters, ask me to check it." |
+| "Session respawned." | Too vague and too technical at once: "respawned" is internal, and it says nothing about what it means. | After a restart already announced for your message: nothing, because the reply confirms it. Otherwise: "I've restarted my session for this conversation and I'm ready." |
+| "🔄 Session restarting — message queued." | Too vague: why, and will the message be answered? | "🔄 My session for this conversation had stopped, so I'm starting a new one. Your message is saved and I'll answer it once I'm back." |
+| "this topic's pinned profile wasn't applied before my last restart — applying it now (the session will briefly restart when idle) [#1]" | Too technical: "pinned profile", a "[#1]" counter. | "The model settings you chose for this conversation didn't take effect when I last restarted. I'm applying them now, which means a brief restart once I'm idle." |
+| "The session has stopped. Send a new message to start a fresh session with full conversation context." | Too vague: does not say why it stopped or whether anything was lost. | Say the cause and the consequence: "My session for this conversation stopped because it ran out of room. Nothing you sent is lost — send a message and I'll carry on in a fresh session that has our conversation so far." (only the parts that are true for that stop) |
+| "You asked me to … but it looks like that setting reverted. Config topic.model = "gpt-6-sol", expected "Opus 5.5"" | Too technical: a config path and a raw model id. | "You asked me to switch this conversation to Opus 5.5, but it's running GPT-6 Sol again. I'm switching it back now; tell me if you meant to change it." |
+
+**How it holds.** Notices the server writes itself go out on deterministic
+paths that skip the LLM tone gate on purpose, because an alarm must arrive
+even when the model is down (Standards Registry, *The Operator Channel Is
+Sacred*). So their wording is held at build and test time, not at send time:
+
+- `src/messaging/userNotices.ts` is the catalog of fixed server notices. Its
+  test (`tests/unit/userNotices.test.ts`) renders every entry with realistic
+  inputs and runs `findPlainNoticeProblems()` (`src/messaging/plainNoticeCheck.ts`):
+  internal words, code identifiers, reason codes, millisecond counts, ids and
+  file paths fail; so does a notice too short to say what happened, what it
+  means and what to do. That word floor is the only mechanical check of the
+  too-vague side. Judging "enough information" beyond it is for the reviewer,
+  using the examples above.
+- `scripts/lint-plain-user-notices.mjs` (part of `npm run lint`) scans every
+  server send site (`sendToTopic`, `sendToChannel`, `sendDeterministicTelegramNotice`, …)
+  for a raw internal value pasted into user text (`${detail}`, `${reason}`,
+  `${err.message}`) and for internal words in the text. A frozen per-file
+  baseline holds today's count; a new one fails the build. A deliberate exception
+  carries `@plain-notice-ok: <why>`.
+- Messages a session writes go through the tone gate on `/telegram/reply`, and
+  scheduled-job sends get the jargon and file-path advisory
+  (`docs/specs/outbound-jargon-filepath-gap.md`). This rule is the wording
+  standard both of those enforce.
+
+**Test**: Read the message as the person would, with no knowledge of Instar's
+internals. Can they tell what happened, what it means for them and what to do,
+on one read, without meeting a word they would have to look up?
+
 ## Applying the Standard
 
 ### For New Features
@@ -138,6 +215,7 @@ Before implementation, every feature spec must include:
 4. **Recovery path audit** — Every auth/verification flow has a recovery mechanism for the most common failure
 5. **Default audit** — Defaults match the common case, not the most cautious case
 6. **Identity audit** — Every person-facing name is bound to its ID; missing names never fall back to IDs
+7. **Wording audit** — Every message the feature sends a person passes Rule 8: what happened, what it means, what to do; no internal detail; fixed server notices live in `src/messaging/userNotices.ts`
 
 ### For Existing Features
 
@@ -154,6 +232,7 @@ Add "UX & Agency" as a standard review dimension alongside Security, Privacy, Ar
 - Are defaults appropriate for the common case?
 - Is there a self-recovery path for common failure modes?
 - Does agent agency scale with the configured autonomy level?
+- Is every message to the person plain and complete (Rule 8) — neither too vague to act on nor too technical to digest?
 
 ## Anti-Patterns
 
@@ -162,6 +241,8 @@ Add "UX & Agency" as a standard review dimension alongside Security, Privacy, Ar
 - **Binary agency** — the agent either does everything or nothing, with no middle ground
 - **Configuration archaeology** — the user has to dig through config files to unlock a workflow that should be a setup wizard question
 - **Dead-end confirmations** — "You're all set." [cursor blinks]
+- **Pasted internals** — a reason code, timeout or id interpolated into a user message ("drain bound (30000ms) reached")
+- **Bare status** — "Session respawned." / "The session has stopped." with no cause, consequence or next step
 - **Context hoarding** — the agent has information relevant to the user's decision but doesn't surface it
 - **Security theater defaults** — defaults so restrictive that every user immediately has to loosen them, teaching them to override security prompts
 

@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-02T14:16:19.334Z",
+  "slug": "machine-self-maintenance-browser-care-lock-reading",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 14,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/BrowserCareProbes.ts",
+      "src/core/MachineLockStateReader.ts",
+      "src/monitoring/machineMaintenance/BrowserCare.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

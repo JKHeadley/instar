@@ -105,6 +105,7 @@ import type {
 import type { CodexSpawnFence, FenceCaptureResult } from './CodexResumeMap.js';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { PROFILE_REAPPLY_NOTICE } from '../messaging/userNotices.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types. NOTE: several of these arguably belong in src/core/types.ts, which is
@@ -194,7 +195,14 @@ export interface OrchestratorSessionPort {
   spawn(
     topicKey: string,
     resolved: ResolvedTopicProfile,
-    directive: { method: SwapMethod; resumeId?: string },
+    directive: {
+      method: SwapMethod;
+      resumeId?: string;
+      /** The tmux session this respawn replaces — lets the spawn port carry
+       *  that session's original spawn brief into a CONTINUATION respawn
+       *  (the brief is not in the topic's chat history). */
+      replacedSessionName?: string;
+    },
   ): Promise<RespawnSpawnOutcome>;
 }
 
@@ -1080,7 +1088,11 @@ export class TopicProfileOrchestrator {
       return;
     }
 
-    const outcome = await this.deps.sessions.spawn(key, resolved, { method, resumeId });
+    const outcome = await this.deps.sessions.spawn(key, resolved, {
+      method,
+      resumeId,
+      replacedSessionName: session.sessionName,
+    });
     if (outcome.ok) {
       const applied = outcome.applied ?? resolvedToApplied(resolved);
       this.recordApplied(key, applied);
@@ -1480,6 +1492,15 @@ export class TopicProfileOrchestrator {
     for (const { topicKey } of live) {
       const resolved = this.deps.resolveProfile(topicKey);
       const lastApplied = this.durable.lastApplied[topicKey]?.profile ?? null;
+      if (!lastApplied) {
+        // No record of what this session launched with (it was started by a
+        // path that never reported its profile). That is NOT evidence of
+        // divergence: restarting on it killed freshly spawned sessions and
+        // lost their in-flight prompt. Leave it alone — the profile applies
+        // at the session's next natural spawn, which records what it used.
+        this.audit_({ type: 'boot-sweep-unknown-applied', topic: topicKey });
+        continue;
+      }
       if (!this.matchesExpectedLive(topicKey, lastApplied, resolved)) {
         divergent.push(topicKey);
       }
@@ -1496,7 +1517,7 @@ export class TopicProfileOrchestrator {
         this.deps.disclose(
           topicKey,
           this.stamp(
-            "this topic's pinned profile wasn't applied before my last restart — applying it now (the session will briefly restart when idle)",
+            PROFILE_REAPPLY_NOTICE,
             seq,
           ),
           { allowDuplicate: true, auditSeq: seq },

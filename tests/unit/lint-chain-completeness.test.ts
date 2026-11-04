@@ -87,6 +87,8 @@ const REQUIRED_LINTS = [
   'lint-journal-actuation-ban.js',
   'lint-llm-attribution.js',
   'lint-migration-consumer-completeness.js',
+  'lint-ecosystem-adoption.mjs',
+  'lint-plain-user-notices.mjs',
   'lint-model-registry-freshness.mjs',
   'lint-nature-chains.mjs',
   'lint-no-blocking-process-scans.js',

@@ -27,6 +27,7 @@ export const ICONS = {
   wallet: '<rect x="3" y="6" width="18" height="14" rx="2"/><path d="M16 13h2M3 10h18"/>',
   chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>',
   stamp: '<path d="M5 21h14M7 17h10l1-4H6l1 4zM12 13V8a3 3 0 1 0-3-3"/>',
+  phone: '<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>',
   lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
   toggle: '<rect x="2" y="7" width="20" height="10" rx="5"/><circle cx="16" cy="12" r="3"/>',
   sparkle: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>',
@@ -43,9 +44,6 @@ export const GROUPS = [
       { id: 'jobs', label: 'Schedule', icon: 'clock', desc: 'What runs on its own, and whether it actually ran: late, failing and running-long jobs first.' },
       { id: 'commitments', label: 'Promises', icon: 'check', desc: 'Every promise I made, what it is waiting on, and whether it was kept.' },
       { id: 'projects', label: 'Plans', icon: 'layers', desc: 'Longer work and multi-round plans: how each is going, what needs your OK, and what is in the way.' },
-      { id: 'initiatives', label: 'Initiatives', icon: 'flag', desc: 'Now inside Plans: longer efforts in flight, and the items that need you.' },
-      { id: 'blockers', label: 'Blockers', icon: 'alert', desc: 'Now inside Plans, under “In the way”: what looked stuck, and how sure that still is.' },
-      { id: 'dropzone', label: 'Send content', icon: 'send', desc: 'Paste text or files straight into a session.' },
     ],
   },
   {
@@ -57,7 +55,6 @@ export const GROUPS = [
       { id: 'subscriptions', label: 'Accounts', icon: 'key', desc: 'Subscriptions and sign-ins: usage left before reset, and fixing a sign-in from your phone.' },
       { id: 'resources', label: 'Resource usage', icon: 'cpu', desc: 'CPU and memory for the server and every session.' },
       { id: 'spend', label: 'What thinking costs', icon: 'wallet', desc: 'Recorded AI cost on this machine: pay-per-use by model, background checks, what your conversations process, and the spending limits.' },
-      { id: 'tokens', label: 'Tokens', icon: 'coins', desc: 'Now inside What thinking costs: how much text your conversations process, Claude and Codex kept apart.' },
     ],
   },
   {
@@ -65,8 +62,9 @@ export const GROUPS = [
     question: 'Who is talking to whom, and with what permission?',
     tabs: [
       { id: 'threadline', label: 'Other agents', icon: 'chat', desc: 'Who is waiting on you, whether each agent I work with is actually there, pairing new ones, and our conversations.' },
-      { id: 'origins', label: 'Messages to you', icon: 'chat', desc: 'Replies held back from you, and the who-wrote-this footer.' },
+      { id: 'origins', label: 'Messages to you', icon: 'chat', desc: 'Who wrote each message I sent you, and the who-wrote-this footer.' },
       { id: 'mandates', label: 'Permission slips', icon: 'stamp', desc: 'What you have let agents do together, who is waiting for your approval, and every allow and refusal.' },
+      { id: 'phones', label: 'Phones', icon: 'phone', desc: 'Pair the Instar iPhone app: a waiting phone’s code, large with a Copy button, after your PIN (when there is no Telegram), and the phones already paired.' },
       { id: 'secrets', label: 'Passwords & keys', icon: 'lock', desc: 'Whether the agent is waiting on a password, a safe one-time link to hand one over, and the keys it already holds.' },
     ],
   },
@@ -80,21 +78,21 @@ export const GROUPS = [
     ],
     hood: [
       { id: 'insights', label: 'Insights', desc: 'A plain-language read of what stands out.' },
-      { id: 'pr-pipeline', label: 'PR pipeline', desc: 'Now inside Development (Shipping): pull requests on their way to merge, and which need you.' },
-      { id: 'evidence', label: 'Evidence', desc: 'Now inside How I’m doing inside: look up why I believe something, and what else relies on the same source.' },
-      { id: 'routing-map', label: 'Routing map', desc: 'Now inside What thinking costs: which model handles each kind of background work, and the backups.' },
-      { id: 'llm-activity', label: 'LLM activity', desc: 'Now inside What thinking costs: what the automatic AI checks did, failed or skipped.' },
-      { id: 'throughput', label: 'Throughput', desc: 'Now inside Development (Pace): how much merged, how fast, and how much was redone.' },
       { id: 'integrated-being', label: 'How I’m doing inside', desc: 'Conversation history, recurring problems, checks on my claims.' },
-      { id: 'process-health', label: 'Process health', desc: 'Now inside How I’m doing inside: problems I caught in my own work, and what keeps coming back.' },
-      { id: 'feedback-drain', label: 'Feedback drain', desc: 'Now inside Development (Feedback): the approvals it needs from you, and feedback being turned into fixes.' },
     ],
   },
 ];
 
-/** Every legacy tab id the console links to. */
+/**
+ * Legacy tabs whose content now lives inside another console page. They get
+ * no tile of their own (a tile that only says "now inside X" is clutter);
+ * their old links still land on the page that holds them (NATIVE_PAGES).
+ */
+export const MERGED = ['dropzone', 'initiatives', 'blockers', 'tokens', 'pr-pipeline', 'evidence', 'routing-map', 'llm-activity', 'throughput', 'process-health', 'feedback-drain'];
+
+/** Every legacy tab id the console links to, including the merged ones. */
 export function allTabIds() {
-  return GROUPS.flatMap((g) => [...g.tabs, ...(g.hood || [])].map((t) => t.id));
+  return [...GROUPS.flatMap((g) => [...g.tabs, ...(g.hood || [])].map((t) => t.id)), ...MERGED];
 }
 
 /** Features rebuilt natively in the console, by legacy tab id. */
@@ -102,6 +100,8 @@ export const NATIVE_PAGES = {
   commitments: '#/work/promises',
   jobs: '#/work/schedule',
   sessions: '#/work/sessions',
+  // Sending text or files now happens in each session's own message box.
+  dropzone: '#/work/sessions',
   projects: '#/work/plans',
   initiatives: '#/work/plans',
   blockers: '#/work/plans?s=in-the-way',
@@ -118,6 +118,8 @@ export const NATIVE_PAGES = {
   features: '#/settings/allowed',
   'preferences-learning': '#/settings/learned',
   files: '#/settings/files',
+  // The pairing code page: its own strict page, outside the console (PIN, then the code + Copy).
+  phones: '/dashboard/pair',
   'pr-pipeline': '#/work/development?s=shipping',
   throughput: '#/work/development?s=pace',
   'feedback-drain': '#/work/development?s=feedback',
@@ -131,9 +133,12 @@ export function tabHref(tabId) {
   return NATIVE_PAGES[tabId] || legacyHref(tabId);
 }
 
+/** The legacy dashboard's own address (/dashboard itself opens this console). */
+export const LEGACY_DASHBOARD = '/dashboard/legacy';
+
 /** The legacy URL for a tab. Ordinary link; nothing is embedded. */
 export function legacyHref(tabId) {
-  return `/dashboard?tab=${encodeURIComponent(tabId)}`;
+  return `${LEGACY_DASHBOARD}?tab=${encodeURIComponent(tabId)}`;
 }
 
 export function icon(name) {

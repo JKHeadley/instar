@@ -12,7 +12,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
-import { MacDesktopHost } from '../../src/core/MacDesktopHost.js';
+import { MacDesktopHost, macDesktopHelperPath } from '../../src/core/MacDesktopHost.js';
 import { publishDashboardPreview } from '../../src/server/dashboardPreview.js';
 
 async function boot(enabled: boolean, frontConfigured = true) {
@@ -42,6 +42,12 @@ async function boot(enabled: boolean, frontConfigured = true) {
   await server.start();
   return { server, dir, machineId, stateDir, config };
 }
+
+// A live Mac target runs the real packaged helper from this checkout's path,
+// and macOS adds a new entry to its privacy lists for every new path, so each
+// verify clone left another row on the operator's Mac (2026-11-02). These run
+// only on a Mac set aside for it: INSTAR_REAL_DESKTOP_HELPER_TESTS=1.
+const realHelperOptIn = process.platform === 'darwin' && process.env.INSTAR_REAL_DESKTOP_HELPER_TESTS === '1';
 
 describe('native desktop production boot', () => {
   it('stays dark without explicit opt-in', async () => {
@@ -90,7 +96,7 @@ describe('native desktop production boot', () => {
     }
   });
 
-  it.skipIf(process.platform !== 'darwin')('wires a live Mac target into the production route', async () => {
+  it.skipIf(!realHelperOptIn)('wires a live Mac target into the production route', async () => {
     const { server, dir, machineId, config } = await boot(true);
     try {
       const unlock = await request(server.getApp()).post('/dashboard/unlock').send({ pin: '123456' });
@@ -139,7 +145,29 @@ describe('native desktop production boot', () => {
     }
   });
 
-  it.skipIf(process.platform !== 'darwin')('limits desktop PIN guesses and persists the attempt budget', async () => {
+  it.skipIf(!realHelperOptIn)('reports which helper copy is live on the production diagnostics route', async () => {
+    const { server, dir, config } = await boot(true);
+    try {
+      const response = await request(server.getApp()).get('/desktop/diagnostics')
+        .set('Authorization', `Bearer ${config.authToken}`);
+      expect(response.status).toBe(200);
+      expect(response.body.targetConstructed).toBe(true);
+      // Under a test runner the kept copy stays off by default, so a test can
+      // never touch this Mac's real one. Asserting the fallback proves the
+      // retention object reached the host through the production constructor.
+      expect(response.body.helperSource).toBe('packaged');
+      expect(response.body.helperFallback).toBe('disabled');
+      // Guided setup names what the production host serves, not what retention would pick.
+      const served = server['macDesktopHost']!.servedHelperPath();
+      expect(served).toBe(macDesktopHelperPath());
+      expect((await server['desktopSetupTarget']!.status()).helperPath).toBe(served);
+    } finally {
+      await server.stop();
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/desktop-boot-lifecycle.test.ts:helper-diagnostics' });
+    }
+  });
+
+  it.skipIf(!realHelperOptIn)('limits desktop PIN guesses and persists the attempt budget', async () => {
     const { server, dir, stateDir } = await boot(true);
     try {
       for (let attempt = 0; attempt < 5; attempt++) {

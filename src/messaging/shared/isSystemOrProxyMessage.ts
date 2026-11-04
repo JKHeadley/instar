@@ -22,16 +22,17 @@
  * path silently decline when the only from-agent message since the user's
  * question was a PresenceProxy standby.
  */
+import { LIFECYCLE_NOTICE_EXACT, LIFECYCLE_NOTICE_PREFIXES } from '../userNotices.js';
+
 export function isSystemOrProxyMessage(text: string | null | undefined): boolean {
   if (!text) return true;
   const t = text.trim();
   if (!t) return true;
   if (t === '✓ Delivered' || t.startsWith('✓ Delivered')) return true;
-  if (
-    t.startsWith('🔄 Session restarting')
-    || t === 'Session respawned.'
-    || t === 'Session terminated.'
-  ) return true;
+  // Server lifecycle notices — one list, owned by the notice catalog, so a
+  // reworded notice can never start passing as a real answer.
+  if (LIFECYCLE_NOTICE_EXACT.has(t)) return true;
+  if (LIFECYCLE_NOTICE_PREFIXES.some((p) => t.startsWith(p))) return true;
   if (t.startsWith('Send a new message to start')) return true;
   // PresenceProxy standby messages — tiered LLM status while agent is busy.
   if (t.startsWith('🔭')) return true;

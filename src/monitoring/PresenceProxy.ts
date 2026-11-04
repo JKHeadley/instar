@@ -13,6 +13,7 @@
  */
 
 import * as fs from 'fs';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { execSync } from 'child_process';
@@ -157,6 +158,15 @@ export interface PresenceProxyConfig {
    * (the honest classifier is then the only voice, which is still correct).
    */
   isStuckRecoveryActive?: (sessionName: string) => boolean;
+
+  /**
+   * True while a session is being spawned (or respawned) for this topic /
+   * Slack channel. A session that is still starting is not "stopped": while
+   * this reads true the dead-session alarm is held and the check re-runs, for
+   * at most the Tier 3 delay (a spawn that never lands is then reported).
+   * Absent → no spawn signal; the Tier 1 grace below still applies.
+   */
+  isSessionStarting?: (topicId: number) => boolean;
 
   /**
    * honest-session-state-surfaces Finding (b): when true, the honest stuck
@@ -784,6 +794,8 @@ export class PresenceProxy {
   private tier1DelayMs: number;
   private tier2DelayMs: number;
   private tier3DelayMs: number;
+  /** Topics whose last check was held or deferred (dead read / spawn in progress). */
+  private heldTopics = new Set<number>();
   private tier3RecheckDelayMs: number;
   private silenceDurationMs: number;
   private prefix: string;
@@ -1097,19 +1109,59 @@ export class PresenceProxy {
     // Check session — retry once after a short delay to avoid transient false negatives.
     // isSessionAlive can briefly return false during process restarts, compaction, or
     // pane command transitions. A single false reading should NOT fast-track to "dead."
-    const sessionName = state.sessionName;
-    let alive = this.config.isSessionAlive(sessionName);
+    //
+    // The name recorded when the message was logged can be stale: Slack and
+    // Telegram log the inbound message BEFORE they find the old session dead
+    // and spawn a replacement. Re-resolve before every liveness read so the
+    // watcher follows the session that is actually answering.
+    this.refreshSessionName(topicId, state);
+    let alive = this.config.isSessionAlive(state.sessionName);
 
     if (!alive) {
       // Wait 5 seconds and recheck before acting on a negative result
       await new Promise(resolve => setTimeout(resolve, 5000));
       if (state.cancelled) return; // Agent may have responded during the wait
-      alive = this.config.isSessionAlive(sessionName);
+      this.refreshSessionName(topicId, state);
+      alive = this.config.isSessionAlive(state.sessionName);
     }
 
-    if (!alive && tier < 3) {
-      // Dead session — skip to Tier 3 logic
-      return this.fireTier(topicId, 3);
+    if (!alive) {
+      const elapsed = Date.now() - state.userMessageAt;
+      // A session being started for this message is not "stopped".
+      if (elapsed < this.tier3DelayMs && this.isSessionStarting(topicId)) {
+        console.log(`[PresenceProxy] Holding Tier ${tier} for topic ${topicId} — a session is starting`);
+        this.heldTopics.add(topicId);
+        this.scheduleTier(topicId, tier, this.tier1DelayMs);
+        return;
+      }
+      // At the first check, give a replacement until the Tier 2 mark to appear
+      // before calling the conversation stopped.
+      if (tier === 1) {
+        console.log(`[PresenceProxy] Session ${state.sessionName} not running for topic ${topicId} at Tier 1 — re-checking at Tier 2`);
+        // Tier 1's stage has passed (as on the ack-suppressed path); Tier 2
+        // requires it, and must keep the watch going if a replacement appears.
+        state.tier1FiredAt = Date.now();
+        this.heldTopics.add(topicId);
+        this.scheduleTier(topicId, 2, Math.max(0, this.tier2DelayMs - elapsed));
+        return;
+      }
+      if (tier < 3) {
+        // Dead session with no replacement — skip to Tier 3 logic
+        return this.fireTier(topicId, 3);
+      }
+    }
+
+    // A hold (dead read / spawn in progress) can end after later tier marks
+    // have passed. Run the tier that matches the elapsed time, so the next
+    // tier is still scheduled and the watch never silently ends.
+    // Only after a hold: a plain on-time check keeps its own tier.
+    if (alive && this.heldTopics.delete(topicId)) {
+      const elapsed = Date.now() - state.userMessageAt;
+      if (tier === 1 && elapsed >= this.tier2DelayMs) {
+        state.tier1FiredAt = state.tier1FiredAt ?? Date.now();
+        tier = 2;
+      }
+      if (tier === 2 && elapsed >= this.tier3DelayMs) tier = 3;
     }
 
     switch (tier) {
@@ -1146,8 +1198,10 @@ export class PresenceProxy {
     if (!this.config.standbyHonestyTiers) return null;
     if (this.config.hasContextExhaustionLatch?.(topicId)) {
       if (this.config.isStuckRecoveryActive?.(sessionName)) {
+        featureEvidence.record('monitoring.standbyHonestyTiers', { kind: 'held', reason: 'latched-recovery-owns-voice', context: { tier: tierLabel, kind: 'context-exhaustion-latch' } });
         return PRESENCE_SUPPRESS;
       }
+      featureEvidence.record('monitoring.standbyHonestyTiers', { kind: 'fired', reason: 'honest-message:context-exhaustion-latch', context: { tier: tierLabel, kind: 'context-exhaustion-latch' } });
       const prefix = tierLabel === 1
         ? `${this.prefix} `
         : `${this.prefix} 2-minute update — `;
@@ -1159,6 +1213,7 @@ export class PresenceProxy {
       stuck = classifyStuckSignature(snapshot);
     } catch {
       // Fail toward today's behavior — never fabricate an honest claim.
+      featureEvidence.record('monitoring.standbyHonestyTiers', { kind: 'error', reason: 'stuck-classification-threw', context: { tier: tierLabel } });
       return null;
     }
     if (!stuck) return null;
@@ -1167,13 +1222,18 @@ export class PresenceProxy {
     // cannot does it raise a Terminal Attention defect (the sole surface).
     // Suppress here UNCONDITIONALLY (a consumer policy, not a classifier
     // contract inversion), with no lifecycle gap.
-    if (stuck.kind === 'approval-prompt-waiting') return PRESENCE_SUPPRESS;
+    if (stuck.kind === 'approval-prompt-waiting') {
+      featureEvidence.record('monitoring.standbyHonestyTiers', { kind: 'held', reason: 'approval-prompt-never-surfaced', context: { tier: tierLabel, kind: stuck.kind } });
+      return PRESENCE_SUPPRESS;
+    }
     // A recovery sentinel already messaging about this stuck state owns the
     // voice — mirror Tier 3's silent return (suppress, do NOT fall through to
     // the "actively working" fallback, which would re-introduce the lie).
     if (this.config.isStuckRecoveryActive?.(sessionName)) {
+      featureEvidence.record('monitoring.standbyHonestyTiers', { kind: 'held', reason: 'recovery-owns-voice', context: { tier: tierLabel, kind: stuck.kind } });
       return PRESENCE_SUPPRESS;
     }
+    featureEvidence.record('monitoring.standbyHonestyTiers', { kind: 'fired', reason: `honest-message:${stuck.kind}`, context: { tier: tierLabel, kind: stuck.kind } });
     const prefix = tierLabel === 1
       ? `${this.prefix} `
       : `${this.prefix} 2-minute update — `;
@@ -1181,6 +1241,43 @@ export class PresenceProxy {
   }
 
   // ─── Tier 1: Status Update ─────────────────────────────────────────────
+
+  /**
+   * Point the watcher at the session currently registered for this topic /
+   * channel. A replacement spawned after the message was logged gets a new
+   * name; the old one reads dead. The pre-message baseline belonged to the old
+   * pane, so it is dropped on a switch.
+   */
+  private refreshSessionName(topicId: number, state: PresenceState): void {
+    let current: string | null = null;
+    try {
+      current = this.config.getSessionForTopic(topicId);
+    } catch {
+      return; // @silent-fallback-ok — lookup failed ⇒ keep watching the recorded name
+    }
+    if (current && current !== state.sessionName) {
+      console.log(`[PresenceProxy] Topic ${topicId} now served by ${current} (was ${state.sessionName}) — following the replacement`);
+      state.sessionName = current;
+      state.userMessageBaselineSnapshot = null;
+    }
+  }
+
+  private isSessionStarting(topicId: number): boolean {
+    try {
+      return this.config.isSessionStarting?.(topicId) === true;
+    } catch {
+      return false; // @silent-fallback-ok — no spawn signal ⇒ the Tier 1 grace still applies
+    }
+  }
+
+  /**
+   * The Tier 3 label. "5-minute check" only when that much time has really
+   * passed since the user's message; an earlier report carries no time claim.
+   */
+  private tier3Label(state: PresenceState): string {
+    const elapsed = Date.now() - state.userMessageAt;
+    return elapsed >= this.tier3DelayMs * 0.9 ? '5-minute check' : 'Check';
+  }
 
   private async fireTier1(topicId: number, state: PresenceState): Promise<void> {
     const lines = this.config.maxTmuxLines?.t1 ?? 50;
@@ -1428,6 +1525,7 @@ export class PresenceProxy {
   // ─── Tier 3: Stall Assessment ──────────────────────────────────────────
 
   private async fireTier3(topicId: number, state: PresenceState): Promise<void> {
+    this.refreshSessionName(topicId, state);
     // ── Session idle: agent completed work but didn't relay response ──
     // Same check as tier 2 — if the agent finished, skip tier 3 entirely.
     {
@@ -1471,6 +1569,21 @@ export class PresenceProxy {
         return;
       }
       alive = this.config.isSessionAlive(state.sessionName);
+      if (!alive) {
+        const before = state.sessionName;
+        this.refreshSessionName(topicId, state);
+        if (state.sessionName !== before) {
+          // A replacement registered during the wait — hand the triage claim
+          // over and assess the live session instead.
+          this.config.releaseTriageMutex?.(before, 'presence-proxy');
+          if (this.config.acquireTriageMutex) {
+            const held = this.config.isTriageMutexHeld?.(state.sessionName);
+            if (held && held !== 'presence-proxy') return; // StallTriageNurse owns it
+            this.config.acquireTriageMutex(state.sessionName, 'presence-proxy');
+          }
+          alive = this.config.isSessionAlive(state.sessionName);
+        }
+      }
     }
 
     const lines = this.config.maxTmuxLines?.t3 ?? 200;
@@ -1513,7 +1626,7 @@ export class PresenceProxy {
         state.tier3FiredAt = Date.now();
         state.tier3Assessment = 'waiting';
         state.tier3Summary = quotaMessage;
-        await this.sendProxyMessage(topicId, `${this.prefix} 5-minute check — ${quotaMessage}`, 3);
+        await this.sendProxyMessage(topicId, `${this.prefix} ${this.tier3Label(state)} — ${quotaMessage}`, 3);
         this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
         this.persistState(topicId, state);
         this.cleanupState(topicId);
@@ -1552,7 +1665,7 @@ export class PresenceProxy {
       state.tier3Summary = 'Latched context exhaustion';
       await this.sendProxyMessage(
         topicId,
-        `${this.prefix} 5-minute check — This conversation is latched at its context limit and cannot produce another reply until recovery succeeds.`,
+        `${this.prefix} ${this.tier3Label(state)} — This conversation is latched at its context limit and cannot produce another reply until recovery succeeds.`,
         3,
       );
       this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
@@ -1738,14 +1851,18 @@ export class PresenceProxy {
 
     if (assessment === 'stalled' || assessment === 'dead') {
       if (assessment === 'dead') originAuthor = deterministicAutomationAuthor();
-      const action = assessment === 'dead' ? 'The session appears to have stopped.' : `${this.config.agentName} appears to be stuck — ${summary}`;
-      message = `${this.prefix} 5-minute check — ${action}\n\nReply "unstick" to attempt recovery, or "restart" to start a fresh session.`;
+      const action = assessment === 'dead'
+        ? (this.tier3Label(state) === '5-minute check'
+          ? 'The session appears to have stopped.'
+          : 'The session handling this conversation has stopped, and no new session has started for it.')
+        : `${this.config.agentName} appears to be stuck — ${summary}`;
+      message = `${this.prefix} ${this.tier3Label(state)} — ${action}\n\nReply "unstick" to attempt recovery, or "restart" to start a fresh session.`;
     } else {
       // Working or waiting
       const guard = guardProxyOutput(summary);
       const safeSummary = guard.safe ? summary : 'making progress on your request';
       if (!guard.safe) originAuthor = deterministicAutomationAuthor();
-      message = `${this.prefix} 5-minute check — ${this.config.agentName} is still actively working — ${safeSummary}. I'll keep watching.`;
+      message = `${this.prefix} ${this.tier3Label(state)} — ${this.config.agentName} is still actively working — ${safeSummary}. I'll keep watching.`;
 
       // Schedule re-check
       this.scheduleTier(topicId, 3, this.tier3RecheckDelayMs);

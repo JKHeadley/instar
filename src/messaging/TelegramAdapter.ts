@@ -1,4 +1,5 @@
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError } from './telegram-origin/types.js';
+import { consolePageUrl } from '../server/dashboardPaths.js';
 import { recordTelegramEditRejection, takeTelegramEditRejection } from './TelegramEditRejection.js';
 /**
  * Telegram Messaging Adapter — send/receive messages via Telegram Bot API.
@@ -12,12 +13,14 @@ import { recordTelegramEditRejection, takeTelegramEditRejection } from './Telegr
  */
 
 import fs from 'node:fs';
-import { verifiedChannelIdentity } from './shared/channelIdentity.js';
+import { verifiedChannelIdentity, nameIdsInText } from './shared/channelIdentity.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
 import { telegramFetch } from './telegram-egress.js';
+import { multipartFileName, multipartMediaType, telegramGroupTypes, telegramKindFor, telegramMethodFor, type TelegramMediaKind } from './telegramMedia.js';
 import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { resolveApprovalOwner } from '../threadline/PairingInviteTelegram.js';
 import { NotificationBatcher, NotificationTier } from './NotificationBatcher.js';
 import type { ContentValidationConfig } from './TopicContentValidator.js';
 import { validateTopicContent, getTopicPurpose, classifyContent } from './TopicContentValidator.js';
@@ -41,6 +44,7 @@ import {
   recordFormatFallbackPlainRetry,
 } from './telegramFormatMetrics.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { transcribeAudioFile } from '../core/VoiceTranscription.js';
 import { pickDashboardPin } from '../core/dashboardPin.js';
 import { stopAutonomousTopic, type AutonomousJournalSeam } from '../core/AutonomousSessions.js';
 import { AttentionTopicGuard, TopicFloodBudgetError, type AttentionTopicGuardConfig } from './AttentionTopicGuard.js';
@@ -48,7 +52,7 @@ import { buildStallAlertDecisionContext } from './shared/StallAlertDecisionConte
 import { DP_TELEGRAM_STALL_CONFIRM } from '../data/provenanceCoverage.js';
 import { AspAuthorshipJoin, type MessageAuthorship } from '../core/AspAuthorshipJoin.js';
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
-import { normalizeInboundThread, toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from './telegramTopicSpace.js';
+import { normalizeInboundThread, inboundTopicId, toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from './telegramTopicSpace.js';
 import { admitItemToHub, attentionPriorityRank, recordHeldHubPost, resolveHubFilterMode, type AttentionHubFilterMode } from './attentionHubPolicy.js';
 import { topicRef } from './shared/topicRef.js';
 import {
@@ -323,6 +327,9 @@ interface LogEntry {
   via?: 'mobile-device';
   deviceId?: string;
   eventId?: string;
+  /** People and roles: the app sender's role and registry person (MSP only; namespaced by machine). */
+  senderRole?: 'owner' | 'msp';
+  senderPerson?: { machineId: string; userId: string };
   /** Structural origin, stamped at the send/receive seam. */
   provenance: MessageProvenance;
   /** Joined at read time from the ASP classification authority. */
@@ -581,6 +588,23 @@ interface PendingPromise {
 /** Longest a send waits at boot for the forward-to-holder wiring (see holderForwardReady). */
 export const HOLDER_FORWARD_WIRING_WAIT_MS = 30_000;
 
+const UNKNOWN_OWNER_TAP_REFUSAL = "I can't confirm who my owner is on this machine yet, so this button can't be answered here.";
+
+/** One file a Telegram inbound handler downloaded (media spec §4.9). */
+export interface TelegramInboundMedia {
+  topicId: number;
+  platformMessageId: number;
+  filePath: string;
+  declaredKind: 'photo' | 'file' | 'voice';
+  filename: string;
+  declaredType: string;
+  at: string;
+  durationMs?: number;
+  width?: number;
+  height?: number;
+}
+export type TelegramInboundMediaHook = (info: TelegramInboundMedia) => Promise<void> | void;
+
 export class TelegramAdapter implements MessagingAdapter {
   readonly platform = 'telegram';
 
@@ -721,6 +745,35 @@ export class TelegramAdapter implements MessagingAdapter {
 
   // Topic message callback — fires on every incoming topic message
   public onTopicMessage: ((message: Message) => void | Promise<void>) | null = null;
+
+  // Inbound media copy (docs/specs/mobile-native-chat-media.md §4.9): wired by the server only
+  // when native app media is on. Called after a successful download with the local file; the
+  // copy into the app's blob store must be finished when the returned promise settles (a voice
+  // note's download is deleted right after). Failures never affect delivery to the session.
+  private inboundMediaHook: TelegramInboundMediaHook | null = null;
+
+  setInboundMediaHook(hook: TelegramInboundMediaHook | null): void { this.inboundMediaHook = hook; }
+
+  /**
+   * Hand one downloaded file to the inbound media hook. Bounded: at most 30 s is waited, and any
+   * failure is logged and swallowed — the Telegram delivery to the session goes on regardless.
+   */
+  private async copyInboundMedia(info: TelegramInboundMedia): Promise<void> {
+    const hook = this.inboundMediaHook;
+    if (!hook) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      await Promise.race([
+        Promise.resolve().then(() => hook(info)),
+        new Promise<void>((resolve) => { timer = setTimeout(() => { console.warn(`[telegram] inbound media copy for message ${info.platformMessageId} took over 30 s; delivery continues`); resolve(); }, 30_000); }),
+      ]);
+    } catch (err) {
+      // @silent-fallback-ok — the hook reports its own degradation; delivery to the session is unaffected
+      console.warn(`[telegram] inbound media copy failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
 
   // Session management callbacks (wired by server.ts)
   public onInterruptSession: ((sessionName: string) => Promise<boolean>) | null = null;
@@ -914,6 +967,8 @@ export class TelegramAdapter implements MessagingAdapter {
   // Prompt Gate — relay prompts to Telegram and handle responses
   private callbackRegistry: CallbackRegistry;
   private pendingPromptReply = new Map<number, PendingPromptReply>(); // topicId → pending
+  private callbackApproverResolver: (() => number | undefined) | null = null;
+  private noApproverReported = new Set<string>();
   private promptGateDisclosureSent = new Set<number>(); // topicIds that have seen the disclosure
 
   /**
@@ -1565,6 +1620,8 @@ export class TelegramAdapter implements MessagingAdapter {
     via?: 'mobile-device';
     deviceId?: string;
     eventId?: string;
+    senderRole?: 'owner' | 'msp';
+    senderPerson?: { machineId: string; userId: string };
   }): void {
     const fromApp = entry.via === 'mobile-device';
     this.appendToLog({
@@ -1579,9 +1636,23 @@ export class TelegramAdapter implements MessagingAdapter {
       telegramUserId: entry.telegramUserId,
       forwarded: fromApp ? undefined : entry.forwarded === true,
       ...(fromApp ? { via: 'mobile-device' as const, deviceId: entry.deviceId, eventId: entry.eventId } : {}),
+      ...(fromApp && entry.senderRole ? { senderRole: entry.senderRole } : {}),
+      ...(fromApp && entry.senderPerson ? { senderPerson: entry.senderPerson } : {}),
       provenance: 'user',
     });
   }
+
+  /** A durable origin recovery bypasses sendToTopic, so mirror its confirmed
+   * Telegram receipt into the same history used by normal session replies. */
+  logRecoveredOriginMessage(entry: { chatId: string; threadId: number | null; messageId: number; text: string; acceptedAt: number; producerKind: string }): void {
+    if (!Number.isSafeInteger(entry.messageId) || entry.messageId <= 0) return;
+    const topicId = inboundTopicId(entry.chatId, entry.threadId, this.topicSpace());
+    this.appendToLog({ messageId: entry.messageId, topicId, text: entry.text,
+      fromUser: false, forwarded: false, timestamp: new Date(entry.acceptedAt).toISOString(),
+      sessionName: this.topicToSession.get(topicId) ?? null,
+      provenance: entry.producerKind === 'session' ? 'agent' : 'automation' });
+  }
+
 
   /**
    * Send a message to a specific forum topic.
@@ -1605,6 +1676,60 @@ export class TelegramAdapter implements MessagingAdapter {
         provenance: provenance ?? 'automation',
       });
     } catch { /* history is best-effort here; the send outcome is already decided */ }
+  }
+
+  /**
+   * Send files into a topic (docs/specs/mobile-native-chat-media.md §4.9: the mirror of a photo or
+   * file the operator sent from the Instar app). One file goes up as sendPhoto / sendVideo /
+   * sendVoice / sendDocument by its kind; several go up as one sendMediaGroup, captioned on the
+   * first item. The request is multipart through the same egress door as every send, so with the
+   * origin outbox active the bytes are captured, sealed and recorded before dispatch. An operator
+   * mirror: no history row, no stall or promise tracking. Throws on any failure (the caller
+   * reports `mirror: "failed"`); never relayed through another machine, because the bytes would
+   * not travel with the relay.
+   */
+  async sendMediaToTopic(
+    topicId: number,
+    files: ReadonlyArray<{ data: Uint8Array; filename: string; mediaType: string; kind: TelegramMediaKind }>,
+    caption: string | null,
+    options?: { silent?: boolean },
+  ): Promise<{ messageIds: number[] }> {
+    if (files.length < 1 || files.length > 10) throw new Error('telegram media send: between 1 and 10 files');
+    if (typeof this.config.token !== 'string' || this.config.token.length === 0) {
+      throw new Error('telegram media send: this machine has no usable bot token');
+    }
+    const base: Record<string, unknown> = { chat_id: this.config.chatId };
+    if (!isGeneralTopic(topicId)) base.message_thread_id = topicId;
+    if (options?.silent) base.disable_notification = true;
+    const params = toWireParams(base, this.topicSpace());
+    const form = new FormData();
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null) form.append(k, String(v));
+    const blob = (f: { data: Uint8Array; mediaType: string }) => new Blob([new Uint8Array(f.data)], { type: multipartMediaType(f.mediaType) });
+    let method: string;
+    // Kinds Telegram refuses (HEIC photos, non-MP4 video) go up as documents.
+    files = files.map((f) => ({ ...f, kind: telegramKindFor(f.kind, f.mediaType) }));
+    if (files.length === 1) {
+      const one = files[0]!;
+      const m = telegramMethodFor(one.kind);
+      method = m.method;
+      if (caption) form.append('caption', caption);
+      form.append(m.field, blob(one), multipartFileName(one.filename));
+    } else {
+      method = 'sendMediaGroup';
+      const types = telegramGroupTypes(files.map((f) => f.kind));
+      form.append('media', JSON.stringify(files.map((_f, i) => ({ type: types[i], media: `attach://file${i}`, ...(i === 0 && caption ? { caption } : {}) }))));
+      files.forEach((f, i) => form.append(`file${i}`, blob(f), multipartFileName(f.filename)));
+    }
+    const safeUrl = `https://api.telegram.org/bot[REDACTED]/${method}`;
+    // Files take longer than a text send; the clock starts after origin review/storage/capacity.
+    const response = await telegramFetch(`https://api.telegram.org/bot${this.config.token}/${method}`, {
+      method: 'POST', body: form, networkTimeoutMs: 120_000,
+    });
+    if (!response.ok) throw new Error(`Telegram API error ${safeUrl} (${response.status}): ${(await response.text()).slice(0, 300)}`);
+    const data = await response.json() as { ok: boolean; result: unknown };
+    if (!data.ok) throw new Error(`Telegram API returned not ok for ${method}`);
+    const results = Array.isArray(data.result) ? data.result : [data.result];
+    return { messageIds: results.map((r) => Number((r as { message_id?: unknown })?.message_id)).filter((n) => Number.isSafeInteger(n)) };
   }
 
   async sendToTopic(
@@ -2047,6 +2172,43 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
+   * Who may answer an authority-bearing button (ACT-115). Wider than getOwnerUserId(), which also
+   * addresses owner DMs: it adds the one verified operator (resolveApprovalOwner). No answer means
+   * nobody may tap, never that anybody may.
+   */
+  setCallbackApproverResolver(resolve: () => number | undefined): void {
+    this.callbackApproverResolver = resolve;
+  }
+
+  /** The configured owner, normalized the way pairing reads it: config is raw JSON, so an id may be a string. */
+  private getConfiguredApprover(): number | undefined {
+    return resolveApprovalOwner(this.getOwnerUserId(), [], []);
+  }
+
+  private getCallbackApprover(): number | undefined {
+    const configured = this.getConfiguredApprover();
+    if (configured !== undefined) return configured;
+    try {
+      return this.callbackApproverResolver?.();
+    } catch {
+      // @silent-fallback-ok: an unresolved owner refuses the tap, which is the safe answer
+      return undefined;
+    }
+  }
+
+  private reportNoCallbackApprover(feature: string): void {
+    if (this.noApproverReported.has(feature)) return;
+    this.noApproverReported.add(feature);
+    DegradationReporter.getInstance().report({
+      feature: `TelegramAdapter.${feature}`,
+      primary: 'Only the verified owner can answer this button',
+      fallback: 'The tap was refused, because no single verified owner is known yet',
+      reason: feature === 'tunnelConsent' ? 'No ownerUserId is configured, and this button needs a configured owner' : 'No ownerUserId is configured and no single verified operator exists',
+      impact: 'This button cannot be answered from Telegram until the owner is known',
+    });
+  }
+
+  /**
    * Send a private DM to the owner principal. Telegram's bot API
    * permits the bot to initiate a DM only after the user has messaged
    * the bot at least once; if the user has never DM'd the bot, the
@@ -2085,6 +2247,9 @@ export class TelegramAdapter implements MessagingAdapter {
       return null;
     }
   }
+
+  /** Mobile push (docs/specs/mobile-push.md): fired after an accepted Attention hub post. Wired by AgentServer. */
+  public onHubPost: ((t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => void) | null = null;
 
   /** Mobile device keys: the owner's Decline tap on a pairing code. Wired by AgentServer. */
   public mobileDeclineHandler: ((nonce: string) => 'declined' | 'unknown') | null = null;
@@ -2439,9 +2604,11 @@ export class TelegramAdapter implements MessagingAdapter {
 
   private formatDashboardMessage(url: string, pin: string | null, isNamed: boolean): string {
     const dashboardUrl = url + '/dashboard';
+    // /dashboard opens the console; the quick links go to its own pages (a `?tab=` link would
+    // open the legacy dashboard).
     const quickLinks = [
-      `Sessions: ${dashboardUrl}?tab=sessions`,
-      `Files: ${dashboardUrl}?tab=files`,
+      `Sessions: ${consolePageUrl(url, '#/work/sessions')}`,
+      `Files: ${consolePageUrl(url, '#/settings/files')}`,
     ];
 
     // A null PIN means the value could not be resolved. NEVER substitute an
@@ -2908,6 +3075,41 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
+   * Record a topic's name from Telegram's own evidence (the creation or rename
+   * service message, or the creation message a topic message replies to).
+   * Used by the poller here and by the lifeline forward on agents whose
+   * lifeline owns polling, where the server never sees those service messages.
+   * A known name is replaced only by a rename.
+   */
+  captureTopicName(numericTopicId: number, detectedName: string, isEditEvent: boolean): void {
+    const name = String(detectedName).trim().slice(0, 128); // bounded-input-reviewed: display-name cap (Telegram allows 128), not a model prompt
+    if (!name || !Number.isSafeInteger(numericTopicId)) return;
+    const currentName = this.topicToName.get(numericTopicId);
+    if (!currentName || /^topic-\d+$/.test(currentName) || isEditEvent) {
+      const isRename = isEditEvent && currentName !== name;
+      if (currentName === name) return;
+      this.topicToName.set(numericTopicId, name);
+      this.saveRegistry();
+      console.log(`[telegram] Captured topic name: ${numericTopicId} → "${name}"`);
+      // UNIFIED-SESSION-LIFECYCLE bonus — fire on TRUE rename only (not on
+      // initial capture or topic creation). The handler updates the bound
+      // session's display `name` so the dashboard label tracks the user's
+      // rename. Fire-and-forget: rename-display is non-critical.
+      if (isRename && this.topicRenamedHandler) {
+        try {
+          void Promise.resolve(this.topicRenamedHandler(numericTopicId, name)).catch((err) => {
+            // @silent-fallback-ok: rename display is non-critical; the failure is logged
+            console.error(`[telegram] topicRenamedHandler failed for ${numericTopicId}:`, err);
+          });
+        } catch (err) {
+          // @silent-fallback-ok: rename display is non-critical; the failure is logged
+          console.error(`[telegram] topicRenamedHandler threw for ${numericTopicId}:`, err);
+        }
+      }
+    }
+  }
+
+  /**
    * Actively resolve a topic's name from Telegram by sending a temporary probe message
    * that replies to the topic's service message (whose message_id = topic_id).
    * The API response includes reply_to_message.forum_topic_created.name.
@@ -2953,6 +3155,8 @@ export class TelegramAdapter implements MessagingAdapter {
     } catch (err) {
       const errStr = String(err);
       console.log(`[telegram] Could not resolve topic name for ${topicId}: ${err}`);
+      // A definite refusal by Telegram (HTTP 400), not a transient failure.
+      if (/telegram-400|Bad Request|message thread not found|TOPIC_DELETED/i.test(errStr)) this.lastProbeRefused = topicId;
       // If the topic was deleted, mark it so we don't retry resolution on every startup
       if (errStr.includes('message thread not found') || errStr.includes('TOPIC_DELETED')) {
         this.topicToName.set(topicId, `[deleted] topic-${topicId}`);
@@ -2966,15 +3170,38 @@ export class TelegramAdapter implements MessagingAdapter {
    * Resolve all topic names that are still using the fallback "topic-NNNN" pattern.
    * Called on startup to backfill names for topics created before name tracking.
    */
+  private static readonly PROBE_REFUSAL_BACKOFF_MS = 7 * 24 * 60 * 60 * 1000;
+  private lastProbeRefused: number | null = null;
+  private probeRefusalsPath(): string { return path.join(this.stateDir, 'topic-name-probe-refusals.json'); }
+  private readProbeRefusals(): Record<number, number> {
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.probeRefusalsPath(), 'utf-8')) as Record<string, unknown>;
+      const out: Record<number, number> = {};
+      for (const [k, v] of Object.entries(raw)) if (Number.isSafeInteger(Number(k)) && typeof v === 'number') out[Number(k)] = v;
+      return out;
+    } catch { return {}; } // @silent-fallback-ok: no record yet means every topic may be probed
+  }
+  private writeProbeRefusals(r: Record<number, number>): void {
+    try { fs.writeFileSync(this.probeRefusalsPath(), JSON.stringify(r)); } catch { /* @silent-fallback-ok: worst case the topic is probed again next start */ }
+  }
+
   async resolveUnknownTopicNames(): Promise<void> {
     const unknowns: number[] = [];
     for (const topicId of this.topicToSession.keys()) {
       if (!this.getTopicName(topicId)) unknowns.push(topicId);
     }
-    if (unknowns.length === 0) return;
-    console.log(`[telegram] Resolving ${unknowns.length} unknown topic names...`);
-    for (const topicId of unknowns) {
-      await this.resolveTopicName(topicId);
+    // General (1) has no creation message to reply to, and a topic Telegram
+    // refused recently (deleted, or not in this chat) is not asked again every
+    // start: each refused probe is a real refused send (2026-11-02: ~190 a week).
+    const refused = this.readProbeRefusals();
+    const now = Date.now();
+    const toProbe = unknowns.filter((id) => id > 1 && !(now - (refused[id] ?? 0) < TelegramAdapter.PROBE_REFUSAL_BACKOFF_MS));
+    if (toProbe.length === 0) return;
+    console.log(`[telegram] Resolving ${toProbe.length} unknown topic names...`);
+    for (const topicId of toProbe) {
+      this.lastProbeRefused = null;
+      const ok = await this.resolveTopicName(topicId);
+      if (ok === null && this.lastProbeRefused === topicId) { refused[topicId] = Date.now(); this.writeProbeRefusals(refused); }
       // Small delay to avoid hitting rate limits
       await new Promise(r => setTimeout(r, 200));
     }
@@ -3615,82 +3842,15 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
-   * Resolve voice transcription provider from config or environment.
-   * Checks explicit config, then env vars, then auto-detects.
-   */
-  private resolveTranscriptionProvider(): { apiKey: string; baseUrl: string; model: string } | null {
-    const providers: Record<string, { envKey: string; baseUrl: string; model: string }> = {
-      groq: {
-        envKey: 'GROQ_API_KEY',
-        baseUrl: 'https://api.groq.com/openai/v1',
-        model: 'whisper-large-v3',
-      },
-      openai: {
-        envKey: 'OPENAI_API_KEY',
-        baseUrl: 'https://api.openai.com/v1',
-        model: 'whisper-1',
-      },
-    };
-
-    // Check explicit config
-    const explicit = this.config.voiceProvider?.toLowerCase();
-    if (explicit && providers[explicit]) {
-      const p = providers[explicit];
-      const apiKey = process.env[p.envKey];
-      if (!apiKey) {
-        console.warn(`[telegram] ${p.envKey} not set — required for ${explicit} voice transcription`);
-        return null;
-      }
-      return { apiKey, baseUrl: p.baseUrl, model: p.model };
-    }
-
-    // Auto-detect: try Groq first (cheaper), then OpenAI
-    for (const [name, p] of Object.entries(providers)) {
-      const apiKey = process.env[p.envKey];
-      if (apiKey) {
-        console.log(`[telegram] Auto-detected voice transcription provider: ${name}`);
-        return { apiKey, baseUrl: p.baseUrl, model: p.model };
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Transcribe a voice message using the configured provider.
+   * Transcribe a voice message with the shared provider (src/core/VoiceTranscription.ts):
+   * the explicit `voiceProvider` config first, then Groq, then OpenAI from the environment.
    */
   private async transcribeVoice(filePath: string): Promise<string> {
-    const provider = this.resolveTranscriptionProvider();
-    if (!provider) {
-      throw new Error('No voice transcription provider configured. Set GROQ_API_KEY or OPENAI_API_KEY.');
-    }
-
-    const formData = new FormData();
-    const fileBuffer = fs.readFileSync(filePath);
-    const blob = new Blob([fileBuffer], { type: 'audio/ogg' });
-    formData.append('file', blob, path.basename(filePath));
-    formData.append('model', provider.model);
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 60_000);
-    try {
-      const response = await fetch(`${provider.baseUrl}/audio/transcriptions`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${provider.apiKey}` },
-        body: formData,
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`Transcription API error (${response.status}): ${errText}`);
-      }
-
-      const data = await response.json() as { text: string };
-      return data.text;
-    } finally {
-      clearTimeout(timer);
-    }
+    return transcribeAudioFile(filePath, {
+      explicit: this.config.voiceProvider,
+      mediaType: 'audio/ogg',
+      log: (note) => console.log(`[telegram] ${note}`),
+    });
   }
 
   // ── Photo Handling ───────────────────────────────────────
@@ -4199,6 +4359,55 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /** Full JSONL scan for a topic's most recent entries (the cache seed / fallback path). */
+  /**
+   * Older history for scroll-back: up to `limit` entries for the topic logged
+   * strictly before `beforeMs`, oldest first. Reads the log directly (the tail
+   * cache only holds recent entries); bounded by the log's rotation cap.
+   */
+  getTopicHistoryBefore(topicId: number, beforeMs: number, limit: number = 20): LogEntry[] {
+    if (!fs.existsSync(this.messageLogPath)) return [];
+    const matching: LogEntry[] = [];
+    // Read backwards in 1 MB chunks and stop once the page is full: the log can
+    // be well over 100 MB, and a scroll-back page usually needs only its tail.
+    const CHUNK = 1024 * 1024;
+    const fd = fs.openSync(this.messageLogPath, 'r');
+    try {
+      let pos = fs.fstatSync(fd).size;
+      // The partial first line of each chunk is kept as bytes and joined to the
+      // previous chunk before decoding, so a character split across chunks survives.
+      let carry = Buffer.alloc(0);
+      while (pos > 0 && matching.length < limit) {
+        const size = Math.min(CHUNK, pos);
+        pos -= size;
+        const read = Buffer.alloc(size);
+        fs.readSync(fd, read, 0, size, pos);
+        let buf = Buffer.concat([read, carry]);
+        if (pos > 0) {
+          const nl = buf.indexOf(0x0a);
+          if (nl < 0) { carry = buf; continue; }
+          carry = buf.subarray(0, nl);
+          buf = buf.subarray(nl + 1);
+        } else {
+          carry = Buffer.alloc(0);
+        }
+        const lines = buf.toString('utf-8').split('\n');
+        for (let i = lines.length - 1; i >= 0 && matching.length < limit; i--) {
+          if (!lines[i]) continue;
+          try {
+            const entry: LogEntry = JSON.parse(lines[i]);
+            const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+            if (entryTopicId !== topicId) continue;
+            const at = Date.parse(String(entry.timestamp));
+            if (Number.isFinite(at) && at < beforeMs) matching.unshift(entry);
+          } catch { /* @silent-fallback-ok: a malformed log line is skipped; the page is built from the lines that parse */ }
+        }
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+    return this.authorshipJoin.join(matching);
+  }
+
   private scanLogForTopic(topicId: number, limit: number): LogEntry[] {
     if (!fs.existsSync(this.messageLogPath)) return [];
 
@@ -4407,7 +4616,23 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Create an attention item and its Telegram topic.
    */
-  async createAttentionItem(item: AttentionObservation, routing?: { hubOnly: true }): Promise<AttentionItem> {
+  /** Machine id → nickname, wired by the server once the pool registry exists. */
+  private machineNameResolver: ((machineId: string) => string | null | undefined) | null = null;
+  setMachineNameResolver(fn: (machineId: string) => string | null | undefined): void { this.machineNameResolver = fn; }
+
+  private nameAttentionString(text: string): string {
+    return nameIdsInText(text, { topicName: (id: number) => this.getTopicName(id), machineName: this.machineNameResolver ?? undefined });
+  }
+
+  /** Operator-facing attention text names topics and machines, never their ids. */
+  private nameAttentionText(item: AttentionObservation): AttentionObservation {
+    const fix = (v: unknown) => (typeof v === 'string' ? this.nameAttentionString(v) : v);
+    return { ...item, title: fix(item.title) as string, summary: fix(item.summary) as string,
+      ...(item.description !== undefined ? { description: fix(item.description) as string } : {}) };
+  }
+
+  async createAttentionItem(rawItem: AttentionObservation, routing?: { hubOnly: true }): Promise<AttentionItem> {
+    const item = this.nameAttentionText(rawItem);
     // One row per condition (attention-lifecycle-close-on-cause §3.1): an
     // observation that lands on an existing row refreshes/reopens it instead
     // of creating a sibling. Only a genuinely new condition reaches the
@@ -4908,7 +5133,12 @@ export class TelegramAdapter implements MessagingAdapter {
       });
       return item.topicId ?? null;
     }
-    const markPosted = () => this.attentionHubLastPost.set(item.id, { at: nowMs, priority: item.priority });
+    const markPosted = () => {
+      this.attentionHubLastPost.set(item.id, { at: nowMs, priority: item.priority });
+      // Mobile push (docs/specs/mobile-push.md §2.3): only after Telegram accepted the hub post.
+      try { this.onHubPost?.({ kind: 'item', itemId: item.id, dedupeKey: item.conditionKey ?? item.id, priority: item.priority }); }
+      catch { /* @silent-fallback-ok — push is best-effort and never affects the hub post */ }
+    };
     // Easy to read on a phone: what it is, then what to do. Category, priority
     // labels and internal source names live in the store / dashboard.
     const emoji = PRIORITY_EMOJI[item.priority] || PRIORITY_EMOJI.NORMAL;
@@ -4994,7 +5224,7 @@ export class TelegramAdapter implements MessagingAdapter {
       this.attentionHubTopicId = topic.topicId;
       this.topicToName.set(topic.topicId, `${TOPIC_STYLE.ALERT.emoji} Attention`);
       try { this.config.systemTopics?.recordAttentionHubTopicId?.(topic.topicId); }
-      catch (err) { console.warn(`[telegram] attention hub: could not record topic ${topic.topicId}: ${err}`); }
+      catch (err) { console.warn(`[telegram] attention hub: could not record topic ${topic.topicId}: ${err}`); } // @silent-fallback-ok — logged; the hub id stays cached in memory
       return this.attentionHubTopicId;
     })();
 
@@ -5126,9 +5356,19 @@ export class TelegramAdapter implements MessagingAdapter {
     row.lastSeenAt = nowIso;
     if (obs.conditionKey && !row.conditionKey) row.conditionKey = obs.conditionKey;
     if (obs.sticky) row.sticky = true;
+    // The latest raise decides who the row is from: a producer that stopped
+    // claiming "agent" must not keep reaching the hub through its old row.
+    if (obs.sourceContext && obs.sourceContext !== row.sourceContext) row.sourceContext = obs.sourceContext;
 
-    const changed = row.title !== obs.title || row.summary !== obs.summary
-      || (row.description ?? '') !== (obs.description ?? '') || row.priority !== obs.priority;
+    // Compare with the stored text named the same way, so a row first stored
+    // with a raw id (or before its topic had a name) is not reposted as if the
+    // ask had changed. A naming-only difference refreshes the text quietly.
+    const named = (v: string | undefined) => this.nameAttentionString(v ?? '');
+    const changed = named(row.title) !== obs.title || named(row.summary) !== obs.summary
+      || named(row.description) !== (obs.description ?? '') || row.priority !== obs.priority;
+    if (!changed && (row.title !== obs.title || row.summary !== obs.summary || (row.description ?? '') !== (obs.description ?? ''))) {
+      Object.assign(row, { title: obs.title, summary: obs.summary, description: obs.description });
+    }
     if (isOpenAttentionStatus(row.status)) {
       if (changed) {
         // The required action changed (approve → tap the phone prompt now):
@@ -5677,28 +5917,7 @@ export class TelegramAdapter implements MessagingAdapter {
       msg.forum_topic_created?.name ??
       msg.forum_topic_edited?.name ??
       msg.reply_to_message?.forum_topic_created?.name;
-    if (detectedName) {
-      const currentName = this.topicToName.get(numericTopicId);
-      if (!currentName || /^topic-\d+$/.test(currentName) || msg.forum_topic_edited?.name) {
-        const isRename = !!msg.forum_topic_edited?.name && currentName !== detectedName;
-        this.topicToName.set(numericTopicId, detectedName);
-        this.saveRegistry();
-        console.log(`[telegram] Captured topic name: ${numericTopicId} → "${detectedName}"`);
-        // UNIFIED-SESSION-LIFECYCLE bonus — fire on TRUE rename only (not on
-        // initial capture or topic creation). The handler updates the bound
-        // session's display `name` so the dashboard label tracks the user's
-        // rename. Fire-and-forget: rename-display is non-critical.
-        if (isRename && this.topicRenamedHandler) {
-          try {
-            void Promise.resolve(this.topicRenamedHandler(numericTopicId, detectedName)).catch((err) => {
-              console.error(`[telegram] topicRenamedHandler failed for ${numericTopicId}:`, err);
-            });
-          } catch (err) {
-            console.error(`[telegram] topicRenamedHandler threw for ${numericTopicId}:`, err);
-          }
-        }
-      }
-    }
+    if (detectedName) this.captureTopicName(numericTopicId, detectedName, !!msg.forum_topic_edited?.name);
 
     // Service messages (topic created/edited) have no user content — skip further processing
     if (msg.forum_topic_created || msg.forum_topic_edited) {
@@ -5954,6 +6173,13 @@ export class TelegramAdapter implements MessagingAdapter {
       return;
     }
 
+    // §4.9: copied into the app's blob store BEFORE the download is deleted below.
+    await this.copyInboundMedia({
+      topicId, platformMessageId: msg.message_id, filePath: filepath, declaredKind: 'voice',
+      filename: filename, declaredType: voice.mime_type || 'audio/ogg', at: new Date(msg.date * 1000).toISOString(),
+      durationMs: typeof voice.duration === 'number' ? voice.duration * 1000 : undefined,
+    });
+
     // Transcribe
     try {
       const transcript = await this.transcribeVoice(filepath);
@@ -6033,6 +6259,12 @@ export class TelegramAdapter implements MessagingAdapter {
     try {
       const filepath = await this.downloadPhoto(photo.file_id, msg.message_id);
       console.log(`[telegram] Downloaded photo: ${filepath}`);
+      // §4.9: the app's copy runs beside delivery (the download stays on disk).
+      void this.copyInboundMedia({
+        topicId, platformMessageId: msg.message_id, filePath: filepath, declaredKind: 'photo',
+        filename: path.basename(filepath), declaredType: 'image/jpeg', at: new Date(msg.date * 1000).toISOString(),
+        width: photo.width, height: photo.height,
+      });
 
       const content = caption
         ? `[image:${filepath}] ${caption}`
@@ -6101,6 +6333,12 @@ export class TelegramAdapter implements MessagingAdapter {
     try {
       const filepath = await this.downloadDocument(doc.file_id, msg.message_id, doc.file_name);
       console.log(`[telegram] Downloaded document: ${filepath}`);
+      // §4.9: the app's copy runs beside delivery (the download stays on disk).
+      void this.copyInboundMedia({
+        topicId, platformMessageId: msg.message_id, filePath: filepath, declaredKind: 'file',
+        filename: doc.file_name || path.basename(filepath), declaredType: doc.mime_type || 'application/octet-stream',
+        at: new Date(msg.date * 1000).toISOString(),
+      });
 
       const content = caption
         ? `[document:${filepath}] ${caption}`
@@ -6166,17 +6404,13 @@ export class TelegramAdapter implements MessagingAdapter {
    * Returns the Telegram message ID of the relay message.
    */
   async relayPrompt(topicId: number, prompt: DetectedPrompt): Promise<number> {
-    // First-use disclosure (once per topic)
-    if (!this.promptGateDisclosureSent.has(topicId)) {
-      await this.sendToTopic(topicId,
-        'Prompt Gate is now active for this topic. Session prompts will appear here ' +
-        'for you to respond to. Note: prompt text is sent through Telegram\'s servers. ' +
-        'Avoid including credentials or sensitive data in your replies.'
-      ).catch(() => {});
-      this.promptGateDisclosureSent.add(topicId);
-    }
-
-    const text = this.formatPromptMessage(prompt);
+    // First-use disclosure rides on the first relayed prompt instead of
+    // arriving as a separate message (operator report 2026-11-02).
+    const firstInTopic = !this.promptGateDisclosureSent.has(topicId);
+    this.promptGateDisclosureSent.add(topicId);
+    const text = this.formatPromptMessage(prompt) + (firstInTopic
+      ? '\n\n<i>Prompt text passes through Telegram. Avoid credentials in replies.</i>'
+      : '');
 
     let result: { message_id: number; chat?: { id: number } };
 
@@ -6321,8 +6555,9 @@ export class TelegramAdapter implements MessagingAdapter {
     // We use getOwnerUserId() (the explicit owner principal), NOT the
     // broader authorizedUserIds set.
     if (query.data.startsWith('tc:')) {
-      const owner = this.getOwnerUserId();
-      if (owner && query.from.id !== owner) {
+      const owner = this.getConfiguredApprover();
+      if (owner === undefined) this.reportNoCallbackApprover('tunnelConsent');
+      if (owner === undefined || query.from.id !== owner) {
         await this.apiCall('answerCallbackQuery', {
           callback_query_id: query.id,
           text: 'Only the owner can approve this',
@@ -6368,11 +6603,12 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     // Authorization check: verify sender is the configured owner
-    const ownerId = this.config.promptGate?.ownerId;
-    if (ownerId && query.from.id !== ownerId) {
+    const ownerId = this.getCallbackApprover();
+    if (ownerId === undefined) this.reportNoCallbackApprover('promptGate');
+    if (ownerId === undefined || query.from.id !== ownerId) {
       await this.apiCall('answerCallbackQuery', {
         callback_query_id: query.id,
-        text: 'Only the session owner can respond to prompts',
+        text: ownerId === undefined ? UNKNOWN_OWNER_TAP_REFUSAL : 'Only the session owner can respond to prompts',
       }).catch(() => {});
       // Do NOT resolve the token — preserve it for the real owner
       return;
@@ -6490,8 +6726,9 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     // Verify sender is the authorized owner
-    const ownerId = this.config.promptGate?.ownerId;
-    if (ownerId && msg.from.id !== ownerId) {
+    const ownerId = this.getCallbackApprover();
+    if (ownerId === undefined) this.reportNoCallbackApprover('promptGate');
+    if (ownerId === undefined || msg.from.id !== ownerId) {
       return false; // Not the owner — fall through to normal routing
     }
 
@@ -6642,6 +6879,23 @@ export class TelegramAdapter implements MessagingAdapter {
     });
 
     return (result as TelegramUpdate[]) ?? [];
+  }
+
+  /**
+   * Human readers of the group, for memory privacy: members less the bots listed
+   * as administrators. A bot that is not an admin counts as a person, because
+   * Telegram offers no way to list it. That errs toward treating the group as shared.
+   */
+  async groupReaderCount(): Promise<number | null> {
+    const count = await this.apiCall('getChatMemberCount', { chat_id: this.config.chatId }) as number;
+    const admins = await this.apiCall('getChatAdministrators', { chat_id: this.config.chatId }) as Array<{ user?: { is_bot?: boolean } }>;
+    if (typeof count !== 'number' || !Array.isArray(admins)) return null;
+    return count - admins.filter((a) => a.user?.is_bot === true).length;
+  }
+
+  /** The place key for the whole group: every forum topic has the same readers. */
+  get memoryPlaceKey(): string {
+    return `telegram:${this.config.chatId}`;
   }
 
   private async apiCall(method: string, params: Record<string, unknown>, retryCount: number = 0): Promise<unknown> {

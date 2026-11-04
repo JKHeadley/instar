@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-02T19:56:19.574Z",
+  "slug": "locked-proof-driver",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 8,
+  "loc": 958,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/locked-proof/configure-proof-agent.mjs",
+      "scripts/locked-proof/create-proof-user.sh",
+      "scripts/locked-proof/driver.mjs",
+      "scripts/locked-proof/lib.mjs",
+      "scripts/locked-proof/pty-feed.py",
+      "scripts/locked-proof/remove-proof-user.sh",
+      "scripts/locked-proof/reset-attempts.py",
+      "scripts/locked-proof/stage-proof-agents.sh"
+    ],
+    "addedLines": 958,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

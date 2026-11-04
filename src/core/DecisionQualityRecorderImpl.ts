@@ -48,6 +48,7 @@ import {
 import { getCensusEntry, getVolumeClass, getRule } from '../data/provenanceCoverage.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
 import { scrubString } from './CredentialAuditEmit.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 /** Outcome evidence-note hard bound (§5.2/§5.5 — clamped at annotate time, before storage). */
 export const EVIDENCE_NOTE_CLAMP = 500;
@@ -301,6 +302,8 @@ export class DecisionQualityRecorderImpl implements DecisionQualityRecorder {
             `volumeClass=${volumeClass ?? 'none'} verdictClass=${safeLabel(verdict.value)} jsonl=${disposition} ` +
             `qualityRowBytes=${byteLength(qualityRecord)} provenanceRowBytes=${byteLength(jplInput)}`,
         );
+        // Per LLM decision, so an hourly row per decision point; suppressedSinceLast is the volume.
+        featureEvidence.recordAtMostEvery('provenance.uniformSeam', `dry|${decisionPoint}`, 60 * 60 * 1000, { kind: 'fired', reason: 'would-write-settlement', context: { decisionPoint: safeLabel(decisionPoint), dryRun: true, inCensus: !!entry, volumeClass: volumeClass ?? null, jsonlDisposition: disposition } });
         return;
       }
 
@@ -316,10 +319,12 @@ export class DecisionQualityRecorderImpl implements DecisionQualityRecorder {
         // Loud, never silent (§5.6/FD4).
         this.ledger?.bumpQualityCounter(decisionPoint, 'droppedByBudget', { ts: s.settledAtMs });
       }
+      featureEvidence.recordAtMostEvery('provenance.uniformSeam', `live|${decisionPoint}`, 60 * 60 * 1000, { kind: 'fired', reason: 'settlement-written', context: { decisionPoint: safeLabel(decisionPoint), dryRun: false, inCensus: !!entry, volumeClass: volumeClass ?? null, jsonlDisposition: disposition } });
     } catch (err) {
       // @silent-fallback-ok: observability must never break the decision path
       // it observes (§5.1.7) — the router additionally isolates this call.
       this.log(`[decision-quality] settlement write failed (observability only): ${(err as Error).message}`);
+      featureEvidence.recordAtMostEvery('provenance.uniformSeam', `settlement-failed|${(err as Error)?.name ?? 'Error'}`, 10 * 60 * 1000, { kind: 'error', reason: 'settlement-side-write-failed', context: { errorName: (err as Error)?.name ?? 'Error', dryRun: this.dryRun } });
     }
   }
 
@@ -447,6 +452,7 @@ export class DecisionQualityRecorderImpl implements DecisionQualityRecorder {
       // @silent-fallback-ok: annotation is observability — a failed write is
       // repaired by idempotent re-runs (upserts converge), never a throw.
       this.log(`[decision-quality] outcome annotation failed (observability only): ${(err as Error).message}`);
+      featureEvidence.recordAtMostEvery('provenance.uniformSeam', `annotation-failed|${(err as Error)?.name ?? 'Error'}`, 10 * 60 * 1000, { kind: 'error', reason: 'outcome-annotation-failed', context: { errorName: (err as Error)?.name ?? 'Error' } });
       return { applied: false };
     }
   }

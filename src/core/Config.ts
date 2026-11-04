@@ -235,7 +235,8 @@ export type FrameworkBinary =
  *   2. Standard system paths (`/usr/local/bin`, `/opt/homebrew/bin`)
  *   3. npm global bin (where `npm install -g` lands)
  *   4. nvm-managed bin directories
- *   5. asdf shims (`$ASDF_DATA_DIR/shims` or `~/.asdf/shims`) + `asdf which`
+ *   5. asdf shims (`$ASDF_DATA_DIR/shims` or `~/.asdf/shims`) + `asdf which`, and mise shims
+ *      (`$MISE_DATA_DIR/shims` or `~/.local/share/mise/shims`)
  *   6. System PATH (via `which`)
  *
  * Returns the absolute path or null if not found.
@@ -262,6 +263,13 @@ export function detectFrameworkBinary(name: FrameworkBinary): string | null {
   const result = detectFrameworkBinaryUncached(name);
   _frameworkBinaryCache.set(name, result);
   return result;
+}
+
+/** For the installer: looks again right after installing a binary, which the memo would hide. */
+export function redetectFrameworkBinary(name: FrameworkBinary): string | null {
+  _frameworkBinaryCache.delete(name);
+  _npmPrefixMemo = undefined;
+  return detectFrameworkBinary(name);
 }
 
 /** Memoized `npm config get prefix` — one subprocess per process, not per framework. */
@@ -327,6 +335,7 @@ function detectFrameworkBinaryUncached(name: FrameworkBinary): string | null {
   candidates.push(`/usr/local/bin/${name}`);    // macOS Intel / Linux
   candidates.push(`/usr/bin/${name}`);           // Linux system
 
+
   // npm global bin (where `npm install -g <pkg>` lands).
   // MEMOIZED across every framework name (round-11 scalability): this
   // subprocess ran once PER framework probed, BEFORE the existsSync candidate
@@ -374,6 +383,20 @@ function detectFrameworkBinaryUncached(name: FrameworkBinary): string | null {
   // Honors ASDF_DATA_DIR, else the default ~/.asdf.
   const asdfDataDir = process.env.ASDF_DATA_DIR || path.join(home, '.asdf');
   candidates.push(path.join(asdfDataDir, 'shims', name));
+
+  // The per-user bin, after the rest, so an agent that already finds a copy anywhere else keeps using it (a Mac can hold both, with only the system one on PATH). Claude Code's own native
+  // installer puts `claude` here, and `instar install` puts an npm CLI here when the global npm
+  // folder isn't writable; a login shell adds it to PATH only if it existed at login, so a binary
+  // installed during this session would otherwise read as missing (fresh Ubuntu, 2026-11-03).
+  if (home) candidates.push(path.join(home, '.local', 'bin', name));
+
+  // mise shims, which a service PATH also misses. Omarchy 4.0 keeps node there and launchers for claude and
+  // codex in ~/.local/bin (searched just above); its 4.5 release candidates move those to mise shims
+  // that route each launch to the person's active subscription, so the shim, not the resolved
+  // install, is what their terminal runs.
+  const miseDataDir = process.env.MISE_DATA_DIR
+    || path.join(process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'mise');
+  candidates.push(path.join(miseDataDir, 'shims', name));
 
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) return candidate;
@@ -654,6 +677,47 @@ function buildCredentialsMap(
   }
 
   return Object.keys(credentials).length > 0 ? credentials : undefined;
+}
+
+/**
+ * Launch-time Anthropic credential fields for SessionManagerConfig (fb-7cb86d4b-1fd).
+ *
+ * Every claude-code spawn path builds its env from `anthropicApiKey`/`anthropicBaseUrl`. Feeding
+ * those from the SAME precedence as {@link buildCredentialsMap} (explicit
+ * `sessions.credentials.anthropic` wins, legacy `sessions.anthropicApiKey`/`anthropicBaseUrl`
+ * fill in) keeps one source of truth without touching each spawn site. A non-string value (for
+ * example an unmigrated `{ secret: true }` placeholder) is ignored rather than stringified.
+ */
+export function resolveAnthropicLaunchFields(
+  sessionsConfig: Record<string, unknown> | undefined,
+): { anthropicApiKey: string | undefined; anthropicBaseUrl: string | undefined } {
+  const legacyKey = typeof sessionsConfig?.['anthropicApiKey'] === 'string' ? (sessionsConfig['anthropicApiKey'] as string) : undefined;
+  const legacyBase = typeof sessionsConfig?.['anthropicBaseUrl'] === 'string' ? (sessionsConfig['anthropicBaseUrl'] as string) : undefined;
+  const map = sessionsConfig?.['credentials'] as Record<string, unknown> | undefined;
+  const cred = map && typeof map === 'object' ? (map['anthropic'] as Record<string, unknown> | undefined) : undefined;
+  const credValue = cred && typeof cred['value'] === 'string' && (cred['value'] as string).length > 0 ? (cred['value'] as string) : undefined;
+  const credBase = cred && typeof cred['baseUrl'] === 'string' && (cred['baseUrl'] as string).length > 0 ? (cred['baseUrl'] as string) : undefined;
+  return { anthropicApiKey: credValue ?? legacyKey, anthropicBaseUrl: credBase ?? legacyBase };
+}
+
+/**
+ * The launch key as it stands in config.json right now, for a process whose loaded config may be
+ * stale. Null when none is set. Undefined when the file can't be read or parsed: a writer may be
+ * mid-write, so the caller keeps what it last had.
+ */
+export function readConfiguredAnthropicKey(stateDir: string): string | null | undefined {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8')) as { sessions?: Record<string, unknown> };
+    return resolveAnthropicLaunchFields(raw.sessions).anthropicApiKey || null;
+  } catch { return undefined; } // @silent-fallback-ok: an unreadable file keeps the last key, by contract above
+}
+
+/** The off switch as it stands in config.json now. An unreadable file reads as on, the default. */
+export function readClaudeChildAuthEnabled(stateDir: string): boolean {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8')) as { sessions?: { claudeChildAuth?: { enabled?: unknown } } };
+    return raw.sessions?.claudeChildAuth?.enabled !== false;
+  } catch { return true; } // @silent-fallback-ok: a writer may be mid-write; the default stands for this one read
 }
 
 /**
@@ -1078,8 +1142,14 @@ export function loadConfig(projectDir?: string): InstarConfig {
     ],
     authToken: fileConfig.authToken as string | undefined,
     port: (fileConfig.port as number | undefined) ?? 4040,
-    anthropicApiKey: fileConfig.sessions?.anthropicApiKey as string | undefined,
-    anthropicBaseUrl: fileConfig.sessions?.anthropicBaseUrl as string | undefined,
+    // fb-7cb86d4b-1fd: session launch reads `anthropicApiKey`/`anthropicBaseUrl`. An install that
+    // configures only the documented `sessions.credentials.anthropic` used to launch every
+    // claude-code session with an EMPTY token ("Not logged in"). Resolve the launch credential
+    // from the same precedence getProviderCredential() uses: explicit credentials.anthropic
+    // first, the legacy fields as the fallback.
+    ...resolveAnthropicLaunchFields(fileConfig.sessions as Record<string, unknown> | undefined),
+    ...(fileConfig.sessions?.claudeChildAuth ? { claudeChildAuth: fileConfig.sessions.claudeChildAuth as { enabled?: boolean } } : {}),
+    ...(fileConfig.sessions?.claudeKeyHealth ? { claudeKeyHealth: fileConfig.sessions.claudeKeyHealth as { enabled?: boolean } } : {}),
     ...(fileConfig.sessions?.resumeFollowsAccount &&
     typeof fileConfig.sessions.resumeFollowsAccount === 'object'
       ? { resumeFollowsAccount: fileConfig.sessions.resumeFollowsAccount as { enabled?: boolean } }

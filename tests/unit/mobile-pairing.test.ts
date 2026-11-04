@@ -20,7 +20,7 @@ describe('PairingCodeStore', () => {
     expect(m.ok).toBe(true);
     if (!m.ok) return;
     expect(CODE_PATTERN.test(m.code)).toBe(true);
-    expect(s.redeem(m.code, TOKEN)).toEqual({ ok: true, label: 'phone' });
+    expect(s.redeem(m.code, TOKEN)).toEqual({ ok: true, label: 'phone', bound: null, person: null });
     expect(s.redeem(m.code, TOKEN)).toEqual({ ok: false, reason: 'invalid' });
   });
 
@@ -94,7 +94,7 @@ describe('helpers', () => {
   });
 
   it('clamps the TTL to 1–60 minutes with a 10 minute default', () => {
-    expect(codeTtlMs(undefined)).toBe(600_000);
+    expect(codeTtlMs(undefined)).toBe(1_800_000); // 30 min default (mobile-pairing-tailscale-origin §3.4)
     expect(codeTtlMs({ codeTtlMinutes: 0 })).toBe(60_000);
     expect(codeTtlMs({ codeTtlMinutes: 999 })).toBe(3_600_000);
   });

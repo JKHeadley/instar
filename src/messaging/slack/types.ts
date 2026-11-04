@@ -187,6 +187,11 @@ export interface SlackMessage {
   files?: SlackFileInfo[];
   reactions?: Array<{ name: string; users: string[] }>;
   subtype?: string;
+  /** Set when a bot (including this agent) posted the message. */
+  bot_id?: string;
+  /** Set when the agent deliberately did not take the message (mention-only
+   *  channel, not addressed to it) — never counts as a user awaiting a reply. */
+  unaddressed?: boolean;
 }
 
 export interface SlackUser {

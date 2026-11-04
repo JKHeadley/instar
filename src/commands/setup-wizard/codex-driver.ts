@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import pc from 'picocolors';
+import { consumeBotLimitOutcome, isTelegramSkip, TELEGRAM_APP_ONLY_NOTE, TELEGRAM_BOT_LIMIT_HINT, telegramSetupOutcomePath } from './telegram-bot-limit.js';
 import {
   buildFreshProjectInstall,
   INITIAL_STATE,
@@ -349,6 +350,15 @@ async function runAction(
   console.log(pc.dim(`  → ${action.description}...`));
 
   switch (action.kind) {
+    case 'install-preflight':
+    case 'install-tools':
+    case 'install-tailscale-operator':
+    case 'door-install':
+    case 'door-sign-in':
+    case 'agent-init':
+    case 'owner-slot':
+      throw new Error(`${action.kind} belongs to the install flow, not this wizard`);
+
     case 'init': {
       // We assume instar is on PATH (the bareword `npx instar` flow
       // got us here). Use the installed binary.
@@ -423,6 +433,12 @@ async function runAction(
       // when the config write didn't actually land.
       const agentic = await runTelegramAgentic(options, answers);
       if (agentic.telegramConfigured) return agentic;
+      if (consumeBotLimitOutcome(options.projectDir)) {
+        // Manual setup would hit the same refusal, so go straight to app-only.
+        console.log();
+        console.log(pc.yellow(`  ${TELEGRAM_APP_ONLY_NOTE}`));
+        return { telegramConfigured: false };
+      }
       console.log();
       console.log(pc.dim('  Browser automation didn\'t finish — switching to manual setup.'));
       return await runTelegramSetup(options);
@@ -660,6 +676,15 @@ STEPS:
    @BotFather result.
 
 5. Send /newbot. Wait for the reply.
+   If BotFather says the account can't create more bots (Telegram
+   allows 20), stop here. Tell the user in one sentence: "Your
+   Telegram account already has the most bots Telegram allows, so
+   I'll set your agent up without Telegram. You'll use its dashboard
+   and the Instar app instead." Then write this file (Bash):
+     mkdir -p '${path.dirname(telegramSetupOutcomePath(projectDir))}' && echo '{"outcome":"bot-limit"}' > '${telegramSetupOutcomePath(projectDir)}'
+   Then output:
+     AGENTIC_FAILED: bot-limit
+   and exit. Do not try to delete any of the user's bots.
 
 6. When BotFather asks for the bot's display name, type the
    AGENT NAME from the context above: "${agentName}".
@@ -947,12 +972,17 @@ async function runTelegramSetup(options: CodexDriverOptions): Promise<Partial<Wi
   console.log('      – Display name (e.g. "Instar Codey")');
   console.log('      – Username (must end with "bot", e.g. "instar_codey_bot")');
   console.log('  • BotFather will reply with a token like 1234567890:AAH...');
+  console.log(pc.dim(`  ${TELEGRAM_BOT_LIMIT_HINT}`));
   console.log();
 
   let token = '';
   let botUsername = '';
   for (let attempt = 0; attempt < 5; attempt++) {
     const input = (await askUser('  Paste the bot token here: ')).trim();
+    if (isTelegramSkip(input)) {
+      console.log(pc.yellow(`  ${TELEGRAM_APP_ONLY_NOTE}`));
+      return { telegramConfigured: false };
+    }
     if (!input) {
       console.log(pc.yellow('  That looked blank — paste the token from BotFather (the long string).'));
       continue;

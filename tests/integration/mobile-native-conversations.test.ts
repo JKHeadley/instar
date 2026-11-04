@@ -6,7 +6,7 @@
  * its read allowance, a dispatch failure after persist, token removal, the reply route's
  * 409 not-owner vs accepted, 404s and the recording-disabled 503.
  */
-import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -25,6 +25,7 @@ import type { AppDispatchInput } from '../../src/core/appInboundDispatch.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { originLeaseDependencyFixture } from '../helpers/originLeaseDependency.js';
 
 const HOST = 'echo.example.dev';
 const dirs: string[] = [];
@@ -36,7 +37,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mobile-native-conversations.test.ts' });
 });
 
-interface Opts { lease?: { held: boolean }; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
+interface Opts { lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
 
 function setup(opts: Opts = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mnative-'));
@@ -51,7 +52,8 @@ function setup(opts: Opts = {}) {
   const recording = opts.recording ?? { on: true };
   const registry = new ConversationRegistry({ stateDir: dir, machineId: () => 'm1', isRecordingEnabled: () => recording.on });
   const bindAuth = createConversationBindAuth(dir);
-  const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease: () => lease.held };
+  const holdsLease = opts.holdsLease ?? (() => lease.held);
+  const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease };
   const pairing = new MobilePairingService(deps);
   pairing.nativeOn = !opts.nativeOff;
   cleanups.push(() => pairing.stop());
@@ -60,7 +62,7 @@ function setup(opts: Opts = {}) {
   const stopEffects: number[] = [];
   const requests = pairing.chatRequests()!;
   const svc = opts.nativeOff ? null : new AppConversationService({
-    stateDir: dir, machineId: () => 'm1', registry, requests, holdsLease: () => lease.held, ownerName: () => 'Justin',
+    stateDir: dir, machineId: () => 'm1', registry, requests, holdsLease, ownerName: () => 'Justin',
     killSession: (n) => { killed.push(n); return true; },
     onEmergencyStop: (alias) => { stopEffects.push(alias); },
     dispatch: () => async (input) => {
@@ -263,11 +265,77 @@ describe('native app conversations — routes', () => {
     expect(hist.body.messages).toEqual([expect.objectContaining({ role: 'agent', originVerified: 'none' })]);
   });
 
+  it('reply notification preview: the reply text for the device, its notification read token and the agent; nothing else', async () => {
+    const e = setup();
+    const key = await create(e);
+    const alias = e.registry.appAliasFor(key)!;
+    e.svc.leaseTick();
+    const token = e.bindAuth.mint('sess-app', [alias]);
+    const text = 'Here is the plan for Saturday: we leave at nine, stop for breakfast, and are at the lake by noon. Bring a jacket.';
+    const r = await bearer(e, 'post', '/app/session-reply').set('X-Instar-Bind-Token', token).send({ conversationId: alias, text });
+    expect(r.status).toBe(200);
+    const path = `/mobile/chat/app/${key}/preview/${r.body.messageId as string}`;
+    const dev = await signed(e, 'GET', path);
+    expect(dev.status).toBe(200);
+    expect(dev.body.title).toBe('Echo');
+    expect(dev.body.body).toBe(`${text.slice(0, 99)}…`);
+    // The notification extension has only the read token, never the signing key.
+    const read = crypto.randomBytes(32).toString('hex');
+    expect(e.pairing.devices.setPush(e.deviceId, { token: 'a'.repeat(64), environment: 'sandbox', notifyTokenHash: crypto.createHash('sha256').update(read).digest('hex'), revision: 1 }).ok).toBe(true);
+    const viaRead = await request(e.app).get(path).set('X-Instar-Device', e.deviceId).set('X-Instar-Notify-Token', read);
+    expect(viaRead.status).toBe(200);
+    expect(viaRead.body.body).toBe(dev.body.body);
+    expect((await request(e.app).get(path).set('X-Instar-Device', e.deviceId).set('X-Instar-Notify-Token', 'nope')).status).toBe(401);
+    // The read token opens no history and no other conversation route.
+    expect((await request(e.app).get(`/mobile/chat/app/${key}/messages`).set('X-Instar-Device', e.deviceId).set('X-Instar-Notify-Token', read)).status).toBe(403);
+    expect((await bearer(e, 'get', path)).status).toBe(200);
+    // An operator message, an unknown id, a bad key: no preview (the phone keeps "New reply").
+    expect((await signed(e, 'GET', `/mobile/chat/app/${key}/preview/am-0000`)).status).toBe(404);
+    expect((await bearer(e, 'get', `/mobile/chat/app/not-a-key/preview/am-1`)).status).toBe(400);
+  });
+
   it('is 503 everywhere when native conversations are off, and the Telegram chat route is untouched', async () => {
     const e = setup({ nativeOff: true });
     expect((await signed(e, 'GET', '/mobile/conversations')).status).toBe(503);
     expect((await signed(e, 'POST', '/mobile/conversations', { title: 'x', requestId: rid() })).status).toBe(503);
     expect((await bearer(e, 'post', '/app/session-reply').send({ conversationId: -5, text: 'x' })).status).toBe(503);
     expect((await signed(e, 'POST', '/mobile/chat/1', { text: 'x', requestId: rid() })).body.error).toBe('chat-unavailable');
+  });
+});
+
+describe('native app conversations — a Telegram-free agent keeps its own lease', () => {
+  // A real fenced lease on a single-machine, non-development agent with no Telegram config:
+  // only the app-conversations dependency (or nothing) keeps it renewed.
+  async function leased(dependency: string | undefined) {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const clock = { value: Date.now() };
+    const h = await originLeaseDependencyFixture({ clock, ...(dependency ? { dependency } : { enroll: false }) });
+    const advance = async (ms: number) => { clock.value += ms; await vi.advanceTimersByTimeAsync(ms); };
+    return { h, advance };
+  }
+
+  it('accepts an app message after the lease TTL has passed', async () => {
+    const { h, advance } = await leased('app-conversations');
+    try {
+      const e = setup({ holdsLease: () => h.coordinator.holdsLease() });
+      const key = await create(e);
+      await advance(30_000); await advance(30_000); await advance(10_000); // past the 60 s TTL
+      const r = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: 'hello without telegram', requestId: rid() });
+      expect(r.status).toBe(200);
+      expect(r.body).toMatchObject({ ok: true, outcome: 'delivered' });
+      expect(h.lc.currentEpoch()).toBe(1);
+    } finally { await h.close(); vi.useRealTimers(); }
+  });
+
+  it('REPRODUCTION: with no renewal dependency the same message gets 503 owner-unavailable', async () => {
+    const { h, advance } = await leased(undefined);
+    try {
+      const e = setup({ holdsLease: () => h.coordinator.holdsLease() });
+      const key = await create(e);
+      await advance(30_000); await advance(30_000); await advance(10_000);
+      const r = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: 'hello without telegram', requestId: rid() });
+      expect(r.status).toBe(503);
+      expect(r.body.error).toBe('owner-unavailable');
+    } finally { await h.close(); vi.useRealTimers(); }
   });
 });

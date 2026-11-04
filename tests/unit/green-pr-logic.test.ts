@@ -75,6 +75,14 @@ describe('classifyCandidate', () => {
   it('skips a conflicting PR', () => {
     expect(classifyCandidate(basePr({ mergeable: 'CONFLICTING' }), 'echo').skip).toBe('not-mergeable');
   });
+  it('skips a stacked PR (base is a feature branch) on both floors — ACT-053', () => {
+    expect(classifyCandidate(basePr({ baseRefName: 'feat/a2a-inbound-id-ledger' }), 'echo').skip).toBe('non-main-base');
+    expect(classifyCandidate(basePr({ baseRefName: 'feat/x' }), 'echo', { floor: 'local', hasRecord: true }).skip).toBe('non-main-base');
+  });
+  it('a main base, or an absent one (legacy projection), is not treated as stacked', () => {
+    expect(classifyCandidate(basePr({ baseRefName: 'main' }), 'echo')).toEqual({ eligible: true });
+    expect(classifyCandidate(basePr({ baseRefName: undefined }), 'echo')).toEqual({ eligible: true });
+  });
   it('skips an unsettled / red PR', () => {
     expect(classifyCandidate(basePr({ statusRollup: 'PENDING' }), 'echo').skip).toBe('not-settled-green');
     expect(classifyCandidate(basePr({ statusRollup: 'FAILURE' }), 'echo').skip).toBe('not-settled-green');

@@ -14,7 +14,8 @@ export function el(tag, attrs = {}, ...kids) {
     else if (k.startsWith('on') && typeof v === 'function') n.addEventListener(k.slice(2), v);
     else n.setAttribute(k, v === true ? '' : String(v));
   }
-  for (const kid of kids.flat()) if (kid != null && kid !== false) n.append(kid);
+  // Any depth: an array left inside the kids would otherwise be stringified into the page ("[object HTMLParagraphElement]").
+  for (const kid of kids.flat(Infinity)) if (kid != null && kid !== false) n.append(kid);
   return n;
 }
 
@@ -31,6 +32,17 @@ export function pageHead({ eyebrow, headline, sub, tone, facts = [] }) {
 
 /** A dashed honesty note (can't tell / partial / stale). */
 export function note(text) { return el('p', { class: 'card-note', text }); }
+
+/** Where a machine's reachability is shown. */
+export const MACHINES_PAGE = '#/capacity/machines';
+/** A note about a machine that did not answer: anything that fails links to the problem. */
+export function machineIssue(text) {
+  return /did not answer|not answering|didn[’']t answer|Couldn['’]t read other machines/i.test(String(text || ''));
+}
+export function noteLinked(text) {
+  if (!machineIssue(text)) return note(text);
+  return el('p', { class: 'card-note' }, document.createTextNode(`${text} `), el('a', { href: MACHINES_PAGE, text: 'See machines' }));
+}
 
 /** 5. Can't tell, as a whole page. */
 export function cantTell(reason) {
@@ -193,7 +205,113 @@ export function actionButton({ label, kind = 'primary', confirm, reason, run, do
 }
 
 /** replaceChildren that skips null/false (a bare null would render as the text "null"). */
-export function setKids(node, ...kids) { node.replaceChildren(...kids.flat().filter((k) => k != null && k !== false)); }
+export function setKids(node, ...kids) {
+  const page = node.tagName === 'MAIN' && node.isConnected && node.childElementCount > 0 && !restoring ? capturePlace(node) : null;
+  if (node.tagName === 'MAIN') node.dataset.painted = '1';
+  node.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
+  if (node.tagName !== 'MAIN' || restoring) return;
+  const drawn = foldStates(node);
+  if (page) restorePlace(node, page);
+  drawnFolds.set(node, drawn);
+}
+
+// ── A refresh keeps the operator's place (Dashboard UX Standard F12) ───────
+// Every page repaints by replacing what is in <main>. Replacing and restoring in
+// one task means the browser never paints the gap: no flash, no jump. Folds are
+// matched by what they say (numbers ignored, a count going from 3 to 4 is the same
+// fold), so this needs nothing from the page. Only a fold the operator moved away from
+// how the page last drew it is put back; a page that keeps its own fold state (and
+// repaints BECAUSE that state changed) is never fought.
+let restoring = false;
+const drawnFolds = new WeakMap(); // <main> → key → how the page itself last drew each fold
+const foldIsOpen = (n) => (n.tagName === 'DETAILS' ? n.open : n.getAttribute('aria-expanded') === 'true');
+function foldStates(root) {
+  const out = new Map();
+  for (const [n, key] of placeKeys(root)) if (n.tagName === 'DETAILS' || (n.tagName === 'BUTTON' && n.hasAttribute('aria-expanded'))) out.set(key, foldIsOpen(n));
+  return out;
+}
+function placeKeys(root) {
+  const seen = new Map();
+  const keys = new Map();
+  for (const n of root.querySelectorAll('*')) {
+    const tag = n.tagName;
+    const fold = tag === 'DETAILS' || (tag === 'BUTTON' && n.hasAttribute('aria-expanded'));
+    const scrolled = n.scrollTop > 0 || n.scrollLeft > 0;
+    const entry = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || tag === 'A' || n.hasAttribute('tabindex');
+    if (!fold && !scrolled && !entry && n.classList.length === 0) continue;
+    const home = n.parentElement && n.parentElement.closest('[id]');
+    const label = (tag === 'DETAILS' ? (n.querySelector(':scope > summary') || n).textContent : fold || entry ? (n.getAttribute('aria-label') || n.textContent || n.getAttribute('name') || n.getAttribute('placeholder') || '') : n.className) || '';
+    const base = `${tag}|${home && home !== root ? home.id : ''}|${String(label).replace(/\d+/g, '#').trim().slice(0, 80)}`;
+    const nth = seen.get(base) || 0;
+    seen.set(base, nth + 1);
+    keys.set(n, `${base}|${nth}`);
+  }
+  return keys;
+}
+function capturePlace(root) {
+  const place = { x: window.scrollX, y: window.scrollY, folds: new Map(), scrolls: new Map(), focus: null };
+  const drawn = drawnFolds.get(root) || new Map();
+  for (const [n, key] of placeKeys(root)) {
+    if ((n.tagName === 'DETAILS' || (n.tagName === 'BUTTON' && n.hasAttribute('aria-expanded'))) && drawn.has(key) && drawn.get(key) !== foldIsOpen(n)) place.folds.set(key, foldIsOpen(n));
+    if (n.scrollTop > 0 || n.scrollLeft > 0) place.scrolls.set(key, [n.scrollLeft, n.scrollTop]);
+    if (n === document.activeElement) place.focus = key;
+  }
+  return place;
+}
+function restorePlace(root, place) {
+  restoring = true;
+  try {
+    for (const [n, key] of placeKeys(root)) {
+      if (!place.folds.has(key) || !n.isConnected) continue;
+      const was = place.folds.get(key);
+      if (foldIsOpen(n) === was) continue;
+      if (n.tagName === 'DETAILS') n.open = was;
+      else n.click();
+    }
+    // Fold changes above can add height; positions are restored last, against the final layout.
+    for (const [n, key] of placeKeys(root)) {
+      const at = place.scrolls.get(key);
+      if (at) { n.scrollLeft = at[0]; n.scrollTop = at[1]; }
+      if (place.focus === key && typeof n.focus === 'function') n.focus({ preventScroll: true });
+    }
+    if (window.scrollX !== place.x || window.scrollY !== place.y) window.scrollTo(place.x, place.y);
+  } finally { restoring = false; }
+}
+
+/** Marks the block that leads a page because it needs the operator. A fixed source id from needs-model.js, never a row key (some carry one-time tokens). */
+export function markNeed(node, sourceId) { if (node) node.setAttribute('data-operator-need', sourceId); return node; }
+
+/** The loading placeholder: only ever shown before a page's first real paint, never over real content. */
+export function firstPaint(main, ...kids) {
+  if (main.dataset.painted) return;
+  main.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
+}
+
+let arrived = new Set();
+/** A new page or link arrived (console route()): its deep-link scroll may run again. */
+export function newArrival() { arrived = new Set(); }
+/** The one way to scroll to a deep-linked section: once per arrival, per key, never on a repaint. */
+export function arrivalScroll(node, { key = 'page', open = false, block = 'start' } = {}) {
+  if (!node || arrived.has(key)) return false;
+  arrived.add(key);
+  if (open) { const head = node.querySelector('button.list-head[aria-expanded="false"]'); if (head) head.click(); }
+  if (typeof node.scrollIntoView === 'function') node.scrollIntoView({ block });
+  return true;
+}
+
+/** F9 at the shell: is the operator in the middle of something a repaint would destroy? */
+export function refreshHeld(root) {
+  if (!root) return false;
+  if (root.querySelector('[data-interaction-open]')) return true;
+  const a = document.activeElement;
+  if (a && root.contains(a) && (a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.isContentEditable || (a.tagName === 'INPUT' && !/^(button|checkbox|radio|submit|reset|range|color|file)$/.test(a.type)))) return true;
+  for (const f of root.querySelectorAll('input, textarea')) {
+    if (/^(button|checkbox|radio|submit|reset|range|color|file|hidden)$/.test(f.type || '')) continue;
+    if (f.value !== f.defaultValue) return true;
+  }
+  const sel = typeof window.getSelection === 'function' ? window.getSelection() : null;
+  return Boolean(sel && !sel.isCollapsed && sel.anchorNode && root.contains(sel.anchorNode));
+}
 
 // ── PIN sheet (00-patterns.md §4: one look, per-action adapters) ───────────
 // adapter 'session': POST /dashboard/unlock → operator-session token, held in page
