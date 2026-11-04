@@ -6,7 +6,7 @@ import type { TelegramOriginRuntime } from './TelegramOriginRuntime.js';
 import type { OriginPreparedBotOperation } from './TelegramOriginService.js';
 import type { StoredOriginInput, OriginListQuery } from './StoreTypes.js';
 import { TelegramOriginHoldError } from './types.js';
-import { unrecordedAcceptanceCovers } from './OriginOperationOutcome.js';
+import { classifyOperationOutcome, unrecordedAcceptanceCovers } from './OriginOperationOutcome.js';
 import type { TelegramOriginRecord } from './types.js';
 import { telegramFetch } from '../telegram-egress.js';
 import { verify as verifySignature } from 'node:crypto';
@@ -65,9 +65,11 @@ export async function handleOriginMesh(options: {
         return { ok: false, reason: 'origin-receipt-unavailable' };
       }
       const fallback = !originAuditDeliveryConfirmed(audit) && unrecordedAcceptanceCovers(runtime, audit);
+      const verdict = classifyOperationOutcome(command.operationId, audit, runtime.unrecordedReceipts?.forOperation(command.operationId) ?? []);
       return { ok: true, operationId: command.operationId, originId: record.originId, envelopeDigest: audit.record.envelopeDigest,
         executionOwnerMachineId: runtime.options.identity.originMachineId, state: fallback ? 'accepted' : audit.operation?.state ?? 'not-admitted',
-        originReceiptConfirmed: fallback || originAuditDeliveryConfirmed(audit) };
+        originReceiptConfirmed: (fallback || originAuditDeliveryConfirmed(audit)) && verdict.outcome === 'delivered',
+        messageIds: verdict.messageIds };
     } catch { return { ok: false, reason: 'origin-receipt-unavailable' }; }
   }
   if (command.action === 'capabilities') return { ok: true, protocol: ORIGIN_MESH_PROTOCOL,
