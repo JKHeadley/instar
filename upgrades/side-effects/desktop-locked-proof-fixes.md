@@ -106,3 +106,5 @@ Concur with the review: stderr is read only for state-op, capped at 256 bytes, w
 - Real helper built with `node scripts/build-native-desktop-host.mjs`; live: a deep missing root is created 0700 at each level; `{bad` → `state-op: request-invalid`; a file in the path → `state-op: store-root-uncreatable`; both exit 69.
 - `INSTAR_REAL_DESKTOP_HELPER_TESTS=1 npx vitest run tests/unit/desktop-helper-state-op.test.ts`: 8/8 (previously always skipped).
 - `tests/unit/desktop-locked-proof-fixes.test.ts`, `DesktopLockedController.test.ts`, `DirectDesktopAccess.locked.test.ts`, `tunnel-manager-rewrite.test.ts`.
+
+**Trace note (2026-11-04):** one closing trace now lists every file in this PR, so the review above is recorded against the whole change, not spread across earlier traces. No code changed in this step.
