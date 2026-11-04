@@ -24,6 +24,10 @@ export const STAGE_B_CERTIFIED_SET = {
   ],
   "excluded": [
     {
+      "file": "src/core/claudeChildAuth.ts",
+      "reason": "Claude-only helper that passes the sign-in key to claude children; a Codex launch never reads it, so it cannot change the behaviour the Stage-B evidence certifies."
+    },
+    {
       "file": "src/monitoring/FeatureEvidenceLog.ts",
       "reason": "Write-only evidence log reached through DegradationReporter; its calls never throw, return nothing the caller reads, and do not alter the certified Codex Stage-B delivery path."
     },

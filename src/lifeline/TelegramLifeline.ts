@@ -37,7 +37,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import pc from 'picocolors';
-import { loadConfig, ensureStateDir, detectTmuxPath, getInstarVersion } from '../core/Config.js';
+import { loadConfig, ensureStateDir, detectTmuxPath, getInstarVersion, readClaudeChildAuthEnabled, readConfiguredAnthropicKey } from '../core/Config.js';
+import { claudeAuthShellPrefix, configureClaudeChildAuth, removeClaudeAuthEnvFile, writeClaudeAuthEnvFile } from '../core/claudeChildAuth.js';
 import { registerAgent, unregisterAgent, startHeartbeat } from '../core/AgentRegistry.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import {
@@ -192,6 +193,13 @@ export class TelegramLifeline {
 
   constructor(projectDir?: string) {
     this.projectConfig = loadConfig(projectDir);
+    // This process outlives a key change, so it reads the file rather than its frozen copy.
+    let lastClaudeKey = this.projectConfig.sessions?.anthropicApiKey;
+    configureClaudeChildAuth(() => {
+      const read = readConfiguredAnthropicKey(this.projectConfig.stateDir);
+      if (read !== undefined) lastClaudeKey = read ?? undefined;
+      return readClaudeChildAuthEnabled(this.projectConfig.stateDir) ? lastClaudeKey : undefined;
+    }, () => this.projectConfig.sessions?.anthropicBaseUrl);
     ensureStateDir(this.projectConfig.stateDir);
 
     // Find Telegram config
@@ -2692,7 +2700,10 @@ export class TelegramLifeline {
     }
 
     // Use shell to pipe the prompt file to claude via --message flag
-    const shellCmd = `cat "${promptPath}" | ${claudePath} ${permFlag} --message -`;
+    // The configured sign-in key, through a private file (this string is tmux argv). A key-only
+    // agent has no stored login, so the doctor could not start (spec cloud-key-internal-calls).
+    const authFile = writeClaudeAuthEnvFile(stateDir);
+    const shellCmd = `${authFile ? `${claudeAuthShellPrefix(authFile)} ` : ''}cat "${promptPath}" | ${claudePath} ${permFlag} --message -`;
 
     const tmuxArgs = [
       'new-session', '-d',
@@ -2719,7 +2730,7 @@ export class TelegramLifeline {
 
     await new Promise<void>((resolve, reject) => {
       execFile(tmuxPath, tmuxArgs, { encoding: 'utf-8' }, (err) => {
-        if (err) reject(new Error(`Failed to create doctor tmux session: ${err}`));
+        if (err) { removeClaudeAuthEnvFile(authFile); reject(new Error(`Failed to create doctor tmux session: ${err}`)); }
         else resolve();
       });
     });

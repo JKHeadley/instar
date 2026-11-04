@@ -86,6 +86,8 @@ import {
   REROUTED_LOGIN_EXPIRED_POOL_SENTENCE_V1,
   INTERACTIVE_LOGIN_EXPIRED_BULLET,
   INTERACTIVE_LOGIN_EXPIRED_MARKER,
+  CLAUDE_KEY_HEALTH_BULLET,
+  CLAUDE_KEY_HEALTH_MARKER,
   STANDING_SESSIONS_BULLET,
   STANDING_SESSIONS_MARKER,
   CONSOLE_BULLET,
@@ -12805,6 +12807,16 @@ A silent **decision audit** records every keep/kill decision *change* (logged on
       result.upgraded.push('CLAUDE.md: added interactive expired-login bullet');
     } else {
       result.skipped.push('CLAUDE.md: interactive expired-login bullet already present');
+    }
+    if (!content.includes(CLAUDE_KEY_HEALTH_MARKER)) {
+      const ilIdx = content.indexOf(INTERACTIVE_LOGIN_EXPIRED_BULLET);
+      content = ilIdx >= 0
+        ? content.slice(0, ilIdx + INTERACTIVE_LOGIN_EXPIRED_BULLET.length) + '\n' + CLAUDE_KEY_HEALTH_BULLET + content.slice(ilIdx + INTERACTIVE_LOGIN_EXPIRED_BULLET.length)
+        : content + '\n' + CLAUDE_KEY_HEALTH_BULLET + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added sign-in key health bullet');
+    } else {
+      result.skipped.push('CLAUDE.md: sign-in key health bullet already present');
     }
 
     // Self-Heal: Update Restart Behavior — explains restart-cascade dampener

@@ -3,6 +3,7 @@
  * the boot-time TCC-protected path detection + /guards row (see the
  * TccProtectedPathGuard block beside the worktree detector).
  */
+import { configureClaudeChildAuth, sweepClaudeAuthEnvFiles } from '../core/claudeChildAuth.js';
 import { slackHistoryLabel } from '../messaging/slack/threadHistoryLabel.js';
 import { readPairingOwnerName } from '../threadline/pairingOwnerName.js';
 import { buildThrowawayJobGuard, checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
@@ -63,7 +64,7 @@ import { StandDownAudit } from '../core/StandDownAudit.js';
 import { resolveStandardsRegistry } from '../core/standardsRegistryPath.js';
 import { chunkLiteralForTmux, buildLiteralSendArgs } from '../core/tmuxLiteralSend.js';
 import { parseStandardsRegistry } from '../core/StandardsRegistryParser.js';
-import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
+import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath, detectClaudePath, readConfiguredAnthropicKey } from '../core/Config.js';
 import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
 import { planInboundLossNotices } from '../core/inboundLossRouting.js';
 import { heartbeatFreshEnoughToRerecord } from '../core/MachineHeartbeat.js';
@@ -4242,6 +4243,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     watchPaths: ['updates.autoApply', 'sessions.maxSessions', 'monitoring'],
   });
   liveConfig.start();
+
+  // Every server-side `claude` child gets the configured sign-in key from here, read per call so a
+  // restored key applies at once (spec cloud-key-internal-calls). Off: sessions.claudeChildAuth.enabled.
+  configureClaudeChildAuth(() =>
+    liveConfig.get<unknown>('sessions.claudeChildAuth.enabled', true) === false ? undefined : config.sessions?.anthropicApiKey,
+    () => config.sessions?.anthropicBaseUrl);
+  sweepClaudeAuthEnvFiles(config.stateDir);
 
   // Threadline → Telegram bridge config — settings surface for the bridge
   // module. Default-OFF auto-create ships from day one;
@@ -21680,6 +21688,88 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.warn('[instar] swap-continuity anti-thrash spine init failed (non-fatal):', err);
       _swapAntiThrashEngine = null;
       _swapWorkGate = null;
+    }
+
+    // A dead sign-in key on a key-only agent: confirmed, told, recovered (spec cloud-key-internal-calls).
+    // Wired here, outside the subscription pool block, because these agents may have no pool.
+    {
+      const { ClaudeKeyHealth, claudeKeyFingerprint, setActiveClaudeKeyHealth } = await import('../core/ClaudeKeyHealth.js');
+      const { buildClaudeKeyProbe } = await import('../core/claudeKeyProbe.js');
+      const { configuredClaudeOauthKey, setClaudeCallOutcomeListener } = await import('../core/claudeChildAuth.js');
+      const keyHealthOn = () => liveConfig.get<unknown>('sessions.claudeKeyHealth.enabled', true) !== false;
+      const sendToSlackKey = async (routingKey: string, text: string): Promise<void> => {
+        const [channelId, threadTs] = routingKey.split(':');
+        await _slackAdapter!.sendToChannel(channelId, text, threadTs ? { thread_ts: threadTs } : undefined);
+      };
+      // The disk read covers a topic bound after this server booted, as SessionRefresh does.
+      const topicForSession = (name: string): number | null =>
+        telegram?.getTopicForSession(name) ?? telegram?.resolveTopicForSessionFromDisk?.(name) ?? null;
+      const claudeKeyHealth = new ClaudeKeyHealth({
+        stateFile: path.join(config.stateDir, 'state', 'claude-key-health.json'),
+        currentKey: () => (keyHealthOn() ? configuredClaudeOauthKey() : undefined),
+        currentRawKey: () => config.sessions.anthropicApiKey,
+        readKeyFromDisk: () => (keyHealthOn() ? readConfiguredAnthropicKey(config.stateDir) : undefined),
+        applyKey: (key) => {
+          config.sessions.anthropicApiKey = key ?? undefined;
+          sessionManager.setAnthropicKey(key);
+        },
+        probe: buildClaudeKeyProbe({
+          claudePath: () => resolveFrameworkBinaryPath({
+            framework: 'claude-code',
+            frameworkBinaryPaths: config.sessions.frameworkBinaryPaths,
+            claudePath: config.sessions.claudePath,
+            configuredFramework: config.sessions.framework,
+          }) ?? detectClaudePath(),
+          baseUrl: () => config.sessions.anthropicBaseUrl,
+        }),
+        // Fixed server text straight to the adapters: the model is what is down, and `notify` returns
+        // nothing, so it can't say whether anyone was told.
+        notifyOperator: async (text) => {
+          let delivered = false;
+          const hubTopicId = state.get<number>('agent-attention-topic') ?? 0;
+          if (telegram && hubTopicId) {
+            try { await telegram.sendToTopic(hubTopicId, text); delivered = true; }
+            catch (err) { /* @silent-fallback-ok: `delivered` stays false, which drives the retry and its capped report */ console.warn(`[ClaudeKeyHealth] Telegram notice failed: ${err instanceof Error ? err.message : String(err)}`); }
+          }
+          const attentionChannel = state.get<string>('slack-attention-channel');
+          if (_slackAdapter && attentionChannel) {
+            try { await _slackAdapter.sendToChannel(attentionChannel, text); delivered = true; }
+            catch (err) { /* @silent-fallback-ok: `delivered` stays false, which drives the retry and its capped report */ console.warn(`[ClaudeKeyHealth] Slack notice failed: ${err instanceof Error ? err.message : String(err)}`); }
+          }
+          return delivered;
+        },
+        notifyPerson: async (sessionName, text) => {
+          const topicId = topicForSession(sessionName);
+          if (topicId !== null) { await telegram!.sendToTopic(topicId, text); return true; }
+          const routingKey = _slackAdapter?.getChannelForSession(sessionName) ?? null;
+          if (routingKey !== null) { await sendToSlackKey(routingKey, text); return true; }
+          return false;
+        },
+        listStuckSessions: async () => (await sessionManager.listSessionsAtLoginScreen()).filter((name) =>
+          topicForSession(name) !== null || (_slackAdapter?.getChannelForSession(name) ?? null) !== null),
+        sessionLaunchFingerprint: (tmuxSession) => {
+          const launched = sessionManager.sessionLaunchKey(tmuxSession);
+          return launched ? claudeKeyFingerprint(launched) : null;
+        },
+        refresh: async (sessionName, prompt) => {
+          if (!_sessionRefresh) return { ok: false, reason: 'session refresh not available' };
+          const r = await _sessionRefresh.refreshSession({ sessionName, followUpPrompt: prompt, reason: 'claude-key-restored' });
+          return r.ok ? { ok: true, newSessionName: r.newSessionName } : { ok: false, reason: r.code };
+        },
+        clearLoginReports: () => sessionManager.clearInteractiveLoginReports(),
+        report: ({ reason, impact }) => DegradationReporter.getInstance().report({
+          feature: 'ClaudeKeyHealth',
+          primary: 'the configured Claude sign-in key authenticates every model call',
+          fallback: 'the operator is told and stuck conversations wait for a working key',
+          reason,
+          impact,
+        }),
+        logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+      });
+      setActiveClaudeKeyHealth(claudeKeyHealth);
+      setClaudeCallOutcomeListener((outcome) => claudeKeyHealth.noteCallOutcome(outcome));
+      sessionManager.prependInteractiveLoginExpiredSink((signal) => claudeKeyHealth.handle(signal));
+      void claudeKeyHealth.boot().catch((err) => console.warn(`[ClaudeKeyHealth] boot failed: ${err instanceof Error ? err.message : String(err)}`));
     }
 
     // SessionRefresh — agent-initiated session respawn. Requires a Telegram

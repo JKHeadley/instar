@@ -44,6 +44,7 @@ import { MAIN_FAIR_SHARE_MS, decideMergeHandoff, decideStart, decideStarved, dec
 import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/laneReport.js';
 import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
+import { decideKeyRefresh, REFRESH_MAX_ATTEMPTS } from '../core/ClaudeKeyHealth.js';
 import { raiseDue } from '../monitoring/MaturationLadder.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
 import { nextBreakerState, RECONCILE_LIMITS } from '../core/ReplicatedStoreReconciler.js';
@@ -3148,6 +3149,38 @@ const interactiveLoginExpiredSwap: SelfActionController = {
 };
 
 /**
+ * claude-key-session-refresh — spec cloud-key-internal-calls. After a working sign-in key is proven,
+ * a session at the login screen is restarted so it can answer. Under the pinned fixture every refresh
+ * is refused. The REAL brake is `decideKeyRefresh`: at most 3 attempts, then the session leaves the
+ * list and is reported. Nothing re-adds it within the episode, and a session already refreshed onto
+ * this key is never queued again.
+ */
+const claudeKeySessionRefresh: SelfActionController = {
+  id: 'claude-key-session-refresh',
+  actionVerb: 'session-refresh',
+  models: 'src/core/ClaudeKeyHealth.ts (decideKeyRefresh: 3-attempt cap per session per episode)',
+  modelsPath: 'src/core/ClaudeKeyHealth.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Attempt counts are persisted with the pending list, so a restart resets nothing, and the list only fills after a key is proven working.' },
+  boundK: REFRESH_MAX_ATTEMPTS,
+  perTargetBoundK: REFRESH_MAX_ATTEMPTS,
+  ticks: 60,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const TARGET = 'stuck-session';
+    let attempts = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (decideKeyRefresh({ attempts, maxAttempts: REFRESH_MAX_ATTEMPTS }) !== 'attempt') return;
+        attempts += 1;
+        sink.emit({ verb: 'session-refresh', target: TARGET });
+        if (!f.targetAlwaysRejects()) { attempts = 0; } // a real refresh (never under the fixture)
+      },
+    };
+  },
+};
+
+/**
  * device-limit-session-move — codex-device-limit-tripwire §4. A live interactive Codex session on
  * an account benched for a (suspected) device limit is moved to another Codex account. Under the
  * pinned fixture every move is refused, so the bench never clears its sessions. The REAL brake is
@@ -3683,6 +3716,7 @@ function makeMachineWedgeNotice(f: PressureFixture, sink: ActionSink): { tick():
 }
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  claudeKeySessionRefresh,
   desktopRelockGuardReplacement,
   desktopLockedHelperRespawn,
   sessionPoolStagePromotion,

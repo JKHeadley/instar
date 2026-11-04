@@ -5,6 +5,7 @@
  * output goes to a log. The ledger in ./install/progress.ts lets a harness poll it and `--resume`
  * continue it.
  */
+import { looksLikeClaudeToken, writeClaudeKeyToConfig as writeClaudeToken } from '../core/claudeChildAuth.js';
 import { codePageUrlForOrigin } from '../server/dashboardPaths.js';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { randomInt } from 'node:crypto';
@@ -336,26 +337,7 @@ export function restrictToOwner(file: string): void {
   }
 }
 
-/** A Claude token from `claude setup-token`. Checked by shape only: it lasts a year and is used at the first session. */
-export function looksLikeClaudeToken(value: string): boolean {
-  return /^sk-ant-oat\d*-[A-Za-z0-9_-]{20,}$/.test(value.trim());
-}
-
-/**
- * Writes the server sign-in token where sessions read it: `sessions.credentials.anthropic`
- * as an oauth-token (fb-7cb86d4b-1fd, read since 1.3.1615). Never the legacy field.
- */
-export function writeClaudeToken(configFile: string, token: string): void {
-  const config = JSON.parse(fs.readFileSync(configFile, 'utf-8')) as Record<string, unknown>;
-  const sessions = (config.sessions && typeof config.sessions === 'object' ? config.sessions : {}) as Record<string, unknown>;
-  const credentials = (sessions.credentials && typeof sessions.credentials === 'object' ? sessions.credentials : {}) as Record<string, unknown>;
-  credentials.anthropic = { kind: 'oauth-token', value: token.trim() };
-  sessions.credentials = credentials;
-  config.sessions = sessions;
-  const tmp = `${configFile}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(config, null, 2), { mode: 0o600 });
-  fs.renameSync(tmp, configFile);
-}
+export { looksLikeClaudeToken, writeClaudeToken };
 
 export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./setup-wizard/state-machine.js').WizardActionKind, StepHandler>> {
   const resume = 'Then run instar install --resume.';

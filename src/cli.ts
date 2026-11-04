@@ -343,6 +343,15 @@ program
 // ── Setup (explicit alias) ────────────────────────────────────────
 
 program
+  .command('set-claude-key')
+  .description('Put a new Claude sign-in key in place. Reads it from stdin or a hidden prompt.')
+  .option('-d, --dir <path>', 'Agent directory')
+  .action(async (opts) => {
+    const { setClaudeKey } = await import('./commands/setClaudeKey.js');
+    await setClaudeKey(opts);
+  });
+
+program
   .command('setup')
   .description('Interactive setup wizard (same as running `instar` with no args)')
   .option('--non-interactive', 'Run setup without LLM wizard (requires all flags)')

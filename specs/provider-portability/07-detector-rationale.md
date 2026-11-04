@@ -35,6 +35,14 @@ For each detector, four lines plus a one-line conclusion:
 - **Fallback:** partial and asymmetric. The spawn path has an extended wait plus a blind-inject-if-alive fallback, so a wrong `not-ready` costs a delay. The Slack stuck-session path's not-ready branch is DESTRUCTIVE (kill + respawn), so a wrong answer there costs a live conversation — which is why the verdict is a named state and not a boolean, letting that caller leave a `menu` alone. The message loss on 2026-07-26 was caught only by the start hook's unanswered-message backstop, an unrelated path that must not be counted as this detector's safety net.
 - **→ Verdict: deterministic + canary required.** Shipped: the deterministic classifier plus regression fixtures carrying the literal pane text of both known failures, with a dead-check guard proving the classifier still discriminates across all three verdicts. Not shipped: a canary. So it detects the two shapes that already bit us and not the next drift, which for an unstable upstream is the case that matters. Canary tracked as CMT-1044. <!-- tracked: CMT-1044 -->
 
+### `core/claudeChildAuth.ts`, `core/claudeKeyProbe.ts` — Claude CLI auth verdict (`rejected` / `no-auth` / `ok`)
+
+- **Criticality:** moderate. A wrong `rejected` would tell an operator to replace a good key, so it takes a numeric 401 seen twice. A missed verdict leaves a dead key undetected by this path.
+- **Frequency:** per failed model call, plus probes that back off to one an hour.
+- **Stability:** semi-stable. `--output-format json` is a documented surface; its error fields are not.
+- **Fallback:** a changed shape reads as no verdict, which concludes nothing: never a false alarm, and the login-screen detector still sees a dead key in a session.
+- **→ Verdict: deterministic.** Real CLI output from 2.1.316 is pinned in `tests/unit/ClaudeKeyHealth.test.ts`. No startup canary: a runtime canary would need a known-bad key call on every boot.
+
 ---
 
 ## Provider substrate

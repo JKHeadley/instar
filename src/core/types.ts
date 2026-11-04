@@ -454,6 +454,10 @@ export interface SessionManagerConfig {
    * `credentials` via `getProviderCredential()`.
    */
   anthropicApiKey?: string;
+  /** Off switch for handing the sign-in key to server-side `claude` children (spec cloud-key-internal-calls). */
+  claudeChildAuth?: { enabled?: boolean };
+  /** Off switch for dead-key detection and recovery (spec cloud-key-internal-calls). */
+  claudeKeyHealth?: { enabled?: boolean };
   /**
    * @deprecated v1.0.0 — use `credentials.anthropic.baseUrl` instead.
    * Anthropic base URL for spawned sessions.
