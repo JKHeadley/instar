@@ -17,6 +17,7 @@ import { stripViewSignatures } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
+import { mountMobilePermissionsRoutes } from './mobilePermissionsRoutes.js';
 import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
 import type { AutoExpiryHold } from '../core/types.js';
@@ -228,7 +229,7 @@ import { mountMobileOpsRoutes } from './mobileOpsRoutes.js';
 import { joinTelegramHistory, withTelegramMediaForDevice } from './mobileConversationRoutes.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
 import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
-import { PROPOSABLE_FLOOR_ACTIONS, renderAuthorizationCard } from '../core/AuthorizationRequestStore.js';
+import { PROPOSABLE_FLOOR_ACTIONS, renderAuthorizationCard, hashProposal } from '../core/AuthorizationRequestStore.js';
 import type { AuthorizationRequestStore, AuthorizationRequest } from '../core/AuthorizationRequestStore.js';
 import { planTransferByNickname } from '../core/TransferByNickname.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
@@ -1396,6 +1397,8 @@ export interface RouteContext {
   nativeHookIngest?: NativeHookEventIngest | null;
   /** Multi-route own names (docs/specs/mobile-multi-route.md); null when the flag is off. */
   mobileOwnNames?: import('../core/MobileOwnNames.js').MobileOwnNames | null;
+  /** The phone pairing service (docs/specs/mobile-native-permissions.md: the owner phone's Face ID-confirmed writes). */
+  mobilePairingService?: import('./mobilePairingRoutes.js').MobilePairingService | null;
   worktreeMonitor: WorktreeMonitor | null;
   subagentTracker: SubagentTracker | null;
   instructionsVerifier: InstructionsVerifier | null;
@@ -15182,6 +15185,9 @@ export function createRoutes(ctx: RouteContext): Router {
   // approve its own request). The operator-facing card is SERVER-authored from the
   // structured proposal + the registry name — never agent free-text (deceptive-summary
   // defense). Spec: docs/specs/OPERATOR-AUTHORIZATION-REQUEST-SPEC.md.
+  const authReqUnavailableResult = (): { status: number; body: unknown } | null =>
+    (!ctx.authorizationRequests || !ctx.authorizationRequests.enabled)
+      ? { status: 503, body: { error: 'authorization-requests feature not enabled' } } : null;
   const authReqUnavailable = (res: import('express').Response): boolean => {
     if (!ctx.authorizationRequests || !ctx.authorizationRequests.enabled) {
       res.status(503).json({ error: 'authorization-requests feature not enabled' });
@@ -15258,16 +15264,19 @@ export function createRoutes(ctx: RouteContext): Router {
 
   // Operator APPROVES — PIN-GATED. The single authority-conferring step. The PIN covers
   // the whole execution incl. the carrier-mandate auto-issue (no second prompt).
-  router.post('/authorization-requests/:id/approve', (req, res) => {
-    if (authReqUnavailable(res)) return;
-    if (!ctx.coordination) { res.status(503).json({ error: 'coordination mandate engine unavailable' }); return; }
-    if (!checkMandatePin(req, res)) {
-      featureEvidence.record('monitoring.authorizationRequests', { kind: 'held', reason: 'approve refused: PIN gate', context: { requestId: req.params.id } });
-      return;
-    }
+  // The body after the PIN check is shared with the owner phone's Face ID-confirmed approve
+  // (docs/specs/mobile-native-permissions.md §3.4): `by` names which proof stood in for the
+  // operator. Synchronous end to end (store read → execute → write), no await in between.
+  type AuthReqActor = { kind: 'pin' } | { kind: 'owner-phone'; deviceId: string; proposalHash?: string };
+  const approveAuthorizationRequest = (id: string, by: AuthReqActor): { status: number; body: unknown } => {
+    if (authReqUnavailableResult()) return authReqUnavailableResult()!;
+    if (!ctx.coordination) return { status: 503, body: { error: 'coordination mandate engine unavailable' } };
+    const via: Record<string, string> = by.kind === 'owner-phone' ? { via: 'owner-phone', deviceId: by.deviceId } : {};
     const ar = ctx.authorizationRequests!;
-    const result = ar.store.approve(req.params.id, {
+    const result = ar.store.approve(id, {
       execute: (proposal) => {
+        // The owner phone signed the exact proposal it showed (docs/specs/mobile-native-permissions.md §3.3).
+        if (by.kind === 'owner-phone' && hashProposal(proposal) !== by.proposalHash) throw new Error('request-changed');
         // Re-check the allowlist (defends against a config change while pending).
         if (!PROPOSABLE_FLOOR_ACTIONS.includes(proposal.floorAction)) throw new Error('action-no-longer-proposable');
         // FRESH-resolve the grantee against the registry (rejects phantom / reflects a rename).
@@ -15295,19 +15304,44 @@ export function createRoutes(ctx: RouteContext): Router {
           agentFp: proposal.grantedToSlackUserId,
           action: `grant-floor:${proposal.floorAction}`,
           decision: 'allow',
-          reason: `approved via authorization-request, authorizedBy ${ar.ownerDisplay} until ${expiresAt}`,
+          reason: by.kind === 'owner-phone'
+            ? `approved via authorization-request, authorizedBy ${ar.ownerDisplay} until ${expiresAt}, from the owner's phone (device ${by.deviceId}) with a Face ID / passcode proof`
+            : `approved via authorization-request, authorizedBy ${ar.ownerDisplay} until ${expiresAt}`,
         });
         return mandate.id;
       },
     });
     if (!result.ok) {
-      featureEvidence.record('monitoring.authorizationRequests', { kind: result.status === 409 ? 'error' : 'held', reason: `approve refused: ${result.error}`, context: { requestId: req.params.id, status: result.status } });
-      res.status(result.status).json({ error: result.error }); return;
+      featureEvidence.record('monitoring.authorizationRequests', { kind: result.status === 409 ? 'error' : 'held', reason: `approve refused: ${result.error}`, context: { requestId: id, status: result.status, ...via } });
+      return { status: result.status, body: { error: result.error } };
     }
-    featureEvidence.record('monitoring.authorizationRequests', { kind: 'fired', reason: result.alreadyApproved ? 'already approved' : 'approved', context: { requestId: result.request.id, floorAction: result.request.proposal.floorAction, durationMs: result.request.proposal.durationMs, alreadyApproved: result.alreadyApproved ?? false } });
-    res.status(result.alreadyApproved ? 200 : 201).json({
-      approved: true, alreadyApproved: result.alreadyApproved ?? false, request: decorateAuthReq(result.request),
-    });
+    featureEvidence.record('monitoring.authorizationRequests', { kind: 'fired', reason: result.alreadyApproved ? 'already approved' : 'approved', context: { requestId: result.request.id, floorAction: result.request.proposal.floorAction, durationMs: result.request.proposal.durationMs, alreadyApproved: result.alreadyApproved ?? false, ...via } });
+    return {
+      status: result.alreadyApproved ? 200 : 201,
+      body: { approved: true, alreadyApproved: result.alreadyApproved ?? false, request: decorateAuthReq(result.request) },
+    };
+  };
+  const denyAuthorizationRequest = (id: string, reason: string, by: AuthReqActor): { status: number; body: unknown } => {
+    if (authReqUnavailableResult()) return authReqUnavailableResult()!;
+    const via: Record<string, string> = by.kind === 'owner-phone' ? { via: 'owner-phone', deviceId: by.deviceId } : {};
+    const result = ctx.authorizationRequests!.store.deny(id, reason);
+    if (!result.ok) {
+      featureEvidence.record('monitoring.authorizationRequests', { kind: 'held', reason: `deny refused: ${result.error}`, context: { requestId: id, status: result.status, ...via } });
+      return { status: result.status, body: { error: result.error } };
+    }
+    featureEvidence.record('monitoring.authorizationRequests', { kind: 'fired', reason: 'denied', context: { requestId: result.request.id, floorAction: result.request.proposal.floorAction, ...via } });
+    return { status: 200, body: { denied: true, request: decorateAuthReq(result.request) } };
+  };
+
+  router.post('/authorization-requests/:id/approve', (req, res) => {
+    if (authReqUnavailable(res)) return;
+    if (!ctx.coordination) { res.status(503).json({ error: 'coordination mandate engine unavailable' }); return; }
+    if (!checkMandatePin(req, res)) {
+      featureEvidence.record('monitoring.authorizationRequests', { kind: 'held', reason: 'approve refused: PIN gate', context: { requestId: req.params.id } });
+      return;
+    }
+    const r = approveAuthorizationRequest(req.params.id, { kind: 'pin' });
+    res.status(r.status).json(r.body);
   });
 
   // Operator DECLINES — PIN-GATED. denyReason REQUIRED.
@@ -15315,13 +15349,8 @@ export function createRoutes(ctx: RouteContext): Router {
     if (authReqUnavailable(res)) return;
     if (!checkMandatePin(req, res)) return;
     const reason = typeof (req.body ?? {}).denyReason === 'string' ? req.body.denyReason : '';
-    const result = ctx.authorizationRequests!.store.deny(req.params.id, reason);
-    if (!result.ok) {
-      featureEvidence.record('monitoring.authorizationRequests', { kind: 'held', reason: `deny refused: ${result.error}`, context: { requestId: req.params.id, status: result.status } });
-      res.status(result.status).json({ error: result.error }); return;
-    }
-    featureEvidence.record('monitoring.authorizationRequests', { kind: 'fired', reason: 'denied', context: { requestId: result.request.id, floorAction: result.request.proposal.floorAction } });
-    res.json({ denied: true, request: decorateAuthReq(result.request) });
+    const r = denyAuthorizationRequest(req.params.id, reason, { kind: 'pin' });
+    res.status(r.status).json(r.body);
   });
 
   // Proposing agent WITHDRAWS its own still-pending request (Bearer).
@@ -37722,6 +37751,80 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
       bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     });
+    // Native Permission slips and What I'm allowed to do (docs/specs/mobile-native-permissions.md):
+    // trimmed reads (owner phone or bearer; approvals and slips proxied-on-read across peers) and the
+    // owner phone's Face ID-confirmed approve, decline and switch, which run the console's own paths.
+    mountMobilePermissionsRoutes(router, {
+      pairing: () => ctx.mobilePairingService ?? null,
+      config: () => ctx.config,
+      stateDir: ctx.config.stateDir,
+      bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+      localSlips: () => {
+        const ar = ctx.authorizationRequests;
+        const approvals = !ar || !ar.enabled || !ctx.coordination
+          ? { state: 'off' as const, rows: [] }
+          : {
+            state: 'ok' as const,
+            rows: ar.store.list('pending').map((r) => {
+              const principal = ar.resolvePrincipal(r.proposal.grantedToSlackUserId);
+              return {
+                id: r.id, createdByAgent: r.createdByAgent, createdAt: r.createdAt, requestExpiresAt: r.requestExpiresAt,
+                // The phone's headline never falls back to a raw Slack user id; a row whose person is not a
+                // registered name carries no approve hash (approve would refuse it as unknown-user anyway).
+                headline: renderAuthorizationCard(r, principal?.name ?? 'a person').headline,
+                reason: r.reason, heldOnThisMachine: r.createdOnMachine === ar.machineId,
+                proposalHash: hashProposal(r.proposal),
+                recipientKnown: !!principal?.registered && !!principal.name && principal.name !== r.proposal.grantedToSlackUserId,
+              };
+            }),
+          };
+        const co = ctx.coordination;
+        const mandates = co ? co.store.list() : [];
+        const slips = co
+          ? { state: 'ok' as const, mandates: mandates as unknown as Record<string, unknown>[], invalidIds: mandates.filter((m) => !co.store.verifyAuthorship(m)).map((m) => m.id) }
+          : { state: 'off' as const, mandates: [], invalidIds: [] };
+        return { approvals, slips };
+      },
+      personName: (uid) => ctx.authorizationRequests?.resolvePrincipal(uid)?.name ?? null,
+      peerSlips: () => peerSummaries('/mobile/permissions/slips?scope=local'),
+      peerFeatures: () => peerSummaries('/mobile/permissions/features?scope=local'),
+      offlineMachineIds: () => {
+        if (!ctx.meshSelfId) return [];
+        const online = new Set([...onlinePeers().map((p) => p.machineId), ctx.meshSelfId]);
+        return (ctx.machinePoolRegistry?.getCapacities() ?? []).map((m) => m.machineId).filter((id) => !online.has(id));
+      },
+      nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+      features: () => (ctx.featureRegistry
+        ? { state: 'ok', list: withEffective(ctx.featureRegistry.getAllFeatures('default')) as unknown as Record<string, unknown>[] }
+        : { state: 'off', list: [] }),
+      approve: (id, proposalHash, deviceId) => {
+        // As the console: no buttons (here, a refusal) for a request asked on another machine.
+        const ar = ctx.authorizationRequests;
+        const r = ar?.enabled ? ar.store.get(id) : null;
+        if (r && ar && r.createdOnMachine !== ar.machineId) return { status: 409, body: { error: 'asked-elsewhere' } };
+        // The phone signed the proposal it showed; approveAuthorizationRequest re-checks that hash on the
+        // very proposal it executes, so a request changed since the phone read it is refused (409 request-changed).
+        return approveAuthorizationRequest(id, { kind: 'owner-phone', deviceId, proposalHash });
+      },
+      deny: (id, reason, deviceId) => {
+        const ar = ctx.authorizationRequests;
+        const r = ar?.enabled ? ar.store.get(id) : null;
+        if (r && ar && r.createdOnMachine !== ar.machineId) return { status: 409, body: { error: 'asked-elsewhere' } };
+        return denyAuthorizationRequest(id, reason, { kind: 'owner-phone', deviceId });
+      },
+      featureDefinition: (id) => (ctx.featureRegistry?.getDefinition(id) as unknown as Record<string, unknown> | undefined) ?? null,
+      setFeature: async (req, id, to, deviceId, stillAuthorized) => {
+        if (!ctx.featureRegistry) return { status: 501, body: { error: 'FeatureRegistry not initialized' } };
+        const def = ctx.featureRegistry.getDefinition(id);
+        if (!def) return { status: 404, body: { error: { code: 'FEATURE_NOT_FOUND', message: 'That feature is not in the registry.' } } };
+        if (def.switchable === false) return { status: 409, body: { error: { code: 'FEATURE_NOT_SWITCHABLE', message: def.honestyNote ?? 'This switch is read-only in this version.' } } };
+        const outcome = await operatorSwitchFeature(req, id, 'default', to, `${to === 'enabled' ? 'Turned on' : 'Turned off'} from the Instar app (owner phone, device ${deviceId}, Face ID / passcode proof)`, stillAuthorized);
+        const code = outcome.result.success ? null : outcome.result.error?.code;
+        if (code === 'permission-actions-off' || code === 'console-pin-not-set') return { status: 503, body: { error: code } };
+        if (code === 'owner-phone-required') return { status: 403, body: { error: code } };
+        return featureTransitionAnswer(outcome, id, 'default', true);
+      },
+    });
   }
 
   // P1.3 (pre-limit half) — proactive swap status + on-demand check. The monitor
@@ -42851,6 +42954,44 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     return result;
   };
 
+  /**
+   * The operator's switch (a fresh PIN-unlocked dashboard session, or the owner phone's Face
+   * ID-confirmed action — docs/specs/mobile-native-permissions.md §3.4): `operatorSet`, then the
+   * setting follows it, one switch at a time per feature (the same chain as every transition).
+   */
+  const operatorSwitchFeature = (req: import('express').Request, featureId: string, userId: string, to: 'enabled' | 'disabled', context: string | undefined,
+    stillAuthorized?: () => string | null) =>
+    serializeFeatureSwitch(featureId, async () => {
+      // A switch that waited behind another one re-checks its authority right before it runs
+      // (the owner phone's: still an active owner phone, the feature still on).
+      const refusal = stillAuthorized?.() ?? null;
+      if (refusal) return { result: { success: false, featureId, error: { code: refusal, message: 'This change is no longer authorized.' } } as import('../core/FeatureRegistry.js').TransitionResult, apply: null };
+      const result = ctx.featureRegistry!.operatorSet(featureId, userId, to, { context });
+      if (!result.success) return { result, apply: null };
+      // The transition landed; now make the setting follow it. The recorded choice
+      // stays even if the setting change is refused — `apply` and `effective` say so.
+      const apply = await applyFeatureSetting(req, featureId, userId, result.newState ?? '');
+      return { result, apply };
+    });
+  /** The transition route's answer for an outcome (shared with the owner phone's switch). */
+  const featureTransitionAnswer = (
+    outcome: { result: import('../core/FeatureRegistry.js').TransitionResult; apply: unknown },
+    featureId: string, userId: string, operatorSwitch: boolean,
+  ): { status: number; body: unknown } => {
+    if (!outcome.result.success) {
+      const code = outcome.result.error?.code;
+      const status = code === 'FEATURE_NOT_FOUND' ? 404
+        : code === 'INVALID_TRANSITION' ? 422
+        : code === 'CONSENT_REQUIRED' ? 422
+        : 400;
+      return { status, body: { error: outcome.result.error } };
+    }
+    return {
+      status: 200,
+      body: { ...outcome.result, viaOperatorSwitch: operatorSwitch, apply: outcome.apply, effective: featureEffective(featureId, userId) },
+    };
+  };
+
   router.get('/features', (req, res) => {
     if (!ctx.featureRegistry) {
       res.status(501).json({ error: 'FeatureRegistry not initialized' });
@@ -43016,36 +43157,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(401).json({ error: { code: 'OPERATOR_PROOF_INVALID', message: 'Your dashboard unlock has expired or is not valid here. Unlock with your PIN again and retry.' } });
       return;
     }
-    const outcome = await serializeFeatureSwitch(req.params.id, async () => {
-      const result = operatorSwitch
-        ? ctx.featureRegistry!.operatorSet(req.params.id, userId, to, { context })
-        : ctx.featureRegistry!.transition(req.params.id, userId, to, {
-            trigger,
-            consentRecord,
-            context,
-            activationChallenge,
-          });
-      if (!result.success) return { result, apply: null };
-      // The transition landed; now make the setting follow it. The recorded choice
-      // stays even if the setting change is refused — `apply` and `effective` say so.
-      const apply = await applyFeatureSetting(req, req.params.id, userId, result.newState ?? '');
-      return { result, apply };
-    });
-    if (!outcome.result.success) {
-      const code = outcome.result.error?.code;
-      const status = code === 'FEATURE_NOT_FOUND' ? 404
-        : code === 'INVALID_TRANSITION' ? 422
-        : code === 'CONSENT_REQUIRED' ? 422
-        : 400;
-      res.status(status).json({ error: outcome.result.error });
-      return;
-    }
-    res.json({
-      ...outcome.result,
-      viaOperatorSwitch: operatorSwitch,
-      apply: outcome.apply,
-      effective: featureEffective(req.params.id, userId),
-    });
+    const outcome = operatorSwitch
+      ? await operatorSwitchFeature(req, req.params.id, userId, to, context)
+      : await serializeFeatureSwitch(req.params.id, async () => {
+        const result = ctx.featureRegistry!.transition(req.params.id, userId, to, {
+          trigger,
+          consentRecord,
+          context,
+          activationChallenge,
+        });
+        if (!result.success) return { result, apply: null };
+        // The transition landed; now make the setting follow it. The recorded choice
+        // stays even if the setting change is refused — `apply` and `effective` say so.
+        const apply = await applyFeatureSetting(req, req.params.id, userId, result.newState ?? '');
+        return { result, apply };
+      });
+    const r = featureTransitionAnswer(outcome, req.params.id, userId, operatorSwitch);
+    res.status(r.status).json(r.body);
   });
 
   router.delete('/features/discovery-data', (req, res) => {

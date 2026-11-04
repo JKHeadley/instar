@@ -4005,6 +4005,11 @@ export interface InstarConfig {
      */
     consoleTicket?: { enabled?: boolean };
     /**
+     * Face ID-confirmed permission writes from the owner's phone (docs/specs/mobile-native-permissions.md).
+     * `enabled` omitted ⇒ live on a development agent, dark on the fleet (DEV_GATED_FEATURES). Read live.
+     */
+    permissionActions?: { enabled?: boolean };
+    /**
      * The operator's Slack user id (`U…`), the sender a message typed in the Instar app speaks as
      * in a Slack conversation (mobile-native-conversations §4.9). Never inferred: the agent
      * proposes it from the Slack channel's verified operator and sets it after the operator says
