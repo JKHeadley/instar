@@ -115,6 +115,20 @@ export interface ChannelRegistryReport {
   generatedAt: string;
 }
 
+/** Turn machine-local observations into one operational channel verdict. A
+ * missing peer is uncertainty, never evidence that the agent lacks a channel. */
+export function mergeAgentChannel(local: ChannelReport, peers: Array<{ machine: string; report: ChannelReport | null }>, missingPeers = 0): ChannelReport {
+  if (local.state === 'working') return { ...local, detail: `This machine: ${local.detail}` };
+  const holder = peers.find(peer => peer.report?.state === 'working');
+  if (holder) return { ...local, state: 'working', direction: holder.report!.direction,
+    probeFailed: false, detail: `Agent channel works through ${holder.machine}. ${holder.report!.detail}` };
+  if (missingPeers > 0 || peers.some(peer => !peer.report || peer.report.state === 'unknown')) {
+    return { ...local, state: 'unknown', direction: 'none', probeFailed: true,
+      detail: 'No working machine was verified; at least one sibling channel could not be checked.' };
+  }
+  return { ...local, detail: `Agent-wide check found no working machine. This machine: ${local.detail}` };
+}
+
 const PROBE_TIMEOUT_MS = 3_000;
 
 /** Bound a probe so one hanging channel cannot make the whole registry unanswerable. */

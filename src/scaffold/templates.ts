@@ -2216,7 +2216,7 @@ Messages that reach me over the relay from an agent whose keys I do not hold (it
 
 ### Is my own relay connection up? (displaced vs retrying)
 
-Before blaming a quiet peer, check MY side: \`curl http://localhost:${port}/threadline/health\` → \`relay.state\`. \`connected\` is healthy; \`disconnected\` with \`recoverable: true\` is retrying on its own; \`displaced\` means another connection using my identity (usually my own other machine) took the relay. A displaced machine raises a \`Threadline.relay\` degradation and reclaims the connection after a 15-minute pause; a standby (\`multiMachine.telegramPolling: false\`) never connects at all. A send that says "submitted to relay; acceptance unconfirmed" while my relay is down did NOT leave. **Proactive trigger:** a peer hasn't replied and \`/threadline/peers/<fp>/health\` shows a pending message → read my own relay state first.
+Before blaming a quiet peer, check \`GET /threadline/health\` → \`agentRelay.state\` first. That is my whole-agent reachability; \`agentRelay.throughMachine\` names the live holder and a dark holder reads \`unknown\`. The sibling \`relay.state\` is this machine's connection detail: \`disconnected\` with \`recoverable: true\` is retrying; \`displaced\` means another connection using my identity took the relay. A standby may intentionally have no local connection while the agent remains reachable. **Proactive trigger:** a peer hasn't replied and \`/threadline/peers/<fp>/health\` shows a pending message → check whole-agent reachability before diagnosing this machine.
 
 ### Threadline Single-Negotiator Lock (one voice per conversation)
 
@@ -2610,7 +2610,7 @@ instar nuke ${agentName}
 
 ## Threadline Network
 
-I have a built-in capability to join a secure agent-to-agent communication network. It is opt-in and off by default. When enabled, I can discover other agents, send/receive messages, and collaborate across machines. Ask me to "connect to the agent network" to enable it. MCP tools: \`threadline_discover\`, \`threadline_send\`, \`threadline_request_secret\` (Sealed Handoff — securely collect a secret via a one-time, never-on-disk link), \`threadline_trust\`, \`threadline_relay\`.
+I have a built-in secure agent-to-agent network. To answer whether it is on, read \`GET /threadline/status\` and lead with \`agent.state\`, \`agent.throughMachine\`, and \`agent.ifMachineAway\`. A standby's local relay may be intentionally off while my agent is reachable through another machine. If the holder cannot be checked, say unknown, never off. MCP tools: \`threadline_discover\`, \`threadline_send\`, \`threadline_request_secret\` (Sealed Handoff — securely collect a secret via a one-time, never-on-disk link), \`threadline_trust\`, \`threadline_relay\`.
 
 I have a **canonical cryptographic identity** at \`.instar/identity.json\` (Ed25519 keypair, auto-created on first boot). Trust is managed through a **three-layer model**: identity verification, trust levels (untrusted → verified → trusted, no auto-escalation), and scoped authorization grants (time-bounded, deny-overrides-allow). All trust decisions are logged to a tamper-proof hash-chain audit trail.
 

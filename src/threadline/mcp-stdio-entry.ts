@@ -168,6 +168,13 @@ async function main(): Promise<void> {
       reloadTrustBeforePairingRead: true,
       registry: registryClient,
       relayClient: createHttpRelayDiscoverer(serverPort, agentToken),
+      agentRelayStatus: async () => {
+        const response = await fetch(`http://127.0.0.1:${serverPort}/threadline/status`, {
+          headers: { Authorization: `Bearer ${agentToken}` }, signal: AbortSignal.timeout(4000),
+        });
+        if (!response.ok) throw new Error(`status-${response.status}`);
+        return ((await response.json()) as { agent?: unknown }).agent;
+      },
     },
   );
 

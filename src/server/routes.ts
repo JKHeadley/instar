@@ -44,6 +44,7 @@ import { deterministicAutomationAuthor } from '../messaging/telegram-origin/Orig
 import { cadenceReportProducerPayload, type WindowRunCadenceExecutor, type WindowCadenceReportReceipt } from '../core/WindowRunCadenceExecutor.js';
 import { verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
 import { IdentityManager as ThreadlineIdentityManager } from '../threadline/client/IdentityManager.js';
+import { resolveAgentRelayStatus } from '../threadline/agentRelayStatus.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
 import { emergencyStopUserMessage } from '../messaging/shared/emergencyStopUserMessage.js';
 import { isVerifiedChannelName, verifiedEntityName } from '../messaging/shared/channelIdentity.js';
@@ -582,7 +583,7 @@ import { isAutoAckBody, autoAckBodyRecognition, looksLikeAutoAckText } from '../
 import { wireTypeOf } from '../threadline/PeerUserMeantJudge.js';
 import type { HandshakeManager } from '../threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
-import { resolveChannels } from '../core/channelRegistry.js';
+import { mergeAgentChannel, resolveChannels, type ChannelReport } from '../core/channelRegistry.js';
 import { buildChannelDefinitions } from '../core/instarChannels.js';
 import { buildUserChannelDefinitions } from '../core/userChannels.js';
 import { evaluateSendGate, negotiatorLogDir } from '../threadline/NegotiatorGate.js';
@@ -8948,7 +8949,7 @@ export function createRoutes(ctx: RouteContext): Router {
     res.status(ok ? 200 : 502).json({ ok, topicId });
   });
 
-  router.get('/capabilities', (_req, res) => {
+  router.get('/capabilities', async (_req, res) => {
     // /capabilities used to be a 440-line hand-curated object literal — the
     // documented self-discovery primitive, but the only structural enforcement
     // of "what should be in here" lived as policy in a unit-test allowlist.
@@ -8988,6 +8989,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const setupIntegrity = ProcessIntegrity.getInstance();
     const capabilityBlocks = buildAllCapabilityBlocks({ ctx, scripts, secretDrop });
     res.json({
+      threadline: { agent: await agentThreadlineStatus(), localRelayConnected: ctx.threadlineRelayClient?.connectionState === 'connected' },
       project: ctx.config.projectName,
       version: setupIntegrity?.runningVersion || ctx.config.version || '0.0.0',
       port: ctx.config.port,
@@ -39782,6 +39784,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             standby: ctx.a2aRelayForward?.relaySuppressedByStandby === true,
           };
         },
+        agentRelayStatus: agentThreadlineStatus,
+        agentRelayAuthToken: ctx.config.authToken,
         // Inbound-id ledger (late-bound; live flips handled by the controller).
         inboundIdLedger: () => ctx.inboundIdLedger?.current() ?? null,
         inboundIdLedgerDaemonDeferred: () => ctx.inboundIdLedgerDaemonDeferred?.() ?? false,
@@ -39943,10 +39947,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // "Which ways of reaching a peer exist, and which work right now?" The channel SET is code-defined,
   // so a channel that failed to construct still gets a row saying so — see src/core/channelRegistry.ts
   // for why that invariant is the whole point.
-  router.get('/channels', async (_req, res) => {
+  router.get('/channels', async (req, res) => {
     try {
+      if (req.query.scope !== undefined && req.query.scope !== 'local') return res.status(400).json({ error: 'invalid-channel-scope' });
+      const localOnly = req.query.scope === 'local';
       const relayClient = ctx.threadlineRelayClient;
       const defs = buildChannelDefinitions({
+        agentRelayStatus: localOnly ? undefined : agentThreadlineStatus,
         relayStatus: () => {
           if (!relayClient) return null;
           const connected = relayClient.connectionState === 'connected';
@@ -40001,7 +40008,35 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             : null,
       });
       const report = await resolveChannels([...defs, ...userDefs]);
-      return res.status(200).json({ advisory: true, ...report });
+      if (localOnly) return res.status(200).json({ advisory: true, scope: 'local', ...report });
+      // Slack runs on one connected machine. A standby's absent adapter cannot
+      // answer whether the agent's Slack channel works. Ask every known peer's
+      // LOCAL channel view; any dark peer keeps a negative verdict unknown.
+      const allUrls = ctx.resolvePeerUrls?.() ?? [];
+      const urls = allUrls.slice(0, 8);
+      const roster = (ctx.listPoolMachines?.() ?? []).filter(p => p.machineId !== ctx.meshSelfId);
+      const missingPeers = roster.filter(p => !urls.some(u => u.machineId === p.machineId)).length
+        + allUrls.slice(8).filter(p => !roster.some(r => r.machineId === p.machineId)).length;
+      const peerSlack = await Promise.all(urls.map(async peer => {
+        let channel: ChannelReport | null = null;
+        try {
+          const response = await fetch(`${peer.url.replace(/\/+$/, '')}/channels?scope=local`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken ?? ''}` }, signal: AbortSignal.timeout(2500),
+          });
+          if (response.ok) {
+            const body = await response.json() as { channels?: ChannelReport[] };
+            channel = body.channels?.find(c => c.id === 'user-slack') ?? null;
+          }
+        } catch { /* named missing peer below keeps the answer unknown */ }
+        const name = verifiedEntityName(peer.machineId, roster.find(p => p.machineId === peer.machineId)?.nickname) ?? peer.machineId;
+        return { machine: name, report: channel };
+      }));
+      report.channels = report.channels.map(channel => channel.id === 'user-slack'
+        ? mergeAgentChannel(channel, peerSlack, missingPeers) : channel);
+      report.summary.working = report.channels.filter(c => c.state === 'working').length;
+      report.summary.unknown = report.channels.filter(c => c.state === 'unknown').length;
+      report.summary.unusable = report.channels.filter(c => ['broken', 'half-built', 'reachable-no-credential'].includes(c.state)).length;
+      return res.status(200).json({ advisory: true, scope: 'agent', ...report });
     } catch (error) {
       // A registry that 500s teaches nothing. Report the failure as the registry's own verdict.
       return res.status(200).json({
@@ -40079,13 +40114,41 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   // ── Threadline Status (auth-gated) ──────────────────────────────────
-  router.get('/threadline/status', (_req, res) => {
+  async function agentThreadlineStatus() {
+    const selfId = ctx.meshSelfId ?? null;
+    const roster = ctx.listPoolMachines?.() ?? [];
+    const urls = new Map((ctx.resolvePeerUrls?.() ?? []).map(p => [p.machineId, p.url]));
+    const peers = roster.filter(p => p.machineId !== selfId).map(p => ({
+      machineId: p.machineId,
+      nickname: verifiedEntityName(p.machineId, p.nickname) ?? undefined,
+      url: urls.get(p.machineId) ?? null,
+    }));
+    // A peer may be known by the URL resolver before the roster catches up.
+    for (const [machineId, url] of urls) {
+      if (machineId !== selfId && !peers.some(p => p.machineId === machineId)) {
+        peers.push({ machineId, nickname: undefined, url });
+      }
+    }
+    return resolveAgentRelayStatus({
+      localConnected: ctx.threadlineRelayClient?.connectionState === 'connected',
+      localUnknown: !ctx.threadlineRelayClient && !!ctx.listenerManager,
+      localMachineId: selfId,
+      fingerprint: new ThreadlineIdentityManager(ctx.config.stateDir).get()?.fingerprint ?? null,
+      peers,
+      expectPeers: ctx.a2aRelayForward?.relaySuppressedByStandby === true,
+    });
+  }
+
+  router.get('/threadline/status', async (_req, res) => {
     const relayClient = ctx.threadlineRelayClient;
     const connected = relayClient?.connectionState === 'connected';
+    const agent = await agentThreadlineStatus();
     const listenerState = ctx.listenerManager?.getState() ?? { active: false, readerLive: false, lastReaderHeartbeatAt: null, state: 'not-configured', messagesHandled: 0, queueDepth: 0, rotationId: '', rotationStartedAt: '' };
 
     res.json({
-      ready: connected,
+      agent,
+      ready: agent.state === 'unknown' ? null : agent.state === 'reachable',
+      localMachine: { relayConnected: connected, relaySuppressedByStandby: ctx.a2aRelayForward?.relaySuppressedByStandby === true },
       relay: {
         connected,
         fingerprint: relayClient?.fingerprint ?? null,
@@ -41506,15 +41569,30 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // as /threadline/relay-send above).
   router.post('/threadline/relay-discover', async (req, res) => {
     const relayClient = ctx.threadlineRelayClient;
+    const filter = (req.body && typeof req.body === 'object') ? req.body.filter : undefined;
     if (!relayClient || relayClient.connectionState !== 'connected') {
+      if (req.query.scope !== 'local') {
+        const agent = await agentThreadlineStatus();
+        const holderUrl = (ctx.resolvePeerUrls?.() ?? []).find(p => p.machineId === agent.throughMachineId)?.url;
+        if (agent.state === 'reachable' && holderUrl) {
+          try {
+            const response = await fetch(`${holderUrl.replace(/\/+$/, '')}/threadline/relay-discover?scope=local`, {
+              method: 'POST', headers: { Authorization: `Bearer ${ctx.config.authToken ?? ''}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ filter }), signal: AbortSignal.timeout(5000),
+            });
+            const body = await response.json();
+            return res.status(response.status).json(body);
+          } catch { /* the holder went away; report uncertainty below */ }
+        }
+        return res.status(503).json({ success: false, error: 'Agent relay holder could not be reached', agentState: 'unknown' });
+      }
       res.status(503).json({
         success: false,
-        error: 'Relay not connected',
+        error: 'Local relay not connected',
         connectionState: relayClient?.connectionState ?? 'absent',
       });
       return;
     }
-    const filter = (req.body && typeof req.body === 'object') ? req.body.filter : undefined;
     try {
       const agents = await relayClient.discover(filter);
       res.json({
