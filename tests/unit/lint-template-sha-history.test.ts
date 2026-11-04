@@ -22,8 +22,10 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   lintTemplateShaHistory,
+  lintSlackTemplateShaHistory,
 } from '../../scripts/lint-template-sha-history.js';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { PRIOR_SHIPPED_SLACK_RELAY_SHA256 } from '../../src/core/SlackReplyRelayInstaller.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -54,6 +56,18 @@ function isShallowClone(): boolean {
 }
 
 describe('lint-template-sha-history', () => {
+  it('covers shipped Slack relay history and catches a removed prior SHA', () => {
+    if (!gitAvailable() || isShallowClone()) return;
+    const current = lintSlackTemplateShaHistory();
+    expect(current.missing).toEqual([]);
+    expect(current.scannedCommits).toBeGreaterThan(0);
+    const missingSha = '166438d58f0246699b6f4b0398983677faa0943feaf2c0c92b30d9d8d89a8fa7';
+    const withoutPrior = new Set(PRIOR_SHIPPED_SLACK_RELAY_SHA256);
+    withoutPrior.delete(missingSha);
+    expect(lintSlackTemplateShaHistory(withoutPrior).missing).toEqual(
+      expect.arrayContaining([expect.objectContaining({ sha: missingSha })]),
+    );
+  });
   it('passes against the current PostUpdateMigrator.TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS', () => {
     if (!gitAvailable() || isShallowClone()) {
       // Tarball / sandboxed install / shallow CI checkout — skip via a
