@@ -692,6 +692,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Replicates the verified-operator binding between the operator\'s OWN machines only; THE LOAD-BEARING SAFETY INVARIANT (Know Your Principal): a replicated record is UNTRUSTED peer data and is NEVER the authoritative answer to "who is my verified operator?" — only the LOCAL authenticated setAuthenticatedOperator binds it; recordKey is sha256(topicId+verified-uid), never a content-name; tombstoned unbinds; fully reversible (rollback-unmerge); no external egress, no destructive write, no spend. Runs live AND dryRun:false on dev. Operator directive 2026-06-13 topic 13481.',
   },
   {
+    name: 'jevFirstCommitment',
+    configPath: 'intelligence.jevFirstCommitment.enabled',
+    description: 'Shared Jev-first yes/no path for CommitmentSentinel (jev-first-decision-path.md): shadow by default on a development agent, off on the fleet; only a separately validated confident negative may later skip the detailed incumbent extraction.',
+    justification: 'Shadow changes no commitment verdict or tracker write. Missing Jev key, uncertain answer, oversize or unscrubbable context, model mismatch, timeout and provenance write failure all reach the incumbent; the same feature works with one provider. Jev receives only bounded secret-scrubbed text, the model is pinned, and the kill switch is read live. Fleet use requires an explicit enable and stage promotion after a held-out replay.',
+  },
+  {
     name: 'jevSignalLive',
     configPath: 'intelligence.jevSignalLive.enabled',
     description: 'Jev as a live advisory input to the tone gate\'s B1–B7 artefact signals (jev-signal-live.md): confident Jev answers decide a kind, unsure/missing answers and every failure fall back to the deterministic detectors.',

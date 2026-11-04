@@ -15850,10 +15850,19 @@ export async function startServer(options: StartOptions): Promise<void> {
     let commitmentSentinel: import('../monitoring/CommitmentSentinel.js').CommitmentSentinel | undefined;
     if (sharedIntelligence) {
       const { CommitmentSentinel } = await import('../monitoring/CommitmentSentinel.js');
+      const { buildCommitmentJevFirst } = await import('../core/JevFirstCommitment.js');
+      const { gateway: jevFirst, getPoint: getJevPoint } = buildCommitmentJevFirst({
+        stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey,
+        developmentAgent: config.developmentAgent,
+        readConfig: () => liveConfig.get('intelligence.jevFirstCommitment', undefined as never),
+        provenance: () => _judgmentProvenance,
+      });
       commitmentSentinel = new CommitmentSentinel({
         stateDir: config.stateDir,
         intelligence: sharedIntelligence,
         commitmentTracker,
+        jevFirst,
+        getJevPoint,
       });
       commitmentSentinel.start();
       console.log(pc.green('  Commitment sentinel enabled (LLM-powered)'));

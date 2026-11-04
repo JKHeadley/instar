@@ -13301,6 +13301,42 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ ...summary, totals, features, classReview, claimVerificationServerAdmittedOnly });
   });
 
+  // Jev-first decision coverage. These are observed call counts; token savings
+  // remain unmeasured until a comparable pre/post window exists, so the API
+  // deliberately returns null rather than laundering a baseline estimate.
+  router.get('/jev-first/summary', (req, res) => {
+    if (!ctx.featureMetricsLedger) {
+      res.status(503).json({ error: 'feature-metrics ledger unavailable' });
+      return;
+    }
+    const rawHours = Number(req.query.sinceHours ?? 168);
+    const sinceHours = Number.isFinite(rawHours) && rawHours > 0 ? Math.min(rawHours, 24 * 30) : 168;
+    const byName = new Map(ctx.featureMetricsLedger.summary({ sinceHours }).features.map((f) => [f.feature, f]));
+    const pointIds = Array.from(byName.keys())
+      .filter((name) => name.startsWith('jev-first:'))
+      .map((name) => name.slice('jev-first:'.length))
+      .sort();
+    const points = pointIds.map((id) => {
+      const decisions = byName.get(`jev-first:${id}`)!;
+      const jev = byName.get(`jev-first-jev:${id}`);
+      const audit = byName.get(`jev-first-audit:${id}`);
+      const total = decisions.fired + decisions.noop;
+      const auditTotal = (audit?.fired ?? 0) + (audit?.noop ?? 0);
+      return {
+        id, decisions: total, jevSettled: decisions.fired, incumbentHandled: decisions.noop,
+        settledShare: total ? decisions.fired / total : null,
+        jevCalls: jev?.realLlmCalls ?? 0, jevErrors: jev?.llmErrors ?? 0,
+        jevTokensIn: jev?.tokensIn ?? 0, jevP50LatencyMs: jev?.p50LatencyMs ?? null,
+        compared: auditTotal, disagreements: audit?.fired ?? 0,
+        disagreementRate: auditTotal ? (audit?.fired ?? 0) / auditTotal : null,
+        bigModelCallsAvoided: decisions.fired,
+        bigModelTokensSaved: null,
+        tokenSavingsStatus: 'unmeasured-pre-post-baseline',
+      };
+    });
+    res.json({ sinceHours, points });
+  });
+
   // ── GrowthMilestoneAnalyst (the proactive growth & milestone analyst) ──────
   // Read-only observability over the maturity/initiative/spec/correction
   // surfaces. The analyst ships DARK (monitoring.growthAnalyst.enabled false) —

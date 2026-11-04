@@ -72,6 +72,7 @@ import {
   jevMemoryPickerAwareness,
   machineLoadAssessmentAwareness,
   jevSignalLiveAwareness,
+  jevFirstDecisionAwareness,
   READINESS_PAUSE_ALARM_BULLET,
   READINESS_PAUSE_ALARM_MARKER,
   READINESS_STALL_NOTICE_BULLET,
@@ -8547,6 +8548,12 @@ setTimeout(() => process.exit(0), 2000);
       content += jevMemoryPickerAwareness();
       patched = true;
       result.upgraded.push('CLAUDE.md: added Jev memory picker awareness card');
+    }
+
+    if (!content.includes('### Jev First Decisions')) {
+      content += jevFirstDecisionAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Jev-first decision awareness card');
     }
 
     if (!content.includes('### Jev Correction Shadow')) {

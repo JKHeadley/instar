@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-04T03:44:12.881Z",
+  "slug": "jev-first-decision-path",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 9,
+  "loc": 352,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/JevFirstCommitment.ts",
+      "src/core/JevFirstDecision.ts",
+      "src/core/JudgmentProvenanceLog.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/monitoring/CommitmentSentinel.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 350,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
