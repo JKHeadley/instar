@@ -22,6 +22,7 @@
  * names (src/core/MobileOwnNames.ts) when the request arrived through its local TLS front, and
  * GET /mobile/routes (device-signed) lists those names for the app.
  */
+import { codePageUrlForDevice, codePageUrlForOrigin } from './dashboardPaths.js';
 import crypto from 'node:crypto';
 import { Router, type Request, type Response, type Application } from 'express';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
@@ -663,7 +664,10 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       // No DM to wait for: the code (plaintext, memory only) is shown on the dashboard's Phones
       // card to an operator session; the phone shows "confirm on your dashboard".
       svc.holdDashboardCode(device.id, code, Date.parse(device.expiresAt!));
-      res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'dashboard', codeFormat });
+      // dashboard-console-default-and-pair-page §3.3: the code page on the host this phone just
+      // redeemed on (already checked above: local TLS, an eligible host, the code's bound host).
+      res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'dashboard', codeFormat,
+        codePageUrl: codePageUrlForDevice(reqHost!, device.id) });
       return;
     }
     const nonce = crypto.randomBytes(12).toString('hex');
@@ -742,7 +746,9 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (!m.ok) { res.status(429).json({ error: m.reason }); return; }
     // originKind lets the agent tell the operator a Tailscale link opens only with Tailscale on.
     res.json({ code: m.code, expiresAt: new Date(m.expiresAt).toISOString(), link: buildPairLink(origin, m.code, deps.config.projectName), originKind: chosen.kind,
-      person: { name: chosenPerson.name, role: chosenPerson.role, userId: chosenPerson.userId } });
+      person: { name: chosenPerson.name, role: chosenPerson.role, userId: chosenPerson.userId },
+      // Where the operator will read the code when it is shown on the dashboard (no Telegram owner).
+      ...(approval === 'dashboard' ? { codePageUrl: codePageUrlForOrigin(origin) } : {}) });
   });
 
   router.get('/mobile/devices', async (req: Request, res: Response) => {

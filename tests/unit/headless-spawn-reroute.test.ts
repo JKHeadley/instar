@@ -361,7 +361,7 @@ describe('headless-spawn reroute', () => {
   });
 
   // ── cap gate (S1/O2) ──
-  it('cap: 4th concurrent reroute under auto falls back headless + reports degradation', async () => {
+  it('cap: auto conversations leave one reroute slot for scheduler jobs', async () => {
     const { DegradationReporter } = await import('../../src/monitoring/DegradationReporter.js');
     const reportSpy = vi.spyOn(DegradationReporter.getInstance(), 'report');
     const { manager, state } = makeManager(
@@ -373,9 +373,13 @@ describe('headless-spawn reroute', () => {
       const s = await manager.spawnSession({ name: `job-cap-${i}`, prompt: 'p' });
       ids.push(s.id);
     }
-    // First 3 rerouted.
-    for (const id of ids) expect(state.getSession(id)!.launchLane).toBe('rerouted-interactive');
-    // 4th hits the cap → falls back to headless.
+    // Two direct conversations use the lane; the third falls back to headless
+    // while the reserved slot remains available to a scheduler job.
+    expect(state.getSession(ids[0])!.launchLane).toBe('rerouted-interactive');
+    expect(state.getSession(ids[1])!.launchLane).toBe('rerouted-interactive');
+    expect(state.getSession(ids[2])!.launchLane).toBe('headless');
+    const scheduled = await manager.spawnSession({ name: 'job-cap-scheduled', prompt: 'p', jobSlug: 'health-check', triggeredBy: 'scheduler:scheduled' });
+    expect(state.getSession(scheduled.id)!.launchLane).toBe('rerouted-interactive');
     const fourth = await manager.spawnSession({ name: 'job-cap-3', prompt: 'p' });
     expect(state.getSession(fourth.id)!.launchLane).toBe('headless');
     expect(launchArgvFrom(lastNewSessionArgv(), CLAUDE)).toContain('-p');

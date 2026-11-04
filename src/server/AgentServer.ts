@@ -178,6 +178,11 @@ import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
 import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
+import { getMigrationDefaults } from '../config/ConfigDefaults.js';
+import { createMaturationLadderRoutes, isMaturationLadderEnabled } from './maturationLadderRoutes.js';
+import { MaturationLadderService, readShippedRegistry, type MetricsSummaryRow } from '../monitoring/MaturationLadderService.js';
+import { FeatureEvidenceLog, setFeatureEvidenceLog } from '../monitoring/FeatureEvidenceLog.js';
+import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
@@ -215,6 +220,7 @@ import { DesktopHelperRetention } from '../core/DesktopHelperRetention.js';
 import { getInstarVersion } from '../core/Config.js';
 import { DesktopHelperPermissionNotice } from '../core/DesktopHelperPermissionNotice.js';
 import { dashboardUnlockRefused, isLoopbackPeer, wslWindowsHostAddress } from '../core/desktopTransport.js';
+import { mountDashboardEntryRoutes, mountPairPage, resolvePairDir } from './dashboardEntry.js';
 import { mountDashboardPreview } from './dashboardPreview.js';
 import { execFile } from 'node:child_process';
 import { DEFAULT_MAC_DESKTOP_HELPER, MacDesktopHost, macDesktopHelperPath } from '../core/MacDesktopHost.js';
@@ -754,6 +760,9 @@ export class AgentServer {
   private growthMilestoneAnalyst: GrowthMilestoneAnalyst | null = null;
   /** The analyst's dark-flag registry, hoisted for the read-only maturation board (null when the analyst is off). */
   private darkFlagRegistry: DarkFlagMaturationRegistry | null = null;
+  private maturationLadder: MaturationLadderService | null = null;
+  private maturationLadderOn: (() => boolean) | null = null;
+  private featureEvidenceLog: FeatureEvidenceLog | null = null;
   private growthDigestPublisher: GrowthDigestPublisher | null = null;
   /** Dashboard Live-LLM-Insights engine (docs/specs/dashboard-live-insights.md).
    *  Null when the feature is dark (dashboard.liveInsights.enabled resolves false
@@ -1523,16 +1532,11 @@ export class AgentServer {
     // fresh index.html with a stale glance.js. Header logic lives in
     // dashboardCacheControl / DASHBOARD_STATIC_OPTIONS (middleware.ts), exercised by
     // the same object in the integration test (no wiring drift).
-    this.app.get('/dashboard', (_req, res) => {
-      dashboardCacheControl(res);
-      // cacheControl:false so send() does not re-stamp `public, max-age=0` over the
-      // no-cache header above; etag/lastModified stay on for cheap 304 revalidation.
-      res.sendFile(path.join(dashboardDir, 'index.html'), {
-        cacheControl: false,
-        etag: true,
-        lastModified: true,
-      });
-    });
+    // /dashboard opens the console; the legacy page lives at /dashboard/legacy, and any
+    // /dashboard?… deep link opens there (docs/specs/dashboard-console-default-and-pair-page.md).
+    mountDashboardEntryRoutes(this.app, { dashboardDir });
+    // The pairing code page: its own strict policy, files outside the static mount (§3.2, §3.5).
+    mountPairPage(this.app, { pairDir: resolvePairDir() });
     this.app.get('/dashboard/desktop.html', (_req, res) => {
       dashboardCacheControl(res);
       const label = this.directDesktopAccess?.targetInfo().label ?? 'this machine';
@@ -6312,7 +6316,13 @@ export class AgentServer {
     }
     this.app.use(createThroughputRoutes({ stateDir: options.config.stateDir }));
     // Maturation board (docs/specs/maturation-board.md): read-only, dev-gated; 503 when off.
-    this.app.use(createMaturationBoardRoutes({ ...routeCtx, darkFlagRegistry: this.darkFlagRegistry }));
+    this.startMaturationLadder(options, routeCtx);
+    this.app.use(createMaturationBoardRoutes({ ...routeCtx, darkFlagRegistry: this.darkFlagRegistry, maturationLadder: () => this.maturationLadder }));
+    this.app.use(createMaturationLadderRoutes({
+      enabled: () => (this.maturationLadderOn ? this.maturationLadderOn() : isMaturationLadderEnabled(options.config)),
+      ladder: () => this.maturationLadder,
+      evidence: () => this.featureEvidenceLog,
+    }));
     // Queue pace (docs/specs/queue-pace.md): measure-only ledger + route (dev-gated, read each
     // tick) and the bounded triage tuner (its own explicit flag, dry-run by default).
     this.startQueuePace(options);
@@ -8582,6 +8592,96 @@ export class AgentServer {
       }
     } catch (error) { /* @silent-fallback-ok: logged; the routes answer 503 and nothing else depends on this */
       console.warn(`[ecosystem-ideas] not started: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** The measured path to default-on (docs/specs/feature-maturation-ladder.md). Dev-gated; never moves a feature. */
+  private startMaturationLadder(
+    options: { config: InstarConfig; liveConfig?: { set(path: string, value: unknown): void }; commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker; coordinator?: import('../core/MultiMachineCoordinator.js').MultiMachineCoordinator | null },
+    routeCtx: { guardRegistry?: GuardRegistry | null },
+  ): void {
+    const config = options.config;
+    if (!config.stateDir || !isMaturationLadderEnabled(config)) return;
+    try {
+      const projectDir = config.projectDir;
+      const machine = this.meshSelfId ?? config.projectName;
+      const configPath = path.join(config.stateDir, 'config.json');
+      this.featureEvidenceLog = new FeatureEvidenceLog({ projectDir, machine, instarVersion: config.version ?? '0.0.0' });
+      setFeatureEvidenceLog(this.featureEvidenceLog);
+      const d7 = this.blockerLifecycleService;
+      const shipped = getMigrationDefaults('standalone');
+      const coherenceCritical = new Set(COHERENCE_CRITICAL_FLAGS.map(f => f.configPath));
+      const ladder = new MaturationLadderService({
+        projectDir,
+        machine,
+        readRegistry: readShippedRegistry,
+        readLiveConfig: () => {
+          try {
+            const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+            return { developmentAgent: config.developmentAgent, ...raw };
+          } catch { return null; } // @silent-fallback-ok — an unreadable config reads as nothing running; rungs fall to dark and moves refuse
+        },
+        shippedDefaults: () => shipped,
+        d7: d7 ? {
+          registerMaturationProjection: (ref, read) => d7.registerMaturationProjection(ref, read),
+          readMaturationProjection: ref => d7.readMaturationProjection(ref),
+          maturationContractHash: c => d7.maturationContractHash(c),
+          evaluations: since => d7.maturationEvaluationRows(since),
+        } : null,
+        featureMetrics: this.featureMetricsLedger
+          ? hours => this.featureMetricsLedger!.summary({ sinceHours: hours }).features as unknown as MetricsSummaryRow[]
+          : null,
+        guardEffective: () => {
+          const snapshot = resolveGuardConfigSnapshot(projectDir);
+          const inventory = buildGuardInventory({
+            snapshot,
+            bootSnapshot: readGuardPostureBootSnapshot(config.stateDir),
+            registry: routeCtx.guardRegistry ?? new GuardRegistry(),
+            now: Date.now(),
+            acceptedFallbacks: scopeAcceptedFallbacks(readAcceptedFallbacks(config.stateDir), this.meshSelfId ?? null),
+          });
+          return new Map(inventory.guards.map(g => [g.key, g.effective as string]));
+        },
+        commitments: options.commitmentTracker
+          ? {
+            record: input => options.commitmentTracker!.record(input as unknown as Parameters<import('../monitoring/CommitmentTracker.js').CommitmentTracker['record']>[0]),
+            getActive: () => options.commitmentTracker!.getActive(),
+          }
+          : null,
+        holdsLease: () => options.coordinator ? options.coordinator.holdsLease() : true,
+        reviewTopic: () => {
+          try {
+            const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as { maturation?: { ladder?: { reviewTopic?: unknown } } };
+            const t = raw.maturation?.ladder?.reviewTopic;
+            return typeof t === 'number' && Number.isInteger(t) ? t : null;
+          } catch { return null; } // @silent-fallback-ok — no readable topic means nothing is raised, the safe side
+        },
+        isCoherenceCritical: p => coherenceCritical.has(p),
+        setConfig: (dotPath, value) => {
+          if (!options.liveConfig) throw new Error('live config unavailable');
+          options.liveConfig.set(dotPath, value);
+        },
+        isDevelopmentAgent: () => config.developmentAgent === true,
+      });
+      this.maturationLadder = ladder;
+      // Re-read each time, so switching it off takes effect without a restart.
+      const on = (): boolean => {
+        try {
+          const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as { maturation?: { ladder?: { enabled?: boolean } } };
+          return resolveDevAgentGate(raw.maturation?.ladder?.enabled, config);
+        } catch { return isMaturationLadderEnabled(config); } // @silent-fallback-ok — an unreadable config falls back to how this server booted
+      };
+      this.maturationLadderOn = on;
+      d7?.setMaturationHooks({
+        prepare: async () => { if (on()) await ladder.refresh(); },
+        subjects: initiatives => (on() ? ladder.subjects(initiatives) : initiatives),
+        after: () => { if (on()) ladder.raise(); },
+      });
+      // A pass can be up to six hours away; the numbers should not read empty until then.
+      setTimeout(() => { void ladder.refresh().catch(() => { /* @silent-fallback-ok — the next pass reads again */ }); }, 15_000).unref?.();
+    } catch (err) {
+      console.warn('[maturation-ladder] init failed (non-fatal):', err);
+      this.maturationLadder = null;
     }
   }
 

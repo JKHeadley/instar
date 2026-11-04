@@ -117,8 +117,8 @@
     },
     {
       "path": "src/templates/scripts/browser/chrome-launch.sh",
-      "sha256": "66c0fe5f11e763f6039e4a241a88a1e36c9dd47bc302e8f8e561e1ab4965a587",
-      "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action; normal-chrome-cross-platform: also refuses a non-URL in the url slot (a launch flag) and launches in the background"
+      "sha256": "a1f67e2dc177639659e9d14376a849c8b252de702af2991cfb38c64d99202173",
+      "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action; normal-chrome-cross-platform: also refuses a non-URL in the url slot (a launch flag) and launches in the background; chrome-keep-drawing-when-locked: adds two fixed rendering flags, still no decision"
     },
     {
       "path": "src/templates/scripts/browser/chrome-mainworld.sh",

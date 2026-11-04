@@ -1,0 +1,13 @@
+# Job capacity and calm alerts — plain English
+
+A scheduled check sometimes cannot start because the Mac Studio is already using all six memory limited Claude sessions. Today the scheduler calls that a failure, sends a separate technical alert for each job, and waits until the next schedule to try again. A two hourly check can therefore lose two hours, even if a slot opens a minute later. Health Check can also be crowded out by long conversations.
+
+The scheduler already has a priority queue and a session manager that counts the rerouted sessions and checks memory pressure. This change uses those pieces. A typed capacity refusal records that the job waited for room. It leaves the real failure count alone, keeps the job in a durable waiting episode, and checks every 15 seconds. When room opens, the scheduler takes a fresh machine claim and starts one waiting job at a time, with Health Check and other urgent work first. The existing memory pressure limit still applies.
+
+One of the six existing session slots is reserved for scheduler jobs when the machine has more than one slot. Direct conversation spawns, including the `/sessions/spawn` route, cannot claim that final slot. A scheduler job can. If memory pressure is high, even a reserved slot is not used; this protects the host from the June 2026 memory failure. An older six conversation host may still need a conversation to finish before the reservation becomes effective.
+
+A short wait sends no message. If Health Check has waited ten minutes, or other work has waited thirty, the scheduler first checks for proven dead sessions and tries again. If the jobs are still blocked, it sends one plain message for the whole episode in Attention, explaining the affected jobs, elapsed time, its retry plan, and when closing an unneeded conversation would help. A true failed job still alerts after its existing failure threshold, but the message names a human cause and never pastes an exception, command, or secret. Its job topic is the first destination; Attention is the fallback. The queue and episode survive a scheduler restart. A successful start closes each waiting item; the whole episode closes after the last one starts.
+
+This is reversible: restoring the prior scheduler and session manager code restores the prior admission and alert behavior. No saved job result is rewritten. The decision is whether these bounded waits and one reserved slot provide the right balance between conversations, background checks, and the Mac's memory safety.
+
+The verification pass also found that an ordinary queued job could miss the moment a starting session settled. The scheduler now checks that queue again when the start finishes, while capacity waits still keep their measured 15 second pace.

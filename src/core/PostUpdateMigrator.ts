@@ -90,6 +90,7 @@ import {
   STANDING_SESSIONS_MARKER,
   CONSOLE_BULLET,
   CONSOLE_MARKER,
+  CONSOLE_MARKER_V1,
   DASHBOARD_PREVIEW_BULLET,
   DASHBOARD_PREVIEW_MARKER,
   remoteDesktopBullet,
@@ -928,6 +929,23 @@ One read-only page joining what already records feature maturation: the \`featur
 }
 
 /**
+ * CLAUDE.md awareness block for the Maturation Ladder (docs/specs/feature-maturation-ladder.md).
+ * Unique content-sniff marker: `Maturation Ladder — what does this feature need`.
+ */
+export function MATURATION_LADDER_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Maturation Ladder — what does this feature need to reach default-on? (\`GET /maturation/ladder\`)
+
+Every switched-off feature has numbers it must hit for each rung, read from its own logged behaviour. The rung comes from what actually ships, never from a label. The last rung is on by default, unless a recorded user-preference decision keeps it off.
+- Read: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/maturation/ladder?id=<feature>"\` → \`{ counts, features: [{ id, rung, next, state, metrics: [{ id, value, threshold, samples, pass }], soak, move }] }\`. States worth acting on: \`ready-to-advance\`, \`harmed\`, \`not-started\`, \`no-data\`.
+- Record what a feature did, in code: \`featureEvidence.record('<feature id>', { kind: 'fired' | 'held' | 'error' | 'outcome', reason, context })\`, which never throws. From a job or hook: \`POST /maturation/evidence\` with \`featureId\`, \`kind\`, \`reason\`.
+- Adding a switched-off flag? Add its entry to \`src/data/feature-ladders.json\` and a \`- **ladder:** <id>\` line to the spec's maturation plan. The build fails without them.
+- Numbers never move anything by themselves. They raise a feature to the recurring review, whose model decides. \`POST /maturation/moves\` applies that decision behind floors that can only refuse; it needs the model's opinions and the values it read. Fleet defaults stay reviewed code changes.
+- **When to use** (PROACTIVE): someone asks "why is this still off?", "what would it take to turn this on?" or "is this feature proven?" → read its ladder row and answer with the number against its target. Instrumenting a feature with no data → use the evidence call above.
+- Dev-gated: \`maturation.ladder.enabled\` (omitted ⇒ live on a development agent, 503 on the fleet). Raising also needs \`maturation.ladder.reviewTopic\`.
+`;
+}
+
+/**
  * CLAUDE.md awareness block for Queue pace (docs/specs/queue-pace.md).
  * Unique content-sniff marker: `Queue Pace — is every work pile shrinking`.
  * Measure-only ledger + route (dev-gated); the triage tuner has its own explicit flag.
@@ -1016,12 +1034,12 @@ export const PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER = '### Pairing a phone wit
 export function PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION(): string {
   return `\n${PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER}
 
-An agent with no Telegram owner can still add a phone. The pairing link works the same; after the phone opens it, the confirmation code (like \`KITE-4172\`, or six digits) is not sent anywhere: it is shown on the dashboard's **Phones** tab, and only after the operator unlocks the dashboard with the PIN. The operator reads it there and types it into the app (or taps "Not my phone"). Where a Telegram owner exists, the code still goes to the owner's private Telegram chat.
-- Send the operator the pairing link and the dashboard link, and tell them: open the link on the phone, then open the dashboard's Phones tab, unlock with the PIN, and type the code shown there into the app. ${PAIRING_WITHOUT_TELEGRAM_CURRENT_CODE_LINE}
+An agent with no Telegram owner can still add a phone. The pairing link works the same; after the phone opens it, the confirmation code (like \`KITE-4172\`, or six digits) is not sent anywhere: it is shown on the pairing code page, \`/dashboard/pair\`, and only after the operator types the dashboard PIN on that page. The operator copies it there (a Copy button) into the app, or taps "Not my phone". Where a Telegram owner exists, the code still goes to the owner's private Telegram chat.
+- Send the operator the pairing link and the mint answer's \`codePageUrl\` (the code page on the same address; never in the same message as the PIN), and tell them: open the pairing link on the phone, then open the code page, type the PIN, tap Copy and paste the code into the app. The app can also open the code page itself once the phone has opened the link. ${PAIRING_WITHOUT_TELEGRAM_CURRENT_CODE_LINE}
 - A phone approved this way is labelled "approved on dashboard" (\`approvedVia: dashboard-pin\`): it proves the person could unlock the dashboard, not that they can read a private Telegram chat.
 - A server restart loses a waiting code (it lives only in memory); the phone then needs a new link.
 - Every reply I send in an app conversation sends one push to paired phones ("New reply"; never the reply's text), within the push budgets, with or without Telegram.
-- **When to use** (PROACTIVE): "add you to my phone" on an agent without Telegram → mint the link and point the operator at the dashboard Phones tab.
+- **When to use** (PROACTIVE): "add you to my phone" on an agent without Telegram → mint the link and send it with its \`codePageUrl\`.
 `;
 }
 
@@ -2459,6 +2477,8 @@ export class PostUpdateMigrator {
         bundled: path.join(bundledRoot, 'src', 'core', 'FeatureMaturationPlanGate.mjs'),
         target: path.join(root, '.claude', 'src', 'core', 'FeatureMaturationPlanGate.mjs'),
         prior: new Set<string>(),
+        // Shipped content: an empty prior list would read a changed gate as customized forever.
+        alwaysOverwrite: true,
       },
       {
         // Round-11 (integration): this entry kept a prior-hash gate while every
@@ -8362,6 +8382,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added bounded quota-enforcement pause awareness');
     }
 
+    if (!content.includes(CONSOLE_MARKER) && content.includes(CONSOLE_MARKER_V1)) {
+      // dashboard-console-default-and-pair-page §3.6: the console is now the front door; the line
+      // that said legacy "stays the default" is replaced in place (its old marker is then gone).
+      content = content.split('\n').map((l) => (l.includes(CONSOLE_MARKER_V1) ? CONSOLE_BULLET : l)).join('\n');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: the console is now the dashboard front door (legacy at /dashboard/legacy)');
+    }
     if (!content.includes(CONSOLE_MARKER)) {
       // Console makeover (docs/specs/console-makeover.md): one bullet under the Dashboard entry.
       const anchor = '- Features: Real-time terminal streaming';
@@ -9200,6 +9227,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Maturation Board section');
     }
 
+    // Maturation Ladder (docs/specs/feature-maturation-ladder.md) — Agent Awareness + Migration Parity.
+    if (!content.includes('Maturation Ladder — what does this feature need')) {
+      content += MATURATION_LADDER_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Maturation Ladder section');
+    }
+
     // Mobile pairing links (docs/specs/mobile-pairing-link.md) — Agent Awareness + Migration Parity.
     if (!content.includes('Mobile pairing link')) {
       content += MOBILE_PAIRING_CLAUDEMD_SECTION(port);
@@ -9322,6 +9356,30 @@ setTimeout(() => process.exit(0), 2000);
       content = content.replace(PAIRING_WITHOUT_TELEGRAM_STALE_CODE_LINE, PAIRING_WITHOUT_TELEGRAM_CURRENT_CODE_LINE);
       patched = true;
       result.upgraded.push('CLAUDE.md: updated the Pairing a phone without Telegram code line');
+    }
+    // dashboard-console-default-and-pair-page §3.6: the three lines that sent the operator to the
+    // dashboard's Phones tab now name the pairing code page. A line is replaced only when it starts
+    // with its shipped prefix AND still names the Phones tab; the fresh lines never say "Phones", so
+    // a second run matches nothing. Runs in either order with the word-code and code-line rewrites.
+    if (content.includes(PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER) && content.includes('Phones')) {
+      const fresh = PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION().split('\n');
+      const pick = (prefix: string) => fresh.find((l) => l.startsWith(prefix));
+      const rules: Array<{ match: (l: string) => boolean; fresh: string | undefined }> = [
+        { match: (l) => l.startsWith('An agent with no Telegram owner can still add a phone') && l.includes('**Phones** tab'), fresh: pick('An agent with no Telegram owner can still add a phone') },
+        { match: (l) => l.startsWith('- Send the operator the pairing link and the dashboard link') && l.includes('Phones tab'), fresh: pick('- Send the operator the pairing link and the mint answer') },
+        { match: (l) => l.startsWith('- **When to use** (PROACTIVE): "add you to my phone" on an agent without Telegram') && l.includes('Phones tab'), fresh: pick('- **When to use** (PROACTIVE): "add you to my phone" on an agent without Telegram') },
+      ];
+      const lines = content.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        const rule = rules.find((r) => r.match(lines[i]!));
+        if (rule?.fresh && !rule.fresh.includes('Phones')) lines[i] = rule.fresh;
+      }
+      const next = lines.join('\n');
+      if (next !== content) {
+        content = next;
+        patched = true;
+        result.upgraded.push('CLAUDE.md: Pairing a phone without Telegram names the pairing code page');
+      }
     }
     if (content.includes(APP_CONVERSATIONS_STALE_VERDICT_LINE)) {
       content = content.replace(APP_CONVERSATIONS_STALE_VERDICT_LINE, APP_CONVERSATIONS_CURRENT_VERDICT_LINE);

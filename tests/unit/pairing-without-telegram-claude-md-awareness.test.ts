@@ -31,9 +31,13 @@ describe('Pairing a phone without Telegram CLAUDE.md section', () => {
     }
   });
 
-  it('names the Phones tab, the PIN unlock, the approval label and the reply push', () => {
+  it('names the pairing code page, the PIN unlock, the approval label and the reply push', () => {
     const s = PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION();
-    expect(s).toContain('Phones');
+    expect(s).toContain('/dashboard/pair');
+    expect(s).toContain('codePageUrl');
+    expect(s).toContain('Copy');
+    // The rewrite of older copies is keyed on "Phones"; the fresh section must never say it.
+    expect(s).not.toContain('Phones');
     expect(s).toContain('PIN');
     expect(s).toContain('approvedVia: dashboard-pin');
     expect(s).toContain('New reply');
@@ -61,6 +65,48 @@ describe('Pairing a phone without Telegram CLAUDE.md section', () => {
       expect(count(after)).toBe(1);
     } finally {
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/pairing-without-telegram-claude-md-awareness.test.ts' });
+    }
+  });
+
+  describe('older copies that sent the operator to the Phones tab (dashboard-console-default-and-pair-page §3.6)', () => {
+    const PHONES_OPENING = 'An agent with no Telegram owner can still add a phone. The pairing link works the same; after the phone opens it, the confirmation code (like `KITE-4172`, or six digits) is not sent anywhere: it is shown on the dashboard\'s **Phones** tab, and only after the operator unlocks the dashboard with the PIN. The operator reads it there and types it into the app (or taps "Not my phone"). Where a Telegram owner exists, the code still goes to the owner\'s private Telegram chat.';
+    const PHONES_OPENING_6DIGIT = 'An agent with no Telegram owner can still add a phone. The pairing link works the same; after the phone opens it, the 6-digit confirmation code is not sent anywhere: it is shown on the dashboard\'s **Phones** tab, and only after the operator unlocks the dashboard with the PIN. The operator reads it there and types it into the app (or taps "Not my phone"). Where a Telegram owner exists, the code still goes to the owner\'s private Telegram chat.';
+    const phonesSend = (codeLine: string) => `- Send the operator the pairing link and the dashboard link, and tell them: open the link on the phone, then open the dashboard's Phones tab, unlock with the PIN, and type the code shown there into the app. ${codeLine}`;
+    const PHONES_WHEN = '- **When to use** (PROACTIVE): "add you to my phone" on an agent without Telegram → mint the link and point the operator at the dashboard Phones tab.';
+    const older = (opening: string, codeLine: string) => {
+      const fresh = PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION().split('\n');
+      return fresh.map((l) => l.startsWith('An agent with no Telegram owner') ? opening
+        : l.startsWith('- Send the operator the pairing link') ? phonesSend(codeLine)
+        : l.startsWith('- **When to use**') ? PHONES_WHEN : l).join('\n');
+    };
+    const cases: Array<[string, string]> = [
+      ['the word-code wording', older(PHONES_OPENING, PAIRING_WITHOUT_TELEGRAM_CURRENT_CODE_LINE)],
+      ['the first code line', older(PHONES_OPENING, PAIRING_WITHOUT_TELEGRAM_STALE_CODE_LINE)],
+      ['the pre-word-code 6-digit wording', older(PHONES_OPENING_6DIGIT, PAIRING_WITHOUT_TELEGRAM_CURRENT_CODE_LINE)],
+      ['the 6-digit wording and the first code line', older(PHONES_OPENING_6DIGIT, PAIRING_WITHOUT_TELEGRAM_STALE_CODE_LINE)],
+    ];
+    for (const [name, section] of cases) {
+      it(`${name}: rewritten to the fresh section, and a second run changes nothing`, () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pairing-notg-md-'));
+        try {
+          fs.mkdirSync(path.join(dir, '.instar'), { recursive: true });
+          const file = path.join(dir, 'CLAUDE.md');
+          expect(section).toContain('Phones');
+          fs.writeFileSync(file, '# CLAUDE.md\nUnrelated note: unlock with the 6-digit PIN, then open the Phones tab of another agent.\n' + section);
+          const m = new PostUpdateMigrator({ projectDir: dir, stateDir: path.join(dir, '.instar'), port: 4042, hasTelegram: false, projectName: 'test' });
+          const run = () => { const r: R = { upgraded: [], skipped: [], errors: [] }; (m as unknown as { migrateClaudeMd(r: R): void }).migrateClaudeMd(r); return r; };
+          expect(run().upgraded).toContain('CLAUDE.md: Pairing a phone without Telegram names the pairing code page');
+          const once = fs.readFileSync(file, 'utf8');
+          // Our three lines are fresh; an unrelated line that merely mentions Phones and the 6-digit PIN is untouched.
+          expect(once).toContain(PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION());
+          expect(once).toContain('Unrelated note: unlock with the 6-digit PIN, then open the Phones tab of another agent.');
+          expect(count(once)).toBe(1);
+          expect(run().upgraded.filter((u) => u.includes('Pairing a phone without Telegram'))).toEqual([]);
+          expect(fs.readFileSync(file, 'utf8')).toBe(once);
+        } finally {
+          SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/pairing-without-telegram-claude-md-awareness.test.ts' });
+        }
+      });
     }
   });
 });

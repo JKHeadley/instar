@@ -8,7 +8,7 @@
 import {
   failure, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, combineNeeds, machineNames,
 } from './home-model.js';
-import { GROUPS, legacyHref, icon, tabHref } from './nav-model.js';
+import { GROUPS, legacyHref, icon, tabHref, LEGACY_DASHBOARD } from './nav-model.js';
 import { fillPartial } from './home-model.js';
 import { renderPromises, topicLink } from './promises.js';
 import { renderMachines } from './machines.js';
@@ -210,7 +210,7 @@ function navItems(active) {
     nav.append(a);
   }
   nav.append(el('div', { class: 'nav-group-label', text: 'Elsewhere' }));
-  const legacy = el('a', { href: '/dashboard', icon: 'external' });
+  const legacy = el('a', { href: LEGACY_DASHBOARD, icon: 'external' });
   legacy.append(el('span', { text: 'Legacy dashboard' }));
   legacy.classList.add('nav-sub-legacy');
   nav.append(legacy);
@@ -218,7 +218,7 @@ function navItems(active) {
 }
 
 function renderShell(active) {
-  const legacyChip = el('a', { class: 'chip chip-legacy', href: '/dashboard', text: 'Legacy' });
+  const legacyChip = el('a', { class: 'chip chip-legacy', href: LEGACY_DASHBOARD, text: 'Legacy' });
   const brand = el('a', { class: 'brand', href: '#/home' },
     el('img', { src: '/dashboard/logo.png', alt: '' }),
     el('span', { text: 'instar' }),
@@ -607,7 +607,7 @@ function renderGroup(main, g) {
 function footNote() {
   return el('p', { class: 'foot-note' },
     document.createTextNode('The older dashboard is still available: '),
-    el('a', { href: '/dashboard', text: 'open the legacy dashboard' }),
+    el('a', { href: LEGACY_DASHBOARD, text: 'open the legacy dashboard' }),
     document.createTextNode('.'),
   );
 }

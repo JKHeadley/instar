@@ -20,7 +20,8 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
-import { dashboardCacheControl, DASHBOARD_STATIC_OPTIONS } from '../../src/server/middleware.js';
+import { DASHBOARD_STATIC_OPTIONS } from '../../src/server/middleware.js';
+import { mountDashboardEntryRoutes } from '../../src/server/dashboardEntry.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DASHBOARD_DIR = path.resolve(__dirname, '..', '..', 'dashboard');
@@ -29,10 +30,9 @@ interface TestServer { url: string; close: () => Promise<void>; }
 function boot(): Promise<TestServer> {
   const app = express();
   // Mirror AgentServer.setupRoutes wiring exactly.
-  app.get('/dashboard', (_req, res) => {
-    dashboardCacheControl(res);
-    res.sendFile(path.join(DASHBOARD_DIR, 'index.html'), { cacheControl: false, etag: true, lastModified: true });
-  });
+  // The shipped entry routes (dashboard-console-default-and-pair-page §3.1): /dashboard → console,
+  // the legacy page at /dashboard/legacy.
+  mountDashboardEntryRoutes(app, { dashboardDir: DASHBOARD_DIR });
   app.use('/dashboard', express.static(DASHBOARD_DIR, DASHBOARD_STATIC_OPTIONS));
   return new Promise((resolve) => {
     const srv = app.listen(0, () => {
@@ -88,9 +88,9 @@ describe('#1441 dashboard static asset serving', () => {
     expect(res.headers['cache-control']).toBe('no-store');
   });
 
-  it('serves the /dashboard index.html route with no-cache (fresh index each load)', async () => {
+  it('serves the legacy index.html route (/dashboard/legacy) with no-cache (fresh index each load)', async () => {
     server = await boot();
-    const res = await get(server.url, '/dashboard');
+    const res = await get(server.url, '/dashboard/legacy');
     expect(res.status).toBe(200);
     expect(res.headers['cache-control']).toBe('no-cache');
     expect(res.body.slice(0, 200).toLowerCase()).toContain('<!doctype html>');

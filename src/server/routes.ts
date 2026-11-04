@@ -4,6 +4,7 @@ import { SlackOriginLedger, SlackOriginRecordingError } from '../messaging/slack
 import { slackOriginFooter, currentAgentDisplay, deviceOriginRow, effectiveDisplay, originEvidenceFromProducer, validateDeviceOriginRow, validateMessageOriginEvidence, type DeviceOriginRow } from '../messaging/messageOrigin.js';
 import type { OriginDisplaySettings, TelegramOriginProducer } from '../messaging/telegram-origin/types.js';
 import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyOriginDeps } from './replyOrigin.js';
+import { consolePageUrl } from './dashboardPaths.js';
 import { stripViewSignatures } from './mobilePairingRoutes.js';
 import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
@@ -28258,20 +28259,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           const truncation = truncationDetector.detect(topicId, String(fromUserId || 'unknown'), text);
           if (truncation.truncationSuspected) {
             // Build Drop Zone URL (tunnel if available, otherwise localhost)
-            let dzUrl = `http://localhost:${ctx.config.port}/dashboard?tab=dropzone`;
+            let dzUrl = consolePageUrl(`http://localhost:${ctx.config.port}`, '#/work/sessions');
             if (ctx.tunnel) {
               // @silent-fallback-ok — tunnel.url access best-effort; fall through to the localhost URL.
               try {
                 const tunnelUrl = ctx.tunnel.url;
                 if (tunnelUrl) {
-                  dzUrl = `${tunnelUrl}/dashboard?tab=dropzone`;
+                  dzUrl = consolePageUrl(tunnelUrl, '#/work/sessions');
                 }
               } catch { /* @silent-fallback-ok */ }
             }
             // Inject a system hint after a short delay so it arrives after the message
             setTimeout(() => {
               const hint = `<system-reminder>The user's previous message may be truncated (${truncation.reason}). ` +
-                `If their content appears incomplete, suggest they use the Drop Zone for longer content: ${dzUrl}</system-reminder>`;
+                `If their content appears incomplete, suggest they paste longer content into this session's message box on the dashboard's Sessions page: ${dzUrl}</system-reminder>`;
               ctx.sessionManager.injectPasteNotification(targetSession, hint);
             }, 1000);
           }

@@ -3986,6 +3986,17 @@ export interface InstarConfig {
      */
     slackOwnerUserId?: string;
   };
+  /** The measured path to default-on (docs/specs/feature-maturation-ladder.md). */
+  maturation?: {
+    ladder?: {
+      /** Omitted: the development-agent gate decides. */
+      enabled?: boolean;
+      /** Where a review reads what gets raised. Unset: this agent raises nothing. */
+      reviewTopic?: number;
+      /** Features this agent's operator holds, with the reason. Stops a move; never ends the ladder. */
+      holds?: Record<string, string>;
+    };
+  };
   maturationBoard?: {
     enabled?: boolean;
     /** Review files directory, relative to the project dir. Default docs/research/feature-maturation/reviews. */

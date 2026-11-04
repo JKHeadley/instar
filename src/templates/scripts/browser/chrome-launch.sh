@@ -10,7 +10,8 @@
 # Launches through LaunchServices (`open -g -na`: in the background, never taking focus from the
 # operator), never a remote-debugging port, after switching on "Allow JavaScript from Apple Events"
 # in that profile's Preferences. The url argument must carry a scheme (https://, about:, ...): a
-# launch flag is never accepted there, in any form (this launcher adds no Chrome flags at all).
+# launch flag is never accepted there, in any form. The launcher itself adds only two fixed
+# rendering flags (keep drawing while the screen is locked); never an automation or debug flag.
 # Does nothing if that profile is already open. macOS only (Apple Events).
 # Installed by instar into .instar/scripts/browser/ — overwritten on every update.
 # See the /normal-chrome-browser skill for the method and its safety rules.
@@ -98,7 +99,11 @@ os.replace(t, f)  # atomic: Chrome never sees a half-written Preferences file
 # -g: do not bring Chrome to the foreground. The scripts never need the window in front, and a launch
 # from a job or a tmux session must not take focus from whoever is using the machine (the operator
 # brings the window forward themselves when a page needs their own click).
-open -g -na "Google Chrome" --args --user-data-dir="$P" "$URL" || { echo "ERR launch-failed (is Google Chrome installed?)" >&2; exit 1; }
+# Two fixed rendering flags, never automation flags: on a locked Mac, macOS reports every Chrome
+# window as hidden and Chrome stops drawing (requestAnimationFrame never fires), so pages that wait
+# for a frame hang on a spinner. Measured on the Studio 2026-11-03: Slack app settings spun forever;
+# with these two it rendered fully while still locked. They add no debug port and no webdriver flag.
+open -g -na "Google Chrome" --args --user-data-dir="$P" --disable-backgrounding-occluded-windows --disable-renderer-backgrounding "$URL" || { echo "ERR launch-failed (is Google Chrome installed?)" >&2; exit 1; }
 "$(dirname "$0")/chrome-ledger.sh" launch "$P" "$PURPOSE" "$TTL"
 [ "$NEW" = 1 ] && echo "note: new profile; Chrome ignores the Apple Events setting on its first run. Quit this Chrome once and run chrome-launch.sh again before chrome-js.sh." >&2
 exit 0
