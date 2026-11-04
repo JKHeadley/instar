@@ -1,0 +1,17 @@
+# Scheduled jobs wait quietly for room
+
+## What Changed
+
+A temporary rerouted-session capacity refusal now queues a scheduled job without counting a failure. Waiting jobs retry every 15 seconds in priority order and survive scheduler restart. A critical job waiting ten minutes, or other work waiting thirty, produces one episode alert after dead-session recovery is attempted. One of the existing rerouted slots is reserved for scheduler jobs when the cap exceeds one. Real failure alerts use plain, bounded wording and route to the job topic or Attention.
+
+## Evidence
+
+The new tests failed against the prior scheduler and session admission code, then passed with the change. Targeted scheduler, session-manager, notice-catalog, and plain-notice lint checks pass. Live end-to-end delivery requires deployment and a real capacity refusal after the update.
+
+## What to Tell Your User
+
+Temporary lack of room will no longer produce a separate failure alert for every job. Checks will start soon after room opens. A longer blockage will produce one clear message.
+
+## Summary of New Capabilities
+
+Scheduled jobs have a durable, priority-ordered capacity wait with one plain escalation for a sustained blockage.

@@ -42,7 +42,7 @@ export interface JobLeaseClaim {
   /** Whether the job completed under this lease. */
   completed: boolean;
   /** Completion result (set on complete). */
-  result?: 'success' | 'failure';
+  result?: 'success' | 'failure' | 'waited';
   /** When the job completed (ISO 8601). */
   completedAt?: string;
 }
@@ -132,7 +132,7 @@ export class JobLeaseClaimStore {
   }
 
   /** Mark our lease on a slug complete (releases it for the next tick). */
-  completeClaim(jobSlug: string, result: 'success' | 'failure'): void {
+  completeClaim(jobSlug: string, result: 'success' | 'failure' | 'waited'): void {
     const claim = this.claims.get(jobSlug);
     if (!claim || claim.machineId !== this.machineId) return;
     claim.completed = true;

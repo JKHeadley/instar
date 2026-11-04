@@ -42,7 +42,7 @@ export interface JobCompletePayload {
   /** Machine ID that completed the job. */
   machineId: string;
   /** Execution result. */
-  result: 'success' | 'failure';
+  result: 'success' | 'failure' | 'waited';
 }
 
 export interface JobClaim {
@@ -59,7 +59,7 @@ export interface JobClaim {
   /** Whether the job completed. */
   completed: boolean;
   /** Completion result (set on work-complete). */
-  result?: 'success' | 'failure';
+  result?: 'success' | 'failure' | 'waited';
   /** When the job completed (ISO 8601). */
   completedAt?: string;
 }
@@ -194,7 +194,7 @@ export class JobClaimManager extends EventEmitter {
    * @param jobSlug - The job that completed.
    * @param result - Success or failure.
    */
-  async completeClaim(jobSlug: string, result: 'success' | 'failure'): Promise<void> {
+  async completeClaim(jobSlug: string, result: 'success' | 'failure' | 'waited'): Promise<void> {
     const claim = this.claims.get(jobSlug);
     if (!claim || claim.machineId !== this.machineId) return;
 

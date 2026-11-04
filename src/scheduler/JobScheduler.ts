@@ -50,6 +50,8 @@ import type { JobDefinition, JobSchedulerConfig, JobState, JobPriority } from '.
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
 import { reportDeliverySinkFailure } from '../messaging/DeliverySinkFailure.js';
+import { RerouteRefusedError } from '../core/rerouteRefusedError.js';
+import { jobCapacityNotice, jobFailureNotice } from '../messaging/userNotices.js';
 import type { JobClaimManager } from './JobClaimManager.js';
 import type { JobLeaseClaimStore } from './JobLeaseClaimStore.js';
 import { decideClaimPath, type CutoverGateInput, type CutoverDecision } from './JobLeaseCutoverGate.js';
@@ -66,7 +68,20 @@ interface QueuedJob {
   slug: string;
   reason: string;
   queuedAt: string;
+  capacityWait?: boolean;
 }
+
+interface JobCapacityEpisode {
+  version: 1;
+  firstBlockedAt: string;
+  jobs: string[];
+  blockedAtByJob?: Record<string, string>;
+  alertedAt?: string;
+}
+
+const CAPACITY_POLL_MS = 15_000;
+const CRITICAL_CAPACITY_ALERT_MS = 10 * 60_000;
+const OTHER_CAPACITY_ALERT_MS = 30 * 60_000;
 
 interface SchedulerStatus {
   running: boolean;
@@ -241,6 +256,12 @@ export class JobScheduler {
 
   /** Scheduler-owned wakeups for delivery retries and unresolved reminders. */
   private failureAlertTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+
+  /** One local admission attempt per poll; persisted episode survives restart. */
+  private capacityPoll: ReturnType<typeof setInterval> | null = null;
+  private capacityAlertInFlight = false;
+  private queueAdmissionInFlight = false;
+  private activeSessionSpawns = new Set<string>();
 
   /** Startup composition has completed, even when its result is "no sink". */
   private failureAlertDeliveryActive = false;
@@ -671,7 +692,7 @@ export class JobScheduler {
    * job. After a process restart, unknown ownership defaults to the legacy bus
    * path; a journal lease then expires rather than being completed by guess.
    */
-  private releaseClaim(slug: string, result: 'success' | 'failure'): void {
+  private releaseClaim(slug: string, result: 'success' | 'failure' | 'waited'): void {
     const acquiredPath = this.acquiredClaimPath.get(slug);
     this.acquiredClaimPath.delete(slug);
     if (acquiredPath === 'journal') {
@@ -744,6 +765,14 @@ export class JobScheduler {
 
     this.refreshJobs();
     this.running = true;
+    const persistedWait = this.state.get<JobCapacityEpisode>('job-capacity-episode');
+    if (persistedWait?.version === 1) {
+      for (const slug of persistedWait.jobs) {
+        const job = this.jobs.find(j => j.slug === slug);
+        if (job?.enabled && this.isJobScopedToThisMachine(job)) this.enqueue(slug, 'capacity-recovery', true);
+        else this.markCapacityJobStarted(slug);
+      }
+    }
     const scopedJobs = this.rebuildCronTasks();
     const enabledJobs = this.jobs.filter(j => j.enabled);
     const skippedByScope = enabledJobs.length - scopedJobs.length;
@@ -803,6 +832,8 @@ export class JobScheduler {
       this.missedJobStartupTimer = null;
     }
     this.queue = [];
+    if (this.capacityPoll) clearInterval(this.capacityPoll);
+    this.capacityPoll = null;
     // Clear all retry timers
     for (const [, state] of this.retryState) {
       if (state.timer) clearTimeout(state.timer);
@@ -1010,6 +1041,7 @@ export class JobScheduler {
         timestamp: new Date().toISOString(),
         metadata: { slug, reason, claimedBy, claimPath: claimPath?.path ?? 'bus' },
       });
+      if (reason.startsWith('queued:')) this.markCapacityJobStarted(slug);
       return 'skipped';
     }
 
@@ -1023,7 +1055,7 @@ export class JobScheduler {
     // that outran its cron interval was always at risk; this closes it generally.
     // The boot-reconcile in SessionManager.purgeDeadSessions kills surviving
     // rerouted job sessions, so the steady state is one-run-per-slug.
-    const liveWithSlug = this.sessionManager.listRunningSessions().some(s => s.jobSlug === slug);
+    const liveWithSlug = this.activeSessionSpawns.has(slug) || this.sessionManager.listRunningSessions().some(s => s.jobSlug === slug);
     if (liveWithSlug) {
       this.skipLedger.recordSkip(slug, 'already-running');
       console.log(`[scheduler] Job "${slug}" skipped — a live session already holds this slug (avoiding double-run).`);
@@ -1033,6 +1065,7 @@ export class JobScheduler {
         timestamp: new Date().toISOString(),
         metadata: { slug, reason, gateReason: 'already-running' },
       });
+      if (reason.startsWith('queued:')) this.markCapacityJobStarted(slug);
       return 'skipped';
     }
 
@@ -1147,13 +1180,16 @@ export class JobScheduler {
     // Check session capacity
     const runningSessions = this.sessionManager.listRunningSessions();
     const jobSessions = runningSessions.filter(s => s.jobSlug);
-    if (jobSessions.length >= this.config.maxParallelJobs) {
+    if (jobSessions.length + this.activeSessionSpawns.size >= this.config.maxParallelJobs) {
       this.enqueue(slug, reason);
       return 'queued';
     }
 
     const timeoutMs = (job.expectedDurationMinutes ?? 30) * 2 * 60_000;
-    if (!this.takeClaim(job, reason, claimPath, timeoutMs)) return 'skipped';
+    if (!this.takeClaim(job, reason, claimPath, timeoutMs)) {
+      if (reason.startsWith('queued:')) this.markCapacityJobStarted(slug);
+      return 'skipped';
+    }
 
     // Clear retry state on successful trigger
     this.clearRetryState(slug);
@@ -1238,7 +1274,7 @@ export class JobScheduler {
    * Process the queue — dequeue and run next job if a slot is available.
    */
   processQueue(): void {
-    if (this.paused || this.queue.length === 0) return;
+    if (this.paused || this.queue.length === 0 || this.queueAdmissionInFlight) return;
 
     try {
       this.refreshJobs();
@@ -1249,7 +1285,16 @@ export class JobScheduler {
 
     const runningSessions = this.sessionManager.listRunningSessions();
     const jobSessions = runningSessions.filter(s => s.jobSlug);
-    if (jobSessions.length >= this.config.maxParallelJobs) return;
+    if (jobSessions.length + this.activeSessionSpawns.size >= this.config.maxParallelJobs) return;
+
+    // The normal queue drain checks only maxParallelJobs. The force-mode
+    // reroute has a separate host-wide cap and a live memory-pressure gate.
+    // Keep the queued job in place until that gate opens; no failed spawn is
+    // recorded and only one queued job is admitted per poll.
+    if (this.queue[0]?.capacityWait && this.sessionManager.confinedRerouteCapacity() === 'saturated') {
+      void this.maybeAlertCapacityEpisode();
+      return;
+    }
 
     const next = this.queue.shift();
     if (!next) return;
@@ -1257,6 +1302,7 @@ export class JobScheduler {
     const job = this.jobs.find(j => j.slug === next.slug);
     if (!job) {
       this.skipLedger.recordSkip(next.slug, 'disabled');
+      if (next.capacityWait) this.markCapacityJobStarted(next.slug);
       this.state.appendEvent({
         type: 'job_skipped',
         summary: `Job "${next.slug}" skipped — no longer present in the live job set`,
@@ -1268,6 +1314,7 @@ export class JobScheduler {
 
     if (!job.enabled) {
       this.skipLedger.recordSkip(next.slug, 'disabled');
+      if (next.capacityWait) this.markCapacityJobStarted(next.slug);
       this.state.appendEvent({
         type: 'job_skipped',
         summary: `Job "${next.slug}" skipped — disabled in the live job set`,
@@ -1301,7 +1348,18 @@ export class JobScheduler {
       return;
     }
 
-    this.spawnJobSession(job, `queued:${next.reason}`);
+    // Re-enter the normal admission path so a recovered wait takes a fresh
+    // machine claim; the old refused attempt released its claim as "waited".
+    this.queueAdmissionInFlight = true;
+    void this.triggerJob(job.slug, `queued:${next.reason}`).then(result => {
+      if (result === 'skipped' && next.capacityWait) {
+        const episode = this.state.get<JobCapacityEpisode>('job-capacity-episode');
+        if (episode?.jobs.includes(job.slug)) this.enqueue(job.slug, next.reason, true);
+      }
+    }).catch(err => {
+      console.error(`[scheduler] Queued trigger failed for "${job.slug}": ${err instanceof Error ? err.message : String(err)}`);
+      if (next.capacityWait) this.enqueue(job.slug, next.reason, true);
+    }).finally(() => { this.queueAdmissionInFlight = false; });
   }
 
   /**
@@ -1316,6 +1374,9 @@ export class JobScheduler {
    */
   clearQueue(): void {
     this.queue.length = 0;
+    this.state.set('job-capacity-episode', null);
+    if (this.capacityPoll) clearInterval(this.capacityPoll);
+    this.capacityPoll = null;
   }
 
   /**
@@ -1564,9 +1625,16 @@ export class JobScheduler {
     );
   }
 
-  private enqueue(slug: string, reason: string): void {
-    // Don't queue duplicates
-    if (this.queue.some(q => q.slug === slug)) return;
+  private enqueue(slug: string, reason: string, capacityWait = false): void {
+    // Don't queue duplicates; a capacity refusal upgrades an ordinary wait.
+    const existing = this.queue.find(q => q.slug === slug);
+    if (existing) {
+      if (capacityWait && !existing.capacityWait) {
+        existing.capacityWait = true;
+        this.recordCapacityWait(slug);
+      }
+      return;
+    }
 
     // Cap queue size to prevent unbounded growth
     if (this.queue.length >= 50) {
@@ -1574,7 +1642,7 @@ export class JobScheduler {
       return;
     }
 
-    this.queue.push({ slug, reason, queuedAt: new Date().toISOString() });
+    this.queue.push({ slug, reason, queuedAt: new Date().toISOString(), capacityWait });
 
     // Sort by priority — critical first
     this.queue.sort((a, b) => {
@@ -1582,6 +1650,94 @@ export class JobScheduler {
       const jobB = this.jobs.find(j => j.slug === b.slug);
       return (PRIORITY_ORDER[jobA?.priority ?? 'low']) - (PRIORITY_ORDER[jobB?.priority ?? 'low']);
     });
+    if (capacityWait) this.recordCapacityWait(slug);
+  }
+
+  private recordCapacityWait(slug: string): void {
+    const key = 'job-capacity-episode';
+    const prior = this.state.get<JobCapacityEpisode>(key);
+    const episode: JobCapacityEpisode = prior?.version === 1
+      ? { ...prior, jobs: [...new Set([...prior.jobs, slug])], blockedAtByJob: { ...prior.blockedAtByJob, [slug]: prior.blockedAtByJob?.[slug] ?? new Date().toISOString() } }
+      : { version: 1, firstBlockedAt: new Date().toISOString(), jobs: [slug], blockedAtByJob: { [slug]: new Date().toISOString() } };
+    this.state.set(key, episode);
+    this.state.appendEvent({
+      type: 'job_waited_for_room',
+      summary: `Job "${slug}" waited for reroute capacity`,
+      timestamp: new Date().toISOString(),
+      metadata: { slug, reason: 'reroute-capacity' },
+    });
+    this.armCapacityPoll();
+  }
+
+  /* @self-action-controller: job-capacity-episode */
+  private armCapacityPoll(): void {
+    if (this.capacityPoll) return;
+    this.capacityPoll = setInterval(() => {
+      if (!this.running || this.paused) return;
+      this.processQueue();
+      void this.maybeAlertCapacityEpisode();
+    }, CAPACITY_POLL_MS);
+    this.capacityPoll.unref?.();
+  }
+
+  private markCapacityJobStarted(slug: string): void {
+    const key = 'job-capacity-episode';
+    const episode = this.state.get<JobCapacityEpisode>(key);
+    if (!episode || !episode.jobs.includes(slug)) return;
+    this.queue = this.queue.filter(q => q.slug !== slug);
+    const jobs = episode.jobs.filter(s => s !== slug);
+    if (jobs.length) {
+      const blockedAtByJob = { ...episode.blockedAtByJob };
+      delete blockedAtByJob[slug];
+      this.state.set(key, { ...episode, jobs, blockedAtByJob });
+    }
+    else {
+      this.state.set(key, null);
+      if (this.capacityPoll) clearInterval(this.capacityPoll);
+      this.capacityPoll = null;
+    }
+  }
+
+  private async maybeAlertCapacityEpisode(): Promise<void> {
+    const episode = this.state.get<JobCapacityEpisode>('job-capacity-episode');
+    if (!episode || episode.alertedAt || this.capacityAlertInFlight || !episode.jobs.length) return;
+    const waiting = episode.jobs.map(s => this.jobs.find(j => j.slug === s)).filter((j): j is JobDefinition => Boolean(j));
+    if (!waiting.length) {
+      for (const slug of episode.jobs) this.markCapacityJobStarted(slug);
+      return;
+    }
+    const ageMs = Date.now() - Date.parse(episode.firstBlockedAt);
+    if (!Number.isFinite(ageMs)) return;
+    const eligible = waiting.some(j => {
+      const since = Date.parse(episode.blockedAtByJob?.[j.slug] ?? episode.firstBlockedAt);
+      const threshold = j.priority === 'critical' ? CRITICAL_CAPACITY_ALERT_MS : OTHER_CAPACITY_ALERT_MS;
+      return Number.isFinite(since) && Date.now() - since >= threshold;
+    });
+    if (!eligible) return;
+    this.capacityAlertInFlight = true;
+    try {
+      // Existing session monitoring owns liveness. Give its completion sweep
+      // one chance to free room before an operator-facing alert.
+      await this.sessionManager.purgeDeadSessions(true);
+      if (this.sessionManager.confinedRerouteCapacity() === 'available') {
+        this.processQueue();
+        return;
+      }
+      const names = waiting.sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]).map(j => j.name);
+      const notice = jobCapacityNotice(names, ageMs);
+      const hub = this.state.get<number>('agent-attention-topic');
+      if (this.telegram && hub) await this.telegram.sendToTopic(hub, notice);
+      else if (!this.telegram && this.messenger) await this.messenger.send({ userId: 'system', content: notice });
+      else return;
+      const current = this.state.get<JobCapacityEpisode>('job-capacity-episode');
+      if (current?.firstBlockedAt === episode.firstBlockedAt && current.jobs.length) {
+        this.state.set('job-capacity-episode', { ...current, alertedAt: new Date().toISOString() });
+      }
+    } catch (err) {
+      console.error(`[scheduler] Capacity episode notice failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      this.capacityAlertInFlight = false;
+    }
   }
 
   /**
@@ -2588,6 +2744,7 @@ export class JobScheduler {
     // typical body sizes) — see spec performance budget.
     const observability = JobScheduler.computeRunObservability(job, allowlistResolution);
 
+    this.activeSessionSpawns.add(job.slug);
     this.sessionManager.spawnSession({
       name: sessionName,
       prompt,
@@ -2603,6 +2760,7 @@ export class JobScheduler {
       // (docs/specs/LOOP-SESSION-NO-MCP-SPEC.md). Absent/'project' → unchanged.
       disableProjectMcp: job.mcpAccess === 'none' ? true : undefined,
     }).then((session) => {
+      this.markCapacityJobStarted(job.slug);
       this.recordLedgerSession(session?.id ?? sessionName, job.slug, new Date().toISOString(), 'job');
       // Record in run history with full Phase 1b observability payload
       const runId = this.runHistory.recordStart({
@@ -2647,6 +2805,14 @@ export class JobScheduler {
         metadata: { slug: job.slug, reason, model: job.model },
       });
     }).catch((err) => {
+      if (err instanceof RerouteRefusedError) {
+        this.releaseClaim(job.slug, 'waited');
+        this.enqueue(job.slug, reason, true);
+        return;
+      }
+      // A real spawn failure ends this job's capacity wait; it is now handled
+      // by the ordinary failure path, not the capacity episode.
+      this.markCapacityJobStarted(job.slug);
       // Record spawn error in run history
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.runHistory.recordSpawnError({
@@ -2682,6 +2848,8 @@ export class JobScheduler {
       });
 
       void this.alertOnConsecutiveFailures(job, failures, errorMsg);
+    }).finally(() => {
+      this.activeSessionSpawns.delete(job.slug);
     });
     return sessionName;
   }
@@ -3426,24 +3594,17 @@ export class JobScheduler {
     this.failureAlertsInFlight.add(job.slug);
 
     try {
-      const isSessionBlocked = error.includes('Max sessions') && error.includes('reached');
-
-      let alertText: string;
-
-      if (isSessionBlocked) {
-        alertText = this.buildSessionBlockedAlert(job, failures, error);
-      } else {
-        alertText = `*Job Alert: ${job.name}*\n\n${failures} consecutive failures.\nLast error: ${error}\nPriority: ${job.priority}`;
-      }
+      const alertText = jobFailureNotice(job.name, failures, error);
 
       alertState.lastAttemptAt = new Date(now).toISOString();
       const attemptId = crypto.randomUUID();
       alertState.activeAttemptId = attemptId;
       this.state.set(stateKey, alertState);
 
-      const send = this.telegram && job.topicId
-        ? () => this.telegram!.sendToTopic(job.topicId!, alertText).then(() => undefined)
-        : this.messenger
+      const noticeTopic = job.topicId ?? this.state.get<number>('agent-attention-topic');
+      const send = this.telegram && noticeTopic
+        ? () => this.telegram!.sendToTopic(noticeTopic, alertText).then(() => undefined)
+        : !this.telegram && this.messenger
           ? () => this.messenger!.send({ userId: 'system', content: alertText }).then(() => undefined)
           : null;
 
@@ -3552,55 +3713,6 @@ export class JobScheduler {
       reason,
       impact: `Job ${job.slug} remains failed and its operator alert remains undelivered; retry is scheduled for ${alertState.nextEligibleAt}`,
     });
-  }
-
-  /**
-   * Build an intelligent "Job Blocked" notification when a job can't start
-   * because all session slots are occupied. Includes session diagnostics,
-   * staleness detection, memory pressure, and actionable suggestions.
-   */
-  private buildSessionBlockedAlert(job: JobDefinition, failures: number, error: string): string {
-    const diagnostics = this.sessionManager.getSessionDiagnostics();
-
-    const lines: string[] = [];
-    lines.push(`*Job Blocked: ${job.name}*`);
-    lines.push('');
-    lines.push(`Could not start — all ${diagnostics.maxSessions} session slots are in use.`);
-    lines.push(`(${failures} consecutive attempts blocked)`);
-    lines.push('');
-
-    // Session list with ages
-    lines.push('*Running sessions:*');
-    for (const s of diagnostics.sessions) {
-      const age = s.ageMinutes >= 60
-        ? `${Math.floor(s.ageMinutes / 60)}h ${s.ageMinutes % 60}m`
-        : `${s.ageMinutes}m`;
-      const staleFlag = s.isStale ? ' ⚠️' : '';
-      const jobTag = s.jobSlug ? ` (${s.jobSlug})` : '';
-      lines.push(`• ${s.name}${jobTag} — ${age}${staleFlag}`);
-      if (s.staleReason) {
-        lines.push(`  └ ${s.staleReason}`);
-      }
-    }
-    lines.push('');
-
-    // Memory pressure
-    const memEmoji = diagnostics.memoryPressure === 'critical' ? '🔴'
-      : diagnostics.memoryPressure === 'high' ? '🟠'
-      : diagnostics.memoryPressure === 'moderate' ? '🟡'
-      : '🟢';
-    lines.push(`Memory: ${memEmoji} ${diagnostics.memoryUsedPercent}% used (${diagnostics.freeMemoryMB} MB free)`);
-    lines.push('');
-
-    // Suggestions
-    if (diagnostics.suggestions.length > 0) {
-      lines.push('*Suggestions:*');
-      for (const suggestion of diagnostics.suggestions) {
-        lines.push(`→ ${suggestion}`);
-      }
-    }
-
-    return lines.join('\n');
   }
 
   private async checkMissedJobs(enabledJobs: JobDefinition[]): Promise<void> {
