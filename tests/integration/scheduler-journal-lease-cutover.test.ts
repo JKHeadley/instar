@@ -172,6 +172,8 @@ describe('JobScheduler × WS4.3 journal-lease cutover', () => {
     await h.scheduler.triggerJob('daily-sync', 'manual');
     expect(h.leaseStore.getClaim('daily-sync')?.machineId).toBe('m1');
     h.leaseStore.completeClaim('daily-sync', 'success');
+    // The first trigger returns before its asynchronous session spawn settles.
+    await new Promise<void>(resolve => setImmediate(resolve));
     // Flip the flag off live; next run must use the bus.
     h.gate.input = { ...h.gate.input, enabled: false };
     const busSpy = vi.spyOn(h.busClaim, 'tryClaim');
