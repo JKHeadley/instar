@@ -49,9 +49,17 @@ describe('the shipped ladder registry', () => {
     for (const name of fs.readdirSync(specs)) {
       if (!name.endsWith('.md')) continue;
       const m = fs.readFileSync(path.join(specs, name), 'utf-8').match(/^\s*[-*+]\s+\*\*ladder:\*\*\s+(.+?)\s*$/im);
-      if (m && !ids.has(m[1])) dangling.push(`${name} → ${m[1]}`);
+      // A spec with no flag says so with its reason; anything else must be a real entry.
+      if (m && !ids.has(m[1]) && !/^not applicable: \S/.test(m[1])) dangling.push(`${name} → ${m[1]}`);
     }
     expect(dangling).toEqual([]);
+  });
+
+  it('a spec with no flag can say not applicable, but only with a reason', () => {
+    const allowed = (v: string) => /^not applicable: \S/.test(v);
+    expect(allowed('not applicable: no flag.')).toBe(true);
+    expect(allowed('not applicable')).toBe(false);
+    expect(allowed('not applicable: ')).toBe(false);
   });
 
   it('ships in the package', () => {
