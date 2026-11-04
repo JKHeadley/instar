@@ -551,6 +551,8 @@ import { CommitmentPersistenceError, CommitmentTracker } from '../monitoring/Com
 import type { SemanticMemory } from '../memory/SemanticMemory.js';
 import type { SessionActivitySentinel } from '../monitoring/SessionActivitySentinel.js';
 import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
+import { isPositiveTopicId, markerFor, MAX_RELEASE_NOTE_CHARS, parseAgentStopClaim, type AgentStopOrigin, type ReleaseConditionVerdict } from '../monitoring/agentStopRelease.js';
+import type { StopClassRead } from '../monitoring/GuardLatchStore.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
 import type { SessionSummarySentinel } from '../messaging/SessionSummarySentinel.js';
 import { decideIngress, commitInboundReply, dedupeKeyFor } from '../messaging/ingressDedup.js';
@@ -1273,6 +1275,8 @@ export interface RouteContext {
   localVerifyStatus?: import('../localVerify/StatusReconciler.js').StatusReconciler | null;
   /** GuardLatchStore — the pool-visible rollback/enable/pool-armed latches. */
   guardLatchStore: import('../monitoring/GuardLatchStore.js').GuardLatchStore | null;
+  /** Keeps an agent-class stop from being orphaned; checks its release condition. */
+  agentStopSurfacer?: import('../monitoring/agentStopRelease.js').AgentStopSurfacer | null;
   messageRouter: MessageRouter | null;
   summarySentinel: SessionSummarySentinel | null;
   spawnManager: SpawnRequestManager | null;
@@ -16986,7 +16990,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const state = ctx.greenPrAutoMerger.snapshot();
-    const latch = ctx.guardLatchStore?.snapshot() ?? null;
+    const latch = (() => {
+      const snap = ctx.guardLatchStore?.snapshot();
+      if (!snap) return null;
+      // Agent stops carry their owner, cause and last condition read. GET makes no network call.
+      const rollbackStops = snap.rollbackStops.map(({ origin, ...stop }) => origin
+        ? {
+            ...stop,
+            topicId: origin.topicId,
+            ...(origin.sessionId ? { sessionId: origin.sessionId } : {}),
+            cause: origin.cause,
+            release: origin.release,
+            ...(ctx.agentStopSurfacer?.conditionOf(stop.latchId) ?? { conditionMet: null, conditionCheckedAt: null, conditionEvidence: null }),
+          }
+        : stop);
+      return { ...snap, rollbackStops };
+    })();
     // mergerunner-auto-arm-handoff: armed/armed-overdue is first-class observable
     // (Observable Intelligence — an in-flight autonomous merge must never be
     // invisible). NON-OPTIONAL — a NUMBER (0) / EMPTY ARRAY when nothing is armed.
@@ -17034,7 +17053,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const reason = typeof req.body?.reason === 'string' ? req.body.reason : 'operator-rollback';
-    const latchId = ctx.guardLatchStore.set('rollback', reason);
+    // green-pr-agent-stop-release: no claim, or a bad one, is operator-class, and
+    // it STILL STOPS. The claim is parsed synchronously and can never refuse.
+    let agentOrigin: AgentStopOrigin | undefined;
+    let agentClaimRejected: string[] | undefined;
+    if (req.body?.agentStop !== undefined) {
+      try {
+        const parsed = parseAgentStopClaim(req.body.agentStop, new Date().toISOString());
+        if (parsed.ok) agentOrigin = parsed.origin; else agentClaimRejected = parsed.reasons;
+      } catch { /* @silent-fallback-ok: a parser fault still stops, on the strict side */ agentClaimRejected = ['claim could not be read']; }
+    }
+    const latchId = ctx.guardLatchStore.set('rollback', reason, agentOrigin);
+    const commitmentId = agentOrigin ? (ctx.agentStopSurfacer?.ensureCommitment(latchId, agentOrigin) ?? null) : undefined;
     // The latch set (stop NEW arming) and the in-line disarm (un-arm what is
     // already armed) are the two halves of one kill switch (mergerunner-auto-arm-
     // handoff Blocker 3a). The disarm must be IN-LINE here, not in the tick — the
@@ -17044,7 +17074,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     let disarm: { disarmed: number[]; failed: number[] } | undefined;
     try { disarm = await ctx.greenPrAutoMerger?.disarmAllArmed(reason); }
     catch { /* disarm failure is surfaced via the watcher's own attention line; the latch still landed */ }
-    res.json({ ok: true, rolledBack: true, latchId, disarmed: disarm?.disarmed ?? [], disarmFailed: disarm?.failed ?? [] });
+    res.json({
+      ok: true, rolledBack: true, latchId, disarmed: disarm?.disarmed ?? [], disarmFailed: disarm?.failed ?? [],
+      originClass: agentOrigin ? 'agent' : 'operator',
+      ...(agentOrigin ? { marker: markerFor(latchId), commitmentId } : {}),
+      ...(agentClaimRejected ? { agentClaimRejected } : {}),
+    });
   });
 
   // Re-arming merge authority is the operator's: dashboard-PIN-gated (the Mandates
@@ -17058,7 +17093,70 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const named = Array.isArray(req.body?.latchIds) ? req.body.latchIds.filter((s: unknown): s is string => typeof s === 'string') : [];
     const ids = named.length > 0 ? named : ctx.guardLatchStore.activeLatchIds('rollback');
     ctx.guardLatchStore.clear('rollback', ids, 're-arm');
+    ctx.agentStopSurfacer?.onEnabled(ids);
     res.json({ ok: true, enabled: true, cleared: ids });
+  });
+
+  // An agent's own stop is the agent's to release (green-pr-agent-stop-release).
+  // Bearer-callable, so it reads the stop's class from the store and its condition
+  // from reality: nothing in the request can change either answer. One named id;
+  // rollback family only. An operator stop stays with /enable and its PIN.
+  router.post('/green-pr-automerge/release', async (req, res) => {
+    const store = ctx.guardLatchStore;
+    if (!store) {
+      res.status(503).json({ error: 'green-pr auto-merge not configured' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const latchId = body.latchId;
+    const releasedBy = (body.releasedBy ?? {}) as Record<string, unknown>;
+    const note = typeof body.note === 'string' ? body.note.trim() : '';
+    if (typeof latchId !== 'string' || !latchId || latchId.length > 128 || !isPositiveTopicId(releasedBy.topicId) || !note || note.length > MAX_RELEASE_NOTE_CHARS) {
+      res.status(400).json({ error: 'latchId (one id), releasedBy.topicId and a note are required' });
+      return;
+    }
+    const read = () => store.stopClass('rollback', latchId);
+    let stop: StopClassRead;
+    try { stop = read(); }
+    catch { /* @silent-fallback-ok: fail closed — the release is refused */
+      res.status(503).json({ error: 'latch-view-unreadable' });
+      return;
+    }
+    if (!stop.known) { res.status(404).json({ error: 'unknown-latch' }); return; }
+    if (!stop.active) { res.status(409).json({ error: 'not-active' }); return; }
+    if (stop.class !== 'agent') {
+      res.status(403).json({ error: 'operator-stop', detail: 'This stop needs the operator\'s PIN. An agent can only release a stop it pulled as its own.' });
+      return;
+    }
+    const surfacer = ctx.agentStopSurfacer;
+    if (!surfacer) { res.status(503).json({ error: 'condition-unverifiable', evidence: { problem: 'no-condition-reader' } }); return; }
+    let verdict: ReleaseConditionVerdict;
+    try { verdict = await surfacer.evaluate(latchId, stop.origin); }
+    catch { /* @silent-fallback-ok: fail closed — an unreadable condition is never met */
+      res.status(503).json({ error: 'condition-unverifiable', evidence: { problem: 'read-failed' } });
+      return;
+    }
+    if (!verdict.met) {
+      res.status(verdict.unverifiable ? 503 : 409).json({ error: verdict.unverifiable ? 'condition-unverifiable' : 'condition-not-met', evidence: verdict.evidence });
+      return;
+    }
+    // The read above awaited the network: a racing release or /enable may have landed.
+    let still: StopClassRead;
+    try { still = read(); }
+    catch { /* @silent-fallback-ok: fail closed — the release is refused */
+      res.status(503).json({ error: 'latch-view-unreadable' });
+      return;
+    }
+    if (!still.known || !still.active) { res.status(409).json({ error: 'not-active' }); return; }
+    store.clear('rollback', [latchId], 'agent-release', {
+      topicId: releasedBy.topicId,
+      ...(typeof releasedBy.sessionId === 'string' && releasedBy.sessionId ? { sessionId: releasedBy.sessionId.slice(0, 128) } : {}),
+      note,
+      evidence: verdict.evidence,
+      at: new Date().toISOString(),
+    });
+    surfacer.onReleased(latchId);
+    res.json({ ok: true, released: latchId, evidence: verdict.evidence, stillStopped: store.activeLatchIds('rollback'), mergeAllowed: store.isMergeAllowed().allowed });
   });
 
   // Conversational-hold assist (R3): apply the [HOLD: …] marker via gh in one call.
