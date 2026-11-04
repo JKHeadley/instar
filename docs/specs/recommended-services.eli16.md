@@ -35,6 +35,10 @@ Nothing is open. Justin confirmed Jev and email go on the list, and told the age
 
 The list of services now exists in code, each with what you get, what leaves the machine, the cost, the account and the backup. The dashboard shows it on "What I'm allowed to do", and nothing can be chosen there yet. Four plans cover the five backup gaps, because one off-machine copy closes two of them. One thing moved: the plain fixed message for when every AI door is down was meant to come earlier, and now ships in step 4 with the only offer that needs it.
 
+## Saying yes or no
+
+The confirm page takes either answer, with your PIN. A no stops the agent setting a service up or offering it, and cancels any earlier yes. If the service is already running, it stays on, and the page tells you that before you tap. The way to stop a running service has to ship before any service can be chosen.
+
 ## Still to settle before offers go live
 
 The groundwork can tell when a platform first accepted a reply, but that reply might only be a quick "got it", not useful work. A reply sent from another machine may not be seen by the machine that would send the offer. WhatsApp and the app can't prove delivery yet. These values also stay on one machine for now. Step 3 of the rollout settles all four before any offer relies on them, so until then nothing reads them.

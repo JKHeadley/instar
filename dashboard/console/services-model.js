@@ -30,8 +30,9 @@ export function buildServices(res) {
     main: s.name || s.service,
     sub: s.benefit || '',
     end: choiceWord(s),
-    // Only something that can be set up gets a way to say yes, and a yes already given needs none.
-    yesHref: s.available && s.choice !== 'yes' ? `/dashboard/service-yes?service=${encodeURIComponent(s.service)}` : null,
+    // The same page takes a yes or a no. A yes on another machine, or one a later no cancelled, leaves
+    // this machine still needing its own, so the choice alone doesn't decide this.
+    action: s.available ? { href: `/dashboard/service-yes?service=${encodeURIComponent(s.service)}`, label: s.grantedHere ? 'Change my answer' : 'Yes or no' } : null,
     lines: [
       { label: 'What you get', text: s.benefit },
       { label: 'What leaves this machine', text: s.dataLeaves },

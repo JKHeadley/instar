@@ -303,6 +303,7 @@ Accepted as written, one line each:
 - `state-loss-risk` fires only after a loss, not before one.
 - `principal` in `rotateKeep: 0` records: use an owner id, not personal data.
 - Kill switch re-arm: if set false, it raises an attention item after 30 days.
+- A no from the confirm page stops offers and voids grants but always records `shutdown: none`, and the page says a running service stays on. The route to stop a running service ships before any service is available.
 - The fixed-template offer path was listed under rollout step 1 and did not ship with it. It ships in rollout step 4 with the `provider-exhausted` event, the only offer that needs it.
 
 ## Open questions
