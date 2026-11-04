@@ -191,6 +191,8 @@ import { createMobileConversationRouter, appOwnerName } from './mobileConversati
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
 import { createMobileMediaRouter } from './mobileMediaRoutes.js';
 import { createMobileSessionRouter } from './mobileSessionRoutes.js';
+import { createMobileSessionTerminalRouter, peerRowsMatch, PEER_LOOKUP_MAX, PEER_LOOKUP_TIMEOUT_MS, type PeerLookup } from './mobileSessionTerminalRoutes.js';
+import { poolPeerFetch } from './poolPeerFetch.js';
 import { AppConversationService, VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS } from '../core/AppConversationService.js';
 import { transcribeAudioFile, configuredVoiceProvider, resolveTranscriptionProvider } from '../core/VoiceTranscription.js';
 import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
@@ -5982,6 +5984,43 @@ export class AgentServer {
       this.checkInReminderTimer = setInterval(() => { void checkInReminderTicker.tick(); }, checkInReminderTicker.status().intervalMs);
       this.checkInReminderTimer.unref?.();
       checkInReminderTicker.setArmed(true);
+    }
+    // The native session screen (docs/specs/mobile-native-session-screen.md): owner-phone requests
+    // for GET /sessions/:name/output and POST /sessions/:name/input. Mounted BEFORE the main routes;
+    // every non-device request passes straight on to the Bearer handlers there, unchanged.
+    if (this.mobilePairing) {
+      const pairingForTerminal = this.mobilePairing;
+      this.app.use(createMobileSessionTerminalRouter({
+        pairing: pairingForTerminal,
+        listSessions: () => options.state.listSessions(),
+        captureOutputAsync: (tmux, lines) => options.sessionManager.captureOutputAsync(tmux, lines),
+        sendInput: (tmux, text) => options.sessionManager.sendInput(tmux, text),
+        lookupPeers: async (name) => {
+          const peers = routeCtx.resolvePeerUrls?.() ?? [];
+          const asked = peers.slice(0, PEER_LOOKUP_MAX);
+          const answers: PeerLookup[] = await Promise.all(asked.map(async (p): Promise<PeerLookup> => {
+            try {
+              const r = await poolPeerFetch(routeCtx.recordRopeResult ?? undefined, p, '/sessions', {
+                headers: { Authorization: `Bearer ${options.config.authToken}` },
+                signal: AbortSignal.timeout(PEER_LOOKUP_TIMEOUT_MS),
+              });
+              if (!r.ok) return { machineId: p.machineId, failed: true };
+              return { machineId: p.machineId, found: peerRowsMatch(await r.json(), name) };
+            } catch { return { machineId: p.machineId, failed: true }; } // @silent-fallback-ok — an unanswered peer makes the location unknown
+          }));
+          // Peers beyond the ones asked count as unanswered: absence is then never claimed.
+          if (peers.length > asked.length) answers.push({ machineId: 'not-asked', failed: true });
+          return answers;
+        },
+        nicknameOf: (id) => routeCtx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+        selfNickname: () => {
+          const id = routeCtx.meshSelfId ?? this.meshSelfId ?? null;
+          return id ? verifiedEntityName(id, routeCtx.machinePoolRegistry?.getCapacity(id)?.nickname) ?? null : null;
+        },
+        selfMachineId: () => routeCtx.meshSelfId ?? this.meshSelfId ?? null,
+        secrets: () => [options.config.authToken, options.config.dashboardPin],
+        stateDir: options.config.stateDir,
+      }));
     }
     this.app.use(routes);
     // The cost surface reads the same live ledgers and scheduler as production
