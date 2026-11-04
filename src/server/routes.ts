@@ -19238,7 +19238,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   router.get('/messaging/advisory-log', (req, res) => {
     const rawLimit = parseInt(String(req.query.limit ?? '50'), 10);
     const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 500) : 50;
-    res.json({ entries: outboundAdvisoryAudit.readTail(limit) });
+    // A "clean" row records only that preflight found no advice. The send may
+    // still be held, fail, or arrive on a later outbox recovery tick.
+    res.json({ entries: outboundAdvisoryAudit.readTail(limit).map(entry => ({ ...entry,
+      deliveryStatus: entry.action === 'acked' ? 'send-returned' : 'not-confirmed',
+      stage: entry.action === 'acked' ? 'send' : 'preflight' })) });
   });
 
   router.post('/telegram/reply/:topicId', async (req, res) => {
