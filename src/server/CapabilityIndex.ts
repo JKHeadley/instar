@@ -250,7 +250,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   },
   {
     key: 'maturationLadder',
-    prefixes: ['/maturation/ladder', '/maturation/moves', '/maturation/evidence'],
+    prefixes: ['/maturation'],
     description: 'Maturation ladder (docs/specs/feature-maturation-ladder.md) — every switched-off feature with its rung, next rung and numbers now vs target. Numbers raise a feature to the recurring review, whose model decides; POST /maturation/moves applies that decision behind floors that can only refuse.',
     build: () => ({
       configured: true,

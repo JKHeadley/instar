@@ -184,7 +184,7 @@ export class MaturationLadderService {
 
   private loadRegistry(): void {
     let text: string;
-    try { text = this.deps.readRegistry(); } catch {
+    try { text = this.deps.readRegistry(); } catch { // @silent-fallback-ok — reported on every response as ladder-file-unreadable
       this.registry = null;
       this.registryError = 'ladder-file-unreadable';
       return;
