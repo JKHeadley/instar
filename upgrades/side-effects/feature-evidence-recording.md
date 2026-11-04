@@ -53,6 +53,8 @@ Revert, or set `maturation.ladder.enabled` false, which makes every call a no-op
 
 ## Second-pass review
 
+**Reviewer:** independent general-purpose subagent, on claude-opus-5-5
+
 Independent subagent, first read: "Concern raised". `allPeersPresumedGone()` in a record's arguments could throw on a corrupt registry just before the lease self-suspend, so the self-fence would be skipped; three per-message or per-request paths recorded without the limiter; one `.message.slice` could throw on a non-Error. All fixed: those facts came out of the lease context, the three paths use `recordAtMostEvery`, and the error read is guarded. A wider grep of added arguments found no other call that can throw on a load-bearing path. It found no message text or credentials in the sampled context, and every feature id in the registry. It sampled by risk, not all 85 files. Concur after fixes.
 
 ## Class-Closure Declaration
