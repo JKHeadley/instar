@@ -638,8 +638,9 @@ export function singleFlight<T>(ttlMs: number, now: () => number): (key: string,
     if (e && t - e.at < ttlMs) return e.p;
     const p = f();
     entries.set(key, { at: t, p });
-    // A failed read is not cached.
-    p.catch(() => { if (entries.get(key)?.p === p) entries.delete(key); });
+    // A failed read is not cached. The caller still receives the rejection (this branch only evicts).
+    // E2E-PAIRING: EXEMPT — comment-only change here; the routes keep their e2e (tests/e2e/mobile-native-capacity-screens-alive.test.ts).
+    p.catch(() => { if (entries.get(key)?.p === p) entries.delete(key); }); // @silent-fallback-ok — eviction only; the rejection reaches the caller through the returned promise
     return p;
   };
 }

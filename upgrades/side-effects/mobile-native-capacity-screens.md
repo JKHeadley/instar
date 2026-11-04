@@ -96,6 +96,13 @@ Concur with the review: the owner check fails closed at the device layer and aga
 
 ---
 
+## Follow-up after Local Verify (rebase onto main with #2707)
+
+- `tests/unit/mobile-session-terminal.test.ts` pinned the owner-only rule count at 2; the three capacity rules made it 5. The test now names each owner-only rule by one request it admits (both directions), so a new owner-only screen adds a line instead of breaking a count.
+- `tests/unit/no-silent-fallbacks.test.ts` counted the single-flight cache's `.catch` that evicts a failed read (495 > baseline 494). It is not a silent fallback (the rejection still reaches the caller through the returned promise); it is tagged `@silent-fallback-ok` with that reason. No behaviour change.
+
+---
+
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable. No self-triggered controller added (the 15 s cache is request-driven, not a loop).
