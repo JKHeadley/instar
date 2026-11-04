@@ -33,6 +33,7 @@ import {
   summarizeEnumerationError,
 } from './worktreeEnumeration.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 
 export interface AgentWorktreeReaperConfig {
   enabled: boolean;
@@ -258,6 +259,7 @@ export class AgentWorktreeReaper extends EventEmitter {
         this.recordEnumerationFailure(failedAt);
         this.emit('enumeration-failed', { error: enumeration.error });
         this.warn(`[agent-worktree-reaper] enumeration FAILED — reclaimable is UNKNOWN, not zero: ${enumeration.error}`);
+        featureEvidence.record('monitoring.agentWorktreeReaper', { kind: 'error', reason: 'enumeration failed: reclaimable unknown', context: { dryRun: !this.killsEnabled, enumerationFailures: this.enumerationFailures } });
         return { ts: failedAt, evaluations: [], reaped: [], dryRun: !this.killsEnabled };
       }
       const worktrees: WorktreeInfo[] = enumeration.worktrees;
@@ -305,6 +307,7 @@ export class AgentWorktreeReaper extends EventEmitter {
           // emit('error') AND recorded for the per-path breaker (which itself
           // emit('reclaim-breaker')s once on trip). The worktree is simply kept and
           // retried (bounded by the breaker), the safe direction for a deletion op.
+          featureEvidence.record('monitoring.agentWorktreeReaper', { kind: 'error', reason: 'worktree removal failed', context: { worktree: info.path.split('/').pop() ?? '', branch: info.branch ?? null, failuresBefore: this.reclaimFailures.get(info.path) ?? 0 } });
           this.recordReclaimFailure(info.path);
           this.emit('error', err);
         }
@@ -314,6 +317,18 @@ export class AgentWorktreeReaper extends EventEmitter {
       this.lastEnumerationError = null;
       this.reapedLastPass = reaped.length;
       this.emit('pass', { evaluations, reaped });
+      const eligible = evaluations.filter((e) => e.verdict === 'reap-eligible').length;
+      featureEvidence.record('monitoring.agentWorktreeReaper', {
+        kind: reaped.length > 0 || (!this.killsEnabled && eligible > 0) ? 'fired' : 'held',
+        reason: reaped.length > 0 ? 'reaped merged idle worktrees' : !this.killsEnabled && eligible > 0 ? 'would reap (dry run)' : 'pass kept everything',
+        context: {
+          dryRun: !this.killsEnabled, worktrees: evaluations.length, eligible, reaped: reaped.length,
+          inUse: evaluations.filter((e) => e.reason === 'in-use').length,
+          dirty: evaluations.filter((e) => e.reason === 'uncommitted-changes').length,
+          raced: evaluations.filter((e) => e.reason.startsWith('raced-') || e.reason === 'reclaim-recheck-error').length,
+          reapedNames: reaped.map((p) => p.split('/').pop() ?? '').join(','),
+        },
+      });
     } finally {
       this.running = false;
     }

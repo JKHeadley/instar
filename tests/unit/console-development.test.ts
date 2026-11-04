@@ -252,7 +252,7 @@ describe('Feedback', () => {
     expect(f.tiles.find((t) => t.key === 'sorting')).toMatchObject({ n: 'Can’t tell', tone: 'unknown' });
     // A to-do the other reads DID show is still listed under the can't-tell headline.
     expect(f.todos.length).toBe(1);
-    expect(f.sub).toContain('listed below');
+    expect(f.sub).toContain('from the reads that answered');
     const q = buildFeedback(feedbackOk({ queue: fail(), readiness: ok(proposal()) }), NOW);
     expect(q.state).toBe('cant-tell');
     expect(q.todos[0].kind).toBe('readiness-authority');

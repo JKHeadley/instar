@@ -78,6 +78,9 @@ export interface TelegramOriginRuntimeOptions {
   /** §4.2 — a DIRECT-path `lease-not-held` hold (owner = this machine, no forward
    * detail) was observed for the first time: the server sends the notice/item. */
   onLeaseHoldObserved?: (row: import('./StoreTypes.js').HeldOperationRow) => Promise<void> | void;
+  /** Mirror a recovered, receipt-confirmed Bot API message into topic history. */
+  onRecoveredMessage?: (input: { operationId: string; chatId: string; threadId: number | null; messageId: number; text: string; acceptedAt: number; producerKind: string }) => void;
+  onSessionDeliveryHeld?: (input: { operationId: string; reason: string; chatId: string | null; threadId: number | null }) => void;
   /** Synchronous diagnostics, independent of worker/transport authority. */
   readDetectorHealth?: () => Record<string, unknown>;
 }
@@ -157,7 +160,12 @@ export class TelegramOriginRuntime {
       reviewLegacyRecovery: options.reviewLegacyRecovery,
       peerEvidence: options.peerEvidence, diagnoseUnknown: options.diagnoseUnknown,
       diagnosticMode: options.diagnosticMode,
-      onHold: ({ reason }) => {
+      onHold: ({ operationId, reason, producerKind, destination }) => {
+        if (producerKind === 'session' && reason === 'telegram-connect-failed') {
+          console.warn(`[telegram-origin] session reply held before network: ${operationId}, chat ${destination.chatId}, thread ${destination.topicId}`);
+          options.onSessionDeliveryHeld?.({ operationId, reason, chatId: destination.chatId,
+            threadId: destination.topicId === null ? null : Number(destination.topicId) });
+        }
         if (!['all-durable-recording-sinks-unavailable', 'execution-admission-unavailable',
           'origin-execution-state-unavailable', 'held-payload-capacity-unavailable'].includes(reason)) return;
         for (const destination of options.alertDestinations()) {
@@ -554,9 +562,25 @@ export class TelegramOriginRuntime {
         if (!await this.store.reserveRecoveryAttempt({ operationId: operation.record.operationId })) continue;
         processed++;
         const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson);
-        await telegramFetch(`https://api.telegram.org/bot${owners[0].token}/${request.method}`,
+        const response = await telegramFetch(`https://api.telegram.org/bot${owners[0].token}/${request.method}`,
           { method: 'POST', headers: { 'Content-Type': request.contentType }, body: request.body,
             networkTimeoutMs: 10_000 }, undefined, operation);
+        if (request.method === 'sendMessage' && this.options.onRecoveredMessage) {
+          try {
+            const receipt = await response.json() as { ok?: boolean; result?: { message_id?: number; date?: number } };
+            const body = JSON.parse(request.body) as { chat_id?: string | number; message_thread_id?: number; text?: string };
+            if (receipt.ok && Number.isSafeInteger(receipt.result?.message_id) && typeof body.text === 'string' && body.chat_id != null) {
+              this.options.onRecoveredMessage({ operationId: operation.record.operationId,
+                chatId: String(body.chat_id), threadId: body.message_thread_id ?? null,
+                messageId: receipt.result!.message_id!, text: body.text,
+                acceptedAt: Number.isSafeInteger(receipt.result?.date) ? receipt.result!.date! * 1000 : Date.now(),
+                producerKind: operation.record.producerKind });
+            }
+          } catch (error) {
+            console.warn('[telegram-origin] recovered message history unavailable', operation.record.operationId,
+              error instanceof Error ? error.name : 'unknown-error');
+          }
+        }
         recovered++;
         } catch (error) {
           // One held operation must not starve unrelated queued destinations.

@@ -3983,12 +3983,28 @@ export interface InstarConfig {
     /** Mobile push (docs/specs/mobile-push.md). `enabled` omitted ⇒ follows mobilePairing. */
     push?: { enabled?: boolean; teamId?: string };
     /**
+     * Console sign-in from an owner phone without the PIN (docs/specs/mobile-console-device-signin.md).
+     * `enabled` omitted ⇒ on wherever mobile pairing is on. Read live.
+     */
+    consoleTicket?: { enabled?: boolean };
+    /**
      * The operator's Slack user id (`U…`), the sender a message typed in the Instar app speaks as
      * in a Slack conversation (mobile-native-conversations §4.9). Never inferred: the agent
      * proposes it from the Slack channel's verified operator and sets it after the operator says
      * yes. Unset ⇒ the app's Slack routes answer 503 `slack-owner-unset` and Slack rows are withheld.
      */
     slackOwnerUserId?: string;
+  };
+  /** The measured path to default-on (docs/specs/feature-maturation-ladder.md). */
+  maturation?: {
+    ladder?: {
+      /** Omitted: the development-agent gate decides. */
+      enabled?: boolean;
+      /** Where a review reads what gets raised. Unset: this agent raises nothing. */
+      reviewTopic?: number;
+      /** Features this agent's operator holds, with the reason. Stops a move; never ends the ladder. */
+      holds?: Record<string, string>;
+    };
   };
   maturationBoard?: {
     enabled?: boolean;

@@ -32,6 +32,7 @@ import {
   type MobilePairingConfig,
 } from '../core/MobilePairing.js';
 import type { InstarConfig } from '../core/types.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import {
   ConfirmationCodes, DeviceRegistry, displayCode, type CodeFormat, ReplayGuard, parseDevicePublicKey, verifyDeviceRequest,
   type DeviceRecord, type DeviceStatus,
@@ -48,6 +49,7 @@ import { APP_CONVERSATION_KEY_PATTERN, derivedEventId, hideCredentialSpans, remo
 import type { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
 import { buildSignedOrigin } from './mobileConversationRoutes.js';
+import { mountConsoleTicketDeviceRoutes } from './mobileConsoleTicket.js';
 import {
   checkSignedFiles, claimMediaUploads, mediaRecordTooLarge, mirrorMediaToTelegram, preflightMediaAttachments, publishMediaMessage, signedFileHashParts,
   type SignedAttachment, type TelegramMediaMirrorTarget,
@@ -613,25 +615,28 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     const reqHost = normalizeRequestHost(req.headers.host);
     const eligible = svc.redeemHostEligible(reqHost);
     if (!arrivedOverLocalTls(req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']) || !eligible) {
+      featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|not-secure-address', 60_000, { kind: 'held', reason: 'redeem refused: not-secure-address' });
       res.status(403).json({ error: 'Pairing only works over this agent\'s secure address.' });
       return;
     }
     const body = (req.body ?? {}) as Record<string, unknown>;
     const publicKey = typeof body.devicePublicKey === 'string' ? body.devicePublicKey : '';
-    if (!parseDevicePublicKey(publicKey)) { res.status(400).json({ error: 'A valid device public key is required.' }); return; }
+    if (!parseDevicePublicKey(publicKey)) { featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|bad-device-key', 60_000, { kind: 'held', reason: 'redeem refused: bad-device-key' }); res.status(400).json({ error: 'A valid device public key is required.' }); return; }
     // Which way the confirmation code reaches the operator (mobile-native-conversations §4.4):
     // the Telegram owner's private chat (needs the serving lease: the code travels through the
     // lease holder's adapter), or — with no Telegram owner — the dashboard, shown only to a PIN
     // session, which needs no lease.
     const approval = svc.approvalPath();
     if (!approval || (approval === 'telegram' && !svc.holdsLease())) {
+      featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|approval-unavailable', 60_000, { kind: 'held', reason: 'redeem refused: approval-unavailable' });
       res.status(409).json({ error: 'approval-unavailable', detail: 'This agent cannot send you the confirmation code right now (no Telegram owner chat on this machine).' });
       return;
     }
-    if (svc.devices.pairingPaused()) { res.status(429).json({ error: 'pairing-paused' }); return; }
+    if (svc.devices.pairingPaused()) { featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|pairing-paused', 60_000, { kind: 'held', reason: 'redeem refused: pairing-paused' }); res.status(429).json({ error: 'pairing-paused' }); return; }
     // Take-and-delete happens synchronously inside redeem(), before any async work.
     const r = svc.codes.redeem(body.code, token);
     if (!r.ok) {
+      featureEvidence.recordAtMostEvery('mobilePairing', `redeem|${r.reason}`, 60_000, { kind: 'held', reason: `redeem refused: ${r.reason}` });
       if (r.reason === 'too-many-attempts') { res.status(429).json({ error: 'too-many-attempts' }); return; }
       res.status(403).json({ error: 'That link has expired or was already used.' });
       return;
@@ -639,6 +644,7 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     // §3.2 step 3: an honest phone sends to the link's own origin. A code with no bound origin
     // (minted before this change, in this process) keeps the old rule: the eligible host.
     if (r.bound && (r.bound.host !== reqHost || r.bound.kind !== eligible.kind)) {
+      featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|wrong-origin', 60_000, { kind: 'held', reason: 'redeem refused: wrong-origin' });
       res.status(403).json({ error: 'That link has expired or was already used.' });
       return;
     }
@@ -647,11 +653,13 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       created = svc.devices.createPending({ deviceName: cleanText(body.deviceName), label: r.label, publicKey, host: reqHost!, userId: r.person?.userId ?? null, role: r.person?.role ?? 'owner' });
     } catch (err) {
       svc.deps.reportDegradation?.('MobilePairing.registryWrite', err);
+      featureEvidence.record('mobilePairing', { kind: 'error', reason: 'redeem failed: registry write', context: { routeKind: eligible.kind } });
       res.status(500).json({ error: 'Could not record the device. Ask for a new link.' });
       return;
     }
     if (!created.ok) {
       const status = created.reason === 'duplicate-key' ? 409 : 429;
+      featureEvidence.record('mobilePairing', { kind: 'held', reason: `redeem refused: ${created.reason}`, context: { routeKind: eligible.kind, status } });
       res.status(status).json({ error: created.reason });
       return;
     }
@@ -666,6 +674,7 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       svc.holdDashboardCode(device.id, code, Date.parse(device.expiresAt!));
       // dashboard-console-default-and-pair-page §3.3: the code page on the host this phone just
       // redeemed on (already checked above: local TLS, an eligible host, the code's bound host).
+      featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'redeemed: code held on dashboard', context: { deviceId: device.id, approval: 'dashboard', role: device.role ?? 'owner', routeKind: eligible.kind, codeFormat } });
       res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'dashboard', codeFormat,
         codePageUrl: codePageUrlForDevice(reqHost!, device.id) });
       return;
@@ -693,9 +702,11 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       svc.confirm.drop(device.id);
       svc.declineNonces.delete(nonce);
       try { svc.devices.remove(device.id); } catch (err) { svc.deps.reportDegradation?.('MobilePairing.registryWrite', err); }
+      featureEvidence.record('mobilePairing', { kind: 'error', reason: 'redeem failed: confirmation code not delivered', context: { deviceId: device.id, routeKind: eligible.kind } });
       res.status(409).json({ error: 'approval-unavailable', detail: 'I could not send you the confirmation code in Telegram. Open a private chat with the bot and send it any message, then ask me for a new link.' });
       return;
     }
+    featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'redeemed: code sent by Telegram', context: { deviceId: device.id, approval: 'telegram', role: device.role ?? 'owner', routeKind: eligible.kind, codeFormat } });
     res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'telegram', codeFormat });
   });
 }
@@ -941,12 +952,13 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const approvedVia = viaDashboard ? 'dashboard-pin' as const : 'telegram-dm' as const;
     if (!viaDashboard && !svc.holdsLease()) {
       try { svc.devices.expireAllPending(svc.dashboardPendingIds()); } catch (err) { deps.reportDegradation?.('MobilePairing.registryWrite', err); }
+      featureEvidence.record('mobilePairing', { kind: 'held', reason: 'confirm refused: approval-moved', context: { deviceId: d.id } });
       res.status(409).json({ error: 'approval-moved', detail: 'This pairing moved machines. Ask for a new link.' });
       return;
     }
-    if (svc.devices.pairingPaused()) { res.status(429).json({ error: 'pairing-paused' }); return; }
+    if (svc.devices.pairingPaused()) { featureEvidence.record('mobilePairing', { kind: 'held', reason: 'confirm refused: pairing-paused', context: { deviceId: d.id } }); res.status(429).json({ error: 'pairing-paused' }); return; }
     const check = svc.confirm.check(d.id, (req.body as Record<string, unknown> | undefined)?.code);
-    if (check.result === 'none') { res.status(409).json({ error: 'expired' }); return; }
+    if (check.result === 'none') { featureEvidence.record('mobilePairing', { kind: 'held', reason: 'confirm refused: expired', context: { deviceId: d.id } }); res.status(409).json({ error: 'expired' }); return; }
     if (check.result === 'wrong-format') {
       // mobile-pairing-word-code §3.3: a shape that can never match costs no strike.
       res.status(422).json({ error: 'wrong-format', detail: 'That is not the pairing code. The code looks like KITE-4172: a word, then four digits.' });
@@ -958,6 +970,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       // Ledger row first (the durable intent), registry second; reconciliation repairs a crash between.
       try { svc.keyLedger.recordActivation(d, approvedVia, approvedAt); } catch (err) {
         deps.reportDegradation?.('MobilePairing.keyLedger', err);
+        featureEvidence.record('mobilePairing', { kind: 'error', reason: 'confirm failed: key ledger write', context: { deviceId: d.id, approvedVia } });
         res.status(500).json({ error: 'Could not record the confirmation. Try again.' });
         return;
       }
@@ -966,6 +979,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       after = svc.devices.applyConfirm(d.id, check.result === 'ok' ? { ok: true, approvedVia, approvedAt } : { ok: false, wrongHmac: check.hmac });
     } catch (err) {
       deps.reportDegradation?.('MobilePairing.registryWrite', err);
+      featureEvidence.record('mobilePairing', { kind: 'error', reason: 'confirm failed: registry write', context: { deviceId: d.id, approvedVia } });
       res.status(500).json({ error: 'Could not record the confirmation. Try again.' });
       return;
     }
@@ -973,9 +987,11 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       svc.confirm.drop(d.id); // consumed only after the activation was written
       svc.dropDashboardCode(d.id);
       for (const [n, id] of svc.declineNonces) if (id === d.id) svc.declineNonces.delete(n);
+      featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'confirmed', context: { deviceId: d.id, approvedVia, role: d.role ?? 'owner' } });
       res.json({ status: 'active' });
       return;
     }
+    featureEvidence.record('mobilePairing', { kind: 'held', reason: 'confirm refused: wrong code', context: { deviceId: d.id, nowDeclined: after?.status === 'declined', pairingPaused: svc.devices.pairingPaused() } });
     if (svc.devices.pairingPaused()) {
       deps.raiseAttention?.('Phone pairing paused', 'Ten wrong pairing codes were entered in the last 24 hours, so phone pairing is paused for now. If you were not pairing a phone, someone may be guessing.');
     }
@@ -988,6 +1004,9 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     }
     res.status(403).json({ error: 'wrong-code' });
   });
+
+  // Console sign-in from an owner phone (docs/specs/mobile-console-device-signin.md).
+  mountConsoleTicketDeviceRoutes(router, svc);
 
   // Revoke: bearer may revoke any device; a device only itself.
   router.post('/mobile/devices/:id/revoke', async (req: Request, res: Response) => {
@@ -1009,13 +1028,15 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       try { held = svc.devices.revoke(id, revokedAt); } catch { held = svc.devices.revoke(id, revokedAt); } // @silent-fallback-ok — a second failure is reported below
     } catch (err) {
       deps.reportDegradation?.('MobilePairing.registryWrite', err);
+      featureEvidence.record('mobilePairing', { kind: 'error', reason: 'revoke failed: registry write', context: { deviceId: id, by: p.kind } });
       res.status(500).json({ error: 'Could not record the revocation. Try again.' });
       return;
     }
-    if (held) { svc.confirm.drop(id); res.json({ revoked: true, machine: deps.selfMachineId ?? null }); return; }
+    if (held) { svc.confirm.drop(id); featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'revoked here', context: { deviceId: id, by: p.kind, heldHere: true } }); res.json({ revoked: true, machine: deps.selfMachineId ?? null }); return; }
     if (p.kind === 'device' || !poolCtx) { res.status(404).json({ error: 'unknown-device' }); return; }
     const r = await forwardRevoke(poolCtx, id);
-    if (r.confirmedBy) { res.json({ revoked: true, machine: r.confirmedBy }); return; }
+    if (r.confirmedBy) { featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'revoked by a peer', context: { deviceId: id, by: p.kind, heldHere: false } }); res.json({ revoked: true, machine: r.confirmedBy }); return; }
+    featureEvidence.record('mobilePairing', { kind: 'error', reason: 'revoke unconfirmed: no machine holding this phone answered', context: { deviceId: id, by: p.kind } });
     res.status(202).json({ pending: true, detail: 'No machine holding this phone confirmed yet. Until one does, the phone may still have access. Revoke it on the machine that serves its address for an immediate effect.' });
   });
 
@@ -1466,6 +1487,11 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     { method: 'GET', re: new RegExp(`^/mobile/media/uploads/${UUID}$`), statuses: active, body: 'none' },
     { method: 'GET', re: /^\/mobile\/media\/[0-9a-f]{64}$/, statuses: active, body: 'none', conversationRef: true },
     { method: 'POST', re: /^\/mobile\/media\/purge$/, statuses: active, body: 'json', conversationRef: true },
+    // Console sign-in from an owner phone (mobile-console-device-signin §3.1-3.2); each route
+    // re-checks owner, local TLS and the feature switch itself.
+    { method: 'POST', re: /^\/mobile\/device\/presence-key$/, statuses: active, body: 'json' },
+    { method: 'POST', re: /^\/mobile\/console-ticket\/challenge$/, statuses: active, body: 'json' },
+    { method: 'POST', re: /^\/mobile\/console-ticket$/, statuses: active, body: 'json' },
     { method: 'POST', re: /^\/mobile\/devices\/[^/]+\/revoke$/, statuses: new Set(['pending', 'active', 'declined', 'expired']), unassignedOk: true },
   ];
 })();
@@ -1520,6 +1546,9 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     if (svc.ownNames) {
       const h = normalizeRequestHost(req.headers.host);
       if (!h || !svc.ownNames.accepts(h) || !arrivedOverLocalTls(req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto'])) {
+        // The bar is about OWN names: a name that is not ours is someone knocking, not a refusal of a real route.
+        const ownName = !!h && svc.ownNames.accepts(h);
+        featureEvidence.recordAtMostEvery('mobilePairing.multiRoute', `host-refused|${ownName}`, 60_000, { kind: ownName ? 'error' : 'held', reason: ownName ? 'refused on an own name: not over local TLS' : 'refused: host is not an own name', context: { ownName, routeKind: ownName ? svc.ownNames.listed().find((n) => n.host === h)?.kind ?? 'unknown' : null } });
         return refuse(401, 'device-unauthorized');
       }
       host = h;
@@ -1537,6 +1566,9 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       },
       rule.statuses, svc.replay, Date.now(), rule.sendRoute === true,
     );
+    if (!v.ok && host) {
+      featureEvidence.recordAtMostEvery('mobilePairing.multiRoute', `signature-refused|${v.reason}|${host}`, 60_000, { kind: v.reason === 'rate-limited' ? 'held' : 'error', reason: `signature refused on an own name: ${v.reason}`, context: { signatureReason: v.reason, host, routeKind: svc.ownNames?.listed().find((n) => n.host === host)?.kind ?? 'unknown' } });
+    }
     if (!v.ok) return refuse(v.reason === 'rate-limited' ? 429 : 401, v.reason === 'rate-limited' ? 'too-many-requests' : 'device-unauthorized');
     if (rule.ownBucket !== undefined) {
       if (!svc.deviceBucketOk(v.deviceId, rule.ownBucket)) return refuse(429, 'too-many-requests');
@@ -1557,6 +1589,10 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     // The Host the signature was checked against (multi-route: one of this machine's own names;
     // otherwise the paired host). Signed records store THIS host, never the paired one.
     (req as unknown as { instarDeviceHost: string }).instarDeviceHost = host ?? svc.devices.get(v.deviceId)?.host ?? '';
+    if (host) {
+      // Per request by nature: one row a device and route an hour, carrying how many it stands for.
+      featureEvidence.recordAtMostEvery('mobilePairing.multiRoute', `accepted|${v.deviceId}|${host}`, 60 * 60 * 1000, { kind: 'fired', reason: 'signature accepted on an own name', context: { deviceId: v.deviceId, host, routeKind: svc.ownNames?.listed().find((n) => n.host === host)?.kind ?? 'unknown', pairedHost: rec?.host === host } });
+    }
     return 'ok';
   };
 }

@@ -31,6 +31,7 @@
  */
 
 import crypto from 'node:crypto';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -1301,6 +1302,7 @@ export class CoherenceJournal {
           this.io.fdatasyncSync(fd);
         } catch (e) {
           this.degradation.flushErrors++;
+          featureEvidence.recordAtMostEvery('multiMachine.coherenceJournal', `flush-append:${kind}`, 3_600_000, { kind: 'error', reason: 'flush-append-failed', context: { journalKind: kind, entries: items.length, partial: bytesWritten, flushErrors: this.degradation.flushErrors } });
           this.log('flush', `[coherence-journal] append/fsync failed for ${kind}: ${(e as Error)?.message}`);
           if (!bytesWritten) {
             // Open failed (or threw before any write): zero bytes hit the file,
@@ -1334,6 +1336,7 @@ export class CoherenceJournal {
       }
     } catch (e) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
       this.degradation.flushErrors++;
+      featureEvidence.recordAtMostEvery('multiMachine.coherenceJournal', 'flush', 3_600_000, { kind: 'error', reason: 'flush-failed', context: { flushErrors: this.degradation.flushErrors } });
       this.log('flush', `[coherence-journal] flush failed (swallowed): ${(e as Error)?.message}`);
     } finally {
       this.flushing = false;

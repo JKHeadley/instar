@@ -7,6 +7,7 @@
  */
 
 import { isCredentialEnvName, CLAUDE_CONFINED_PERMISSION_ARGS } from './credentialEnvNames.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { execFileSync, execFile } from 'node:child_process';
 import { isInstarSourceTree } from './SourceTreeGuard.js';
 import { AdmissionRefusedError, type AdmissionDecision, type AdmissionKind } from './workAdmission.js';
@@ -33,6 +34,7 @@ import { BASELINE_PROCESS_PATTERNS, CLAUDE_TOOL_SHELL_PATTERN, isToolShellComman
 import { chunkLiteralForTmux, buildLiteralSendArgs } from './tmuxLiteralSend.js';
 import { isReadyPromptTail, classifyPaneReadiness, type PaneReadiness } from './claudeReadinessProbe.js';
 import { RerouteRefusedError } from './rerouteRefusedError.js';
+import { SessionCapacityRefusedError } from './sessionCapacityRefusedError.js';
 export { RerouteRefusedError } from './rerouteRefusedError.js';
 import { initialConfinedStartupState, stepConfinedStartup, classifyConfinedStartupPane, confinedPromptLine, LOGIN_REQUIRED, showsOtherPermissionMode, CONFINED_STARTUP_BUDGET_MS, type ConfinedStartupState, type ConfinedStartupObservation } from './confinedStartupDialogs.js';
 
@@ -722,6 +724,8 @@ export function applyClaudeToolConfinement(argv: string[], tools: string[]): voi
 }
 
 export class SessionManager extends EventEmitter {
+  private pendingHeadlessSpawns = 0;
+  private pendingScheduledSpawns = 0;
   private config: SessionManagerConfig;
   private state: StateManager;
   private monitorInterval: ReturnType<typeof setInterval> | null = null;
@@ -1543,6 +1547,13 @@ export class SessionManager extends EventEmitter {
       // guard counts the degraded-call signal distinctly from a generic error.
       const killed = e.killed === true || e.signal === 'SIGKILL' || /SIGKILL/.test(msg);
       this.degradedTmuxGuard?.observeTmuxCall(Date.now() - t0, killed ? 'killed-client' : 'indeterminate');
+      if (this.tmuxAsyncEnabled) {
+        featureEvidence.recordAtMostEvery('monitoring.tmuxResilience.asyncHotPath', killed ? 'timeout' : 'indeterminate', 300_000, {
+          kind: killed ? 'fired' : 'error',
+          reason: killed ? 'bounded-call-timed-out-and-killed' : 'tmux-call-failed-indeterminate',
+          context: { op: args[0] ?? 'unknown', elapsedMs: Date.now() - t0, timeoutMs: timeout, inFlight: this.tmuxInflightCount },
+        });
+      }
       return { state: 'indeterminate', reason: msg.slice(0, 120) };
     }
   }
@@ -3056,6 +3067,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // (A) tri-state: ONLY a definitive `false` (dead) marks the session
         // completed. `'indeterminate'` (slow/timed-out tmux) does NOT — it falls
         // through to be re-checked next tick rather than reaping a live session.
+        if (alive === 'indeterminate') {
+          featureEvidence.recordAtMostEvery('monitoring.tmuxResilience.asyncHotPath', `kept:${session.tmuxSession}`, 300_000, { kind: 'held', reason: 'indeterminate-probe-kept-session', context: { session: session.tmuxSession } });
+        }
+        if (alive === false && this.tmuxAsyncEnabled) {
+          // A definitive-dead verdict is the one a spurious reap would come from; the review grades these rows.
+          featureEvidence.record('monitoring.tmuxResilience.asyncHotPath', { kind: 'fired', reason: 'probe-classified-session-dead', context: { session: session.tmuxSession } });
+        }
         if (alive === false) {
           // CAS re-read after the await: an operator kill (or another killer)
           // can land mid-probe, so re-read the live record before mutating it —
@@ -3457,11 +3475,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
                 now,
               );
               if (action === 'emit') {
+                featureEvidence.record('monitoring.idleThrottleSettleGate', { kind: 'fired', reason: 'settled-handed-to-rate-limit-sentinel', context: { session: session.tmuxSession, snapshotRead: settledSnapshot != null } });
                 this.idleThrottleSettle.delete(session.tmuxSession);
                 this.emit('rateLimitedAtIdle', session.tmuxSession);
                 continue; // Settled → sentinel owns recovery.
               }
               if (action === 'wait') {
+                if (!this.idleThrottleSettle.has(session.tmuxSession)) {
+                  featureEvidence.record('monitoring.idleThrottleSettleGate', { kind: 'held', reason: 'throttle-seen-waiting-to-settle', context: { session: session.tmuxSession } });
+                }
                 if (nextState) this.idleThrottleSettle.set(session.tmuxSession, nextState);
                 continue; // Not settled yet — re-sample next idle tick; do NOT emit, and
                           // (like the watchdog's 'waiting') do not run the generic-error
@@ -3469,6 +3491,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
               }
               // 'fall-through': no current throttle in the settled window (a stale buffer
               // line) → clear tracking and proceed to the normal idle machinery below.
+              if (this.idleThrottleSettle.has(session.tmuxSession) || settledSnapshot == null) {
+                // The row the gate exists for: a throttle string that never settled gets no hand-off.
+                if (settledSnapshot == null) {
+                  featureEvidence.recordAtMostEvery('monitoring.idleThrottleSettleGate', `read-failed:${session.tmuxSession}`, 3_600_000, { kind: 'error', reason: 'pane-read-failed', context: { session: session.tmuxSession } });
+                } else {
+                  featureEvidence.record('monitoring.idleThrottleSettleGate', { kind: 'held', reason: 'throttle-gone-before-settle-no-handoff', context: { session: session.tmuxSession } });
+                }
+              }
               this.idleThrottleSettle.delete(session.tmuxSession);
             }
             if (!this.idlePromptSince.has(session.id)) {
@@ -3826,7 +3856,36 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (!decision.allowed) throw new AdmissionRefusedError(decision.reason ?? 'overloaded', decision.detail ?? 'machine overloaded');
   }
 
-  async spawnSession(options: {
+  async spawnSession(options: Parameters<SessionManager['spawnSessionInternal']>[0]): Promise<Session> {
+    const running = this.listRunningSessions();
+    const effectiveCount = running.length + this.pendingHeadlessSpawns;
+    const scheduled = Boolean(options.jobSlug && options.triggeredBy?.startsWith('scheduler:'));
+    // Human conversations can exceed the soft autonomous cap. Permit exactly
+    // one scheduled job alongside them while memory is healthy and the hard
+    // absolute cap still has room. This remains a bounded loan, not an
+    // increase in parallel job capacity or the rerouted memory cap.
+    if (effectiveCount >= this.config.maxSessions
+      && !(scheduled && this.scheduledOverflowAvailable(running, this.currentMemoryPressure()))) {
+      throw new SessionCapacityRefusedError(effectiveCount, this.config.maxSessions);
+    }
+    this.pendingHeadlessSpawns++;
+    if (scheduled) this.pendingScheduledSpawns++;
+    try {
+      return await this.spawnSessionInternal(options);
+    } finally {
+      this.pendingHeadlessSpawns--;
+      if (scheduled) this.pendingScheduledSpawns--;
+    }
+  }
+
+  private scheduledOverflowAvailable(running: Session[], pressure: MemoryPressure): boolean {
+    return pressure !== 'high' && pressure !== 'critical'
+      && running.length + this.pendingHeadlessSpawns < this.config.maxSessions * 3
+      && this.pendingScheduledSpawns === 0
+      && !running.some(s => s.jobSlug);
+  }
+
+  private async spawnSessionInternal(options: {
     name: string;
     prompt: string;
     /** Either a Claude tier name, a generic tier ('fast'|'balanced'|'capable'),
@@ -3958,14 +4017,6 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (options.omitAuthEnv && (this.config.anthropicApiKey ?? '').length > 0) {
       throw new Error('omit-auth-env-unsupported: the agent authenticates Claude through an env token');
     }
-    const runningSessions = this.listRunningSessions();
-    if (runningSessions.length >= this.config.maxSessions) {
-      throw new Error(
-        `Max sessions (${this.config.maxSessions}) reached. ` +
-        `Running: ${runningSessions.map(s => s.name).join(', ')}`
-      );
-    }
-
     const sessionId = this.generateId();
     const tmuxSession = this.plannedTmuxSessionName(options.name);
 
@@ -4496,10 +4547,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * nothing while the lane is full (docs/specs/confined-spawn-subscription-reroute.md, Cap contention).
    */
   confinedRerouteCapacity(): 'available' | 'saturated' | 'not-rerouted' {
+    const pressure = this.currentMemoryPressure();
+    const running = this.listRunningSessions();
+    if (running.length + this.pendingHeadlessSpawns >= this.config.maxSessions
+      && !this.scheduledOverflowAvailable(running, pressure)) return 'saturated';
     if ((this.config.subscriptionPathMode ?? 'off') !== 'force') return 'not-rerouted';
     const maxRerouted = this.config.subscriptionMaxRerouted ?? 3;
-    const pressure = this.currentMemoryPressure();
-    return this.countReroutedInteractiveSessions() >= maxRerouted || pressure === 'high' || pressure === 'critical' ? 'saturated' : 'available';
+    return this.countReroutedInteractiveSessions() >= maxRerouted
+      || pressure === 'high' || pressure === 'critical' ? 'saturated' : 'available';
   }
 
   private evaluateRerouteGate(spawnName: string, scheduledJob = false): { allow: boolean } {
@@ -6236,6 +6291,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       this.buildContextStore.record(tmuxSession, this.config.projectDir, currentCwd);
     } catch (err) {
       console.warn(`[SessionManager] Failed to record build context for "${tmuxSession}": ${err instanceof Error ? err.message : String(err)}`);
+      featureEvidence.recordAtMostEvery('sessions.respawnBuildContext', `capture-failed|${tmuxSession}`, 60 * 60 * 1000, { kind: 'error', reason: 'capture-failed', context: { tmuxSession, errorName: err instanceof Error ? err.name : 'unknown' } });
     }
   }
 
@@ -6248,6 +6304,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       this.buildContextStore.record(tmuxSession, this.config.projectDir, currentCwd);
     } catch (err) {
       console.warn(`[SessionManager] Failed to record build context for "${tmuxSession}": ${err instanceof Error ? err.message : String(err)}`);
+      featureEvidence.recordAtMostEvery('sessions.respawnBuildContext', `capture-failed|${tmuxSession}`, 60 * 60 * 1000, { kind: 'error', reason: 'capture-failed', context: { tmuxSession, errorName: err instanceof Error ? err.name : 'unknown' } });
     }
   }
 
@@ -6258,8 +6315,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
   ): string | undefined {
     if (!resumeSessionId || !this.buildContextStore) return initialMessage;
     const restore = this.buildContextStore.getRestore(tmuxSession);
-    if (!restore) return initialMessage;
+    if (!restore) {
+      featureEvidence.record('sessions.respawnBuildContext', { kind: 'held', reason: 'no-usable-context-on-resume', context: { tmuxSession } });
+      return initialMessage;
+    }
     console.log(`[SessionManager] Restoring build context for "${tmuxSession}" from ${restore.entry.currentCwd}`);
+    featureEvidence.record('sessions.respawnBuildContext', { kind: 'fired', reason: 'context-restored-on-resume', context: { tmuxSession, contextAgeMs: Date.now() - restore.entry.updatedAt } });
     return [restore.note, initialMessage].filter(Boolean).join('\n\n');
   }
 

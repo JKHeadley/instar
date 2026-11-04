@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { registerSqliteHandle } from './SqliteRegistry.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 export const SUBSCRIPTION_RELOGIN_STATES = [
   'suggested', 'approved', 'cli-starting', 'artifact-ready', 'browser-driving',
@@ -498,7 +499,7 @@ export class SubscriptionReloginStore {
     reason?: string | null;
   }): SubscriptionReloginEpisode {
     const at = input.at ?? this.isoNow(); normalizeEvent(input.eventClass);
-    return this.db.transaction(() => {
+    const updated = this.db.transaction(() => {
       const ep = this.mustGet(id);
       if (ep.version !== input.expectedVersion) throw new SubscriptionReloginConflictError('episode-version-conflict');
       if (!TRANSITIONS[ep.state].includes(input.to))
@@ -531,6 +532,14 @@ export class SubscriptionReloginStore {
       this.enforceCaps();
       return this.mustGet(ep.id);
     })();
+    if (TERMINAL.has(updated.state)) {
+      featureEvidence.record('subscriptionPool.assistedRelogin', {
+        kind: updated.state === 'succeeded' ? 'fired' : updated.state === 'cancelled' ? 'held' : 'error',
+        reason: updated.failureClass ? `repair-${updated.state}: ${updated.failureClass}` : `repair-${updated.state}`,
+        context: { episodeId: updated.id, accountId: updated.accountId, provider: updated.provider, state: updated.state, failureClass: updated.failureClass ?? null, attemptCount: updated.attemptCount, reissueCount: updated.reissueCount, eventClass: input.eventClass },
+      });
+    }
+    return updated;
   }
 
   cancel(id: string, at = this.isoNow()): SubscriptionReloginEpisode {

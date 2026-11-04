@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { mergeDefaults } from './mergeDefaults.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 export interface CodexTaskContinuationConfig {
   enabled?: boolean;
@@ -351,6 +352,7 @@ export class CodexTaskContinuationStore {
         catch { /* @silent-fallback-ok: audit failure is a typed fail-open stop decision, never an unreported continuation */
           return this.deactivate(ledger, 'audit-failed', false);
         }
+        featureEvidence.record('autonomousSessions.codexTaskContinuation', { kind: 'fired', reason: 'continue: open-tasks', context: { topicId: ledger.topicId, openTasks: open, continuationCount: ledger.continuationCount, maxContinuations: ledger.maxContinuations, generation: ledger.generation, mode: ledger.mode ?? 'ordinary' } });
         return {
           decision: 'continue', reason: 'open-tasks', openTaskCount: open,
           continuationCount: ledger.continuationCount,
@@ -384,6 +386,7 @@ export class CodexTaskContinuationStore {
     if (writeAudit) {
       try { this.audit(ledger, 'deactivate', reason, null, ledger.continuationCount); } catch { /* already stopping */ }
     }
+    featureEvidence.record('autonomousSessions.codexTaskContinuation', { kind: reason === 'invalid-state' || reason === 'audit-failed' ? 'error' : 'held', reason: `deactivate: ${reason}`, context: { topicId: ledger.topicId, continuationCount: ledger.continuationCount, maxContinuations: ledger.maxContinuations, generation: ledger.generation, mode: ledger.mode ?? 'ordinary' } });
     return { decision: 'deactivate', reason, openTaskCount: null, continuationCount: ledger.continuationCount };
   }
 
@@ -414,6 +417,10 @@ export class CodexTaskContinuationStore {
 
   private recordAllow(ledger: ContinuationLedger | null, topicId: string, sessionId: string, reason: ContinuationReason): ContinuationDecision {
     try { this.audit(ledger ?? { topicId, sessionId, generationId: '', continuationCount: 0 } as ContinuationLedger, 'allow', reason, null, ledger?.continuationCount ?? null); } catch { /* allow remains safe */ }
+    // 'disabled' and 'no-ledger' are every Stop of every session with nothing to decide: no row.
+    if (reason !== 'disabled' && reason !== 'no-ledger') {
+      featureEvidence.record('autonomousSessions.codexTaskContinuation', { kind: reason === 'ownership-mismatch' ? 'held' : 'error', reason: `allow: ${reason}`, context: { topicId, continuationCount: ledger?.continuationCount ?? null, generation: ledger?.generation ?? null, mode: ledger?.mode ?? null } });
+    }
     return { decision: 'allow', reason, openTaskCount: null, continuationCount: ledger?.continuationCount ?? null };
   }
 

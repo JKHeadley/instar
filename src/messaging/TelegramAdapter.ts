@@ -51,7 +51,7 @@ import { buildStallAlertDecisionContext } from './shared/StallAlertDecisionConte
 import { DP_TELEGRAM_STALL_CONFIRM } from '../data/provenanceCoverage.js';
 import { AspAuthorshipJoin, type MessageAuthorship } from '../core/AspAuthorshipJoin.js';
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
-import { normalizeInboundThread, toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from './telegramTopicSpace.js';
+import { normalizeInboundThread, inboundTopicId, toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from './telegramTopicSpace.js';
 import { admitItemToHub, attentionPriorityRank, recordHeldHubPost, resolveHubFilterMode, type AttentionHubFilterMode } from './attentionHubPolicy.js';
 import {
   attentionConditionKeyOf, classifyAttentionLifecycle, decideAttentionExpiry, isOpenAttentionStatus, mayReopenInPlace,
@@ -1635,6 +1635,18 @@ export class TelegramAdapter implements MessagingAdapter {
       provenance: 'user',
     });
   }
+
+  /** A durable origin recovery bypasses sendToTopic, so mirror its confirmed
+   * Telegram receipt into the same history used by normal session replies. */
+  logRecoveredOriginMessage(entry: { chatId: string; threadId: number | null; messageId: number; text: string; acceptedAt: number; producerKind: string }): void {
+    if (!Number.isSafeInteger(entry.messageId) || entry.messageId <= 0) return;
+    const topicId = inboundTopicId(entry.chatId, entry.threadId, this.topicSpace());
+    this.appendToLog({ messageId: entry.messageId, topicId, text: entry.text,
+      fromUser: false, forwarded: false, timestamp: new Date(entry.acceptedAt).toISOString(),
+      sessionName: this.topicToSession.get(topicId) ?? null,
+      provenance: entry.producerKind === 'session' ? 'agent' : 'automation' });
+  }
+
 
   /**
    * Send a message to a specific forum topic.

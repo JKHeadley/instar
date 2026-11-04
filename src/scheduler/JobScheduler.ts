@@ -51,10 +51,12 @@ import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
 import { reportDeliverySinkFailure } from '../messaging/DeliverySinkFailure.js';
 import { RerouteRefusedError } from '../core/rerouteRefusedError.js';
+import { SessionCapacityRefusedError } from '../core/sessionCapacityRefusedError.js';
 import { jobCapacityNotice, jobFailureNotice } from '../messaging/userNotices.js';
 import type { JobClaimManager } from './JobClaimManager.js';
 import type { JobLeaseClaimStore } from './JobLeaseClaimStore.js';
 import { decideClaimPath, type CutoverGateInput, type CutoverDecision } from './JobLeaseCutoverGate.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { TopicMemory } from '../memory/TopicMemory.js';
 
 /**
@@ -677,10 +679,19 @@ export class JobScheduler {
     } catch {
       // @silent-fallback-ok — fail toward the legacy bus path (the conservative
       // side) if the live gate read throws; never strand a job on a broken gate.
+      featureEvidence.recordAtMostEvery('multiMachine.seamlessness.ws43JournalLease', 'gate-threw', 60 * 60_000, { kind: 'error', reason: 'cutover gate read failed: fell back to the bus path', context: { slug } });
       return null;
     }
     const decision = decideClaimPath(input);
     this.onCutoverDecision?.(slug, decision);
+    if (decision.reason !== 'flag-off' && decision.reason !== 'single-machine') {
+      // Runs for every job firing: one row per decision reason per hour.
+      featureEvidence.recordAtMostEvery('multiMachine.seamlessness.ws43JournalLease', decision.reason, 60 * 60_000, {
+        kind: decision.reason === 'peers-incoherent' ? 'held' : 'fired',
+        reason: `claim path: ${decision.path} (${decision.reason})`,
+        context: { path: decision.path, code: decision.reason, dryRun: decision.journalDryRun, incoherentPeers: decision.incoherentPeers.length, peers: input.peers.length, epoch: input.epoch },
+      });
+    }
     return { path: decision.path, epoch: input.epoch, journalDryRun: decision.journalDryRun };
   }
 
@@ -992,9 +1003,11 @@ export class JobScheduler {
         // guard is an additive safety, and a broken provider degrades to today's
         // behavior (spawn proceeds) rather than wedging the scheduler.
         guard = { enabled: false, holdsLease: true };
+        featureEvidence.recordAtMostEvery('multiMachine.seamlessness.ws43RoleGuard', 'provider-threw', 60 * 60_000, { kind: 'error', reason: 'role guard provider failed: the job spawned unguarded', context: { slug } });
       }
       if (guard.enabled && !guard.holdsLease) {
         this.skipLedger.recordSkip(slug, 'role-guard');
+        featureEvidence.recordAtMostEvery('multiMachine.seamlessness.ws43RoleGuard', slug, 60 * 60_000, { kind: 'fired', reason: 'state-writing job refused on a non-holder', context: { slug, trigger: reason, holdsLease: guard.holdsLease } });
         console.log(`[scheduler] Job "${slug}" refused at spawn boundary — state-writing job on a read-only standby (not the lease-holder).`);
         this.state.appendEvent({
           type: 'job_skipped',
@@ -1654,6 +1667,10 @@ export class JobScheduler {
   }
 
   private recordCapacityWait(slug: string): void {
+    // A pending capacity episode owns the operator notice until this job can
+    // run again. Suspend any older per-job failure reminder, including one
+    // left by a pre-upgrade capacity error; a later real failure re-arms it.
+    this.clearFailureAlertState(slug);
     const key = 'job-capacity-episode';
     const prior = this.state.get<JobCapacityEpisode>(key);
     const episode: JobCapacityEpisode = prior?.version === 1
@@ -2805,7 +2822,7 @@ export class JobScheduler {
         metadata: { slug: job.slug, reason, model: job.model },
       });
     }).catch((err) => {
-      if (err instanceof RerouteRefusedError) {
+      if (err instanceof RerouteRefusedError || err instanceof SessionCapacityRefusedError) {
         this.releaseClaim(job.slug, 'waited');
         this.enqueue(job.slug, reason, true);
         return;

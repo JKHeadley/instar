@@ -22,6 +22,8 @@
  * to it and drive the EnrollmentWizard on allow (§5.3, per-server transport per OQ6).
  */
 
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+
 export type FollowMeMechanism = 're-mint' | 'credential-transport';
 
 export interface FollowMeRequest {
@@ -107,6 +109,7 @@ export class AccountFollowMeOrchestrator {
     // No mandate id at all ⇒ deny-by-default: never self-authorize, surface consent.
     if (!req.mandateId) {
       this.deps.log?.(`[account-follow-me] no mandate for ${req.accountId}→${req.targetMachineId}; surfacing consent`);
+      featureEvidence.record('multiMachine.accountFollowMe', { kind: 'held', reason: 'enrollment-no-mandate', context: { mechanism } });
       return { proceed: false, outcome: 'consent-required', consent: consent(), reason: 'no-mandate' };
     }
 
@@ -119,10 +122,12 @@ export class AccountFollowMeOrchestrator {
 
     if (result.decision !== 'allow') {
       this.deps.log?.(`[account-follow-me] gate denied (${result.reason}); surfacing consent`);
+      featureEvidence.record('multiMachine.accountFollowMe', { kind: 'held', reason: 'enrollment-gate-denied', context: { mechanism, gateDecision: result.decision } });
       return { proceed: false, outcome: 'consent-required', consent: consent(), reason: `denied:${result.reason}` };
     }
 
     this.deps.log?.(`[account-follow-me] gate allowed ${req.accountId}→${req.targetMachineId} (${mechanism})`);
+    featureEvidence.record('multiMachine.accountFollowMe', { kind: 'fired', reason: 'enrollment-mandate-allowed', context: { mechanism } });
     return {
       proceed: true,
       accountId: req.accountId,

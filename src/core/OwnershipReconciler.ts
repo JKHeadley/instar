@@ -43,6 +43,7 @@ import { compareHlc } from './TopicPinReplicatedStore.js';
 import { claimSuspensionExcludesPin } from './TopicClaimAnnotationStore.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import type { StaleOwnerReleaseEngine } from './StaleOwnerReleaseEngine.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 export interface ReconcilerMachineView {
   machineId: string;
@@ -763,6 +764,8 @@ export class OwnershipReconciler {
   ): boolean {
     if (this.d.dryRun()) {
       this.log(`DRY-RUN would ${action.type} ${sessionKey} (${reason})`);
+      // A would-act repeats every tick until the pin converges: one row per topic and step per hour.
+      featureEvidence.recordAtMostEvery('multiMachine.seamlessness.ws13Reconcile', `${sessionKey}|${action.type}|${reason}`, 60 * 60_000, { kind: 'fired', reason: `would ${action.type} (${reason})`, context: { topic: sessionKey, action: action.type, step: reason, dryRun: true } });
       if (!countOnce) report[counter]++;
       return false; // dry-run never lands a CAS, so chained steps stop here
     }
@@ -775,11 +778,13 @@ export class OwnershipReconciler {
     if (r.ok) {
       if (!countOnce) report[counter]++;
       this.log(`${action.type} landed for ${sessionKey} (${reason}, epoch ${r.record.ownershipEpoch})`);
+      featureEvidence.record('multiMachine.seamlessness.ws13Reconcile', { kind: 'fired', reason: `${action.type} landed (${reason})`, context: { topic: sessionKey, action: action.type, step: reason, epoch: r.record.ownershipEpoch, dryRun: false } });
       try { this.d.emitPlacement(sessionKey, r, reason); } catch { /* §3.3 pairing is observability — never endangers the CAS */ }
       this.conflictSince.delete(sessionKey);
       return true;
     }
     this.log(`${action.type} rejected for ${sessionKey} (${'reason' in r ? r.reason : 'unknown'}) — will re-evaluate next tick`);
+    featureEvidence.recordAtMostEvery('multiMachine.seamlessness.ws13Reconcile', `rejected|${sessionKey}|${action.type}`, 60 * 60_000, { kind: 'error', reason: `${action.type} refused (${'reason' in r ? r.reason : 'unknown'})`, context: { topic: sessionKey, action: action.type, step: reason, code: 'reason' in r ? String(r.reason) : 'unknown', dryRun: false } });
     return false;
   }
 

@@ -145,6 +145,8 @@ export function subline(board) {
   const fs = board.features || [];
   const a = attention(fs);
   const bits = [];
+  const ready = readyToMove(fs).length;
+  if (ready) bits.push(`${ready} ready to move up.`);
   if (a.need) {
     const parts = [];
     if (a.nobody) parts.push(`${a.nobody} have no fix planned`);
@@ -253,6 +255,54 @@ export function measureText(m) {
   return bits.join(' · ');
 }
 
+const RUNG_WORDS = { dark: 'Off everywhere', 'dry-run': 'Practising, not acting', 'dev-agent-live': 'On for development agents', fleet: 'On by default' };
+const LADDER_STATE_WORDS = {
+  'ready-to-advance': 'Has met its numbers; waiting on the review',
+  soaking: 'Numbers met; holding them',
+  hold: 'A number is off target',
+  collecting: 'Not enough data yet',
+  'no-data': 'Not recording anything yet',
+  'no-opportunity': 'Hasn’t had a chance to run',
+  'not-started': 'Nothing runs it yet',
+  harmed: 'Got worse after its last move',
+  held: 'Held by its operator',
+  'at-final': 'At its last step',
+  'retire-pending': 'Being retired',
+  composed: 'Moves with its parent feature',
+};
+
+/** The ladder's own facts for a row, from the machine that read them. */
+export function ladderOf(f) {
+  const o = (f.owners || []).find((x) => x.source === 'ladder');
+  return o ? o.facts : null;
+}
+
+/** Ready to move up: the ladder says so, on any machine. */
+export function readyToMove(features) {
+  return features.filter((f) => (ladderOf(f) || {}).state === 'ready-to-advance');
+}
+
+/** One plain line: where it is and what the numbers say. */
+export function ladderLine(f) {
+  const l = ladderOf(f);
+  if (!l) return '';
+  const bits = [RUNG_WORDS[l.rung] || l.rung, LADDER_STATE_WORDS[l.state] || l.state];
+  if (l.total) bits.push(`${l.passing} of ${l.total} numbers met`);
+  if (l.state === 'soaking' && l.soakNeeded) bits.push(`held ${l.soakDays} of ${l.soakNeeded} days`);
+  return bits.join(' · ');
+}
+
+const ROLE_WORDS = { ran: 'Ran', quality: 'Quality', harm: 'Harm' };
+
+/** A threshold as now vs target, in plain words. */
+export function metricText(m) {
+  const target = `${m.direction === 'at-least' ? 'at least' : 'at most'} ${m.threshold}`;
+  if (m.value === null || m.value === undefined) return `${ROLE_WORDS[m.role] || m.role}: no number yet (target ${target})`;
+  const now = Number.isInteger(m.value) ? m.value : Number(m.value.toFixed(3));
+  const short = m.samples < m.minSamples ? `, only ${m.samples} of ${m.minSamples} samples` : '';
+  return `${ROLE_WORDS[m.role] || m.role}: ${now} (target ${target}${short})`;
+}
+
 /** The short card under a tapped row. Rows with nothing to say are left out. */
 export function card(f) {
   const r = f.review || {};
@@ -260,6 +310,7 @@ export function card(f) {
   const due = d ? `${fmtDate(d.date)}${d.overdueDays != null ? ` (${d.overdueDays} days late)` : ''}` : '';
   return [
     { label: 'What it does', text: r.purpose || '' },
+    { label: 'Where it is', text: ladderLine(f), tone: (ladderOf(f) || {}).state === 'harmed' ? 'bad' : (ladderOf(f) || {}).state === 'ready-to-advance' ? 'ok' : '' },
     { label: 'To move up', text: r.goal || '' },
     { label: 'Now', text: measureText(r.measure) || r.summary || '', tone: r.measure && r.measure.trend === 'worse' ? 'bad' : r.measure && r.measure.trend === 'better' ? 'ok' : '' },
     { label: 'Plan', text: r.plan || r.nextStep || '' },

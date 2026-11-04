@@ -77,6 +77,7 @@ function writeFixture(openQuestionsSection: string): { spec: string; report: str
       '- **fleet:** after operator review',
       '- **graduation criterion:** stated',
       '- **dark-window:** 14d',
+      '- **ladder:** monitoring.example',
       '',
       '## Non-goals',
       'nothing',

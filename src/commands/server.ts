@@ -78,6 +78,7 @@ import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstan
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
 import { JOB_LEASE_POOL_AUTHORITY_READY } from '../scheduler/JobLeaseClaimStore.js';
 import { resolveRelayUnknownSenderTrustMode } from '../threadline/relayUnknownSenderTrust.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { resolveEncryptToPinnedMode, encryptToPinnedModeName } from '../threadline/encryptToPinned.js';
 import { resolveRefuseDowngradeMode } from '../threadline/refuseDowngrade.js';
 import { MarkedPairingInviteFlow } from '../threadline/PairingPendingAcceptMarkers.js';
@@ -736,6 +737,9 @@ let _singleMachineFailoverGap: import('../monitoring/SingleMachineFailoverGapDet
 // `GET /pool/missing-login` can read the detector constructed deep in the mesh
 // peer-presence wiring. Null when the guard is dark (route 503s).
 let _missingLoginSession: import('../monitoring/MissingLoginSessionDetector.js').MissingLoginSessionDetector | null = null;
+// The journal compaction pass runs at boot, before the evidence log is wired by
+// AgentServer; its row is held here and written straight after that construction.
+let _pendingCompactionEvidence: import('../monitoring/FeatureEvidenceLog.js').FeatureEvidenceInput | null = null;
 // Module-level handle for the SessionPoolFailoverRunner driver (§Rollout, Track H)
 // so `GET /session-pool/failover-runner` can read its status(). Null when the
 // runner is dark (dev-gated) — the route 503s. Constructed inside the rollout-gate
@@ -933,6 +937,8 @@ let _pinPlacementMetadata: ((sessionKey: string) => import('../core/PlacementExe
 let _ws13SustainedOnline: ((machineId: string) => boolean) | null = null;
 /** Cross-machine secret-sync (spec Phase 4): route-facing handle (push lever + read-only status). */
 let _secretSyncHandle: import('../core/SecretSync.js').SecretSyncHandle | null = null;
+/** The boot-time escrow result, recorded as evidence once the evidence log is wired. Flags only, no key material. */
+let _recoveryEscrowEvidence: { minted: boolean; recoveryEpoch: number; hadRoot: boolean } | null = null;
 /** Pool Dashboard Streaming (POOL-DASHBOARD-STREAM-SPEC §2.3): shared single-use
  *  ticket store — minted by the `pool-stream-ticket` mesh verb, consumed by the
  *  WebSocketManager's /pool-stream upgrade. Constructed in the mesh-setup block. */
@@ -2765,6 +2771,14 @@ export function wireTelegramRouting(
               modelTier: clsDeps.modelTier,
             });
             const willAct = result.isCommand && !clsDeps.dryRun;
+            // Same scope as the audit below: LLM-engaged verdicts, never the prefilter-skip bulk.
+            if (result.source !== 'prefilter-skip') {
+              featureEvidence.record('threadline.hubIntent', {
+                kind: result.source === 'fail-open' ? 'error' : 'fired',
+                reason: result.source === 'fail-open' ? 'classifier-fail-open' : result.isCommand ? (willAct ? 'swallow' : 'would-swallow') : 'would-pass',
+                context: { topicId, dryRun: clsDeps.dryRun, source: result.source, intent: result.intent ?? null, confidence: result.confidence ?? null, targetTopicId: result.targetTopicId ?? null },
+              });
+            }
             // Audit the soak: log LLM-engaged decisions (a prefilter-skip is the
             // bulk of traffic and always a would-pass — skipping it cuts volume
             // AND the message-preview privacy surface). Never gates the message.
@@ -2807,6 +2821,7 @@ export function wireTelegramRouting(
         }
       } catch (err) {
         console.warn(`[telegram] hub-command intercept error (fail-open): ${err instanceof Error ? err.message : err}`);
+        featureEvidence.record('threadline.hubIntent', { kind: 'error', reason: 'intercept-threw-fail-open', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
       }
     }
 
@@ -4475,6 +4490,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // covers the window on the fleet. D4-verified read-only (localhost-only inbound
     // socket, zero outbound). Belt-and-suspenders, not a boot reorder.
     let bootBeacon: BootHealthBeacon | undefined;
+    let bootBeaconBindErrorCode: string | null = null;
     if (resolveDevAgentGate(config.monitoring?.bootHealthBeacon?.enabled, config)) {
       try {
         bootBeacon = new BootHealthBeacon(config.port);
@@ -4485,6 +4501,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         // failure must NEVER block the server boot (the startupGrace bump still
         // covers the health window). Logged here, not swallowed silently.
         bootBeacon = undefined;
+        bootBeaconBindErrorCode = (err as NodeJS.ErrnoException)?.code ?? 'unknown';
         console.error('  Boot health beacon failed to start (non-fatal):', err instanceof Error ? err.message : err);
       }
     }
@@ -5364,13 +5381,34 @@ export async function startServer(options: StartOptions): Promise<void> {
         const compactionConfig = config.multiMachine?.coherenceJournal?.replication?.compaction;
         if (compactionConfig?.run === true) {
           const { ReplicatedJournalCompactor } = await import('../core/ReplicatedJournalCompactor.js');
-          new ReplicatedJournalCompactor({
-            stateDir: config.stateDir,
-            registry: replicatedKindRegistry,
-            enabled: true,
-            dryRun: compactionConfig.dryRun ?? true,
-            logger: (m) => console.log(pc.dim(`  ${m}`)),
-          }).run();
+          try {
+            const compaction = new ReplicatedJournalCompactor({
+              stateDir: config.stateDir,
+              registry: replicatedKindRegistry,
+              enabled: true,
+              dryRun: compactionConfig.dryRun ?? true,
+              logger: (m) => console.log(pc.dim(`  ${m}`)),
+            }).run();
+            _pendingCompactionEvidence = {
+              kind: 'fired',
+              reason: compaction.dryRun ? 'would-compact' : 'compacted',
+              context: {
+                dryRun: compaction.dryRun,
+                filesCompacted: compaction.filesCompacted,
+                originalRecords: compaction.originalRecords,
+                compactedRecords: compaction.compactedRecords,
+                bytesBefore: compaction.bytesBefore,
+                bytesAfter: compaction.bytesAfter,
+              },
+            };
+          } catch (compactionErr) {
+            _pendingCompactionEvidence = {
+              kind: 'error',
+              reason: 'compaction-failed',
+              context: { dryRun: compactionConfig.dryRun ?? true, errorName: compactionErr instanceof Error ? compactionErr.name : 'unknown' },
+            };
+            throw compactionErr;
+          }
           // A real run replaced streams atomically; rebuild from the committed files.
         }
         coherenceJournal.setReplicatedRecordCommitObserver((kind, entries) => {
@@ -6801,6 +6839,25 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { bootTelegramOrigin } = await import('../messaging/telegram-origin/TelegramOriginBoot.js')
         .catch(error => { releaseOriginLeaseRenewal(); throw error; });
       telegramOriginBoot = await bootTelegramOrigin({ config, token: typeof originBotToken === 'string' && originBotToken ? originBotToken : undefined,
+        onRecoveredMessage: entry => {
+          telegram?.logRecoveredOriginMessage(entry);
+          const attentionId = `telegram-origin-held-reply:${entry.operationId}`;
+          if (telegram?.clearAttentionCondition({ id: attentionId }, `Telegram accepted recovered message ${entry.messageId}.`).closed === 0) {
+            void telegram?.updateAttentionStatus(attentionId, 'DONE', { silent: true,
+              closedBy: 'cause-cleared', resolution: `Telegram accepted recovered message ${entry.messageId}.` });
+          }
+        },
+        onSessionDeliveryHeld: entry => {
+          if (!telegram || !entry.chatId) return;
+          const topicId = entry.chatId === String((originTelegramConfig.config as { issuesChatId?: unknown }).issuesChatId)
+            ? 10_000_000_000 + (entry.threadId ?? 1) : entry.threadId;
+          void telegram.createAttentionItem({ id: `telegram-origin-held-reply:${entry.operationId}`,
+            category: 'telegram-origin', priority: 'HIGH', title: 'A session reply is delayed',
+            sourceContext: 'telegram-origin-session-hold',
+            summary: `A reply to topic ${topicId ?? 'unknown'} is still in the delivery queue. Telegram was unreachable before this attempt connected; the server will retry the same message.`,
+            description: `Operation ${entry.operationId}. The advisory preflight does not confirm delivery.` }, { hubOnly: true })
+            .catch(error => console.warn('[telegram-origin] held reply attention unavailable', error instanceof Error ? error.name : 'unknown-error'));
+        },
         noticeOwner: typeof originBotToken === 'string' && !!originBotToken && !lifelineOwnsTelegramPoll(config.stateDir, originBotToken) && options.telegram !== false,
         holdsLease: () => coordinator.holdsLease(),
         isSessionLive: binding => {
@@ -8150,6 +8207,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             // Never let a pauser fault take down the boot path or the interval.
             clpLastError = err instanceof Error ? err.message : String(err);
             console.error(pc.red(`  CrashLoopPauser pass failed: ${clpLastError}`));
+            featureEvidence.record('monitoring.crashLoopPauser', { kind: 'error', reason: 'pause pass failed', context: { dryRun: clpDryRun, errorName: err instanceof Error ? err.name : 'unknown' } });
           }
         };
         const clpInitialDelay = clpCfg.initialPassDelayMs ?? 10 * 60_000;
@@ -14897,19 +14955,34 @@ export async function startServer(options: StartOptions): Promise<void> {
         buildSubscriptionAccountMetaData,
         buildSubscriptionAccountMetaTombstoneData,
       } = await import('../core/SubscriptionAccountMetaReplicatedStore.js');
+      // Every quota change re-projects an account, so one row per op and outcome per ten minutes. No account ids.
+      const followMeEvidence = (op: 'put' | 'delete', outcome: string): void => {
+        const failed = outcome === 'error' || outcome === 'unconfirmed' || outcome.startsWith('dropped:');
+        featureEvidence.recordAtMostEvery('multiMachine.accountFollowMe', `${op}:${outcome}`, 600_000, {
+          kind: outcome === 'emitted' ? 'fired' : failed ? 'error' : 'held',
+          reason: `account-meta-${op}:${outcome}`,
+          context: { op, outcome },
+        });
+      };
       subscriptionPool.setMetaReplicationEmitter({
-        emitPut: (acct) =>
-          emitter.emit(
+        emitPut: (acct) => {
+          const projected = emitter.emit(
             SUBSCRIPTION_ACCOUNT_META_STORE_KEY,
             deriveSubscriptionAccountMetaRecordKey(acct.id),
             (hlc, origin, observed) => buildSubscriptionAccountMetaData({ account: acct, hlc, origin, observed }),
-          ),
-        emitDelete: (accountId, deletedAt) =>
-          emitter.emit(
+          );
+          followMeEvidence('put', projected.outcome);
+          return projected;
+        },
+        emitDelete: (accountId, deletedAt) => {
+          const projected = emitter.emit(
             SUBSCRIPTION_ACCOUNT_META_STORE_KEY,
             deriveSubscriptionAccountMetaRecordKey(accountId),
             (hlc, origin, observed) => buildSubscriptionAccountMetaTombstoneData({ accountId, hlc, origin, deletedAt, observed }),
-          ),
+          );
+          followMeEvidence('delete', projected.outcome);
+          return projected;
+        },
       });
     }
 
@@ -17261,6 +17334,23 @@ export async function startServer(options: StartOptions): Promise<void> {
             externalBlockSweepMs: aoftRawCfg.externalBlockSweepMs as number | undefined,
             holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
           });
+          // The aoft.* events have no other reader: keep them, with no message text (ids and reason codes only).
+          for (const [event, kind] of [
+            ['aoft.would-suppress', 'fired'], ['aoft.suppressed', 'fired'],
+            ['aoft.would-reroute-terminal', 'fired'], ['aoft.terminal-rerouted', 'fired'],
+            ['aoft.would-deadletter-external', 'fired'], ['aoft.deadlettered-external', 'fired'],
+            ['aoft.external-block-recorded-internal', 'held'],
+            ['aoft.graveyard-reconciled', 'fired'],
+            ['aoft.beacon-id-leak', 'error'],
+          ] as const) {
+            promiseBeacon.on(event, (e: { id?: string; topicId?: number | null; kind?: string; reason?: string; closed?: number; wouldClose?: number; dryRun?: boolean; terms?: unknown[] }) => {
+              featureEvidence.record('commitments.agentOwnedFollowthrough', {
+                kind,
+                reason: event.replace('aoft.', '') + (e?.reason ? `: ${e.reason}` : ''),
+                context: { commitmentId: e?.id ?? null, topicId: e?.topicId ?? null, sendKind: e?.kind ?? null, dryRun: event.includes('would-') || e?.dryRun === true, closed: e?.closed ?? null, wouldClose: e?.wouldClose ?? null, leakedTerms: Array.isArray(e?.terms) ? e.terms.length : null },
+              });
+            });
+          }
           promiseBeacon.start();
           (globalThis as Record<string, unknown>).__instarPromiseBeacon = promiseBeacon;
 
@@ -17392,6 +17482,28 @@ export async function startServer(options: StartOptions): Promise<void> {
                   recentOutputChangeWindowMs: ahRawCfg.recentOutputChangeWindowMs,
                 },
               );
+              // The focus line is a session's own words: never in a row. Suppressions run every tick, so only a change of reason per topic writes one.
+              const ahLastHold = new Map<number, string>();
+              autonomousHeartbeat.on('would-emit', (e: { topicId: number; minutesSilent: number }) => {
+                ahLastHold.delete(e.topicId);
+                featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'fired', reason: 'would emit (dry run)', context: { topicId: e.topicId, minutesSilent: e.minutesSilent, dryRun: true } });
+              });
+              autonomousHeartbeat.on('emitted', (e: { topicId: number; minutesSilent: number }) => {
+                ahLastHold.delete(e.topicId);
+                featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'fired', reason: 'emitted', context: { topicId: e.topicId, minutesSilent: e.minutesSilent, dryRun: false } });
+              });
+              autonomousHeartbeat.on('send-error', (e: { topicId: number; err: unknown }) => {
+                featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'error', reason: 'send failed', context: { topicId: e.topicId, errorName: e.err instanceof Error ? e.err.name : 'unknown' } });
+              });
+              autonomousHeartbeat.on('tick-error', (err: unknown) => {
+                featureEvidence.recordAtMostEvery('monitoring.autonomousHeartbeat', 'tick-error', 60 * 60 * 1000, { kind: 'error', reason: 'tick failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
+              });
+              autonomousHeartbeat.on('suppressed', (e: { topicId: number; reason: string }) => {
+                if (ahLastHold.get(e.topicId) === e.reason) return;
+                if (ahLastHold.size >= 256) ahLastHold.clear();
+                ahLastHold.set(e.topicId, e.reason);
+                featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'held', reason: `suppressed: ${e.reason}`, context: { topicId: e.topicId } });
+              });
               autonomousHeartbeat.start();
               (globalThis as Record<string, unknown>).__instarAutonomousHeartbeat = autonomousHeartbeat;
               guardRegistry.register('monitoring.autonomousHeartbeat.enabled', () => autonomousHeartbeat.guardStatus());
@@ -24472,6 +24584,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // root at already-paired peers remains an explicit operator/PIN step;
           // the bearer recovery path can never become the first root writer.
           const escrow = machineRecoveryKey.ensure(meshSelfId, own.recoveryEpoch ?? 0, own.recoveryPublicKey);
+          _recoveryEscrowEvidence = { minted: !!escrow, recoveryEpoch: own.recoveryEpoch ?? 0, hadRoot: !!own.recoveryPublicKey };
           if (own.recoveryPublicKey && !escrow) {
             try {
               _meshAttentionRaise?.({
@@ -25572,6 +25685,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               // release replicates exactly like the user-move release does. A lost CAS
               // (peer advanced the epoch first) is a no-op here — we never retry/force.
               emitPlacement(sk, r, 'released', prevOwner);
+              featureEvidence.record('multiMachine.ownershipFollowsLiveWork', r.ok
+                ? { kind: 'fired', reason: 'release-on-complete: ownership released', context: { topicId: sk, part: 'release-on-complete', prevOwner: prevOwner ?? null } }
+                : { kind: 'error', reason: 'release-on-complete: compare-and-set refused', context: { topicId: sk, part: 'release-on-complete', prevOwner: prevOwner ?? null } });
             } catch {
               // @silent-fallback-ok — release-on-complete is best-effort housekeeping
               // (FD1); a throw must never break the completion path. The existing
@@ -28793,6 +28909,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             runMachineCoherenceEffects?.(effects, { telegram: () => tg ?? null });
           };
 
+          const meshEvidence = (kind: 'fired' | 'held' | 'error', reason: string): void => {
+            featureEvidence.record('monitoring.meshCoherenceLiveCheck', { kind, reason, context: { uptimeSec: Math.round(process.uptime()), emitCap: config.monitoring?.meshCoherenceLiveCheck?.emitCap ?? null } });
+          };
+          const meshFired = (code: string): true => { meshEvidence('fired', `divergence:${code}`); return true; };
+          const meshHeld = (code: string): void => meshEvidence('held', `emit-cap:${code}`);
           const peerPresenceTick = (): void => {
             void reconcileIdentityActivation().catch((err) => {
               console.warn(`[identity-recovery] periodic activation reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -28832,8 +28953,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                       if (emitCap === undefined || count < emitCap) {  // emitCap is READ here
                         console.log(pc.yellow(`  ⚠ mesh-live-coherence [${w.code}]: ${w.message}`));
                         _meshCoherenceEmitCounts.set(w.code, count + 1);
-                        firedThisTick = true;
-                      }
+                        firedThisTick = meshFired(w.code);
+                      } else meshHeld(w.code);
                     }
                   }
                   recorder?.record({ feature: 'mesh-coherence-live', kind: 'event', outcome: firedThisTick ? 'fired' : 'noop' });
@@ -28850,6 +28971,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                     _meshCoherenceFailing = true;
                   }
                   _meshCoherenceConsecFailures += 1;
+                  if (_meshCoherenceConsecFailures === 1) meshEvidence('error', 'live-state-read-failed');
                 }
               }
             }
@@ -30382,7 +30504,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       catch { console.warn('[instar] Windows desktop bootstrap diagnostic could not be persisted'); }
     }
 
-    const server = new AgentServer({ config, ecosystemLedger: _ecosystemLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, ecosystemLedger: _ecosystemLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx }); if (_pendingCompactionEvidence) featureEvidence.record('multiMachine.coherenceJournal.replication.compaction', _pendingCompactionEvidence);    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     const readIdentityProjectionPeerRows = async () => {
       const peers = _resolvePeerUrls?.() ?? [];
       const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
@@ -30732,6 +30854,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           subjectMachineId: proposed.machineId, epoch: proposed.recoveryEpoch ?? 0,
           contentHash: operatorGrantMod.recoveryRootDelegationHash(proposed), dryRun,
         });
+        featureEvidence.record('multiMachine.recoveryKeyEscrow', { kind: 'fired', reason: dryRun ? 'would rotate the recovery root from a peer' : 'rotated the recovery root from a peer', context: { machineId: proposed.machineId, recoveryEpoch: proposed.recoveryEpoch ?? 0, dryRun } });
         if (dryRun) return 'would-rotate';
         identityStore.apply({
           identity: proposed,
@@ -31315,9 +31438,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // port (force-closes lingering sockets, awaits 'close') BEFORE listen, so the
     // gap is sub-second and the supervisor never observes a hole. No-op if the
     // beacon was never started (dark) or already failed.
+    // A failed bind happened before the evidence log was wired (at AgentServer construction), so it is kept and written here.
+    if (bootBeaconBindErrorCode) featureEvidence.record('monitoring.bootHealthBeacon', { kind: 'error', reason: 'could not bind during boot', context: { code: bootBeaconBindErrorCode, port: config.port } });
     try {
       await bootBeacon?.stop();
     } catch (err) {
+      featureEvidence.record('monitoring.bootHealthBeacon', { kind: 'error', reason: 'handoff failed: stop threw', context: { port: config.port, errorName: err instanceof Error ? err.name : 'unknown' } });
       // @silent-fallback-ok — a beacon stop failure must not stop the real server
       // from binding; logged, and the OS releases the listening socket regardless.
       console.error('  Boot health beacon stop failed (continuing to bind real server):', err instanceof Error ? err.message : err);
@@ -31328,6 +31454,16 @@ export async function startServer(options: StartOptions): Promise<void> {
     // no per-session write admission.
     sessionManager.startMonitoring();
     await server.start();
+    // Boot recovery runs before the evidence log exists, so its verdict is recorded here.
+    if (resolveDevAgentGate(config.multiMachine?.recoveryKeyEscrow?.enabled, config)) {
+      const escrowDryRun = config.multiMachine?.recoveryKeyEscrow?.dryRun !== false;
+      featureEvidence.record('multiMachine.recoveryKeyEscrow', {
+        kind: bootRecoveryOutcome === 'disabled' || (_recoveryEscrowEvidence && !_recoveryEscrowEvidence.minted && _recoveryEscrowEvidence.hadRoot) ? 'error'
+          : bootRecoveryOutcome === 'coherence-held' ? 'held' : 'fired',
+        reason: bootRecoveryOutcome === 'disabled' ? 'boot recovery unavailable' : `boot recovery: ${bootRecoveryOutcome}`,
+        context: { outcome: bootRecoveryOutcome, dryRun: escrowDryRun, minted: _recoveryEscrowEvidence?.minted ?? null, hadRoot: _recoveryEscrowEvidence?.hadRoot ?? null, recoveryEpoch: _recoveryEscrowEvidence?.recoveryEpoch ?? null },
+      });
+    }
     // After listen: a stop's condition usually turns met across a restart onto the
     // fixed version, and the wake brief sends a session straight to a route.
     agentStopSurfacer?.start();

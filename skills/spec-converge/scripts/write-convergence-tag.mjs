@@ -332,7 +332,10 @@ if (!dpGate.ok) {
 // or field-incomplete `## Maturation plan` section. Whether a plan is any GOOD
 // remains spec-converge's lessons-aware reviewer's judgment — this refuses the
 // absence of a declaration, never the adequacy of one.
-const maturationGate = findMaturationPlanGaps(content);
+// In the instar source tree a plan also names its ladder entry (feature-maturation-ladder §11).
+// An installed agent has no src/data here, so its own project's specs are unaffected.
+const requireLadder = fs.existsSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'src', 'data', 'feature-ladders.json'));
+const maturationGate = findMaturationPlanGaps(content, { requireLadder });
 if (!maturationGate.ok) {
   const details = [
     maturationGate.reason,
@@ -342,7 +345,7 @@ if (!maturationGate.ok) {
   console.error(
     `MATURATION_PLAN_REFUSED ${specArg}: ${details}\n\n` +
     `A spec cannot converge without a complete \`## Maturation plan\`. Add the section with ` +
-    `every required field (${REQUIRED_FIELDS.join(', ')}), each declared exactly once, then re-run.\n` +
+    `every required field (${REQUIRED_FIELDS.join(', ')}${requireLadder ? ', ladder' : ''}), each declared exactly once, then re-run.\n` +
     `A feature with no declared path to maturity ships dark forever — which is incoherence on the ` +
     `maturation axis, not caution.`,
   );

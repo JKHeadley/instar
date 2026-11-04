@@ -32,6 +32,7 @@ import { scrubForStore } from '../core/durableSecretScrub.js';
 import { BoundedJsonlAudit } from '../core/BoundedJsonlAudit.js';
 import { SingleFlightProvider } from '../core/SingleFlightProvider.js';
 import { readJsonlTailLines } from '../utils/jsonl-tail.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { ScriptRunContext, ScriptRunObserver } from './scriptRunObservers.js';
 import type { JobRun } from './JobRunHistory.js';
 import type { JobTriageStateStore, TriageSessionRecord } from './JobTriageStateStore.js';
@@ -534,6 +535,11 @@ export class JobResultTriage implements ScriptRunObserver {
       const jev = await this.askJev(evidence.text, cfg);
       this.lastJevAvailable = jev.kind !== 'none';
       Object.assign(extra, jev.audit);
+      const jevContext = { slug, jev: String(jev.audit.jev), labelFwd: typeof jev.audit.labelFwd === 'string' ? jev.audit.labelFwd : null, labelRev: typeof jev.audit.labelRev === 'string' ? jev.audit.labelRev : null, pNeedsSession: typeof jev.audit.pNeedsSession === 'number' ? jev.audit.pNeedsSession : null, fp: fp.slice(0, 16) };
+      if (jev.kind === 'confident') featureEvidence.record('jobs.scriptTriage.jev', { kind: 'fired', reason: `verdict: ${jev.decision}`, context: jevContext });
+      else if (jev.kind === 'escalate') featureEvidence.record('jobs.scriptTriage.jev', { kind: 'held', reason: `escalated: ${jev.why}`, context: jevContext });
+      else if (jev.audit.jevCalled === true) featureEvidence.record('jobs.scriptTriage.jev', { kind: 'error', reason: `call failed: ${String(jev.audit.jev)}`, context: jevContext });
+      else if (jev.audit.jev !== 'disabled') featureEvidence.recordAtMostEvery('jobs.scriptTriage.jev', `not-asked|${String(jev.audit.jev)}`, 60 * 60 * 1000, { kind: 'held', reason: `not asked: ${String(jev.audit.jev)}`, context: jevContext });
       if (jev.kind === 'confident') {
         decision = jev.decision;
         decider = 'jev';

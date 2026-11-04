@@ -24,6 +24,7 @@ import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { registerSqliteHandle } from './SqliteRegistry.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import type { AppConversationStore } from './AppConversationStore.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { assembleChunks, hashFile } from './appMediaWorker.js';
 import {
   CHUNK_BYTES, MAX_FILE_BYTES, isSha256Hex, safeFileName, sniffMediaType, type AppAttachment, type MediaKind,
@@ -529,9 +530,10 @@ export class AppMediaStore {
   }
 
   private quarantine(p: string, sha: string): void {
-    try { fs.renameSync(p, path.join(this.quarantineDir, sha)); } catch (err) { this.report(`a damaged file could not be set aside: ${err instanceof Error ? err.message : String(err)}`); return; } // @silent-fallback-ok — reported through deps.reportDegradation; the next check retries
+    try { fs.renameSync(p, path.join(this.quarantineDir, sha)); } catch (err) { this.report(`a damaged file could not be set aside: ${err instanceof Error ? err.message : String(err)}`); featureEvidence.record('mobilePairing.native.media', { kind: 'error', reason: 'damaged file could not be quarantined', context: { sha256Prefix: sha.slice(0, 12) } }); return; } // @silent-fallback-ok — reported through deps.reportDegradation; the next check retries
     this.db.prepare('DELETE FROM blob_checks WHERE sha256 = ?').run(sha);
     this.report(`a stored file no longer matches its hash and was quarantined (${sha.slice(0, 12)}…)`);
+    featureEvidence.record('mobilePairing.native.media', { kind: 'error', reason: 'stored file quarantined: bytes no longer match', context: { sha256Prefix: sha.slice(0, 12) } });
   }
 
   /** Every blob this machine holds (live and deleted/), sorted, de-duplicated. */

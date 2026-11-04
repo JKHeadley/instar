@@ -248,6 +248,13 @@ export function authMiddleware(
       return;
     }
 
+    // Console ticket redeem (docs/specs/mobile-console-device-signin.md §3.3): the single-use
+    // ticket in the body IS the auth, checked in the handler. Exact method + path only.
+    if (req.path === '/dashboard/console-ticket' && req.method === 'POST') {
+      next();
+      return;
+    }
+
     // Mobile pairing (docs/specs/mobile-pairing-link.md): the redeem and the self-probe
     // ping are public by exact path+method; mint and devices stay behind the bearer gate.
     if ((req.path === '/mobile/pairing-codes/redeem' && req.method === 'POST')

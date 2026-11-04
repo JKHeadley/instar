@@ -3,8 +3,8 @@
 // switch stay in the legacy Spend tab until their native sheets ship. Every value
 // reaches the DOM through textContent; the model (costs-model.js) decides everything.
 
-import { buildCostsPage, WINDOWS, DEFAULT_WINDOW, GRAINS, windowParams, spendQuery, committedLine, basisWord, fmtTokens, fmtUsd, modelWord, doorWord } from './costs-model.js';
-import { el, setKids, pageHead, section, sheet, story, details, note, cantTell, firstPaint } from './ui.js';
+import { buildCostsPage, WINDOWS, DEFAULT_WINDOW, GRAINS, windowParams, spendQuery, committedLine, basisWord, fmtTokens, fmtUsd, modelWord, doorWord, spendingNeed } from './costs-model.js';
+import { el, setKids, pageHead, section, sheet, story, details, note, cantTell, firstPaint, markNeed } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { sessionLabel } from './home-model.js';
 
@@ -43,8 +43,11 @@ export async function renderCosts(main, ctx) {
   timeControl.classList.add('time-control');
   hero.insertBefore(timeControl, hero.querySelector('.facts'));
 
+  const spending = spendingNeed(status);
   setKids(main, el('div', { class: 'costs-page' },
     hero,
+    spending ? markNeed(el('div', { class: 'need-card' }, el('span', { class: 'need-title', text: spending.title }), el('span', { class: 'need-sub', text: spending.why }),
+      el('a', { class: 'btn-primary btn-inline', href: legacyHref('spend'), text: 'Open the spending controls' })), 'spending') : null,
     el('div', { class: 'page-controls' }, routingLink),
     el('div', { class: 'page-sections' },
       recordedSection(page, repaint),
@@ -75,7 +78,7 @@ function recordedSection(page, repaint) {
     const more = el('details', { class: 'raw more-detail' }, el('summary', { text: 'More detail' }),
       el('p', { class: 'card-line', text: 'How the ledger is grouped. By hour and by day follow the time window above; by month and all time cover every retained day.' }), grainChips,
       r.horizonNote ? el('p', { class: 'card-note', text: r.horizonNote }) : null,
-      el('p', { class: 'card-note', text: `Source: ${r.source || 'the feature-metrics ledger'}${r.lastReconcileAt ? `, reconciled ${new Date(r.lastReconcileAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}${r.rollupMaintained ? '' : ' · rollup not maintained'}. Reporting figures are recomputed at current prices; the committed figures below are what a limit enforces.` }));
+      el('p', { class: 'card-note', text: `Source: ${r.source || 'the feature-metrics ledger'}${r.lastReconcileAt ? `, reconciled ${new Date(r.lastReconcileAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}${r.rollupMaintained ? '' : ' · rollup not maintained'}. Reporting figures are recomputed at current prices; the committed figures are what a limit enforces.` }));
     wrap.append(more);
   }
   // Paid routes: committed limits and committed spend, visibly apart from the reporting rows.
