@@ -112,7 +112,7 @@ No flag, by design: the change is read-only, returns a strict subset of what the
 - **fleet:** the routes ride `mobilePairing.enabled` (device headers authenticate nothing when it is off; the bearer path works regardless). The spend view follows `routingSpend.enabled` and reads `off` where it is dark.
 - **graduation criterion:** one week after the app build reaches the operator, zero `MobileCapacityScreens.read` degradations, and the dev-agent-live matrix shows every screen passing.
 - **dark-window:** none: the routes are live on release (read-only, no flag).
-- **ladder:** none (no flag, rides mobilePairing.enabled)
+- **ladder:** mobilePairing
 
 ## Open questions
 
