@@ -13,6 +13,8 @@ Declared Tier 1: the new caller is clamped to shadow, the route is read-only, an
 
 A later full-suite lint pass found four optional-telemetry catches whose intended fallback needed explicit markers; those markers now make the existing behavior auditable. The shared contract also now states the current one-question limit accurately. A time-bounded PromptGate incident count was added to the research inventory so provider circuit shedding is not mistaken for machine pressure.
 
+The next full unit pass found that the new awareness card mentioned the feature-metrics route before that older card's migration sniff ran, preventing the older card from installing. The Jev card now uses the descriptive name of those metrics, and the Jev summary is classified as a discoverable read-only capability. The generated manifest is refreshed after the source edit.
+
 ## Decision-point inventory
 
 - `CommitmentSentinel.detectCommitments` — modified — Jev may say whether a batch has any qualifying promise; only a confident negative can eventually skip detailed extraction. The incumbent remains the authority in shadow, audit, uncertainty, outage, missing-key, and oversized-context cases.

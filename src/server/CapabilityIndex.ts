@@ -1510,6 +1510,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         : { enabled: false },
   },
   {
+    key: 'jevFirstDecisions',
+    prefixes: ['/jev-first'],
+    description: 'Read-only observed Jev-first decision counts and incumbent handoffs; no projected savings are credited.',
+    build: () => ({
+      endpoints: ['GET /jev-first/summary — local observed Jev calls, handoffs, settlements, and audit disagreements'],
+      savings: 'Unmeasured until comparable live model usage exists',
+    }),
+  },
+  {
     key: 'autonomousSessions',
     prefixes: ['/autonomous'],
     description: 'Multi-session autonomy — concurrent per-topic autonomous jobs (list / start-gate / stop)',
