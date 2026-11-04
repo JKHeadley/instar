@@ -209,6 +209,7 @@ import { confirmLocalPlacementAfterDelivery } from '../core/SessionPoolLocalClai
 import { decideLeaseGatedSpawn, sharedG3SoakLedger, applyBindingCleanupOnKill } from '../core/leaseGatedSpawn.js';
 import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForwardBridge.js';
 import { formatForwardedTopicContext } from '../core/ForwardedTopicContext.js';
+import { createTopicHistoryPullHandler, pullMovedTopicHistory, TOPIC_HISTORY_PULL_MAX_MESSAGES, TOPIC_HISTORY_PULL_TIMEOUT_MS } from '../core/topicHistoryPull.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl, detectTailscaleIp, pickPrimaryLanIp, computeSelfMeshEndpoints, advertiseSelfMeshEndpoints, resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { PeerEndpointResolver } from '../core/PeerEndpointResolver.js';
 import {
@@ -848,6 +849,9 @@ let _ownershipReadForDrain: ((sessionKey: string) => import('../core/SessionOwne
  *  a moved topic's prior history from the router (bug #2). Set in the mesh block where
  *  the peer-URL resolver + coordinator are in scope. */
 let _resolveRouterUrl: (() => string | null) | null = null;
+/** Signed read of a moved topic's history from the lease holder. Null when this machine
+ *  is the holder or none is known. Set in the same mesh block. */
+let _pullRouterHistory: ((topic: number) => Promise<{ ok: boolean; result?: unknown } | null>) | null = null;
 /** Every OTHER active machine with a known URL — backs GET /sessions?scope=pool
  *  (pool-wide session aggregation for the dashboard). Set in the same mesh block. */
 let _resolvePeerUrls:
@@ -26674,21 +26678,22 @@ export async function startServer(options: StartOptions): Promise<void> {
               // history for the topic is empty) so the moved session continues with context
               // instead of starting blank. Best-effort — on any failure we spawn without it.
               void (async (): Promise<string> => {
-                let movedContext: string | undefined;
-                try {
-                  const url = _resolveRouterUrl?.() ?? null;
-                  if (url) {
-                    const resp = await fetch(`${url}/telegram/topics/${topicId}/messages?limit=50`, {
+                const history = await pullMovedTopicHistory({
+                  signedPull: _pullRouterHistory,
+                  bearerFetch: async (topic) => {
+                    const url = _resolveRouterUrl?.() ?? null;
+                    if (!url) return null;
+                    const resp = await fetch(`${url}/telegram/topics/${topic}/messages?limit=${TOPIC_HISTORY_PULL_MAX_MESSAGES}`, {
                       headers: { 'Authorization': `Bearer ${config.authToken}` },
+                      signal: AbortSignal.timeout(TOPIC_HISTORY_PULL_TIMEOUT_MS),
                     });
-                    if (resp.ok) {
-                      const j = (await resp.json()) as { messages?: import('../core/ForwardedTopicContext.js').ForwardedHistoryMessage[] };
-                      movedContext = formatForwardedTopicContext(j.messages, tg.getTopicName?.(topicId) ?? undefined) || undefined;
-                    }
-                  }
-                } catch {
-                  // @silent-fallback-ok — cross-machine context relay is best-effort
-                }
+                    if (!resp.ok) return null;
+                    const j = (await resp.json()) as { messages?: unknown[] };
+                    return Array.isArray(j.messages) ? j.messages : null;
+                  },
+                  log: (m) => console.warn(`  [session-pool] ${m}`),
+                }, topicId);
+                const movedContext = formatForwardedTopicContext(history.messages, tg.getTopicName?.(topicId) ?? undefined) || undefined;
                 return spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text, undefined, undefined, movedContext);
               })()
                 .then((name) => {
@@ -27116,6 +27121,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                 },
               });
             },
+            'topic-history-pull': (cmd) => createTopicHistoryPullHandler({
+              readHistory: telegram ? (topic, limit) => telegram!.getTopicHistory(topic, limit) : null,
+            })(cmd as { topic?: unknown; limit?: unknown }),
             'topic-profile-pull': (cmd) => {
               if (!_topicProfileStore) return { ok: false, reason: 'topic-profile disabled' };
               return createTopicProfilePullHandler({
@@ -27701,6 +27709,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           _resolveRouterUrl = () => {
             const h = coordinator.getSyncStatus().leaseHolder;
             return h && h !== meshSelfId ? peerUrl(h) : null;
+          };
+          _pullRouterHistory = async (topic) => {
+            const h = coordinator.getSyncStatus().leaseHolder;
+            const url = h && h !== meshSelfId ? peerUrl(h) : null;
+            if (!h || !url) return null;
+            return meshClient.send({ machineId: h, url }, { type: 'topic-history-pull', topic, limit: TOPIC_HISTORY_PULL_MAX_MESSAGES }, 0, { timeoutMs: TOPIC_HISTORY_PULL_TIMEOUT_MS });
           };
           // Pool-scope readers must use the same validated multi-rope resolver as
           // routing and lease traffic. A freshly enrolled peer can have live
@@ -28583,6 +28597,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               const cap = machinePoolRegistry?.getCapacity(m);
               if (!cap) return null;
               return cap.seamlessnessFlags?.ws11DeliverReceive === true;
+            },
+            liveLocalSession: (sk) => {
+              const topic = /^-?\d+$/.test(sk) ? Number(sk) : null;
+              const name = topic !== null ? telegram?.getSessionForTopic(topic) : _slackAdapter?.getSessionForChannel(sk);
+              return !!name && sessionManager.isSessionAlive(name);
             },
             markOwnerSuspect: (m) => ownerSuspectBreaker.markSuspect(m),
             onOwnerResponsive: (m) => ownerSuspectBreaker.recordSuccess(m),
