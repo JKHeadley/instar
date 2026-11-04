@@ -178,7 +178,7 @@ describe('relay handler (src/commands/server.ts)', () => {
 describe('/messages/relay-agent (src/server/routes.ts)', () => {
   const src = read('src/server/routes.ts');
   const start = src.indexOf("router.post('/messages/relay-agent'");
-  const route = src.slice(start, start + 30_000);
+  const route = src.slice(start, start + 40_000);
 
   it('stops on an inbound ack before the message store, the gate and the router — after auth, loop check and ledger commit', () => {
     const ledgerCommit = route.indexOf('relayLedger.admit(');

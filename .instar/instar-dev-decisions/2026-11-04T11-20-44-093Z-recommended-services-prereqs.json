@@ -1,0 +1,39 @@
+{
+  "ts": "2026-11-04T11:20:44.093Z",
+  "slug": "recommended-services-prereqs",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 707,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/init.ts",
+      "src/commands/install.ts",
+      "src/commands/install/engine.ts",
+      "src/commands/setup.ts",
+      "src/core/BackupManager.ts",
+      "src/data/state-coherence-registry.json",
+      "src/install/doorSteps.ts",
+      "src/install/doors.ts",
+      "src/recommended/offerPrerequisites.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/recommendedServiceRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 549,
+    "deletedLines": 158
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot install steps moved unchanged from the install command, run once per person-started step; no self-triggered loop. The reply hook only writes a file after a send."
+  },
+  "verdict": "blocked"
+}

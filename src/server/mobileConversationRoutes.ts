@@ -48,6 +48,7 @@ import {
 import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { isExactStopMessage } from '../core/MessageSentinel.js';
 import { cleanText } from '../core/MobilePairing.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { RouteContext } from './routes.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
@@ -531,6 +532,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // Step 2 — look up. Step 7 — a done/unknown request answers from the CURRENT delivery state.
     const prior = requests.lookup(deviceId, requestId, hash);
     if (prior.kind === 'done' || prior.kind === 'outcome-unknown') {
+      featureEvidence.record('mobilePairing.native', { kind: 'held', reason: `duplicate send answered from record: ${prior.kind}`, context: { messageId, deviceId, priorKind: prior.kind } });
       const state = s.store.deliveryState(messageId);
       if (state === 'delivered' || state === 'refused' || state === 'intercepted') {
         const recorded = prior.kind === 'done' ? prior.body : {};
@@ -594,6 +596,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // Step 4 — reserve, then persist the message with its signed origin (fsync) BEFORE dispatch.
     let r: ReturnType<typeof requests.reserve>;
     try { r = requests.reserve(deviceId, requestId, hash, 0, { op: 'send', conversationKey: key, messageId }); } catch {
+      featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'loss: request could not be recorded', context: { messageId, deviceId } });
       res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' });
       return;
     }
@@ -603,7 +606,10 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // Media (§4.3): claim every upload at once, make the bytes durable, and only then the event.
     if (msg.kind === 'media-message') {
       const refused = await claimMediaUploads(s, uploadIds, messageId, (detail) => s.deps.reportDegradation?.('AppMedia.publish', detail));
-      if (refused) { requests.release(deviceId, requestId); res.status(refused.status).json(refused.body); return; }
+      if (refused) {
+        featureEvidence.record('mobilePairing.native.media', { kind: 'error', reason: 'files could not be claimed for the message', context: { messageId, files: uploadIds.length, status: refused.status } });
+        requests.release(deviceId, requestId); res.status(refused.status).json(refused.body); return;
+      }
     }
     // Publish and append with no await between them (media review finding 1): nothing can remove
     // a blob after it is published and before the event that references it is stored.
@@ -613,8 +619,13 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     } catch (err) {
       requests.release(deviceId, requestId);
       s.deps.reportDegradation?.('AppConversations.persist', err instanceof Error ? err.message : String(err));
+      featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'loss: message could not be saved', context: { messageId, deviceId, files: stored.length } });
+      if (stored.length > 0) featureEvidence.record('mobilePairing.native.media', { kind: 'error', reason: 'files not published: message could not be saved', context: { messageId, files: stored.length } });
       res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' });
       return;
+    }
+    for (const a of stored) {
+      featureEvidence.record('mobilePairing.native.media', { kind: 'fired', reason: 'file sent', context: { messageId, index: a.index, fileKind: a.kind, declaredKind: a.declaredKind, size: a.size, files: stored.length } });
     }
     const reclassified = stored.filter((a) => a.kind !== a.declaredKind).map((a) => a.index);
     const extras = {
@@ -630,6 +641,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (exactStop) {
       const stop = s.emergencyStop(key);
       s.appendDelivery(key, messageId, 'intercepted', seed);
+      featureEvidence.record('mobilePairing.native', { kind: 'held', reason: 'intercepted: exact emergency stop', context: { messageId, deviceId, stopped: typeof stop.stopped === 'number' ? stop.stopped : null } });
       finish(200, { ok: true, outcome: 'sentinel-kill', stopped: stop.stopped, conversationKey: key, eventId, messageId, deliveryState: 'intercepted', ...extras });
       return;
     }
@@ -637,6 +649,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // Step 5 — ownership (pool dark: the serving-lease holder), the pause intercept, dispatch.
     const alias = s.deps.registry.appAliasFor(key) ?? (() => { const m = s.deps.registry.mintAppAlias(key); return m.ok ? m.id : null; })();
     if (alias === null || !s.isOwner()) {
+      featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'saved, not delivered: owner unavailable', context: { messageId, deviceId, aliasMinted: alias !== null } });
       finish(503, { error: 'owner-unavailable', detail: 'Your message is saved, but the machine that runs this conversation is not available right now. Try again shortly.', conversationKey: key, eventId, messageId, ...extras });
       return;
     }
@@ -644,6 +657,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       // The message is already saved; a failed binding write must not leave the request hanging.
       requests.markUnknown(deviceId, requestId);
       s.deps.reportDegradation?.('AppConversations.bind', err instanceof Error ? err.message : String(err));
+      featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'outcome unknown: binding write failed', context: { messageId, deviceId, alias } });
       res.status(409).json({ error: 'outcome-unknown', eventId, messageId, detail: 'This message is saved but may not have reached the agent. Check the conversation.' });
       return;
     }
@@ -653,6 +667,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         if (d.disposition === 'kill' || d.disposition === 'pause') {
           const out = d.disposition === 'kill' ? { outcome: 'sentinel-kill', stopped: s.emergencyStop(key).stopped } : { outcome: 'sentinel-pause', paused: s.pause(key) };
           s.appendDelivery(key, messageId, 'intercepted', seed);
+          featureEvidence.record('mobilePairing.native', { kind: 'held', reason: `intercepted: sentinel ${d.disposition}`, context: { messageId, deviceId, disposition: d.disposition } });
           finish(200, { ok: true, ...out, conversationKey: key, eventId, messageId, deliveryState: 'intercepted', ...extras });
           return;
         }
@@ -662,6 +677,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (!dispatch) {
       // Nothing was dispatched: an honest refusal, not an unknown outcome.
       s.appendDelivery(key, messageId, 'refused', seed);
+      featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'saved, not delivered: no dispatcher on this machine', context: { messageId, deviceId } });
       finish(503, { error: 'chat-unavailable', detail: 'Your message is saved, but this machine cannot start a session for it right now.', conversationKey: key, eventId, messageId, deliveryState: 'refused', ...extras });
       return;
     }
@@ -675,17 +691,21 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     }
     const pending = s.pendingContext(key);
     let outcome: 'delivered' | 'refused';
+    let originVerdict: OriginVerdict = 'unknown';
     try {
-      outcome = await dispatch({ conversationKey: key, alias, title: conv.title ?? 'Untitled', text: sessionText, messageId, ownerName: sender?.name ?? s.ownerName(), originVerdict: s.verify(msg), ...(pending.lines.length > 0 ? { notes: pending.lines } : {}) });
+      originVerdict = s.verify(msg);
+      outcome = await dispatch({ conversationKey: key, alias, title: conv.title ?? 'Untitled', text: sessionText, messageId, ownerName: sender?.name ?? s.ownerName(), memoryPersonId: sender?.role === 'msp' ? sender.userId : null, originVerdict, ...(pending.lines.length > 0 ? { notes: pending.lines } : {}) });
       if (outcome === 'delivered') pending.ack();
     } catch (err) {
       try { s.appendDelivery(key, messageId, 'unknown', seed); } catch { /* @silent-fallback-ok — the request itself is recorded outcome-unknown below */ }
       requests.markUnknown(deviceId, requestId);
       s.deps.reportDegradation?.('AppConversations.dispatch', err instanceof Error ? err.message : String(err));
+      featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'outcome unknown: dispatch threw', context: { messageId, deviceId, originVerdict, files: stored.length } });
       res.status(409).json({ error: 'outcome-unknown', eventId, messageId, detail: 'This message may or may not have reached the agent. Check the conversation.' });
       return;
     }
     s.appendDelivery(key, messageId, outcome, seed);
+    featureEvidence.record('mobilePairing.native', { kind: outcome === 'delivered' && originVerdict !== 'failed' ? 'fired' : 'error', reason: originVerdict === 'failed' ? `failed verdict on a message: ${outcome}` : `message ${outcome}`, context: { messageId, deviceId, outcome, originVerdict, files: stored.length, redacted: removedKinds.size > 0, senderRole: sender?.role ?? null } });
     finish(200, { ok: true, outcome, conversationKey: key, eventId, messageId, deliveryState: outcome, ...extras });
   });
 

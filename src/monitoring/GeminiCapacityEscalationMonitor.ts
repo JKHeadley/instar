@@ -26,6 +26,8 @@ import {
   type GeminiCapacityGate,
 } from '../providers/adapters/gemini-cli/observability/geminiCapacityPolicy.js';
 
+import { featureEvidence } from './FeatureEvidenceLog.js';
+
 export interface GeminiCapacityEscalationConfig {
   enabled?: boolean;
   /** Only escalate when the remaining defer window is at/above this. Default 60. */
@@ -118,6 +120,14 @@ export class GeminiCapacityEscalationMonitor {
     const episodeKey = gate.deferredUntil ?? -1;
     const alreadyEscalated = this.escalatedEpisode === episodeKey;
 
+    if (!longEnough && !alreadyEscalated) {
+      // A short defer is absorbed silently: one row per deferral episode says so.
+      featureEvidence.recordAtMostEvery('monitoring.geminiCapacityEscalation', `held:${episodeKey}`, 6 * 3_600_000, {
+        kind: 'held',
+        reason: 'defer-below-threshold',
+        context: { remainingMin: Math.round(remainingMs / 60_000), thresholdMin: this.config.escalateAfterMinutes },
+      });
+    }
     if (!longEnough || alreadyEscalated || !this.raiseAttention) {
       return { enabled: true, blocked: true, remainingMs, escalated: false };
     }
@@ -125,7 +135,7 @@ export class GeminiCapacityEscalationMonitor {
     this.escalatedEpisode = episodeKey;
     const remainingMin = Math.round(remainingMs / 60_000);
     const human = remainingMin >= 120 ? `${Math.round(remainingMin / 60)}h` : `${remainingMin}m`;
-    await this.raiseAttention({
+    const raising = (async () => this.raiseAttention!({
       id: `gemini-capacity-block-${episodeKey}`,
       title: 'Gemini capacity-blocked for an extended window',
       summary:
@@ -135,7 +145,15 @@ export class GeminiCapacityEscalationMonitor {
       category: 'gemini-capacity',
       priority: remainingMin >= 120 ? 'HIGH' : 'NORMAL',
       sourceContext: 'gemini-capacity-escalation',
-    });
+    }))();
+    const evidenceContext = { remainingMin, thresholdMin: this.config.escalateAfterMinutes, priority: remainingMin >= 120 ? 'HIGH' : 'NORMAL' };
+    try {
+      await raising;
+    } catch (err) {
+      featureEvidence.record('monitoring.geminiCapacityEscalation', { kind: 'error', reason: 'escalation-raise-failed', context: evidenceContext });
+      throw err;
+    }
+    featureEvidence.record('monitoring.geminiCapacityEscalation', { kind: 'fired', reason: 'escalated-long-capacity-block', context: evidenceContext });
     return { enabled: true, blocked: true, remainingMs, escalated: true };
   }
 }

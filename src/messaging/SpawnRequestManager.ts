@@ -273,6 +273,8 @@ export interface SpawnRequestManagerConfig {
    * absent (the default), admission behavior is byte-for-byte unchanged.
    */
   shouldSpawnSession?: (priority?: string) => { allowed: boolean; reason: string };
+  /** A standing refusal, with its reason, or null to continue. */
+  refuseSpawn?: () => string | null;
   /** Cooldown between spawn requests per agent (ms). Default: 30s */
   cooldownMs?: number;
   /** Max spawn retries before giving up. Default: 3 */
@@ -948,6 +950,9 @@ export class SpawnRequestManager {
    */
   async #evaluateGuarded(request: SpawnRequest): Promise<GuardedSpawnResult> {
     const agent = request.requester.agent;
+
+    const standingRefusal = this.#config.refuseSpawn?.();
+    if (standingRefusal) return { approved: false, reason: standingRefusal };
 
     // §4.3: payload byte-size cap. Refuse oversized envelopes at admission so
     // bulk content can't hog drain-tick budget. Measured on the UTF-8 byte

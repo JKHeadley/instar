@@ -24,6 +24,34 @@ export const STAGE_B_CERTIFIED_SET = {
   ],
   "excluded": [
     {
+      "file": "src/core/claudeChildAuth.ts",
+      "reason": "Claude-only helper that passes the sign-in key to claude children; a Codex launch never reads it, so it cannot change the behaviour the Stage-B evidence certifies."
+    },
+    {
+      "file": "src/monitoring/FeatureEvidenceLog.ts",
+      "reason": "Write-only evidence log reached through DegradationReporter; its calls never throw, return nothing the caller reads, and do not alter the certified Codex Stage-B delivery path."
+    },
+    {
+      "file": "src/utils/jsonl-rotation.ts",
+      "reason": "Size-based log rotation used only by the evidence log in this closure; it never throws and does not alter the certified Codex Stage-B delivery path."
+    },
+    {
+      "file": "src/permissions/SlackPrincipalResolver.ts",
+      "reason": "Slack identity lookup reached only through memory privacy from the excluded SessionManager; no delivery logic, outside the Stage-B canaried path."
+    },
+    {
+      "file": "src/permissions/types.ts",
+      "reason": "Role type declarations reached through SlackPrincipalResolver; types and constants only, outside the Stage-B canaried path."
+    },
+    {
+      "file": "src/users/MemoryAudience.ts",
+      "reason": "Pure audience rules reached through the excluded SessionManager; no delivery logic, outside the Stage-B canaried path."
+    },
+    {
+      "file": "src/users/MemoryPrivacy.ts",
+      "reason": "Memory audience state reached through the excluded SessionManager; decides a session's memory folder, not message delivery, outside the Stage-B canaried path."
+    },
+    {
       "file": "src/scheduler/jobScriptProtocol.ts",
       "reason": "Shared deterministic script-job output parser reached through scheduler imports; it does not alter the certified Codex Stage-B delivery path and has separate script protocol unit and lifecycle coverage"
     },

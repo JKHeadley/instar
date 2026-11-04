@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { RerouteRefusedError } from '../../src/core/rerouteRefusedError.js';
+import { SessionCapacityRefusedError } from '../../src/core/sessionCapacityRefusedError.js';
 import { createTempProject, createMockSessionManager } from '../helpers/setup.js';
 import type { TempProject, MockSessionManager } from '../helpers/setup.js';
 
@@ -49,6 +50,23 @@ describe('job reroute capacity episode', () => {
     await scheduler.triggerJob('topic-issues', 'manual');
     await vi.waitFor(() => expect(project.state.getJobState('topic-issues')?.consecutiveFailures).toBe(1));
     expect(project.state.queryEvents({ type: 'job_error' })).toHaveLength(1);
+  });
+
+  it('treats the global session cap as a quiet wait and retries when room opens', async () => {
+    sessions.spawnSession = vi.fn().mockRejectedValueOnce(new SessionCapacityRefusedError(20, 20))
+      .mockRejectedValueOnce(new Error('Max sessions (20) reached with 20 running'))
+      .mockImplementation(createMockSessionManager().spawnSession);
+    await scheduler.triggerJob('health-check', 'scheduled');
+    await vi.waitFor(() => expect(scheduler.getQueue()).toHaveLength(1));
+    expect(project.state.getJobState('health-check')?.consecutiveFailures ?? 0).toBe(0);
+    expect(send).not.toHaveBeenCalled();
+    await scheduler.triggerJob('topic-issues', 'scheduled');
+    await vi.waitFor(() => expect(project.state.getJobState('topic-issues')?.consecutiveFailures).toBe(1));
+    expect(scheduler.getQueue()).toHaveLength(1);
+    available = true;
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(scheduler.getQueue()).toHaveLength(0);
+    expect(sessions.spawnSession).toHaveBeenCalledTimes(3);
   });
 
   it('warns once after ten minutes for a blocked critical job, then starts it when room opens', async () => {

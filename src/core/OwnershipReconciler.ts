@@ -43,6 +43,7 @@ import { compareHlc } from './TopicPinReplicatedStore.js';
 import { claimSuspensionExcludesPin } from './TopicClaimAnnotationStore.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import type { StaleOwnerReleaseEngine } from './StaleOwnerReleaseEngine.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 export interface ReconcilerMachineView {
   machineId: string;
@@ -157,6 +158,13 @@ export interface OwnershipReconcilerDeps {
    * Absent ⇒ no overload moves (today's behavior).
    */
   overloadMoves?: () => ReadonlyArray<{ sessionKey: string; target: string; episodeId: string }>;
+  /**
+   * Performs an overload move through the owner-side drain, which closes the session
+   * and hands over custody. Fire-and-forget: it reports its outcome to the planner.
+   * Absent ⇒ no overload move happens: a bare transfer would leave the session running
+   * on the overloaded machine with ownership pointing elsewhere.
+   */
+  drainMove?: (mv: { sessionKey: string; target: string; episodeId: string }, epoch: number) => void;
   /**
    * trustworthy-machine-load D4 — drive in-flight transfers to claim or abort INDEPENDENTLY
    * of pins, so a move outlives its proposal (expiry, restart): each tick the durable
@@ -606,26 +614,32 @@ export class OwnershipReconciler {
       // No safe-point deadline override for an overload move: wait for idle.
       if (this.d.isTopicBusy(mv.sessionKey)) { report.deferredBusy++; continue; }
       if (movesInitiated() >= maxMoves) { report.deferredPaced++; continue; }
-      const before = report.transfers;
-      this.act(report, 'transfers', mv.sessionKey, { type: 'transfer', to: mv.target }, 'reconcile-transfer');
-      if (report.transfers > before) {
-        this.overloadTransferred.set(mv.sessionKey, mv.episodeId);
-        if (this.overloadTransferred.size > 1000) this.overloadTransferred.delete(this.overloadTransferred.keys().next().value as string);
-        report.overloadTransfers = (report.overloadTransfers ?? 0) + 1;
-        this.log(`overload-shed transfer ${mv.sessionKey} → ${mv.target} (episode ${mv.episodeId})`);
-      }
+      if (!this.d.drainMove) continue;
+      let reconcileDryRun = true;
+      try { reconcileDryRun = this.d.dryRun(); } catch { reconcileDryRun = true; /* @silent-fallback-ok — an unreadable gate reads as dry-run: nothing moves */ }
+      if (reconcileDryRun) continue;
+      this.overloadTransferred.set(mv.sessionKey, mv.episodeId);
+      if (this.overloadTransferred.size > 1000) this.overloadTransferred.delete(this.overloadTransferred.keys().next().value as string);
+      report.transfers += 1;
+      report.overloadTransfers = (report.overloadTransfers ?? 0) + 1;
+      this.log(`overload-shed drain ${mv.sessionKey} → ${mv.target} (episode ${mv.episodeId})`);
+      try { this.d.drainMove(mv, rec.ownershipEpoch); }
+      catch (err) { this.log(`overload-shed drain failed to start for ${mv.sessionKey}: ${err instanceof Error ? err.message : String(err)}`); }
     }
 
     // ── trustworthy-machine-load D4: drive UNPINNED in-flight transfers (a started move
     // outlives its proposal). Pinned records are already driven by the loop above.
     let driveUnpinned = false;
     try { driveUnpinned = this.d.driveUnpinnedTransfers?.() === true; } catch { driveUnpinned = false; /* @silent-fallback-ok — unreadable flag keeps today's pin-only behavior */ }
-    if (driveUnpinned) {
+    // A drain-flow record is always driven, whatever the shed's dry-run says, so flipping
+    // that switch mid-move cannot strand a topic in `transferring`.
+    {
       const deadline = this.d.transferDeadlineMs ?? DEFAULT_TRANSFER_DEADLINE_MS;
       let all: ReturnType<SessionOwnershipRegistry['all']> = [];
       try { all = this.d.ownership.all(); } catch { all = []; /* @silent-fallback-ok — an unreadable registry drives nothing this tick; the next tick retries */ }
       for (const rec of all) {
         if (rec.status !== 'transferring' || pinnedSeenThisTick.has(rec.sessionKey)) continue;
+        if (!driveUnpinned && rec.drainInFlight !== true) continue;
         const age = now - (rec.timestamp ?? 0); // same fallback as the pinned path
         if (rec.transferTo === self) {
           let accepting = true;
@@ -763,6 +777,8 @@ export class OwnershipReconciler {
   ): boolean {
     if (this.d.dryRun()) {
       this.log(`DRY-RUN would ${action.type} ${sessionKey} (${reason})`);
+      // A would-act repeats every tick until the pin converges: one row per topic and step per hour.
+      featureEvidence.recordAtMostEvery('multiMachine.seamlessness.ws13Reconcile', `${sessionKey}|${action.type}|${reason}`, 60 * 60_000, { kind: 'fired', reason: `would ${action.type} (${reason})`, context: { topic: sessionKey, action: action.type, step: reason, dryRun: true } });
       if (!countOnce) report[counter]++;
       return false; // dry-run never lands a CAS, so chained steps stop here
     }
@@ -775,11 +791,13 @@ export class OwnershipReconciler {
     if (r.ok) {
       if (!countOnce) report[counter]++;
       this.log(`${action.type} landed for ${sessionKey} (${reason}, epoch ${r.record.ownershipEpoch})`);
+      featureEvidence.record('multiMachine.seamlessness.ws13Reconcile', { kind: 'fired', reason: `${action.type} landed (${reason})`, context: { topic: sessionKey, action: action.type, step: reason, epoch: r.record.ownershipEpoch, dryRun: false } });
       try { this.d.emitPlacement(sessionKey, r, reason); } catch { /* §3.3 pairing is observability — never endangers the CAS */ }
       this.conflictSince.delete(sessionKey);
       return true;
     }
     this.log(`${action.type} rejected for ${sessionKey} (${'reason' in r ? r.reason : 'unknown'}) — will re-evaluate next tick`);
+    featureEvidence.recordAtMostEvery('multiMachine.seamlessness.ws13Reconcile', `rejected|${sessionKey}|${action.type}`, 60 * 60_000, { kind: 'error', reason: `${action.type} refused (${'reason' in r ? r.reason : 'unknown'})`, context: { topic: sessionKey, action: action.type, step: reason, code: 'reason' in r ? String(r.reason) : 'unknown', dryRun: false } });
     return false;
   }
 

@@ -180,6 +180,7 @@ export class SlackAdapter implements MessagingAdapter {
   private started = false;
   private channelNameLookups = new Set<string>();
   private authorizedUsers: Set<string>;
+  private inboundThreads = new Map<string, string>();
   private channelHistory: Map<string, RingBuffer<SlackMessage>> = new Map();
   private pendingPrompts: Map<string, PendingPrompt> = new Map();
   private seenMessageTs: Set<string> = new Set();
@@ -662,6 +663,33 @@ export class SlackAdapter implements MessagingAdapter {
     const idx = routingKey.indexOf(':');
     if (idx === -1) return { channelId: routingKey };
     return { channelId: routingKey.slice(0, idx), threadTs: routingKey.slice(idx + 1) };
+  }
+
+  /**
+   * Human readers of a channel, for memory privacy. Null for any channel where the
+   * count cannot prove who reads it: a public channel is readable by the workspace
+   * without joining, and a shared channel by another organization.
+   */
+  async channelReaderCount(channelId: string): Promise<number | null> {
+    const channel = await this.channelManager.getChannelInfo(channelId, { includeMembers: true }) as unknown as {
+      is_private?: boolean; is_ext_shared?: boolean; num_members?: number;
+    };
+    if (!channel.is_private || channel.is_ext_shared || typeof channel.num_members !== 'number') return null;
+    return channel.num_members - 1;
+  }
+
+  /**
+   * The thread a channel's latest inbound message came from. A session serves the
+   * whole channel, so without this a reply to a thread lands at channel level
+   * (fb-99bf432a-05f). An explicit thread on the reply still wins.
+   */
+  noteInboundThread(channelId: string, threadTs: string | undefined): void {
+    if (threadTs) this.inboundThreads.set(channelId, threadTs);
+    else this.inboundThreads.delete(channelId);
+  }
+
+  inboundThreadFor(channelId: string): string | undefined {
+    return this.inboundThreads.get(channelId);
   }
 
   /** Check if a user is authorized. */

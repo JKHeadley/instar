@@ -49,7 +49,13 @@ describe('UndatedActionResurfacer production lifecycle', () => {
   });
 
   it('is constructed, reads the real action store, and delegates to the production Attention seam', async () => {
-    const res = await request(server.getApp()).get('/evolution/actions/undated-resurfacer');
+    // The first run happens shortly after boot; on a loaded machine that is later than a fixed
+    // 30 ms (seen on a peer verifier, 2026-11-04), so wait for it, bounded at 10 s.
+    let res = await request(server.getApp()).get('/evolution/actions/undated-resurfacer');
+    for (let i = 0; i < 100 && !(res.body.totalRuns >= 1); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      res = await request(server.getApp()).get('/evolution/actions/undated-resurfacer');
+    }
     expect(res.status).toBe(200);
     expect(res.body.enabled).toBe(true);
     expect(res.body.dryRun).toBe(false);

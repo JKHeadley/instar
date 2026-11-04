@@ -19,6 +19,10 @@ interface AttemptEntry {
   resetAt: number;
 }
 
+/** One cap across every source address, shared by every route that takes a PIN with no bearer token. */
+export const GLOBAL_PIN_KEY = '__dashboard_unlock_global__';
+export const GLOBAL_PIN_MAX_ATTEMPTS = 20;
+
 export class PinAttemptStore {
   private readonly filePath: string;
   private entries = new Map<string, AttemptEntry>();

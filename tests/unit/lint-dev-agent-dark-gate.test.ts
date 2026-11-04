@@ -537,9 +537,9 @@ describe('lint-dev-agent-dark-gate', () => {
       // #1367's moveIntent dev-gated sub-block was inserted under sessionPool
       // (docs/specs/nickname-move-intent-llm-rebuild.md); it OMITS `enabled` (rides
       // resolveDevAgentGate), adds no map row, and shifts the subsequent lines.
-      '1591': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1601': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1630': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1593': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1603': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1632': 'multiMachine.sessionPool.holdForStability.enabled',
       // replicated-journal-compaction adds a 5-line compaction default block
       // above stateSync. It uses `run:false` (not an `enabled` gate), so the
       // attributed path set is unchanged and the four rows below shift by +5.
@@ -553,7 +553,7 @@ describe('lint-dev-agent-dark-gate', () => {
       // +32 lines, no `enabled:` literals) shift the cartographer rows below.
       // +15 below the #1561 baseline: this row is BELOW the failoverRunner insert,
       // so it carries both the +10 (missingLogin) and +15 (failoverRunner) shifts.
-      '1891': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1893': 'multiMachine.stateSync.threadlinePairing.enabled',
       // commitment-auto-expiry (2026-07-10): a 6-line `commitments.autoExpiry`
       // default sub-block was inserted above `promiseBeacon`/`cartographer`.
       // Its `enabled: true` literal is an explicit fleet-on default, not a dark
@@ -562,11 +562,11 @@ describe('lint-dev-agent-dark-gate', () => {
       // PromiseBeacon's four-line default-silent user-output boundary adds no
       // `enabled:` row, so only the three cartographer rows below it shift +4.
       // Below the failoverRunner insert → both +10 (missingLogin) and +15 shifts.
-      '1958': 'autonomousSessions.codexTaskContinuation.enabled',
-      '2086': 'cartographer.freshnessSweep.enabled',
+      '1960': 'autonomousSessions.codexTaskContinuation.enabled',
+      '2088': 'cartographer.freshnessSweep.enabled',
       // Assisted relogin is intentionally fleet-dark until a per-agent
       // promotion; the exclusion registry classifies it as action-bearing.
-      '2185': 'subscriptionPool.assistedRelogin.enabled',
+      '2187': 'subscriptionPool.assistedRelogin.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

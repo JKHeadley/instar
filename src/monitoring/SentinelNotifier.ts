@@ -1,4 +1,5 @@
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 /**
  * SentinelNotifier — the single delivery policy for the silently-stopped
  * sentinels (ActiveWorkSilenceSentinel + SocketDisconnectSentinel).
@@ -124,6 +125,11 @@ export class SentinelNotifier {
     this.write('escalated', sentinel, sessionName, text);
     if (!this.telegramEnabled) {
       this.write('escalation-suppressed', sentinel, sessionName, 'telegramEscalation disabled (log-only)');
+      featureEvidence.record('monitoring.sentinelTelegramEscalation', {
+        kind: 'held',
+        reason: this.cfg.telegramEscalation === true ? 'no-telegram-sender-wired' : 'telegram-escalation-off',
+        context: { sentinel, telegramEscalation: this.cfg.telegramEscalation === true },
+      });
       return;
     }
     this.pending.set(sessionName, text);
@@ -172,6 +178,11 @@ export class SentinelNotifier {
     const message = this.composeMessage(entries);
     try {
       const delivered = await this.deps.sendConsolidated(message);
+      featureEvidence.record('monitoring.sentinelTelegramEscalation', {
+        kind: delivered ? 'fired' : 'error',
+        reason: delivered ? 'telegram-escalation-sent' : 'telegram-send-returned-false',
+        context: { sessions: entries.length },
+      });
       this.write(
         delivered ? 'escalation-sent' : 'notify-error',
         'sentinel-notifier',
@@ -179,6 +190,11 @@ export class SentinelNotifier {
         delivered ? `consolidated ${entries.length} escalation(s)` : 'sendConsolidated returned false',
       );
     } catch (err) {
+      featureEvidence.record('monitoring.sentinelTelegramEscalation', {
+        kind: 'error',
+        reason: 'telegram-send-threw',
+        context: { sessions: entries.length, errorName: err instanceof Error ? err.name : 'unknown' },
+      });
       this.write(
         'notify-error',
         'sentinel-notifier',

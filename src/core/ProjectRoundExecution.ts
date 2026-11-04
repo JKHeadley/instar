@@ -34,6 +34,7 @@
  *   the runner.
  */
 
+import { applyClaudeChildAuth } from './claudeChildAuth.js';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 
 import type { Initiative, InitiativeTracker, RoundStatus } from './InitiativeTracker.js';
@@ -523,13 +524,13 @@ function spawnAutonomousChild(input: RunRoundInput, itemIds: string[]): ChildPro
     cwd: workdir,
     detached: true, // critical — makes the child its own process group leader
     stdio: 'ignore',
-    env: {
+    env: applyClaudeChildAuth({
       ...process.env,
       INSTAR_PROJECT_ID: input.projectId,
       INSTAR_ROUND_INDEX: String(input.roundIndex),
       INSTAR_ROUND_ITEM_IDS: JSON.stringify(itemIds),
       INSTAR_STOP_CONDITION: 'all-items-merged-on-main',
-    },
+    }),
   });
   // Attach IMMEDIATELY — see spawnFailures above. Without a listener a failure
   // to START is an unhandled 'error' event, which is a process-level uncaught

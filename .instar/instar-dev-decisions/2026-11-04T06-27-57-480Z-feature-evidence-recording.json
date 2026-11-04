@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-04T06:27:57.480Z",
+  "slug": "feature-evidence-recording",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/data/stageBCertifiedSet.ts"
+    ],
+    "addedLines": 8,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "These calls only observe decisions other code already made; none triggers an action or a retry."
+  },
+  "verdict": "pass"
+}

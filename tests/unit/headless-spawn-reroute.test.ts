@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { ReapGuard } from '../../src/core/ReapGuard.js';
 
 const mockTmuxSessions = new Set<string>();
 /** What `tmux show-environment -t … CLAUDE_CONFIG_DIR` answers ('' = unparseable). */
@@ -84,6 +85,7 @@ vi.mock('node:child_process', () => {
 });
 
 import { SessionManager } from '../../src/core/SessionManager.js';
+import { SessionCapacityRefusedError } from '../../src/core/sessionCapacityRefusedError.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 import type { SessionManagerConfig } from '../../src/core/types.js';
@@ -104,6 +106,7 @@ const CLAUDE = '/usr/local/bin/claude';
 function makeManager(opts: {
   mode?: 'off' | 'auto' | 'force';
   maxRerouted?: number;
+  maxSessions?: number;
   framework?: 'claude-code' | 'codex-cli' | 'gemini-cli';
   credit?: () => Promise<{ remainingUsd: number; totalUsd: number } | null>;
 }, tmpDir: string): { manager: SessionManager; state: StateManager; maintenanceTick: () => Promise<void> } {
@@ -116,7 +119,7 @@ function makeManager(opts: {
     frameworkBinaryPaths: { 'claude-code': CLAUDE, 'codex-cli': '/usr/local/bin/codex', 'gemini-cli': '/usr/local/bin/gemini' },
     projectName: 'proj',
     projectDir: tmpDir,
-    maxSessions: 10,
+    maxSessions: opts.maxSessions ?? 10,
     protectedSessions: [],
     completionPatterns: ['has been automatically paused'],
     ...(opts.framework ? { framework: opts.framework } : {}),
@@ -393,6 +396,57 @@ describe('headless-spawn reroute', () => {
       manager.spawnSession({ name: 'job-force-2', prompt: 'p' }),
     ).rejects.toThrow(/Reroute refused \(force-mode\)/);
   });
+
+  it('global cap: one scheduler job can use a guarded reserve beyond the conversation limit', async () => {
+    const { manager } = makeManager({ mode: 'force', maxRerouted: 6, maxSessions: 2 }, tmpDir);
+    await manager.spawnSession({ name: 'conversation-one', prompt: 'p' });
+    await manager.spawnSession({ name: 'conversation-two', prompt: 'p' });
+    await expect(manager.spawnSession({ name: 'direct-spawn', prompt: 'p', jobSlug: 'claimed-job' }))
+      .rejects.toBeInstanceOf(SessionCapacityRefusedError);
+    const health = await manager.spawnSession({ name: 'health-job', prompt: 'p', jobSlug: 'health-check', triggeredBy: 'scheduler:scheduled' });
+    expect(health.jobSlug).toBe('health-check');
+    expect(manager.confinedRerouteCapacity()).toBe('saturated');
+    await expect(manager.spawnSession({ name: 'second-job', prompt: 'p', jobSlug: 'other-job', triggeredBy: 'scheduler:scheduled' }))
+      .rejects.toBeInstanceOf(SessionCapacityRefusedError);
+  });
+
+  it('global cap: high memory pressure closes the extra scheduler slot', async () => {
+    const { manager } = makeManager({ mode: 'off', maxSessions: 2 }, tmpDir);
+    await manager.spawnSession({ name: 'conversation-one', prompt: 'p' });
+    await manager.spawnSession({ name: 'conversation-two', prompt: 'p' });
+    (manager as unknown as { currentMemoryPressure: () => string }).currentMemoryPressure = () => 'high';
+    expect(manager.confinedRerouteCapacity()).toBe('saturated');
+    await expect(manager.spawnSession({ name: 'health-job', prompt: 'p', jobSlug: 'health-check', triggeredBy: 'scheduler:scheduled' }))
+      .rejects.toBeInstanceOf(SessionCapacityRefusedError);
+  });
+
+  it('global cap: simultaneous scheduler requests cannot both take the reserve', async () => {
+    const { manager } = makeManager({ mode: 'off', maxSessions: 2 }, tmpDir);
+    await manager.spawnSession({ name: 'conversation-one', prompt: 'p' });
+    await manager.spawnSession({ name: 'conversation-two', prompt: 'p' });
+    const results = await Promise.allSettled([
+      manager.spawnSession({ name: 'health-job', prompt: 'p', jobSlug: 'health-check', triggeredBy: 'scheduler:scheduled' }),
+      manager.spawnSession({ name: 'other-job', prompt: 'p', jobSlug: 'other-job', triggeredBy: 'scheduler:scheduled' }),
+    ]);
+    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(r => r.status === 'rejected' && r.reason instanceof SessionCapacityRefusedError)).toHaveLength(1);
+  });
+
+  it('global cap: a scheduler job still has one slot when conversations exceed the soft cap', async () => {
+    const { manager, state } = makeManager({ mode: 'force', maxRerouted: 6, maxSessions: 2 }, tmpDir);
+    for (let i = 0; i < 3; i++) {
+      const tmuxSession = `proj-conversation-${i}`;
+      state.saveSession({ id: `conversation-${i}`, name: `conversation-${i}`, status: 'running',
+        tmuxSession, startedAt: new Date().toISOString(), framework: 'claude-code', launchLane: 'interactive' });
+      mockTmuxSessions.add(tmuxSession);
+    }
+    // The feedback executor does not carry scheduler provenance, so it cannot
+    // borrow the global reserve even though the health job below can.
+    expect(manager.confinedRerouteCapacity()).toBe('saturated');
+    const health = await manager.spawnSession({ name: 'health-job', prompt: 'p', jobSlug: 'health-check', triggeredBy: 'scheduler:scheduled' });
+    expect(health.jobSlug).toBe('health-check');
+    expect(manager.confinedRerouteCapacity()).toBe('saturated');
+  });
 });
 
 // ── V3: completionMode decision boundary (per-session detection) ──
@@ -482,6 +536,20 @@ describe('detectSessionCompletion (V3 decision boundary)', () => {
 describe('monitorTick rerouted-interactive branch', () => {
   let tmpDir: string;
 
+  const activityGuard = (recentUserMessage = false) => new ReapGuard({
+    protectedSessions: () => [],
+    isRecoveryActive: () => false,
+    hasPendingInjection: () => false,
+    isRelayLeaseActive: () => false,
+    topicBinding: () => recentUserMessage ? 18330 : null,
+    recentUserMessage: () => recentUserMessage,
+    activeCommitmentForTopic: () => false,
+    activeSubagentCount: () => 0,
+    buildOrAutonomousActive: () => false,
+    hasActiveProcesses: () => true,
+    mainProcessActive: () => true,
+  });
+
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-reroute-monitor-'));
     mockTmuxSessions.clear();
@@ -543,6 +611,44 @@ describe('monitorTick rerouted-interactive branch', () => {
     expect(saved.endedReason).toBe('rerouted-lifetime');
     expect(reportSpy).toHaveBeenCalled();
     reportSpy.mockRestore();
+  });
+
+  it('an expired rerouted session can pass the real activity guard and free its slot', async () => {
+    const { manager, state, maintenanceTick } = makeManager({}, tmpDir);
+    state.saveSession({
+      id: 'rr-expired', name: 'rr-expired', status: 'running', tmuxSession: 'proj-rr-expired',
+      startedAt: new Date(Date.now() - 50 * 60_000).toISOString(), framework: 'claude-code',
+      launchLane: 'rerouted-interactive', completionMode: 'pattern',
+      completionPatterns: ['INSTAR_JOB_COMPLETE_never'], maxLifetimeMinutes: 45,
+    });
+    mockTmuxSessions.add('proj-rr-expired');
+    manager.setReapGuard(activityGuard());
+    (manager as unknown as { isSessionAliveAsync: () => Promise<boolean> }).isSessionAliveAsync = async () => true;
+    (manager as unknown as { recordBuildContext: () => void }).recordBuildContext = () => {};
+    (manager as unknown as { captureOutput: () => string }).captureOutput = () => 'no completion sentinel';
+
+    await maintenanceTick();
+
+    expect(state.getSession('rr-expired')).toMatchObject({ status: 'killed', endedReason: 'rerouted-lifetime' });
+  });
+
+  it('an expired rerouted session still respects a recent user message', async () => {
+    const { manager, state, maintenanceTick } = makeManager({}, tmpDir);
+    state.saveSession({
+      id: 'rr-recent', name: 'rr-recent', status: 'running', tmuxSession: 'proj-rr-recent',
+      startedAt: new Date(Date.now() - 50 * 60_000).toISOString(), framework: 'claude-code',
+      launchLane: 'rerouted-interactive', completionMode: 'pattern',
+      completionPatterns: ['INSTAR_JOB_COMPLETE_never'], maxLifetimeMinutes: 45,
+    });
+    mockTmuxSessions.add('proj-rr-recent');
+    manager.setReapGuard(activityGuard(true));
+    (manager as unknown as { isSessionAliveAsync: () => Promise<boolean> }).isSessionAliveAsync = async () => true;
+    (manager as unknown as { recordBuildContext: () => void }).recordBuildContext = () => {};
+    (manager as unknown as { captureOutput: () => string }).captureOutput = () => 'no completion sentinel';
+
+    await maintenanceTick();
+
+    expect(state.getSession('rr-recent')?.status).toBe('running');
   });
 
   it('under lifetime, no sentinel → left running (re-check next tick)', async () => {

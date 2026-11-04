@@ -27,7 +27,7 @@ import {
 } from '../../src/core/sessionPoolFailoverRunnerConfig.js';
 import type { SubprocessRunResult } from '../../src/core/sessionPoolFailoverCheck.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { StageAdvancer, stageIndex, type SessionPoolStage } from '../../src/core/StageAdvancer.js';
+import { StageAdvancer, failoverProvenStage, stageIndex, type SessionPoolStage } from '../../src/core/StageAdvancer.js';
 
 const dirs: string[] = [];
 function tmp(): string {
@@ -137,13 +137,14 @@ describe('SessionPoolFailoverRunnerDriver — honest recording to the right stor
       dryRunResultStore: makeStore(dir, 'dry.json'),
       runProcess: async () => ({ ranToCompletion: true, exitCode: 0, evidenceRef: 'current-stage-green' }),
       currentCommitSha: buildIdentity,
-      provenStage: () => stageIndex(readStage()),
+      provenStage: () => failoverProvenStage(readStage()),
     })!;
     const advancer = new StageAdvancer({
       resultStore: realStore,
       currentCommitSha: buildIdentity,
       readStage,
       writeStageConfig: (next) => { stage = next; },
+      rebalanceProof: () => ({ fresh: true, detail: 'fresh' }),
     });
 
     await driver.maybeTick();
@@ -154,6 +155,13 @@ describe('SessionPoolFailoverRunnerDriver — honest recording to the right stor
       result: 'green',
     });
     expect(advancer.advanceTo('rebalance')).toEqual({ ok: true, stage: 'rebalance' });
+  });
+
+  it('never credits a failover run to stage 3: it proves failover, so it records as stage 2', () => {
+    expect(failoverProvenStage('rebalance')).toBe(stageIndex('live-transfer'));
+    expect(failoverProvenStage('live-transfer')).toBe(stageIndex('live-transfer'));
+    expect(failoverProvenStage('shadow')).toBe(stageIndex('shadow'));
+    expect(failoverProvenStage('dark')).toBe(stageIndex('dark'));
   });
 
   it('does not credit a green recorded at the wrong stage to the current-stage climb', async () => {

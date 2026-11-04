@@ -404,6 +404,8 @@ challenge; and one disabled feature re-enabled directly.
 
 ---
 
+**Outside services (`docs/specs/recommended-services.md`, added after this plan).** A read-only section on this page listing each recommended outside service from `GET /recommended-services`: what you get, what leaves the machine, cost, account, and the backup with its honest status. No controls until the setup recipes ship.
+
 ## What I've learned about you (legacy tab id: `preferences-learning`)
 
 **Who comes here, and the one question on arrival.** Justin, when he notices the agent

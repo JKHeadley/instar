@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-04T08:23:44.177Z",
+  "slug": "session-pool-rebalancing-finish",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/OverloadShedPlanner.ts",
+      "src/data/feature-ladders.json"
+    ],
+    "addedLines": 7,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "overload-shed is a registered controller: at most 4 moves per topic per episode, 2 per hour, one live, 6h per-topic cooldown; the ratchet runs the real planner with every live-move gate open"
+    },
+    "component": "OverloadShedPlanner"
+  },
+  "verdict": "pass"
+}

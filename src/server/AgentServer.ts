@@ -11,6 +11,7 @@
 import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import express, { type Express, type Request, type Response } from 'express';
+import { setMoveAftercare } from '../core/OverloadShedPlanner.js';
 import { getAspClassifierRef } from '../core/aspClassifierRef.js';
 import type { Server } from 'node:http';
 import fs from 'node:fs';
@@ -181,16 +182,19 @@ import { createThroughputRoutes } from './throughputRoutes.js';
 import { getMigrationDefaults } from '../config/ConfigDefaults.js';
 import { createMaturationLadderRoutes, isMaturationLadderEnabled } from './maturationLadderRoutes.js';
 import { MaturationLadderService, readShippedRegistry, type MetricsSummaryRow } from '../monitoring/MaturationLadderService.js';
-import { FeatureEvidenceLog, setFeatureEvidenceLog } from '../monitoring/FeatureEvidenceLog.js';
+import { FeatureEvidenceLog, featureEvidence, setFeatureEvidenceLog } from '../monitoring/FeatureEvidenceLog.js';
 import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
+import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
 import { createMobileMediaRouter } from './mobileMediaRoutes.js';
 import { createMobileSessionRouter } from './mobileSessionRoutes.js';
+import { createMobileSessionTerminalRouter, peerRowsMatch, PEER_LOOKUP_MAX, PEER_LOOKUP_TIMEOUT_MS, type PeerLookup } from './mobileSessionTerminalRoutes.js';
+import { poolPeerFetch } from './poolPeerFetch.js';
 import { AppConversationService, VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS } from '../core/AppConversationService.js';
 import { transcribeAudioFile, configuredVoiceProvider, resolveTranscriptionProvider } from '../core/VoiceTranscription.js';
 import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
@@ -219,6 +223,7 @@ import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js'
 import { DesktopHelperRetention } from '../core/DesktopHelperRetention.js';
 import { getInstarVersion } from '../core/Config.js';
 import { DesktopHelperPermissionNotice } from '../core/DesktopHelperPermissionNotice.js';
+import { GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS } from '../core/PinAttemptStore.js';
 import { dashboardUnlockRefused, isLoopbackPeer, wslWindowsHostAddress } from '../core/desktopTransport.js';
 import { mountDashboardEntryRoutes, mountPairPage, resolvePairDir } from './dashboardEntry.js';
 import { mountDashboardPreview } from './dashboardPreview.js';
@@ -1117,6 +1122,8 @@ export class AgentServer {
     appConversations?: AppConversationService;
     /** The bootstrap-built idea ledger (server.ts), already hooked to replication. Absent ⇒ built here. */
     ecosystemLedger?: import('../ecosystem/EcosystemLedger.js').EcosystemLedger;
+    /** docs/specs/recommended-services.md: the bootstrap-built choice ledger. Absent means the routes answer 503. */
+    recommendedServicesLedger?: import('../recommended/RecommendedServicesLedger.js').RecommendedServicesLedger;
     /** Test seams for the idea pipeline: external I/O only. */
     ecosystemDeps?: import('../ecosystem/buildEcosystemIdeas.js').BuildEcosystemInput['overrides'];
     judgmentProvenance?: import('../core/JudgmentProvenanceLog.js').JudgmentProvenanceLog;
@@ -1327,6 +1334,8 @@ export class AgentServer {
     /** Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md): the
      *  service behind POST /mcp/threadline. Mounted whenever Threadline runs. */
     threadlineMcpHttp?: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService;
+    /** Memory privacy: resolves session tokens at the auth layer. */
+    memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacy;
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
     a2aDeliveryTracker?: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker;
     /** Honest-delivery verdict counters (spec §1) for the authed branch of /health. */
@@ -1580,8 +1589,7 @@ export class AgentServer {
     const pinAttempts = new Map<string, { count: number; resetAt: number }>();
     const MAX_ATTEMPTS = 5;
     const WINDOW_MS = 5 * 60 * 1000; // 5-minute window
-    const GLOBAL_MAX_ATTEMPTS = 20;
-    const GLOBAL_PIN_KEY = '__dashboard_unlock_global__';
+    const GLOBAL_MAX_ATTEMPTS = GLOBAL_PIN_MAX_ATTEMPTS;
     let globalPinAttempts = { count: 0, resetAt: 0 };
     const configRef = this.config;
 
@@ -1724,6 +1732,8 @@ export class AgentServer {
       },
     });
     mountPublicMobilePairingRoutes(this.app, this.mobilePairing);
+    // Console sign-in from an owner phone: the public, single-use ticket redeem (mobile-console-device-signin §3.3).
+    mountConsoleTicketRedeemRoute(this.app, this.mobilePairing, () => configRef.authToken);
     // Multi-route own names: the tailscale-serve boot step + the bounded probe loop (§4.1).
     if (this.mobilePairing.ownNames && (options.mobileRoutes?.start ?? !process.env.VITEST)) this.mobilePairing.ownNames.start();
     {
@@ -1987,6 +1997,7 @@ export class AgentServer {
         return false;
       },
       this.mobilePairing ? deviceAuthenticator(this.mobilePairing) : undefined,
+      options.memoryPrivacy ? (token) => options.memoryPrivacy!.sessionForToken(token) : undefined,
     ));
     // Per-path request-timeout overrides for LLM-backed / third-party routes
     // (outbound messaging + the standards-conformance gate). The map and its
@@ -4989,6 +5000,7 @@ export class AgentServer {
         }
       })();
     });
+    setMoveAftercare(kickWorkingSetOnMachine);
     const resolveWindowFirstUnreceiptedTask = (state: Readonly<import('../core/WindowRunLivenessAuthority.js').WindowRunLivenessDocument>): string | null => {
       const localPath = path.join(options.config.stateDir, 'autonomous', `${state.topicId}.local.md`);
       const content = fs.readFileSync(localPath, 'utf8');
@@ -5454,6 +5466,7 @@ export class AgentServer {
       moneyLayerAudit: this.moneyLayerAudit,
       requestSupervisedRestart: (reason: string, requestedBy?: string) => this.requestSupervisedRestart(reason, requestedBy),
       pinAttemptStore: this.pinAttemptStore,
+      pinEntryRefusedHere: (req) => dashboardUnlockRefused(Boolean(this.directDesktopAccess), req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']),
       providerCostReportStore: this.providerCostReportStore,
       resourceLedger: this.resourceLedger,
       processFootprintMonitor: this.processFootprintMonitor,
@@ -5949,6 +5962,7 @@ export class AgentServer {
         });
       }
     }
+    routeCtx.recommendedServicesLedger = options.recommendedServicesLedger ?? null;
     this.startEcosystemIdeas(options, routeCtx);
     this.desktopSetupTarget = new DesktopSetupTarget({
       peerClaimAllowed: resolveDevAgentGate(options.config.remoteDesktop?.guidedSetup?.enabled, options.config),
@@ -5982,6 +5996,43 @@ export class AgentServer {
       this.checkInReminderTimer = setInterval(() => { void checkInReminderTicker.tick(); }, checkInReminderTicker.status().intervalMs);
       this.checkInReminderTimer.unref?.();
       checkInReminderTicker.setArmed(true);
+    }
+    // The native session screen (docs/specs/mobile-native-session-screen.md): owner-phone requests
+    // for GET /sessions/:name/output and POST /sessions/:name/input. Mounted BEFORE the main routes;
+    // every non-device request passes straight on to the Bearer handlers there, unchanged.
+    if (this.mobilePairing) {
+      const pairingForTerminal = this.mobilePairing;
+      this.app.use(createMobileSessionTerminalRouter({
+        pairing: pairingForTerminal,
+        listSessions: () => options.state.listSessions(),
+        captureOutputAsync: (tmux, lines) => options.sessionManager.captureOutputAsync(tmux, lines),
+        sendInput: (tmux, text) => options.sessionManager.sendInput(tmux, text),
+        lookupPeers: async (name) => {
+          const peers = routeCtx.resolvePeerUrls?.() ?? [];
+          const asked = peers.slice(0, PEER_LOOKUP_MAX);
+          const answers: PeerLookup[] = await Promise.all(asked.map(async (p): Promise<PeerLookup> => {
+            try {
+              const r = await poolPeerFetch(routeCtx.recordRopeResult ?? undefined, p, '/sessions', {
+                headers: { Authorization: `Bearer ${options.config.authToken}` },
+                signal: AbortSignal.timeout(PEER_LOOKUP_TIMEOUT_MS),
+              });
+              if (!r.ok) return { machineId: p.machineId, failed: true };
+              return { machineId: p.machineId, found: peerRowsMatch(await r.json(), name) };
+            } catch { return { machineId: p.machineId, failed: true }; } // @silent-fallback-ok — an unanswered peer makes the location unknown
+          }));
+          // Peers beyond the ones asked count as unanswered: absence is then never claimed.
+          if (peers.length > asked.length) answers.push({ machineId: 'not-asked', failed: true });
+          return answers;
+        },
+        nicknameOf: (id) => routeCtx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+        selfNickname: () => {
+          const id = routeCtx.meshSelfId ?? this.meshSelfId ?? null;
+          return id ? verifiedEntityName(id, routeCtx.machinePoolRegistry?.getCapacity(id)?.nickname) ?? null : null;
+        },
+        selfMachineId: () => routeCtx.meshSelfId ?? this.meshSelfId ?? null,
+        secrets: () => [options.config.authToken, options.config.dashboardPin],
+        stateDir: options.config.stateDir,
+      }));
     }
     this.app.use(routes);
     // The cost surface reads the same live ledgers and scheduler as production
@@ -6932,6 +6983,7 @@ export class AgentServer {
         // by the time we detect completion, so captureOutput returns empty).
         let reply = '';
         let sessionId = '';
+        let menteeTimedOut = false;
         const spawnTs = Date.now();
         try {
           const session = await self.sessionManager.spawnSession({
@@ -6956,6 +7008,7 @@ export class AgentServer {
             await new Promise((r) => setTimeout(r, pollIntervalMs));
           }
           if (!finished) {
+            menteeTimedOut = true;
             try { self.sessionManager.killSession(session.id); } catch { /* best-effort */ }
             console.warn(
               `[mentee] session ${session.id} timed out at ${sessionTimeoutMs}ms (corr=${msg.corr}); sending best-effort partial reply`,
@@ -6971,6 +7024,7 @@ export class AgentServer {
             `[mentee] mentor-message handler spawn failed (corr=${msg.corr}, sessionId=${sessionId}):`,
             err instanceof Error ? err.message : String(err),
           );
+          featureEvidence.record('mentee', { kind: 'error', reason: sessionId ? 'mentor message handling failed' : 'session spawn failed', context: { from: msg.from, corr: msg.corr, sessionId, durationMs: Date.now() - spawnTs, errorName: err instanceof Error ? err.name : 'unknown' } });
           return;
         }
 
@@ -6978,6 +7032,7 @@ export class AgentServer {
           console.warn(
             `[mentee] mentee session produced empty reply for corr=${msg.corr}; skipping reply-out`,
           );
+          featureEvidence.record('mentee', { kind: 'error', reason: 'empty reply: nothing sent back', context: { from: msg.from, corr: msg.corr, sessionId, timedOut: menteeTimedOut, durationMs: Date.now() - spawnTs } });
           return;
         }
 
@@ -6985,20 +7040,28 @@ export class AgentServer {
         // mentor is a local peer; Telegram fallback otherwise). The handler
         // stays capture-only — deliverA2aMessage is an orchestrator method,
         // not a capability handed into the handler.
-        await self.deliverA2aMessage({
-          fromAgent: localAgent,
-          toAgent: msg.from,
-          role: 'mentor-reply',
-          corr: msg.corr || msg.id,
-          body: reply,
-          allowedRoles: new Set(['mentor-reply']),
-          telegramTopicId: menteeCfg.replyTopicId,
-          // fromBotId = THIS agent's own bot id, so the mentor's allowlist
-          // (knownAgents[instar-codey].botId === senderBotId) passes.
-          fromBotId: self.ownPrimaryBotId(),
-          toBotId: menteeCfg.knownMentors[msg.from]?.botId,
-          targetMachineId: menteeCfg.knownMentors[msg.from]?.machineId,
-        });
+        const menteeEvidence = { from: msg.from, corr: msg.corr, sessionId, timedOut: menteeTimedOut, durationMs: Date.now() - spawnTs, replyChars: reply.length };
+        let replyDelivered: boolean;
+        try {
+          replyDelivered = await self.deliverA2aMessage({
+            fromAgent: localAgent,
+            toAgent: msg.from,
+            role: 'mentor-reply',
+            corr: msg.corr || msg.id,
+            body: reply,
+            allowedRoles: new Set(['mentor-reply']),
+            telegramTopicId: menteeCfg.replyTopicId,
+            // fromBotId = THIS agent's own bot id, so the mentor's allowlist
+            // (knownAgents[instar-codey].botId === senderBotId) passes.
+            fromBotId: self.ownPrimaryBotId(),
+            toBotId: menteeCfg.knownMentors[msg.from]?.botId,
+            targetMachineId: menteeCfg.knownMentors[msg.from]?.machineId,
+          });
+        } catch (err) {
+          featureEvidence.record('mentee', { kind: 'error', reason: 'reply delivery threw', context: menteeEvidence });
+          throw err;
+        }
+        featureEvidence.record('mentee', { kind: replyDelivered ? 'fired' : 'error', reason: replyDelivered ? 'mentor message handled: reply delivered' : 'reply not delivered', context: menteeEvidence });
       };
       roleHandlers.set('mentor', mentorMessageHandler);
     }

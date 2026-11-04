@@ -29,6 +29,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import type { SessionOwnershipRecord } from '../core/SessionOwnership.js';
 import type { MachineCapacity } from '../core/types.js';
 import type { ChannelScope } from '../core/machineServesChannel.js';
@@ -108,6 +109,9 @@ export class StrandedTopicSentinel extends EventEmitter {
   private emptyTicks = new Map<string, number>();
   /** Per-owner open stranding-window id (the dwell-epoch of the first strand). */
   private windowId = new Map<string, number>();
+  /** Items update in place every tick; evidence is written when one changes shape. */
+  private lastOwnerEvidence = new Map<string, string>();
+  private lastCantAssessEvidence: number | null = null;
 
   constructor(
     private readonly deps: StrandedTopicSentinelDeps,
@@ -127,6 +131,11 @@ export class StrandedTopicSentinel extends EventEmitter {
         // propagate or degrade anything (it mutates nothing). The error is
         // surfaced as a 'tick-error' event for observability; swallowing the
         // throw IS the correct fail-closed behavior, not a hidden degradation.
+        featureEvidence.recordAtMostEvery('monitoring.strandedTopicSentinel', 'tick-error', 3_600_000, {
+          kind: 'error',
+          reason: 'tick-error',
+          context: { errorName: err instanceof Error ? err.name : 'unknown' },
+        });
         this.emit('tick-error', { err });
       }
     }, this.cfg.tickMs);
@@ -197,6 +206,7 @@ export class StrandedTopicSentinel extends EventEmitter {
       if (n >= this.cfg.clearAfterTicks) {
         this.windowId.delete(owner);
         this.emptyTicks.delete(owner);
+        this.lastOwnerEvidence.delete(owner);
         this.emit('window-closed', { owner });
       } else {
         this.emptyTicks.set(owner, n);
@@ -247,8 +257,22 @@ export class StrandedTopicSentinel extends EventEmitter {
     };
     try {
       this.deps.raiseAttention(item);
+      const evidence = `${windowId}:${topics.length}:${reasonText}:${anyServable}`;
+      if (this.lastOwnerEvidence.get(owner) !== evidence) {
+        this.lastOwnerEvidence.set(owner, evidence);
+        featureEvidence.record('monitoring.strandedTopicSentinel', {
+          kind: 'fired',
+          reason: `stranded:${reasonText}`,
+          context: { ownerMachineId: owner, windowId, topics: topics.length, reasons: reasonText, servablePeerExists: anyServable, ownerBeatAgeSec: Math.round(ageMs / 1000) },
+        });
+      }
       this.emit('stranded', { owner, windowId, topics });
     } catch (err) {
+      featureEvidence.recordAtMostEvery('monitoring.strandedTopicSentinel', `raise-error:${owner}`, 3_600_000, {
+        kind: 'error',
+        reason: 'attention-raise-failed',
+        context: { ownerMachineId: owner, topics: topics.length, errorName: err instanceof Error ? err.name : 'unknown' },
+      });
       // @silent-fallback-ok — the attention raise is the sentinel's only output;
       // if it throws, the correct signal-only behavior is to surface a
       // 'raise-error' event and continue (no degradation, nothing to fall back
@@ -275,8 +299,17 @@ export class StrandedTopicSentinel extends EventEmitter {
     };
     try {
       this.deps.raiseAttention(item);
+      if (this.lastCantAssessEvidence !== count) {
+        this.lastCantAssessEvidence = count;
+        featureEvidence.record('monitoring.strandedTopicSentinel', { kind: 'held', reason: 'cant-assess-owner-heartbeat', context: { owners: count } });
+      }
       this.emit('cant-assess', { count });
     } catch (err) {
+      featureEvidence.recordAtMostEvery('monitoring.strandedTopicSentinel', 'raise-error:cant-assess', 3_600_000, {
+        kind: 'error',
+        reason: 'attention-raise-failed',
+        context: { owners: count, errorName: err instanceof Error ? err.name : 'unknown' },
+      });
       // @silent-fallback-ok — signal-only: surface a 'raise-error' event and
       // continue; a raise failure must never crash the monitoring tick.
       this.emit('raise-error', { err });

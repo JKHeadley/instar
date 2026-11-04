@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "mobile-native-ops-screens",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-04T07:52:38.151Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-ops-screens.md",
+  "artifactSha256": "854d309f7678a2cff03b323cb302e593efbe23dd47c264509498cb170b39ddaa",
+  "specPath": "docs/specs/mobile-native-ops-screens.md",
+  "coveredFiles": [
+    "tests/e2e/mobile-native-ops-screens-alive.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Test-only follow-up to the same Tier-2 change: the e2e now configures a stable address so pairing can mint a link.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

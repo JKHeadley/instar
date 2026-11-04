@@ -18,6 +18,7 @@
 
 import { decideCheckIn } from './A2ACheckInPolicy.js';
 import { buildSummaryPrompt, guardSummary, type SummaryKind } from './A2ACheckInSummarizer.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 export interface CheckInDeps {
   /** Run the summarizer prompt through the LLM (server wires this to the BACKGROUND LlmQueue lane). */
@@ -72,6 +73,9 @@ export async function runCheckIn(req: CheckInRequest, deps: CheckInDeps): Promis
     return { surfaced: false, kind: 'none', reason: decision.reason };
   }
 
+  // Recorded only past `decision.kind === 'none'`, so the cadence's idle ticks write nothing.
+  const checkInEvidence = { threadId: req.threadId, topicId: req.topicId ?? null, summaryKind: decision.kind, heartbeatEnabled: req.heartbeatEnabled === true, hasSalientEvent: req.hasSalientEvent === true };
+  try {
   const history = String(await deps.getHistory(req.threadId));
   const prompt = buildSummaryPrompt({ peerName: req.peerName, historyText: history, kind: decision.kind });
   const raw = await deps.summarize(prompt);
@@ -79,6 +83,7 @@ export async function runCheckIn(req: CheckInRequest, deps: CheckInDeps): Promis
   const guard = guardSummary(raw);
   if (!guard.safe) {
     // Drop the check-in: never surface an unsafe summary. (Caller may log guard.reason.)
+    featureEvidence.record('threadline.a2aCheckIn', { kind: 'held', reason: `guard-blocked: ${guard.reason}`, context: checkInEvidence });
     return { surfaced: false, kind: decision.kind, reason: `guard-blocked: ${guard.reason}` };
   }
 
@@ -90,5 +95,10 @@ export async function runCheckIn(req: CheckInRequest, deps: CheckInDeps): Promis
     kind: decision.kind,
   });
 
+  featureEvidence.record('threadline.a2aCheckIn', { kind: 'fired', reason: `summary-sent: ${decision.reason}`, context: checkInEvidence });
   return { surfaced: true, kind: decision.kind, reason: decision.reason };
+  } catch (err) {
+    featureEvidence.record('threadline.a2aCheckIn', { kind: 'error', reason: 'check-in-failed', context: { ...checkInEvidence, errorName: err instanceof Error ? err.name : 'unknown' } });
+    throw err;
+  }
 }

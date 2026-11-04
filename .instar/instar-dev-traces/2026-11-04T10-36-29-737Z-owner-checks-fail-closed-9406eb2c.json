@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "owner-checks-fail-closed",
+  "sessionId": "58f67d35-e862-45fd-a8db-06c862c54056",
+  "timestamp": "2026-11-04T10:36:29.737Z",
+  "artifactPath": "upgrades/side-effects/owner-checks-fail-closed.md",
+  "artifactSha256": "0d7ba38ca3c3b70c951d657571443c06f9166b5b0ed5c258e366a5aa4f3f050a",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "docs/specs/telegram-button-approval.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts",
+    "src/threadline/PairingInviteTelegram.ts",
+    "tests/integration/callback-owner-wiring.test.ts",
+    "tests/unit/callback-owner-fails-closed.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/threadline/PairingInviteTelegram.test.ts",
+    "upgrades/next/owner-checks-fail-closed.md",
+    "upgrades/side-effects/owner-checks-fail-closed.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes who can answer Telegram buttons on every agent: a fail-closed authority change with a fleet-wide behavior effect, named as the first item of the recommended-services rollout.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
