@@ -120,8 +120,9 @@ It is built on `proper-lockfile`, already a dependency, with a dedicated lock pa
 
 - The deadline defaults to 2 s and the stale threshold is 10 s.
 - The manager API is synchronous, so a contended lock briefly blocks the event loop. The critical
-  section is a small read and rename, so contention should last milliseconds. The deadline bounds the
-  worst case.
+  section contains a read, rename and local journal append; measure its duration and keep the
+  ordinary case within milliseconds. The deadline bounds lock acquisition, while a separate
+  watchdog must report a slow append.
 - On timeout it throws a typed `StoreLockTimeoutError`. It never falls through to an unlocked write.
 
 **`UserManager` mutations become disk transactions.** `upsertUser` and `removeUser` each do this:
@@ -130,15 +131,21 @@ It is built on `proper-lockfile`, already a dependency, with a dedicated lock pa
 2. Read the **raw** array from disk.
 3. Check channel collisions against disk, not memory.
 4. Apply a single-record change to the raw array.
-5. Write atomically and release the lock.
-6. Rebuild the in-memory map from the array just written.
-7. Emit, outside the lock.
+5. Write atomically and rebuild the in-memory map from the array just written.
+6. If a replication emitter is attached, append the affected user's `put`, or the removed user's
+   tombstone, to the local journal synchronously while holding the same file lock. Do not emit every
+   survivor. A failed
+   emit is counted and leaves the local write intact; the reconciler retries the current disk
+   projection, and Phase 3's durable intent covers a delete.
+7. Release the lock. No deferred emitter may publish an older snapshot after a later transaction.
 
 Applying the change to raw rows is what preserves rows this manager cannot load, including signed
 test-identity rows it has no key for and malformed rows. `persistUsers()`, the whole-map save, is
-deleted. The existing emit-every-survivor behaviour stays: the survivors now come from fresh disk
-state, so a stale manager can no longer emit a removed user. Reducing that fan-out is not needed for
-correctness and is out of scope.
+deleted. The lock serializes local journal appends with file commits across manager instances and
+CLI processes. Emitting only the affected record also avoids re-publishing an unchanged survivor
+after another process deletes it. The synchronous journal append is part of the bounded critical
+section; a slow or failed append must be measured and reported, and must never fall back to an
+out-of-lock replay of an old snapshot.
 
 **Failure rule: an unparseable file aborts the write.** The transaction throws and leaves the file
 alone, rather than replacing it. Boot-time load keeps its backup-and-continue behaviour, so a corrupt
@@ -173,6 +180,11 @@ other than through the funnel, so a new bypass cannot land quietly.
   deletion intent covers it, refuse the re-save. This closes the resurrection noted in reconciler
   spec §5.3.
 
+Each store uses its own file lock for the complete read-modify-write and local journal append. A
+writer must never emit from a snapshot after releasing the lock; a failed append is recovered from
+the current disk projection or a durable deletion intent. Phase 2's tests exercise these orderings
+before Phase 3 enables tombstones.
+
 Phase 2 can ship independently of Phase 1. It must ship before Phase 3 for the two evolution files.
 
 ### 3.4 Phase 3 — tombstones for the three puts-only stores
@@ -183,6 +195,9 @@ update. It extends the existing mechanism and adds no new one:
 - `UserManager.removeUser` and the `EvolutionManager` prune paths (`saveLearnings`, `saveActions`)
   write `recordDeletionPending` before the commit and `recordDeletionDone` after it, as
   `KnowledgeManager.remove` does at `KnowledgeManager.ts:197, 209`.
+- The pending intent, file commit, ordered journal append and done marker all occur under that
+  store's file lock. If the process dies between them, recovery uses the durable pending intent;
+  no later writer may publish the older key from an earlier snapshot.
 - Add key-only builders, starting with `buildUserTombstoneFromKey` (today only the channel-based
   `buildUserTombstoneData` exists), plus learning and action equivalents.
 - Add `deletionIntents` and `tombstoneFromKey` to the three seams in
@@ -193,7 +208,8 @@ update. It extends the existing mechanism and adds no new one:
 
 **Channel changes need an intent too.** `deriveUserRecordKey` hashes the full channel set, so an
 upsert that changes a user's channels creates a new key and strands the old record on peers. With the
-funnel, the transaction can see both versions, so it writes an intent for the old key.
+funnel, the transaction can see both versions, so it writes an intent for the old key and appends the
+old-key tombstone before the new-key put while holding the lock.
 
 ## 4. Coverage after the fix
 
@@ -229,6 +245,10 @@ Phase 1 tests fail on today's code and pass after the fix.
 - Two managers add different users sequentially, and both survive (case 1).
 - A stale manager's upsert does not resurrect a removed user, and the emitter sees no `put` for it
   (case 2).
+- Two managers interleave an upsert and a remove while journal emission is paused. The later delete
+  cannot be followed by an older `put`, including when the first manager held other survivors.
+- An emission failure after the file commit never schedules an out-of-lock replay of that snapshot;
+  the reconciler sees only the current disk value or the durable delete intent.
 - Constructing a manager never writes `users.json`, compared by bytes and `ino` (case 3).
 - A long-lived manager sees an external add without being rebuilt (case 4).
 - A keyless manager's write preserves a signed test-identity row and a malformed row.
@@ -239,12 +259,30 @@ Phase 1 tests fail on today's code and pass after the fix.
 **Integration, `tests/integration/user-manager-multiprocess.test.ts`:** N child processes each add M
 users concurrently, and all N×M are present afterwards with the file parseable throughout.
 
+**Phase 2, `tests/unit/replicated-store-write-funnels.test.ts` and
+`tests/integration/replicated-store-multiprocess-writes.test.ts`:**
+
+- Two `EvolutionManager` instances update the same learnings and actions files from stale views;
+  both distinct records survive. A concurrent prune and save cannot restore the pruned record or
+  publish an older `put` after its tombstone.
+- A CLI `instar reflect` process and a running manager write distinct evolution records at the same
+  time; both remain on disk and the journal follows commit order.
+- Two `KnowledgeManager` instances, including one launched through `instar knowledge ingest`, add
+  different catalog entries while one removes another entry. No entry is lost or resurrected, and
+  the removal intent remains durable across a process restart.
+- Two `RelationshipManager` instances save and delete the same record with a forced interleaving;
+  a stale save sees the deletion intent and refuses to restore the record. Unrelated records survive.
+- Each store's lock timeout refuses a write without changing file bytes or appending an event.
+
 **Phase 3:**
 
 - Extend `replicated-store-reconciler-wiring.test.ts` so the three stores are seamed with intents.
 - A two-instance e2e test extending `tests/e2e/ws2-userregistry-cross-instance.test.ts`: remove on
   instance A in a process with no emitter, and assert the tombstone reaches instance B.
 - A lost-update test proves that a row missing without an intent produces no tombstone.
+- A channel-set edit on instance A leaves no old-key ghost on instance B. A peer that still holds
+  the older, smaller channel set retains its valid identity until it receives the ordered old-key
+  tombstone and new-key put; inbound resolution never grants a channel to the wrong user.
 
 **Regression:** the existing `UserManager`, `ws26-user-topicop-*` and `silent-loss-*` suites. Tests
 that rely on the constructor persisting `initialUsers` will need updating, which is expected.
@@ -257,7 +295,7 @@ that rely on the constructor persisting `initialUsers` will need updating, which
   is a removal on every peer and a revert does not undo it, so start with one dev agent and watch the
   reconciler counters before widening.
 
-## 8. Decisions for the reviewer
+## 8. Design choices
 
 - **D1. A removed user who is still in `config.users`.** The boot seed would re-add them on restart.
   Recommendation: skip the seed when the newest intent for that record key is `done`, and log it. The
@@ -269,5 +307,6 @@ that rely on the constructor persisting `initialUsers` will need updating, which
 - **D3. Should `instar user remove` exist?** It is not required for this fix, and Phase 3 makes it safe
   to add. Recommendation: leave it to a separate change, and correct reconciler spec line 58 either way.
 - **D4. Intent for a changed channel set (§3.4).** Recommendation: include it. Without it, every
-  channel edit leaves a ghost record on peers. Reviewers should confirm that a peer holding the older,
-  smaller channel set is not harmed; REQ-M14 suggests it is not.
+  channel edit leaves a ghost record on peers. The implementation must preserve the identity of a
+  peer holding the older, smaller channel set until the ordered old-key tombstone and new-key put
+  arrive. The Phase 3 cross-instance test above verifies that boundary under REQ-M14.
