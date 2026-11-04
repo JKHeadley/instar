@@ -63,11 +63,11 @@ describe('recommended services catalog', () => {
     expect(isServiceAvailable({ ...rows[0], setupRecipe: 'tailscale-v1' })).toBe(true);
     expect(isServiceAvailable({ ...rows[0], setupRecipe: null })).toBe(false);
     // Giving a real service a recipe opens the confirm page to the public and promises setup. Before this
-    // may change, rollout step 3 must ship: the recipe runner that reads activeGrant and stops on a no; live
-    // proof, and the check that setup messages give the person no other task; closing the setup commitment
-    // on a no; a route to stop a running service; for address services, the owner-only button or the "an
-    // address comes first" row; and the confirm page in the CLAUDE.md section. The four questions listed
-    // under step 3 bind offers rather than recipes, and are kept here so they can't be missed.
+    // may change, rollout step 3 must ship: live proof, and the check that setup messages give the person no
+    // other task; a route to stop a running service; a way to store a key that keeps it out of the session;
+    // the lease question for a machine that can't reach the person; for address services, the owner-only
+    // button or the "an address comes first" row; and the confirm page in the CLAUDE.md section. The four
+    // questions listed under step 3 bind offers rather than recipes, and are kept here so they can't be missed.
     expect(rows.filter(isServiceAvailable), 'see the comment above before giving a service a recipe').toEqual([]);
   });
 

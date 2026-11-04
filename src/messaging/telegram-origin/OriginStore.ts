@@ -52,7 +52,7 @@ function workerInputBytes(input: unknown, maximum: number): number {
   }
   return bytes;
 }
-const READS = new Set(['listHeldOperations', 'unresolvedHeldOperationCount', 'heldForwardAdmissions', 'getOrigin', 'getChild', 'getOperation', 'getPayload', 'listOrigins', 'lookupOriginEvidence', 'getMetrics', 'diagnostics', 'recoverableAdmissions', 'legacyCandidates', 'undiagnosedOrigins', 'getFederatedMetrics', 'getBrowserRecoveryStates']);
+const READS = new Set(['listHeldOperations', 'listSessionDeliveryExceptions', 'unresolvedHeldOperationCount', 'heldForwardAdmissions', 'getOrigin', 'getChild', 'getOperation', 'getPayload', 'listOrigins', 'lookupOriginEvidence', 'getMetrics', 'diagnostics', 'recoverableAdmissions', 'legacyCandidates', 'undiagnosedOrigins', 'getFederatedMetrics', 'getBrowserRecoveryStates']);
 // Request deadlines protect an already-running worker operation. Starting a
 // fresh worker is a different boundary: under host pressure Node can defer the
 // worker bootstrap well beyond an ordinary DB request without the worker being
@@ -334,6 +334,8 @@ export class OriginStore {
     holdReason?: string; holdDetail?: Record<string, unknown> | null }): Promise<boolean> { return this.call('recordOperationState', input); }
   /** a2a-single-agent-identity §4.2 — durable held rows (read-only). */
   listHeldOperations(input: { limit?: number; holdReason?: string; now?: number } = {}): Promise<HeldOperationRow[]> { return this.call('listHeldOperations', input); }
+  listSessionDeliveryExceptions(input: { afterPreparedAt?: number; afterOperationId?: string; limit?: number } = {}): Promise<ReturnType<import('./OriginStoreBackend.js').OriginStoreBackend['listSessionDeliveryExceptions']>> { return this.call('listSessionDeliveryExceptions', input); }
+
   /** attention-lifecycle-close-on-cause §3.3 — held `lease-not-held` operations still unresolved for a topic (read-only). */
   unresolvedHeldOperationCount(topicId: string): Promise<number> { return this.call('unresolvedHeldOperationCount', topicId); }
   markHoldExpiryReported(input: { operationId: string; now?: number }): Promise<boolean> { return this.call('markHoldExpiryReported', input); }

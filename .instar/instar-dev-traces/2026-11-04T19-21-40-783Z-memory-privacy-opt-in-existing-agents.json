@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "slug": "memory-privacy-opt-in-existing-agents",
+  "sessionId": "844e418a-0c35-4034-a55b-985451976cc9",
+  "timestamp": "2026-11-04T19:21:40.783Z",
+  "artifactPath": "upgrades/side-effects/memory-privacy-opt-in-existing-agents.md",
+  "artifactSha256": "eee00510433ce22bd728228b0d24f136476d755b3677f179a8cbd727089ee7f3",
+  "coveredFiles": [
+    "docs/specs/memory-privacy.eli16.md",
+    "docs/specs/memory-privacy.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/SessionManager.ts",
+    "src/core/types.ts",
+    "src/scaffold/templates.ts",
+    "src/users/wireMemoryPrivacy.ts",
+    "tests/e2e/memory-privacy-existing-agent-lifecycle.test.ts",
+    "tests/e2e/memory-privacy-lifecycle.test.ts",
+    "tests/integration/memory-privacy-spawn.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/memory-privacy-existing-agents.test.ts",
+    "upgrades/next/memory-privacy-opt-in-existing-agents.md",
+    "upgrades/side-effects/memory-privacy-opt-in-existing-agents.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes the fleet default of a privacy boundary and adds a boot step that ends sessions.",
+  "eli16Path": "docs/specs/memory-privacy.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/memory-privacy-opt-in-existing-agents.md",
+  "specPath": "docs/specs/memory-privacy.md",
+  "secondPass": true,
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: the session end runs once per boot, only with privacy off, only for sessions still inside the boundary, and creates nothing that re-triggers it"
+  }
+}

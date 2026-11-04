@@ -15,6 +15,9 @@ export const PRIOR_SHIPPED_SLACK_RELAY_SHA256 = new Set([
   'ea698ef54e0e48233d82225c6cfcf886f58c7939101d966cfafc5e85edcac6a4',
   // Before message-origin-all-platforms added the origin credential header.
   '0eb8b30594456cd5ea4a830077bb70a7e2d66e4aeaf11086d3aee462b27fcc2e',
+  // Shipped by message-origin-all-platforms (932e1c851, #2669); missed when
+  // memory-privacy changed the template in 0d9bd763d (#2705).
+  '166438d58f0246699b6f4b0398983677faa0943feaf2c0c92b30d9d8d89a8fa7',
 ]);
 
 export interface SlackRelayInstallResult {

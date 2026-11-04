@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { PROOF_MOVE_TIMEOUT_MS, RebalanceProofRunner, proofProbeText, type ProofHistoryRow, type ProofRecord, type RebalanceProofDeps } from '../../src/core/rebalanceProof.js';
+import { PROOF_MOVE_TIMEOUT_MS, PROOF_SETTLED_INTERVAL_MS, PROOF_SETTLED_READS, PROOF_SPAWN_TIMEOUT_MS, RebalanceProofRunner, waitForSettledIdle, proofProbeText, type ProofHistoryRow, type ProofRecord, type RebalanceProofDeps } from '../../src/core/rebalanceProof.js';
 
 const SELF = 'm_a'; const TARGET = 'm_b'; const TOPIC = 700; const NONCE = 'nonce-1';
 
@@ -234,5 +234,58 @@ describe('RebalanceProofRunner: nothing recorded unless a move started', () => {
         vi.useRealTimers();
       }
     });
+  });
+});
+
+describe('waitForSettledIdle: one idle read of a starting session is not enough', () => {
+  const clock = () => { let t = 0; return { now: () => t, sleep: async (ms: number) => { t += ms; } }; };
+  const reads = (seq: Array<string | null>, then: string | null) => { let i = 0; return async () => (i < seq.length ? seq[i++] : then); };
+
+  it('a session idle throughout is settled after the full count', async () => {
+    const c = clock();
+    expect(await waitForSettledIdle(reads([], 's'), PROOF_SPAWN_TIMEOUT_MS, c)).toBe(true);
+    expect(c.now()).toBe((PROOF_SETTLED_READS - 1) * PROOF_SETTLED_INTERVAL_MS);
+  });
+
+  it('the live case: idle while starting, working on its brief, then idle restarts the count', async () => {
+    const c = clock();
+    const seq = ['s', 's', null, null];
+    expect(await waitForSettledIdle(reads(seq, 's'), PROOF_SPAWN_TIMEOUT_MS, c)).toBe(true);
+    expect(c.now()).toBe((seq.length + PROOF_SETTLED_READS - 1) * PROOF_SETTLED_INTERVAL_MS);
+  });
+
+  it('a session that never holds idle times out', async () => {
+    let n = 0;
+    expect(await waitForSettledIdle(async () => (n++ % 2 === 0 ? 's' : null), PROOF_SPAWN_TIMEOUT_MS, clock())).toBe(false);
+  });
+
+  it('a replacement session starts the count again', async () => {
+    const c = clock();
+    const seq = ['a', 'a', 'a', 'a', 'a'];
+    expect(await waitForSettledIdle(reads(seq, 'b'), PROOF_SPAWN_TIMEOUT_MS, c)).toBe(true);
+    expect(c.now()).toBe((seq.length + PROOF_SETTLED_READS - 1) * PROOF_SETTLED_INTERVAL_MS);
+  });
+
+  it('a read that returns past the deadline does not count', async () => {
+    const c = clock();
+    let n = 0;
+    const slowLast = async () => { if (++n === PROOF_SETTLED_READS) await c.sleep(PROOF_SPAWN_TIMEOUT_MS); return 's'; };
+    expect(await waitForSettledIdle(slowLast, PROOF_SPAWN_TIMEOUT_MS, c)).toBe(false);
+  });
+});
+
+describe('evidence reads the source session even when the move failed', () => {
+  it.each([[true, false], [false, true]])('session left %s: sourceSessionGone is %s', async (localAfter, gone) => {
+    const r = rig({ moved: false, localAfter });
+    expect((await run(r)).state).toBe('red');
+    expect((r.evidence[0].steps as Record<string, unknown>).sourceSessionGone).toBe(gone);
+  });
+
+  it('a session read that throws leaves the move failure as the reason', async () => {
+    const r = rig({ moved: false, hasLocalSession: () => { throw new Error('ps failed'); } });
+    const done = await run(r);
+    expect(done.state).toBe('red');
+    expect(done.reason).toMatch(/^move-/);
+    expect((r.evidence[0].steps as Record<string, unknown>).sourceSessionGone).toBe('unknown');
   });
 });

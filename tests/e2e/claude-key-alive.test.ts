@@ -59,16 +59,18 @@ describe('claude key wiring', () => {
     await expect(sink({})).resolves.toBeUndefined();
   });
 
-  it('the CLI writes a piped key, refuses a wrong shape, and prints neither', () => {
+  it('the CLI writes a piped key without Claude installed, refuses a wrong shape, and prints neither', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-key-cli-'));
+    const emptyPath = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-key-no-cli-'));
+    const env = { ...process.env, PATH: emptyPath, INSTAR_FRAMEWORK: 'claude-code' };
     fs.mkdirSync(path.join(dir, '.instar'));
     const file = path.join(dir, '.instar', 'config.json');
     fs.writeFileSync(file, JSON.stringify({ projectName: 't', port: 4999 }));
     const cli = path.join(ROOT, 'dist/cli.js');
-    const out = execFileSync('node', [cli, 'set-claude-key', '--dir', dir], { input: `${KEY}\n`, encoding: 'utf-8' });
+    const out = execFileSync(process.execPath, [cli, 'set-claude-key', '--dir', dir], { input: `${KEY}\n`, encoding: 'utf-8', env });
     expect(out).not.toContain(KEY);
     expect(JSON.parse(fs.readFileSync(file, 'utf-8')).sessions.credentials.anthropic.value).toBe(KEY);
-    expect(() => execFileSync('node', [cli, 'set-claude-key', '--dir', dir], { input: 'nonsense\n', encoding: 'utf-8', stdio: 'pipe' })).toThrow();
+    expect(() => execFileSync(process.execPath, [cli, 'set-claude-key', '--dir', dir], { input: 'nonsense\n', encoding: 'utf-8', stdio: 'pipe', env })).toThrow();
     expect(JSON.parse(fs.readFileSync(file, 'utf-8')).sessions.credentials.anthropic.value).toBe(KEY);
   });
 });

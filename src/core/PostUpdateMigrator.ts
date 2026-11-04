@@ -1564,6 +1564,32 @@ export interface MigratorConfig {
  * A stripped seamlessness block left empty is removed so the file stays clean.
  */
 /**
+ * usage-wall-rescue — correct two stale Subscription Pool sentences in an
+ * existing agent's CLAUDE.md: "auto-swap ships OFF" (the usage-wall rescue is
+ * now on by default with 2+ usable accounts) and "the proactive swap covers the
+ * UNTAGGED interactive session" (it skips untagged sessions by design, Q3).
+ * Pure + idempotent: only the exact old sentences are replaced.
+ */
+export const USAGE_WALL_RESCUE_OLD_CONTINUITY =
+  'Auto-swap on rate-limit ships OFF (opt-in via `subscriptionPool.autoSwapOnRateLimit` — it moves a live session, real authority).';
+export const USAGE_WALL_RESCUE_NEW_CONTINUITY =
+  "**Usage-wall rescue is ON by default when the pool holds 2+ usable accounts:** a session that sits at its account's usage wall — tagged, or riding the default login untagged — moves to an account with room and continues; new sessions are tagged with a pool account; a new session never launches on a default login the pool knows is walled. The user is told only when no account has room. Switch: `subscriptionPool.wallRescue.enabled` (an explicit `false` turns it off; with 0 or 1 usable accounts it does nothing). Swapping on a server-throttle escalation stays opt-in (`subscriptionPool.autoSwapOnRateLimit: true`).";
+export const USAGE_WALL_RESCUE_OLD_PROACTIVE =
+  "It also covers the UNTAGGED interactive session (resolves its account from the default login), so the session you talk to doesn't wedge at the wall.";
+export const USAGE_WALL_RESCUE_NEW_PROACTIVE =
+  'It does NOT move untagged sessions (no account tag, riding the default login): those are reached before the wall only by the default-slot repoint, and at the wall by the usage-wall rescue — and with 2+ usable accounts new sessions are tagged, so few stay untagged.';
+export function rewriteUsageWallRescueAwareness(content: string): { content: string; changed: boolean } {
+  let out = content;
+  if (out.includes(USAGE_WALL_RESCUE_OLD_CONTINUITY)) {
+    out = out.split(USAGE_WALL_RESCUE_OLD_CONTINUITY).join(USAGE_WALL_RESCUE_NEW_CONTINUITY);
+  }
+  if (out.includes(USAGE_WALL_RESCUE_OLD_PROACTIVE)) {
+    out = out.split(USAGE_WALL_RESCUE_OLD_PROACTIVE).join(USAGE_WALL_RESCUE_NEW_PROACTIVE);
+  }
+  return { content: out, changed: out !== content };
+}
+
+/**
  * Bounded Attention-Notification Surface (docs/specs/bounded-attention-notification-surface.md).
  * Adds the operator-facing levers so they are DISCOVERABLE and editable, rather
  * than inline code defaults an operator cannot see. The runtime already falls
@@ -8418,6 +8444,11 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Memory privacy section');
     }
+    if (!content.includes('An update never turns it on')) {
+      content += `\n\n- **Memory privacy is opt-in here**: off unless the owner sets \`memoryPrivacy.enabled: true\` on every machine of this agent, then restarts. An update never turns it on, so the agent runs as it always did. Tell an owner with several people that their facts are not separated until they opt in. A machine joined later does not inherit the setting, so it must be set there too.`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: memory privacy is opt-in for existing agents');
+    }
 
     // Replace a shipped legacy section before any missing capability bullets
     // are appended. An appended bullet at EOF would otherwise become part of
@@ -10327,9 +10358,9 @@ Rule: I do not state that work landed inside another agent's state unless I have
 **Subscription Pool (multi-account quota + auto-swap + enrollment)** — Hold ALL of your subscriptions for a provider (e.g. several Claude logins) and use them as one pool: I read each account's live quota, drain each before its reset, and when a session hits an account's limit I resume it on another account instead of letting it die. The registry stores each account's login LOCATION (its config home), NEVER a token.
 - See the pool + each account's live quota: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/subscription-pool\` · one account's quota + burn: \`GET /subscription-pool/:id/quota\` · poll all now: \`POST /subscription-pool/poll\`.
 - **Quota across ALL my machines** (pool-scope read) — \`GET /subscription-pool?scope=pool\` fans out to every ONLINE peer's plain pool, tags each account with the machine holding it (\`machineId\`/\`machineNickname\`/\`remote:true\`), and merges into ONE dark-peer-tolerant object \`{ enabled, accounts:[...], pool:{ selfMachineId, peersQueried, peersOk, failed }, scope:'pool' }\`. A down/slow/unauth peer is a classified \`pool.failed\` row (normalized reason — never a peer URL or token), never a silent omission and never a 500. Per-machine seat is meaningful, so the SAME account on two machines stays individually visible (never coalesced). Single-machine → the plain self-only view tagged \`scope:'pool'\`. Use this when the operator asks "how much quota is left across ALL my machines?".
-- **Continuity guarantee** — a long session that hits its account's quota resumes on another eligible account (conversation preserved via \`--resume\`), never dies. Manual lever: \`POST /subscription-pool/swap\` \`{"sessionName":"...","exhaustedAccountId":"..."}\`. Auto-swap on rate-limit ships OFF (opt-in via \`subscriptionPool.autoSwapOnRateLimit\` — it moves a live session, real authority).
+- **Continuity guarantee** — a long session that hits its account's quota resumes on another eligible account (conversation preserved via \`--resume\`), never dies. Manual lever: \`POST /subscription-pool/swap\` \`{"sessionName":"...","exhaustedAccountId":"..."}\`. **Usage-wall rescue is ON by default when the pool holds 2+ usable accounts:** a session that sits at its account's usage wall — tagged, or riding the default login untagged — moves to an account with room and continues; new sessions are tagged with a pool account; a new session never launches on a default login the pool knows is walled. The user is told only when no account has room. Switch: \`subscriptionPool.wallRescue.enabled\` (an explicit \`false\` turns it off; with 0 or 1 usable accounts it does nothing). Swapping on a server-throttle escalation stays opt-in (\`subscriptionPool.autoSwapOnRateLimit: true\`).
 - **Conversation follows its login** — when a Telegram or Slack topic restarts under a different pool account, its conversation is copied into that account's login folder first (never deleting or overwriting a divergent copy), so \`--resume\` finds it. If no copy exists, the topic starts from recent messages and I'm told so. A resume that crashes at startup is detected from the pane's exit and retried fresh once, with the crash output in the server log. Off switch: \`sessions.resumeFollowsAccount.enabled: false\` (applies on restart). User asks "why did my topic lose its memory / show 'No conversation found'?" → check the server log for \`Resume placement\` and \`exited during startup\` lines.
-- **Pre-limit (proactive) swap** — beyond the reactive swap above, I can move a session OFF an account BEFORE it walls, at a lag-aware measured threshold (default 80% — the polled reading trails real usage, so the swap completes with margin). It also covers the UNTAGGED interactive session (resolves its account from the default login), so the session you talk to doesn't wedge at the wall. Opt-in via \`subscriptionPool.proactiveSwap.enabled\` (same authority as auto-swap, earlier trigger). Status: \`GET /subscription-pool/proactive-swap\`; run a pass now: \`POST /subscription-pool/proactive-swap/check\`.
+- **Pre-limit (proactive) swap** — beyond the reactive swap above, I can move a session OFF an account BEFORE it walls, at a lag-aware measured threshold (default 80% — the polled reading trails real usage, so the swap completes with margin). It does NOT move untagged sessions (no account tag, riding the default login): those are reached before the wall only by the default-slot repoint, and at the wall by the usage-wall rescue — and with 2+ usable accounts new sessions are tagged, so few stay untagged. Opt-in via \`subscriptionPool.proactiveSwap.enabled\` (same authority as auto-swap, earlier trigger). Status: \`GET /subscription-pool/proactive-swap\`; run a pass now: \`POST /subscription-pool/proactive-swap/check\`.
 - **Anti-thrash brakes + in-flight work protection on swaps** — the proactive swap carries brakes so it can never ping-pong sessions between hot accounts: when EVERY account is hot it STAYS PUT (\`all-hot\` refusal), a just-swapped session dwells ~45 min before it can be moved again (restart-safe via \`state/swap-ledger.jsonl\`), and a swap only executes onto a target that is MATERIALLY cooler on a fresh quota reading. A session mid-turn or carrying live subagents is never killed by an optimization — the swap DEFERS until the work lands (a forced/reactive kill carries a mitigation note enumerating interrupted subagents + re-injecting the last unanswered message). Brakes ship dry-run first (\`subscriptionPool.proactiveSwap.antiThrash.dryRun\`); the work gate's \`subscriptionPool.swapContinuity.enabled\` is restart-required. "Why didn't my session swap?" → \`GET /subscription-pool/proactive-swap\` \`brakes\`/\`deferrals\` blocks name the refusal; "why did my refresh get a session-busy error?" → the work gate refused to kill in-flight work — wait, or re-issue with \`force:true\`.
 - **Credential identity drift is self-healing safety state** — quota follows the account proven by the live token, never a stale slot label. \`GET /subscription-pool\` exposes \`identityDrifted\` + credential-free evidence; drifted slots are excluded from capacity and every swap target. Repair is planned/audited through the existing staged credential-swap machinery, with a live identity pre-flight before every swap; uncertainty quarantines. A login absent from this machine becomes an owner re-login commitment with enrollment links (Claude logins are never copied across machines).
 - **Enroll a new account from your phone** — \`POST /subscription-pool/enroll\` \`{"id","label","provider","framework","configHome"}\` starts a login and returns a public code/URL (never a token); \`GET /subscription-pool/pending-logins\` is the surface; expired codes are auto-reissued. Mark done with \`POST /subscription-pool/enroll/:id/complete\`, or safely abandon a stuck login with \`POST /subscription-pool/enroll/:id/cancel\`.
@@ -10516,7 +10547,7 @@ Rule: I do not state that work landed inside another agent's state unless I have
       const continuityAnchor =
         '`subscriptionPool.autoSwapOnRateLimit` — it moves a live session, real authority).';
       const proactiveBullet =
-        '\n- **Pre-limit (proactive) swap** — beyond the reactive swap above, I can move a session OFF an account BEFORE it walls, at a lag-aware measured threshold (default 80% — the polled reading trails real usage, so the swap completes with margin). It also covers the UNTAGGED interactive session (resolves its account from the default login), so the session you talk to doesn\'t wedge at the wall. Opt-in via `subscriptionPool.proactiveSwap.enabled` (same authority as auto-swap, earlier trigger). Status: `GET /subscription-pool/proactive-swap`; run a pass now: `POST /subscription-pool/proactive-swap/check`.';
+        '\n- **Pre-limit (proactive) swap** — beyond the reactive swap above, I can move a session OFF an account BEFORE it walls, at a lag-aware measured threshold (default 80% — the polled reading trails real usage, so the swap completes with margin). It does NOT move untagged sessions (no account tag, riding the default login): those are reached before the wall only by the default-slot repoint, and at the wall by the usage-wall rescue — and with 2+ usable accounts new sessions are tagged, so few stay untagged. Opt-in via `subscriptionPool.proactiveSwap.enabled` (same authority as auto-swap, earlier trigger). Status: `GET /subscription-pool/proactive-swap`; run a pass now: `POST /subscription-pool/proactive-swap/check`.';
       if (content.includes(continuityAnchor)) {
         content = content.replace(continuityAnchor, continuityAnchor + proactiveBullet);
         patched = true;
@@ -10543,6 +10574,21 @@ Rule: I do not state that work landed inside another agent's state unless I have
         content = content.replace(preLimitAnchor, preLimitAnchor + antiThrashBullet);
         patched = true;
         result.upgraded.push('CLAUDE.md: added Subscription Pool anti-thrash brakes + work-gate bullet');
+      }
+    }
+
+    // usage-wall-rescue (docs/specs/usage-wall-rescue.md): existing agents were
+    // told auto-swap ships OFF and that the proactive swap covers untagged
+    // sessions. Neither is true any more (the proactive swap skips untagged
+    // sessions by design; the wall rescue is on by default with 2+ accounts).
+    // Runs AFTER the proactive/anti-thrash insertions above, which anchor on the
+    // old continuity sentence. Idempotent: old sentences only.
+    {
+      const rewritten = rewriteUsageWallRescueAwareness(content);
+      if (rewritten.changed) {
+        content = rewritten.content;
+        patched = true;
+        result.upgraded.push('CLAUDE.md: corrected Subscription Pool swap coverage (usage-wall rescue on by default; proactive swap skips untagged sessions)');
       }
     }
 
@@ -14781,6 +14827,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     // sections preserve narrative ordering in the shadow.
     const markers = [
       '**Memory privacy**',
+      'An update never turns it on',
       '### Feature switches apply their setting (read `effective` before saying a feature is on)',
       '### Telegram message origin',
       // message-origin-all-platforms: server-side and framework-neutral (app + Slack recording).
@@ -16273,6 +16320,19 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     }
 
     let patched = false;
+
+    // Memory privacy never restricts an agent by update. Record that as a choice, and
+    // add only a missing value: an owner's opt-in stays, as do their people.
+    {
+      const memoryPrivacy = (config.memoryPrivacy && typeof config.memoryPrivacy === 'object')
+        ? config.memoryPrivacy as Record<string, unknown> : {};
+      if (memoryPrivacy.enabled === undefined) {
+        memoryPrivacy.enabled = false;
+        config.memoryPrivacy = memoryPrivacy;
+        patched = true;
+        result.upgraded.push('config.json: memory privacy stays off for this existing agent');
+      }
+    }
 
     // Account-specific feedback triage is dark until the staged live-evidence
     // route is enabled. Add only a missing value; never rewrite operator choice.

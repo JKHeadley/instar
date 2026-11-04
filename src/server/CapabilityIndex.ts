@@ -83,7 +83,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'subscriptionPool',
     prefixes: ['/subscription-pool'],
-    description: 'Subscription & Auth Standard — a multi-account subscription pool (N logins of the same provider) with live per-account quota (5h + weekly utilization + reset dates, measured burn), reset-date-optimal account selection, a hard session-continuity guarantee (a session that hits its account quota resumes on another account via --resume, never dies), proactive PRE-LIMIT swap (move a session off an account before it walls, at a lag-aware threshold — covers untagged sessions on the default login), and a mobile-first enrollment wizard (start a login, surface the public code/URL, auto-reissue an expired code). The registry stores login LOCATION (config home), never tokens. Backs the dashboard Subscriptions tab. Single-account pools are a no-op; auto-swap of live sessions is opt-in (subscriptionPool.autoSwapOnRateLimit reactive; subscriptionPool.proactiveSwap pre-limit).',
+    description: 'Subscription & Auth Standard — a multi-account subscription pool (N logins of the same provider) with live per-account quota (5h + weekly utilization + reset dates, measured burn), reset-date-optimal account selection, a hard session-continuity guarantee (a session that hits its account quota resumes on another account via --resume, never dies), proactive PRE-LIMIT swap (move a session off an account before it walls, at a lag-aware threshold — tagged sessions only; untagged ones are reached by the default-slot repoint and the usage-wall rescue), and a mobile-first enrollment wizard (start a login, surface the public code/URL, auto-reissue an expired code). The registry stores login LOCATION (config home), never tokens. Backs the dashboard Subscriptions tab. Single-account pools are a no-op. Usage-wall rescue is ON by default with 2+ usable accounts (subscriptionPool.wallRescue.enabled): a session at its account usage wall, tagged or untagged, moves to an account with room, and new sessions are tagged with a pool account; swapping on a server throttle stays opt-in (subscriptionPool.autoSwapOnRateLimit) and the pre-limit swap is opt-in (subscriptionPool.proactiveSwap).',
     build: ({ ctx }) => ({
       configured: !!ctx.subscriptionPool,
       accounts: ctx.subscriptionPool ? ctx.subscriptionPool.size() : 0,
@@ -278,7 +278,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     description: 'Recommended outside services (docs/specs/recommended-services.md) — the catalog (benefit, what leaves the machine, cost, account, backup and its status, whether it is available) and the saved yes or no for each service, replicated across machines where machine sync is on (the route reports `replicating`). Offers are not live yet, and the route reports what they wait for (`migrationComplete`, `firstResult`). A no needs the dashboard PIN.',
     build: () => ({
       configured: true,
-      endpoints: ['GET /recommended-services', 'POST /recommended-services/:id/no', 'GET /recommended-services/:id/confirm', 'POST /recommended-services/:id/confirm'],
+      endpoints: ['GET /recommended-services', 'POST /recommended-services/:id/no', 'GET /recommended-services/:id/confirm', 'POST /recommended-services/:id/confirm', 'POST /recommended-services/:id/verify'],
     }),
   },
   {

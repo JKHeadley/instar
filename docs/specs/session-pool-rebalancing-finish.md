@@ -231,6 +231,18 @@ as `not-router`. So a proof on any other machine hands its nonce to the holder t
 is the holder, it handles the probe rather than forwarding it, and that counts. Found live on 2026-11-04: the Mini
 moved a conversation correctly and its proof went red with `probe-queued`.
 
+**A Linux session is not busy forever.** On Linux, `npm exec` starts the Playwright server through `sh -c playwright-mcp`.
+That reads as a tool shell, and a tool shell outranked the baseline list, so every such session looked busy for good: a
+proof could not start, and a drain aborted. Found live on 2026-11-04 on Mama PC, which went red with `aborted-not-quiet`
+and then `no-idle-session` on a session plainly sitting at its prompt. macOS has no such shell, which is why the Macs
+passed. `computeHasActiveProcesses` and `drainProcessShape` now recognise exactly that launcher: a plain one-command `sh -c`
+naming an mcp binary, whose direct parent is `npm exec` or `npx` of an MCP package. Any other shell stays work.
+
+**Idle has to hold.** A session still starting reads as idle, so the proof waits for six idle reads in a row of the same
+session, five seconds apart, before asking for the move; any other read starts the count again. A brief delivered later
+than that can still abort a move, which is a named red and never a false green. The evidence's `sourceSessionGone` is a
+real session read on every path, so a failed move that leaves the session running says so.
+
 **What "exactly one reply" covers.** It is read across the machines that can be read, and the target must be one of
 them. A machine that is off cannot make the proof red: only the source and the target can receive the probe, and
 requiring every machine would fail a whole ring because one laptop is shut. Any step that could hang has its own

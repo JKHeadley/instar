@@ -174,6 +174,7 @@ const DEFAULT_CONFIG: BackupConfig = {
     // A person's choices, so a no survives restoring a lone machine.
     'state/recommended-services/',
     'state/offer-prerequisites/',
+    'state/recommended-service-setup/',
     // Integrated-Being v1 (gated by config.integratedBeing.enabled at snapshot
     // time — see resolveIncludedFiles()). Glob matches the active ledger and
     // any rotated .jsonl.<epoch> archives.

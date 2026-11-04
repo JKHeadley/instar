@@ -58,7 +58,7 @@ describe('memory privacy (alive on the production wiring path)', () => {
     };
     wiring = wireMemoryPrivacy({
       projectDir: path.join(dir, 'agent'), stateDir, projectName: 'mp-e2e', instarRoot: path.join(dir, '.instar'),
-      framework: () => 'claude-code', memoryPrivacy: () => undefined,
+      framework: () => 'claude-code', memoryPrivacy: () => ({ enabled: true }),
       messaging: () => config.messaging as never, sessionManager: sessionManager as never, probe: async () => true, slackBotUserId: () => 'B',
     });
     await wiring.ready;

@@ -62,7 +62,7 @@ import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { StandDownRegistry } from '../core/StandDownRegistry.js';
 import { getActiveOverloadShedPlanner, getMoveAftercare } from '../core/OverloadShedPlanner.js';
 import { QuietTopicScanner, type RunningTopicSession } from '../core/quietTopicScanner.js';
-import { RebalanceProofRunner, getActiveRebalanceProof, proofSpawnBrief, setActiveRebalanceProof, setActiveRebalanceProofStore, type ProofHistoryRow } from '../core/rebalanceProof.js';
+import { RebalanceProofRunner, getActiveRebalanceProof, waitForSettledIdle, proofSpawnBrief, setActiveRebalanceProof, setActiveRebalanceProofStore, type ProofHistoryRow } from '../core/rebalanceProof.js';
 import { rebalanceProofState } from '../core/StageAdvancer.js';
 import { buildHandoffContinuationInstruction, type HandoffCommitment } from '../core/handoffContinuation.js';
 import { BASELINE_PROCESS_PATTERNS } from '../core/baselineProcessPatterns.js';
@@ -267,6 +267,7 @@ import { DispatchScopeEnforcer } from '../core/DispatchScopeEnforcer.js';
 import { TrustRecovery } from '../core/TrustRecovery.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { gitLeaseHasNoRemote, reportLeaseMediumSelection, selectLeaseMedium } from '../core/leaseMediumSelection.js';
+import { decideRoleRestart, readLastRoleRestart, requestRoleRestart } from '../core/roleFollowRestart.js';
 import { HumanAsDetectorLog, observeInboundMessage } from '../monitoring/HumanAsDetectorLog.js';
 import { creditUsherOnMiss } from '../core/UsherActedCorrelator.js';
 import { resolveStableNodeBinary } from '../utils/resolveNodeBinary.js';
@@ -1276,6 +1277,10 @@ let _quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareSch
 // Subscription & Auth Standard P1.3 — pre-limit proactive swap monitor. Null
 // until wired (requires the scheduler; gated behind subscriptionPool.proactiveSwap).
 let _proactiveSwapMonitor: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor | null = null;
+// usage-wall-rescue — moves a session off a walled account (tagged or not) and
+// tags spawns. Null until wired next to the scheduler; read late by the
+// PresenceProxy wording hook.
+let _usageWallRescue: import('../core/UsageWallRescue.js').UsageWallRescue | null = null;
 // swap-continuity-antithrash §3/§4 — the anti-thrash spine. The ledger + engine
 // load and hydrate UNCONDITIONALLY at boot (R4-L3: reactive rows append
 // regardless of antiThrash.enabled, so the index is warm at a mid-run flag
@@ -6940,6 +6945,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     };
     sessionManager.on('sessionComplete', (session) => sessionManager.releaseMemorySession(session));
     await _memoryWiring.ready.catch((err) => console.error('[memory-privacy] boot probe failed; scoped conversations stay refused:', err));
+    await sessionManager.retireBoundedSessionsWhenPrivacyOff()
+      .then((names) => { if (names.length) console.log(`[memory-privacy] off: ended ${names.length} bounded session(s)`); })
+      .catch((err) => console.error('[memory-privacy] could not end bounded sessions:', err));
 
     // Native hook events (docs/specs/native-hook-events.md D4): reconcile the
     // reporter entries in .claude/settings.json to this machine's decision at
@@ -6984,22 +6992,57 @@ export async function startServer(options: StartOptions): Promise<void> {
       telegramOriginBoot = await bootTelegramOrigin({ config, token: typeof originBotToken === 'string' && originBotToken ? originBotToken : undefined,
         onRecoveredMessage: entry => {
           telegram?.logRecoveredOriginMessage(entry);
+          // A late acceptance is reported by the durable exception scan. Only
+          // an on-time acceptance can close the held Attention item here.
+          if (entry.acceptedAt - entry.preparedAt >= 300_000) return;
           const attentionId = `telegram-origin-held-reply:${entry.operationId}`;
           if (telegram?.clearAttentionCondition({ id: attentionId }, `Telegram accepted recovered message ${entry.messageId}.`).closed === 0) {
             void telegram?.updateAttentionStatus(attentionId, 'DONE', { silent: true,
               closedBy: 'cause-cleared', resolution: `Telegram accepted recovered message ${entry.messageId}.` });
           }
         },
-        onSessionDeliveryHeld: entry => {
+        onSessionDeliveryHeld: async entry => {
           if (!telegram || !entry.chatId) return;
+          const { sessionDeliveryNotice, lateRecoveredReplyNotice } = await import('../messaging/telegram-origin/SessionDeliveryNotice.js');
           const topicId = entry.chatId === String((originTelegramConfig.config as { issuesChatId?: unknown }).issuesChatId)
             ? 10_000_000_000 + (entry.threadId ?? 1) : entry.threadId;
-          void telegram.createAttentionItem({ id: `telegram-origin-held-reply:${entry.operationId}`,
-            category: 'telegram-origin', priority: 'HIGH', title: 'A session reply is delayed',
-            sourceContext: 'telegram-origin-session-hold',
-            summary: `A reply to topic ${topicId ?? 'unknown'} is still in the delivery queue. Telegram was unreachable before this attempt connected; the server will retry the same message.`,
-            description: `Operation ${entry.operationId}. The advisory preflight does not confirm delivery.` }, { hubOnly: true })
-            .catch(error => console.warn('[telegram-origin] held reply attention unavailable', error instanceof Error ? error.name : 'unknown-error'));
+          const late = entry.state === 'accepted' && entry.preparedAt !== undefined && entry.acceptedAt !== null && entry.acceptedAt !== undefined
+            ? lateRecoveredReplyNotice(entry.preparedAt, entry.acceptedAt, entry.outOfOrder) : null;
+          const attentionId = `telegram-origin-held-reply:${entry.operationId}`;
+          const previous = telegram.getAttentionItem(attentionId);
+          if (entry.state === 'accepted' && !late) {
+            if (previous && previous.status !== 'DONE') await telegram.updateAttentionStatus(attentionId, 'DONE', { silent: true,
+              closedBy: 'cause-cleared', resolution: 'Telegram accepted the original reply.' });
+            return;
+          }
+          const copy = entry.state === 'accepted'
+            ? { summary: 'An earlier reply was confirmed after a delay and may be out of order with newer answers.', topicText: late! }
+            : sessionDeliveryNotice(entry.state ?? 'held', entry.uncertain);
+          if (entry.state === 'accepted' && previous?.status === 'DONE' && previous.summary === copy.summary) return;
+          await telegram.upsertAttentionItem({ id: attentionId,
+            category: 'telegram-origin', priority: 'HIGH', title: 'A reply needs delivery attention',
+            sourceContext: 'telegram-origin-session-hold', summary: copy.summary,
+            description: `Original reply to topic ${topicId ?? 'unknown'}; delivery state ${entry.state ?? 'held'}.` });
+          if (topicId === null) return;
+          // A stable logical send id lets the origin outbox answer a repeated
+          // notice with its original receipt, including after a server restart.
+          // A held/uncertain notice is retried by the next durable scan.
+          if (!telegramOriginBoot) throw new Error('origin notice sender not ready');
+          const { postOriginAutomationReply } = await import('../messaging/telegram-origin/OriginAutomationReply.js');
+          const noticeState = entry.state === 'accepted' ? 'late'
+            : entry.uncertain || entry.state === 'outcome-unknown' ? 'uncertain'
+              : entry.state === 'expired' || entry.state === 'known-failed' ? 'failed' : 'delayed';
+          const response = await postOriginAutomationReply({ service: telegramOriginBoot.runtime.service,
+            port: config.port, authToken: config.authToken ?? '', producerId: 'reply-delivery-notice',
+            topicId, body: { text: copy.topicText, metadata: { messageKind: 'health-alert' } },
+            logicalSendId: `reply-delivery-notice:${entry.operationId}:${noticeState}` });
+          if (response.status !== 200) throw new Error(`origin notice not confirmed: HTTP ${response.status}`);
+          if (entry.state === 'accepted') {
+            if (telegram.clearAttentionCondition({ id: attentionId }, 'The late reply and its explanation reached the conversation.').closed === 0) {
+              await telegram.updateAttentionStatus(attentionId, 'DONE', { silent: true,
+                closedBy: 'cause-cleared', resolution: 'The late reply and its explanation reached the conversation.' });
+            }
+          }
         },
         noticeOwner: typeof originBotToken === 'string' && !!originBotToken && !lifelineOwnsTelegramPoll(config.stateDir, originBotToken) && options.telegram !== false,
         holdsLease: () => coordinator.holdsLease(),
@@ -8233,6 +8276,41 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
 
     let scheduler: JobScheduler | undefined;
+    // lease-takeover-role-restart: the scheduler below exists only on a machine awake at boot,
+    // so a role change restarts once and this same path builds what the new role needs.
+    // Losing authority stops jobs NOW, whatever a restart is waiting on: a throttled restart
+    // must never mean jobs running in two places.
+    const bootAwake = coordinator.isAwake;
+    const reconcileRole = (): void => {
+      try {
+        const nowAwake = coordinator.isAwake;
+        if (nowAwake === bootAwake) return;
+        const lease = config.multiMachine?.leaseSelfHeal;
+        const peer = Object.entries(coordinator.managers.identityManager.loadRegistry().machines ?? {})
+          .some(([id, entry]) => id !== coordinator.identity?.machineId && !entry.revokedAt);
+        const decision = decideRoleRestart({
+          applies: !!lease?.soloCaptainHold?.enabled && !lease?.preferredAwakeMachineId && peer,
+          bootAwake, nowAwake, lastRestartAtMs: readLastRoleRestart(config.stateDir), nowMs: Date.now(),
+        });
+        if (decision === 'restart') {
+          console.log(pc.yellow(`  [lease] role is now ${coordinator.role}: restarting once so boot builds what it needs`));
+          requestRoleRestart({ stateDir: config.stateDir }, nowAwake);
+        }
+      } catch (err) {
+        console.warn(`  [lease] role restart check failed: ${err instanceof Error ? err.message : String(err)}`); // @silent-fallback-ok: logged, and the timer below retries
+      }
+    };
+    coordinator.on('roleChange', (_from, to) => {
+      const lease = config.multiMachine?.leaseSelfHeal;
+      if (lease?.soloCaptainHold?.enabled && !lease?.preferredAwakeMachineId) {
+        if (to === 'awake') scheduler?.resume();
+        else scheduler?.pause();
+      }
+      reconcileRole();
+    });
+    // A change inside the restart window, or a failed request, is retried until the role matches.
+    setInterval(reconcileRole, 60_000).unref?.();
+
     if (config.scheduler.enabled && coordinator.isAwake) {
       scheduler = new JobScheduler(config.scheduler, sessionManager, state, config.stateDir);
       scheduler.notifyDestinationHasOtherReaders = (job) => {
@@ -16903,6 +16981,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           hasContextExhaustionLatch: sessionRecovery
             ? (topicId) => sessionRecovery!.hasContextWedgedSeen(topicId)
             : undefined,
+          // usage-wall-rescue: when another account has room, the standby says
+          // the session is being moved — never "paused until reset".
+          describeQuotaWall: (sessionName) => _usageWallRescue?.describeWall(sessionName) ?? null,
           // Shared per-topic mutex — coordinates with PromiseBeacon.
           acquireProxyMutex: (topicId, holder) => proxyCoordinator.tryAcquire(topicId, holder),
           releaseProxyMutex: (topicId, holder) => proxyCoordinator.release(topicId, holder),
@@ -22140,8 +22221,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         onNoAlternate: telegramRef ? (sessionName, exhaustedAccountId) => {
           void telegramRef.createAttentionItem({
             id: `subpool-no-alternate-${exhaustedAccountId}`,
-            title: 'Subscription pool — no alternate account to swap to',
-            summary: `Session "${sessionName}" hit account "${exhaustedAccountId}"'s quota and there's no other eligible account in the pool. The session falls back to the existing rate-limit back-off; consider enrolling another account.`,
+            title: 'Every subscription account is at its usage limit',
+            summary: `Session "${sessionName}" reached the usage limit on account "${exhaustedAccountId}", and no other connected account has room. It will carry on by itself when the limit resets. Connecting another account would let it carry on sooner.`,
             category: 'subscription-pool',
             priority: 'HIGH',
             sourceContext: 'subscription-pool:no-alternate',
@@ -22150,49 +22231,107 @@ export async function startServer(options: StartOptions): Promise<void> {
         logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
       });
 
-      // DARK auto-trigger: only when explicitly enabled does a rate-limit
-      // escalation drive an account swap. Default off — opt-in per Justin's
-      // tier-2 sign-off (auto-swapping live sessions is real authority).
-      if (config.subscriptionPool?.autoSwapOnRateLimit) {
-        rateLimitSentinel.on('rate-limit:escalated', (rlState: { sessionName?: string }) => {
-          const sessionName = rlState?.sessionName;
-          if (!sessionName) return;
-          // Resolve which account this session is running under; only pool-managed
-          // sessions are swap-eligible (others fall back to the existing back-off).
-          const session = state.listSessions({ status: 'running' })
-            .find(s => s.tmuxSession === sessionName);
-          const accountId = session?.subscriptionAccountId;
-          if (!accountId) return;
-          void _quotaAwareScheduler?.onQuotaPressure({
-            sessionName,
-            exhaustedAccountId: accountId,
-            nowMs: Date.now(),
-            framework: session?.framework ?? 'claude-code',
-          });
+      // usage-wall-rescue (docs/specs/usage-wall-rescue.md). ONE switch,
+      // `subscriptionPool.wallRescue.enabled` (default true, operator-approved
+      // 2026-11-04), read LIVE; effective only while the pool has 2+ usable
+      // accounts of the session's framework. Covers untagged sessions by
+      // resolving the account the session is actually on.
+      const { UsageWallRescue } = await import('../core/UsageWallRescue.js');
+      type WallRescueConfigView = import('../core/UsageWallRescue.js').WallRescueConfigView;
+      const readWallRescueConfig = (): WallRescueConfigView | undefined =>
+        liveConfig.get<WallRescueConfigView | undefined>(
+          'subscriptionPool',
+          config.subscriptionPool as WallRescueConfigView | undefined,
+        );
+      _usageWallRescue = new UsageWallRescue({
+        readConfig: readWallRescueConfig,
+        listAccounts: () => subscriptionPool.list(),
+        getSession: (name) => state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === name),
+        configHomeForSession: (name) => sessionManager.configHomeForSession(name),
+        resolveDefaultAccountId: async () =>
+          (await inUseAccountResolver.resolve(subscriptionPool.list())).activeAccountId,
+        swap: (a) =>
+          _quotaAwareScheduler
+            ? _quotaAwareScheduler.onQuotaPressure(a)
+            : Promise.resolve({ swapped: false, toAccountId: null, reason: 'scheduler-unavailable' }),
+        // Plain notice to the conversation, only when the session cannot be
+        // moved (no account has room, or moves kept failing).
+        // Coalesced: one in-flight poll at a time and at most one per minute, so
+        // many sessions holding on a stale reading cannot fan out pool polls.
+        requestQuotaRefresh: (() => {
+          let inFlight = false;
+          let lastAt = 0;
+          return () => {
+            const now = Date.now();
+            if (inFlight || now - lastAt < 60_000) return;
+            inFlight = true;
+            lastAt = now;
+            void Promise.resolve(quotaPoller.pollAll())
+              .catch(() => { /* @silent-fallback-ok: the scheduled poll still runs */ })
+              .finally(() => { inFlight = false; });
+          };
+        })(),
+        notifyUser: (sessionName, text) => {
+          const raw = telegram?.getTopicForSession(sessionName);
+          const topicId = typeof raw === 'number' ? raw : Number(raw);
+          if (raw == null || !Number.isFinite(topicId)) return false;
+          // Resolves true only on a confirmed send; anything else leaves the
+          // standby to report the wall.
+          return sendAutomationReply('usage-wall-rescue', topicId, { text, metadata: { provenance: 'automation' } }, deterministicAutomationAuthor())
+            .then((resp) => resp.ok === true)
+            .catch(() => false);
+        },
+        logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+      });
+      const wallRescue = _usageWallRescue;
+      void wallRescue.refreshDefaultAccount();
+      const wallRescueDefaultTimer = setInterval(() => { void wallRescue.refreshDefaultAccount(); }, 60_000);
+      wallRescueDefaultTimer.unref?.();
+      // The trigger: the watchdog's settled usage-wall signal.
+      if (watchdog) {
+        watchdog.on('usage-wall', (sessionName: string) => {
+          void wallRescue.onUsageWall(sessionName);
+        });
+        watchdog.on('usage-wall-cleared', (sessionName: string) => {
+          wallRescue.onWallCleared(sessionName);
         });
       }
 
-      // Subscription-pool session PINNING (Subscription & Auth Standard): when
-      // enabled, new claude-code spawns launch on the scheduler-picked optimal
-      // account (reset-date / headroom score) and carry its id. This is the
-      // prerequisite that makes auto-swap functional — without a session→account
-      // tag, the swap engine has nothing to move. Default off → spawns use the
-      // default config exactly as before (the resolver stays unwired).
-      if (config.subscriptionPool?.pinSessionsToPool) {
+      // Legacy opt-in: an explicit autoSwapOnRateLimit:true also moves a session
+      // on a server-throttle escalation (a throttle is shared capacity, so the
+      // default-on rescue does not move sessions for it). It goes through the
+      // SAME funnel and brakes as the wall; untagged sessions are resolved
+      // instead of skipped. The live config is checked per event.
+      rateLimitSentinel.on('rate-limit:escalated', (rlState: { sessionName?: string }) => {
+        const sessionName = rlState?.sessionName;
+        if (!sessionName) return;
+        void wallRescue.onThrottleEscalated(sessionName);
+      });
+
+      // Session PINNING / tagging. An explicit pinSessionsToPool:true pins
+      // every claude-code spawn (as before). Otherwise the rescue's resolver
+      // tags spawns when the pool has 2+ usable accounts (so no session is
+      // untagged) and, with pinning explicitly off, still refuses to launch on
+      // a default login the pool knows is walled. 0/1 usable accounts → null →
+      // the default login, exactly as before.
+      if (config.subscriptionPool?.pinSessionsToPool === true) {
         const { selectAccount } = await import('../core/QuotaAwareScheduler.js');
         sessionManager.setSpawnAccountResolver(() => {
           const acct = selectAccount(subscriptionPool.list(), { nowMs: Date.now(), framework: 'claude-code' });
           return acct ? { configHome: acct.configHome, accountId: acct.id } : null;
         });
         console.log(pc.green('  Subscription-pool session pinning enabled'));
+      } else {
+        sessionManager.setSpawnAccountResolver(() => wallRescue.spawnAccount());
       }
 
       // ProactiveSwapMonitor (Subscription & Auth Standard P1.3 — the PRE-LIMIT
       // half). Moves a session OFF an account BEFORE it walls, at a lag-aware
-      // measured threshold. Complements the reactive autoSwapOnRateLimit (which
-      // only fires AFTER the wall) and covers UNTAGGED sessions by resolving the
-      // default-config login — so the primary interactive session is swap-visible
-      // instead of wedging (the 2026-06-09 failure). DARK by default: only runs
+      // measured threshold. Complements the reactive usage-wall rescue (which
+      // only fires AFTER the wall). It does NOT move untagged sessions (Q3):
+      // those are reached by the default-slot repoint arm, and on a pool with
+      // 2+ usable accounts the wall rescue tags new spawns so few stay
+      // untagged. DARK by default: only runs
       // when subscriptionPool.proactiveSwap.enabled is true (moving live sessions
       // is real authority).
       const proactiveCfg = config.subscriptionPool?.proactiveSwap;
@@ -25678,13 +25817,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                     const name = await spawnSessionForTopic(sessionManager, telegram, `proof-${t}`, t, proofSpawnBrief());
                     telegram.registerTopicSession(t, name, `proof-${t}`);
                   }
-                  const deadline = Date.now() + timeoutMs;
-                  while (Date.now() < deadline) {
+                  return waitForSettledIdle(async () => {
                     const tmux = live();
-                    if (tmux && (await sessionManager.checkSessionWorkState(tmux)) === 'idle') return true;
-                    await new Promise((r) => setTimeout(r, 5_000));
-                  }
-                  return false;
+                    return tmux && (await sessionManager.checkSessionWorkState(tmux)) === 'idle' ? tmux : null;
+                  }, timeoutMs, { now: () => Date.now(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)) });
                 },
                 move: (t, to) => planner.proofMove(String(t), to),
                 probeViaHolder: async (t, nonce) => {
@@ -30930,7 +31066,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       catch { console.warn('[instar] Windows desktop bootstrap diagnostic could not be persisted'); }
     }
 
-    const server = new AgentServer({ config, ecosystemLedger: _ecosystemLedger ?? undefined, recommendedServicesLedger: _recommendedServicesLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, memoryPrivacy: _memoryPrivacyWired ?? undefined, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx }); if (_pendingCompactionEvidence) featureEvidence.record('multiMachine.coherenceJournal.replication.compaction', _pendingCompactionEvidence);    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, ecosystemLedger: _ecosystemLedger ?? undefined, recommendedServicesLedger: _recommendedServicesLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, usageWallRescue: _usageWallRescue ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, memoryPrivacy: _memoryPrivacyWired ?? undefined, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx }); if (_pendingCompactionEvidence) featureEvidence.record('multiMachine.coherenceJournal.replication.compaction', _pendingCompactionEvidence);    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     const readIdentityProjectionPeerRows = async () => {
       const peers = _resolvePeerUrls?.() ?? [];
       const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;

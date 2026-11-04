@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -60,17 +60,19 @@ const SEEDED_RUNS = 20;
 const FREE_SLOTS = DAILY_MAX_RUNS - SEEDED_RUNS;
 
 function supportsTransformTypes(): boolean {
-  const [maj, min] = process.versions.node.split('.').map((n) => Number(n));
-  if (!Number.isFinite(maj) || !Number.isFinite(min)) return false;
-  return maj > 22 || (maj === 22 && min >= 7) || maj >= 23;
+  // Node 26 removed this flag despite its higher major version. Probe the
+  // executable the children will actually use instead of inferring support.
+  return spawnSync(process.execPath, ['--experimental-transform-types', '-e', ''], {
+    stdio: 'ignore', timeout: 5000,
+  }).status === 0;
 }
 
 const CAN_RUN = supportsTransformTypes();
 if (!CAN_RUN) {
   // Loud, not silent: a skipped concurrency proof must never read as coverage.
   console.warn(
-    `[grok-budget-concurrency] SKIPPED on node ${process.versions.node} — needs >=22.7 for `
-      + '--experimental-transform-types so children can load TS source. Runs on the node-22 CI shard.',
+    `[grok-budget-concurrency] SKIPPED on node ${process.versions.node} — this executable lacks `
+      + '--experimental-transform-types; the node-22 CI shard runs this proof.',
   );
 }
 

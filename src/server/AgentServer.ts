@@ -983,6 +983,7 @@ export class AgentServer {
     quotaPoller?: import('../core/QuotaPoller.js').QuotaPoller;
     quotaAwareScheduler?: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler;
     proactiveSwapMonitor?: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor;
+    usageWallRescue?: import('../core/UsageWallRescue.js').UsageWallRescue;
     inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
     enrollmentWizard?: import('../core/EnrollmentWizard.js').EnrollmentWizard;
     accountFollowMeRevocation?: import('../core/AccountFollowMeRevocation.js').AccountFollowMeRevocation;
@@ -1517,6 +1518,8 @@ export class AgentServer {
     this.app.use('/mobile/pairing-codes/redeem', express.json({ limit: '4kb', verify: keepRawBody }));
     // Media chunks (mobile-native-chat-media §4.10): the signature covers the raw chunk bytes.
     this.app.use('/mobile/media/uploads', express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }));
+    // A setup session's key: plain text, so a JSON slip can't put part of it in a parse-error log.
+    this.app.post(/^\/recommended-services\/[a-z][a-z0-9-]{0,63}\/key$/, express.text({ type: 'text/plain', limit: '8kb' }));
     this.app.use(express.json({ limit: '12mb', verify: keepRawBody }));
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
@@ -5349,6 +5352,7 @@ export class AgentServer {
       quotaPoller: options.quotaPoller ?? null,
       quotaAwareScheduler: options.quotaAwareScheduler ?? null,
       proactiveSwapMonitor: options.proactiveSwapMonitor,
+      usageWallRescue: options.usageWallRescue,
       inUseAccountResolver: options.inUseAccountResolver,
       enrollmentWizard: options.enrollmentWizard ?? null,
       accountFollowMeRevocation: options.accountFollowMeRevocation ?? null,
