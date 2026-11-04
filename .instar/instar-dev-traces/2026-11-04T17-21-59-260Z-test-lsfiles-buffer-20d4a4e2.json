@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "test-lsfiles-buffer",
+  "sessionId": "b79e7adf-be36-4819-ae55-55d72c5f8b25",
+  "timestamp": "2026-11-04T17:21:59.260Z",
+  "artifactPath": "upgrades/side-effects/test-lsfiles-buffer.md",
+  "artifactSha256": "f80ddbc8145935534a2fd63ba8740d12de77131cec10d90ea1be47e47c1bfbe4",
+  "coveredFiles": [
+    "docs/specs/test-lsfiles-buffer.eli16.md",
+    "tests/unit/audit-convergence-reports.test.ts",
+    "upgrades/side-effects/test-lsfiles-buffer.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only buffer size on a protected test; main red on ENOBUFS.",
+  "eli16Path": "docs/specs/test-lsfiles-buffer.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/test-lsfiles-buffer.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
