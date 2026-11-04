@@ -30,6 +30,7 @@
 import { EventEmitter } from 'node:events';
 import { execFileSync } from 'node:child_process';
 import { withSyncOp } from '../core/InFlightSyncOpMarker.js';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import { mergeDefaults, resolveTimerMs } from '../core/mergeDefaults.js';
 
 /** The ONLY name shape this sweeper will ever act on. Anchored at position 0. */
@@ -419,6 +420,7 @@ export class CodexArmSessionSweeper extends EventEmitter {
     // A non-finite clock would make `new Date(now).toISOString()` throw mid-pass.
     const now = Number.isFinite(rawNow) ? rawNow : Date.now();
     const result = blank();
+    const wouldKillNamesBefore = this.wouldKillNames.size;
     let attempted = 0; // Invariant 6 bounds ATTEMPTS, not successes — a pass of failing kills is still bounded.
     let protectedNames: Set<string>;
     try {
@@ -564,6 +566,15 @@ export class CodexArmSessionSweeper extends EventEmitter {
       if (result.kills.length) {
         this.lastKills = result.kills.slice(-20);
         this.lastKillsAt = new Date(now).toISOString();
+      }
+      // One row only for a pass that changed something: a standing backlog re-counted every pass writes nothing.
+      const newWouldKill = this.wouldKillNames.size - wouldKillNamesBefore;
+      if (result.errors > 0 || result.killed > 0 || newWouldKill > 0) {
+        featureEvidence.record('monitoring.codexArmSessionSweeper', {
+          kind: result.errors > 0 ? 'error' : 'fired',
+          reason: result.failedClosed ? 'session list unreadable: no kills this pass' : result.errors > 0 ? 'kill failed' : result.killed > 0 ? 'killed orphaned sessions' : 'would kill newly seen sessions (dry run)',
+          context: { dryRun: this.cfg.dryRun, killed: result.killed, newWouldKill, wouldKill: result.wouldKill, kept: result.kept, errors: result.errors, alreadyGone: result.alreadyGone, breakerOpen: result.breakerOpen },
+        });
       }
     }
   }

@@ -17,6 +17,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { SessionOwnershipRecord } from './SessionOwnership.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 /**
  * FD10 — the SINGLE nonce source for the three new ownership-CAS callsites (Part A
@@ -158,7 +159,10 @@ export function createClaimOwnershipOnSpawn(deps: ClaimOnSpawnDeps): (topicId: n
       const { ownReg, emitPlacement } = deps;
       const sk = String(topicId);
       let cur: SessionOwnershipRecord | null;
-      try { cur = ownReg.read(sk); } catch { return 'error'; /* @silent-fallback-ok — registry unreadable → withhold (fail-closed) */ }
+      try { cur = ownReg.read(sk); } catch {
+        featureEvidence.record('multiMachine.ownershipFollowsLiveWork', { kind: 'error', reason: 'claim-on-spawn: ownership registry unreadable', context: { topicId, part: 'claim-on-spawn' } });
+        return 'error'; /* @silent-fallback-ok — registry unreadable → withhold (fail-closed) */
+      }
       const plan = planClaimOnSpawn({ enabled: deps.enabled, selfMachineId: self, record: cur });
       if (plan.action === 'noop') return 'already-owned';
       if (plan.action === 'in-flight') return 'in-flight';
@@ -169,20 +173,28 @@ export function createClaimOwnershipOnSpawn(deps: ClaimOnSpawnDeps): (topicId: n
           { sessionKey: sk, sender: self, nonce: ownershipNonce(self, 'auto-place', sk) },
         );
         emitPlacement(sk, rp, 'placed', prev0);
-        if (!rp.ok) return 'lost'; // a peer advanced first → the reconciler converges (FD11)
+        if (!rp.ok) {
+          featureEvidence.record('multiMachine.ownershipFollowsLiveWork', { kind: 'error', reason: 'claim-on-spawn: place compare-and-set refused', context: { topicId, part: 'claim-on-spawn', step: 'place', prevOwner: prev0 ?? null, prevStatus: cur?.status ?? null } });
+          return 'lost'; // a peer advanced first → the reconciler converges (FD11)
+        }
         const rc = ownReg.cas(
           { type: 'claim', machineId: self },
           { sessionKey: sk, sender: self, nonce: ownershipNonce(self, 'auto-claim', sk) },
         );
         emitPlacement(sk, rc, 'placed', self);
+        featureEvidence.record('multiMachine.ownershipFollowsLiveWork', rc.ok
+          ? { kind: 'fired', reason: 'claim-on-spawn: ownership claimed for the live session', context: { topicId, part: 'claim-on-spawn', prevOwner: prev0 ?? null, prevStatus: cur?.status ?? null } }
+          : { kind: 'error', reason: 'claim-on-spawn: claim compare-and-set refused', context: { topicId, part: 'claim-on-spawn', step: 'claim', prevOwner: prev0 ?? null, prevStatus: cur?.status ?? null } });
         return rc.ok ? 'claimed' : 'lost';
       }
       // Owned by a PEER → never force-claim (FD3); one neutral audit row.
+      featureEvidence.record('multiMachine.ownershipFollowsLiveWork', { kind: 'held', reason: 'claim-on-spawn: topic owned by a peer, claim withheld', context: { topicId, part: 'claim-on-spawn', owner: plan.owner, status: plan.status } });
       try { deps.auditOwnedElsewhere?.({ topicId, owner: plan.owner, status: plan.status }); } catch { /* @silent-fallback-ok — observational audit; never break the spawn */ }
       return 'owned-elsewhere';
     } catch {
       // @silent-fallback-ok — best-effort (FD1/FD11): reported as 'error'; a throw
       // must never undo the successful spawn.
+      featureEvidence.record('multiMachine.ownershipFollowsLiveWork', { kind: 'error', reason: 'claim-on-spawn: threw', context: { topicId, part: 'claim-on-spawn' } });
       return 'error';
     }
   };

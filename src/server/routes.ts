@@ -1,4 +1,5 @@
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { ISSUES_TOPIC_OFFSET } from '../messaging/telegramTopicSpace.js';
 import { SlackOriginLedger, SlackOriginRecordingError } from '../messaging/slack/SlackOriginLedger.js';
 import { slackOriginFooter, currentAgentDisplay, deviceOriginRow, effectiveDisplay, originEvidenceFromProducer, validateDeviceOriginRow, validateMessageOriginEvidence, type DeviceOriginRow } from '../messaging/messageOrigin.js';
@@ -4086,6 +4087,11 @@ export function createRoutes(ctx: RouteContext): Router {
       // over. A guard that walls a credential in the message body while storing
       // one from the reason field would be theatre.
       const note = input.reason ? scrubForStore(input.reason).text.slice(0, 500) : undefined;
+      featureEvidence.record('toneGate.advisoryMigration', {
+        kind: 'fired',
+        reason: `self-report-${reaction}`,
+        context: { reaction, rule: rule.slice(0, 64), derivation: derivation ?? null, grade: reaction === 'override' ? 'wrong' : 'right', hasReason: !!note },
+      });
       // ── Off the send path ────────────────────────────────────────────────
       // `upsertOutcome` is a synchronous better-sqlite3 transaction that
       // recomputes the whole (decision_point, day) rollup twice over a window-
@@ -8841,6 +8847,19 @@ export function createRoutes(ctx: RouteContext): Router {
             : condition.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'autonomous-goal';
           const userFacing = typeof body.userFacing === 'boolean' ? body.userFacing : undefined;
           const gate = ctx.liveTestGate.evaluate({ featureId, userFacing, goalText: condition, mode: ctx.liveTestGateMode });
+          featureEvidence.record('monitoring.liveTestGate', {
+            kind: gate.outcome !== 'allow' ? 'fired' : 'held',
+            reason: gate.blocks ? `veto:${gate.outcome}` : gate.wouldBlock ? `would-veto:${gate.outcome}` : 'allowed',
+            context: {
+              outcome: gate.outcome,
+              mode: gate.mode,
+              wouldBlock: gate.wouldBlock,
+              blocks: gate.blocks,
+              // The fallback id is built from the goal text, so only a declared id is kept.
+              declaredFeatureId: typeof body.featureId === 'string' && body.featureId ? body.featureId : null,
+              userFacingDeclared: userFacing ?? null,
+            },
+          });
           if (gate.outcome !== 'allow') {
             if (gate.blocks) {
               res.json({ met: false, reason: `live-test gate: ${gate.reason}`, liveTestGate: { outcome: gate.outcome, mode: gate.mode, overrode: true } });
@@ -8851,7 +8870,8 @@ export function createRoutes(ctx: RouteContext): Router {
             res.json({ ...verdict, liveTestGate: { outcome: gate.outcome, mode: gate.mode, wouldBlock: gate.wouldBlock, reason: gate.reason, overrode: false } });
             return;
           }
-        } catch {
+        } catch (gateErr) {
+          featureEvidence.record('monitoring.liveTestGate', { kind: 'error', reason: 'gate-evaluate-failed', context: { mode: ctx.liveTestGateMode, errorName: gateErr instanceof Error ? gateErr.name : 'unknown' } });
           // @silent-fallback-ok — a gate error must never trap a genuine completion
           // (the completion judge is the primary authority); fall through to the verdict.
         }
@@ -13584,6 +13604,7 @@ export function createRoutes(ctx: RouteContext): Router {
           browserNonce: req.body?.browserNonce, videoCodec: req.body?.videoCodec,
           client: req.body?.client === 'app' ? 'app' : 'browser', controlRecords: req.body?.controlRecords === true,
         });
+        featureEvidence.record('remoteDesktop', { kind: 'fired', reason: 'session-started-via-mesh', context: { route: 'mesh', machineId: String(req.body?.machineId ?? '').slice(0, 64), client: req.body?.client === 'app' ? 'app' : 'browser', controlRecords: req.body?.controlRecords === true } });
         res.status(201).json(result);
         return;
       }
@@ -13596,8 +13617,12 @@ export function createRoutes(ctx: RouteContext): Router {
         scopeConfirmed: req.body?.scopeConfirmed,
         client: req.body?.client === 'app' ? 'app' : 'browser', controlRecords: req.body?.controlRecords === true,
       });
+      featureEvidence.record('remoteDesktop', { kind: 'fired', reason: 'session-started-direct', context: { route: 'direct', machineId: String(req.body?.machineId ?? '').slice(0, 64), client: req.body?.client === 'app' ? 'app' : 'browser', controlRecords: req.body?.controlRecords === true, telegramStepUp } });
       res.status(201).json(result);
-    } catch (error) { res.status(403).json({ error: (error as Error).message }); }
+    } catch (error) {
+      featureEvidence.record('remoteDesktop', { kind: 'error', reason: 'session-start-refused', context: { machineId: String(req.body?.machineId ?? '').slice(0, 64), telegramStepUp, errorName: (error as Error)?.name ?? 'unknown' } });
+      res.status(403).json({ error: (error as Error).message });
+    }
   });
   router.get('/desktop/requests/:id', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -15079,6 +15104,7 @@ export function createRoutes(ctx: RouteContext): Router {
     if (typeof proposedUid === 'string' && proposedUid) {
       const principal = ar.resolvePrincipal(proposedUid);
       if (!principal || !principal.registered) {
+        featureEvidence.record('monitoring.authorizationRequests', { kind: 'held', reason: 'create refused: unknown-user', context: { status: 400 } });
         res.status(400).json({ error: 'unknown-user — the grantee must be a registered Slack user' });
         return;
       }
@@ -15089,7 +15115,11 @@ export function createRoutes(ctx: RouteContext): Router {
       proposal: b.proposal,
       reason: typeof b.reason === 'string' ? b.reason : undefined,
     });
-    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
+    if (!result.ok) {
+      featureEvidence.record('monitoring.authorizationRequests', { kind: 'held', reason: `create refused: ${result.error}`, context: { status: result.status } });
+      res.status(result.status).json({ error: result.error }); return;
+    }
+    featureEvidence.record('monitoring.authorizationRequests', { kind: 'fired', reason: result.deduped ? 'create deduped' : 'created', context: { requestId: result.request.id, requestKind: result.request.kind, floorAction: result.request.proposal.floorAction, durationMs: result.request.proposal.durationMs, deduped: result.deduped ?? false } });
     res.status(201).json({ id: result.request.id, deduped: result.deduped ?? false, request: decorateAuthReq(result.request) });
   });
 
@@ -15116,7 +15146,10 @@ export function createRoutes(ctx: RouteContext): Router {
   router.post('/authorization-requests/:id/approve', (req, res) => {
     if (authReqUnavailable(res)) return;
     if (!ctx.coordination) { res.status(503).json({ error: 'coordination mandate engine unavailable' }); return; }
-    if (!checkMandatePin(req, res)) return;
+    if (!checkMandatePin(req, res)) {
+      featureEvidence.record('monitoring.authorizationRequests', { kind: 'held', reason: 'approve refused: PIN gate', context: { requestId: req.params.id } });
+      return;
+    }
     const ar = ctx.authorizationRequests!;
     const result = ar.store.approve(req.params.id, {
       execute: (proposal) => {
@@ -15152,7 +15185,11 @@ export function createRoutes(ctx: RouteContext): Router {
         return mandate.id;
       },
     });
-    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
+    if (!result.ok) {
+      featureEvidence.record('monitoring.authorizationRequests', { kind: result.status === 409 ? 'error' : 'held', reason: `approve refused: ${result.error}`, context: { requestId: req.params.id, status: result.status } });
+      res.status(result.status).json({ error: result.error }); return;
+    }
+    featureEvidence.record('monitoring.authorizationRequests', { kind: 'fired', reason: result.alreadyApproved ? 'already approved' : 'approved', context: { requestId: result.request.id, floorAction: result.request.proposal.floorAction, durationMs: result.request.proposal.durationMs, alreadyApproved: result.alreadyApproved ?? false } });
     res.status(result.alreadyApproved ? 200 : 201).json({
       approved: true, alreadyApproved: result.alreadyApproved ?? false, request: decorateAuthReq(result.request),
     });
@@ -15164,7 +15201,11 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!checkMandatePin(req, res)) return;
     const reason = typeof (req.body ?? {}).denyReason === 'string' ? req.body.denyReason : '';
     const result = ctx.authorizationRequests!.store.deny(req.params.id, reason);
-    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
+    if (!result.ok) {
+      featureEvidence.record('monitoring.authorizationRequests', { kind: 'held', reason: `deny refused: ${result.error}`, context: { requestId: req.params.id, status: result.status } });
+      res.status(result.status).json({ error: result.error }); return;
+    }
+    featureEvidence.record('monitoring.authorizationRequests', { kind: 'fired', reason: 'denied', context: { requestId: result.request.id, floorAction: result.request.proposal.floorAction } });
     res.json({ denied: true, request: decorateAuthReq(result.request) });
   });
 
@@ -15174,7 +15215,11 @@ export function createRoutes(ctx: RouteContext): Router {
     const b = req.body ?? {};
     const agentName = (typeof b.createdByAgent === 'string' && b.createdByAgent) ? b.createdByAgent : 'agent';
     const result = ctx.authorizationRequests!.store.withdraw(req.params.id, agentName);
-    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
+    if (!result.ok) {
+      featureEvidence.record('monitoring.authorizationRequests', { kind: 'held', reason: `withdraw refused: ${result.error}`, context: { requestId: req.params.id, status: result.status } });
+      res.status(result.status).json({ error: result.error }); return;
+    }
+    featureEvidence.record('monitoring.authorizationRequests', { kind: 'fired', reason: 'withdrawn', context: { requestId: result.request.id, floorAction: result.request.proposal.floorAction } });
     res.json({ withdrawn: true, request: decorateAuthReq(result.request) });
   });
 
@@ -19216,6 +19261,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       kind === 'automated'
         ? composeAdvisories(capped, { sessionClocks: activeClocks })
         : composeTimeClaimAdvisories(capped, activeClocks);
+    const timeClaimAdvisories = advisories.filter((a) => a.code === 'TIME_CLAIM').length;
+    if (timeClaimAdvisories > 0) {
+      featureEvidence.record('messaging.outboundAdvisory.timeClaim', { kind: 'fired', reason: 'TIME_CLAIM: claim contradicts the live session clock', context: { topicId: Number.isFinite(topic) ? topic : 0, senderKind: kind, jobSlug: typeof jobSlug === 'string' ? jobSlug : null, timeClaimAdvisories, activeClocks: activeClocks.length, chars: capped.length } });
+    }
     outboundAdvisoryAudit.recordPreflight({
       topicId: Number.isFinite(topic) ? topic : 0,
       // Non-automated (conversational-session) preflights carry no job slug —
@@ -21017,9 +21066,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         'Operator-asserted SAS mismatch (POST /threadline/pairing/:peerFp/verify)',
       );
       if (!ok) {
+        featureEvidence.record('threadline.verifiedPairing', { kind: 'error', reason: 'could-not-mark-verification-failed', context: { peerFp } });
         res.status(409).json({ error: 'could not mark verification-failed for this pairing' });
         return;
       }
+      featureEvidence.record('threadline.verifiedPairing', { kind: 'error', reason: 'verification-failed: sas-mismatch', context: { peerFp, typedWords: Array.isArray(body.words) } });
       // §3.2 / §3.7 — an operator-asserted SAS mismatch is a potential MITM and must
       // raise ONE HIGH attention item, deduped per (peerFp) episode, NEVER coalesced
       // (a re-attempt LOOP — repeated handshake-then-mismatch — collapses onto the SAME
@@ -21054,6 +21105,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       peerAcked: profile.peerAcked,
     });
     if (!ok) {
+      featureEvidence.record('threadline.verifiedPairing', { kind: 'error', reason: 'confirm-refused: state-or-epoch', context: { peerFp, pairingState: profile.pairingState ?? null } });
       res.status(409).json({ error: 'could not confirm pairing (state/epoch mismatch or not pending) — re-handshake required' });
       return;
     }
@@ -21922,15 +21974,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     let dropped = 0;
     for (const intent of remoteAckStore.list()) {
       if (intent.attempts >= REMOTE_ACK_GIVE_UP_ATTEMPTS) {
+        featureEvidence.record('multiMachine.seamlessness.ws41DurableAck', { kind: 'error', reason: 'ack intent given up after the attempt limit', context: { itemId: intent.itemId, targetMachineId: intent.targetMachineId, attempts: intent.attempts, lastOutcome: intent.lastOutcome ?? null } });
         remoteAckStore.resolve(intent.itemId, intent.targetMachineId);
         dropped += 1;
         continue;
       }
       const disposition = await deliverRemoteAck(intent);
       if (disposition === 'delivered') {
+        featureEvidence.record('multiMachine.seamlessness.ws41DurableAck', { kind: 'fired', reason: 'queued ack applied on the owner', context: { itemId: intent.itemId, targetMachineId: intent.targetMachineId, attempts: intent.attempts } });
         remoteAckStore.resolve(intent.itemId, intent.targetMachineId);
         delivered += 1;
       } else if (disposition === 'stale-superseded') {
+        featureEvidence.record('multiMachine.seamlessness.ws41DurableAck', { kind: 'held', reason: 'queued ack superseded on the owner', context: { itemId: intent.itemId, targetMachineId: intent.targetMachineId, attempts: intent.attempts } });
         remoteAckStore.resolve(intent.itemId, intent.targetMachineId);
         dropped += 1;
       } else {
@@ -26786,7 +26841,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // bound, single-use, mesh-signed assertion of THAT user-authentication —
       // never the raw credential (each machine's PIN secret never crosses).
       if (ctx.poolLink) {
-        await proxyViewToHolder(req, res, req.params.id);
+        try {
+          await proxyViewToHolder(req, res, req.params.id);
+        } catch (err) {
+          featureEvidence.record('multiMachine.seamlessness.ws44PoolLinks', { kind: 'error', reason: 'view proxy to the holder failed', context: { error: (err instanceof Error ? err.message : String(err)).slice(0, 80) } });
+          throw err;
+        }
         return;
       }
       res.status(404).json({ error: 'View not found' });
@@ -26858,12 +26918,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // labeled), never a fabricated/stale body. (The broader pool-cache
       // unification is the tracked follow-up CMT-1416; this in-scope posture is
       // the staleness-tag on the holder-resolution caching surface.)
+      featureEvidence.record('multiMachine.seamlessness.ws44PoolLinks', { kind: 'held', reason: 'declined: fronting machine load-shedding with no cached holder', context: { resolution: resolution.kind } });
       res.status(503).setHeader('Retry-After', '5');
       res.json({ error: 'Fronting machine busy (load-shed) — retry shortly' });
       return;
     }
     if (resolution.kind === 'holder-offline') {
       // §WS4.4 d: honest unavailable — NEVER a bare 404, never stale content.
+      featureEvidence.record('multiMachine.seamlessness.ws44PoolLinks', { kind: 'held', reason: 'holder offline: answered unavailable', context: { resolution: resolution.kind, stale: tagged.stale } });
       tagStale();
       res.status(503).setHeader('Content-Type', 'text/html; charset=utf-8');
       res.send(
@@ -26898,18 +26960,25 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     );
     if (!slot.ok) {
       // §WS4.4 c: over the in-flight cap — honest 503, never an unbounded queue.
+      featureEvidence.record('multiMachine.seamlessness.ws44PoolLinks', { kind: 'held', reason: 'over the in-flight proxy cap', context: { holder: resolution.machineId, method } });
       res.status(503).json({ error: 'Too many in-flight remote view requests — retry shortly' });
       return;
     }
 
     const holderRes = slot.value;
     if (holderRes.status === 404) {
+      featureEvidence.record('multiMachine.seamlessness.ws44PoolLinks', { kind: 'error', reason: 'resolved holder no longer has the view', context: { holder: resolution.machineId, status: 404, stale: tagged.stale, method } });
       // The memo may name a stale holder (view moved). Invalidate so the next
       // request re-fans-out, and surface not-found honestly.
       pl.proxy.invalidate(viewId);
       res.status(404).json({ error: 'View not found' });
       return;
     }
+    featureEvidence.recordAtMostEvery('multiMachine.seamlessness.ws44PoolLinks', `proxied|${holderRes.status}`, 10 * 60 * 1000, {
+      kind: holderRes.status >= 500 || holderRes.status === 401 || holderRes.status === 403 ? 'error' : 'fired',
+      reason: holderRes.status === 401 || holderRes.status === 403 ? 'holder refused the assertion' : `proxied view to the holder: ${holderRes.status}`,
+      context: { holder: resolution.machineId, status: holderRes.status, stale: tagged.stale, method, userAuth },
+    });
     // §WS4.4 b: the HOLDER makes the authorization decision — relay its
     // 401/403 (or any status) UNCHANGED. The fronting machine never substitutes
     // its own decision. Stream the body straight through; never cache it.
@@ -30091,6 +30160,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const full = String(req.query.full ?? '') === '1';
       const bsk = new BootSelfKnowledge({ stateDir: ctx.config.stateDir, configPath });
       const result = bsk.sessionContext(maxBytes, { full });
+      featureEvidence.record('selfKnowledge.sessionContext', {
+        kind: result.vaultState === 'decrypt-failed' ? 'error' : 'fired',
+        reason: result.vaultState === 'decrypt-failed' ? 'vault-decrypt-failed' : result.present ? 'block-served' : 'nothing-to-serve',
+        context: { present: result.present, nameCount: result.names.length, factCount: result.factCount, vaultState: result.vaultState, blockBytes: Buffer.byteLength(result.block, 'utf8'), maxBytes, full },
+      });
       console.log(
         `[boot-self-knowledge] served names=${result.names.length} facts=${result.factCount} vaultState=${result.vaultState} bytes=${Buffer.byteLength(result.block, 'utf8')}`,
       );
@@ -30099,6 +30173,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.json(result);
     } catch (err) {
+      featureEvidence.record('selfKnowledge.sessionContext', { kind: 'error', reason: 'build-failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to build boot self-knowledge' });
     }
   });
@@ -30772,6 +30847,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const entry = outbox.enqueue({ canonicalEmail: canonical, targetMachineId, principal, portable,
           cutoffSeq: Number.isSafeInteger(args.revokesGrantSeq) ? (args.revokesGrantSeq as number) : null });
         const after = await outbox.attemptNow(entry.key);
+        featureEvidence.record('passkeys', { kind: after?.state === 'applied' ? 'fired' : 'held', reason: after?.state === 'applied' ? 'peer-revoke-applied' : 'peer-revoke-queued', context: { op, target: targetMachineId, outboxState: after?.state ?? 'pending' } });
         appendPlaywrightAudit('passkey-revoke', 'passkeys', { target: targetMachineId, email: canonical ? 'set' : 'none', delivered: after?.state === 'applied', outbox: after?.state ?? 'pending', reason: after?.lastResult ?? null, dryRun: false });
         res.status(after?.state === 'applied' ? 200 : 202).json({ op, target: targetMachineId, delivered: after?.state === 'applied', outbox: after ? { key: after.key, state: after.state, attempts: after.attempts, nextAttemptAt: after.nextAttemptAt, lastResult: after.lastResult ?? null } : null,
           note: after?.state === 'applied' ? undefined : 'queued in the durable revoke outbox; re-delivered unchanged on backoff (1h, 6h, then daily) until the peer applies it' });
@@ -30783,12 +30859,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         auth.grants.recordIssuedPeerGrant({ canonicalEmail: canonical, targetMachineId, issuedAt: new Date().toISOString(), nonce: out.portable?.body.nonce ?? '',
           ...(Number.isSafeInteger(peerSeq) ? { targetLocalSeq: peerSeq as number } : {}) });
       }
+      featureEvidence.record('passkeys', { kind: out.ok ? 'fired' : 'error', reason: out.ok ? `peer-${op}-delivered` : `peer-${op}-failed: ${out.reason ?? 'unknown'}`, context: { op, target: targetMachineId, status: out.status ?? null } });
       appendPlaywrightAudit(`passkey-${op}`, 'passkeys', { target: targetMachineId, email: canonical ? 'set' : 'none', delivered: out.ok, reason: out.reason ?? null, dryRun: false });
       res.status(out.ok ? 200 : 502).json({ op, target: targetMachineId, delivered: out.ok, status: out.status, reason: out.reason ?? null, result: (out as { result?: unknown }).result ?? null });
       return;
     }
     const body = mintPasskeyCellBody({ principal, canonicalEmail: canonical, targetMachineId, op, args });
     const outcome = await applyLocalPasskeyCellAction(auth.deps, body);
+    featureEvidence.record('passkeys', { kind: outcome.applied ? 'fired' : 'error', reason: outcome.applied ? `local-${op}-applied` : `local-${op}-refused: ${outcome.reason}`, context: { op, target: 'local' } });
     appendPlaywrightAudit(`passkey-${op}`, 'passkeys', { target: 'local', email: canonical ? 'set' : 'none', applied: outcome.applied, reason: outcome.applied ? null : outcome.reason, dryRun: false });
     res.status(outcome.applied ? 200 : (outcome.reason === 'issuer-bootstrap-required' ? 409 : 400)).json({ ...outcome, target: targetMachineId });
   };
@@ -31182,6 +31260,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // cell's record is removed with the revoke and must not be resurrected by a late outcome.
       if (!auth.grants.has(email)) { res.status(404).json({ error: 'no active grant for that account on this machine' }); return; }
       const r = buildPasskeyHealth(auth).recordOutcome({ canonicalEmail: email, outcome: outcome as PasskeyProofOutcome, origin: origin as PasskeyProofOrigin, reenrolled });
+      featureEvidence.record('passkeys', { kind: outcome === 'ready' ? 'fired' : outcome === 'unknown' ? 'held' : 'error', reason: `proof-outcome: ${outcome}`, context: { outcome, origin, transition: r.transition ? `${r.transition.from}->${r.transition.to}` : null } });
       appendPlaywrightAudit('passkey-health-outcome', 'passkeys', { outcome, origin, transition: r.transition ? `${r.transition.from}->${r.transition.to}` : null, dryRun: false });
       res.json({ cell: r.cell, transition: r.transition, scheduleConfirmAt: r.scheduleConfirmAt });
     } catch (err) {
@@ -31262,6 +31341,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         pauses.push('account-throttled-24h', 'machine-throttled-1h');
       }
       const recorded = health.recordOutcome({ canonicalEmail: canonical, outcome: result.outcome, origin: 'operator' });
+      featureEvidence.record('passkeys', { kind: result.outcome === 'ready' ? 'fired' : result.outcome === 'unknown' ? 'held' : 'error', reason: `sign-in-proof: ${result.outcome}`, context: { outcome: result.outcome, reasonCode: result.reason ?? null, finalPageClass: result.finalPageClass ?? null, steps: result.steps.length, riskPage: !!result.riskPage, throttled: !!result.throttled } });
       appendPlaywrightAudit('passkey-prove', 'passkeys', { outcome: result.outcome, reason: result.reason, page: result.finalPageClass, steps: result.steps.length, pauses: pauses.join(',') || null, transition: recorded.transition ? `${recorded.transition.from}->${recorded.transition.to}` : null, dryRun: false });
       res.json({ outcome: result.outcome, reason: result.reason, finalPageClass: result.finalPageClass, observedAssertion: result.observedAssertion, singleCredential: result.singleCredential, signedInIdentity: result.signedInIdentity, riskPage: result.riskPage, throttled: result.throttled, steps: result.steps, teardown: result.teardown, pauses, cell: recorded.cell, transition: recorded.transition,
         // Honest about the admission inputs this build does not publish yet (same wording as GET /passkeys/admission).
@@ -31283,9 +31363,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       const auth = await buildPasskeyAuthorityAndSweep();
       const outcome = await receivePasskeyCellMandate({ ...auth.deps, verify: { issuerPublicKeyPem: passkeyIssuerPublicKeyPem } }, portable);
+      featureEvidence.record('passkeys', { kind: outcome.applied ? 'fired' : 'error', reason: outcome.applied ? `mandate-applied: ${outcome.op}` : `mandate-refused: ${outcome.reason}`, context: { op: outcome.op ?? null, applied: outcome.applied } });
       appendPlaywrightAudit('passkey-cell-action', 'passkeys', { op: outcome.op, applied: outcome.applied, reason: outcome.applied ? null : outcome.reason, dryRun: false });
       res.status(outcome.applied ? 200 : 403).json(outcome);
     } catch (err) {
+      featureEvidence.record('passkeys', { kind: 'error', reason: 'mandate-authority-unreadable', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
       res.status(500).json({ applied: false, reason: 'authority-unreadable', detail: err instanceof Error ? err.message : String(err) });
     }
   });
@@ -35364,6 +35446,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const { command, cwd, topicId, sessionName, intent, prNumber } = req.body ?? {};
     if (typeof command !== 'string' || typeof cwd !== 'string' || typeof topicId !== 'number' || typeof sessionName !== 'string') {
       // Malformed → fail-open (never block on a bad request).
+      featureEvidence.record('monitoring.prHandLease', { kind: 'error', reason: 'bad-request-failopen', context: { dryRun } });
       res.json({ decision: 'allow', reason: 'bad-request-failopen' });
       return;
     }
@@ -35377,6 +35460,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
       const evalResult = ctx.prHandLease.evaluate(key, topicId, sessionName);
+      const leaseRefuses = evalResult.decision === 'deny' || evalResult.decision === 'escalate';
+      featureEvidence.record('monitoring.prHandLease', {
+        kind: evalResult.reason === 'eval-error-failopen' ? 'error' : leaseRefuses ? 'fired' : 'held',
+        reason: `${leaseRefuses && dryRun ? 'would-' : ''}${evalResult.decision}:${evalResult.reason}`,
+        context: {
+          decision: evalResult.decision,
+          leaseReason: evalResult.reason,
+          dryRun,
+          topicId,
+          holderTopicId: evalResult.holder?.holderTopicId ?? null,
+          holderPr: evalResult.holder?.prNumber ?? null,
+        },
+      });
       // Always (re)acquire/renew MY lease on the allow-because-mine / no-lease paths,
       // and take over on a stale path — so a peer can see I hold it.
       if (evalResult.decision === 'allow' && (evalResult.reason === 'own-topic' || evalResult.reason === 'no-lease')) {
@@ -35395,6 +35491,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ decision: evalResult.decision, reason: evalResult.reason, holder: redactHolder(evalResult.holder) });
     } catch (err) {
       // Inner fail-open — never block a push on an internal error.
+      featureEvidence.record('monitoring.prHandLease', { kind: 'error', reason: 'eval-error-failopen', context: { dryRun, errorName: err instanceof Error ? err.name : 'unknown' } });
       res.json({ decision: 'allow', reason: 'eval-error-failopen' });
     }
   });
@@ -35672,6 +35769,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         attention: ctx.telegram,
       });
       if (!verdict.ok) {
+        if (isMinted) featureEvidence.record('messaging.actionClaim.slack', { kind: 'held', reason: 'refused: conversation-bind-not-authorized', context: { topicId, lane, dryRun: slackDryRun } });
         res.status(403).json({ error: 'conversation-bind-not-authorized', detail: verdict.detail });
         return;
       }
@@ -35691,6 +35789,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       );
     const alreadyOpen = openForTopic.some((c) => c.externalKey === externalKey);
     if (!alreadyOpen && openForTopic.length >= cap) {
+      if (isMinted) featureEvidence.record('messaging.actionClaim.slack', { kind: 'held', reason: 'refused: per-topic-cap', context: { topicId, lane, dryRun: slackDryRun, openForTopic: openForTopic.length, cap } });
       res.json({ observed: true, registered: false, reason: 'per-topic-cap', lane, ...(verb ? { verb } : {}), cap, activityNote });
       return;
     }
@@ -35721,6 +35820,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       } catch {
         /* audit is observability */
       }
+      featureEvidence.record('messaging.actionClaim.slack', { kind: 'fired', reason: 'would register (dry run)', context: { topicId, lane, verb: verb ?? null, externalKey, bindVerdict: boundBy ?? 'legacy-open', dryRun: true, openForTopic: openForTopic.length, alreadyOpen } });
       res.json({ observed: true, registered: false, dryRun: true, wouldRegister: true, lane, ...(verb ? { verb } : {}), externalKey, activityNote });
       return;
     }
@@ -35741,6 +35841,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // Lane B passes NO beacon fields — record()'s internal auto-arm sets
         // beaconEnabled + cadence from the SAME detectTimePromise (§4.2 fold).
       });
+      if (isMinted) featureEvidence.record('messaging.actionClaim.slack', { kind: 'fired', reason: 'registered', context: { topicId, lane, verb: verb ?? null, commitmentId: commitment.id, bindVerdict: boundBy ?? 'legacy-open', dryRun: false, beaconEnabled: commitment.beaconEnabled ?? false, alreadyOpen } });
       res.json({
         observed: true,
         registered: true,
@@ -35753,6 +35854,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
     } catch (err) {
       // Signal-only: never surface a failure as a block. Audit via the 500-free path.
+      if (isMinted) featureEvidence.record('messaging.actionClaim.slack', { kind: 'error', reason: 'record-failed', context: { topicId, lane, verb: verb ?? null, errorName: err instanceof Error ? err.name : 'unknown' } });
       res.json({ observed: true, registered: false, reason: 'record-failed', detail: err instanceof Error ? err.message : String(err) });
     }
   });
@@ -38729,6 +38831,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // No trust manager (relay off, relay standby, or trust init failed):
           // there is no authority to consult, so today's handling stands. Counted.
           localRouteTrustCounters.noTrustManager++;
+          featureEvidence.recordAtMostEvery('threadline.localRouteTrust', 'no-trust-manager', 60 * 60 * 1000, { kind: 'held', reason: 'no-trust-manager', context: { dryRun: trustMode.dryRun } });
         } else {
           let verdict: ReturnType<typeof resolveLocalRouteTrust> | null = null;
           try {
@@ -38741,6 +38844,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             });
           } catch (trustErr) {
             localRouteTrustCounters.lookupErrors++;
+            featureEvidence.record('threadline.localRouteTrust', { kind: 'error', reason: 'trust-lookup-failed', context: { dryRun: trustMode.dryRun, senderRegistered: !!senderRegistryFp } });
             console.warn(`[relay-agent-trust] lookup failed: ${trustErr instanceof Error ? trustErr.message : String(trustErr)}`);
             if (!trustMode.dryRun) {
               // Enforcing and the authority cannot answer: refuse, retryable —
@@ -38751,6 +38855,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           }
           if (verdict) {
             localRouteTrustCounters.evaluated++;
+            // Per message, so one row per sender, operation and verdict per hour. A refusal of
+            // a registry-known same-machine agent is the failure this rollout watches for.
+            const localTrustEvidenceVerdict = verdict.allowed ? 'allowed' : trustMode.dryRun ? 'would-refuse' : 'refuse';
+            const localTrustEvidenceFailure = !verdict.allowed && verdict.identitySource === 'registry';
+            featureEvidence.recordAtMostEvery('threadline.localRouteTrust', `${verdict.fingerprint ?? 'no-fp'}|${verdict.identitySource}|${verdict.operation.slice(0, 48)}|${localTrustEvidenceVerdict}`, 60 * 60 * 1000, {
+              kind: localTrustEvidenceFailure ? 'error' : 'fired',
+              reason: localTrustEvidenceFailure ? `${localTrustEvidenceVerdict}-registered-sender` : localTrustEvidenceVerdict,
+              context: { level: verdict.level, operation: verdict.operation.slice(0, 48), identitySource: verdict.identitySource, fingerprint: verdict.fingerprint, dryRun: trustMode.dryRun },
+            });
             if (verdict.allowed) {
               localRouteTrustCounters.allowed++;
               // Enforcing: the router is told the resolved level instead of the
@@ -40900,6 +41013,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                     backupRouteCounters.fingerprintLocal++;
                     fingerprintRouteCounted = true;
                     console.log(backupLogLine('fingerprint-local', msgId, localPostPeerFp, outcome));
+                    featureEvidence.recordAtMostEvery('threadline.backupRoutes', `fingerprint-local|${localPostPeerFp}|${accepted}`, 5 * 60 * 1000, {
+                      kind: accepted ? 'fired' : 'error',
+                      reason: accepted ? 'fingerprint-local-delivered' : 'fingerprint-local-not-accepted',
+                      context: { path: 'fingerprint-local', peerFp: localPostPeerFp, messageId: msgId, status: localResp.status },
+                    });
                   }
 
                   // Persist our OWN outbound leg into the thread history so
@@ -41186,8 +41304,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (fallthrough.marked) {
           backupRouteCounters.markedFallthrough++;
           console.log(backupLogLine('marked-fallthrough', msgId, localPostPeerFp || resolvedId, fallthrough.outcome));
+          featureEvidence.recordAtMostEvery('threadline.backupRoutes', `marked-fallthrough|${fallthrough.outcome}`, 10 * 60 * 1000, { kind: 'fired', reason: `marked-fallthrough: ${fallthrough.outcome}`, context: { path: 'marked-fallthrough', peerFp: localPostPeerFp || resolvedId, messageId: msgId, outcome: fallthrough.outcome } });
         } else {
           backupRouteCounters.unmarkedFallthroughAfterPost++;
+          featureEvidence.recordAtMostEvery('threadline.backupRoutes', `unmarked-fallthrough|${fallthrough.outcome}`, 10 * 60 * 1000, { kind: 'held', reason: `unmarked-fallthrough: ${fallthrough.outcome}`, context: { path: 'unmarked-fallthrough', peerFp: localPostPeerFp || resolvedId, messageId: msgId, outcome: fallthrough.outcome } });
         }
       }
       const relayLegResend = Boolean(fallthrough?.marked || (forwardedRequest && req.body?.resend === true));
@@ -44173,6 +44293,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // enforces (a non-move is a recorded 200 'aborted', never a misleading PASS).
       const t = await transfer(telegramTopicId, targetMachine);
       if (!t.seatMoved) {
+        featureEvidence.record('monitoring.liveTestRunner', { kind: 'held', reason: 'capstone-aborted-seat-did-not-move', context: { targetMachine, blockedSurfaces: blockedSurfaces.length, hasSlack: Boolean(slackChannelId) } });
         res.status(200).json({ ok: true, seatMoved: false, capstone: 'aborted', reason: t.detail ?? 'seat did not move', blockedSurfaces });
         return;
       }
@@ -44181,8 +44302,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const matrix = buildMultiMachineCapstoneMatrix({ featureId, targetMachine, telegramTopicId, slackChannelId, message, timeoutMs });
       const harness = ctx.liveTestRunnerCtx.makeHarness(driver);
       const result = await harness.run(matrix, runId ? { runId } : {});
+      const scenarioVerdict = (v: string): number => result.artifact.scenarios.filter((s) => s.verdict === v).length;
+      featureEvidence.record('monitoring.liveTestRunner', {
+        kind: 'fired',
+        reason: 'capstone-ran',
+        context: {
+          targetMachine,
+          runId: result.artifact.runId,
+          scenarios: result.artifact.scenarios.length,
+          passed: scenarioVerdict('PASS'),
+          failed: scenarioVerdict('FAIL'),
+          blocked: scenarioVerdict('BLOCKED'),
+          blockedSurfaces: blockedSurfaces.length,
+          surfaces: result.artifact.surfaces.join(','),
+        },
+      });
       res.json({ ok: true, seatMoved: true, capstone: 'ran', artifact: result.artifact, entry: result.entry, blockedSurfaces });
     } catch (err) {
+      featureEvidence.record('monitoring.liveTestRunner', { kind: 'error', reason: 'capstone-run-failed', context: { targetMachine, errorName: err instanceof Error ? err.name : 'unknown' } });
       // A genuine internal error surfaces LOUDLY as a 500 with the reason — never a
       // fabricated PASS, never a swallowed run. This is the honest error path.
       res.status(500).json({ error: `capstone run failed: ${err instanceof Error ? err.message : String(err)}` });

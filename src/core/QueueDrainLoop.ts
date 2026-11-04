@@ -32,6 +32,7 @@ import type {
   EnqueueOutcome,
 } from './PendingInboundStore.js';
 import { sanitizeError } from './PendingInboundStore.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { InboundQueueConfig, HoldForStabilityConfig } from './inboundQueueConfig.js';
 
 // ── Dispatch seam contract (§3.1/§3.4) ────────────────────────────────
@@ -154,6 +155,11 @@ export class QueueDrainLoop {
   private heldSeqs = new Set<number>();
   /** Refusal negative cache keyed on the canonical id (§1). */
   private refusalCache = new Map<string, number>();
+  private evidenceAt = -Infinity;
+  private evidenceDelivered = 0;
+  private evidenceFailed = 0;
+  private evidenceUnroutable = 0;
+  private evidenceHeld = 0;
   /** Single-flight + rerun (§3.2). */
   private passInFlight = false;
   private rerunRequested: string | null = null;
@@ -306,6 +312,7 @@ export class QueueDrainLoop {
         // A refusal for a session WITH queued entries is ordering-affecting (§1).
         if (this.hasQueued(msg.sessionKey)) {
           this.d.store.incrementCounter('orderingViolations');
+          featureEvidence.recordAtMostEvery('multiMachine.sessionPool.inboundQueue', 'ordering-violation', 60 * 60_000, { kind: 'error', reason: 'ordering violation: refused a message for a session with queued entries', context: { refusal: out.reason ?? null } });
         }
         this.d.store.incrementCounter('wouldRefuse');
       }
@@ -385,6 +392,7 @@ export class QueueDrainLoop {
       // Record proof BEFORE cleanup. A crash in the gap leaves the shadow row
       // for constructor recovery, rather than erasing the only evidence.
       this.d.store.recordDryRunShadowCustodyResult('verified', nowIso);
+      featureEvidence.recordAtMostEvery('multiMachine.sessionPool.inboundQueue', 'shadow-verified', 60 * 60_000, { kind: 'fired', reason: 'dry-run: shadow custody round trip verified', context: { dryRun: true } });
       if (!shadow.transition(seq, 'queued', 'delivered', { nowIso, terminalReason: 'dry-run-shadow-verified' })) {
         throw new Error('shadow custody cleanup transition lost its row');
       }
@@ -393,6 +401,7 @@ export class QueueDrainLoop {
       this.d.store.recordDryRunShadowCustodyResult('error', nowIso);
       this.d.store.incrementCounter('dryRunErrors');
       this.d.log(`[inbound-queue] dry-run shadow custody failed: ${sanitizeError(err)}`);
+      featureEvidence.recordAtMostEvery('multiMachine.sessionPool.inboundQueue', 'shadow-error', 60 * 60_000, { kind: 'error', reason: 'dry-run: shadow custody failed', context: { dryRun: true } });
       if (seq !== null) {
         try {
           const row = shadow.getRow(seq);
@@ -561,7 +570,10 @@ export class QueueDrainLoop {
         expired.push(this.lossItem(row, 'ttl-expired'));
       }
     }
-    if (expired.length > 0) this.d.reportLoss(expired, 'ttl-expired');
+    if (expired.length > 0) {
+      this.d.reportLoss(expired, 'ttl-expired');
+      featureEvidence.record('multiMachine.sessionPool.inboundQueue', { kind: 'error', reason: 'queued messages expired: ttl', context: { terminalReason: 'ttl-expired', count: expired.length, entryTtlMs: q.entryTtlMs } });
+    }
   }
 
   // ── Hold recheck (§3.2/§4.3) ────────────────────────────────────────
@@ -602,6 +614,7 @@ export class QueueDrainLoop {
         // is imprecise for restart-recovered owners, round-7 — the bound is
         // drainConcurrency + the peer's spawn-in-progress backpressure).
         this.d.store.incrementCounter(verdict === 'failover' ? 'holdsReleasedToFailover:flap-forced' : 'holdsRecoveredInPlace');
+        featureEvidence.record('multiMachine.sessionPool.inboundQueue', { kind: 'held', reason: verdict === 'failover' ? 'hold released to failover: flap forced' : 'hold recovered in place', context: { verdict, seq, trigger: 'recheck' } });
       }
       this.heldSeqs.delete(seq);
       this.d.store.resetNextAttempt(row.session_key);
@@ -628,6 +641,7 @@ export class QueueDrainLoop {
       if (this.d.holdVerdict(row.session_key) !== 'hold') {
         this.heldSeqs.delete(seq);
         this.d.store.incrementCounter('holdsRecoveredInPlace');
+        featureEvidence.record('multiMachine.sessionPool.inboundQueue', { kind: 'held', reason: 'hold recovered in place', context: { seq, trigger: 'breaker-close' } });
         this.d.store.resetNextAttempt(row.session_key);
       }
     }
@@ -718,6 +732,7 @@ export class QueueDrainLoop {
         }
         if (summary.deadlineHit) break;
       }
+      this.recordDrainEvidence(summary);
       return summary;
     } finally {
       // Abnormal pass releases the single-flight guard (§3.3).
@@ -760,6 +775,7 @@ export class QueueDrainLoop {
           this.mirrorRemove(row.session_key);
           summary.staleCustodyExpired += 1;
           this.d.reportLoss([this.lossItem(row, 'stale-custody')], 'stale-custody');
+          featureEvidence.record('multiMachine.sessionPool.inboundQueue', { kind: 'error', reason: 'queued message expired: stale custody', context: { terminalReason: crossTenure ? 'stale-custody-tenure' : 'stale-custody-reboot', seq: row.enqueue_seq, ageMs: age } });
         }
         return;
       }
@@ -776,6 +792,7 @@ export class QueueDrainLoop {
       if (this.d.store.transition(row.enqueue_seq, 'queued', 'expired', { nowIso, terminalReason: 'poisoned', lastError: sanitizeError(err) })) {
         this.mirrorRemove(row.session_key);
         this.d.reportLoss([this.lossItem(row, 'poisoned')], 'poisoned');
+        featureEvidence.record('multiMachine.sessionPool.inboundQueue', { kind: 'error', reason: 'queued message dropped: unreadable row', context: { terminalReason: 'poisoned', seq: row.enqueue_seq } });
       }
       return;
     }
@@ -917,10 +934,29 @@ export class QueueDrainLoop {
     };
   }
 
+  /** Deliveries as a bounded summary, not one row per message: at most one row per 15 minutes. */
+  private recordDrainEvidence(summary: DrainPassSummary): void {
+    this.evidenceDelivered += summary.delivered;
+    this.evidenceFailed += summary.failed;
+    this.evidenceUnroutable += summary.unroutable;
+    this.evidenceHeld += summary.skippedHeld;
+    if (this.evidenceDelivered + this.evidenceFailed + this.evidenceUnroutable + this.evidenceHeld === 0) return;
+    const now = this.d.now();
+    if (now - this.evidenceAt < 15 * 60_000) return;
+    this.evidenceAt = now;
+    featureEvidence.record('multiMachine.sessionPool.inboundQueue', {
+      kind: this.evidenceDelivered > 0 ? 'fired' : 'held',
+      reason: 'drain summary',
+      context: { delivered: this.evidenceDelivered, failed: this.evidenceFailed, unroutable: this.evidenceUnroutable, skippedHeld: this.evidenceHeld, trigger: summary.trigger },
+    });
+    this.evidenceDelivered = this.evidenceFailed = this.evidenceUnroutable = this.evidenceHeld = 0;
+  }
+
   private expireAttemptsExhausted(row: PendingInboundRow, nowIso: string): void {
     this.d.store.transition(row.enqueue_seq, 'claimed', 'expired', { nowIso, terminalReason: 'attempts-exhausted' });
     this.mirrorRemove(row.session_key);
     this.d.reportLoss([this.lossItem(row, 'attempts-exhausted')], 'attempts-exhausted');
+    featureEvidence.record('multiMachine.sessionPool.inboundQueue', { kind: 'error', reason: 'queued message dropped: attempts exhausted', context: { terminalReason: 'attempts-exhausted', seq: row.enqueue_seq, attempts: row.attempts } });
   }
 
   private releaseWithBackoff(row: PendingInboundRow, attempts: number, lastError: string, nowIso: string): void {

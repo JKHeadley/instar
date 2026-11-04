@@ -24,6 +24,7 @@
  */
 import crypto from 'node:crypto';
 import { encryptForSync, decryptFromSync, type Secrets, type EncryptedSecretPayload } from './SecretStore.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 /**
  * Vault namespaces whose contents are deliberately machine-local.  In
@@ -196,6 +197,21 @@ export class SecretShareHandler {
    * Throws only on a malformed/foreign payload or a machine-local recovery namespace.
    */
   handle(command: SecretShareCommand, sender: string): { stored: string[]; dropped: string[] } {
+    try {
+      const result = this.handleInner(command, sender);
+      // Counts only: never a secret name or value.
+      featureEvidence.record('multiMachine.secretSync', { kind: 'fired', reason: 'secret sync received and applied', context: { sender, stored: result.stored.length, dropped: result.dropped.length } });
+      return result;
+    } catch (err) {
+      // A classified code, never err.message: the refusal message names a secret path.
+      const message = err instanceof Error ? err.message : '';
+      const code = message.includes('non-secret-share') ? 'wrong-command' : message.includes('machine-local') ? 'local-only-namespace' : 'open-or-apply-failed';
+      featureEvidence.record('multiMachine.secretSync', { kind: 'error', reason: `secret sync refused: ${code}`, context: { sender, code } });
+      throw err;
+    }
+  }
+
+  private handleInner(command: SecretShareCommand, sender: string): { stored: string[]; dropped: string[] } {
     // The legacy permissive path must be structurally unreachable for credential-class data
     // (WS5.2 R3a / §6.5): a credential rides the distinct `account-credential-share` verb +
     // `decryptAccountCredential`, never this one. Reject anything that is not a secret-share.

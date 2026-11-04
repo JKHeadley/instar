@@ -47,6 +47,7 @@ import {
   type HogGradeEvent,
 } from './ExternalHogDecisionStore.js';
 import type { DecisionProvenanceBlock } from '../core/decisionQualityTypes.js';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 
 /** The real-I/O seam. Every method is injected so the shell is fully testable with fakes. */
 export interface ExternalHogAdapters {
@@ -212,9 +213,16 @@ export class ExternalHogSentinel {
       deferralsFor: (key) => this.deferrals.get(key) ?? 0,
     };
 
-    const result = await runScanTick(this.state, deps, this.opts);
+    let result: ScanResult;
+    try {
+      result = await runScanTick(this.state, deps, this.opts);
+    } catch (err) {
+      featureEvidence.record('monitoring.externalHogSentinel', { kind: 'error', reason: 'scan tick threw', context: { errorName: err instanceof Error ? err.name : 'unknown', processes: table.length } });
+      throw err;
+    }
     this.state = result.nextState;
     this.updateDeferrals(result.outcomes);
+    this.recordFeatureEvidence(result.outcomes);
     this.lastOutcomes = result.outcomes.slice(-16);
     this.lastTickAt = this.adapters.nowMs();
 
@@ -275,6 +283,22 @@ export class ExternalHogSentinel {
         grade: ev.grade,
         evidence: { kind: 'hog-evidence', windowMs: ev.windowMs, note: ev.evidenceNote },
       });
+    }
+  }
+
+  /** One row per real kill; a standing hog that keeps getting the same answer writes at most hourly. */
+  private recordFeatureEvidence(outcomes: readonly ScanOutcome[]): void {
+    for (const o of outcomes) {
+      const enacted = String(o.enacted);
+      const input = {
+        kind: enacted === 'killed' || enacted === 'sigterm-exited' || enacted === 'would-kill' ? 'fired' as const
+          : enacted === 'alert-only-breaker-held' || enacted === 'decider-unavailable' ? 'error' as const
+            : 'held' as const,
+        reason: typeof o.outcome === 'object' && 'reason' in o.outcome ? `${enacted}: ${o.outcome.reason}` : enacted,
+        context: { classId: o.classId ?? null, ledgerKey: o.ledgerKey ?? null, pid: o.pid ?? null, verdict: String(o.verdict), enacted, deferrals: this.deferrals.get(o.ledgerKey) ?? 0 },
+      };
+      if (enacted === 'killed' || enacted === 'sigterm-exited') featureEvidence.record('monitoring.externalHogSentinel', input);
+      else featureEvidence.recordAtMostEvery('monitoring.externalHogSentinel', `${o.ledgerKey}|${enacted}`, 60 * 60 * 1000, input);
     }
   }
 

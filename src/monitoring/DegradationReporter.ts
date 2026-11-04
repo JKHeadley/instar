@@ -33,6 +33,7 @@ import os from 'node:os';
 import { detectJargon } from '../core/JargonDetector.js';
 import type { MessagingToneGate } from '../core/MessagingToneGate.js';
 import { Redactor } from './Redactor.js';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import { ErrorCodeExtractor, type ErrorProvenance } from './ErrorCodeExtractor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
@@ -391,6 +392,7 @@ export class DegradationReporter {
     this.openDegradations.set(k, {
       component, framework, openedAt: this.neverSilentNow(), retryAttempts: 0, lastEscalatedAt: null,
     });
+    featureEvidence.record('intelligence.degradationLadder.neverSilent', { kind: 'fired', reason: 'degradation opened', context: { component, framework, openCount: this.openDegradations.size } });
   }
 
   /**
@@ -404,6 +406,7 @@ export class DegradationReporter {
     const d = this.openDegradations.get(k);
     if (!d) return null;
     this.openDegradations.delete(k);
+    featureEvidence.record('intelligence.degradationLadder.neverSilent', { kind: 'fired', reason: 'degradation resolved', context: { component, framework, durationMs: this.neverSilentNow() - d.openedAt, retryAttempts: d.retryAttempts, escalated: d.lastEscalatedAt !== null } });
     return this.neverSilentNow() - d.openedAt;
   }
 
@@ -426,12 +429,16 @@ export class DegradationReporter {
       const age = now - d.openedAt;
       if (d.retryAttempts === 0) {
         // Idle / run-once: degraded once, never retried → done, not stuck. Auto-close at the TTL.
-        if (age > this.neverSilentTtlMs) this.openDegradations.delete(k);
+        if (age > this.neverSilentTtlMs) {
+          this.openDegradations.delete(k);
+          featureEvidence.record('intelligence.degradationLadder.neverSilent', { kind: 'held', reason: 'closed at TTL: never retried, not stuck', context: { component: d.component, framework: d.framework, durationMs: age } });
+        }
         continue;
       }
       if (age > this.neverSilentEscalateMs &&
           (d.lastEscalatedAt === null || now - d.lastEscalatedAt > this.neverSilentEscalateMs)) {
         d.lastEscalatedAt = now;
+        featureEvidence.record('intelligence.degradationLadder.neverSilent', { kind: 'error', reason: 'persistent degradation escalated', context: { component: d.component, framework: d.framework, durationMs: age, retryAttempts: d.retryAttempts, notifyUser: this.notifyUser } });
         this.escalatePersistentDegradation(d, age);
       }
     }

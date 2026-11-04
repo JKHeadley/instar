@@ -181,7 +181,7 @@ import { createThroughputRoutes } from './throughputRoutes.js';
 import { getMigrationDefaults } from '../config/ConfigDefaults.js';
 import { createMaturationLadderRoutes, isMaturationLadderEnabled } from './maturationLadderRoutes.js';
 import { MaturationLadderService, readShippedRegistry, type MetricsSummaryRow } from '../monitoring/MaturationLadderService.js';
-import { FeatureEvidenceLog, setFeatureEvidenceLog } from '../monitoring/FeatureEvidenceLog.js';
+import { FeatureEvidenceLog, featureEvidence, setFeatureEvidenceLog } from '../monitoring/FeatureEvidenceLog.js';
 import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
@@ -6932,6 +6932,7 @@ export class AgentServer {
         // by the time we detect completion, so captureOutput returns empty).
         let reply = '';
         let sessionId = '';
+        let menteeTimedOut = false;
         const spawnTs = Date.now();
         try {
           const session = await self.sessionManager.spawnSession({
@@ -6956,6 +6957,7 @@ export class AgentServer {
             await new Promise((r) => setTimeout(r, pollIntervalMs));
           }
           if (!finished) {
+            menteeTimedOut = true;
             try { self.sessionManager.killSession(session.id); } catch { /* best-effort */ }
             console.warn(
               `[mentee] session ${session.id} timed out at ${sessionTimeoutMs}ms (corr=${msg.corr}); sending best-effort partial reply`,
@@ -6971,6 +6973,7 @@ export class AgentServer {
             `[mentee] mentor-message handler spawn failed (corr=${msg.corr}, sessionId=${sessionId}):`,
             err instanceof Error ? err.message : String(err),
           );
+          featureEvidence.record('mentee', { kind: 'error', reason: sessionId ? 'mentor message handling failed' : 'session spawn failed', context: { from: msg.from, corr: msg.corr, sessionId, durationMs: Date.now() - spawnTs, errorName: err instanceof Error ? err.name : 'unknown' } });
           return;
         }
 
@@ -6978,6 +6981,7 @@ export class AgentServer {
           console.warn(
             `[mentee] mentee session produced empty reply for corr=${msg.corr}; skipping reply-out`,
           );
+          featureEvidence.record('mentee', { kind: 'error', reason: 'empty reply: nothing sent back', context: { from: msg.from, corr: msg.corr, sessionId, timedOut: menteeTimedOut, durationMs: Date.now() - spawnTs } });
           return;
         }
 
@@ -6985,20 +6989,28 @@ export class AgentServer {
         // mentor is a local peer; Telegram fallback otherwise). The handler
         // stays capture-only — deliverA2aMessage is an orchestrator method,
         // not a capability handed into the handler.
-        await self.deliverA2aMessage({
-          fromAgent: localAgent,
-          toAgent: msg.from,
-          role: 'mentor-reply',
-          corr: msg.corr || msg.id,
-          body: reply,
-          allowedRoles: new Set(['mentor-reply']),
-          telegramTopicId: menteeCfg.replyTopicId,
-          // fromBotId = THIS agent's own bot id, so the mentor's allowlist
-          // (knownAgents[instar-codey].botId === senderBotId) passes.
-          fromBotId: self.ownPrimaryBotId(),
-          toBotId: menteeCfg.knownMentors[msg.from]?.botId,
-          targetMachineId: menteeCfg.knownMentors[msg.from]?.machineId,
-        });
+        const menteeEvidence = { from: msg.from, corr: msg.corr, sessionId, timedOut: menteeTimedOut, durationMs: Date.now() - spawnTs, replyChars: reply.length };
+        let replyDelivered: boolean;
+        try {
+          replyDelivered = await self.deliverA2aMessage({
+            fromAgent: localAgent,
+            toAgent: msg.from,
+            role: 'mentor-reply',
+            corr: msg.corr || msg.id,
+            body: reply,
+            allowedRoles: new Set(['mentor-reply']),
+            telegramTopicId: menteeCfg.replyTopicId,
+            // fromBotId = THIS agent's own bot id, so the mentor's allowlist
+            // (knownAgents[instar-codey].botId === senderBotId) passes.
+            fromBotId: self.ownPrimaryBotId(),
+            toBotId: menteeCfg.knownMentors[msg.from]?.botId,
+            targetMachineId: menteeCfg.knownMentors[msg.from]?.machineId,
+          });
+        } catch (err) {
+          featureEvidence.record('mentee', { kind: 'error', reason: 'reply delivery threw', context: menteeEvidence });
+          throw err;
+        }
+        featureEvidence.record('mentee', { kind: replyDelivered ? 'fired' : 'error', reason: replyDelivered ? 'mentor message handled: reply delivered' : 'reply not delivered', context: menteeEvidence });
       };
       roleHandlers.set('mentor', mentorMessageHandler);
     }
