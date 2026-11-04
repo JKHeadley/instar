@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-04T00:02:06.650Z",
+  "slug": "normal-chrome-linux",
+  "carriers": {
+    "CMT-1265": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Fresh small Hetzner server: new-user install, Claude token via Secret Drop, Slack, phone pairing, 24h real scheduled use with a pass/fail list; start ACT-138; plain pass/fail report in topic 136880 and a Threadline reply to Luna by Thu 2026-11-05."
+    }
+  }
+}

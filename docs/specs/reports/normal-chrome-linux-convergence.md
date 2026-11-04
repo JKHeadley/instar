@@ -1,18 +1,18 @@
-# Convergence Report — Normal-Chrome browser skill: the Linux driver (X11 input + AT-SPI reading)
+# Convergence Report — Normal-Chrome browser skill: the Linux driver, first slice
 
 **Spec:** [docs/specs/normal-chrome-linux.md](../normal-chrome-linux.md)
 **Slug:** `normal-chrome-linux`
-**Outcome:** not converged. After the 6-round cap the design was cut (the driver now runs only on a display the agent owns), and one verification round (round 7) was run on the cut. Round 7 found 10 distinct design findings (12 as raised), all about the new agent display or its operator path, none reopening the removed shared-screen machinery. They are fixed in the spec text and not re-reviewed. **No convergence tag was written.**
-**Iterations:** 7 (6 + one authorized verification round)
-**Final-round design findings:** 10 distinct (round 7), all folded into the spec, none re-reviewed
+**Outcome:** not converged; cut to a v1 slice. After the 6-round cap the design was cut to a display the agent owns, and round 7 verified that cut. Round 8, the final verification round, found design problems again (codex 3, clean-door 2, integration 3, security 2, lessons-aware 4; most in the phone take-over path). Under the orchestrator's fixed rule (topic 136110, 2026-11-03 15:55 PST), no round 9 was run. ACT-138 v1 was cut to the smallest slice: launch on the agent display, read the active tab through AT-SPI, find-and-click with a hit-test, type non-secret text and navigate. Every other part is now a tracked "Later slices" line. **No convergence tag was written and `approved` was not set.**
+**Iterations:** 8 (6 + two authorized verification rounds), then the v1 cut
+**Final-round design findings:** 14 as raised (round 8). The ones that still apply to the v1 slice are folded in; the rest left with the parts that moved to later slices.
 
 ## Cross-model review: codex-cli:gpt-6-astra
 
-A real GPT-tier review ran through the agent's codex CLI in all seven rounds, each with status `ok`. The context sent with each review was the spec itself, `docs/specs/normal-chrome-cross-platform.md` and `docs/signal-vs-authority.md`.
+A real GPT-tier review ran through the agent's codex CLI in all eight rounds, each with status `ok`. The context sent with each review was the spec itself, `docs/specs/normal-chrome-cross-platform.md` and `docs/signal-vs-authority.md`.
 
 The Gemini family was **unavailable** (`gemini-not-authed`) and Grok was not enabled.
 
-A clean-door Anthropic read (`--family claude-code`) also ran in every round, round 7 included. It is recorded separately as `clean-door-anthropic-review: claude-code:claude-opus-5-5`. It ran on `claude-opus-5-5`, not the configured `claude-fable-5`, so it is a second Claude read, not a cross-family one.
+A clean-door Anthropic read (`--family claude-code`) also ran in every round, round 8 included. It is recorded separately as `clean-door-anthropic-review: claude-code:claude-opus-5-5`. It ran on `claude-opus-5-5`, not the configured `claude-fable-5`, so it is a second Claude read, not a cross-family one.
 
 The six internal reviewer lenses ran as Claude subagents on the session model (Opus 5.5) in every round. Externals ran on every round because the spec's body changed each time.
 
@@ -22,12 +22,13 @@ Instar agents can already drive a normal, signed-in Chrome window on a Mac and o
 
 This spec designs the Linux version. It moves the real mouse and keyboard through the X11 display system. It reads the page the way a screen reader does, through the Linux accessibility bus. Before writing the design, Echo proved the method by hand on Cirrus, a Linux test VM, on 2026-11-03.
 
-If it ships, an agent on any Linux machine where TigerVNC can run (a cloud VM, a KDE or GNOME laptop, Wayland or not, with or without a desktop) can do those account-bound web tasks on a private screen of its own. The operator watches that screen from a phone on the dashboard's Desktop page and takes it over only when a person's hands are needed.
+The first version (v1) is deliberately small. An agent on any Linux machine where TigerVNC can run (a cloud VM, a KDE or GNOME laptop, Wayland or not, with or without a desktop) opens Chrome on a private screen of its own. There it reads the page, finds and clicks a link or button by name after checking what is under the point, types ordinary text and goes to addresses. Watching from a phone, taking over, typing passwords, downloads and a Wayland input path are later steps, each tracked under ACT-138.
 
 The trade-offs:
 - **No code inside the page.** The Mac version can run code in the page; the Linux version cannot.
 - **Not on the person's own screen.** After six rounds of patching the rules for sharing a screen with a person, that path was cut. The agent works only on its own screen.
 - **Cookies protected by file permissions only,** and a US keyboard layout on the agent's screen.
+- **No sign-in yet.** v1 types no secrets, so account pages that need a sign-in wait for the secret-typing slice.
 
 ## Original vs Converged
 
@@ -82,6 +83,7 @@ This section records what rounds 1-6 changed. The structural cut after round 6 (
 | 6 | ran (1 flag; fit) | adversarial, decisions, lessons, integration, codex, clean-door | 7 (2 safety or data loss) | ~25 | Folded in: release checks the operator first; pending release per display; `close --force` judgment row; Wayland decided by the X server only; latch clears when the Chrome is gone; macOS log lock via `fcntl`; GLib iteration and streamed walks |
 | cut | — | — | — | — | Structural cut (below): Chrome runs only on an agent-owned Xvnc display; operator-presence, shared-display, desktop-resolution, Wayland-session, unattended-override and keyring machinery deleted |
 | 7 | ran (2 flags: lint `.py` judged false positive; Mobile-Complete, design) | security, adversarial, integration, decisions, lessons, codex, clean-door | 10 distinct (12 raised) | 20 | Folded in, not re-reviewed: phone path through the existing Desktop page with handover-gated input; release waits for view-only; whole-group stop with a health contract and boot id; `IsEnabled` on the private bus; `-AllowOverride`, `-AcceptSetDesktopSize=0`, pointer root-coordinate check; squat-proof readiness (lock pid + `SO_PEERCRED`); `at-spi-bus-launcher` path; `--new` judgment row; no stop during handover |
+| 8 | ran (1 flag: lint `.py`, the recorded false positive; fit weak) | security, integration, lessons-aware, codex, clean-door | 14 as raised (codex 3, clean-door 2, integration 3, security 2, lessons-aware 4) | ~15 | Not iterated (decision rule B): cut to the v1 slice (below); the round-8 items that apply to v1 folded in |
 
 Standards-Conformance Gate: ran every round (one persistent flag; round 7 added a second, Mobile-Complete). Its parent-principle fit varied between weak and fit; round 7: fit. Gemini stayed unavailable in round 7 (`gemini-not-authed`). Round-7 internal lenses ran as Claude subagents on Opus 5.5 (security + adversarial, integration + scalability + decisions, lessons-aware).
 
@@ -279,12 +281,41 @@ Round-6 items against the cut:
 
 Precision items from round 7 fixed in passing: sockets under the runtime dir (no false blocker on deep homes), one readiness wording, `nav` checks the omnibox has focus, Unix-socket ssh forwarding, outfiles folded into the state marker, lock wait 90 s, `KillMode=process` cited, remote-desktop discovery skips 100-119.
 
+## Round 8 findings
+
+Round 8 ran on spec head `cbe661e88`. Gate: one flag (the lint `.py` flag, judged a false positive again by the lessons-aware lens, the fifth independent read to agree); parent-principle fit weak (the lessons-aware lens judged the parent right and suggested citing `SelfUnblockChecklist`, which lists "browser" as a probe source). Codex `gpt-6-astra`: ok, SERIOUS ISSUES. Clean-door `claude-opus-5-5` (configured `claude-fable-5`): ok, MINOR ISSUES. Gemini unavailable (`gemini-not-authed`), Grok not enabled. Internal lenses ran as Claude subagents on Opus 5.5: security + adversarial, integration + scalability + decisions, lessons-aware.
+
+Design findings, one line each, and where each one stands after the cut:
+- Desktop-host typing can still be emitting keys after "Give back" re-enables driver input (codex). **Moved out** with the phone path; the later-slice line names the serialization.
+- The stale-record stop's process-group rule conflicts with its unit test and can signal a reused group (codex, security). **Fixed in v1**: a pid-and-start-time list, including the accessibility bus's own daemon; no process-group signalling.
+- An interrupted one-time-code entry gets stuck between "clear before any read" and "read before any input" (codex). **Moved out** with secret typing; the later-slice line names the content-free recovery read.
+- Sockets in `$XDG_RUNTIME_DIR` vanish when the user's last login session ends (clean-door). **Fixed in v1**: sockets in the state folder or a verified `/tmp` folder, the `linger` line, and a live-gate logout row.
+- Without a window manager Chrome may never set the frame's `active` state (clean-door). **Fixed in v1**: the frame is chosen by the bound window's geometry, `active` is corroboration only, and v1 drives one window per profile.
+- A health failure stopped the whole stack, killing a bound Chrome with unsaved input or cutting a handover (security). **Fixed in v1**: `ERR display-unhealthy` while `Xvnc` is alive and a Chrome is bound; stop only when `Xvnc` is gone or nothing is bound.
+- The "Agent browser" screen is unreachable on a headless or Wayland machine, and when the person's screen is locked (integration, lessons-aware). **Moved out** with the phone path.
+- No design for two X servers behind one desktop host (integration, lessons-aware). **Moved out**.
+- The handover route runs on the front, not on the pool machine that owns the display (integration, lessons-aware). **Moved out**.
+- The phone path's preconditions (remote desktop enabled, pool nickname) are unstated (lessons-aware). **Moved out**.
+- The dependency judgment row's default hands the operator a command to paste (lessons-aware). **Fixed in v1**: a yes/no approval and the agent runs it with `sudo -n`; plain words otherwise; never a paste-this command.
+
+Precision items fixed in passing: the cookie is written for this display number on the local host only (security); the v3 card no longer names `handover on` (lessons-aware); `systemd-run --scope` recorded as an alternative (clean-door). The `vncconfig` per-event cost, the motion-event check rate, the 90 s handover lock wait, the per-machine Desktop link and the existing host's argv typing all left with the phone path.
+
+## The v1 cut (after round 8)
+
+The decision rule for a round 8 that found design problems: no round 9, no approval; cut ACT-138 v1 to the smallest slice. v1 contains:
+1. Chrome started on the agent-private display, keeping the cut's isolation (own `Xvnc`, cookie, session bus and accessibility bus; now with no VNC listener at all) and every security floor: no credential on argv or in logs, typed text on stdin only, profile jail, url rule, operator-asked actions only, page text untrusted, no CAPTCHA or human-check defeat, hit-test before every click, bounded waits, one-instance lock, a clean stop that signals only recorded processes with matching start times;
+2. reading the active tab (URL, title, text) through AT-SPI;
+3. finding an element by accessible name and clicking it after a hit-test;
+4. typing non-secret text (`type`, `key`) and navigating (`nav`); `close` is the cleanup.
+
+All input and coordinate handling sits behind one small backend interface (X11 in v1). A Wayland/Hyprland backend can plug in later, using 136848's evidence (AT-SPI works on native-Wayland Chromium once the accessibility bus is enabled; boxes are window-relative; input through a virtual pointer and `wtype` on stdin).
+
+Moved to "Later slices", each tracked under ACT-138: phone watch and take-over (Desktop page, VNC socket, handover); secret typing with the expected-host check; downloads; the rest of the command surface (`invoke`, `clickxy`, `editfields` / `typeedit`, `ctrl`, `tree`, `shot`, `target`, `windows` / `switch` and popups, `find browser`); the Wayland backend; close and recovery extras (`close --force`, `display` / `display-stop`, idle bound, log rotation in the other writers). Each later-slice line names ACT-138. Its tracked marker names CMT-1265, the topic-136880 commitment that started ACT-138, because the commit-time deferral lint resolves only commitment carriers with a generated ledger (`docs/specs/carriers/normal-chrome-linux.json`) and an inlined excerpt. The Cirrus proof section is unchanged. The ELI16 companion was rewritten to match v1.
+
+The v1 slice has not been reviewed. By the decision rule, no round 9 was run.
+
 ## Convergence verdict
 
-**Not converged.** Round 7, the one verification round authorized after the cut, found 10 distinct design findings. All concern the new agent display and the operator's path to it; none reopens the removed shared-screen machinery, and the cut itself was supported by every reviewer who commented on it (codex and clean-door called it the right simplification). All 10 are fixed in the spec text, and by instruction no further round was run, so the fixes are not re-reviewed. No `review-convergence` tag was written and `approved: true` was not touched.
+**Not converged; cut to the v1 slice.** Round 8 found design problems, most of them in the phone take-over path. Under the orchestrator's fixed decision rule (topic 136110, 2026-11-03 15:55 PST) no round 9 was run and the spec was not approved. ACT-138 v1 is now the four-part slice above, with the round-8 items that apply to it folded in, and the rest listed under "Later slices". No `review-convergence` tag was written and `approved: true` was not touched.
 
-The operator's options:
-1. Authorize one more verification round limited to the round-7 fixes (mainly the phone path through the Desktop page and the stack's health contract). If it is quiet, the tag is written. Recommended.
-2. Accept the round-7 fixes as they stand.
-
-`## Open questions` is empty. Decision-Completeness counts for round 7 (integration reviewer): frontloaded decisions 22, cheap-to-change tags 0, contested then cleared 2 (passive scoring, `invoke` activation); one contested and not cleared (the remote desktop left out), resolved by the phone-path fix.
+`## Open questions` is empty. Decision-Completeness counts for round 8 (integration reviewer, on the pre-cut text): frontloaded decisions 22, cheap-to-change tags 0, contested then cleared 2; the phone path was contested and not cleared, and has moved to a later slice.
