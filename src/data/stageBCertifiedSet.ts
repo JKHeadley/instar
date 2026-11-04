@@ -24,6 +24,10 @@ export const STAGE_B_CERTIFIED_SET = {
   ],
   "excluded": [
     {
+      "file": "src/core/claudeChildAuth.ts",
+      "reason": "Claude-only helper that passes the sign-in key to claude children; a Codex launch never reads it, so it cannot change the behaviour the Stage-B evidence certifies."
+    },
+    {
       "file": "src/scheduler/jobScriptProtocol.ts",
       "reason": "Shared deterministic script-job output parser reached through scheduler imports; it does not alter the certified Codex Stage-B delivery path and has separate script protocol unit and lifecycle coverage"
     },

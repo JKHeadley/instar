@@ -56,6 +56,7 @@ All points are invariant: each reads a status code, a hash comparison or a count
 - Triage lane: previously had no key and hardcoded `credentialSource: 'store'`. It now reports `env` when a key is passed.
 - Tone gate, sentinel and external gate start getting real answers on key agents, so messages that passed the fixed leak floor may now be held by a model verdict. That is the intended behaviour and a visible change for those agents.
 - Agents with a key and a stored login: internal calls move to the key, matching their sessions.
+- Stage-B release evidence: `claudeChildAuth.ts` is reached by import from the certified set, so it is listed as excluded with a reason. A Codex launch never reads it, and no certified file changed.
 
 ---
 
