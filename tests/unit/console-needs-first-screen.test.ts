@@ -194,6 +194,13 @@ describe('Home: every source reaches the count and the headline', () => {
     expect(surfacedNeeds(known, NOW).pending).toEqual([]);
   });
 
+  it('a stop only the agent holds asks nothing of the operator; a mixed stop does', async () => {
+    const { surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
+    const w = (stops: unknown[]) => ({ merging: { results: { watcher: ok(watcher({ gate: { rollback: [{ by: 'x' }], rollbackStops: stops } })) } } });
+    expect(surfacedNeeds(w([{ class: 'agent' }]), NOW).rows).toHaveLength(0);
+    expect(surfacedNeeds(w([{ class: 'agent' }, { class: 'operator' }]), NOW).rows).toHaveLength(1);
+  });
+
   it('secret rows carry no one-time token', async () => {
     const { NEED_SOURCES } = await import(path.join(CONSOLE, 'needs-model.js'));
     const src = NEED_SOURCES.find((s: any) => s.id === 'secrets');

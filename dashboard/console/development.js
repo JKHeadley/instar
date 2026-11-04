@@ -131,7 +131,7 @@ function paint() {
   if (!view.open) view.open = feedback.tone === 'attn' || feedback.state === 'cant-tell' ? 'feedback' : 'shipping';
   setKids(main, el('div', { class: 'dev-page' },
     pageHead({ eyebrow: EYEBROW, headline: h.text, sub: h.sub, tone: h.tone }),
-    stopped, approvalsLine, lead, moreLine,
+    stopped, lead, approvalsLine, moreLine,
     el('div', { class: 'page-sections' },
       fold({ id: 'shipping', title: 'Shipping', line: shipping.line, tone: shipping.tone, body: () => shippingBody(shipping, deps) }),
       fold({ id: 'feedback', title: 'Feedback', line: feedback.line, tone: feedback.tone, body: () => feedbackBody(feedback, deps) }),

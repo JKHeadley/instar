@@ -3,7 +3,7 @@
 // neither can miss one. Pure: it reads nothing itself and touches no DOM. Rows are built with
 // each page's own model, so Home and the page cannot disagree.
 
-import { buildShipping, stoppedLead, operatorTodos, sourceState } from './development-model.js';
+import { buildShipping, stoppedLead, operatorTodos, sourceState, agentOwnedStop } from './development-model.js';
 import { buildAccountsPage } from './accounts-model.js';
 import { pairingModel, waitingCards } from './agents-model.js';
 import { buildApprovals } from './mandates-model.js';
@@ -19,6 +19,7 @@ const UNREADABLE = null;
 export const NEED_SOURCES = [
   { id: 'merging', page: 'work/development', reads: { watcher: '/green-pr-automerge' },
     rows: ({ watcher }, now) => {
+      if (agentOwnedStop(watcher.data)) return []; // the agent releases this itself; the page still shows it
       const lead = stoppedLead(buildShipping({ watcher }, now, {}));
       return lead ? [row('merging', lead.title, lead.detail, '#/work/development')] : [];
     } },
