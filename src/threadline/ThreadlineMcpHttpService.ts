@@ -34,6 +34,8 @@ import type { ThreadResumeMap } from './ThreadResumeMap.js';
 import {
   sendMessageViaHttp,
   getThreadHistoryViaHttp,
+  acknowledgeViaHttp,
+  getThreadReceiptsViaHttp,
   requestSecretViaHttp,
   startPairingViaHttp,
   createPairingInviteViaHttp,
@@ -445,6 +447,9 @@ export class ThreadlineMcpHttpService implements ThreadlineMcpSpawnWiring {
           }));
         },
         getThreadHistory: (threadId, limit, before) => track(getThreadHistoryViaHttp(threadId, limit, port, token(), before)),
+        // a2a-required-acknowledgment D4/D6: the same route the stdio helper calls.
+        acknowledge: (params) => track(acknowledgeViaHttp(params, port, token())),
+        getThreadReceipts: (threadId) => track(getThreadReceiptsViaHttp(threadId, port, token())),
         requestSecret: (params) => track(requestSecretViaHttp(params, port)),
         startPairing: (peerFp) => track(startPairingViaHttp(peerFp, port, token())),
         createInvite: (o) => track(createPairingInviteViaHttp(o, port, token())),

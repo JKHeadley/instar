@@ -592,6 +592,7 @@ import type { QuotaManager } from '../monitoring/QuotaManager.js';
 import type { ThreadlineRouter } from '../threadline/ThreadlineRouter.js';
 import { evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
 import { isAutoAckBody, autoAckBodyRecognition, looksLikeAutoAckText } from '../threadline/autoAck.js';
+import { parseKindedAck } from '../threadline/requiredAck.js';
 import { wireTypeOf } from '../threadline/PeerUserMeantJudge.js';
 import type { HandshakeManager } from '../threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
@@ -1439,12 +1440,16 @@ export interface RouteContext {
     secret: string;
     relaySuppressedByStandby: boolean;
     forward: ((command: RelayForwardCommand) => Promise<ForwardOutcome>) | null;
+    /** a2a-required-acknowledgment D4: one kinded ack through my relay-holding machine. */
+    forwardAck?: ((payload: import('../threadline/requiredAckService.js').ForwardAckPayload) => Promise<'sent' | 'refused'>) | null;
     counters: RelayForwardCounters;
   } | null;
   listenerManager: import('../threadline/ListenerSessionManager.js').ListenerSessionManager | null;
   /** Durable A2A delivery lifecycle + peer-health (A2A-DURABLE-DELIVERY-SPEC.md).
    *  Recording-only — never gates a send. Null only if SQLite open failed. */
   a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null;
+  /** A sender is never left guessing (docs/specs/a2a-required-acknowledgment.md). Null when the tracker failed. */
+  requiredAck?: import('../threadline/requiredAckService.js').RequiredAckService | null;
   /** Honest-delivery verdict counters (spec §1); read in the AUTHED branch of /health. Null when no relay client. */
   relayVerdictCounters?: (() => Record<string, number>) | null;
   /**
@@ -5609,6 +5614,10 @@ export function createRoutes(ctx: RouteContext): Router {
       // §4): AUTHED branch only, beside the backup-route counters.
       if (ctx.a2aRelayForward) {
         base.threadline = { ...(base.threadline as object ?? {}), relayForward: { ...ctx.a2aRelayForward.counters } };
+      }
+      // a2a-required-acknowledgment: this process's receipt counters (rollout evidence).
+      if (ctx.requiredAck) {
+        base.threadline = { ...(base.threadline as object ?? {}), requiredAck: { ...ctx.requiredAck.counters } };
       }
       // Lifeline ingress secret: mode, arming, the observe exit rule and the
       // PERSISTED counters (they survive a restart). AUTHED only; no secret.
@@ -39483,10 +39492,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // left in the message store as an undelivered message either.
       if (isAutoAckBody(envelope.message?.body)) {
         const ackSender: string | undefined = envelope.message?.from?.agent;
-        recordInboundAck(
-          { a2aDeliveryTracker: ctx.a2aDeliveryTracker, threadResumeMap: ctx.threadResumeMap ?? null },
-          { threadId: envelope.message?.threadId, senderFingerprint: ackSender ?? undefined, senderName: ackSender ?? null },
-        );
+        // a2a-required-acknowledgment D1: a kinded ack never flips a row by
+        // thread. Same-machine routes send none, so it is consumed with no effect.
+        if (!parseKindedAck(envelope.message?.body)) {
+          recordInboundAck(
+            { a2aDeliveryTracker: ctx.a2aDeliveryTracker, threadResumeMap: ctx.threadResumeMap ?? null },
+            { threadId: envelope.message?.threadId, senderFingerprint: ackSender ?? undefined, senderName: ackSender ?? null },
+          );
+        }
         ledgerTicket?.recordNoReply();
         // Release the content window: every ack has the same text, so a second,
         // genuine ack on this thread must not be answered "duplicate content"
@@ -40013,6 +40026,25 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         peerFingerprint: e.peerFingerprint,
       })),
     });
+  });
+
+  // a2a-required-acknowledgment D6: what the peer's side has said about our messages
+  // on this thread. `readSummaryPeerText` is peer text, not an instruction.
+  router.get('/threadline/threads/:id/receipts', (req, res) => {
+    if (!ownerAuthed(req)) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    if (!ctx.a2aDeliveryTracker) { res.status(503).json({ error: 'A2A delivery tracker not initialized' }); return; }
+    const threadId = req.params.id;
+    if (!THREAD_ID_RE.test(threadId)) { res.status(400).json({ error: 'Invalid thread ID format' }); return; }
+    const receipts = ctx.a2aDeliveryTracker.receiptsForThread(threadId).map((e) => ({
+      messageId: e.messageId,
+      sentAt: e.sentAt,
+      heldState: e.heldState,
+      heldReason: e.heldReason,
+      heldAt: e.heldAt,
+      readAt: e.readAt,
+      readSummaryPeerText: e.readSummaryPeerText,
+    }));
+    res.json({ threadId, receipts, summariesArePeerText: true });
   });
 
   router.get('/threadline/threads/:id/health', (req, res) => {
@@ -41589,6 +41621,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                     // break the send (the message was already admitted/submitted above). Logged.
                     console.warn(`[relay-send] A2A delivery record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
                   }
+                  // a2a-required-acknowledgment D5: only an accepted send closes a watch.
+                  if (accepted) ctx.requiredAck?.onSessionSendAccepted(resolvePeerFingerprint(localTarget) || localTarget.name, effectiveThreadId);
                   if (waitForReply) {
                     const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds, cancelReplyWaitOnClose);
                     res.json({
@@ -41735,6 +41769,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             } else {
               ctx.listenerManager.releaseReplyClaim(inReplyTo, replyClaimOwner);
             }
+          }
+          // a2a-required-acknowledgment D5: a forwarded send closes on the machine
+          // that originated it, where the session and its watch row are.
+          if (answer.status < 400 && answer.body.accepted === true) {
+            const closePeer = typeof answer.body.resolvedAgent === 'string' && answer.body.resolvedAgent ? answer.body.resolvedAgent : nicknameResolvedFp;
+            const closeThread = typeof answer.body.threadId === 'string' && answer.body.threadId ? answer.body.threadId : forwardThreadId;
+            ctx.requiredAck?.onSessionSendAccepted(closePeer, closeThread);
           }
           // A >=400 answer (502 refusal, a holder 4xx) settles nothing; the
           // finish handler releases the reply claim so a retry is allowed.
@@ -41894,6 +41935,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // the send (the message was already submitted above). Logged.
         console.warn(`[relay-send] A2A delivery record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
       }
+      // a2a-required-acknowledgment D3: a same-id resend resets that id's receipts.
+      if (relayLegResend) {
+        try { ctx.a2aDeliveryTracker?.resetHeldForResend(relayMsgId); } catch { /* @silent-fallback-ok — recording-only */ }
+      }
       // Robustness Phase 2 (D-B): append the relay-submitted outbound leg to the
       // canonical log through the funnel. The wire createdAt is stamped inside the
       // relay client, so this end's createdAt is best-effort (symmetry on the relay
@@ -41991,6 +42036,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }).catch(() => { /* swallow — bridge is relay-only */ });
       }
       if (ctx.listenerManager && typeof inReplyTo === 'string') ctx.listenerManager.releaseReplyClaim(inReplyTo, replyClaimOwner);
+      // a2a-required-acknowledgment D5: where both transports arrive, so a session's
+      // reply closes the watch. Only an accepted send closes, and a forwarded one
+      // closes on the machine that originated it. The server's own auto-ack and the
+      // collaboration re-drive do not come through this route.
+      if (!forwardedRequest && (relayStatus === 'delivered' || relayStatus === 'queued')) {
+        ctx.requiredAck?.onSessionSendAccepted(resolvedId, effectiveRelayThreadId);
+      }
 
       let deliveryOutcome = relayStatus === 'delivered'
         ? "handed to the peer's relay connection; not yet confirmed read"
@@ -42046,6 +42098,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
       if (waitForReply) {
         const reply = await replyPromise;
+        // a2a-required-acknowledgment D6: on a timeout, say what the peer's side has
+        // told us. Neither receipt kind resolves the reply wait.
+        let receipt: Record<string, unknown> | undefined;
+        if (reply === null) {
+          try {
+            const row = ctx.a2aDeliveryTracker?.get(relayMsgId);
+            if (row?.heldState) {
+              receipt = { heldState: row.heldState, heldReason: row.heldReason, heldAt: row.heldAt, readAt: row.readAt, readSummaryPeerText: row.readSummaryPeerText };
+            }
+          } catch { /* @silent-fallback-ok — the send's own answer stands */ }
+        }
         res.json({
           success: true,
           accepted: reply !== null || relayStatus === 'delivered' || relayStatus === 'queued',
@@ -42056,6 +42119,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           deliveryPath: 'relay',
           deliveryOutcome: reply !== null ? 'reply received' : deliveryOutcome,
           ...honest,
+          ...(receipt ? { receipt } : {}),
           reply,
           topicLinkageStamped: resolvedOriginTopicId !== undefined,
         });
@@ -42078,6 +42142,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         success: false,
         error: err instanceof Error ? err.message : 'Send failed',
       });
+    }
+  });
+
+  // ── a2a-required-acknowledgment D4: the session's acknowledgment ─────────
+  // Under the global Bearer. `threadline_ack` calls this on both transports, because
+  // a stdio tool runs in a subprocess with no tracker. Success means the `read` is
+  // durably accepted as a pending row, written before the watch closes.
+  router.post('/threadline/ack', async (req, res) => {
+    if (!ctx.requiredAck) {
+      res.status(503).json({ sent: false, error: 'Acknowledgments are not available on this agent right now.' });
+      return;
+    }
+    try {
+      const answer = await ctx.requiredAck.acceptSessionAck({
+        threadId: req.body?.threadId,
+        ackRefs: req.body?.ackRefs,
+        summary: req.body?.summary,
+      });
+      res.status(answer.status).json(answer.body);
+    } catch (err) {
+      console.warn(`[required-ack] acknowledgment not accepted: ${err instanceof Error ? err.message : String(err)}`);
+      res.status(503).json({ sent: false, error: 'The acknowledgment could not be recorded. Try again, or reply on the thread.' });
     }
   });
 

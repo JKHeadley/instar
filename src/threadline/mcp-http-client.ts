@@ -157,6 +157,7 @@ export async function sendMessageViaHttp(
       forwardedTo?: string;
       replyArrivesIn?: string;
       peerDark?: { since: string | null; queuedCount: number; expiresAt: string | null; connectedNow: boolean | null; connectedNowReason?: 'no-row' | 'relay-down' | 'stale' | null; connectedAsOf?: string | null; handedUnackedCount?: number };
+      receipt?: SendMessageResult['receipt'];
     } = {};
     if (raw) {
       try {
@@ -190,6 +191,8 @@ export async function sendMessageViaHttp(
         ...(parsed.replyArrivesIn !== undefined ? { replyArrivesIn: parsed.replyArrivesIn } : {}),
         // §3.2: a send to a dark peer carries the evidence object, additively.
         ...(parsed.peerDark && typeof parsed.peerDark === 'object' ? { peerDark: parsed.peerDark } : {}),
+        // a2a-required-acknowledgment D6: what the peer's side said, on a wait timeout.
+        ...(parsed.receipt && typeof parsed.receipt === 'object' ? { receipt: parsed.receipt } : {}),
       };
     }
 
@@ -293,6 +296,40 @@ export async function getThreadHistoryViaHttp(
     return { threadId, messages, totalCount, hasMore };
   } catch {
     return empty;
+  }
+}
+
+/**
+ * a2a-required-acknowledgment D4: `threadline_ack` on both transports. Stdio tools run
+ * in a subprocess with no tracker, so the watch and pending rows live behind this route.
+ */
+export async function acknowledgeViaHttp(
+  params: { threadId?: string; ackRefs: string[]; summary: string },
+  serverPort: number,
+  agentToken: string,
+): Promise<Record<string, unknown>> {
+  const response = await fetch(`http://localhost:${serverPort}/threadline/ack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify(params),
+  });
+  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (response.status >= 400 && typeof body.error === 'string') throw new Error(body.error);
+  if (response.status >= 400) throw new Error(`The agent server answered ${response.status}`);
+  return body;
+}
+
+/** a2a-required-acknowledgment D6: receipts on a thread. An unreadable answer is no receipts. */
+export async function getThreadReceiptsViaHttp(threadId: string, serverPort: number, agentToken: string): Promise<Array<Record<string, unknown>>> {
+  try {
+    const response = await fetch(`http://localhost:${serverPort}/threadline/threads/${encodeURIComponent(threadId)}/receipts`, {
+      headers: { Authorization: `Bearer ${agentToken}` },
+    });
+    if (!response.ok) return [];
+    const body = (await response.json()) as { receipts?: Array<Record<string, unknown>> };
+    return Array.isArray(body.receipts) ? body.receipts : [];
+  } catch {
+    return []; // @silent-fallback-ok — history still answers without receipts
   }
 }
 

@@ -206,6 +206,10 @@ export type TopicRouteOutcome =
       reason: string;
       commitmentDelivered: boolean;
       telegramSent: boolean;
+      /** a2a-required-acknowledgment D5: the local session that has it, when known. */
+      sessionName?: string;
+      /** a2a-required-acknowledgment D5: it went to a topic session on another machine, so no watch opens. */
+      remote?: boolean;
       /**
        * Set ONLY with `deliveryMode: 'live-inject-pending'`: the final route
        * (`live-inject` → commitment delivered, no surface; `failure-visible`
@@ -217,6 +221,11 @@ export type TopicRouteOutcome =
 export interface RouteReplyInput {
   envelope: MessageEnvelope;
   threadEntry: { remoteAgent: string; subject?: string; originTopicId?: number; originSessionName?: string; machineOrigin?: string };
+  /**
+   * a2a-required-acknowledgment D4: the fixed instruction for a watched message. Goes
+   * only into a LOCAL session's payload: a remote session has no watch row to close.
+   */
+  requiredAckInstruction?: string;
 }
 
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -535,6 +544,9 @@ export class TopicLinkageHandler {
     const sessionName = liveSessionName ?? threadEntry.originSessionName ?? null;
     let deliveryMode: TopicDeliveryMode = 'failure-visible';
     let pendingSettled: Promise<LiveInjectSettlement> | null = null;
+    // a2a-required-acknowledgment D5: the session that actually has it. A respawn
+    // replaces the dead one, whose name would read as an ended session.
+    let deliveredSession: string | null = sessionName;
 
     const payload = this.buildSessionPayload({
       threadId,
@@ -546,6 +558,7 @@ export class TopicLinkageHandler {
       history,
       topicId,
       userTopicId,
+      requiredAckInstruction: input.requiredAckInstruction,
     });
 
     // Try live injection first. If the topic session is alive, deliver the
@@ -579,12 +592,14 @@ export class TopicLinkageHandler {
       try {
         const r = await this.deps.respawnTopicSession({ topicId, text: payload });
         if (r.delivered) {
+          deliveredSession = r.sessionName ?? null;
           deliveryMode = r.mode;
           console.log(
             `[TopicLinkageHandler] Topic ${topicId} reply on thread ${threadId} delivered by ${r.mode}${r.sessionName ? ` into "${r.sessionName}"` : ''}`,
           );
         } else if (r.pending) {
           // The hook's live paste landed in a mid-turn session: provisional.
+          deliveredSession = null;
           deliveryMode = 'live-inject-pending';
           pendingSettled = r.settled;
         } else {
@@ -635,11 +650,13 @@ export class TopicLinkageHandler {
         reason: verdictResult.reason,
         commitmentDelivered: false,
         telegramSent: false,
+        ...(deliveredSession ? { sessionName: deliveredSession } : {}),
         settled,
       };
     }
 
-    return this.finishRouted({ threadId, topicId, userTopicId, message, threadEntry, commitment, deliveryMode, verdictResult });
+    const routed = await this.finishRouted({ threadId, topicId, userTopicId, message, threadEntry, commitment, deliveryMode, verdictResult });
+    return routed.kind === 'routed' && deliveredSession ? { ...routed, sessionName: deliveredSession } : routed;
   }
 
   /**
@@ -953,11 +970,12 @@ export class TopicLinkageHandler {
     }
     try { this.deps.onRemoteReplyEvent?.(injected ? 'injected' : 'failure-visible'); } catch { /* @silent-fallback-ok — counters are observability only */ }
     try {
-      return await this.finishRouted({
+      const routed = await this.finishRouted({
         threadId, topicId, userTopicId, message, threadEntry, commitment,
         deliveryMode: injected ? 'live-inject' : 'failure-visible',
         verdictResult,
       });
+      return routed.kind === 'routed' && injected ? { ...routed, remote: true } : routed;
     } catch (err) {
       console.warn(
         `[TopicLinkageHandler] finishRouted threw for thread ${threadId}: ${err instanceof Error ? err.message : String(err)}`,
@@ -969,6 +987,7 @@ export class TopicLinkageHandler {
         reason: verdictResult.reason,
         commitmentDelivered: false,
         telegramSent: false,
+        ...(injected ? { remote: true } : {}),
       };
     }
   }
@@ -1003,6 +1022,8 @@ export class TopicLinkageHandler {
     userTopicId?: number;
     /** Set for a remote inject: the machine that holds the full body. */
     remoteHolderName?: string;
+    /** a2a-required-acknowledgment D4: fixed text plus a server handle, for a watched message. */
+    requiredAckInstruction?: string;
   }): string {
     const { threadId, message, threadEntry, commitment, verdict, verdictReason, history, topicId, remoteHolderName } = args;
     const userTopicId = args.userTopicId ?? topicId;
@@ -1042,6 +1063,7 @@ export class TopicLinkageHandler {
     const endGuard = `<<<REMOTE_REPLY_END nonce=${guardNonce}>>>`;
 
     return [
+      ...(args.requiredAckInstruction ? [args.requiredAckInstruction, ``] : []),
       '[threadline-reply]',
       `A threadline reply just landed on a conversation you initiated.`,
       ``,

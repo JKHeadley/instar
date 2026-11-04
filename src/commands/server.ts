@@ -308,6 +308,7 @@ import { ThreadLog } from '../threadline/ThreadLog.js';
 import { ThreadMessageRecorder } from '../threadline/recordThreadMessage.js';
 import { recordInboundAck } from '../threadline/recordInboundAck.js';
 import { isAutoAckInbound, autoAckRecognition, looksLikeAutoAckText, createAckRateLimiter, runRelayAckStage, createRelayAckSettler, describeUndeliveredRouterResult } from '../threadline/autoAck.js';
+import { parseKindedAck } from '../threadline/requiredAck.js';
 import { type LiveInjectOutcome } from '../threadline/TopicLinkageHandler.js';
 import type { InjectionConfirmation } from '../core/SessionManager.js';
 
@@ -1264,6 +1265,12 @@ let _handbackSendOffer:
 // `_a2aAskTopicOwner` are assigned where the MeshRpcClient exists; until then a
 // standby answers today's 503 and a topic-bound reply takes today's path.
 let _a2aRelayForwardCtx: NonNullable<import('../server/routes.js').RouteContext['a2aRelayForward']> | null = null;
+// a2a-required-acknowledgment: one service per server. Late-bound, because the spawn
+// manager's callbacks are wired before the tracker it writes to exists.
+let _requiredAckService: import('../threadline/requiredAckService.js').RequiredAckService | null = null;
+let _requiredAckRelayRoute: (() => import('../threadline/requiredAckService.js').KindedAckRoute) | null = null;
+let _requiredAckRelayClient: () => import('../threadline/client/ThreadlineClient.js').ThreadlineClient | null = () => null;
+let _requiredAckTrustManager: () => import('../threadline/AgentTrustManager.js').AgentTrustManager | null = () => null;
 let _a2aAskTopicOwner:
   | ((machineId: string, payload: { topicId: number; text: string; messageId: string; threadId: string }, timeoutMs: number) => Promise<import('../threadline/relayForward.js').TopicOwnerAskResult>)
   | null = null;
@@ -19231,6 +19238,16 @@ export async function startServer(options: StartOptions): Promise<void> {
         const state = memoryMonitor?.getState();
         return !state || state.state === 'normal';
       },
+      // a2a-required-acknowledgment D7: a session limit with a slot now free. A live
+      // read of the number admission reads; admission still decides.
+      isDrainRefusalLiveCleared: (marker) => {
+        if (!/session limit/i.test(marker.refusalSignature)) return false;
+        const limit = config.sessions?.maxSessions ?? (config as { maxSessions?: number }).maxSessions ?? 5;
+        return sessionManager.listRunningSessions().length < limit;
+      },
+      // a2a-required-acknowledgment D3/D5.
+      onQueuedMessageDropped: (receipt, cause) => _requiredAckService?.onQueueDropped(receipt, cause),
+      onQueuedMessageDelivered: (receipt, session) => _requiredAckService?.onDelivered(receipt, session),
       onDrainRearm: (event) => {
         console.log(
           `[spawn-manager] drain give-up latch re-armed for ${event.agent} ` +
@@ -19564,6 +19581,48 @@ export async function startServer(options: StartOptions): Promise<void> {
           auditPath: path.join(config.stateDir, '..', 'logs', 'a2a-delivery-verdicts.jsonl'),
           degradations: DegradationReporter.getInstance(),
         });
+      }
+      // A sender is never left guessing (docs/specs/a2a-required-acknowledgment.md).
+      // Always constructed: inbound kinded acks are consumed safely even when
+      // threadline.requiredAck.enabled is false.
+      {
+        const ra = await import('../threadline/requiredAckService.js');
+        const raConfig = config as import('../threadline/requiredAckService.js').RequiredAckConfigShape;
+        const relayRoute = (): import('../threadline/requiredAckService.js').KindedAckRoute => {
+          const client = _requiredAckRelayClient();
+          if (client && client.connectionState === 'connected') {
+            return { kind: 'relay', send: (peerFp, ack, text, opts) => { client.sendKindedAck(peerFp, ack, text, opts); } };
+          }
+          return { kind: 'none' };
+        };
+        _requiredAckRelayRoute = relayRoute;
+        _requiredAckService = new ra.RequiredAckService({
+          tracker: a2aDeliveryTracker,
+          enabled: () => ra.resolveRequiredAckEnabled(liveConfig.get<boolean | undefined>('threadline.requiredAck.enabled', undefined), raConfig),
+          thresholds: () => ra.resolveRequiredAckThresholds(raConfig),
+          route: () => {
+            const direct = relayRoute();
+            if (direct.kind === 'relay') return direct;
+            const forwardAck = _a2aRelayForwardCtx?.relaySuppressedByStandby === true ? _a2aRelayForwardCtx.forwardAck : null;
+            return forwardAck ? { kind: 'forward', send: forwardAck } : { kind: 'none' };
+          },
+          isStandby: () => _a2aRelayForwardCtx?.relaySuppressedByStandby === true,
+          hasTrustProfile: (fp) => {
+            const p = _requiredAckTrustManager()?.getProfileByFingerprint(fp);
+            return !!p && !(p.relayFirstContact && p.source === 'setup-default');
+          },
+          isPinned: (fp) => !!_requiredAckTrustManager()?.getProfileByFingerprint(fp)?.peerIdentityPub,
+          isSessionAlive: (name) => sessionManager.isSessionAlive(name),
+          injectReminder: (name, text) => sessionManager.injectMessage(name, text, { firstParty: { source: 'a2a-ack-reminder' } }),
+          laneOf: (name) => {
+            const lane = sessionManager.listRunningSessions().find((sess) => sess.tmuxSession === name)?.launchLane;
+            return lane === 'headless' ? 'headless' : lane === 'rerouted-interactive' ? 'interactive' : null;
+          },
+          threadPeer: (threadId) => threadResumeMap.get(threadId)?.remoteAgent ?? null,
+        });
+        const interrupted = _requiredAckService.recoverAfterRestart();
+        if (interrupted > 0) console.log(`[required-ack] ${interrupted} message(s) a restart interrupted; their senders will be told once the relay connects`);
+        _requiredAckService.start();
       }
     } catch (err) {
       // @silent-fallback-ok: cascade-isolation — a tracker open failure must never block
@@ -20132,6 +20191,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
       } catch { /* @silent-fallback-ok — an advisory startup note must never endanger boot */ }
 
+      // a2a-required-acknowledgment: the service exists before the relay client does.
+      _requiredAckRelayClient = () => threadlineRelayClient as import('../threadline/client/ThreadlineClient.js').ThreadlineClient | null;
+      _requiredAckTrustManager = () => (threadline.trustManager ?? null) as import('../threadline/AgentTrustManager.js').AgentTrustManager | null;
+
       if (threadlineRelayClient) {
         // Wire relay message delivery through ThreadlineRouter (Phase 1).
         // Replaces the ad-hoc handler with proper thread persistence, auto-ack,
@@ -20251,23 +20314,32 @@ export async function startServer(options: StartOptions): Promise<void> {
           // ack, which is the honest result when nothing received the message.
           const isTopicBoundReply =
             !!msg.threadId && threadResumeMap.get(msg.threadId)?.originTopicId !== undefined;
+          // a2a-required-acknowledgment D1: plaintext arrives relay-authenticated;
+          // anything else came through the decrypt path, encrypted and signed.
+          const arrivedEncrypted = decision.reason !== 'relay-authenticated' && decision.reason !== 'probe';
           const relayAckDeps = {
             autoAckEnabled: config.threadline?.autoAck !== false,
             autoAckMessage: config.threadline?.autoAckMessage,
             isAckRateLimited,
             sendAck: (to: string, text: string, threadId?: string) => { threadlineRelayClient!.sendAck(to, text, threadId); },
             recordDelivery: recordRelayDelivery,
+            consumeKindedAck: (ack: import('../threadline/requiredAck.js').KindedAckWire) => {
+              _requiredAckService?.consumeInboundAck({ from: senderFingerprint, ack, arrivedEncrypted });
+            },
           };
           const relayAckInput = {
             isAutoAck, trustLevel, msgType, senderFingerprint, threadId: msg.threadId, ticket: ledgerTicket,
+            kindedAck: parseKindedAck(msg.content),
             deferSend: true,
           };
           const relayAck = createRelayAckSettler(relayAckDeps, relayAckInput);
           const ackStage = runRelayAckStage(relayAckDeps, relayAckInput);
           if (ackStage === 'ack-consumed') {
-            console.log(`[relay] delivery ack from ${senderName} (thread: ${msg.threadId ?? 'none'}, by ${autoAckRecognition({ type: msgType, text: textContent })}) recorded — not acked, not routed`);
+            console.log(`[relay] ${relayAckInput.kindedAck ? 'kinded' : 'delivery'} ack from ${senderName} (thread: ${msg.threadId ?? 'none'}, by ${autoAckRecognition({ type: msgType, text: textContent })}) ${relayAckInput.kindedAck ? 'consumed' : 'recorded'} — not acked, not routed`);
             return;
           }
+          // a2a-required-acknowledgment D1: after the trust check, per ordinary message.
+          if (msgType !== 'status' && decision.reason !== 'probe') _requiredAckService?.notePeerMessage(senderFingerprint, msg.content);
 
           // Canonical inbox write — single source of truth across all routing branches.
           // Runs once at relay-ingest, BEFORE pipe / warm-listener / cold-spawn branching,
@@ -20500,12 +20572,17 @@ export async function startServer(options: StartOptions): Promise<void> {
           // router takes the proven cold-spawn path byte-for-byte.
           const preferWarmSession =
             warmEnabled && !isTopicBoundReply && trustMeetsFloor(trustLevel, warmTrustFloor);
+          // a2a-required-acknowledgment D4: pipe and listener paths never get here.
+          const requiredAckHandle = decision.reason === 'probe' ? null : (_requiredAckService?.prepare({
+            peerFp: senderFingerprint, messageId: msg.messageId, threadId: msg.threadId ?? null, triggerEncrypted: arrivedEncrypted,
+          }) ?? null);
           const relayContext = {
             trust: { kind: 'plaintext-tofu' as const, senderFingerprint },
             senderFingerprint,
             senderName,
             trustLevel,
             preferWarmSession,
+            ...(requiredAckHandle ? { requiredAck: { instruction: requiredAckHandle.instruction, receipt: requiredAckHandle.receipt } } : {}),
           };
           let result = await threadlineRouter.handleInboundMessage(envelope, relayContext, { resentNotice: ledgerNotice });
 
@@ -20519,6 +20596,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
           // Inbound-id ledger: the outcome of the LAST path tried, through the allowlist.
           ledgerTicket?.recordRouterResult(result);
+          // a2a-required-acknowledgment D2/D5: tell the sender what really happened.
+          _requiredAckService?.settleRouterResult(requiredAckHandle, result);
 
           if (result.error) console.warn(`[relay] Router error: ${result.error}`);
           if (result.spawned) console.log(`[relay] Spawned session for ${senderName} (trust: ${trustLevel}, thread: ${result.threadId})`);
@@ -26665,6 +26744,16 @@ export async function startServer(options: StartOptions): Promise<void> {
                 counters: fwd.counters,
               });
             },
+            // a2a-required-acknowledgment D4: the holder sends a standby's kinded ack.
+            // The handler is the gate; it refuses when the feature is off here.
+            'a2a-relay-forward-ack': async (cmd) => {
+              if (!_requiredAckService) return { outcome: 'refused', reason: 'required-ack-not-wired' };
+              const route = _requiredAckRelayRoute?.();
+              return _requiredAckService.handleForwardedAck(
+                cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'a2a-relay-forward-ack' },
+                { relay: route?.kind === 'relay' ? route : null },
+              );
+            },
             // §5 — type a reply into THIS machine's own live session for the
             // topic (the confirmed paste). Never spawns, never moves the topic.
             'a2a-topic-reply-inject': async (cmd) => {
@@ -27221,6 +27310,14 @@ export async function startServer(options: StartOptions): Promise<void> {
               send: (peer, command, timeoutMs) => meshClient.send({ machineId: peer.machineId, url: peer.url }, command, 0, { timeoutMs }),
             });
             _a2aRelayForwardCtx.forward = (command) => relayForwarder.forward(command);
+            // a2a-required-acknowledgment D4: a kinded ack through my relay-holding
+            // machine. A holder that lacks the verb refuses it; the row stays pending.
+            _a2aRelayForwardCtx.forwardAck = async (payload) => {
+              const peer = await holderFinder.find();
+              if (!peer) return 'refused';
+              const res = await meshClient.send({ machineId: peer.machineId, url: peer.url }, { type: 'a2a-relay-forward-ack', ...payload }, 0, { timeoutMs: 15_000 });
+              return res.ok && (res.result as { outcome?: unknown } | null)?.outcome === 'sent' ? 'sent' : 'refused';
+            };
             _a2aAskTopicOwner = (machineId, payload, timeoutMs) => fwdMod.askTopicOwner(
               async (id, command, t) => {
                 const url = peerUrl(id);
@@ -30911,7 +31008,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       catch { console.warn('[instar] Windows desktop bootstrap diagnostic could not be persisted'); }
     }
 
-    const server = new AgentServer({ config, ecosystemLedger: _ecosystemLedger ?? undefined, recommendedServicesLedger: _recommendedServicesLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, memoryPrivacy: _memoryPrivacyWired ?? undefined, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx }); if (_pendingCompactionEvidence) featureEvidence.record('multiMachine.coherenceJournal.replication.compaction', _pendingCompactionEvidence);    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, ecosystemLedger: _ecosystemLedger ?? undefined, recommendedServicesLedger: _recommendedServicesLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, memoryPrivacy: _memoryPrivacyWired ?? undefined, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, requiredAck: _requiredAckService ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx }); if (_pendingCompactionEvidence) featureEvidence.record('multiMachine.coherenceJournal.replication.compaction', _pendingCompactionEvidence);    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     const readIdentityProjectionPeerRows = async () => {
       const peers = _resolvePeerUrls?.() ?? [];
       const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
@@ -32418,6 +32515,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       retryManager.stop();
       if (warmReapTimer) { clearInterval(warmReapTimer); warmReapTimer = null; } // Warm-Session A2A reap tick
       a2aSweep?.stop(); a2aSweep = null; // honest-delivery silence sweep
+      _requiredAckService?.stop(); // a2a-required-acknowledgment 30-second timer
       try { _topicProfileOrchestrator?.dispose(); } catch { /* @silent-fallback-ok: orchestrator dispose clears timers/locks on shutdown — a dispose fault must not block the shutdown sequence (TOPIC-PROFILE-SPEC §8) */ } // §8 dispose
       spawnManager.dispose(); // §4.4: stop drain loop + clear DRR state
       summarySentinel.stop();

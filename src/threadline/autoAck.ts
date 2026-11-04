@@ -19,6 +19,7 @@
  */
 
 import type { AdmissionTicket } from './InboundIdLedger.js';
+import { parseKindedAck, type KindedAckWire } from './requiredAck.js';
 
 /** The wire `type` of an automatic acknowledgement. */
 export const AUTO_ACK_TYPE = 'ack';
@@ -121,6 +122,13 @@ export interface RelayAckStageDeps {
   sendAck: (recipient: string, text: string, threadId?: string) => void;
   /** Records the implicit delivery ack (`recordInboundAck`). Never throws. */
   recordDelivery: () => void;
+  /**
+   * Consume a kinded ack (docs/specs/a2a-required-acknowledgment.md D1). The
+   * branch runs BEFORE `recordDelivery`: a `held` receipt must never read as a
+   * delivery ack, and a `read` flips exactly its referenced rows, never by
+   * thread. Absent: the kinded ack is still consumed, with no effect.
+   */
+  consumeKindedAck?: (ack: KindedAckWire) => void;
 }
 
 export interface RelayAckStageInput {
@@ -128,6 +136,8 @@ export interface RelayAckStageInput {
   trustLevel: string;
   /** The inbound's wire `type` (acks are never sent for `status`). */
   msgType: unknown;
+  /** The inbound's parsed `ack` field, when this is a kinded ack. */
+  kindedAck?: KindedAckWire | null;
   senderFingerprint: string;
   threadId?: string;
   ticket: AdmissionTicket | null;
@@ -149,6 +159,12 @@ export interface RelayAckStageInput {
  *  - otherwise → send our own ack when allowed, and let the caller continue.
  */
 export function runRelayAckStage(deps: RelayAckStageDeps, input: RelayAckStageInput): 'ack-consumed' | 'continue' {
+  if (input.kindedAck) {
+    try { deps.consumeKindedAck?.(input.kindedAck); } catch (err) {
+      console.warn(`[relay] kinded ack handling failed (consumed): ${err instanceof Error ? err.message : err}`);
+    }
+    return 'ack-consumed';
+  }
   if (input.isAutoAck) {
     deps.recordDelivery();
     input.ticket?.recordNoReply();
@@ -220,8 +236,9 @@ export function settleDeferredRelayAck(
  *                           without a live session receiving the message. This
  *                           includes a capacity refusal the spawn manager
  *                           QUEUED (`queued: true`, e.g. "Session limit reached
- *                           (5/5)"). Deliberately no ack, and no separate
- *                           "queued" receipt: see `describeUndeliveredRouterResult`.
+ *                           (5/5)"). Never the promising ack; a peer that
+ *                           advertised support gets a kinded `held` receipt
+ *                           instead: see `describeUndeliveredRouterResult`.
  *  - `no-reply`           — the warrants-reply gate decided not to answer
  *                           (a no-reply verdict or an exhausted loop budget).
  */
@@ -243,26 +260,24 @@ export type RelayAckSettlement =
 /**
  * The log wording for a router result that reached no live session.
  *
- * DECISION (ACT-091, queued spawns): a capacity refusal that the spawn manager
- * queued (`queued: true`; only reported when `SpawnRequestManager`'s queue
- * actually admitted the payload) keeps the message for a later spawn. It still
- * gets NO ack, and we do not send a third fixed "received, queued" text:
+ * DECISION (ACT-091, reversed in part by docs/specs/a2a-required-acknowledgment.md):
+ * a capacity refusal that the spawn manager queued (`queued: true`; only reported
+ * when `SpawnRequestManager`'s queue actually admitted the payload) keeps the
+ * message for a later spawn. It still gets NO promising ack: "Composing
+ * response..." goes out only once a live session has the message.
  *
- *  - The queue is in memory, bounded per agent and globally, and expires entries
- *    after 10 minutes, and a later arrival can evict an older entry. "Queued" is
- *    a hope of a later session, not a hand-off to one, so a receipt would claim
- *    more than we know.
- *  - A new ack text is recognised as an ack only through the `ack` wire type.
- *    `isAutoAckInbound` matches untyped text only when it is exactly
- *    DEFAULT_AUTO_ACK_MESSAGE, and `looksLikeAutoAckText` (prefix "Message
- *    received." / "Message received,") only spares a reply waiter and stops
- *    nothing. A peer from before the wire type routes ANY ack text to a session
- *    as a message, so a queued receipt would spend a session on that peer at the
- *    moment our own side is out of sessions.
+ * ACT-091 also refused any "queued" receipt. Both of its reasons are now answered:
  *
- * If the queued message later reaches a session, that session's reply is the
- * sender's acknowledgement. The wording below names the queued case so the log
- * says "queued", not "lost".
+ *  - It said a receipt would claim more than we know, because the queue is in
+ *    memory, bounded and expiring. The kinded `held` receipt says only what is
+ *    true (the server has it, no session has read it, it could be lost), and a
+ *    loss sends a second receipt, including a loss to a restart.
+ *  - It said a peer from before the `ack` wire type routes any ack text to a
+ *    session. Kinded acks go only to a peer that has advertised support with the
+ *    `ackKinds` stamp, so that peer never receives one.
+ *
+ * Reversed by the operator's direct request, 2026-11-04 (topic 134156). The
+ * wording below still names the queued case so the log says "queued", not "lost".
  */
 export function describeUndeliveredRouterResult(result: { queued?: boolean; error?: string }): string {
   if (result.queued === true) {
@@ -314,11 +329,19 @@ export function createRelayAckSettler(deps: RelayAckStageDeps, input: RelayAckSt
 // ── Plaintext wire format (shared by the sender and the receiver) ──────
 
 /** Build the base64 JSON payload of a plaintext relay message. */
-export function encodePlaintextPayload(text: string, type: string, resend?: boolean): string {
+export function encodePlaintextPayload(
+  text: string,
+  type: string,
+  resend?: boolean,
+  /** a2a-required-acknowledgment D1: the kinded-ack field and the capability stamp. */
+  extras?: { ack?: KindedAckWire; ackKinds?: number },
+): string {
   return Buffer.from(JSON.stringify({
     text,
     type,
     ...(resend ? { resend: true } : {}),
+    ...(extras?.ack ? { ack: extras.ack } : {}),
+    ...(extras?.ackKinds !== undefined ? { ackKinds: extras.ackKinds } : {}),
   })).toString('base64');
 }
 
@@ -326,7 +349,7 @@ export function encodePlaintextPayload(text: string, type: string, resend?: bool
  * Decode a plaintext (unknown-sender) relay payload. Returns null when the
  * payload cannot be decoded at all.
  */
-export function decodePlaintextPayload(payload: unknown): { text: string; type?: string; resend: boolean } | null {
+export function decodePlaintextPayload(payload: unknown): { text: string; type?: string; resend: boolean; ack?: KindedAckWire; ackKinds?: number } | null {
   try {
     const parsed = JSON.parse(Buffer.from(payload as string, 'base64').toString('utf-8'));
     if (typeof parsed === 'object' && parsed !== null && 'text' in parsed) {
@@ -335,6 +358,9 @@ export function decodePlaintextPayload(payload: unknown): { text: string; type?:
         type: parsed.type as string | undefined,
         // inbound-id ledger §5: `resend` travels INSIDE the message body.
         resend: (parsed as { resend?: unknown }).resend === true,
+        // a2a-required-acknowledgment D1: older decoders drop both; this one keeps them.
+        ...(parseKindedAck(parsed) ? { ack: parseKindedAck(parsed)! } : {}),
+        ...(typeof (parsed as { ackKinds?: unknown }).ackKinds === 'number' ? { ackKinds: (parsed as { ackKinds: number }).ackKinds } : {}),
       };
     }
     if (typeof parsed === 'string') return { text: parsed, resend: false };
