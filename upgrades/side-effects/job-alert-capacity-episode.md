@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-Tier 1, reversible: the session manager reserves one existing reroute slot for scheduler jobs; the scheduler treats typed capacity refusals as waits, retries from its priority queue, persists one episode, and routes bounded plain notices through the user-notice catalog. The change touches session admission, machine claim completion, scheduler queue admission, and job alert delivery. About 11 files and 300 changed lines; one design pass, one independent review with fixes, and one planned commit attempt.
+Tier 1, reversible: the session manager reserves one existing reroute slot for scheduler jobs; the scheduler treats typed capacity refusals as waits, retries from its priority queue, persists one episode, and routes bounded plain notices through the user-notice catalog. The change touches session admission, machine claim completion, scheduler queue admission, and job alert delivery. About 11 files and 300 changed lines; one design pass, one independent review with fixes, and one initial commit and one peer-verifier follow-up.
 
 ## Decision-point inventory
 
@@ -58,7 +58,7 @@ A code revert restores prior cap and alert behavior. The added `job-capacity-epi
 
 ## Second-pass review
 
-Concur with the review. The reviewer found and verified fixes for overlapping queue admissions, transient skip retention, per-job alert clocks, and clearing a capacity wait after a real spawn error.
+Concur with the review. The reviewer found and verified fixes for overlapping queue admissions, transient skip retention, per-job alert clocks, and clearing a capacity wait after a real spawn error. After the peer verifier found four scheduler test failures, the follow-up reviewer concurred with the ordinary-queue wakeup and updated asynchronous/reservation expectations. The four affected files now pass 110 tests together.
 
 ## Class-Closure Declaration
 

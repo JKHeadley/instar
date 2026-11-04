@@ -6,7 +6,7 @@ A temporary rerouted-session capacity refusal now queues a scheduled job without
 
 ## Evidence
 
-The new tests failed against the prior scheduler and session admission code, then passed with the change. Targeted scheduler, session-manager, notice-catalog, and plain-notice lint checks pass. Live end-to-end delivery requires deployment and a real capacity refusal after the update.
+The new tests failed against the prior scheduler and session admission code, then passed with the change. The peer verifier found four scheduler test failures; one ordinary-queue timing bug was fixed and three old expectations were updated. The affected scheduler tests now pass 110/110, and TypeScript and the plain-notice lint pass. Live end-to-end delivery requires deployment and a real capacity refusal after the update.
 
 ## What to Tell Your User
 

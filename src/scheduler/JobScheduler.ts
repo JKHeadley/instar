@@ -2850,6 +2850,9 @@ export class JobScheduler {
       void this.alertOnConsecutiveFailures(job, failures, errorMsg);
     }).finally(() => {
       this.activeSessionSpawns.delete(job.slug);
+      // A spawn may settle after its session has already finished. Recheck
+      // ordinary queued work then; capacity waits keep their 15-second pace.
+      if (this.running && this.queue.length && !this.queue[0].capacityWait) this.processQueue();
     });
     return sessionName;
   }
