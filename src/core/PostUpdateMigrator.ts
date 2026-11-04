@@ -4197,7 +4197,8 @@ export class PostUpdateMigrator {
     if (
       content.includes('cannot load better-sqlite3 (ABI drift)') &&
       content.includes('version-managed node candidates') &&
-      content.includes('npm_config_scripts_prepend_node_path')
+      content.includes('npm_config_scripts_prepend_node_path') &&
+      content.includes('Restored previous install after interrupted update')
     ) {
       result.skipped.push('boot-wrapper ABI-check: already current');
       return;

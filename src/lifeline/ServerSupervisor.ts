@@ -1127,6 +1127,17 @@ export class ServerSupervisor extends EventEmitter {
     if (this.detached) { console.log('[Supervisor] spawnServer() after detach — refusing to touch the server session'); return false; }
     if (!this.tmuxPath) return false;
 
+    // An interrupted two-rename update can leave the validated candidate
+    // unpromoted. Restore the previous runnable install before any heal/spawn.
+    if (this.stateDir) {
+      const active = path.join(this.stateDir, 'shadow-install');
+      const previous = path.join(this.stateDir, 'shadow-install.previous');
+      if (!fs.existsSync(active) && fs.existsSync(previous)) {
+        try { fs.renameSync(previous, active); }
+        catch (err) { console.error(`[Supervisor] Could not restore previous shadow install: ${err instanceof Error ? err.message : String(err)}`); }
+      }
+    }
+
     // Run preflight self-heal before every spawn attempt
     this.preflightSelfHeal();
 
