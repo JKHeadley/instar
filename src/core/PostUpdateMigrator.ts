@@ -236,6 +236,10 @@ export function raiseLaunchdProcessCeilings(plistXml: string, floor: number): st
   });
 }
 
+/** The overload-shed line in an agent's CLAUDE.md, shared by the section template and the
+ *  add/update migrations so the three cannot drift. */
+export const OVERLOAD_SHED_CLAUDE_MD_LINE = `- **Overload shed (trustworthy-machine-load, P3):** a machine that has refused new work for 3 minutes AND is at 85% or more of its session limit moves a conversation off, one at a time, to a healthy machine (direct contact under 2 min, \`loadVerdict\` \`ok\`, not refusing work, at least 2 free session slots after what it has already reserved there). Only conversations with a running session that has sat quiet for 10 minutes move, so this frees session slots and memory, not CPU. The move goes through the same drain as a manual transfer: the session here closes and the conversation carries on there at its next message. Pinned conversations, Slack conversations and conversations with a live autonomous run stay. Brakes: at most 2 moves an hour, 2 tries per conversation per overload episode, a moved conversation stays put for 6 hours wherever it landed, and a machine seen refusing work in the last 30 min never receives moved work. Live moves need pool stage \`rebalance\`, a fresh rebalance proof on this machine, and \`dryRun: false\`; otherwise it only logs what it WOULD move. Each machine earns its proof with \`POST /session-pool/rebalance-proof\` \`{ topic, to }\` (202 with a run id; \`GET /session-pool/rebalance-proof/RUN_ID\` for the result), which really moves a topic listed in \`multiMachine.sessionPool.rebalanceProofTopics\` and passes only if the old session is gone and the target answers once. A proof lasts 30 days; without a fresh one the stage steps down to \`live-transfer\`. Stale-owner notices say "struggling" or "refusing" when that is the evidence. Registry First: \`GET /overload-shed\` → \`{ enabled, dryRun, overloadedSince, isSource, liveMove, reservations, movesLastHour, counters }\`; audit \`logs/overload-shed.jsonl\` (\`would-move\` and \`move-outcome\` rows carry the numbers behind each decision). Ships dev-gated + dry-run (\`monitoring.overloadShed\`). When the user asks "why did my conversation move machines?" or "why is this overloaded machine still holding work?" → read \`GET /overload-shed\` before guessing.`;
+
 /**
  * Agent-facing contract for `POST /intent/journal` confidence.
  *
@@ -2214,6 +2218,8 @@ export function migrateConfigAccountFollowMeRevocationDeadline(config: Record<st
 const CLAUDE_MD_CLEANUP_MIN_UNITS = 10;
 
 const CONTEXT_DEATH_MARKER_ID = 'INSTAR:ANTI-PATTERN-CONTEXT-DEATH';
+
+export const POOL_READINESS_CLAUDE_MD_LINE = `- **Pool readiness:** can this agent move conversations between machines, or take over if a machine dies? \`GET /session-pool/readiness\` answers line by line per peer: contact, clock, capacity, no start failure seen, channels, follow-ups, plus this machine's takeover, ownership and duplicate check. Each is \`ok\`, \`failing\` or \`unknown\`. It only reports: ready means the known prerequisites look met, not that a real conversation has been placed. History is in \`logs/pool-readiness.jsonl\` on agents with 2 or more machines. Takeover reads \`failing\` on a machine using the git lease with no git remote, because it cannot take over yet. When the user asks "would my conversations work on the other machine?" or "what happens if this machine dies?" → read this before answering.`;
 
 /**
  * Insert the context-death anti-pattern block into a CLAUDE.md string (end of
@@ -8366,6 +8372,13 @@ setTimeout(() => process.exit(0), 2000);
     let patched = false;
     const port = this.config.port;
 
+    // Memory privacy (docs/specs/memory-privacy.md): idempotent, by content sniff.
+    if (!content.includes('**Memory privacy**')) {
+      content += `\n\n- **Memory privacy**: when more than one person can reach this agent, what I remember belongs to an audience, and the place sets it. A private chat serves one person; a channel or group serves everyone who can read it, even when the person asking told me the fact privately. A session for a person or a shared place keeps its memory in its own folder and cannot reach the rest, so a refused read there is expected, not a fault. I never copy a person's facts into CLAUDE.md, AGENT.md or anything shared.\n- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/memory-privacy\` → \`{ enabled, multiPerson, ownerUserId, sandboxReady }\`. People who share memory freely go in \`memoryPrivacy.sharedMemoryPeople\` in .instar/config.json (profile ids); an agent reached only by them behaves as single-person.\n- Proactive: user asks "why did you forget that here?" / "why can't you see what I told you in the channel?" / "can others see what I tell you?" → explain the audience rule, and check the status above.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Memory privacy section');
+    }
+
     // Replace a shipped legacy section before any missing capability bullets
     // are appended. An appended bullet at EOF would otherwise become part of
     // that section and make its exact-text migration refuse the replacement.
@@ -11862,7 +11875,7 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
 - **Idle vs broken machine (WS4.2):** the same \`pool.machines[]\` carries an explicit per-machine state so an idle machine never reads as broken. A machine with ZERO sessions gets \`pool.machines[].emptyState\` = \`online — no active sessions\` (heartbeat-fresh, just idle) / \`offline since <t>\` (known offline) / \`unreachable (last seen <t>)\` (was online, now not answering — the \`failed\` case). Honest derivation from the registry online flag + last-seen + the live fan-out — never a fabricated "looks fine". The dashboard sessions view renders these per-machine; a machine WITH sessions gets no empty-state (its tiles already name it). Single-machine install = just the lone self row.
 - **Honest machine state (trustworthy-machine-load, P1):** every \`pool.machines[]\` row now carries \`liveness\` = \`live\` / \`unreachable\` (shape \`struggling\` | \`refusing\` | \`silent\`) / \`stale\` / \`unknown\`, each with the evidence age and source, plus a ready-made \`livenessLine\` (\`<liveness>, last evidence <age> ago from <source>\`) and the freshest other-machine sighting ("Mac Mini reached it 3 min ago"). The last DIRECT contact is saved to disk, so a server restart renders \`stale, last evidence 20 min ago\` instead of "offline". **Never say a machine is "offline" without positive evidence** (a shutdown announcement or the sleep gate): quote the liveness, its age and its source — an overloaded machine looks exactly like a dead one to a plain timeout. Each row also carries a multi-signal \`loadReport\` (cores, CPU idle, available memory, native memory pressure, server event-loop lag, sessions in use) and \`loadVerdict\` = \`ok\` / \`elevated\` / \`saturated\` / \`impaired\` / \`unknown\` — a report older than 60 s reads \`unknown\`, and a peer on older code reads \`unknown\`, never \`ok\`. Reporting only: the \`online\` flag, placement and ownership keep their existing semantics in this phase.
 - **Overload admission (trustworthy-machine-load, P2):** each machine protects its own resources. When its own \`loadVerdict\` is \`saturated\` or \`impaired\` it CLOSES to new automatic work (scheduled jobs, helpers, placement of new conversations): the work waits and is retried, nothing is dropped, and existing conversations keep working. It reopens after five consecutive good samples (about 75 s). One host-wide **recovery slot** (shared by every agent on the machine) stays free so a session the operator asks for can always start and assess the machine. Placement never puts new work on a machine that is refusing it; if every machine refuses, the message stays in the durable inbound queue (\`all-machines-refusing-work\`). Registry First: \`GET /work-admission\` → \`{ enabled, dryRun, enforced, acceptingWork, lastVerdict, recoverySlot, counters }\`; each machine's \`loadReport.acceptingWork\` / \`admissionEnforced\` in \`GET /pool\`; audit \`logs/work-admission.jsonl\`. Ships dev-gated + dry-run (\`monitoring.workAdmission\`: it logs what it WOULD refuse, refuses nothing, and peers keep placing work here until \`dryRun:false\`). When the user asks "why didn't a job run / why is this machine not taking work?" → read \`GET /work-admission\` before guessing.
-- **Overload shed (trustworthy-machine-load, P3):** a machine that has refused new work for 3 minutes moves its EXISTING conversations off, one at a time, to a healthy machine (direct contact under 2 min, \`loadVerdict\` \`ok\`, not refusing work, at least 2 free session slots after what it has already reserved there). The move is an ordinary cooperative ownership transfer through the reconciler, like a pin move but never written as a pin. Pinned conversations, Slack conversations and conversations with a live autonomous run stay. Brakes: at most 2 moves an hour, 2 tries per conversation per overload episode, the same conversation is not moved again for 30 min, and a machine seen refusing work in the last 30 min never receives moved work. A started transfer is driven to claim or cancelled after its deadline even if the plan behind it is gone. Stale-owner notices say "struggling" or "refusing" when that is the evidence. Registry First: \`GET /overload-shed\` → \`{ enabled, dryRun, overloadedSince, isSource, liveMove, reservations, movesLastHour, counters }\`; audit \`logs/overload-shed.jsonl\`. Ships dev-gated + dry-run (\`monitoring.overloadShed\`: it logs what it WOULD move, moves nothing, and also moves nothing while overload admission is in dry-run). When the user asks "why did my conversation move machines?" or "why is this overloaded machine still holding work?" → read \`GET /overload-shed\` before guessing.
+${OVERLOAD_SHED_CLAUDE_MD_LINE}
 - **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (closed by the transfer's drain step when the current machine can drain, otherwise within ~2 reaper ticks) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
 - **Quota-aware placement (automatic):** capacity heartbeats carry each machine's LLM-account quota state, and placement avoids machines whose account is currently rate-limited/blocked (no more topics placed onto a silent machine). A hard pin still wins (flagged \`pinned-machine-quota-blocked\`); if EVERY machine is blocked, placement proceeds least-loaded with \`all-machines-quota-blocked\` flagged. \`GET /pool\` shows each machine's \`quotaState\`.
 - **Machine nicknames** are the user-facing handle (auto-assigned, editable). Rename via \`PATCH /pool/machines/:machineId\` with \`{"nickname":"the mini"}\`, or inline on the Machines tab.
@@ -12008,13 +12021,28 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
       result.upgraded.push('CLAUDE.md: added overload admission + recovery slot line');
     }
 
+    // session-pool-default-on step 1: agents that carry the pool section learn the readiness
+    // report. Idempotent via the unique '**Pool readiness:**' marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('**Pool readiness:**')) {
+      content += '\n' + POOL_READINESS_CLAUDE_MD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added pool readiness line');
+    }
+
     // trustworthy-machine-load-and-mesh-floor P3 (2026-10-26): overload shed — agents
     // that carry the pool section learn that a machine that stays overloaded moves its
     // existing conversations off one at a time, and where to read it (GET /overload-shed).
     // Idempotent via the unique 'Overload shed (trustworthy-machine-load' marker.
+    // session-pool-rebalancing-finish: the line an installed agent already carries says a
+    // shed move is a plain transfer gated on admission, neither of which is true now.
+    // Replaced in place. Idempotent: the old wording is the trigger, the new text lacks it.
+    if (content.includes('ordinary cooperative ownership transfer through the reconciler')) {
+      content = content.replace(/^- \*\*Overload shed \(trustworthy-machine-load, P3\):\*\*.*$/m, () => OVERLOAD_SHED_CLAUDE_MD_LINE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated overload shed line for the rebalance stage');
+    }
     if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('Overload shed (trustworthy-machine-load')) {
-      const shedLine = `
-- **Overload shed (trustworthy-machine-load, P3):** a machine that has refused new work for 3 minutes moves its EXISTING conversations off, one at a time, to a healthy machine (direct contact under 2 min, \`loadVerdict\` \`ok\`, not refusing work, at least 2 free session slots after what it has already reserved there). The move is an ordinary cooperative ownership transfer through the reconciler, like a pin move but never written as a pin. Pinned conversations, Slack conversations and conversations with a live autonomous run stay. Brakes: at most 2 moves an hour, 2 tries per conversation per overload episode, the same conversation is not moved again for 30 min, and a machine seen refusing work in the last 30 min never receives moved work. A started transfer is driven to claim or cancelled after its deadline even if the plan behind it is gone. Stale-owner notices say "struggling" or "refusing" when that is the evidence. Registry First: \`GET /overload-shed\` → \`{ enabled, dryRun, overloadedSince, isSource, liveMove, reservations, movesLastHour, counters }\`; audit \`logs/overload-shed.jsonl\`. Ships dev-gated + dry-run (\`monitoring.overloadShed\`: it logs what it WOULD move, moves nothing, and also moves nothing while overload admission is in dry-run). When the user asks "why did my conversation move machines?" or "why is this overloaded machine still holding work?" → read \`GET /overload-shed\` before guessing.`;
+      const shedLine = OVERLOAD_SHED_CLAUDE_MD_LINE;
       content += '\n' + shedLine + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added overload shed line');
@@ -14649,6 +14677,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     // ensured exists in CLAUDE.md. Kept in document order so appended
     // sections preserve narrative ordering in the shadow.
     const markers = [
+      '**Memory privacy**',
       '### Feature switches apply their setting (read `effective` before saying a feature is on)',
       '### Telegram message origin',
       // message-origin-all-platforms: server-side and framework-neutral (app + Slack recording).
@@ -18138,8 +18167,19 @@ fi
 echo ""
 echo "Key files:"
 [ -f "$INSTAR_DIR/AGENT.md" ] && echo "  .instar/AGENT.md — Your identity (read for full context)"
-[ -f "$INSTAR_DIR/USER.md" ] && echo "  .instar/USER.md — Your collaborator"
-[ -f "$INSTAR_DIR/MEMORY.md" ] && echo "  .instar/MEMORY.md — Persistent learnings"
+# Memory privacy (docs/specs/memory-privacy.md): a session serving a person or a shared
+# place has its own memory folder, and cannot read these. The API-backed sections
+# below need no branch: its session token is refused there and curl -sf stays silent.
+case "\${INSTAR_MEMORY_SCOPE:-}" in
+  person-*|place-*|none)
+    echo "  Memory for this conversation lives in your own memory folder, and only there."
+    echo "  When something is worth remembering, note who said it."
+    ;;
+  *)
+    [ -f "$INSTAR_DIR/USER.md" ] && echo "  .instar/USER.md — Your collaborator"
+    [ -f "$INSTAR_DIR/MEMORY.md" ] && echo "  .instar/MEMORY.md — Persistent learnings"
+    ;;
+esac
 [ -f "$INSTAR_DIR/project-map.md" ] && echo "  .instar/project-map.md — Project structure map"
 
 # Relationship count
@@ -19057,7 +19097,9 @@ except Exception as e:
 fi
 
 # ── 3. MEMORY (first 50 lines — what have I learned?) ──
-if [ -f "\$INSTAR_DIR/MEMORY.md" ]; then
+MEMORY_FILE_ALLOWED=1
+case "\${INSTAR_MEMORY_SCOPE:-}" in person-*|place-*|none) MEMORY_FILE_ALLOWED=0 ;; esac
+if [ "\$MEMORY_FILE_ALLOWED" = 1 ] && [ -f "\$INSTAR_DIR/MEMORY.md" ]; then
   LINES=\$(wc -l < "\$INSTAR_DIR/MEMORY.md" | tr -d ' ')
   echo ""
   echo "--- Your Memory (.instar/MEMORY.md — \${LINES} lines, showing first 50) ---"

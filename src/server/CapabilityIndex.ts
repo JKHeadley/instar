@@ -63,6 +63,12 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({ configured: true, endpoints: ['GET /channels'] }),
   },
   {
+    key: 'memoryPrivacy',
+    prefixes: ['/memory-privacy'],
+    description: 'Whether memory is kept per person and per place on this agent, who the owner is, and whether the sandbox runs here.',
+    build: () => ({ configured: true, endpoints: ['GET /memory-privacy'] }),
+  },
+  {
     key: 'capabilityRegistry',
     prefixes: ['/capability-registry'],
     description: 'Local capability registry read surface; dark until explicitly enabled.',
@@ -308,7 +314,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     description: 'Overload shed (docs/specs/trustworthy-machine-load-and-mesh-floor.md Part D) — moves EXISTING conversations off a machine that has stayed overloaded: once this machine has refused new work for 3 minutes it proposes moving one Telegram conversation at a time to a healthy machine (live evidence under 2 min, verdict ok, room after reservations), through the ownership reconciler; pinned topics and topics with a live autonomous run stay. Breaker 2 moves/hour, 2 tries per topic per episode. GET /overload-shed reports enabled/dryRun, overloadedSince, isSource, liveMove, reservations, movesLastHour and counters (proposed, wouldMove, claimed, expired, breakerHeld). Dev-gated + dry-run first (monitoring.overloadShed); 503 when dark. When asked "why did my conversation move machines / why is this overloaded machine still holding work?" → read this, don\'t guess.',
     build: () => ({
       configured: true,
-      endpoints: ['GET /overload-shed'],
+      endpoints: ['GET /overload-shed', 'POST /session-pool/rebalance-proof', 'GET /session-pool/rebalance-proof/:runId'],
     }),
   },
   {
@@ -1679,7 +1685,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'threadline', reason: 'surfaced via discovery (threadline-relay feature)' },
   { prefix: 'mesh', reason: 'machine-to-machine MeshRpc transport (§L0 Session Pool) — Ed25519-signed, recipient-bound peer commands; never an agent/user capability. (GET /mesh/rope-health — U4.5 rope-health read surface — shares this prefix; it is agent-surfaced via the CLAUDE.md template proactive trigger + the rope-health-digest job rather than discovery.)' },
   { prefix: 'mesh-selfheal', reason: 'G3 lease-gated-spawn promotion-evidence surface (MESH-SELF-HEAL-SPEC §3.3) — read-only soak ledger (would-have-prevented-duplicate / would-have-cleared-stale-binding + promotion recommendation) the agent READS for the dark-feature graduation loop; operational observability like /worktrees/agent-reaper, not a user-invokable capability' },
-  { prefix: 'session-pool', reason: 'session-pool rollout control/observability (§Rollout) — the signed E2E results (GET /session-pool/e2e-results), failover-runner status, and evidence-gated one-step promotion lever (POST /session-pool/promote); promotion remains explicitly off by default and ceiling-bounded' },
+  { prefix: 'session-pool', reason: 'session-pool rollout control/observability (§Rollout) — the signed E2E results (GET /session-pool/e2e-results), the read-only readiness report (GET /session-pool/readiness), failover-runner status, and evidence-gated one-step promotion lever (POST /session-pool/promote); promotion remains explicitly off by default and ceiling-bounded' },
   { prefix: 'write-admission', reason: 'standby-write reconciliation status surface (docs/specs/standby-write-reconciliation.md P2-6/F9) — read-only per-domain admission counters + recent typed refusals + the event-loop-lag gauge the agent READS to answer "are writes hanging or being refused?"; dev-gated dark (503 on the fleet, dry-run first) and agent-surfaced via the CLAUDE.md "Write Admission" awareness section rather than discovery — operational observability like /mesh-selfheal and /worktrees/agent-reaper, not a user-invokable capability' },
 ];
 

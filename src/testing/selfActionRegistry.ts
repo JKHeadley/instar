@@ -3222,10 +3222,10 @@ const deviceLimitSessionMove: SelfActionController = {
  * closed and enforced on every sample, forever; a healthy peer always has room;
  * and the peer NEVER claims a proposed topic (every move expires). Brakes, all in
  * the planner: one live move at a time (10 min entry TTL), 2 moves per hour, a
- * 30 min per-topic cooldown, MAX_ATTEMPTS_PER_TOPIC (2) per overload episode, and
+ * 6 h per-topic cooldown, MAX_ATTEMPTS_PER_TOPIC (2) per overload episode, and
  * at most MAX_REFUNDS_PER_TOPIC (2) refunds for proposals whose transfer never
  * started (the worst case modelled here). The episode never ends under pressure,
- * so the total settles at 4 × the topics (5 topics → 20 proposals) and the
+ * so the total settles at no more than 4 × the topics (5 topics → 20 proposals) and the
  * per-topic count at 4, independent of the horizon. The reconciler (the actuator)
  * additionally initiates at most ONE transfer per topic per episode. The episode,
  * attempt and refund counts are durable, so a restart continues the same episode.
@@ -3255,6 +3255,11 @@ function makeOverloadShedPlanner(f: PressureFixture, sink: ActionSink): { tick()
     placement: new PlacementExecutor(),
     statePath,
     now: () => f.clock.nowMs(),
+    // Every live-move gate open, or the planner proposes nothing and the bound proves nothing.
+    poolStage: () => 'rebalance',
+    proofFresh: () => true,
+    quietTopics: () => new Set(topics.map((t) => t.sessionKey)),
+    moveActuatorLive: () => true,
   });
   let proposedSeen = 0; // per-process counter (the planner's counters are in memory)
   return {
@@ -3274,7 +3279,7 @@ function makeOverloadShedPlanner(f: PressureFixture, sink: ActionSink): { tick()
 const overloadShed: SelfActionController = {
   id: 'overload-shed',
   actionVerb: 'converge-overload-transfer',
-  models: 'src/core/OverloadShedPlanner.ts (OverloadShedPlanner.tick — one live move, 2/hour breaker, 30 min topic cooldown, 2 attempts + 2 never-started refunds per topic per durable overload episode)',
+  models: 'src/core/OverloadShedPlanner.ts (OverloadShedPlanner.tick — one live move, 2/hour breaker, 6 h topic cooldown, 2 attempts + 2 never-started refunds per topic per durable overload episode)',
   modelsPath: 'src/core/OverloadShedPlanner.ts',
   boundK: 20,
   perTargetBoundK: 4,

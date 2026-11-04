@@ -54,6 +54,8 @@ export interface Session {
   tmuxSession: string;
   /** Telegram topic routing ID, retained with the session so display-name reads can verify its title. */
   telegramTopicId?: number;
+  /** The Slack channel this session serves, when it serves one. */
+  slackChannelId?: string;
   /** When the session was created */
   startedAt: string;
   /** When the session ended (if completed) */
@@ -89,6 +91,14 @@ export interface Session {
    *  with). Set at spawn + updated on a quota-aware account swap. Undefined on
    *  legacy records and single-account agents. */
   subscriptionAccountId?: string;
+  /** Memory privacy: the audience this session was started for (`audienceKey`). */
+  memoryAudience?: string;
+  /** Memory privacy: this session's own folder; set only inside the boundary. */
+  memoryScopeDir?: string;
+  /** Memory privacy: the launch settings file, removed at session end. */
+  memorySettingsPath?: string;
+  /** Memory privacy: what the place was computed from, so a recheck uses the same inputs. */
+  memoryPlaceInput?: import('../users/MemoryPrivacy.js').SessionPlaceInput;
   /** Why the session ended. Set by the single-writer terminateSession() path
    *  (e.g. 'idle-zombie', 'reaped-idle', 'manual-kill'). Undefined on records
    *  ended before this field existed. */
@@ -3228,11 +3238,16 @@ export interface SessionPoolConfig {
   promotionModel?: 'auto-climb' | 'operator' | 'off';
   /** Highest stage either promotion model may reach. Default dark (fail-closed). */
   promotionCeiling?: 'dark' | 'shadow' | 'live-transfer' | 'rebalance';
+  /**
+   * Telegram topics the rebalance proof may move (session-pool-rebalancing-finish). Empty ⇒
+   * POST /session-pool/rebalance-proof refuses everything. Listed topics are never shed.
+   */
+  rebalanceProofTopics?: number[];
   /** Auto-climb cadence in ms; runtime floor 60000. Default 60000. */
   promotionTickMs?: number;
   /**
    * Graduated rollout stage (spec §Rollout). 'dark' (code shipped, placement
-   * dry-run, always local) → 'shadow' (real placement + ownership, no transfer)
+   * dry-run, always local) → 'shadow' (real placement: a conversation can start on another machine; no moves of running ones)
    * → 'live-transfer' (failover + pin transfers) → 'rebalance' (load-driven).
    * Written ONLY by StageAdvancer via a Config.ts write-guard (Track H);
    * a direct write is rejected. Default 'dark'.
@@ -6892,6 +6907,8 @@ export interface MonitoringConfig {
     maxMovesPerHour?: number;
     /** Same-topic cooldown, and how long a machine seen refusing work is not a target (default 1800000). */
     recentShedMs?: number;
+    /** A topic that arrived or moved is left alone this long; follows the topic across machines (default 6 h). */
+    topicCooldownMs?: number;
   };
   /**
    * ProcessFootprintMonitor — observe-only per-machine process-count measurement

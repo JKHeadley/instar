@@ -36,6 +36,22 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "Size-based log rotation used only by the evidence log in this closure; it never throws and does not alter the certified Codex Stage-B delivery path."
     },
     {
+      "file": "src/permissions/SlackPrincipalResolver.ts",
+      "reason": "Slack identity lookup reached only through memory privacy from the excluded SessionManager; no delivery logic, outside the Stage-B canaried path."
+    },
+    {
+      "file": "src/permissions/types.ts",
+      "reason": "Role type declarations reached through SlackPrincipalResolver; types and constants only, outside the Stage-B canaried path."
+    },
+    {
+      "file": "src/users/MemoryAudience.ts",
+      "reason": "Pure audience rules reached through the excluded SessionManager; no delivery logic, outside the Stage-B canaried path."
+    },
+    {
+      "file": "src/users/MemoryPrivacy.ts",
+      "reason": "Memory audience state reached through the excluded SessionManager; decides a session's memory folder, not message delivery, outside the Stage-B canaried path."
+    },
+    {
       "file": "src/scheduler/jobScriptProtocol.ts",
       "reason": "Shared deterministic script-job output parser reached through scheduler imports; it does not alter the certified Codex Stage-B delivery path and has separate script protocol unit and lifecycle coverage"
     },

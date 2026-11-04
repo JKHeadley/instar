@@ -8,6 +8,7 @@ import { slackOriginFooter, currentAgentDisplay, deviceOriginRow, effectiveDispl
 import type { OriginDisplaySettings, TelegramOriginProducer } from '../messaging/telegram-origin/types.js';
 import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyOriginDeps } from './replyOrigin.js';
 import { consolePageUrl } from './dashboardPaths.js';
+import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
 import { stripViewSignatures } from './mobilePairingRoutes.js';
 import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
@@ -15,6 +16,7 @@ import type { AutoExpiryHold } from '../core/types.js';
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
 import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
+import { getActiveRebalanceProof, getActiveRebalanceProofStore } from '../core/rebalanceProof.js';
 import { getActiveDrainRehearsal } from '../monitoring/machineMaintenance/DrainRehearsal.js';
 import { getActiveBrowserCare } from '../monitoring/machineMaintenance/BrowserCare.js';
 import { getActiveWedgeMonitor } from '../monitoring/machineMaintenance/WedgeMonitor.js';
@@ -12203,6 +12205,11 @@ export function createRoutes(ctx: RouteContext): Router {
   // Rate limit session spawning — each session is a real Claude Code process.
   // Default: 10 spawns per 60 seconds, which is generous for normal use.
   const spawnLimiter = rateLimiter(60_000, 10);
+  // Memory privacy status (docs/specs/memory-privacy.md). Agent token only.
+  router.get('/memory-privacy', (_req, res) => {
+    res.json(ctx.sessionManager.memoryPrivacyStatus());
+  });
+
   router.post('/sessions/spawn', spawnLimiter, async (req, res) => {
     const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole } = req.body;
 
@@ -12216,6 +12223,12 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     if (typeof prompt !== 'string' || prompt.length > 500_000) {
       res.status(400).json({ error: '"prompt" must be a string under 500KB' });
+      return;
+    }
+    // Memory privacy: this route starts sessions with owner reach, so it cannot serve a
+    // place whose readers must not see owner memory.
+    if (typeof topicId === 'number' && ['place', 'person', 'none'].includes(ctx.sessionManager.memoryAudienceKind?.({ telegramTopicId: topicId }) ?? 'open')) {
+      res.status(409).json({ error: 'memory-scoped-place', message: 'This topic serves people who may not see owner memory; a session here starts from their message.' });
       return;
     }
     // Round-17 (integration): this hand-written allowlist rejected `grok-build`
@@ -13269,7 +13282,12 @@ export function createRoutes(ctx: RouteContext): Router {
       const tmuxSession = await ctx.sessionManager.spawnInteractiveSession(
         undefined, // no initial message
         topicName,
-        { triggeredBy: 'dashboard-operator' },
+        {
+          triggeredBy: 'dashboard-operator',
+          // Memory privacy: an unbound console session is the operator's. One bound to a
+          // channel serves that channel's readers, so it takes the channel's audience.
+          ...(slackChannelId ? { memoryPlaceKey: `slack:${slackChannelId}` } : topicId !== undefined ? { telegramTopicId: topicId } : { memoryPlace: { kind: 'system' as const } }),
+        },
       );
 
       // Update Slack channel-session registry and invite authorized users
@@ -21364,7 +21382,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     const { channelId } = req.params;
-    const { text, thread_ts, metadata } = req.body;
+    const { text, thread_ts: explicitThread, metadata } = req.body;
+    // A session's reply follows the thread it was asked in (fb-99bf432a-05f). System
+    // senders post where they say: they are not answering anyone.
+    const fromSession = typeof res.locals.originBoundSession === 'string' || req.path === '/slack/session-reply';
+    const thread_ts = explicitThread ?? (fromSession ? ctx.slack?.inboundThreadFor?.(String(req.params.channelId)) : undefined);
     if (!text || typeof text !== 'string') {
       res.status(400).json({ error: '"text" field required' });
       return;
@@ -21565,6 +21587,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   const APP_DUPLICATE_WINDOW_MS = 15 * 60_000;
   const APP_DUPLICATE_MIN_CHARS = 40;
   router.post('/app/session-reply', async (req, res) => {
+    // Memory privacy: the server reads these paths with its own reach, which a session
+    // inside the boundary must not borrow.
+    if (req.body?.files !== undefined && res.locals.memorySession) {
+      res.status(403).json({ error: 'not-available-to-this-session' });
+      return;
+    }
     const app = ctx.appConversations;
     if (!app) { res.status(503).json({ error: 'native-conversations-off', detail: 'App conversations are turned off on this agent.' }); return; }
     const bodyKeys = Object.keys(req.body ?? {});
@@ -25108,6 +25136,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
+  // Read-only signal (session-pool-default-on): nothing reads this to allow or block anything.
+  router.get('/session-pool/readiness', (_req, res) => {
+    const deps = getActivePoolReadiness();
+    res.json(deps ? computePoolReadiness(deps) : SINGLE_MACHINE_READINESS);
+  });
+
   // GET /session-pool/e2e-results — the rollout gate's observable state (§Rollout).
   // Read-only; returns the latest E2E result per stage + whether each verifies. The
   // StageAdvancer gates activation on these; this surfaces them (no mutation here).
@@ -25122,7 +25156,46 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const row = store.getLatestForStage(stage);
       return { stage, result: row?.result ?? null, commitSha: row?.commitSha ?? null, ranAt: row?.ranAt ?? null, verified: row ? store.verify(row) : null };
     });
-    res.json({ latestPerStage, total: store.all().length });
+    // Stage 3 is proven by the rebalance proof's own store, not the failover rows.
+    const proof = getActiveRebalanceProofStore();
+    const proofRow = proof?.getLatestForStage(3) ?? null;
+    const stage3 = { stage: 3, result: proofRow?.result ?? null, commitSha: proofRow?.commitSha ?? null, ranAt: proofRow?.ranAt ?? null, verified: proofRow ? (proof as NonNullable<typeof proof>).verify(proofRow) : false };
+    res.json({ latestPerStage: latestPerStage.map((row) => (row.stage === 3 ? { ...row, ...stage3 } : row)), total: store.all().length });
+  });
+
+  // POST /session-pool/rebalance-proof — one real move of a listed proof topic through
+  // the production shed path, judged from outside it (session-pool-rebalancing-finish).
+  // 202 with a run id; the move and reply can take minutes, so it never holds the request.
+  router.post('/session-pool/rebalance-proof', (req, res) => {
+    const runner = getActiveRebalanceProof();
+    if (!runner) {
+      res.status(503).json({ error: 'rebalance proof not available (overload shed is off on this agent)' });
+      return;
+    }
+    const body = (req.body ?? {}) as { topic?: unknown; to?: unknown };
+    const topic = Number(body.topic);
+    const to = typeof body.to === 'string' ? body.to.trim() : '';
+    if (!Number.isInteger(topic) || topic <= 0 || !to) {
+      res.status(400).json({ error: 'topic and to are required, e.g. {"topic":13481,"to":"m_abc"}' });
+      return;
+    }
+    const started = runner.start(topic, to);
+    if ('refused' in started) {
+      res.status(409).json({ refused: started.refused });
+      return;
+    }
+    void started.finished.catch((err) => console.error('[rebalance-proof] run failed:', err));
+    res.status(202).json({ runId: started.run.runId });
+  });
+
+  // GET /session-pool/rebalance-proof/:runId — where a proof run stands.
+  router.get('/session-pool/rebalance-proof/:runId', (req, res) => {
+    const run = getActiveRebalanceProof()?.get(req.params.runId) ?? null;
+    if (!run) {
+      res.status(404).json({ error: 'no such proof run on this machine' });
+      return;
+    }
+    res.json(run);
   });
 
   // GET /session-pool/failover-runner — the in-agent failover-runner's status

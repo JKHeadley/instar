@@ -35,6 +35,8 @@ export interface AppDispatchInput {
    * delivery with no live session to tell, and files that could not be copied within 7 days.
    */
   notes?: string[];
+  /** Memory privacy: the phone's person, `null` for the owner's own phone. */
+  memoryPersonId?: string | null;
 }
 
 export type AppDispatchOutcome = 'delivered' | 'refused';
@@ -46,7 +48,7 @@ export interface AppDispatchSessions {
   waitForClaudeReady?(tmuxSession: string, timeoutMs?: number): Promise<boolean>;
   injectMessage(tmuxSession: string, text: string, opts?: { conversationId?: string }): boolean;
   killSession?(sessionId: string): boolean;
-  spawnInteractiveSession(initialMessage?: string, name?: string, options?: { bootstrapConversationIds?: number[] }): Promise<string>;
+  spawnInteractiveSession(initialMessage?: string, name?: string, options?: { memoryPlaceKey?: string; bootstrapConversationIds?: number[] }): Promise<string>;
 }
 
 export interface AppDispatchAdmission {
@@ -64,6 +66,8 @@ export interface AppInboundDispatchDeps {
   log?: (line: string) => void;
   /** Ready-wait budget for an existing session (ms). */
   readyTimeoutMs?: number;
+  /** Memory privacy: runs before routing. False means this message was refused. */
+  memoryInbound?: (input: AppDispatchInput) => Promise<boolean>;
 }
 
 const HISTORY = 30;
@@ -91,6 +95,10 @@ export function createAppFollowUpInjector(deps: { sessions: Pick<AppDispatchSess
 export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInboundDispatch {
   const log = deps.log ?? (() => undefined);
   return async (input) => {
+    if (deps.memoryInbound && !(await deps.memoryInbound(input))) {
+      log('[app→session] refused: this conversation needs private memory, which is not available here');
+      return 'refused';
+    }
     const channelKey = String(input.alias);
     const tag = appInjectionTag(input.alias, input.title, input.ownerName, input.originVerdict);
 
@@ -172,7 +180,7 @@ export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInbou
         log(`[app→session] admission error (fail-open): ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-    const name = await deps.sessions.spawnInteractiveSession(bootstrap, undefined, { bootstrapConversationIds: [input.alias] });
+    const name = await deps.sessions.spawnInteractiveSession(bootstrap, undefined, { bootstrapConversationIds: [input.alias], memoryPlaceKey: `app:${input.conversationKey}` });
     if (!name) return 'refused';
     deps.channels.register(channelKey, name, input.title);
     log(`[app→session] spawned ${name} for app conversation ${input.alias}`);

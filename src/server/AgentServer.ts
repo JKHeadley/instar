@@ -11,6 +11,7 @@
 import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import express, { type Express, type Request, type Response } from 'express';
+import { setMoveAftercare } from '../core/OverloadShedPlanner.js';
 import { getAspClassifierRef } from '../core/aspClassifierRef.js';
 import type { Server } from 'node:http';
 import fs from 'node:fs';
@@ -1332,6 +1333,8 @@ export class AgentServer {
     /** Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md): the
      *  service behind POST /mcp/threadline. Mounted whenever Threadline runs. */
     threadlineMcpHttp?: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService;
+    /** Memory privacy: resolves session tokens at the auth layer. */
+    memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacy;
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
     a2aDeliveryTracker?: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker;
     /** Honest-delivery verdict counters (spec §1) for the authed branch of /health. */
@@ -1994,6 +1997,7 @@ export class AgentServer {
         return false;
       },
       this.mobilePairing ? deviceAuthenticator(this.mobilePairing) : undefined,
+      options.memoryPrivacy ? (token) => options.memoryPrivacy!.sessionForToken(token) : undefined,
     ));
     // Per-path request-timeout overrides for LLM-backed / third-party routes
     // (outbound messaging + the standards-conformance gate). The map and its
@@ -4996,6 +5000,7 @@ export class AgentServer {
         }
       })();
     });
+    setMoveAftercare(kickWorkingSetOnMachine);
     const resolveWindowFirstUnreceiptedTask = (state: Readonly<import('../core/WindowRunLivenessAuthority.js').WindowRunLivenessDocument>): string | null => {
       const localPath = path.join(options.config.stateDir, 'autonomous', `${state.topicId}.local.md`);
       const content = fs.readFileSync(localPath, 'utf8');

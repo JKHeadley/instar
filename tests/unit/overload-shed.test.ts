@@ -66,7 +66,7 @@ interface PlannerRig {
   setNow: (t: number) => void;
   advance: (ms: number) => void;
   owner: Map<string, string>;
-  state: { admission: { acceptingWork: boolean; enforced: boolean } | null; caps: MachineCapacity[]; topics: Array<{ sessionKey: string; pinned: boolean }>; cfg: Partial<OverloadShedConfig>; autonomous: Set<string>; busy: Set<string>; status: Map<string, { status: string; transferTo?: string }> | null };
+  state: { actuatorLive?: boolean; stage: string; proofFresh: boolean; notQuiet: Set<string>; proofTopics: Set<string>; admission: { acceptingWork: boolean; enforced: boolean } | null; caps: MachineCapacity[]; topics: Array<{ sessionKey: string; pinned: boolean; lastMovedAt?: number }>; cfg: Partial<OverloadShedConfig>; autonomous: Set<string>; busy: Set<string>; status: Map<string, { status: string; transferTo?: string }> | null };
   statePath: string;
   auditPath: string;
   audit: () => Array<Record<string, unknown>>;
@@ -84,6 +84,10 @@ function plannerRig(over: Partial<PlannerRig['state']> = {}, self = SELF, dir = 
     autonomous: new Set(),
     busy: new Set(),
     status: null,
+    stage: 'rebalance',
+    proofFresh: true,
+    notQuiet: new Set(),
+    proofTopics: new Set(),
     ...over,
   };
   const statePath = path.join(dir, 'state', 'overload-shed.json');
@@ -98,6 +102,11 @@ function plannerRig(over: Partial<PlannerRig['state']> = {}, self = SELF, dir = 
     placement: new PlacementExecutor(),
     hasLiveAutonomousRun: (k) => state.autonomous.has(k),
     isTopicBusy: (k) => state.busy.has(k),
+    poolStage: () => state.stage,
+    moveActuatorLive: () => state.actuatorLive ?? true,
+    proofFresh: () => state.proofFresh,
+    quietTopics: () => new Set(state.topics.map((t) => t.sessionKey).filter((k) => !state.notQuiet.has(k))),
+    isProofTopic: (k) => state.proofTopics.has(k),
     ...(state.status ? { statusOf: (k: string) => state.status!.get(k) ?? { status: 'active' } } : {}),
     statePath,
     auditPath,
@@ -148,15 +157,64 @@ describe('OverloadShedPlanner — source (D2)', () => {
     run(rig, 4 * MIN);
     expect(rig.planner.overloadMoves()).toEqual([]);
     const would = rig.audit().filter((r) => r.event === 'would-move');
-    expect(would.length).toBe(1); // deduped: at most one per topic/target per 5 min
+    expect(would.length).toBe(1); // one row per episode per topic, so a long episode is one decision
     expect(would[0]).toMatchObject({ sessionKey: '101', target: PEER, reason: 'dry-run' });
   });
 
-  it('admission in dry-run (not enforced) proposes nothing — peers would send the work straight back', () => {
+  it('admission in dry-run still moves at stage rebalance: the stage is the gate, not enforcement', () => {
     const rig = plannerRig({ admission: { acceptingWork: false, enforced: false } });
     run(rig, 4 * MIN);
+    expect(rig.planner.overloadMoves()).toHaveLength(1);
+  });
+
+  it.each([
+    ['below stage rebalance', { stage: 'live-transfer' }, 'stage-not-rebalance'],
+    ['no fresh proof', { proofFresh: false }, 'proof-not-fresh'],
+  ])('%s holds the move, and dryRun:false alone cannot make it live', (_n, over, reason) => {
+    const rig = plannerRig(over);
+    run(rig, 4 * MIN);
     expect(rig.planner.overloadMoves()).toEqual([]);
-    expect(rig.audit().find((r) => r.event === 'would-move')?.reason).toBe('admission-not-enforced');
+    expect(rig.audit().find((r) => r.event === 'would-move')).toMatchObject({ reason, workState: 'idle', sourceActive: 10, sourceMax: 10, targetActive: 1, targetMax: 10, targetVerdict: 'ok' });
+  });
+
+  it('admission closed but plenty of session slots free is not a source: a CPU spike moves nothing', () => {
+    const rig = plannerRig({ caps: [healthy(SELF, { loadVerdict: 'saturated', activeSessionCount: 8 }), healthy(PEER)] });
+    run(rig, 4 * MIN);
+    expect(rig.planner.overloadMoves()).toEqual([]);
+    expect(rig.audit().filter((r) => r.event === 'would-move')).toEqual([]);
+  });
+
+  it('source ratio boundary: 0.85 of the session limit is a source', () => {
+    const rig = plannerRig({ caps: [healthy(SELF, { loadVerdict: 'saturated', activeSessionCount: 17, maxSessions: 20 }), healthy(PEER)] });
+    run(rig, 4 * MIN);
+    expect(rig.planner.overloadMoves()).toHaveLength(1);
+  });
+
+  it('an unknown session limit on this machine is not a source', () => {
+    const rig = plannerRig({ caps: [healthy(SELF, { maxSessions: undefined }), healthy(PEER)] });
+    run(rig, 4 * MIN);
+    expect(rig.planner.overloadMoves()).toEqual([]);
+  });
+
+  it('a topic with no quiet running session is never a candidate; one that is, is', () => {
+    const rig = plannerRig({ topics: [{ sessionKey: '101', pinned: false }, { sessionKey: '102', pinned: false }], notQuiet: new Set(['101']) });
+    run(rig, 4 * MIN);
+    expect(rig.planner.overloadMoves().map((m) => m.sessionKey)).toEqual(['102']);
+  });
+
+  it('a proof topic is never shed by the normal path', () => {
+    const rig = plannerRig({ proofTopics: new Set(['101']) });
+    run(rig, 4 * MIN);
+    expect(rig.planner.overloadMoves()).toEqual([]);
+  });
+
+  it('the cooldown follows the topic: one that arrived 1 h ago stays, one from 7 h ago may move', () => {
+    const rig = plannerRig({ topics: [{ sessionKey: '101', pinned: false, lastMovedAt: 1_700_000_000_000 - 60 * MIN }] });
+    run(rig, 4 * MIN);
+    expect(rig.planner.overloadMoves()).toEqual([]);
+    const old = plannerRig({ topics: [{ sessionKey: '101', pinned: false, lastMovedAt: 1_700_000_000_000 - 7 * 60 * MIN }] });
+    run(old, 4 * MIN);
+    expect(old.planner.overloadMoves()).toHaveLength(1);
   });
 
   it('disabled proposes nothing and forgets a live move', () => {
@@ -178,6 +236,8 @@ describe('OverloadShedPlanner — target rules (D2)', () => {
     ['refusing work itself', { loadReportAgeMs: 5_000, loadReport: report({ acceptingWork: false, admissionEnforced: true }) }],
     ['no headroom (needs 2 free)', { activeSessionCount: 9, maxSessions: 10 }],
     ['unknown session limit', { maxSessions: undefined }],
+    ['unknown session count', { activeSessionCount: undefined }],
+    ['closed admission, even unenforced', { loadReport: report({ acceptingWork: false, admissionEnforced: false }) }],
   ];
   for (const [name, over] of cases) {
     it(`never targets a machine with ${name}`, () => {
@@ -296,6 +356,7 @@ interface ReconRig {
   pins: TopicPlacementPinStore;
   recon: OwnershipReconciler;
   setNow: (t: number) => void;
+  drained: string[];
 }
 
 function reconRig(opts: {
@@ -306,6 +367,7 @@ function reconRig(opts: {
   busy?: (k: string) => boolean;
   autonomous?: (k: string) => boolean;
   maxMovesPerTick?: number;
+  noDrain?: boolean;
   reg?: SessionOwnershipRegistry;
 } = {}): ReconRig {
   const dir = tmp();
@@ -313,6 +375,7 @@ function reconRig(opts: {
   const reg = opts.reg ?? new SessionOwnershipRegistry({ store: new InMemorySessionOwnershipStore(), seenNonce: (k) => nonces.has(k), recordNonce: (k) => nonces.add(k) });
   const pins = new TopicPlacementPinStore({ filePath: path.join(dir, 'pins.json'), now: () => new Date(Date.now() - 60_000) });
   let now = Date.now();
+  const drained: string[] = [];
   const machines = opts.machines ?? [{ machineId: SELF, online: true, lastSeenMs: now }, { machineId: PEER, online: true, lastSeenMs: now }];
   const recon = new OwnershipReconciler({
     enabled: () => true,
@@ -328,10 +391,11 @@ function reconRig(opts: {
     ...(opts.autonomous ? { hasLiveAutonomousRun: opts.autonomous } : {}),
     ...(opts.maxMovesPerTick !== undefined ? { maxMovesPerTick: opts.maxMovesPerTick } : {}),
     ...(opts.moves ? { overloadMoves: opts.moves } : {}),
+    ...(opts.noDrain ? {} : { drainMove: (m: { sessionKey: string; target: string }) => { drained.push(m.sessionKey); reg.cas({ type: 'transfer', to: m.target }, { sessionKey: m.sessionKey, sender: opts.self ?? SELF, nonce: `t-${drained.length}-${m.sessionKey}` }); } }),
     ...(opts.drive !== undefined ? { driveUnpinnedTransfers: () => opts.drive! } : {}),
     now: () => now,
   });
-  return { reg, pins, recon, setNow: (t) => { now = t; } };
+  return { reg, pins, recon, drained, setNow: (t) => { now = t; } };
 }
 
 function ownActive(reg: SessionOwnershipRegistry, key: string, owner = SELF): void {
@@ -340,7 +404,138 @@ function ownActive(reg: SessionOwnershipRegistry, key: string, owner = SELF): vo
 }
 const mv = (k: string, target = PEER) => ({ sessionKey: k, target, episodeId: 'ep' });
 
+describe('moves report their outcome (noteMoveOutcome)', () => {
+  const live = () => { const rig = plannerRig(); run(rig, 4 * MIN); expect(rig.planner.overloadMoves()).toHaveLength(1); return rig; };
+
+  it('a drained move clears the entry, keeps the breaker slot, and logs the numbers', () => {
+    const rig = live();
+    rig.planner.noteMoveOutcome('101', { status: 'drained', claimLanded: true, durationMs: 1200 });
+    expect(rig.planner.overloadMoves()).toEqual([]);
+    expect(rig.planner.status().movesLastHour).toBe(1);
+    expect(rig.audit().find((r) => r.event === 'move-outcome')).toMatchObject({ sessionKey: '101', target: PEER, status: 'drained', claimLanded: true, durationMs: 1200, sourceActive: 10, targetMax: 10 });
+  });
+
+  it('a refused move frees the hourly slot and the reservation at once, but the try is spent', () => {
+    const rig = live();
+    rig.planner.noteMoveOutcome('101', { status: 'aborted-not-quiet' });
+    expect(rig.planner.status().movesLastHour).toBe(0);
+    expect(rig.planner.status().reservations).toEqual([]);
+    rig.planner.tick();
+    expect(rig.planner.overloadMoves()).toHaveLength(1);
+    rig.planner.noteMoveOutcome('101', { status: 'refused-close-failed' });
+    rig.planner.tick();
+    expect(rig.planner.overloadMoves()).toEqual([]); // MAX_ATTEMPTS_PER_TOPIC
+  });
+
+  it('an outcome for a topic that is not the live move is ignored', () => {
+    const rig = live();
+    rig.planner.noteMoveOutcome('999', { status: 'drained' });
+    expect(rig.planner.overloadMoves()).toHaveLength(1);
+  });
+});
+
+describe('the switches take effect at once', () => {
+  it('a proposal that has not started is held the moment dry-run returns, and resumes when it clears', () => {
+    const rig = plannerRig();
+    run(rig, 4 * MIN);
+    expect(rig.planner.overloadMoves()).toHaveLength(1);
+    rig.state.cfg = { dryRun: true };
+    expect(rig.planner.overloadMoves()).toEqual([]);
+    rig.state.cfg = { dryRun: false };
+    expect(rig.planner.overloadMoves()).toHaveLength(1);
+  });
+
+  it('losing the proof or the stage holds a pending proposal too', () => {
+    const rig = plannerRig();
+    run(rig, 4 * MIN);
+    rig.state.proofFresh = false;
+    expect(rig.planner.overloadMoves()).toEqual([]);
+    rig.state.proofFresh = true;
+    rig.state.stage = 'live-transfer';
+    expect(rig.planner.overloadMoves()).toEqual([]);
+  });
+
+  it('a reconciler in dry-run is audited as a held move, and a proof refuses up front', () => {
+    const rig = plannerRig({ actuatorLive: false });
+    run(rig, 4 * MIN);
+    expect(rig.audit().find((r) => r.event === 'would-move')?.reason).toBe('reconciler-dry-run');
+    const p = plannerRig({ actuatorLive: false, caps: [healthy(SELF), healthy(PEER)] });
+    expect(p.planner.proofMove('101', PEER)).toEqual({ refused: 'reconciler-dry-run' });
+  });
+});
+
+describe('proofMove: the production path with named exemptions', () => {
+  it('disabling the shed settles a running proof, so later proofs are not locked out', async () => {
+    const rig = plannerRig({ caps: [healthy(SELF), healthy(PEER)] });
+    const r = rig.planner.proofMove('101', PEER);
+    if ('refused' in r) throw new Error(r.refused);
+    rig.state.cfg = { ...rig.state.cfg, enabled: false } as Partial<OverloadShedConfig>;
+    rig.planner.tick();
+    await expect(r.outcome).resolves.toMatchObject({ moved: false, outcome: { status: 'shed-disabled' } });
+    rig.state.cfg = { dryRun: false };
+    expect('outcome' in rig.planner.proofMove('101', PEER)).toBe(true);
+  });
+
+  it('a proof entry does not survive a restart: nothing is waiting for it, so it must not move anything', () => {
+    const rig = plannerRig({ caps: [healthy(SELF), healthy(PEER)] });
+    rig.planner.proofMove('101', PEER);
+    rig.rebuild();
+    expect(rig.planner.overloadMoves()).toEqual([]);
+  });
+
+  it('runs below stage rebalance, in dry-run, with no overload, and stamps no shed state', async () => {
+    const rig = plannerRig({ stage: 'live-transfer', proofFresh: false, admission: null, cfg: { dryRun: true }, proofTopics: new Set(['101']), caps: [healthy(SELF), healthy(PEER)] });
+    const r = rig.planner.proofMove('101', PEER);
+    if ('refused' in r) throw new Error(r.refused);
+    expect(rig.planner.overloadMoves()).toMatchObject([{ sessionKey: '101', target: PEER }]);
+    rig.planner.noteMoveOutcome('101', { status: 'drained', claimLanded: true });
+    await expect(r.outcome).resolves.toMatchObject({ moved: true });
+    const st = rig.planner.status();
+    expect(st.movesLastHour).toBe(0);
+    expect(st.reservations).toEqual([]);
+    expect(rig.audit().filter((a) => a.event === 'move-outcome').every((a) => a.proof === true)).toBe(true);
+  });
+
+  it('still refuses a target that fails the production eligibility rules', () => {
+    const rig = plannerRig({ caps: [healthy(SELF), healthy(PEER, { loadVerdict: 'elevated' })] });
+    expect(rig.planner.proofMove('101', PEER)).toEqual({ refused: 'target-ineligible' });
+  });
+
+  it('only moves to the machine named, and never alongside a live move', () => {
+    const rig = plannerRig({ caps: [healthy(SELF), healthy(PEER), healthy('m_other')] });
+    const r = rig.planner.proofMove('101', 'm_other');
+    if ('refused' in r) throw new Error(r.refused);
+    expect(rig.planner.overloadMoves()[0].target).toBe('m_other');
+    expect(rig.planner.proofMove('102', PEER)).toEqual({ refused: 'move-in-flight' });
+  });
+
+  it('a proof move that expires settles as not moved', async () => {
+    const rig = plannerRig({ caps: [healthy(SELF), healthy(PEER)], status: new Map() });
+    const r = rig.planner.proofMove('101', PEER);
+    if ('refused' in r) throw new Error(r.refused);
+    rig.advance(11 * MIN);
+    rig.planner.tick();
+    await expect(r.outcome).resolves.toMatchObject({ moved: false, outcome: { status: 'expired' } });
+  });
+});
+
 describe('OwnershipReconciler — overload moves (D1)', () => {
+  it('without a drain there is no move: a bare transfer would leave the session running here', () => {
+    const r = reconRig({ moves: () => [mv('300')], noDrain: true });
+    ownActive(r.reg, '300');
+    expect(r.recon.tick().overloadTransfers ?? 0).toBe(0);
+    expect(r.reg.read('300')).toMatchObject({ status: 'active' });
+  });
+
+  it('a drain-flow transfer is driven even with the shed in dry-run, so it cannot strand', () => {
+    const r = reconRig({ drive: false });
+    ownActive(r.reg, '305');
+    r.reg.cas({ type: 'transfer', to: PEER, drain: true }, { sessionKey: '305', sender: SELF, nonce: 't' });
+    r.setNow(Date.now() + 10 * MIN);
+    expect(r.recon.tick().aborts).toBe(1);
+    expect(r.reg.read('305')).toMatchObject({ status: 'active', ownerMachineId: SELF });
+  });
+
   it('transfers an active, self-owned, unpinned topic to the target', () => {
     const r = reconRig({ moves: () => [mv('301')] });
     ownActive(r.reg, '301');
