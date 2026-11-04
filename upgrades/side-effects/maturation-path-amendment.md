@@ -3,7 +3,7 @@
 **Version / slug:** `maturation-path-amendment`
 **Date:** `2026-11-03`
 **Author:** `echo`
-**Second-pass reviewer:** `GPT-6 Astra read the wording; findings applied`
+**Second-pass reviewer:** `GPT-6 Astra, on the wording and the final diff`
 
 ## Summary of the change
 
@@ -45,7 +45,17 @@ Repo-tracked text; unified.
 
 ## 8. Rollback cost
 
-A revert of the text.
+A revert of the text, with the area audits it re-recorded.
+
+## Second-pass review
+
+**Reviewer:** independent cross-family reader, codex-cli on gpt-6-astra
+
+First read of the Maturation Path wording: five issues, applied or put to the operator. Final diff with the new article: three findings. One applied: clauses (c) and (d) stay named as unenforced, since the coverage test proves neither. Two not applied, to keep the text matching 2.0 Rule 119, with reasons in `docs/specs/reports/maturation-path-and-alignment-constitution-review-2026-11-04.md`. Concur with the review after those changes.
+
+## One Constitution article
+
+This PR also adds *One Constitution, Two Books Aligned*, whose check merged in #2689. `scripts/safe-merge.mjs` gains only a comment naming the article, which the back-reference lint requires. Its counterpart in instar-2 is PR 189, and the master merges first.
 
 ## Evidence
 

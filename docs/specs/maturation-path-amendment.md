@@ -25,7 +25,7 @@ The change is to `docs/STANDARDS-REGISTRY.md`, in *Maturation Path*:
 
 > (e) THE LADDER IS THE MACHINE FORM OF THE PLAN. `src/data/feature-ladders.json` holds every staged feature's thresholds. A flag the code reports as switched off (`src/monitoring/maturationUniverse.ts`) with no entry fails the build. (f) The rung is derived from what ships, never written by hand. (g) A USER-PREFERENCE FINAL IS A RECORDED DECISION, with a named decider, reason, date and reference, each one visible on the board. The decider is the operator, or the review's two independent readings agreeing that the choice belongs to each user, in a named class: opt-in cost, a personal account, or personal taste. A preference final closes only the step to default-on: the feature still earns its lower rungs, stays available to any user who turns it on, and keeps its thresholds. It says nothing about a critical path that depends on it, which stays with *A Dark Feature Guards Nothing*.
 
-**Applied through, changed:** the coverage test gives clauses (c) and (d) a check at merge, the parser gives clause (b) a structural floor, and the `STD-SUBCOUNTDOWN-maturation-bcd` line comes out. It says plainly what is not certified: that a logged record is true, that a threshold is any good, or that a decision reached the track on the day it was made.
+**Applied through, changed:** the coverage test enforces clause (e), the parser gives clause (b) a structural floor, and clauses (c) and (d) stay named as unenforced under their countdown. It says plainly what is not certified: that a logged record is true, that a threshold is any good, or that a decision reached the track on the day it was made.
 
 ## Decisions for the operator
 

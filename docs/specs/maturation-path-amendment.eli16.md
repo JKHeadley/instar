@@ -18,7 +18,7 @@ Features ship switched off, then walk from test agents, to development agents, t
 
 > (e) The ladder is the machine form of the plan. `src/data/feature-ladders.json` holds every staged feature's thresholds. A flag the code reports as switched off (`src/monitoring/maturationUniverse.ts`) with no entry fails the build. (f) The rung is derived from what ships, never written by hand. (g) A user-preference final is a recorded decision, with a named decider, reason, date and reference, each one visible on the board. The decider is the operator, or the review's two independent readings agreeing that the choice belongs to each user, in a named class: opt-in cost, a personal account, or personal taste. A preference final closes only the step to default-on: the feature still earns its lower rungs, stays available to any user who turns it on, and keeps its thresholds. It says nothing about a critical path that depends on it, which stays with *A Dark Feature Guards Nothing*.
 
-The article's "unenforced" note also comes out, since those promises now have checks. It still says what isn't certified: that a logged record is true, that a threshold is any good, or that a decision was recorded on the day it was made.
+The article's "unenforced" note narrows to the two promises that still have no check. It also says what isn't certified: that a logged record is true, that a threshold is any good, or that a decision was recorded on the day it was made.
 
 ## The two things worth your eye
 
