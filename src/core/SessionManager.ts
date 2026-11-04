@@ -111,6 +111,7 @@ import {
   computeGrokInteractiveOptIn,
 } from './frameworkSessionLaunch.js';
 import { frameworkFromEnv } from './intelligenceProviderFactory.js';
+import { codexSupportsGpt61Sol } from './codexCapabilities.js';
 import { decideSdkVsSubscription, DEFAULT_SAFETY_MARGIN_FRACTION } from '../providers/costAwareRouting.js';
 import {
   resolveCodexLaunchModelWithUsage,
@@ -7300,9 +7301,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
     });
     if (decision.swapped) {
       console.log(`[SessionManager] ${decision.reason}`);
-      return decision.model;
     }
-    return requestedModel;
+    const selected = decision.swapped ? decision.model : requestedModel;
+    if (framework === 'codex-cli' && selected === 'gpt-6.1-sol') {
+      const binary = resolveFrameworkBinaryPath({
+        framework,
+        frameworkBinaryPaths: this.config.frameworkBinaryPaths,
+        claudePath: this.config.claudePath,
+        configuredFramework: this.config.framework,
+      });
+      if (!binary || !codexSupportsGpt61Sol(binary)) {
+        console.warn('[SessionManager] This machine has an older Codex CLI; using gpt-6-sol for this session.');
+        return 'gpt-6-sol';
+      }
+    }
+    return selected;
   }
 
   /**

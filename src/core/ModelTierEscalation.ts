@@ -241,6 +241,9 @@ export const KNOWN_CODEX_MODEL_IDS = [
   // Live-verified 2026-09-23 on codex CLI 0.156.1 (0.153.4 refuses both).
   'gpt-6-sol',
   'gpt-6-luna',
+  // Live subscription probe on Codex CLI 0.166.0 (2026-11-04); 0.156.1
+  // refuses this id. Launchers check local CLI capability before using it.
+  'gpt-6.1-sol',
 ] as const;
 
 export const KNOWN_MODEL_IDS: Record<EscalationFramework, readonly string[]> = {
