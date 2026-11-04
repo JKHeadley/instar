@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "locked-proof-neutral-wording",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-04T02:56:50.264Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-neutral-wording.md",
+  "artifactSha256": "be69a1055d3efe272318c1762f425265dcbdfef108f91e7f6a386803330c6b0b",
+  "coveredFiles": [
+    "scripts/locked-proof/lib.mjs",
+    "upgrades/side-effects/locked-proof-neutral-wording.eli16.md",
+    "upgrades/side-effects/locked-proof-neutral-wording.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "wording in test tooling",
+  "eli16Path": "upgrades/side-effects/locked-proof-neutral-wording.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-neutral-wording.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "wording only"
+  }
+}
