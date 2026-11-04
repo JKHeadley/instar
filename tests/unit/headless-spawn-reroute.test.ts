@@ -439,7 +439,9 @@ describe('headless-spawn reroute', () => {
         tmuxSession, startedAt: new Date().toISOString(), framework: 'claude-code', launchLane: 'interactive' });
       mockTmuxSessions.add(tmuxSession);
     }
-    expect(manager.confinedRerouteCapacity()).toBe('available');
+    // The feedback executor does not carry scheduler provenance, so it cannot
+    // borrow the global reserve even though the health job below can.
+    expect(manager.confinedRerouteCapacity()).toBe('saturated');
     const health = await manager.spawnSession({ name: 'health-job', prompt: 'p', jobSlug: 'health-check', triggeredBy: 'scheduler:scheduled' });
     expect(health.jobSlug).toBe('health-check');
     expect(manager.confinedRerouteCapacity()).toBe('saturated');
