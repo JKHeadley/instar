@@ -1203,6 +1203,18 @@ export class GreenPrAutoMerger extends EventEmitter {
       return;
     }
 
+    if (outcome === 'refused:constitution-counterpart') {
+      // Waiting on a line in the PR body, or on a read that failed. Neither moves
+      // a head or needs the ladder, so this re-reads every 15 minutes.
+      const ep: Episode = state.episodes[target.number] ?? { pr: target.number, headRefOid: target.headRefOid, attempts: 0, rearmEpisodes: 0, state: 'active' };
+      ep.lastOutcome = outcome;
+      ep.lastAttemptAt = this.deps.now();
+      ep.nextEligibleAt = this.deps.now() + 15 * 60_000;
+      state.episodes[target.number] = ep;
+      this.deps.audit({ kind: 'green-pr-automerge', event: outcome, pr: target.number });
+      return;
+    }
+
     if (outcome === 'refused:approval-required') {
       // The base branch demands a HUMAN approval (ruleset require_last_push_approval
       // or a required review) that --admin cannot and must not bypass. safe-merge

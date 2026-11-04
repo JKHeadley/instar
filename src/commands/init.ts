@@ -29,6 +29,7 @@
  * Existing project adds .instar/ and appends to CLAUDE.md.
  */
 
+import { isBlankAgentHome, markNewAgent } from '../recommended/offerPrerequisites.js';
 import { applyInitPosture, decideInitPosture, parseTtl } from '../core/ThrowawayAgentGuard.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -356,6 +357,8 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
 
   // Create .instar/ state directory
   const stateDir = path.join(projectDir, '.instar');
+  // An existing agent stays out of offers until its first list, so only a blank home counts as new.
+  if (isBlankAgentHome(stateDir)) markNewAgent(stateDir);
   ensureStateDir(stateDir);
   console.log(`  ${pc.green('✓')} Created .instar/`);
 
@@ -744,6 +747,8 @@ async function initExistingProject(options: InitOptions): Promise<void> {
 
   // Create state directory
   const stateDir = path.join(projectDir, '.instar');
+  // An existing agent stays out of offers until its first list, so only a blank home counts as new.
+  if (isBlankAgentHome(stateDir)) markNewAgent(stateDir);
   ensureStateDir(stateDir);
   console.log(pc.green('  Created:') + ' .instar/');
 
@@ -1104,6 +1109,8 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
 
   // Create directory structure
   fs.mkdirSync(projectDir, { recursive: true });
+  // An existing agent stays out of offers until its first list, so only a blank home counts as new.
+  if (isBlankAgentHome(stateDir)) markNewAgent(stateDir);
   ensureStateDir(stateDir);
   console.log(`  ${pc.green('✓')} Created ${projectDir}`);
 

@@ -17,6 +17,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import {
   GeminiLoopDriver,
   type GeminiLoopSpawn,
@@ -113,13 +114,17 @@ export class GeminiLoopRunner {
   startRun(req: GeminiLoopStartRequest): GeminiLoopStartOutcome {
     if (!this.isEnabled()) return { ok: false, reason: 'disabled' };
     if (this.activeCount >= this.config.maxConcurrent) {
+      featureEvidence.record('autonomousSessions.geminiLoopDriver', { kind: 'held', reason: 'refused: at-capacity', context: { activeRuns: this.activeCount, maxConcurrent: this.config.maxConcurrent } });
       return { ok: false, reason: 'at-capacity', detail: `maxConcurrent=${this.config.maxConcurrent}` };
     }
     const goalPrompt = (req.goalPrompt ?? '').trim();
     if (!goalPrompt) return { ok: false, reason: 'invalid', detail: 'goalPrompt is required' };
 
     const gate = this.budgetGate();
-    if (!gate.ok) return { ok: false, reason: 'budget', detail: gate.reason };
+    if (!gate.ok) {
+      featureEvidence.record('autonomousSessions.geminiLoopDriver', { kind: 'held', reason: 'refused: budget', context: { activeRuns: this.activeCount } });
+      return { ok: false, reason: 'budget', detail: gate.reason };
+    }
 
     const runId = this.genId();
     const model = (req.model ?? this.config.model) || this.config.model;
@@ -172,11 +177,17 @@ export class GeminiLoopRunner {
       record.result = result;
       record.finishedAt = this.now();
       this.log(`[gemini-loop] run ${record.runId} done (${result.stopReason}, ${result.turns.length} turns)`);
+      featureEvidence.record('autonomousSessions.geminiLoopDriver', {
+        kind: result.stopReason === 'spawn-failure' || result.stopReason === 'handle-capture-failure' ? 'error' : result.stopReason === 'budget-halt' ? 'held' : 'fired',
+        reason: `run ended: ${result.stopReason}`,
+        context: { runId: record.runId, stopReason: result.stopReason, turns: result.turns.length, maxTurns: record.maxTurns, model: record.model, durationMs: this.now() - record.startedAt },
+      });
     } catch (err) {
       record.status = 'error';
       record.error = err instanceof Error ? err.message : String(err);
       record.finishedAt = this.now();
       this.log(`[gemini-loop] run ${record.runId} error: ${record.error}`);
+      featureEvidence.record('autonomousSessions.geminiLoopDriver', { kind: 'error', reason: 'run threw', context: { runId: record.runId, errorName: err instanceof Error ? err.name : 'unknown', maxTurns: record.maxTurns, model: record.model, durationMs: this.now() - record.startedAt } });
     } finally {
       this.activeCount = Math.max(0, this.activeCount - 1);
     }

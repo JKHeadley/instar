@@ -3,6 +3,10 @@
  * the boot-time TCC-protected path detection + /guards row (see the
  * TccProtectedPathGuard block beside the worktree detector).
  */
+import { configureClaudeChildAuth, sweepClaudeAuthEnvFiles } from '../core/claudeChildAuth.js';
+import { SlackPrincipalResolver } from '../permissions/SlackPrincipalResolver.js';
+import { MEMORY_PRIVACY_UNAVAILABLE_REPLY } from '../users/MemoryInboundTracker.js';
+import { whatsappPersonKey } from '../users/MemoryAudience.js';
 import { slackHistoryLabel } from '../messaging/slack/threadHistoryLabel.js';
 import { readPairingOwnerName } from '../threadline/pairingOwnerName.js';
 import { buildThrowawayJobGuard, checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
@@ -56,14 +60,17 @@ import { setAspClassifierRef, getAspClassifierRef } from '../core/aspClassifierR
 import { resolveInboundTelegramMessageId, resolveSignedByAgent, operatorAutoBindPermitted } from '../messaging/shared/signedInbound.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { StandDownRegistry } from '../core/StandDownRegistry.js';
-import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
+import { getActiveOverloadShedPlanner, getMoveAftercare } from '../core/OverloadShedPlanner.js';
+import { QuietTopicScanner, type RunningTopicSession } from '../core/quietTopicScanner.js';
+import { RebalanceProofRunner, getActiveRebalanceProof, proofSpawnBrief, setActiveRebalanceProof, setActiveRebalanceProofStore, type ProofHistoryRow } from '../core/rebalanceProof.js';
+import { rebalanceProofState } from '../core/StageAdvancer.js';
 import { buildHandoffContinuationInstruction, type HandoffCommitment } from '../core/handoffContinuation.js';
 import { BASELINE_PROCESS_PATTERNS } from '../core/baselineProcessPatterns.js';
 import { StandDownAudit } from '../core/StandDownAudit.js';
 import { resolveStandardsRegistry } from '../core/standardsRegistryPath.js';
 import { chunkLiteralForTmux, buildLiteralSendArgs } from '../core/tmuxLiteralSend.js';
 import { parseStandardsRegistry } from '../core/StandardsRegistryParser.js';
-import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
+import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath, detectClaudePath, readConfiguredAnthropicKey } from '../core/Config.js';
 import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
 import { planInboundLossNotices } from '../core/inboundLossRouting.js';
 import { heartbeatFreshEnoughToRerecord } from '../core/MachineHeartbeat.js';
@@ -77,6 +84,7 @@ import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstan
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
 import { JOB_LEASE_POOL_AUTHORITY_READY } from '../scheduler/JobLeaseClaimStore.js';
 import { resolveRelayUnknownSenderTrustMode } from '../threadline/relayUnknownSenderTrust.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { resolveEncryptToPinnedMode, encryptToPinnedModeName } from '../threadline/encryptToPinned.js';
 import { resolveRefuseDowngradeMode } from '../threadline/refuseDowngrade.js';
 import { MarkedPairingInviteFlow } from '../threadline/PairingPendingAcceptMarkers.js';
@@ -258,7 +266,7 @@ import { AutonomousEvolution } from '../core/AutonomousEvolution.js';
 import { DispatchScopeEnforcer } from '../core/DispatchScopeEnforcer.js';
 import { TrustRecovery } from '../core/TrustRecovery.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
-import { reportLeaseMediumSelection, selectLeaseMedium } from '../core/leaseMediumSelection.js';
+import { gitLeaseHasNoRemote, reportLeaseMediumSelection, selectLeaseMedium } from '../core/leaseMediumSelection.js';
 import { HumanAsDetectorLog, observeInboundMessage } from '../monitoring/HumanAsDetectorLog.js';
 import { creditUsherOnMiss } from '../core/UsherActedCorrelator.js';
 import { resolveStableNodeBinary } from '../utils/resolveNodeBinary.js';
@@ -720,9 +728,18 @@ let _topicProfileCtxRef: {
 // The custody engine (null = feature dark / gate failed / invariants violated —
 // every consumer treats null as "refused → today's fall-through").
 let _inboundQueue: import('../core/QueueDrainLoop.js').QueueDrainLoop | null = null;
+/** Memory privacy (docs/specs/memory-privacy.md): set in startServer, read at every inbound. */
+let _memoryInbound: import('../users/MemoryInboundTracker.js').MemoryInboundTracker | null = null;
+function telegramConfiguredForMemory(config: { messaging?: Array<{ type: string }> }): boolean {
+  return (config.messaging ?? []).some((m) => m.type === 'telegram');
+}
+let _memoryTelegramOwner: (() => number | undefined) | null = null;
+let _memoryUserResolver: { slack(id: string): import('../core/types.js').UserProfile | null; channel(type: string, id: string): import('../core/types.js').UserProfile | null } | null = null;
 // Late-bound self-capacity refresh. The heartbeat writer is constructed before
 // the durable inbound queue, whose live handle is one of the advertised fields.
 let _refreshPoolHeartbeat: () => void = () => {};
+/** Boot-cached takeover reading for the pool readiness report; never read from /health. */
+let _takeoverReadiness: import('../core/poolReadiness.js').ReadinessLine = { state: 'unknown', reason: 'only a real takeover proves this' };
 // Module-level handle for the machine-coherence guard (machine-coherence-guard
 // §6) so `GET /pool/machine-coherence` can read the sentinel constructed deep in
 // the mesh peer-presence wiring. Null when the guard is dark (route 503s).
@@ -735,6 +752,9 @@ let _singleMachineFailoverGap: import('../monitoring/SingleMachineFailoverGapDet
 // `GET /pool/missing-login` can read the detector constructed deep in the mesh
 // peer-presence wiring. Null when the guard is dark (route 503s).
 let _missingLoginSession: import('../monitoring/MissingLoginSessionDetector.js').MissingLoginSessionDetector | null = null;
+// The journal compaction pass runs at boot, before the evidence log is wired by
+// AgentServer; its row is held here and written straight after that construction.
+let _pendingCompactionEvidence: import('../monitoring/FeatureEvidenceLog.js').FeatureEvidenceInput | null = null;
 // Module-level handle for the SessionPoolFailoverRunner driver (§Rollout, Track H)
 // so `GET /session-pool/failover-runner` can read its status(). Null when the
 // runner is dark (dev-gated) — the route 503s. Constructed inside the rollout-gate
@@ -932,6 +952,8 @@ let _pinPlacementMetadata: ((sessionKey: string) => import('../core/PlacementExe
 let _ws13SustainedOnline: ((machineId: string) => boolean) | null = null;
 /** Cross-machine secret-sync (spec Phase 4): route-facing handle (push lever + read-only status). */
 let _secretSyncHandle: import('../core/SecretSync.js').SecretSyncHandle | null = null;
+/** The boot-time escrow result, recorded as evidence once the evidence log is wired. Flags only, no key material. */
+let _recoveryEscrowEvidence: { minted: boolean; recoveryEpoch: number; hadRoot: boolean } | null = null;
 /** Pool Dashboard Streaming (POOL-DASHBOARD-STREAM-SPEC §2.3): shared single-use
  *  ticket store — minted by the `pool-stream-ticket` mesh verb, consumed by the
  *  WebSocketManager's /pool-stream upgrade. Constructed in the mesh-setup block. */
@@ -1113,6 +1135,12 @@ let _sessionRefresh: import('../core/SessionRefresh.js').SessionRefresh | null =
 let _ownershipReconciler: import('../core/OwnershipReconciler.js').OwnershipReconciler | null = null;
 /** trustworthy-machine-load D: the overload-shed evaluation timer (cleared at shutdown). */
 let _overloadShedTimer: ReturnType<typeof setInterval> | null = null;
+/** This machine's rebalance proof store (session-pool-rebalancing-finish): built with the rollout gate, read by the shed. */
+let _rebalanceProofStore: import('../core/SessionPoolE2EResultStore.js').SessionPoolE2EResultStore | null = null;
+let _sessionPoolBuildIdentity: (() => string) | null = null;
+let _shedDrainInFlight = false;
+/** Topics in a shed drain: they journal as `reconcile`, because peers reject an unknown reason. */
+const _shedDrainTopics = new Set<string>();
 // U4.2 stale-owner release — the evidence-upgraded Case C engine, hoisted so the
 // GET /pool/stale-owner-release route + the reconciler dep can reach it. Null
 // until the pool block constructs it (single-machine / dark → the route 503s).
@@ -1127,6 +1155,7 @@ let _spawnAdmission: import('../core/SpawnAdmission.js').SpawnAdmission | null =
 /** Native app conversations (mobile-native-conversations, increment 1) — late-bound for the replication observers. */
 let _appConversationService: import('../core/AppConversationService.js').AppConversationService | null = null;
 let _ecosystemLedger: import('../ecosystem/EcosystemLedger.js').EcosystemLedger | null = null;
+let _recommendedServicesLedger: import('../recommended/RecommendedServicesLedger.js').RecommendedServicesLedger | null = null;
 // trustworthy-machine-load C5: one fixed holding notice per topic per overload
 // episode when EVERY machine refuses new work (30-min cooldown; the message
 // itself is already in durable custody, this only tells the user why it waits).
@@ -1397,7 +1426,12 @@ export async function spawnSessionForTopic(
   // of who it's talking to: permissions, preferences, relationship history.
   let userContextBlock = '';
   if (userProfile && hasUserContext(userProfile)) {
-    userContextBlock = formatUserContextForSession(userProfile);
+    // Memory privacy: in a shared place the others can ask about what is loaded, so
+    // a person's bio, interests and relationship notes stay out of it.
+    const shared = ['place', 'none'].includes(sessionManager.memoryAudienceKind({ telegramTopicId: topicId }));
+    userContextBlock = shared
+      ? `[USER CONTEXT — ${userProfile.name} (${userProfile.id})]\n[SYSTEM-ENFORCED PERMISSIONS: ${userProfile.permissions.join(', ')}]`
+      : formatUserContextForSession(userProfile);
   }
 
   // Build the bootstrap message with inline context.
@@ -2588,6 +2622,7 @@ export function wireTelegramRouting(
   const spawningTopics = new SpawningTopicsRegistry();
   _spawningTopicsRegistryRef = spawningTopics; // F7: expose to the outer-scope verifier
 
+  _memoryTelegramOwner = () => telegram.getOwnerUserId();
   telegram.onTopicMessage = async (msg: Message) => {
     const topicId = (msg.metadata?.messageThreadId as number) ?? null;
     if (!topicId) return;
@@ -2602,6 +2637,22 @@ export function wireTelegramRouting(
     const resolvedUser = telegramUserId && userManager
       ? userManager.resolveFromTelegramUserId(telegramUserId)
       : null;
+
+    // Memory privacy: record who spoke and re-check the group's readers BEFORE routing.
+    if (_memoryInbound) {
+      const verdict = await _memoryInbound.onInbound({
+        placeKey: telegram.memoryPlaceKey,
+        placeKind: 'shared',
+        senderKey: resolvedUser ? `user:${resolvedUser.id}` : telegramUserId ? `telegram:${telegramUserId}` : null,
+        personId: resolvedUser?.id ?? null,
+        readerCount: () => telegram.groupReaderCount(),
+        liveSession: () => telegram.getSessionForTopic(topicId),
+      });
+      if (verdict === 'unavailable') {
+        await telegram.sendToTopic(topicId, MEMORY_PRIVACY_UNAVAILABLE_REPLY);
+        return;
+      }
+    }
 
     // Agent-signed inbound (ASP). A message an agent SIGNED and delivered through
     // a human's account is labelled as agent traffic for the receiving session and
@@ -2764,6 +2815,14 @@ export function wireTelegramRouting(
               modelTier: clsDeps.modelTier,
             });
             const willAct = result.isCommand && !clsDeps.dryRun;
+            // Same scope as the audit below: LLM-engaged verdicts, never the prefilter-skip bulk.
+            if (result.source !== 'prefilter-skip') {
+              featureEvidence.record('threadline.hubIntent', {
+                kind: result.source === 'fail-open' ? 'error' : 'fired',
+                reason: result.source === 'fail-open' ? 'classifier-fail-open' : result.isCommand ? (willAct ? 'swallow' : 'would-swallow') : 'would-pass',
+                context: { topicId, dryRun: clsDeps.dryRun, source: result.source, intent: result.intent ?? null, confidence: result.confidence ?? null, targetTopicId: result.targetTopicId ?? null },
+              });
+            }
             // Audit the soak: log LLM-engaged decisions (a prefilter-skip is the
             // bulk of traffic and always a would-pass — skipping it cuts volume
             // AND the message-preview privacy surface). Never gates the message.
@@ -2806,6 +2865,7 @@ export function wireTelegramRouting(
         }
       } catch (err) {
         console.warn(`[telegram] hub-command intercept error (fail-open): ${err instanceof Error ? err.message : err}`);
+        featureEvidence.record('threadline.hubIntent', { kind: 'error', reason: 'intercept-threw-fail-open', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
       }
     }
 
@@ -2861,7 +2921,7 @@ export function wireTelegramRouting(
     // mesh) instead of handling it locally. DARK (the default) skips this block
     // entirely → byte-identical to single-machine dispatch. Any error falls back
     // to the local path below (fail-safe). The live-transfer behavior is gated by
-    // the staged rollout (StageAdvancer); shadow records ownership but stays local.
+    // the staged rollout (StageAdvancer). Any stage past dark places for real, shadow included.
     // SpawnAdmission TOCTOU guard (ownership-gated-spawn §3.1 item 2): stash the
     // router's verdict for THIS message so the seam at the spawn callsites below
     // CONSUMES it instead of re-resolving — the admission decision and the
@@ -3479,6 +3539,26 @@ export function wireTelegramRouting(
   }
 }
 
+/** Memory privacy: a 1:1 chat is private, a group is shared. False means the message was refused. */
+async function whatsappMemoryCheck(
+  whatsapp: import('../messaging/WhatsAppAdapter.js').WhatsAppAdapter,
+  jid: string,
+  metadata: Record<string, unknown> | undefined,
+): Promise<boolean> {
+  if (!_memoryInbound) return true;
+  const profile = _memoryUserResolver?.channel('whatsapp', jid) ?? null;
+  const verdict = await _memoryInbound.onInbound({
+    placeKey: `whatsapp:${jid}`,
+    placeKind: jid.endsWith('@g.us') ? 'shared' : 'private',
+    senderKey: profile ? `user:${profile.id}` : whatsappPersonKey((metadata?.senderJid as string | undefined) ?? jid),
+    personId: profile?.id ?? null,
+    liveSession: () => whatsapp.getSessionForChannel(jid),
+  });
+  if (verdict === 'deliver') return true;
+  await whatsapp.send({ userId: jid, content: MEMORY_PRIVACY_UNAVAILABLE_REPLY, channel: { type: 'whatsapp', identifier: jid } });
+  return false;
+}
+
 /**
  * Wire WhatsApp message routing: incoming messages → Claude sessions.
  *
@@ -3497,6 +3577,9 @@ function wireWhatsAppRouting(
     const text = msg.content;
     const senderName = (msg.metadata?.senderName as string) ?? undefined;
 
+    const memoryPlaceKey = `whatsapp:${jid}`;
+    if (!(await whatsappMemoryCheck(whatsapp, jid, msg.metadata))) return;
+
     // Check for existing session
     const targetSession = whatsapp.getSessionForChannel(jid);
 
@@ -3512,7 +3595,7 @@ function wireWhatsAppRouting(
           const replyInstruction = `(IMPORTANT: Relay all responses back via: cat <<'EOF' | .instar/scripts/whatsapp-reply.sh ${jid}\nYour response\nEOF)`;
           const bootstrap = `[whatsapp:${jid}] ${text} ${replyInstruction}`;
           const sessionName = `wa-${jid.split('@')[0].slice(-6)}`;
-          const newSession = await sessionManager.spawnInteractiveSession(bootstrap, sessionName);
+          const newSession = await sessionManager.spawnInteractiveSession(bootstrap, sessionName, { memoryPlaceKey });
           whatsapp.registerSession(jid, newSession);
           console.log(`[whatsapp→session] Respawned "${newSession}" for ${jid}`);
         } catch (err) { // @silent-fallback-ok — matches Telegram respawn pattern
@@ -3526,7 +3609,7 @@ function wireWhatsAppRouting(
         const replyInstruction = `(IMPORTANT: Relay all responses back via: cat <<'EOF' | .instar/scripts/whatsapp-reply.sh ${jid}\nYour response\nEOF)`;
         const bootstrap = `[whatsapp:${jid}${senderName ? ` from ${senderName}` : ''}] ${text} ${replyInstruction}`;
         const sessionName = `wa-${jid.split('@')[0].slice(-6)}`;
-        const newSession = await sessionManager.spawnInteractiveSession(bootstrap, sessionName);
+        const newSession = await sessionManager.spawnInteractiveSession(bootstrap, sessionName, { memoryPlaceKey });
         whatsapp.registerSession(jid, newSession);
         console.log(`[whatsapp→session] Spawned "${newSession}" for ${jid}`);
       } catch (err) { // @silent-fallback-ok — matches Telegram auto-spawn pattern
@@ -3676,6 +3759,24 @@ function wireIMessageRouting(
     // Skip empty messages (reactions, read receipts, lookback artifacts)
     if (!text || !text.trim()) return;
 
+    // Memory privacy: a 1:1 conversation is private. The send happens inside the session
+    // with imsg, which the sandbox cannot give, so a scoped session is refused here.
+    if (_memoryInbound) {
+      const imProfile = _memoryUserResolver?.channel('imessage', sender) ?? null;
+      const verdict = await _memoryInbound.onInbound({
+        placeKey: `imessage:${senderNorm}`,
+        placeKind: 'private',
+        senderKey: imProfile ? `user:${imProfile.id}` : `imessage:${sender}`,
+        personId: imProfile?.id ?? null,
+        scopedUnsupported: true,
+        liveSession: () => imessage.getSessionForSender(sender),
+      });
+      if (verdict === 'unavailable') {
+        await imessage.send({ userId: sender, content: MEMORY_PRIVACY_UNAVAILABLE_REPLY, channel: { type: 'imessage', identifier: sender } });
+        return;
+      }
+    }
+
     // Check for existing session
     const targetSession = imessage.getSessionForSender(sender);
 
@@ -3702,7 +3803,7 @@ function wireIMessageRouting(
 
       // Pass bootstrap as initialMessage — spawnInteractiveSession handles
       // wait-for-ready and injection internally (same code path as Telegram)
-      sessionManager.spawnInteractiveSession(bootstrapMessage, sessionName)
+      sessionManager.spawnInteractiveSession(bootstrapMessage, sessionName, { memoryPlaceKey: `imessage:${senderNorm}` })
         .then((newSession) => {
           imessage.registerSession(sender, newSession);
           console.log(`[imessage→session] Spawned "${newSession}" for ${(imessage.constructor as any).maskIdentifier?.(sender) || sender}`);
@@ -4227,6 +4328,13 @@ export async function startServer(options: StartOptions): Promise<void> {
   });
   liveConfig.start();
 
+  // Every server-side `claude` child gets the configured sign-in key from here, read per call so a
+  // restored key applies at once (spec cloud-key-internal-calls). Off: sessions.claudeChildAuth.enabled.
+  configureClaudeChildAuth(() =>
+    liveConfig.get<unknown>('sessions.claudeChildAuth.enabled', true) === false ? undefined : config.sessions?.anthropicApiKey,
+    () => config.sessions?.anthropicBaseUrl);
+  sweepClaudeAuthEnvFiles(config.stateDir);
+
   // Threadline → Telegram bridge config — settings surface for the bridge
   // module. Default-OFF auto-create ships from day one;
   // see TelegramBridgeConfig for the policy.
@@ -4467,6 +4575,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // covers the window on the fleet. D4-verified read-only (localhost-only inbound
     // socket, zero outbound). Belt-and-suspenders, not a boot reorder.
     let bootBeacon: BootHealthBeacon | undefined;
+    let bootBeaconBindErrorCode: string | null = null;
     if (resolveDevAgentGate(config.monitoring?.bootHealthBeacon?.enabled, config)) {
       try {
         bootBeacon = new BootHealthBeacon(config.port);
@@ -4477,6 +4586,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         // failure must NEVER block the server boot (the startupGrace bump still
         // covers the health window). Logged here, not swallowed silently.
         bootBeacon = undefined;
+        bootBeaconBindErrorCode = (err as NodeJS.ErrnoException)?.code ?? 'unknown';
         console.error('  Boot health beacon failed to start (non-fatal):', err instanceof Error ? err.message : err);
       }
     }
@@ -5182,6 +5292,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     // docs/specs/ecosystem-idea-pipeline.md: inert registration; the store is injected below whenever the pipeline is on.
     const { ECOSYSTEM_IDEAS_KIND_REGISTRATION } = await import('../ecosystem/EcosystemIdeasReplicatedStore.js');
     replicatedKindRegistry.register(ECOSYSTEM_IDEAS_KIND_REGISTRATION);
+    // docs/specs/recommended-services.md: a person's choices follow them across machines.
+    const { RECOMMENDED_SERVICES_KIND_REGISTRATION } = await import('../recommended/RecommendedServicesReplicatedStore.js');
+    replicatedKindRegistry.register(RECOMMENDED_SERVICES_KIND_REGISTRATION);
     // mobile-native-conversations §4.8 — the `mobileDeviceKeyLedger` kind (inert registration; on
     // whenever native app conversations are on, so a signed record can be checked on any machine).
     const { DEVICE_KEY_LEDGER_KIND_REGISTRATION } = await import('../core/MobileDeviceKeyLedgerReplicatedStore.js');
@@ -5356,13 +5469,34 @@ export async function startServer(options: StartOptions): Promise<void> {
         const compactionConfig = config.multiMachine?.coherenceJournal?.replication?.compaction;
         if (compactionConfig?.run === true) {
           const { ReplicatedJournalCompactor } = await import('../core/ReplicatedJournalCompactor.js');
-          new ReplicatedJournalCompactor({
-            stateDir: config.stateDir,
-            registry: replicatedKindRegistry,
-            enabled: true,
-            dryRun: compactionConfig.dryRun ?? true,
-            logger: (m) => console.log(pc.dim(`  ${m}`)),
-          }).run();
+          try {
+            const compaction = new ReplicatedJournalCompactor({
+              stateDir: config.stateDir,
+              registry: replicatedKindRegistry,
+              enabled: true,
+              dryRun: compactionConfig.dryRun ?? true,
+              logger: (m) => console.log(pc.dim(`  ${m}`)),
+            }).run();
+            _pendingCompactionEvidence = {
+              kind: 'fired',
+              reason: compaction.dryRun ? 'would-compact' : 'compacted',
+              context: {
+                dryRun: compaction.dryRun,
+                filesCompacted: compaction.filesCompacted,
+                originalRecords: compaction.originalRecords,
+                compactedRecords: compaction.compactedRecords,
+                bytesBefore: compaction.bytesBefore,
+                bytesAfter: compaction.bytesAfter,
+              },
+            };
+          } catch (compactionErr) {
+            _pendingCompactionEvidence = {
+              kind: 'error',
+              reason: 'compaction-failed',
+              context: { dryRun: compactionConfig.dryRun ?? true, errorName: compactionErr instanceof Error ? compactionErr.name : 'unknown' },
+            };
+            throw compactionErr;
+          }
           // A real run replaced streams atomically; rebuild from the committed files.
         }
         coherenceJournal.setReplicatedRecordCommitObserver((kind, entries) => {
@@ -5383,6 +5517,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           // The idea ledger: peers' events land once, re-validated by the ledger.
           if (kind === 'ecosystem-idea-event' && _ecosystemLedger) {
             for (const e of entries) _ecosystemLedger.ingestReplicated((e.data as { event?: unknown }).event);
+          }
+          // A person's choices: each row lands only when it verifies under the machine it names.
+          if (kind === 'recommended-service-record' && _recommendedServicesLedger) {
+            for (const e of entries) {
+              const r = _recommendedServicesLedger.ingestReplicated((e.data as { row?: unknown }).row);
+              if (r === 'bad-signature' || r === 'unverifiable') console.warn(`  [recommended-services] a replicated row was not accepted (${r})`);
+            }
           }
           // Device-key ledger rows: each lands only when it verifies under the pinned key of the machine it names.
           if (kind === 'mobile-device-key-ledger-row' && _appConversationService?.deps.keyLedger) {
@@ -5507,12 +5648,16 @@ export async function startServer(options: StartOptions): Promise<void> {
     const _appNativeOn = _isMobileNativeEnabled(config);
     const _stateSyncStoresResolved: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined = (() => {
       let s = _stateSyncStoresBase ?? {};
+      // On wherever the journal is live: a yes or no belongs to the person, not one machine
+      // (docs/specs/recommended-services.md). Without the journal there is no applier, so it isn't advertised.
+      const _recommendedServicesOn = !!coherenceJournal && _stateSyncStoresBase?.recommendedServices?.enabled !== false;
+      if (_recommendedServicesOn) s = { ...s, recommendedServices: { enabled: true } };
       if (_appNativeOn) s = { ...s, appConversations: { enabled: true }, mobileDeviceKeyLedger: { enabled: true } };
       if (resolveDevAgentGate(config.ecosystemIdeas?.enabled, config)) s = { ...s, ecosystemIdeas: { enabled: true } };
       if (_accountFollowMeEnabled) s = { ...s, subscriptionAccountMeta: { enabled: true } };
       if (_pinReplicateEnabled) s = { ...s, topicPins: { enabled: true } };
       if (_staleOwnerReleaseResolved) s = { ...s, topicClaimAnnotations: { enabled: true } };
-      return _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _staleOwnerReleaseResolved || _stateSyncStoresBase ? s : _stateSyncStoresBase;
+      return _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _staleOwnerReleaseResolved || _stateSyncStoresBase ? s : _stateSyncStoresBase;
     })();
 
     // WS2 send-side: the generic journal-backed record emitter (the concrete emitter
@@ -5899,6 +6044,14 @@ export async function startServer(options: StartOptions): Promise<void> {
       const leaseGitRef = leaseMedium.medium === 'local' ? undefined : gitSyncRef;
       const leaseStoreName = leaseGitRef ? 'GitLeaseStore' as const : 'LocalLeaseStore' as const;
       coordinator.attachLeaseMediumProvider(() => ({ ...leaseMedium, store: leaseStoreName }));
+      // Read live: a peer can join and a preferred machine can be named without a restart.
+      const survivorMayHold = (): boolean => !config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId
+        && Object.entries(idMgr.loadRegistry().machines ?? {}).some(([id, entry]) => id !== selfMachineId && !entry.revokedAt);
+      const takeoverFixOn = !!config.multiMachine?.leaseSelfHeal?.soloCaptainHold?.enabled
+        && !config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId;
+      if (leaseGitRef && !takeoverFixOn && gitLeaseHasNoRemote(config.projectDir) === true) {
+        _takeoverReadiness = { state: 'failing', reason: 'this machine uses the git lease with no git remote, so it cannot take over' };
+      }
 
       try {
         // ── G1 fenced-lease integration (spec §6) ──────────────────
@@ -5932,6 +6085,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             registryAbsPath: idMgr.registryPath,
             pullRebase: () => gs.pullRebase(),
             commitAndPush: (msg, paths) => gs.commitAndPush(msg, paths),
+            localCommitIsFinal: () => !!config.multiMachine?.leaseSelfHeal?.soloCaptainHold?.enabled
+              && survivorMayHold() && gitLeaseHasNoRemote(config.projectDir) === true,
             logger: (m) => console.log(pc.dim(m)),
           });
         } else {
@@ -6112,6 +6267,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             return !!pref && pref === selfMachineId;
           },
           allPeersPresumedGone: leaseLiveness.allPeersPresumedGone,
+          survivorMayHold,
           onSelfSuspend: (reason) => console.log(pc.yellow(`  [lease] self-suspend: ${reason}`)),
           onEscalate: (info) => console.log(pc.yellow(`  [lease] split-brain escalation: ${info.reason} (holder ${info.holder})`)),
           logger: (m) => console.log(pc.dim(m)),
@@ -6752,6 +6908,39 @@ export async function startServer(options: StartOptions): Promise<void> {
       stageCRecoveryEnabled,
     });
 
+    // Memory privacy (docs/specs/memory-privacy.md): straight after the session manager
+    // and before any adapter starts, so no message or session comes ahead of it.
+    const { wireMemoryPrivacy } = await import('../users/wireMemoryPrivacy.js');
+    const _memoryWiring = wireMemoryPrivacy({
+      projectDir: config.projectDir,
+      stateDir: config.stateDir,
+      projectName: config.projectName,
+      framework: () => sessionManagerConfig.framework ?? 'claude-code',
+      claudePath: sessionManagerConfig.frameworkBinaryPaths?.['claude-code'] ?? sessionManagerConfig.claudePath,
+      memoryPrivacy: () => (config as { memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacyConfig }).memoryPrivacy,
+      messaging: () => (config.messaging ?? []) as Array<{ type: string; config?: Record<string, unknown> }>,
+      initialUsers: config.users,
+      sessionManager,
+      slackBotUserId: () => _slackAdapter?.getBotUserId?.() ?? null,
+      slackChannelForSession: (name) => _slackAdapter?.getChannelForSession?.(name) ?? null,
+      telegramOwnerId: () => _memoryTelegramOwner?.() ?? null,
+    });
+    const _memoryPrivacyWired = _memoryWiring.privacy;
+    _memoryInbound = _memoryWiring.tracker;
+    _memoryUserResolver = {
+      // The org permission system's own resolver, so a person registered there is the
+      // same person here. An unregistered sender gets no profile, which means `place`.
+      slack: (id) => {
+        const principal = new SlackPrincipalResolver({
+          resolveFromSlackUserId: (slackId) => _memoryWiring.users().find((u) => u.slackUserId === slackId || u.channels?.some((c) => c.type === 'slack' && c.identifier === slackId)) ?? null,
+        }).resolve(id);
+        return principal.userId ? _memoryWiring.users().find((u) => u.id === principal.userId) ?? null : null;
+      },
+      channel: (type, id) => _memoryWiring.users().find((u) => u.channels?.some((c) => c.type === type && c.identifier === id)) ?? null,
+    };
+    sessionManager.on('sessionComplete', (session) => sessionManager.releaseMemorySession(session));
+    await _memoryWiring.ready.catch((err) => console.error('[memory-privacy] boot probe failed; scoped conversations stay refused:', err));
+
     // Native hook events (docs/specs/native-hook-events.md D4): reconcile the
     // reporter entries in .claude/settings.json to this machine's decision at
     // boot (a flag flip takes effect at the next restart, not the next
@@ -6793,6 +6982,25 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { bootTelegramOrigin } = await import('../messaging/telegram-origin/TelegramOriginBoot.js')
         .catch(error => { releaseOriginLeaseRenewal(); throw error; });
       telegramOriginBoot = await bootTelegramOrigin({ config, token: typeof originBotToken === 'string' && originBotToken ? originBotToken : undefined,
+        onRecoveredMessage: entry => {
+          telegram?.logRecoveredOriginMessage(entry);
+          const attentionId = `telegram-origin-held-reply:${entry.operationId}`;
+          if (telegram?.clearAttentionCondition({ id: attentionId }, `Telegram accepted recovered message ${entry.messageId}.`).closed === 0) {
+            void telegram?.updateAttentionStatus(attentionId, 'DONE', { silent: true,
+              closedBy: 'cause-cleared', resolution: `Telegram accepted recovered message ${entry.messageId}.` });
+          }
+        },
+        onSessionDeliveryHeld: entry => {
+          if (!telegram || !entry.chatId) return;
+          const topicId = entry.chatId === String((originTelegramConfig.config as { issuesChatId?: unknown }).issuesChatId)
+            ? 10_000_000_000 + (entry.threadId ?? 1) : entry.threadId;
+          void telegram.createAttentionItem({ id: `telegram-origin-held-reply:${entry.operationId}`,
+            category: 'telegram-origin', priority: 'HIGH', title: 'A session reply is delayed',
+            sourceContext: 'telegram-origin-session-hold',
+            summary: `A reply to topic ${topicId ?? 'unknown'} is still in the delivery queue. Telegram was unreachable before this attempt connected; the server will retry the same message.`,
+            description: `Operation ${entry.operationId}. The advisory preflight does not confirm delivery.` }, { hubOnly: true })
+            .catch(error => console.warn('[telegram-origin] held reply attention unavailable', error instanceof Error ? error.name : 'unknown-error'));
+        },
         noticeOwner: typeof originBotToken === 'string' && !!originBotToken && !lifelineOwnsTelegramPoll(config.stateDir, originBotToken) && options.telegram !== false,
         holdsLease: () => coordinator.holdsLease(),
         isSessionLive: binding => {
@@ -8027,6 +8235,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     let scheduler: JobScheduler | undefined;
     if (config.scheduler.enabled && coordinator.isAwake) {
       scheduler = new JobScheduler(config.scheduler, sessionManager, state, config.stateDir);
+      scheduler.notifyDestinationHasOtherReaders = (job) => {
+        const topicId = (job as { topicId?: number }).topicId;
+        const kind = sessionManager.memoryAudienceKind(telegramConfiguredForMemory(config) ? { telegramTopicId: topicId ?? 0 } : { memoryPlace: { kind: 'system' } });
+        return kind === 'place' || kind === 'none';
+      };
       guardRegistry.register('scheduler.enabled', () => scheduler!.guardStatus());
       // Test-agent leak guard: a temp-folder / recorded throwaway refuses every
       // scheduled job (it cannot prove its sessions avoid the real login).
@@ -8142,6 +8355,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             // Never let a pauser fault take down the boot path or the interval.
             clpLastError = err instanceof Error ? err.message : String(err);
             console.error(pc.red(`  CrashLoopPauser pass failed: ${clpLastError}`));
+            featureEvidence.record('monitoring.crashLoopPauser', { kind: 'error', reason: 'pause pass failed', context: { dryRun: clpDryRun, errorName: err instanceof Error ? err.name : 'unknown' } });
           }
         };
         const clpInitialDelay = clpCfg.initialPassDelayMs ?? 10 * 60_000;
@@ -9271,6 +9485,20 @@ export async function startServer(options: StartOptions): Promise<void> {
           }),
         });
         appDispatch = createAppInboundDispatch({
+          // Memory privacy: an app conversation belongs to one phone's person. The owner's
+          // own phone carries no person id, so it resolves to the owner.
+          memoryInbound: async (input) => {
+            if (!_memoryInbound) return true;
+            const person = input.memoryPersonId ?? null;
+            const verdict = await _memoryInbound.onInbound({
+              placeKey: `app:${input.conversationKey}`,
+              placeKind: 'private',
+              senderKey: person ? `user:${person}` : null,
+              personId: person ?? _memoryPrivacyWired.ownerUserId(),
+              liveSession: () => appSvc.channels.getSessionForChannel(String(input.alias)),
+            });
+            return verdict === 'deliver';
+          },
           sessions: sessionManager, channels: appSvc.channels, store: appSvc.store, stateDir: config.stateDir,
           spawnAdmission: () => _spawnAdmission,
           relayReady: () => {
@@ -9324,6 +9552,46 @@ export async function startServer(options: StartOptions): Promise<void> {
         // @silent-fallback-ok — reported loudly; AgentServer then default-constructs (or the routes 503)
         console.warn(`  [app-conversations] wiring failed: ${err instanceof Error ? err.message : String(err)}`);
       }
+    }
+
+    // docs/specs/recommended-services.md: built here so its rows replicate; no identity means no ledger, and the routes answer 503.
+    try {
+      const { loadMachineSigner, identityKeyLookup } = await import('../core/AppRecordSignatures.js');
+      const { RecommendedServicesLedger } = await import('../recommended/RecommendedServicesLedger.js');
+      const recRepl = await import('../recommended/RecommendedServicesReplicatedStore.js');
+      const signer = loadMachineSigner(config.stateDir);
+      if (signer) {
+        const ledger = new RecommendedServicesLedger({ stateDir: config.stateDir, signer, keyLookup: identityKeyLookup(config.stateDir) });
+        if (replicatedRecordEmitter) {
+          const emitter = replicatedRecordEmitter;
+          const emitRow = (row: import('../recommended/RecommendedServicesLedger.js').LedgerRow) => {
+            const { outcome } = emitter.emit(recRepl.RECOMMENDED_SERVICES_STORE_KEY, recRepl.deriveRecommendedServiceRecordKey(row.eventId), recRepl.buildRecommendedServiceRecordData(row));
+            if (outcome !== 'emitted') console.warn(`  [recommended-services] a choice was not replicated yet (${outcome}); it is sent again at next boot`);
+          };
+          ledger.setReplicationHook(emitRow);
+          ledger.setReplicating(_stateSyncStoresResolved?.recommendedServices?.enabled === true && config.multiMachine?.coherenceJournal?.replication?.enabled === true);
+          // Rows written while the journal was off, or dropped by a rate cap, go out now.
+          if (replicatedPeerStreamReader && cjOwnMachineId) {
+            for (const row of ledger.all()) {
+              if (row.machineId !== signer.machineId()) continue;
+              const rk = recRepl.deriveRecommendedServiceRecordKey(row.eventId);
+              if (!replicatedPeerStreamReader.loadOriginRecords(recRepl.RECOMMENDED_SERVICES_STORE_KEY, rk).some((o) => o.origin === cjOwnMachineId)) emitRow(row);
+            }
+          }
+        }
+        if (replicatedPeerStreamReader && cjOwnMachineId) {
+          const reader = replicatedPeerStreamReader;
+          for (const rk of reader.listRecordKeys(recRepl.RECOMMENDED_SERVICES_STORE_KEY)) {
+            for (const r of reader.loadOriginRecords(recRepl.RECOMMENDED_SERVICES_STORE_KEY, rk)) {
+              if (r.origin !== cjOwnMachineId) ledger.ingestReplicated((r.data as { row?: unknown }).row);
+            }
+          }
+        }
+        _recommendedServicesLedger = ledger;
+      }
+    } catch (err) {
+      // @silent-fallback-ok: reported; the routes answer 503 and nothing else depends on this
+      console.warn(`  [recommended-services] ledger wiring failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // docs/specs/ecosystem-idea-pipeline.md: the ledger is built here so its events replicate; AgentServer builds the service.
@@ -9815,6 +10083,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           const isThreadSession = slackAdapter!.isThreadRoutingKey(routingKey);
           // The thread_ts to thread replies under (only when this is a thread session).
           const replyThreadTs = isThreadSession ? threadTs : undefined;
+          if (!isThreadSession) slackAdapter!.noteInboundThread(channelId, threadTs);
 
           // ── §6.3 eager mint (durable-conversation-identity) ────────────────
           // Get-or-create the durable conversation id for the RESOLVED routing
@@ -9833,6 +10102,24 @@ export async function startServer(options: StartOptions): Promise<void> {
 
           // Build injection tag with sender info (matches Telegram's buildInjectionTag pattern)
           const slackUserId = message.metadata?.slackUserId as string;
+
+          // Memory privacy: record who spoke and where BEFORE routing. A DM is private;
+          // a channel or thread is shared, and a thread's audience is its channel's.
+          if (_memoryInbound) {
+            const slackProfile = slackUserId ? _memoryUserResolver?.slack(slackUserId) ?? null : null;
+            const verdict = await _memoryInbound.onInbound({
+              placeKey: `slack:${channelId}`,
+              placeKind: channelId.startsWith('D') ? 'private' : 'shared',
+              senderKey: slackProfile ? `user:${slackProfile.id}` : slackUserId ? `slack:${slackUserId}` : null,
+              personId: slackProfile?.id ?? null,
+              readerCount: () => slackAdapter!.channelReaderCount(channelId),
+              liveSession: () => slackAdapter!.getSessionForChannel(routingKey),
+            });
+            if (verdict === 'unavailable') {
+              await slackAdapter!.sendToChannel(channelId, MEMORY_PRIVACY_UNAVAILABLE_REPLY, replyThreadTs ? { thread_ts: replyThreadTs } : undefined);
+              return 'refused';
+            }
+          }
           // Sanitize sender name at injection boundary (prevents injection attacks)
           const safeSenderName = senderName
             ? senderName.replace(/[\x00-\x1f\x7f]/g, '').replace(/\s+/g, ' ').replace(/["\[\]]/g, '').trim().slice(0, 64) || 'User'
@@ -12423,7 +12710,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       activitySentinel = new SessionActivitySentinel({
         stateDir: config.stateDir,
         intelligence: sharedIntelligence,
-        getActiveSessions: () => sessionManager.listRunningSessions(),
+        getActiveSessions: () => sessionManager.sessionsForAgentDigests(),
         captureSessionOutput: (tmuxSession) => sessionManager.captureOutput(tmuxSession),
         getTelegramMessages: telegram
           ? (topicId, since) => telegram!.searchLog({
@@ -12681,6 +12968,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const matches = state.listSessions().filter(session => session.tmuxSession === name);
             return readTriageSessionAuthor(telegramOriginBoot?.runtime, matches.length === 1 ? matches[0].id : undefined);
           },
+          isMemoryScopedTopic: (topicId) => ['place', 'person', 'none'].includes(sessionManager.memoryAudienceKind({ telegramTopicId: topicId })),
           spawnTriageSession: (name, options) => sessionManager.spawnTriageSession(name, options),
           getTriageSessionUuid: (sessionName) => {
             return _topicResumeMap?.findUuidForSession(sessionName) ?? undefined;
@@ -14889,19 +15177,34 @@ export async function startServer(options: StartOptions): Promise<void> {
         buildSubscriptionAccountMetaData,
         buildSubscriptionAccountMetaTombstoneData,
       } = await import('../core/SubscriptionAccountMetaReplicatedStore.js');
+      // Every quota change re-projects an account, so one row per op and outcome per ten minutes. No account ids.
+      const followMeEvidence = (op: 'put' | 'delete', outcome: string): void => {
+        const failed = outcome === 'error' || outcome === 'unconfirmed' || outcome.startsWith('dropped:');
+        featureEvidence.recordAtMostEvery('multiMachine.accountFollowMe', `${op}:${outcome}`, 600_000, {
+          kind: outcome === 'emitted' ? 'fired' : failed ? 'error' : 'held',
+          reason: `account-meta-${op}:${outcome}`,
+          context: { op, outcome },
+        });
+      };
       subscriptionPool.setMetaReplicationEmitter({
-        emitPut: (acct) =>
-          emitter.emit(
+        emitPut: (acct) => {
+          const projected = emitter.emit(
             SUBSCRIPTION_ACCOUNT_META_STORE_KEY,
             deriveSubscriptionAccountMetaRecordKey(acct.id),
             (hlc, origin, observed) => buildSubscriptionAccountMetaData({ account: acct, hlc, origin, observed }),
-          ),
-        emitDelete: (accountId, deletedAt) =>
-          emitter.emit(
+          );
+          followMeEvidence('put', projected.outcome);
+          return projected;
+        },
+        emitDelete: (accountId, deletedAt) => {
+          const projected = emitter.emit(
             SUBSCRIPTION_ACCOUNT_META_STORE_KEY,
             deriveSubscriptionAccountMetaRecordKey(accountId),
             (hlc, origin, observed) => buildSubscriptionAccountMetaTombstoneData({ accountId, hlc, origin, deletedAt, observed }),
-          ),
+          );
+          followMeEvidence('delete', projected.outcome);
+          return projected;
+        },
       });
     }
 
@@ -17253,6 +17556,23 @@ export async function startServer(options: StartOptions): Promise<void> {
             externalBlockSweepMs: aoftRawCfg.externalBlockSweepMs as number | undefined,
             holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
           });
+          // The aoft.* events have no other reader: keep them, with no message text (ids and reason codes only).
+          for (const [event, kind] of [
+            ['aoft.would-suppress', 'fired'], ['aoft.suppressed', 'fired'],
+            ['aoft.would-reroute-terminal', 'fired'], ['aoft.terminal-rerouted', 'fired'],
+            ['aoft.would-deadletter-external', 'fired'], ['aoft.deadlettered-external', 'fired'],
+            ['aoft.external-block-recorded-internal', 'held'],
+            ['aoft.graveyard-reconciled', 'fired'],
+            ['aoft.beacon-id-leak', 'error'],
+          ] as const) {
+            promiseBeacon.on(event, (e: { id?: string; topicId?: number | null; kind?: string; reason?: string; closed?: number; wouldClose?: number; dryRun?: boolean; terms?: unknown[] }) => {
+              featureEvidence.record('commitments.agentOwnedFollowthrough', {
+                kind,
+                reason: event.replace('aoft.', '') + (e?.reason ? `: ${e.reason}` : ''),
+                context: { commitmentId: e?.id ?? null, topicId: e?.topicId ?? null, sendKind: e?.kind ?? null, dryRun: event.includes('would-') || e?.dryRun === true, closed: e?.closed ?? null, wouldClose: e?.wouldClose ?? null, leakedTerms: Array.isArray(e?.terms) ? e.terms.length : null },
+              });
+            });
+          }
           promiseBeacon.start();
           (globalThis as Record<string, unknown>).__instarPromiseBeacon = promiseBeacon;
 
@@ -17384,6 +17704,28 @@ export async function startServer(options: StartOptions): Promise<void> {
                   recentOutputChangeWindowMs: ahRawCfg.recentOutputChangeWindowMs,
                 },
               );
+              // The focus line is a session's own words: never in a row. Suppressions run every tick, so only a change of reason per topic writes one.
+              const ahLastHold = new Map<number, string>();
+              autonomousHeartbeat.on('would-emit', (e: { topicId: number; minutesSilent: number }) => {
+                ahLastHold.delete(e.topicId);
+                featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'fired', reason: 'would emit (dry run)', context: { topicId: e.topicId, minutesSilent: e.minutesSilent, dryRun: true } });
+              });
+              autonomousHeartbeat.on('emitted', (e: { topicId: number; minutesSilent: number }) => {
+                ahLastHold.delete(e.topicId);
+                featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'fired', reason: 'emitted', context: { topicId: e.topicId, minutesSilent: e.minutesSilent, dryRun: false } });
+              });
+              autonomousHeartbeat.on('send-error', (e: { topicId: number; err: unknown }) => {
+                featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'error', reason: 'send failed', context: { topicId: e.topicId, errorName: e.err instanceof Error ? e.err.name : 'unknown' } });
+              });
+              autonomousHeartbeat.on('tick-error', (err: unknown) => {
+                featureEvidence.recordAtMostEvery('monitoring.autonomousHeartbeat', 'tick-error', 60 * 60 * 1000, { kind: 'error', reason: 'tick failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
+              });
+              autonomousHeartbeat.on('suppressed', (e: { topicId: number; reason: string }) => {
+                if (ahLastHold.get(e.topicId) === e.reason) return;
+                if (ahLastHold.size >= 256) ahLastHold.clear();
+                ahLastHold.set(e.topicId, e.reason);
+                featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'held', reason: `suppressed: ${e.reason}`, context: { topicId: e.topicId } });
+              });
               autonomousHeartbeat.start();
               (globalThis as Record<string, unknown>).__instarAutonomousHeartbeat = autonomousHeartbeat;
               guardRegistry.register('monitoring.autonomousHeartbeat.enabled', () => autonomousHeartbeat.guardStatus());
@@ -18693,7 +19035,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const summarySentinel = new SessionSummarySentinel({
       stateDir: config.stateDir,
       scrubber: durableOutputScrubber,
-      getActiveSessions: () => sessionManager.listRunningSessions(),
+      getActiveSessions: () => sessionManager.sessionsForAgentDigests(),
       captureOutput: (tmuxSession: string) => {
         // RULE 3: EXEMPT — this is raw byte capture (the whole pane), not state parsing.
         // The output is handed verbatim to the SummarySentinel (LLM-backed) which is the
@@ -18721,6 +19063,10 @@ export async function startServer(options: StartOptions): Promise<void> {
     // manager it belongs to (for re-entrant evaluate() calls during drain).
     let spawnManager: SpawnRequestManager;
     spawnManager = new SpawnRequestManager({
+      // Memory privacy: trust levels limit what a peer may do, not what data its
+      // session can see, so a peer session with owner reach could pass a person's fact on.
+      refuseSpawn: () => (_memoryInbound && sessionManager.isMultiPersonAgent()
+        ? 'agent-to-agent sessions are off on an agent that serves several people' : null),
       maxSessions: config.sessions.maxSessions ?? 5,
       // Live accessor — read config on every admission check so operators
       // raising sessions.maxSessions don't have to rebuild the manager.
@@ -20580,6 +20926,16 @@ export async function startServer(options: StartOptions): Promise<void> {
     });
     if (featureRegistryReady) {
       featureRegistry.bootstrap(config as unknown as Record<string, unknown>);
+      // docs/specs/recommended-services.md: old declines carry over before any list is built.
+      if (_recommendedServicesLedger) {
+        try {
+          const { importLegacyDeclines } = await import('../recommended/legacyDeclines.js');
+          importLegacyDeclines(_recommendedServicesLedger, (id) => featureRegistry.getState(id, 'default')?.discoveryState ?? null);
+        } catch (err) {
+          // @silent-fallback-ok: reported; idempotent, so it retries at next boot, and optional work never blocks startup
+          console.warn(`  [recommended-services] old declines could not be imported yet: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
     }
     {
       const summaries = featureRegistry.getSummaries();
@@ -21503,6 +21859,88 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.warn('[instar] swap-continuity anti-thrash spine init failed (non-fatal):', err);
       _swapAntiThrashEngine = null;
       _swapWorkGate = null;
+    }
+
+    // A dead sign-in key on a key-only agent: confirmed, told, recovered (spec cloud-key-internal-calls).
+    // Wired here, outside the subscription pool block, because these agents may have no pool.
+    {
+      const { ClaudeKeyHealth, claudeKeyFingerprint, setActiveClaudeKeyHealth } = await import('../core/ClaudeKeyHealth.js');
+      const { buildClaudeKeyProbe } = await import('../core/claudeKeyProbe.js');
+      const { configuredClaudeOauthKey, setClaudeCallOutcomeListener } = await import('../core/claudeChildAuth.js');
+      const keyHealthOn = () => liveConfig.get<unknown>('sessions.claudeKeyHealth.enabled', true) !== false;
+      const sendToSlackKey = async (routingKey: string, text: string): Promise<void> => {
+        const [channelId, threadTs] = routingKey.split(':');
+        await _slackAdapter!.sendToChannel(channelId, text, threadTs ? { thread_ts: threadTs } : undefined);
+      };
+      // The disk read covers a topic bound after this server booted, as SessionRefresh does.
+      const topicForSession = (name: string): number | null =>
+        telegram?.getTopicForSession(name) ?? telegram?.resolveTopicForSessionFromDisk?.(name) ?? null;
+      const claudeKeyHealth = new ClaudeKeyHealth({
+        stateFile: path.join(config.stateDir, 'state', 'claude-key-health.json'),
+        currentKey: () => (keyHealthOn() ? configuredClaudeOauthKey() : undefined),
+        currentRawKey: () => config.sessions.anthropicApiKey,
+        readKeyFromDisk: () => (keyHealthOn() ? readConfiguredAnthropicKey(config.stateDir) : undefined),
+        applyKey: (key) => {
+          config.sessions.anthropicApiKey = key ?? undefined;
+          sessionManager.setAnthropicKey(key);
+        },
+        probe: buildClaudeKeyProbe({
+          claudePath: () => resolveFrameworkBinaryPath({
+            framework: 'claude-code',
+            frameworkBinaryPaths: config.sessions.frameworkBinaryPaths,
+            claudePath: config.sessions.claudePath,
+            configuredFramework: config.sessions.framework,
+          }) ?? detectClaudePath(),
+          baseUrl: () => config.sessions.anthropicBaseUrl,
+        }),
+        // Fixed server text straight to the adapters: the model is what is down, and `notify` returns
+        // nothing, so it can't say whether anyone was told.
+        notifyOperator: async (text) => {
+          let delivered = false;
+          const hubTopicId = state.get<number>('agent-attention-topic') ?? 0;
+          if (telegram && hubTopicId) {
+            try { await telegram.sendToTopic(hubTopicId, text); delivered = true; }
+            catch (err) { /* @silent-fallback-ok: `delivered` stays false, which drives the retry and its capped report */ console.warn(`[ClaudeKeyHealth] Telegram notice failed: ${err instanceof Error ? err.message : String(err)}`); }
+          }
+          const attentionChannel = state.get<string>('slack-attention-channel');
+          if (_slackAdapter && attentionChannel) {
+            try { await _slackAdapter.sendToChannel(attentionChannel, text); delivered = true; }
+            catch (err) { /* @silent-fallback-ok: `delivered` stays false, which drives the retry and its capped report */ console.warn(`[ClaudeKeyHealth] Slack notice failed: ${err instanceof Error ? err.message : String(err)}`); }
+          }
+          return delivered;
+        },
+        notifyPerson: async (sessionName, text) => {
+          const topicId = topicForSession(sessionName);
+          if (topicId !== null) { await telegram!.sendToTopic(topicId, text); return true; }
+          const routingKey = _slackAdapter?.getChannelForSession(sessionName) ?? null;
+          if (routingKey !== null) { await sendToSlackKey(routingKey, text); return true; }
+          return false;
+        },
+        listStuckSessions: async () => (await sessionManager.listSessionsAtLoginScreen()).filter((name) =>
+          topicForSession(name) !== null || (_slackAdapter?.getChannelForSession(name) ?? null) !== null),
+        sessionLaunchFingerprint: (tmuxSession) => {
+          const launched = sessionManager.sessionLaunchKey(tmuxSession);
+          return launched ? claudeKeyFingerprint(launched) : null;
+        },
+        refresh: async (sessionName, prompt) => {
+          if (!_sessionRefresh) return { ok: false, reason: 'session refresh not available' };
+          const r = await _sessionRefresh.refreshSession({ sessionName, followUpPrompt: prompt, reason: 'claude-key-restored' });
+          return r.ok ? { ok: true, newSessionName: r.newSessionName } : { ok: false, reason: r.code };
+        },
+        clearLoginReports: () => sessionManager.clearInteractiveLoginReports(),
+        report: ({ reason, impact }) => DegradationReporter.getInstance().report({
+          feature: 'ClaudeKeyHealth',
+          primary: 'the configured Claude sign-in key authenticates every model call',
+          fallback: 'the operator is told and stuck conversations wait for a working key',
+          reason,
+          impact,
+        }),
+        logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+      });
+      setActiveClaudeKeyHealth(claudeKeyHealth);
+      setClaudeCallOutcomeListener((outcome) => claudeKeyHealth.noteCallOutcome(outcome));
+      sessionManager.prependInteractiveLoginExpiredSink((signal) => claudeKeyHealth.handle(signal));
+      void claudeKeyHealth.boot().catch((err) => console.warn(`[ClaudeKeyHealth] boot failed: ${err instanceof Error ? err.message : String(err)}`));
     }
 
     // SessionRefresh — agent-initiated session respawn. Requires a Telegram
@@ -23872,7 +24310,22 @@ export async function startServer(options: StartOptions): Promise<void> {
           };
           _refreshPoolHeartbeat = refreshPool;
           refreshPool();
-          const poolTimer = setInterval(refreshPool, 30_000);
+          const readinessMod = await import('../core/poolReadiness.js');
+          const durableOwnershipMod = await import('../core/durableOwnershipActivation.js');
+          const poolReadinessDeps: import('../core/poolReadiness.js').PoolReadinessDeps = {
+            peerIds: () => Object.entries(coordinator.managers.identityManager.loadRegistry().machines ?? {})
+              .filter(([id, entry]) => id !== poolSelfId && !entry.revokedAt)
+              .map(([id]) => id),
+            capacity: (id) => machinePoolRegistry!.getCapacityForReport(id),
+            ownChannels: () => selfServesChannels(),
+            durableOwnership: () => durableOwnershipMod.shouldActivateDurableOwnership(config, resolveDevAgentGate),
+            duplicateCheck: () => _duplicateReconciler?.status() ?? null,
+            takeover: () => _takeoverReadiness,
+          };
+          readinessMod.setActivePoolReadiness(poolReadinessDeps);
+          const poolReadinessLog = new readinessMod.PoolReadinessLog(poolReadinessDeps, path.join(config.stateDir, '..', 'logs', 'pool-readiness.jsonl'));
+          const poolBeat = (): void => { refreshPool(); poolReadinessLog.tick(); };
+          const poolTimer = setInterval(poolBeat, 30_000);
           if (typeof poolTimer.unref === 'function') poolTimer.unref();
 
           // Boot-time pool-flag-coherence check (multi-machine-replicated-store-
@@ -24382,6 +24835,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // root at already-paired peers remains an explicit operator/PIN step;
           // the bearer recovery path can never become the first root writer.
           const escrow = machineRecoveryKey.ensure(meshSelfId, own.recoveryEpoch ?? 0, own.recoveryPublicKey);
+          _recoveryEscrowEvidence = { minted: !!escrow, recoveryEpoch: own.recoveryEpoch ?? 0, hadRoot: !!own.recoveryPublicKey };
           if (own.recoveryPublicKey && !escrow) {
             try {
               _meshAttentionRaise?.({
@@ -25042,6 +25496,33 @@ export async function startServer(options: StartOptions): Promise<void> {
             overloadMoves: () => {
               try { return getActiveOverloadShedPlanner()?.overloadMoves() ?? []; } catch { return []; /* @silent-fallback-ok — no planner → no overload moves (today's behavior) */ }
             },
+            // A shed move goes through the owner-side drain: it closes the session and hands
+            // over custody. One at a time; the slot is held until the runner settles, so a
+            // hung drain blocks further moves rather than stacking them.
+            drainMove: (mv, epoch) => {
+              const planner = getActiveOverloadShedPlanner();
+              if (!planner) return;
+              if (_shedDrainInFlight) return;
+              if (!_drainRunner) { planner.noteMoveOutcome(mv.sessionKey, { status: 'refused-no-drain-runner' }); return; }
+              const target = machinePoolRegistry?.getCapacity(mv.target);
+              if (!target || target.liveness?.state !== 'live' || target.loadVerdict !== 'ok' || target.loadReport?.acceptingWork === false) {
+                planner.noteMoveOutcome(mv.sessionKey, { status: 'refused-target-changed' });
+                return;
+              }
+              _shedDrainInFlight = true;
+              const startedAt = Date.now();
+              _shedDrainTopics.add(mv.sessionKey);
+              void _drainRunner.run({ sessionKey: mv.sessionKey, target: mv.target, senderObservedEpoch: epoch, onNotQuiet: 'abort' })
+                .then((o) => {
+                  if (o.status === 'drained' || o.status === 'drained-interrupted') {
+                    const topicNum = Number(mv.sessionKey);
+                    if (Number.isFinite(topicNum)) { try { getMoveAftercare()?.(mv.target, topicNum); } catch { /* @silent-fallback-ok — the kick has bounded retries; the target can still fetch */ } }
+                  }
+                  planner.noteMoveOutcome(mv.sessionKey, { status: o.status, claimLanded: o.claimLanded, durationMs: Date.now() - startedAt, ...(o.detail ? { detail: o.detail } : {}) });
+                })
+                .catch((err) => { planner.noteMoveOutcome(mv.sessionKey, { status: 'refused-drain-threw', detail: err instanceof Error ? err.message : String(err) }); })
+                .finally(() => { _shedDrainInFlight = false; _shedDrainTopics.delete(mv.sessionKey); });
+            },
             // Live only when overload shed is enabled AND out of dry-run: driving unpinned
             // transfers (claim / abort past the deadline) is real authority over every
             // unpinned in-flight transfer, so the soft dry-run lever must hold it too.
@@ -25103,6 +25584,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   enabled: resolveDevAgentGate(c?.enabled, config),
                   dryRun: c?.dryRun ?? dflt.dryRun,
                   sourceAfterMs: c?.sourceAfterMs ?? dflt.sourceAfterMs,
+                  topicCooldownMs: c?.topicCooldownMs ?? dflt.topicCooldownMs,
                   maxMovesPerHour: c?.maxMovesPerHour ?? dflt.maxMovesPerHour,
                   recentShedMs: c?.recentShedMs ?? dflt.recentShedMs,
                 };
@@ -25113,6 +25595,31 @@ export async function startServer(options: StartOptions): Promise<void> {
                   return !!(meta?.preferredMachine || meta?.pinned);
                 } catch { return true; /* @silent-fallback-ok — an unreadable pin view treats the topic as pinned (never moved) */ }
               };
+              const shedProofTopics = (): ReadonlySet<number> => new Set(config.multiMachine?.sessionPool?.rebalanceProofTopics ?? []);
+              // Topics with a running session here, with when the conversation last moved.
+              // One cached listing; the work-state reads stay off the planner's sync tick.
+              const quietScanner = new QuietTopicScanner({
+                runningTopicSessions: () => {
+                  if (!telegram) return [];
+                  const out: RunningTopicSession[] = [];
+                  for (const s of sessionManager.getCachedRunningSessions().sessions) {
+                    const topic = telegram.getTopicForSession(s.tmuxSession);
+                    if (topic === null || topic === undefined) continue;
+                    const last = telegram.getTopicHistory(topic, 1)[0];
+                    const at = last ? Date.parse(last.timestamp) : NaN;
+                    out.push({ sessionKey: String(topic), tmuxSession: s.tmuxSession, lastActivityAt: Number.isFinite(at) ? at : null });
+                  }
+                  return out;
+                },
+                workState: (tmux) => sessionManager.checkSessionWorkState(tmux),
+                movable: (key) => {
+                  const r = ownReg.read(key);
+                  if (r?.status !== 'active' || r.ownerMachineId !== _meshSelfId) return false;
+                  if (shedPinned(key) || shedProofTopics().has(Number(key))) return false;
+                  try { return !autoSessionsMod.listAutonomousJobs(config.stateDir).find((j) => j.topic === key && j.active && !j.paused); }
+                  catch { return false; /* @silent-fallback-ok: unreadable run registry: treat the topic as not movable */ }
+                },
+              });
               const planner = new shedMod.OverloadShedPlanner({
                 config: shedCfg,
                 selfMachineId: () => _meshSelfId,
@@ -25120,7 +25627,15 @@ export async function startServer(options: StartOptions): Promise<void> {
                 capacities: () => machinePoolRegistry?.getCapacities() ?? [],
                 ownedTopics: () => ownReg.all()
                   .filter((r) => r.status === 'active' && r.ownerMachineId === _meshSelfId)
-                  .map((r) => ({ sessionKey: r.sessionKey, pinned: shedPinned(r.sessionKey) })),
+                  .map((r) => ({ sessionKey: r.sessionKey, pinned: shedPinned(r.sessionKey), lastMovedAt: r.timestamp })),
+                poolStage: () => liveConfig.get('multiMachine.sessionPool.stage', 'dark') as string,
+                proofFresh: () => {
+                  if (!_rebalanceProofStore) return false;
+                  return rebalanceProofState(_rebalanceProofStore, Date.now()).fresh;
+                },
+                quietTopics: () => quietScanner.current(),
+                moveActuatorLive: () => resolveDevAgentGate(ws13Cfg().ws13Reconcile, config) && ws13Cfg().ws13DryRun === false,
+                isProofTopic: (key) => shedProofTopics().has(Number(key)),
                 ownerOf: (key) => ownReg.read(key)?.ownerMachineId,
                 statusOf: (key) => {
                   const r = ownReg.read(key);
@@ -25141,7 +25656,81 @@ export async function startServer(options: StartOptions): Promise<void> {
                 log: (line) => console.log(pc.yellow(`  [overload-shed] ${line}`)),
               });
               shedMod.setActiveOverloadShedPlanner(planner);
+              // The rebalance proof: drives this planner's real path, judged from outside it.
+              const proofMarker = path.join(config.stateDir, 'rebalance-proof-in-flight');
+              setActiveRebalanceProof(new RebalanceProofRunner({
+                selfMachineId: () => _meshSelfId,
+                isProofTopic: (t) => shedProofTopics().has(t),
+                stage: () => liveConfig.get('multiMachine.sessionPool.stage', 'dark') as string,
+                stageAllowsProof: () => {
+                  const st = liveConfig.get('multiMachine.sessionPool.stage', 'dark') as string;
+                  return st === 'live-transfer' || st === 'rebalance';
+                },
+                readRecord: (t) => ownReg.read(String(t)),
+                hasLocalSession: (t) => {
+                  const tmux = telegram?.getSessionForTopic(t);
+                  return !!tmux && sessionManager.isSessionAlive(tmux);
+                },
+                ensureIdleSession: async (t, timeoutMs) => {
+                  if (!telegram) return false;
+                  const live = () => { const m = telegram.getSessionForTopic(t); return m && sessionManager.isSessionAlive(m) ? m : null; };
+                  if (!live()) {
+                    const name = await spawnSessionForTopic(sessionManager, telegram, `proof-${t}`, t, proofSpawnBrief());
+                    telegram.registerTopicSession(t, name, `proof-${t}`);
+                  }
+                  const deadline = Date.now() + timeoutMs;
+                  while (Date.now() < deadline) {
+                    const tmux = live();
+                    if (tmux && (await sessionManager.checkSessionWorkState(tmux)) === 'idle') return true;
+                    await new Promise((r) => setTimeout(r, 5_000));
+                  }
+                  return false;
+                },
+                move: (t, to) => planner.proofMove(String(t), to),
+                probeViaHolder: async (t, nonce) => {
+                  const holderUrl = _resolveRouterUrl?.() ?? null;
+                  if (!holderUrl) return null;
+                  const r = await fetch(`${holderUrl}/session-pool/rebalance-proof/probe`, {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${config.authToken}`, 'Content-Type': 'application/json', 'X-Instar-AgentId': config.projectName },
+                    body: JSON.stringify({ topic: t, nonce }),
+                    signal: AbortSignal.timeout(30_000),
+                  });
+                  const j = await r.json().catch(() => ({})) as { action?: string; holder?: string | null; refused?: string }; // @silent-fallback-ok: a body we cannot read is reported as the status below
+                  return { action: j.action ?? j.refused ?? `holder-status-${r.status}`, holder: j.holder ?? null };
+                },
+                sendProbe: async (t, text, messageId) => {
+                  if (!_sessionRouter) return 'no-router';
+                  const o = await _sessionRouter.route({ sessionKey: String(t), messageId, payload: text, senderEnvelope: null });
+                  return o.action;
+                },
+                readHistory: async (t) => {
+                  const r = await fetch(`http://127.0.0.1:${config.port}/telegram/topics/${t}/messages?scope=pool&limit=50`, {
+                    headers: { Authorization: `Bearer ${config.authToken}`, 'X-Instar-AgentId': config.projectName },
+                  });
+                  if (!r.ok) throw new Error(`history ${r.status}`);
+                  const j = await r.json() as { messages?: ProofHistoryRow[]; pool?: { failed?: Array<string | { machineId?: string }> } };
+                  return { rows: j.messages ?? [], failed: (j.pool?.failed ?? []).map((f) => (typeof f === 'string' ? f : f.machineId ?? '')) };
+                },
+                record: (result, evidenceRef) => {
+                  _rebalanceProofStore?.recordResult(3, result, _sessionPoolBuildIdentity?.() ?? 'unknown', evidenceRef);
+                },
+                writeEvidence: (ev) => {
+                  const dir = path.join(config.stateDir, '..', 'logs', 'rebalance-proof');
+                  fs.mkdirSync(dir, { recursive: true });
+                  const file = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+                  fs.writeFileSync(file, JSON.stringify(ev, null, 2));
+                  return file;
+                },
+                newNonce: () => crypto.randomUUID().replace(/-/g, '').slice(0, 12),
+                markInFlight: (runId) => fs.writeFileSync(proofMarker, runId),
+                readInFlight: () => { try { return fs.readFileSync(proofMarker, 'utf8').trim() || null; } catch { return null; /* @silent-fallback-ok — no marker means no unfinished run */ } },
+                clearInFlight: () => { SafeFsExecutor.safeRmSync(proofMarker, { force: true, operation: 'rebalance-proof: run finished' }); },
+                log: (line) => console.log(pc.dim(`  [rebalance-proof] ${line}`)),
+              }));
               _overloadShedTimer = setInterval(() => {
+                // The scan is cheap to skip: it only matters while this machine is a source.
+                if (planner.status().isSource === true) void quietScanner.refresh(); else quietScanner.clear();
                 try { planner.tick(); } catch (err) { console.log(pc.yellow(`  [overload-shed] tick failed: ${err instanceof Error ? err.message : String(err)}`)); /* @silent-fallback-ok (logged) — the next tick retries */ }
               }, 15_000);
               _overloadShedTimer.unref?.();
@@ -25482,6 +26071,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               // release replicates exactly like the user-move release does. A lost CAS
               // (peer advanced the epoch first) is a no-op here — we never retry/force.
               emitPlacement(sk, r, 'released', prevOwner);
+              featureEvidence.record('multiMachine.ownershipFollowsLiveWork', r.ok
+                ? { kind: 'fired', reason: 'release-on-complete: ownership released', context: { topicId: sk, part: 'release-on-complete', prevOwner: prevOwner ?? null } }
+                : { kind: 'error', reason: 'release-on-complete: compare-and-set refused', context: { topicId: sk, part: 'release-on-complete', prevOwner: prevOwner ?? null } });
             } catch {
               // @silent-fallback-ok — release-on-complete is best-effort housekeeping
               // (FD1); a throw must never break the completion path. The existing
@@ -25846,8 +26438,14 @@ export async function startServer(options: StartOptions): Promise<void> {
               const r = ownReg.cas(action, c);
               // Journal pairing (§3.3): the drain's transfer/abort/claim CASes
               // record placement history like every other CAS site.
-              emitPlacement(c.sessionKey, r, 'user-move', prev);
+              emitPlacement(c.sessionKey, r, _shedDrainTopics.has(c.sessionKey) ? 'reconcile' : 'user-move', prev);
               return r;
+            },
+            sessionIdleNow: async (sk) => {
+              const topicNum = Number(sk);
+              const tmux = Number.isFinite(topicNum) ? telegram?.getSessionForTopic(topicNum) : null;
+              if (!tmux || !sessionManager.isSessionAlive(tmux)) return true; // nothing local to disturb
+              return (await sessionManager.checkSessionWorkState(tmux)) === 'idle';
             },
             suspendAutonomousRun: (topic, target) =>
               autoMod.suspendAutonomousTopicForMove(config.stateDir, topic, target, coherenceJournal ?? undefined),
@@ -28703,6 +29301,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             runMachineCoherenceEffects?.(effects, { telegram: () => tg ?? null });
           };
 
+          const meshEvidence = (kind: 'fired' | 'held' | 'error', reason: string): void => {
+            featureEvidence.record('monitoring.meshCoherenceLiveCheck', { kind, reason, context: { uptimeSec: Math.round(process.uptime()), emitCap: config.monitoring?.meshCoherenceLiveCheck?.emitCap ?? null } });
+          };
+          const meshFired = (code: string): true => { meshEvidence('fired', `divergence:${code}`); return true; };
+          const meshHeld = (code: string): void => meshEvidence('held', `emit-cap:${code}`);
           const peerPresenceTick = (): void => {
             void reconcileIdentityActivation().catch((err) => {
               console.warn(`[identity-recovery] periodic activation reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -28742,8 +29345,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                       if (emitCap === undefined || count < emitCap) {  // emitCap is READ here
                         console.log(pc.yellow(`  ⚠ mesh-live-coherence [${w.code}]: ${w.message}`));
                         _meshCoherenceEmitCounts.set(w.code, count + 1);
-                        firedThisTick = true;
-                      }
+                        firedThisTick = meshFired(w.code);
+                      } else meshHeld(w.code);
                     }
                   }
                   recorder?.record({ feature: 'mesh-coherence-live', kind: 'event', outcome: firedThisTick ? 'fired' : 'noop' });
@@ -28760,6 +29363,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                     _meshCoherenceFailing = true;
                   }
                   _meshCoherenceConsecFailures += 1;
+                  if (_meshCoherenceConsecFailures === 1) meshEvidence('error', 'live-state-read-failed');
                 }
               }
             }
@@ -29162,6 +29766,20 @@ export async function startServer(options: StartOptions): Promise<void> {
         bootCommitSha = `package:${startupVersion}`;
       }
       const currentSessionPoolBuildIdentity = () => bootCommitSha || 'unknown';
+      _sessionPoolBuildIdentity = currentSessionPoolBuildIdentity;
+      // The rebalance proof has its own signed store: the failover rows prove failover, and
+      // 770 of them once sat at stage 3 proving nothing about rebalancing.
+      _rebalanceProofStore = new e2eMod.SessionPoolE2EResultStore({
+        filePath: path.join(config.stateDir, 'session-pool-rebalance-proof.json'),
+        sign: hmac,
+        verifySig: (c, s) => {
+          try { const exp = hmac(c); return s.length === exp.length && crypto.timingSafeEqual(Buffer.from(s), Buffer.from(exp)); } catch { return false; /* @silent-fallback-ok: HMAC verify fails closed — a malformed input is an invalid signature, never accepted */ }
+        },
+      });
+      setActiveRebalanceProofStore(_rebalanceProofStore);
+      // A failure here must not cost the agent its rollout gate below.
+      try { getActiveRebalanceProof()?.recoverInterrupted(); }
+      catch (err) { console.warn('[rebalance-proof] could not record an interrupted run:', err instanceof Error ? err.message : String(err)); /* @silent-fallback-ok (logged): the marker stays and the next boot retries */ }
       // ONE authoritative stage read for the rollout gate and its proof producer.
       // Splitting these previously let the runner stamp every green as stage 0
       // while StageAdvancer was already waiting for a green at stage 2.
@@ -29177,6 +29795,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         currentCommitSha: currentSessionPoolBuildIdentity,
         readStage: readSessionPoolStage,
         writeStageConfig: (s) => liveConfig.set(guardMod.STAGE_CONFIG_PATH, s, { stageWriteToken: guardMod.STAGE_WRITE_TOKEN }),
+        rebalanceProof: () => stageMod.rebalanceProofState(_rebalanceProofStore!, Date.now()),
         audit: (event, detail) => console.log(pc.dim(`  [stage-advancer] ${event} ${JSON.stringify(detail)}`)),
       });
       // ── Promotion activation ────────────────────────────────────────────────
@@ -29309,7 +29928,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           currentCommitSha: currentSessionPoolBuildIdentity,
           // Credit the proof to the stage that is actually running. The next
           // promotion reads this same current-stage index as its prior-stage gate.
-          provenStage: () => stageMod.stageIndex(readSessionPoolStage()),
+          provenStage: () => stageMod.failoverProvenStage(readSessionPoolStage()),
           audit: (event, detail) => console.log(pc.dim(`  [failover-runner] ${event} ${JSON.stringify(detail)}`)),
         });
         if (_sessionPoolFailoverRunnerDriver) {
@@ -30292,7 +30911,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       catch { console.warn('[instar] Windows desktop bootstrap diagnostic could not be persisted'); }
     }
 
-    const server = new AgentServer({ config, ecosystemLedger: _ecosystemLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, ecosystemLedger: _ecosystemLedger ?? undefined, recommendedServicesLedger: _recommendedServicesLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, memoryPrivacy: _memoryPrivacyWired ?? undefined, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx }); if (_pendingCompactionEvidence) featureEvidence.record('multiMachine.coherenceJournal.replication.compaction', _pendingCompactionEvidence);    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     const readIdentityProjectionPeerRows = async () => {
       const peers = _resolvePeerUrls?.() ?? [];
       const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
@@ -30642,6 +31261,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           subjectMachineId: proposed.machineId, epoch: proposed.recoveryEpoch ?? 0,
           contentHash: operatorGrantMod.recoveryRootDelegationHash(proposed), dryRun,
         });
+        featureEvidence.record('multiMachine.recoveryKeyEscrow', { kind: 'fired', reason: dryRun ? 'would rotate the recovery root from a peer' : 'rotated the recovery root from a peer', context: { machineId: proposed.machineId, recoveryEpoch: proposed.recoveryEpoch ?? 0, dryRun } });
         if (dryRun) return 'would-rotate';
         identityStore.apply({
           identity: proposed,
@@ -31225,9 +31845,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // port (force-closes lingering sockets, awaits 'close') BEFORE listen, so the
     // gap is sub-second and the supervisor never observes a hole. No-op if the
     // beacon was never started (dark) or already failed.
+    // A failed bind happened before the evidence log was wired (at AgentServer construction), so it is kept and written here.
+    if (bootBeaconBindErrorCode) featureEvidence.record('monitoring.bootHealthBeacon', { kind: 'error', reason: 'could not bind during boot', context: { code: bootBeaconBindErrorCode, port: config.port } });
     try {
       await bootBeacon?.stop();
     } catch (err) {
+      featureEvidence.record('monitoring.bootHealthBeacon', { kind: 'error', reason: 'handoff failed: stop threw', context: { port: config.port, errorName: err instanceof Error ? err.name : 'unknown' } });
       // @silent-fallback-ok — a beacon stop failure must not stop the real server
       // from binding; logged, and the OS releases the listening socket regardless.
       console.error('  Boot health beacon stop failed (continuing to bind real server):', err instanceof Error ? err.message : err);
@@ -31238,6 +31861,16 @@ export async function startServer(options: StartOptions): Promise<void> {
     // no per-session write admission.
     sessionManager.startMonitoring();
     await server.start();
+    // Boot recovery runs before the evidence log exists, so its verdict is recorded here.
+    if (resolveDevAgentGate(config.multiMachine?.recoveryKeyEscrow?.enabled, config)) {
+      const escrowDryRun = config.multiMachine?.recoveryKeyEscrow?.dryRun !== false;
+      featureEvidence.record('multiMachine.recoveryKeyEscrow', {
+        kind: bootRecoveryOutcome === 'disabled' || (_recoveryEscrowEvidence && !_recoveryEscrowEvidence.minted && _recoveryEscrowEvidence.hadRoot) ? 'error'
+          : bootRecoveryOutcome === 'coherence-held' ? 'held' : 'fired',
+        reason: bootRecoveryOutcome === 'disabled' ? 'boot recovery unavailable' : `boot recovery: ${bootRecoveryOutcome}`,
+        context: { outcome: bootRecoveryOutcome, dryRun: escrowDryRun, minted: _recoveryEscrowEvidence?.minted ?? null, hadRoot: _recoveryEscrowEvidence?.hadRoot ?? null, recoveryEpoch: _recoveryEscrowEvidence?.recoveryEpoch ?? null },
+      });
+    }
     // After listen: a stop's condition usually turns met across a restart onto the
     // fixed version, and the wake brief sends a session straight to a route.
     agentStopSurfacer?.start();

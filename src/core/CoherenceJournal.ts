@@ -31,6 +31,7 @@
  */
 
 import crypto from 'node:crypto';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -42,7 +43,7 @@ import {
 } from './ReplicatedRecordEnvelope.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'ssh-direction-proof' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta' | 'topic-pin-record' | 'topic-claim-annotation' | 'working-set-artifact' | 'class-review-record' | 'app-conversation-event' | 'mobile-device-key-ledger-row' | 'ecosystem-idea-event';
+export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'ssh-direction-proof' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta' | 'topic-pin-record' | 'topic-claim-annotation' | 'working-set-artifact' | 'class-review-record' | 'app-conversation-event' | 'mobile-device-key-ledger-row' | 'ecosystem-idea-event' | 'recommended-service-record';
 
 /**
  * What happened to one `emit` call. Every branch of the private `emit` already
@@ -60,7 +61,7 @@ export type JournalEmitOutcome =
   | 'not-replicated-kind'
   | 'error';
 
-export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'ssh-direction-proof', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta', 'topic-pin-record', 'topic-claim-annotation', 'working-set-artifact', 'class-review-record', 'app-conversation-event', 'mobile-device-key-ledger-row', 'ecosystem-idea-event'];
+export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'ssh-direction-proof', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta', 'topic-pin-record', 'topic-claim-annotation', 'working-set-artifact', 'class-review-record', 'app-conversation-event', 'mobile-device-key-ledger-row', 'ecosystem-idea-event', 'recommended-service-record'];
 // 'subscription-account-meta' added for WS5.2 Account Follow-Me §6.1a (registry follow-me =
 // METADATA ONLY): a redacted, credential-free projection of a SubscriptionAccount (id, nickname,
 // email, provider, framework, status, quota) replicates so a peer KNOWS an account's depth/quota
@@ -319,6 +320,8 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   // pruned); the journal stream is only the transport. Rows are few, so a small window suffices.
   'mobile-device-key-ledger-row': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 8 },
   'ecosystem-idea-event': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 8 },
+  // A person's yes and no: never pruned, so compaction can't drop a refusal.
+  'recommended-service-record': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 0 },
   // evolution-action-record (WS2.5): a memory-family store — NEVER rotateKeep:0 (rotate-but-
   // never-delete would be a compliance defect). Actions are FEW + bounded (the
   // EvolutionManager prunes to maxActions=300), so a small window with a few archives mirrors
@@ -563,7 +566,7 @@ export class CoherenceJournal {
   private state: WriterState = 'closed';
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
-  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'ssh-direction-proof': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1, 'topic-pin-record': 1, 'topic-claim-annotation': 1, 'working-set-artifact': 1, 'class-review-record': 1, 'app-conversation-event': 1, 'mobile-device-key-ledger-row': 1, 'ecosystem-idea-event': 1 };
+  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'ssh-direction-proof': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1, 'topic-pin-record': 1, 'topic-claim-annotation': 1, 'working-set-artifact': 1, 'class-review-record': 1, 'app-conversation-event': 1, 'mobile-device-key-ledger-row': 1, 'ecosystem-idea-event': 1, 'recommended-service-record': 1 };
   /** Durable highWaterSeq per kind (advanced after data fdatasync). */
   private highWaterSeq: Record<JournalKind, number> = {
     'topic-placement': 0,
@@ -588,6 +591,7 @@ export class CoherenceJournal {
     'app-conversation-event': 0,
     'mobile-device-key-ledger-row': 0,
     'ecosystem-idea-event': 0,
+    'recommended-service-record': 0,
   };
   /** In-memory enqueue order; drained by the flusher in seq order per kind. */
   private queue: QueuedEntry[] = [];
@@ -615,6 +619,7 @@ export class CoherenceJournal {
     'app-conversation-event': new Set(),
     'mobile-device-key-ledger-row': new Set(),
     'ecosystem-idea-event': new Set(),
+    'recommended-service-record': new Set(),
   };
   private rateBuckets: Record<JournalKind, RateBucket>;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -672,6 +677,7 @@ export class CoherenceJournal {
       'app-conversation-event': config.retention?.['app-conversation-event'] ?? DEFAULT_RETENTION['app-conversation-event'],
       'mobile-device-key-ledger-row': config.retention?.['mobile-device-key-ledger-row'] ?? DEFAULT_RETENTION['mobile-device-key-ledger-row'],
       'ecosystem-idea-event': config.retention?.['ecosystem-idea-event'] ?? DEFAULT_RETENTION['ecosystem-idea-event'],
+      'recommended-service-record': config.retention?.['recommended-service-record'] ?? DEFAULT_RETENTION['recommended-service-record'],
     };
     this.rateCapCfg = config.rateCap ?? DEFAULT_RATE_CAP;
     this.artifactRoots = (config.artifactRoots ?? [path.join(this.stateDir, 'autonomous'), this.stateDir]).map((r) => {
@@ -713,6 +719,7 @@ export class CoherenceJournal {
       'app-conversation-event': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'mobile-device-key-ledger-row': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'ecosystem-idea-event': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'recommended-service-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
     };
   }
 
@@ -1301,6 +1308,7 @@ export class CoherenceJournal {
           this.io.fdatasyncSync(fd);
         } catch (e) {
           this.degradation.flushErrors++;
+          featureEvidence.recordAtMostEvery('multiMachine.coherenceJournal', `flush-append:${kind}`, 3_600_000, { kind: 'error', reason: 'flush-append-failed', context: { journalKind: kind, entries: items.length, partial: bytesWritten, flushErrors: this.degradation.flushErrors } });
           this.log('flush', `[coherence-journal] append/fsync failed for ${kind}: ${(e as Error)?.message}`);
           if (!bytesWritten) {
             // Open failed (or threw before any write): zero bytes hit the file,
@@ -1334,6 +1342,7 @@ export class CoherenceJournal {
       }
     } catch (e) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
       this.degradation.flushErrors++;
+      featureEvidence.recordAtMostEvery('multiMachine.coherenceJournal', 'flush', 3_600_000, { kind: 'error', reason: 'flush-failed', context: { flushErrors: this.degradation.flushErrors } });
       this.log('flush', `[coherence-journal] flush failed (swallowed): ${(e as Error)?.message}`);
     } finally {
       this.flushing = false;

@@ -33,6 +33,7 @@
  */
 
 import { Cron } from 'croner';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { scrubSecrets } from './scrubSecrets.js';
@@ -523,6 +524,21 @@ export class GrowthDigestPublisher {
       ...(e.supersedeConflict ? { supersedeConflict: true } : {}),
       ...(typeof e.attemptCount === 'number' ? { attemptCount: e.attemptCount } : {}),
     };
+    // skipped-off / skipped-standby / skipped-overlap are the scheduler's no-ops, not digest decisions.
+    if (!e.action.startsWith('skipped-') || e.action === 'skipped-calm') {
+      const failed = e.action === 'error' || e.action === 'send-blocked' || e.action === 'send-exhausted';
+      featureEvidence.record('monitoring.growthAnalyst', {
+        kind: failed ? 'error' : e.action === 'sent' || e.action === 'dry-run' ? 'fired' : 'held',
+        reason: `digest-${e.action}`,
+        context: {
+          action: e.action,
+          trigger: e.trigger ?? null,
+          auditReason: e.reason ?? null,
+          dryRun: e.action === 'dry-run',
+          attemptCount: e.attemptCount ?? null,
+        },
+      });
+    }
     try {
       this.deps.audit?.(entry);
     } catch (err) {

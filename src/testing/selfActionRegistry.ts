@@ -44,6 +44,8 @@ import { MAIN_FAIR_SHARE_MS, decideMergeHandoff, decideStart, decideStarved, dec
 import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/laneReport.js';
 import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
+import { decideKeyRefresh, REFRESH_MAX_ATTEMPTS } from '../core/ClaudeKeyHealth.js';
+import { raiseDue } from '../monitoring/MaturationLadder.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
 import { nextBreakerState, RECONCILE_LIMITS } from '../core/ReplicatedStoreReconciler.js';
 import { findStuckPreparingRuns, PREPARING_NOTICE_MAX_ATTEMPTS } from '../core/AutonomousStartAdmission.js';
@@ -1215,6 +1217,41 @@ const ecosystemIdeaReview: SelfActionController = {
  * delegated give-up. Each extra tick still passes the triage service's own single flight, rate
  * limit, quota pause and daily call cap.
  */
+/**
+ * maturation-ladder-raise — the ladder records a commitment for a feature worth a
+ * decision after each six-hour scoring pass. Worst case: one feature stays `harmed`
+ * and the review closes its commitment every time. The durable last-raised row
+ * brakes it to once a day; the commitment key dedupes while one is open.
+ */
+const maturationLadderRaise: SelfActionController = {
+  id: 'maturation-ladder-raise',
+  actionVerb: 'notify-review-by-commitment',
+  models: 'src/monitoring/MaturationLadderService.ts raise() (raiseDue cooldown from the durable audit log, 5 per pass, lease only, no beacon: a record, never a message)',
+  modelsPath: 'src/monitoring/MaturationLadderService.ts',
+  delegatedGiveUp: 'raiseDue: at most once a day per harmed feature and once a week per ready feature, read back from the audit log across restarts, and capped at 5 per pass',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 4 * 60,
+  tickMs: 6 * 60 * 60_000,
+  eternalSentinel: { reason: 'a feature that stays harmed is raised for a decision at most once a day, as a record with no message', rateFloorMs: 24 * 60 * 60_000 },
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return maturationLadderRaise.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const raw = f.durableState.get('maturation-last-raised');
+      const last = raw === undefined ? undefined : Number(raw);
+      if (!raiseDue('harmed', last, now)) return;
+      f.durableState.set('maturation-last-raised', now);
+      sink.emit({ verb: 'notify-review-by-commitment', target: 'maturation:feature' });
+      sink.emitTimesMs.push(now);
+    } };
+  },
+};
+
 const queuePaceExtraRun: SelfActionController = {
   id: 'queue-pace-extra-run',
   actionVerb: 'nudge-triage-extra-tick',
@@ -3112,6 +3149,38 @@ const interactiveLoginExpiredSwap: SelfActionController = {
 };
 
 /**
+ * claude-key-session-refresh — spec cloud-key-internal-calls. After a working sign-in key is proven,
+ * a session at the login screen is restarted so it can answer. Under the pinned fixture every refresh
+ * is refused. The REAL brake is `decideKeyRefresh`: at most 3 attempts, then the session leaves the
+ * list and is reported. Nothing re-adds it within the episode, and a session already refreshed onto
+ * this key is never queued again.
+ */
+const claudeKeySessionRefresh: SelfActionController = {
+  id: 'claude-key-session-refresh',
+  actionVerb: 'session-refresh',
+  models: 'src/core/ClaudeKeyHealth.ts (decideKeyRefresh: 3-attempt cap per session per episode)',
+  modelsPath: 'src/core/ClaudeKeyHealth.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Attempt counts are persisted with the pending list, so a restart resets nothing, and the list only fills after a key is proven working.' },
+  boundK: REFRESH_MAX_ATTEMPTS,
+  perTargetBoundK: REFRESH_MAX_ATTEMPTS,
+  ticks: 60,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const TARGET = 'stuck-session';
+    let attempts = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (decideKeyRefresh({ attempts, maxAttempts: REFRESH_MAX_ATTEMPTS }) !== 'attempt') return;
+        attempts += 1;
+        sink.emit({ verb: 'session-refresh', target: TARGET });
+        if (!f.targetAlwaysRejects()) { attempts = 0; } // a real refresh (never under the fixture)
+      },
+    };
+  },
+};
+
+/**
  * device-limit-session-move — codex-device-limit-tripwire §4. A live interactive Codex session on
  * an account benched for a (suspected) device limit is moved to another Codex account. Under the
  * pinned fixture every move is refused, so the bench never clears its sessions. The REAL brake is
@@ -3153,10 +3222,10 @@ const deviceLimitSessionMove: SelfActionController = {
  * closed and enforced on every sample, forever; a healthy peer always has room;
  * and the peer NEVER claims a proposed topic (every move expires). Brakes, all in
  * the planner: one live move at a time (10 min entry TTL), 2 moves per hour, a
- * 30 min per-topic cooldown, MAX_ATTEMPTS_PER_TOPIC (2) per overload episode, and
+ * 6 h per-topic cooldown, MAX_ATTEMPTS_PER_TOPIC (2) per overload episode, and
  * at most MAX_REFUNDS_PER_TOPIC (2) refunds for proposals whose transfer never
  * started (the worst case modelled here). The episode never ends under pressure,
- * so the total settles at 4 × the topics (5 topics → 20 proposals) and the
+ * so the total settles at no more than 4 × the topics (5 topics → 20 proposals) and the
  * per-topic count at 4, independent of the horizon. The reconciler (the actuator)
  * additionally initiates at most ONE transfer per topic per episode. The episode,
  * attempt and refund counts are durable, so a restart continues the same episode.
@@ -3186,6 +3255,11 @@ function makeOverloadShedPlanner(f: PressureFixture, sink: ActionSink): { tick()
     placement: new PlacementExecutor(),
     statePath,
     now: () => f.clock.nowMs(),
+    // Every live-move gate open, or the planner proposes nothing and the bound proves nothing.
+    poolStage: () => 'rebalance',
+    proofFresh: () => true,
+    quietTopics: () => new Set(topics.map((t) => t.sessionKey)),
+    moveActuatorLive: () => true,
   });
   let proposedSeen = 0; // per-process counter (the planner's counters are in memory)
   return {
@@ -3205,7 +3279,7 @@ function makeOverloadShedPlanner(f: PressureFixture, sink: ActionSink): { tick()
 const overloadShed: SelfActionController = {
   id: 'overload-shed',
   actionVerb: 'converge-overload-transfer',
-  models: 'src/core/OverloadShedPlanner.ts (OverloadShedPlanner.tick — one live move, 2/hour breaker, 30 min topic cooldown, 2 attempts + 2 never-started refunds per topic per durable overload episode)',
+  models: 'src/core/OverloadShedPlanner.ts (OverloadShedPlanner.tick — one live move, 2/hour breaker, 6 h topic cooldown, 2 attempts + 2 never-started refunds per topic per durable overload episode)',
   modelsPath: 'src/core/OverloadShedPlanner.ts',
   boundK: 20,
   perTargetBoundK: 4,
@@ -3647,6 +3721,7 @@ function makeMachineWedgeNotice(f: PressureFixture, sink: ActionSink): { tick():
 }
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  claudeKeySessionRefresh,
   desktopRelockGuardReplacement,
   desktopLockedHelperRespawn,
   sessionPoolStagePromotion,
@@ -3673,6 +3748,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   feedbackTriageTick,
   ecosystemIdeaReview,
   queuePaceExtraRun,
+  maturationLadderRaise,
   jobScriptTriageEpisode,
   jobScriptTriageBackup,
   feedbackTriageActionList,

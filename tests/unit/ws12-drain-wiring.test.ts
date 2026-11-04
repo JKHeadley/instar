@@ -44,7 +44,7 @@ describe('WS1.2 drain wiring (server boot + transfer route)', () => {
     expect(idx).toBeGreaterThan(-1);
     const block = server.slice(idx - 400, idx + 3200);
     // CAS dep journals placement like every other CAS site.
-    expect(block).toContain("emitPlacement(c.sessionKey, r, 'user-move', prev)");
+    expect(block).toContain("emitPlacement(c.sessionKey, r, _shedDrainTopics.has(c.sessionKey) ? 'reconcile' : 'user-move', prev)");
     // WS1.4 remote arm.
     expect(block).toContain('suspendAutonomousTopicForMove');
     // Turn-boundary signal reads REAL session activity, defaulting quiet when

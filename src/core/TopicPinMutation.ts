@@ -24,6 +24,7 @@
  */
 
 import type { HlcTimestamp } from './HybridLogicalClock.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { TopicPlacementPinStore, TopicPinnedBy } from './TopicPlacementPinStore.js';
 import {
   TOPIC_PIN_STORE_KEY,
@@ -70,6 +71,7 @@ export function setPinWithOneHlc(
     }
   }
   deps.pinStore.set(sessionKey, preferredMachine, pinned, minted, pinnedBy);
+  if (minted !== undefined) featureEvidence.record('multiMachine.seamlessness.ws13PinReplicate', { kind: 'fired', reason: 'pin record written to the journal', context: { topic: sessionKey, preferredMachine, pinned, op: 'put' } });
   return minted !== undefined ? { hlc: minted } : {};
 }
 
@@ -94,5 +96,6 @@ export function clearPinWithTombstone(
     }
   }
   deps.pinStore.clear(sessionKey);
+  if (minted !== undefined) featureEvidence.record('multiMachine.seamlessness.ws13PinReplicate', { kind: 'fired', reason: 'pin clear written to the journal', context: { topic: sessionKey, hadPin, op: 'delete' } });
   return minted !== undefined ? { hadPin, hlc: minted } : { hadPin };
 }

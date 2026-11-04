@@ -79,10 +79,12 @@ export default defineConfig({
           items: [
             { label: 'Job Scheduler', slug: 'features/scheduler' },
             { label: 'Telegram Integration', slug: 'features/telegram' },
+            { label: 'Tunnels', slug: 'features/tunnel' },
             { label: 'WhatsApp Integration', slug: 'features/whatsapp' },
             { label: 'Slack Integration', slug: 'features/slack' },
             { label: 'Lifeline', slug: 'features/lifeline' },
             { label: 'Conversational Memory', slug: 'features/memory' },
+            { label: 'Memory Privacy', slug: 'features/memory-privacy' },
             { label: 'Evolution System', slug: 'features/evolution' },
             { label: 'Relationships', slug: 'features/relationships' },
             { label: 'Safety Gates', slug: 'features/safety-gates' },

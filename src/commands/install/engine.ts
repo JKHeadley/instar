@@ -10,12 +10,10 @@ import type {
   WizardAnswers,
   WizardState,
 } from '../setup-wizard/state-machine.js';
+import type { StepResult } from '../../install/doorSteps.js';
 import type { InstallProgress, InstallStatus } from './progress.js';
 
-export type StepResult =
-  | { kind: 'done'; updates?: Partial<WizardAnswers>; note?: string }
-  | { kind: 'awaiting-person'; instruction: string; loginPid?: number; loginStamp?: string }
-  | { kind: 'failed'; message: string; nextStep: string };
+export type { StepResult };
 
 export type StepHandler = (answers: WizardAnswers, progress: InstallProgress) => Promise<StepResult>;
 

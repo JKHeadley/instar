@@ -7,6 +7,10 @@
  */
 
 import { isCredentialEnvName, CLAUDE_CONFINED_PERMISSION_ARGS } from './credentialEnvNames.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { applyMemorySessionLaunch, buildMemorySessionSettings, moveInboundFilesIntoScope } from './memorySessionPolicy.js';
+import { audienceKey, type MemoryPrivacy, type SessionPlaceInput } from '../users/MemoryPrivacy.js';
+import { isScopedAudience, memoryScopeEnvValue, type MemoryAudience, type MemoryPlace } from '../users/MemoryAudience.js';
 import { execFileSync, execFile } from 'node:child_process';
 import { isInstarSourceTree } from './SourceTreeGuard.js';
 import { AdmissionRefusedError, type AdmissionDecision, type AdmissionKind } from './workAdmission.js';
@@ -33,6 +37,7 @@ import { BASELINE_PROCESS_PATTERNS, CLAUDE_TOOL_SHELL_PATTERN, isToolShellComman
 import { chunkLiteralForTmux, buildLiteralSendArgs } from './tmuxLiteralSend.js';
 import { isReadyPromptTail, classifyPaneReadiness, type PaneReadiness } from './claudeReadinessProbe.js';
 import { RerouteRefusedError } from './rerouteRefusedError.js';
+import { SessionCapacityRefusedError } from './sessionCapacityRefusedError.js';
 export { RerouteRefusedError } from './rerouteRefusedError.js';
 import { initialConfinedStartupState, stepConfinedStartup, classifyConfinedStartupPane, confinedPromptLine, LOGIN_REQUIRED, showsOtherPermissionMode, CONFINED_STARTUP_BUDGET_MS, type ConfinedStartupState, type ConfinedStartupObservation } from './confinedStartupDialogs.js';
 
@@ -75,6 +80,7 @@ import { detectRateLimited, nextIdleThrottleAction, RATE_LIMIT_SETTLED_CAPTURE_L
 import { classifyIdleError } from './IdleErrorClassifier.js';
 import { classifyLoginExpired } from './LoginExpiredSignature.js';
 import { liveTail } from './paneTail.js';
+import { claudeAuthExecPrefix, removeClaudeAuthEnvFile, writeClaudeAuthEnvFile } from './claudeChildAuth.js';
 import type { InteractiveLoginExpiredSignal } from './InteractiveLoginExpiredRecovery.js';
 import { InputGuard, type TopicBinding } from './InputGuard.js';
 import { resolveIdleSinceSeed } from './idleSincePersistence.js';
@@ -162,6 +168,7 @@ const ageKillGov = governor.for('age-kill-backoff');
  * the lease-holder boundary unchanged.
  */
 const LOCAL_AGE_LIMIT_REAP_CAPABILITY = Symbol('local-age-limit-reap-capability');
+const REROUTED_LIFETIME_REAP_CAPABILITY = Symbol('rerouted-lifetime-reap-capability');
 
 /**
  * Closeout activeness bypass (docs/specs/closeout-activeness-bypass-confirmed-move.md).
@@ -720,7 +727,25 @@ export function applyClaudeToolConfinement(argv: string[], tools: string[]): voi
   }
 }
 
+interface MemorySessionPlan {
+  audience: MemoryAudience;
+  placeKey: string | null;
+  dropResume: boolean;
+  scopeDir: string | null;
+  settingsPath: string | null;
+}
+
+/** A session that must run inside the boundary cannot, here. Never run it unprotected. */
+export class MemoryPrivacyUnavailableError extends Error {
+  constructor(framework: string) {
+    super(`memory-privacy-unavailable: no working sandbox for ${framework}`);
+    this.name = 'MemoryPrivacyUnavailableError';
+  }
+}
+
 export class SessionManager extends EventEmitter {
+  private pendingHeadlessSpawns = 0;
+  private pendingScheduledSpawns = 0;
   private config: SessionManagerConfig;
   private state: StateManager;
   private monitorInterval: ReturnType<typeof setInterval> | null = null;
@@ -1025,6 +1050,18 @@ export class SessionManager extends EventEmitter {
    * is enabled, so it is a strict no-op by default). Returns null per-call when
    * no eligible account exists. */
   private spawnAccountResolver?: () => { configHome: string; accountId: string } | null;
+  /** Memory privacy (docs/specs/memory-privacy.md). Unwired means today's behaviour. */
+  private memoryPrivacyWiring?: {
+    privacy: MemoryPrivacy;
+    /** The whole Telegram group's place key, or null when there is no group. */
+    telegramGroupKey: () => string | null;
+    /** True when the boot probe proved the OS sandbox starts here. */
+    sandboxReady: () => boolean;
+    /** Scripts a scoped session runs, as absolute paths. */
+    replyScripts: () => string[];
+    /** Finds the Slack channel of a session started before places were recorded. */
+    slackChannelForSession?: (sessionName: string) => string | null;
+  };
 
   /**
    * Census #5/#6: live credential re-pointing gate. When set AND enabled, a pinned account's
@@ -1542,6 +1579,13 @@ export class SessionManager extends EventEmitter {
       // guard counts the degraded-call signal distinctly from a generic error.
       const killed = e.killed === true || e.signal === 'SIGKILL' || /SIGKILL/.test(msg);
       this.degradedTmuxGuard?.observeTmuxCall(Date.now() - t0, killed ? 'killed-client' : 'indeterminate');
+      if (this.tmuxAsyncEnabled) {
+        featureEvidence.recordAtMostEvery('monitoring.tmuxResilience.asyncHotPath', killed ? 'timeout' : 'indeterminate', 300_000, {
+          kind: killed ? 'fired' : 'error',
+          reason: killed ? 'bounded-call-timed-out-and-killed' : 'tmux-call-failed-indeterminate',
+          context: { op: args[0] ?? 'unknown', elapsedMs: Date.now() - t0, timeoutMs: timeout, inFlight: this.tmuxInflightCount },
+        });
+      }
       return { state: 'indeterminate', reason: msg.slice(0, 120) };
     }
   }
@@ -1700,6 +1744,148 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * The resolver picks the optimal pool account (the scheduler's reset-date /
    * headroom score) at spawn time and returns its configHome + id, or null.
    */
+  setMemoryPrivacy(wiring: NonNullable<SessionManager['memoryPrivacyWiring']>): void {
+    this.memoryPrivacyWiring = wiring;
+  }
+
+  /**
+   * The audience for a session about to start, and everything that follows from
+   * it. Computed here for every interactive spawn, so a caller that passes no
+   * place lands on `none` rather than on full reach. Null when unwired.
+   */
+  private planMemorySession(framework: string, tmuxSession: string, input: SessionPlaceInput): MemorySessionPlan | null {
+    const wiring = this.memoryPrivacyWiring;
+    if (!wiring || !wiring.privacy.enabled) return null;
+    const place = wiring.privacy.placeFor(input, wiring.telegramGroupKey());
+    const audience = wiring.privacy.audienceFor(place);
+    const placeKey = 'placeKey' in place ? place.placeKey : null;
+    console.log(`[memory-privacy] session=${tmuxSession} place=${place.kind} audience=${audience.kind}`);
+    const dropResume = wiring.privacy.audienceChanged(placeKey, audience);
+    if (!isScopedAudience(audience)) return { audience, placeKey, dropResume, scopeDir: null, settingsPath: null };
+    if (framework !== 'claude-code' || !wiring.sandboxReady()) {
+      throw new MemoryPrivacyUnavailableError(framework);
+    }
+    const scopeDir = wiring.privacy.ensureScopeDir(audience, tmuxSession);
+    if (!scopeDir) throw new Error('memory-session-launch-missing: no scope folder for a scoped audience');
+    const settingsDir = path.join(path.dirname(scopeDir), '.settings');
+    fs.mkdirSync(settingsDir, { recursive: true, mode: 0o700 });
+    const settingsPath = path.join(settingsDir, `${tmuxSession}.json`);
+    const settings = buildMemorySessionSettings({
+      agentHome: this.config.projectDir,
+      scopeDir,
+      homeDir: os.homedir(),
+      agentHomeEntries: fs.readdirSync(this.config.projectDir),
+      replyScripts: wiring.replyScripts(),
+      tempRoots: ['/tmp', '/private/tmp', '/var/tmp', '/private/var/tmp', '/var/folders', '/private/var/folders'],
+    });
+    fs.writeFileSync(settingsPath, JSON.stringify(settings), { mode: 0o600 });
+    return { audience, placeKey, dropResume, scopeDir, settingsPath };
+  }
+
+  /**
+   * End every running session whose audience no longer matches, so a session that
+   * loaded wider memory cannot answer a new reader. Runs on a flip and at boot,
+   * before any waiting message is delivered.
+   */
+  async retireSessionsForAudienceChange(): Promise<string[]> {
+    const wiring = this.memoryPrivacyWiring;
+    if (!wiring?.privacy.enabled) return [];
+    const retired: string[] = [];
+    for (const session of this.listRunningSessions()) {
+      if (session.jobSlug || session.launchLane) continue;
+      const input: SessionPlaceInput = session.memoryPlaceInput ?? {
+        telegramTopicId: session.telegramTopicId,
+        slackChannelId: session.slackChannelId ?? wiring.slackChannelForSession?.(session.tmuxSession) ?? undefined,
+      };
+      const expected = audienceKey(wiring.privacy.audienceFor(wiring.privacy.placeFor(input, wiring.telegramGroupKey())));
+      if (expected === (session.memoryAudience ?? 'open')) continue;
+      if (await this.retireMemorySession(session)) retired.push(session.name);
+    }
+    return retired;
+  }
+
+  /**
+   * Headless lanes are reached only by jobs and agent-token callers, so they run as
+   * `system`. Hooks read this: on a multi-person agent, no scope means no injection.
+   */
+  private memorySystemEnvFlags(): string[] {
+    const privacy = this.memoryPrivacyWiring?.privacy;
+    return privacy?.enabled && privacy.isMultiPerson() ? ['-e', 'INSTAR_MEMORY_SCOPE=system'] : [];
+  }
+
+  private async retireMemorySession(session: Session): Promise<boolean> {
+    const result = await this.#terminateSessionInternal(session.id, 'memory-audience-changed', {
+      finalStatus: 'killed', disposition: 'terminal', workEvidence: [], memoryAudienceClose: true,
+    });
+    return result.terminated;
+  }
+
+  /**
+   * The per-message check: the live session for a place must match its audience.
+   * False means it could not be ended, and the message must not be delivered to it.
+   */
+  async retireSessionUnlessAudience(tmuxSession: string, audience: string): Promise<boolean> {
+    const session = this.listRunningSessions().find((s) => s.tmuxSession === tmuxSession || s.name === tmuxSession);
+    if (!session) return true;
+    if ((session.memoryAudience ?? 'open') === audience) return true;
+    // Job and headless work is left running, but it has owner reach, so it must not
+    // receive a message from a place that is scoped.
+    if (session.jobSlug || session.launchLane) return !/^(person:|place:|none$)/.test(audience);
+    return this.retireMemorySession(session);
+  }
+
+  /** Memory privacy: a scoped session reads its files from its own inbox. */
+  private withInboundFilesInScope(tmuxSession: string, text: string): string {
+    if (!this.memoryPrivacyWiring) return text;
+    const scopeDir = this.listRunningSessions().find((s) => s.tmuxSession === tmuxSession)?.memoryScopeDir;
+    if (!scopeDir) return text;
+    const state = path.join(this.config.projectDir, '.instar');
+    return moveInboundFilesIntoScope(text, scopeDir, [
+      path.join(state, 'telegram-inbound'), path.join(state, 'telegram-images'), path.join(state, 'telegram-files'),
+      path.join(state, 'slack-files'), path.join(state, 'imessage', 'attachments'), path.join(state, 'state', 'dashboard-uploads'),
+      '/tmp/instar-slack', '/private/tmp/instar-slack',
+    ]);
+  }
+
+  /** The audience kind a place would get, for callers that shape what they send there. */
+  memoryAudienceKind(input: SessionPlaceInput): MemoryAudience['kind'] {
+    const wiring = this.memoryPrivacyWiring;
+    if (!wiring?.privacy.enabled) return 'open';
+    return wiring.privacy.audienceFor(wiring.privacy.placeFor(input, wiring.telegramGroupKey())).kind;
+  }
+
+  /** Sessions whose output may feed agent-wide digests: never one inside the boundary. */
+  sessionsForAgentDigests(): Session[] {
+    return this.listRunningSessions().filter((s) => !s.memoryScopeDir);
+  }
+
+  /** What the status route reports. No people's names beyond the owner's id. */
+  memoryPrivacyStatus(): { enabled: boolean; multiPerson: boolean; ownerUserId: string | null; sandboxReady: boolean } {
+    const wiring = this.memoryPrivacyWiring;
+    if (!wiring) return { enabled: false, multiPerson: false, ownerUserId: null, sandboxReady: false };
+    return {
+      enabled: wiring.privacy.enabled,
+      multiPerson: wiring.privacy.isMultiPerson(),
+      ownerUserId: wiring.privacy.ownerUserId(),
+      sandboxReady: wiring.sandboxReady(),
+    };
+  }
+
+  /** True when memory privacy is on and more than one person can reach this agent. */
+  isMultiPersonAgent(): boolean {
+    const privacy = this.memoryPrivacyWiring?.privacy;
+    return Boolean(privacy?.enabled && privacy.isMultiPerson());
+  }
+
+  /** Clean up after a session that ran inside the boundary. */
+  releaseMemorySession(session: Pick<Session, 'id' | 'memoryScopeDir' | 'memorySettingsPath' | 'memoryAudience'>): void {
+    if (!session.memoryScopeDir) return;
+    this.memoryPrivacyWiring?.privacy.revokeSessionTokens(session.id);
+    const op = 'SessionManager.releaseMemorySession';
+    if (session.memorySettingsPath) SafeFsExecutor.safeRmSync(session.memorySettingsPath, { force: true, operation: op });
+    if (session.memoryAudience === 'none') SafeFsExecutor.safeRmSync(session.memoryScopeDir, { recursive: true, force: true, operation: op });
+  }
+
   setSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | null): void {
     this.spawnAccountResolver = resolver;
   }
@@ -2093,6 +2279,49 @@ rm()  { "${shimRunner}" rm  "$@"; }
     this.interactiveLoginExpiredSink = fn;
   }
 
+  /** Put a handler ahead of the sink. When it returns true the signal is handled and goes no further. */
+  prependInteractiveLoginExpiredSink(first: (input: InteractiveLoginExpiredSignal) => Promise<boolean>): void {
+    const rest = this.interactiveLoginExpiredSink;
+    this.interactiveLoginExpiredSink = async (input) => {
+      if (await first(input)) return;
+      await rest?.(input);
+    };
+  }
+
+  /** A restored sign-in key for every later launch. `config` here is a copy, so server code can't reach it. */
+  setAnthropicKey(key: string | null): void {
+    this.config.anthropicApiKey = key ?? undefined;
+  }
+
+  /** Forget which sessions were already reported, so a stuck one is offered again on the next check. */
+  clearInteractiveLoginReports(): void {
+    this.interactiveLoginReportedAt.clear();
+  }
+
+  /** Unprotected topic sessions showing Claude Code's own login frame right now. */
+  async listSessionsAtLoginScreen(): Promise<string[]> {
+    const stuck: string[] = [];
+    for (const session of this.listRunningSessions()) {
+      if ((session.framework ?? 'claude-code') !== 'claude-code' || session.jobSlug) continue;
+      if (this.config.protectedSessions.includes(session.tmuxSession)) continue;
+      const pane = (await this.captureOutputMaybeAsync(session.tmuxSession, 40)) || '';
+      const verdict = classifyLoginExpired(pane);
+      if (verdict.loginExpired && verdict.messageLed) stuck.push(session.tmuxSession);
+    }
+    return stuck;
+  }
+
+  /** The key a session was launched with, as tmux holds it. Read for comparison only: never log it. */
+  sessionLaunchKey(tmuxSession: string): string | null {
+    try {
+      const line = withSyncOp(() => execFileSync(this.config.tmuxPath, ['show-environment', '-t', `=${tmuxSession}:`, 'CLAUDE_CODE_OAUTH_TOKEN'], {
+        encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+      })).trim();
+      const value = line.startsWith('CLAUDE_CODE_OAUTH_TOKEN=') ? line.slice('CLAUDE_CODE_OAUTH_TOKEN='.length) : '';
+      return value || null;
+    } catch { return null; } // @silent-fallback-ok: unset or unreadable means no launch key, and no key means no refresh
+  }
+
   setCodexSigninTriggerSink(fn: ((input: { accountId: string; session: string }) => Promise<boolean | void> | void) | null): void {
     this.codexSigninTriggerSink = fn;
   }
@@ -2411,6 +2640,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
        *  It proves the request originated in THIS SessionManager's monitor over
        *  THIS machine's state tree and local tmux namespace. Never public. */
       localAgeLimitReapCapability?: typeof LOCAL_AGE_LIMIT_REAP_CAPABILITY;
+      /** Module-private proof from the rerouted-session monitor. The termination
+       * guard rechecks the saved session's lane and elapsed hard lifetime. */
+      reroutedLifetimeReapCapability?: typeof REROUTED_LIFETIME_REAP_CAPABILITY;
       /** Age-limit kill only: the age gate saw this session working after it
        *  passed its age limit. Passed through on `sessionReaped` so the resume
        *  queue does not count the revival as a kill-resume-kill loop. */
@@ -2419,6 +2651,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
       localPostTransferCloseout?: boolean;
       /** See SessionTerminateAuthorityOptions.topicTransferClose. */
       topicTransferClose?: boolean;
+      /**
+       * Runtime-private: this session holds memory its place's readers must not see,
+       * and a message is about to reach it. The ordinary keeps protect a busy session,
+       * and a busy session is exactly the one that would answer, so they do not apply.
+       * Only `protected`, which is checked before this, still wins.
+       */
+      memoryAudienceClose?: boolean;
       /**
        * Killer-supplied work evidence (reap-notify spec R2.1): computed at the
        * KILLER's decision point — the only moment the work was observable (the
@@ -2467,6 +2706,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
     const isAuthorizedTopicMovedCloseout = reason.startsWith('topic moved')
       && opts?.localPostTransferCloseout === true;
+    const isAuthorizedReroutedLifetime = reason === 'rerouted-lifetime'
+      && opts?.reroutedLifetimeReapCapability === REROUTED_LIFETIME_REAP_CAPABILITY
+      && session.launchLane === 'rerouted-interactive'
+      && session.completionMode === 'pattern'
+      && typeof session.maxLifetimeMinutes === 'number'
+      && Number.isFinite(session.maxLifetimeMinutes)
+      && session.maxLifetimeMinutes > 0
+      && !!session.startedAt
+      && Date.now() - Date.parse(session.startedAt) > session.maxLifetimeMinutes * 60_000;
     const authorityScope = origin === 'operator'
       ? 'operator' as const
       : holdsServingLease
@@ -2505,7 +2753,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (!holdsServingLease
           && !isAuthorizedTopicMovedCloseout
           && !isAuthorizedTopicTransferClose
-          && !isAuthorizedLocalAgeLimit) {
+          && !isAuthorizedLocalAgeLimit
+          && opts?.memoryAudienceClose !== true) {
         this.emit('reapBlocked', { session, reason, skipped: 'not-lease-holder', origin });
         return { terminated: false, skipped: 'not-lease-holder' };
       }
@@ -2520,7 +2769,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // session would pin a tombstone in the running list and re-create the boot
       // death-spiral the purge guards against. A proven-dead session has no
       // liveness to protect, so skip the guard. Lease + protected + CAS still apply.
-      if (!opts?.knownDead) {
+      if (!opts?.knownDead && opts?.memoryAudienceClose !== true) {
         // Build the set of keep-reasons the active bypass flags TREAT AS BYPASSED,
         // then ask the guard for the first keep-reason that is NOT bypassed. This
         // re-checks EVERY other guard (the contract the spec's Part E promises):
@@ -2530,6 +2779,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
         const bypassedReasons: string[] = [];
         if (opts?.bypassRecoveryFlag) bypassedReasons.push('recovery-in-flight');
         if (opts?.bypassActiveProcessKeep) bypassedReasons.push('active-process');
+        // A rerouted one-shot is an interactive REPL, so a live child process can
+        // remain after its hard deadline. The monitor's private capability and
+        // this second expiry check let the hard cap bypass only process-activity
+        // evidence. Protected sessions, user activity, commitments and other
+        // KEEP reasons still veto termination.
+        if (isAuthorizedReroutedLifetime) {
+          bypassedReasons.push('active-process', 'main-process-active', 'process-uninspectable');
+        }
         if (opts?.bypassRecentUserMessageForConfirmedMove || opts?.topicTransferClose === true) {
           bypassedReasons.push('recent-user-message');
         }
@@ -3012,6 +3269,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // (A) tri-state: ONLY a definitive `false` (dead) marks the session
         // completed. `'indeterminate'` (slow/timed-out tmux) does NOT — it falls
         // through to be re-checked next tick rather than reaping a live session.
+        if (alive === 'indeterminate') {
+          featureEvidence.recordAtMostEvery('monitoring.tmuxResilience.asyncHotPath', `kept:${session.tmuxSession}`, 300_000, { kind: 'held', reason: 'indeterminate-probe-kept-session', context: { session: session.tmuxSession } });
+        }
+        if (alive === false && this.tmuxAsyncEnabled) {
+          // A definitive-dead verdict is the one a spurious reap would come from; the review grades these rows.
+          featureEvidence.record('monitoring.tmuxResilience.asyncHotPath', { kind: 'fired', reason: 'probe-classified-session-dead', context: { session: session.tmuxSession } });
+        }
         if (alive === false) {
           // CAS re-read after the await: an operator kill (or another killer)
           // can land mid-probe, so re-read the live record before mutating it —
@@ -3125,12 +3389,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
             if (lifeElapsedMin > session.maxLifetimeMinutes &&
                 !this.config.protectedSessions.includes(session.tmuxSession) &&
                 !this.isStandingSession(session.tmuxSession)) {
-              console.warn(`[SessionManager] Rerouted session "${session.name}" exceeded its hard lifetime (${Math.round(lifeElapsedMin)}m > ${session.maxLifetimeMinutes}m) without a completion sentinel. Killing (timeout).`);
-              const killed = await this.terminateSession(session.id, 'rerouted-lifetime', {
+              const killed = await this.#terminateSessionInternal(session.id, 'rerouted-lifetime', {
                 finalStatus: 'killed',
                 disposition: 'terminal',
+                origin: 'autonomous',
+                reroutedLifetimeReapCapability: REROUTED_LIFETIME_REAP_CAPABILITY,
               });
               if (killed.terminated) {
+                console.warn(`[SessionManager] Rerouted session "${session.name}" exceeded its hard lifetime (${Math.round(lifeElapsedMin)}m > ${session.maxLifetimeMinutes}m) without a completion sentinel. Killed (timeout).`);
                 DegradationReporter.getInstance().report({
                   feature: 'SessionManager.monitorTick.reroutedLifetime',
                   primary: 'rerouted-interactive session completes via its sentinel within the lifetime cap',
@@ -3413,11 +3679,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
                 now,
               );
               if (action === 'emit') {
+                featureEvidence.record('monitoring.idleThrottleSettleGate', { kind: 'fired', reason: 'settled-handed-to-rate-limit-sentinel', context: { session: session.tmuxSession, snapshotRead: settledSnapshot != null } });
                 this.idleThrottleSettle.delete(session.tmuxSession);
                 this.emit('rateLimitedAtIdle', session.tmuxSession);
                 continue; // Settled → sentinel owns recovery.
               }
               if (action === 'wait') {
+                if (!this.idleThrottleSettle.has(session.tmuxSession)) {
+                  featureEvidence.record('monitoring.idleThrottleSettleGate', { kind: 'held', reason: 'throttle-seen-waiting-to-settle', context: { session: session.tmuxSession } });
+                }
                 if (nextState) this.idleThrottleSettle.set(session.tmuxSession, nextState);
                 continue; // Not settled yet — re-sample next idle tick; do NOT emit, and
                           // (like the watchdog's 'waiting') do not run the generic-error
@@ -3425,6 +3695,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
               }
               // 'fall-through': no current throttle in the settled window (a stale buffer
               // line) → clear tracking and proceed to the normal idle machinery below.
+              if (this.idleThrottleSettle.has(session.tmuxSession) || settledSnapshot == null) {
+                // The row the gate exists for: a throttle string that never settled gets no hand-off.
+                if (settledSnapshot == null) {
+                  featureEvidence.recordAtMostEvery('monitoring.idleThrottleSettleGate', `read-failed:${session.tmuxSession}`, 3_600_000, { kind: 'error', reason: 'pane-read-failed', context: { session: session.tmuxSession } });
+                } else {
+                  featureEvidence.record('monitoring.idleThrottleSettleGate', { kind: 'held', reason: 'throttle-gone-before-settle-no-handoff', context: { session: session.tmuxSession } });
+                }
+              }
               this.idleThrottleSettle.delete(session.tmuxSession);
             }
             if (!this.idlePromptSince.has(session.id)) {
@@ -3782,7 +4060,36 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (!decision.allowed) throw new AdmissionRefusedError(decision.reason ?? 'overloaded', decision.detail ?? 'machine overloaded');
   }
 
-  async spawnSession(options: {
+  async spawnSession(options: Parameters<SessionManager['spawnSessionInternal']>[0]): Promise<Session> {
+    const running = this.listRunningSessions();
+    const effectiveCount = running.length + this.pendingHeadlessSpawns;
+    const scheduled = Boolean(options.jobSlug && options.triggeredBy?.startsWith('scheduler:'));
+    // Human conversations can exceed the soft autonomous cap. Permit exactly
+    // one scheduled job alongside them while memory is healthy and the hard
+    // absolute cap still has room. This remains a bounded loan, not an
+    // increase in parallel job capacity or the rerouted memory cap.
+    if (effectiveCount >= this.config.maxSessions
+      && !(scheduled && this.scheduledOverflowAvailable(running, this.currentMemoryPressure()))) {
+      throw new SessionCapacityRefusedError(effectiveCount, this.config.maxSessions);
+    }
+    this.pendingHeadlessSpawns++;
+    if (scheduled) this.pendingScheduledSpawns++;
+    try {
+      return await this.spawnSessionInternal(options);
+    } finally {
+      this.pendingHeadlessSpawns--;
+      if (scheduled) this.pendingScheduledSpawns--;
+    }
+  }
+
+  private scheduledOverflowAvailable(running: Session[], pressure: MemoryPressure): boolean {
+    return pressure !== 'high' && pressure !== 'critical'
+      && running.length + this.pendingHeadlessSpawns < this.config.maxSessions * 3
+      && this.pendingScheduledSpawns === 0
+      && !running.some(s => s.jobSlug);
+  }
+
+  private async spawnSessionInternal(options: {
     name: string;
     prompt: string;
     /** Either a Claude tier name, a generic tier ('fast'|'balanced'|'capable'),
@@ -3914,14 +4221,6 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (options.omitAuthEnv && (this.config.anthropicApiKey ?? '').length > 0) {
       throw new Error('omit-auth-env-unsupported: the agent authenticates Claude through an env token');
     }
-    const runningSessions = this.listRunningSessions();
-    if (runningSessions.length >= this.config.maxSessions) {
-      throw new Error(
-        `Max sessions (${this.config.maxSessions}) reached. ` +
-        `Running: ${runningSessions.map(s => s.name).join(', ')}`
-      );
-    }
-
     const sessionId = this.generateId();
     const tmuxSession = this.plannedTmuxSessionName(options.name);
 
@@ -4296,6 +4595,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${options.omitAuthEnv ? '' : this.config.authToken}`,
+        ...this.memorySystemEnvFlags(),
         ...headlessThreadline.secretEnvFlags, // threadline-mcp-local-http D2 (flag on only; blank when stripped)
         // Long waits (threadline-mcp-local-http "Bounds", deadline 5): the client
         // outlasts the 300 s reply wait on every claude-code spawn, stdio and HTTP alike.
@@ -4452,22 +4752,31 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * nothing while the lane is full (docs/specs/confined-spawn-subscription-reroute.md, Cap contention).
    */
   confinedRerouteCapacity(): 'available' | 'saturated' | 'not-rerouted' {
-    if ((this.config.subscriptionPathMode ?? 'off') !== 'force') return 'not-rerouted';
-    const maxRerouted = this.config.subscriptionMaxRerouted ?? 3;
     const pressure = this.currentMemoryPressure();
-    return this.countReroutedInteractiveSessions() >= maxRerouted || pressure === 'high' || pressure === 'critical' ? 'saturated' : 'available';
+    const running = this.listRunningSessions();
+    // Feedback canaries/builds are not scheduler-proven spawns. The early check
+    // must use their actual gate, not the scheduler's reserved global slot.
+    if (running.length + this.pendingHeadlessSpawns >= this.config.maxSessions) return 'saturated';
+    if ((this.config.subscriptionPathMode ?? 'off') !== 'force') return 'not-rerouted';
+    return this.countReroutedInteractiveSessions() >= this.rerouteAdmissionCap(false)
+      || pressure === 'high' || pressure === 'critical' ? 'saturated' : 'available';
+  }
+
+  private rerouteAdmissionCap(scheduledJob: boolean): number {
+    const maxRerouted = this.config.subscriptionMaxRerouted ?? 3;
+    // A one-slot host cannot reserve without blocking all conversations.
+    return !scheduledJob && maxRerouted > 1 ? maxRerouted - 1 : maxRerouted;
   }
 
   private evaluateRerouteGate(spawnName: string, scheduledJob = false): { allow: boolean } {
     const mode = this.config.subscriptionPathMode ?? 'off';
-    const maxRerouted = this.config.subscriptionMaxRerouted ?? 3;
     const reroutedCount = this.countReroutedInteractiveSessions();
     const pressure = this.currentMemoryPressure();
     const pressureElevated = pressure === 'high' || pressure === 'critical';
     // Keep one of the existing memory-bounded slots for scheduled jobs when
     // conversations would otherwise fill the entire lane. A one-slot host
     // cannot reserve without blocking all conversations, so retain its cap.
-    const admissionCap = !scheduledJob && maxRerouted > 1 ? maxRerouted - 1 : maxRerouted;
+    const admissionCap = this.rerouteAdmissionCap(scheduledJob);
     if (reroutedCount < admissionCap && !pressureElevated) {
       return { allow: true };
     }
@@ -4735,6 +5044,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`,
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${omitAuth ? '' : this.config.authToken}`,
+        ...this.memorySystemEnvFlags(),
         ...reroutedThreadline.secretEnvFlags, // threadline-mcp-local-http D2 (flag on only; blank when stripped)
         ...CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS, // long waits: the client outlasts the 300 s reply wait
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
@@ -6192,6 +6502,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       this.buildContextStore.record(tmuxSession, this.config.projectDir, currentCwd);
     } catch (err) {
       console.warn(`[SessionManager] Failed to record build context for "${tmuxSession}": ${err instanceof Error ? err.message : String(err)}`);
+      featureEvidence.recordAtMostEvery('sessions.respawnBuildContext', `capture-failed|${tmuxSession}`, 60 * 60 * 1000, { kind: 'error', reason: 'capture-failed', context: { tmuxSession, errorName: err instanceof Error ? err.name : 'unknown' } });
     }
   }
 
@@ -6204,6 +6515,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       this.buildContextStore.record(tmuxSession, this.config.projectDir, currentCwd);
     } catch (err) {
       console.warn(`[SessionManager] Failed to record build context for "${tmuxSession}": ${err instanceof Error ? err.message : String(err)}`);
+      featureEvidence.recordAtMostEvery('sessions.respawnBuildContext', `capture-failed|${tmuxSession}`, 60 * 60 * 1000, { kind: 'error', reason: 'capture-failed', context: { tmuxSession, errorName: err instanceof Error ? err.name : 'unknown' } });
     }
   }
 
@@ -6214,8 +6526,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
   ): string | undefined {
     if (!resumeSessionId || !this.buildContextStore) return initialMessage;
     const restore = this.buildContextStore.getRestore(tmuxSession);
-    if (!restore) return initialMessage;
+    if (!restore) {
+      featureEvidence.record('sessions.respawnBuildContext', { kind: 'held', reason: 'no-usable-context-on-resume', context: { tmuxSession } });
+      return initialMessage;
+    }
     console.log(`[SessionManager] Restoring build context for "${tmuxSession}" from ${restore.entry.currentCwd}`);
+    featureEvidence.record('sessions.respawnBuildContext', { kind: 'fired', reason: 'context-restored-on-resume', context: { tmuxSession, contextAgeMs: Date.now() - restore.entry.updatedAt } });
     return [restore.note, initialMessage].filter(Boolean).join('\n\n');
   }
 
@@ -7118,6 +7434,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
      * actually been injected. Used for framework handoffs so a newly mapped
      * session cannot receive a user turn before its continuation context. */
     awaitInitialInjection?: boolean;
+    /** Memory privacy: a place with no topic or channel argument (WhatsApp, iMessage, app). */
+    memoryPlaceKey?: string;
+    /** Memory privacy: set by callers that are not a conversation (dashboard, agent-to-agent). */
+    memoryPlace?: MemoryPlace;
   }): Promise<string> {
     const sanitized = name
       ? name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
@@ -7148,6 +7468,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
       try {
         withSyncOp(() => execFileSync(this.config.tmuxPath, ['kill-session', '-t', `=${tmuxSession}`], { stdio: 'ignore', timeout: 5000 }));
       } catch { /* @silent-fallback-ok — already gone */ }
+    }
+    // Memory privacy: a same-name session is reused only if it serves this audience.
+    if (this.memoryPrivacyWiring?.privacy.enabled && this.tmuxSessionExists(tmuxSession)) {
+      const wiring = this.memoryPrivacyWiring;
+      const audience = wiring.privacy.audienceFor(wiring.privacy.placeFor({
+        telegramTopicId: options?.telegramTopicId, slackChannelId: options?.slackChannelId,
+        memoryPlaceKey: options?.memoryPlaceKey, memoryPlace: options?.memoryPlace,
+      }, wiring.telegramGroupKey()));
+      const known = this.listRunningSessions().some((s) => s.tmuxSession === tmuxSession);
+      if ((!known && isScopedAudience(audience)) || !(await this.retireSessionUnlessAudience(tmuxSession, audienceKey(audience)))) {
+        throw new MemoryPrivacyUnavailableError('a session that could not be ended');
+      }
     }
     if (this.tmuxSessionExists(tmuxSession)) {
       // Session already exists — just reuse it. The initial message is
@@ -7212,6 +7544,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
       configFramework: this.config.framework,
       envFramework: frameworkFromEnv(),
     });
+
+    // Memory privacy: decide the audience before anything else, and drop a resume
+    // whose transcript was read by a different audience.
+    const memoryPlan = this.planMemorySession(framework, tmuxSession, {
+      telegramTopicId: options?.telegramTopicId,
+      slackChannelId: options?.slackChannelId,
+      memoryPlaceKey: options?.memoryPlaceKey,
+      memoryPlace: options?.memoryPlace,
+    });
+    if (memoryPlan?.dropResume && options?.resumeSessionId) {
+      options = { ...options, resumeSessionId: undefined };
+    }
+
     // Shared impersonation fence (spec §2.0) — see resolveFrameworkBinaryPath.
     const configuredBinaryPath = resolveFrameworkBinaryPath({
       framework,
@@ -7361,7 +7706,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(options?.effort ? { effort: options.effort } : {}),
     });
 
-    this.linkAgentOwnedMemory(framework, launchSpec.envOverrides, options?.cwd ?? this.config.projectDir);
+    const memoryScoped = Boolean(memoryPlan?.scopeDir && memoryPlan.settingsPath);
+    if (memoryScoped) {
+      applyMemorySessionLaunch(launchSpec.argv, memoryPlan!.settingsPath!, memoryPlan!.scopeDir!);
+    } else {
+      this.linkAgentOwnedMemory(framework, launchSpec.envOverrides, options?.cwd ?? this.config.projectDir);
+    }
+    const memoryToken = memoryScoped
+      ? this.memoryPrivacyWiring!.privacy.issueSessionToken(interactiveSessionId, memoryPlan!.audience, memoryPlan!.placeKey)
+      : null;
+    const memoryScopeEnv = memoryPlan ? memoryScopeEnvValue(memoryPlan.audience) : null;
 
     // Spawn the framework CLI in tmux — no bash -c shell intermediary.
     // Uses tmux -e flags to set/unset env vars directly, matching spawnSession pattern.
@@ -7386,8 +7740,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
         }), // Expose instar session ID to hook events
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
-        '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
-        ...interactiveThreadline.secretEnvFlags, // threadline-mcp-local-http D2 (flag on only)
+        '-e', `INSTAR_AUTH_TOKEN=${memoryToken ?? this.config.authToken}`,
+        ...(memoryScopeEnv ? ['-e', `INSTAR_MEMORY_SCOPE=${memoryScopeEnv}`] : []),
+        ...(memoryScoped ? [
+          '-e', `INSTAR_PORT=${this.config.port}`,
+          '-e', `CLAUDE_CODE_TMPDIR=${path.join(memoryPlan!.scopeDir!, 'tmp')}`,
+          '-e', `TMPDIR=${path.join(memoryPlan!.scopeDir!, 'tmp')}`,
+        ] : []),
+        ...(memoryScoped ? [] : interactiveThreadline.secretEnvFlags), // threadline-mcp-local-http D2 (flag on only)
         ...(framework === 'claude-code' ? CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS : []), // long waits
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         // The agent HOME (the `.instar` PARENT), distinct from CLAUDE_PROJECT_DIR.
@@ -7406,7 +7766,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           options?.bootstrapConversationIds ??
             (typeof options?.telegramTopicId === 'number' ? [options.telegramTopicId] : []),
         ),
-        ...this.ghTokenEnvFlags(), // P3b: per-agent vault GitHub token (empty when no vault token)
+        ...(memoryScoped ? [] : this.ghTokenEnvFlags()), // P3b: per-agent vault GitHub token (empty when no vault token)
         // Framework-specific env additions/clears (e.g., CLAUDECODE=)
         ...Object.entries(launchSpec.envOverrides).flatMap(([k, v]) => ['-e', `${k}=${v}`]),
         // OAuth tokens (sk-ant-oat01-...) go in CLAUDE_CODE_OAUTH_TOKEN to enable
@@ -7519,6 +7879,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(effectiveAccountId ? { subscriptionAccountId: effectiveAccountId } : {}),
       // §2.10 credential provenance — derived from the SAME predicate as the env block.
       ...(interactiveCredentialSource ? { credentialSource: interactiveCredentialSource } : {}),
+      ...(memoryPlan ? { memoryAudience: audienceKey(memoryPlan.audience) } : {}),
+      ...(memoryPlan?.scopeDir ? { memoryScopeDir: memoryPlan.scopeDir, memorySettingsPath: memoryPlan.settingsPath ?? undefined } : {}),
+      ...(memoryPlan ? { memoryPlaceInput: {
+        telegramTopicId: options?.telegramTopicId, slackChannelId: options?.slackChannelId,
+        memoryPlaceKey: options?.memoryPlaceKey, memoryPlace: options?.memoryPlace,
+      } } : {}),
+      ...(options?.slackChannelId ? { slackChannelId: options.slackChannelId } : {}),
       ...(options?.triggeredBy ? { triggeredBy: options.triggeredBy } : {}),
       prompt: effectiveInitialMessage,
       maxDurationMinutes: this.effectiveMaxDurationMinutes,
@@ -7939,6 +8306,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
     this.linkAgentOwnedMemory('claude-code', {}, this.config.projectDir);
     // Planned once the triage binary is resolved (below); the env slot needs it first.
     let triageThreadline: ThreadlineSpawnPlan = { transport: 'stdio', reason: 'not-wired', secretEnvFlags: [] };
+    let triageCredentialSource: 'env' | 'store' = 'store';
+    let triageAuthFile: string | null = null;
     const triageBinaryForPlan = resolveFrameworkBinaryPath({
       framework: 'claude-code',
       frameworkBinaryPaths: this.config.frameworkBinaryPaths,
@@ -8021,6 +8390,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
             'spawning another framework\'s binary with Claude flags.',
         );
       }
+      // A key-only agent has no stored login, so triage answered "Not logged in". The key arrives
+      // through a private file, not `-e`, so it stays out of argv (spec cloud-key-internal-calls).
+      triageAuthFile = writeClaudeAuthEnvFile(path.join(this.config.projectDir, '.instar'));
+      triageCredentialSource = triageAuthFile ? 'env' : 'store';
+      if (triageAuthFile) tmuxArgs.push(...claudeAuthExecPrefix(triageAuthFile));
       // CMT-798: triage panes are claude-code sessions too — retained copy.
       tmuxArgs.push(this.resolveLaunchBinary('claude-code', triageBinary));
 
@@ -8050,23 +8424,25 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // @silent-fallback-ok — history-limit is a nice-to-have
       }
     } catch (err) {
+      removeClaudeAuthEnvFile(triageAuthFile);
       this.revokeOriginSession(triageSessionId);
       throw new Error(`Failed to create triage tmux session: ${this.originSpawnError(err)}`);
     }
 
     // Track it but with a shorter timeout (triage sessions should be brief)
     const session: Session = {
+      memoryAudience: 'system',
+      memoryPlaceInput: { memoryPlace: { kind: 'system' } },
       id: triageSessionId,
       name,
       status: 'running',
       tmuxSession,
       startedAt: new Date().toISOString(),
       maxDurationMinutes: 10,
-      // §2.10 provenance — the triage lane hardcodes an EMPTY `ANTHROPIC_API_KEY=` above
-      // (it always reads the per-CLAUDE_CONFIG_DIR store, never an env token), so 'store' is
-      // the deterministic provenance here. Set explicitly so no claude-code spawn record is
-      // provenance-blind (an env-token lane that forgot the flag would be a lint-caught bug).
-      credentialSource: 'store',
+      // §2.10 provenance — 'env' when the configured sign-in key was handed over above, 'store'
+      // otherwise. Set explicitly so no claude-code spawn record is provenance-blind (an env-token
+      // lane that forgot the flag would be a lint-caught bug).
+      credentialSource: triageCredentialSource,
       ...this.threadlineTransportTag(triageThreadline),
     };
     this.state.saveSession(session);
@@ -8499,6 +8875,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       conversationId?: string;
     },
   ): boolean {
+    text = this.withInboundFilesInScope(tmuxSession, text);
     // ── First-party provenance (F7): instar-authored content, verified by
     // the in-process parameter (never by what the text says) — the guard
     // layers below exist to vet content of UNVERIFIED origin, and instar's

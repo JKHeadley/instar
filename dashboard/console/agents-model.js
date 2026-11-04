@@ -315,7 +315,7 @@ export function waitingCards(pairing, now = Date.now()) {
   for (const n of pairing.restartNotices) cards.push({ kind: 'restart', id: n.id, title: 'An invite was cleared by a restart', body: `An invite from ${claimed(n.claimedAgent, n.claimedOwner)} was waiting for your approval when I restarted, and it was cleared (its secret lived only in memory). Paste it again, or forward it to my Telegram, before it expires at ${localTime(n.exp, now)}.`, actions: ['dismiss'] });
   for (const a of pairing.alarms) {
     const secondName = verifiedDisplayName(a.secondAccept && a.secondAccept.agent);
-    cards.push({ kind: 'alarm', iid: a.iid, title: 'Warning: your invite got out', body: `Two agents used the same invite, so I paused the first one: it cannot receive anything secret. The second ${secondName ? `calls itself ${secondName}` : 'has no verified name'}. Make a new invite and send it privately.`, actions: [] });
+    cards.push({ kind: 'alarm', iid: a.iid, title: 'Warning: your invite got out', body: `Two agents used the same invite, so I paused the first one: it cannot receive anything secret. The second ${secondName ? `calls itself ${secondName}` : 'has no verified name'}. Make a new invite and send it privately.`, actions: ['new-invite'] });
   }
   for (const p of pairing.pendingAccepts) cards.push({ kind: 'accept', iid: p.iid, name: verifiedDisplayName(p.claimedAgent) || 'An unnamed agent', title: `Pair with ${claimed(p.claimedAgent, p.claimedOwner)}?`, body: `Only approve if you know who sent you this invite. Check code (optional, to read to them): ${p.checkCode || '—'}. It expires at ${localTime(p.exp, now)}.`, actions: ['approve', 'decline'] });
   for (const i of pairing.finishPrompts) cards.push({ kind: 'finish', iid: i.iid, name: verifiedDisplayName(i.acceptor && i.acceptor.agent) || 'An unnamed agent', title: `${verifiedDisplayName(i.acceptor && i.acceptor.agent) || 'An unnamed agent'} accepted your invite.`, body: `${claimed(i.acceptor && i.acceptor.agent, i.acceptor && i.acceptor.owner).replace(/^the/, 'The')} accepted it. Finish only if that is who you sent it to.`, actions: ['finish', 'not-them'] });
@@ -341,7 +341,7 @@ export function buildAgentsPage({ health, pairingRes, invitesRes, peersRes, conv
     return {
       mode: 'off', certain: relayOff, relay, pairing, agents, waiting, conversations, facts: [], topicNames,
       headline: relayOff ? 'The agent network is off on this agent.' : 'The agent network looks off on this agent.',
-      sub: `${relayOff ? '' : `${relay.word}. `}Pairing is turned off too. To turn it on, ask me to “connect to the agent network”, or tap Turn on pairing below; that restarts my server, and this page reconnects by itself.`,
+      sub: `${relayOff ? '' : `${relay.word}. `}Pairing is turned off too. To turn it on, ask me to “connect to the agent network”, or tap Turn on pairing; that restarts my server, and this page reconnects by itself.`,
       tone: 'muted', notes: [],
     };
   }
@@ -378,7 +378,7 @@ export function buildAgentsPage({ health, pairingRes, invitesRes, peersRes, conv
   const subParts = [];
   if (waiting.length && !relay.connected && relay.state !== 'cant-tell' && !relayOff) subParts.push(`${relay.word}.`);
   if (pairing.state === 'elsewhere') subParts.push(pairing.holder ? `Pairing runs on ${pairing.holder.name}; open the console there to make or approve invites.` : 'Pairing runs on another of my machines.');
-  if (pairing.state === 'off' && agents.length) subParts.push(paired.length ? 'Existing agents are listed below.' : agents.some(a => a.historyOnly) ? 'Past conversations are saved below.' : 'No agents are paired here.');
+  if (pairing.state === 'off' && agents.length) subParts.push(paired.length ? 'Existing agents are still listed.' : agents.some(a => a.historyOnly) ? 'Past conversations are still saved.' : 'No agents are paired here.');
   if (pairing.state === 'cant-tell') subParts.push(pairing.reason);
   if (!agents.length && pairing.state === 'ok' && !waiting.length) subParts.push('Connect another agent to start.');
   if (relay.identity && relay.identity.tone === 'bad') subParts.push(relay.identity.word + '.');

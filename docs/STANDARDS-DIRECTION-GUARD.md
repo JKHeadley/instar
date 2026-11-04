@@ -23,10 +23,10 @@ real pin exists, changing it through an ordinary candidate is never accepted mer
 because that candidate supplies a matching signature.
 
 The corresponding private key must remain outside the repository, agent-readable
-credential stores, and build environment. The current fleet file is a comments-only
-placeholder: no production approver key is configured, and therefore every standards
-change fails closed until an independently controlled key is deliberately installed
-in protected main. The test suite uses ephemeral fixture keys only; none are reusable
+credential stores, and build environment. While no production approver key is installed, the signature path cannot pass. A
+standards change lands through the guard's second path instead,
+`evaluateOperatorReviewApproval`: an approving GitHub review from the repository owner
+on the exact head commit. The test suite uses ephemeral fixture keys only; none are reusable
 approval credentials.
 
 ## Identity and rename cost

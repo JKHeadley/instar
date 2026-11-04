@@ -15,6 +15,7 @@
  */
 
 import crypto from 'node:crypto';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
 import type { SpawnRequestManager, SpawnResult } from '../messaging/SpawnRequestManager.js';
 import type { MessageStore } from '../messaging/MessageStore.js';
@@ -1195,6 +1196,7 @@ export class ThreadlineRouter {
     // for verified peers, but the pool must never cross-bind. → cold-spawn.
     const existingRecord = this.warmSessionPool.peek(threadId);
     if (existingRecord && existingRecord.peerId !== peerId) {
+      featureEvidence.record('threadline.warmSessionA2A', { kind: 'held', reason: 'warm-prespawn-peer-conflict', context: { threadId, peerId } });
       console.warn(`[ThreadlineRouter] Warm pre-spawn peer-conflict for thread ${threadId}: owned by ${existingRecord.peerId.slice(0, 16)}, sender ${peerId.slice(0, 16)}. Falling back to cold-spawn.`);
       return null;
     }
@@ -1235,6 +1237,7 @@ export class ThreadlineRouter {
       // @silent-fallback-ok — intentional + observable: the warm keep-alive path
       // is best-effort over the PROVEN cold-spawn. A spawn-eval error degrades to
       // cold-spawn (logged here, and the cold path has its own denial handling).
+      featureEvidence.record('threadline.warmSessionA2A', { kind: 'error', reason: 'warm-spawn-evaluate-threw', context: { threadId, peerId, trustLevel: relayContext.trustLevel } });
       console.warn(`[ThreadlineRouter] Warm spawn evaluate threw for thread ${threadId}: ${err instanceof Error ? err.message : String(err)} — falling back to cold-spawn`);
       return null;
     }
@@ -1263,6 +1266,7 @@ export class ThreadlineRouter {
           error: `Spawn denied: ${spawnResult.reason}`,
         };
       }
+      featureEvidence.record('threadline.warmSessionA2A', { kind: 'held', reason: 'warm-spawn-not-approved', context: { threadId, peerId, trustLevel: relayContext.trustLevel } });
       console.log(`[ThreadlineRouter] Warm spawn not approved for thread ${threadId}: ${spawnResult.reason}. Falling back to cold-spawn.`);
       return null;
     }
@@ -1285,6 +1289,7 @@ export class ThreadlineRouter {
       // PROVEN cold-spawn (logged); it must NEVER overwrite the owner's warm
       // session. Any OTHER error re-throws (not a silent fallback).
       if (err instanceof WarmSessionPeerConflictError) {
+        featureEvidence.record('threadline.warmSessionA2A', { kind: 'error', reason: 'warm-admit-peer-conflict', context: { threadId, peerId } });
         console.warn(`[ThreadlineRouter] Warm admit peer-conflict for thread ${threadId}: ${err.message}. Falling back to cold-spawn.`);
         return null;
       }
@@ -1316,6 +1321,7 @@ export class ThreadlineRouter {
       timestamp: new Date().toISOString(),
     });
 
+    featureEvidence.record('threadline.warmSessionA2A', { kind: 'fired', reason: 'warm-session-spawned', context: { threadId, peerId, sessionName, trustLevel: relayContext.trustLevel, poolSize: this.warmSessionPool.size() } });
     console.log(`[ThreadlineRouter] Warm (keep-alive) session ${sessionName} admitted for thread ${threadId} (peer ${peerId.slice(0, 16)})`);
     return {
       handled: true,
@@ -1375,6 +1381,10 @@ export class ThreadlineRouter {
       // worker isn't reaped while it's actively conversing. No-op when the pool
       // is absent (dark-ship) or the thread isn't a warm one.
       this.warmSessionPool?.touch(threadId);
+      if (this.warmSessionPool?.peek(threadId)) {
+        // Per follow-up message, so one row per thread per hour, carrying the rest as a count.
+        featureEvidence.recordAtMostEvery('threadline.warmSessionA2A', `served|${threadId}`, 60 * 60 * 1000, { kind: 'fired', reason: 'warm-session-served-followup', context: { threadId, sessionName: entry.sessionName, messageCount: entry.messageCount + 1 } });
+      }
 
       console.log(`[ThreadlineRouter] Injected message into live session ${entry.sessionName} for thread ${threadId}`);
       return {
@@ -1388,6 +1398,9 @@ export class ThreadlineRouter {
       };
     } catch (err) {
       console.warn(`[ThreadlineRouter] Live-session injection threw for thread ${threadId}:`, err);
+      if (this.warmSessionPool?.peek(threadId)) {
+        featureEvidence.record('threadline.warmSessionA2A', { kind: 'error', reason: 'warm-delivery-threw', context: { threadId, sessionName: entry.sessionName } });
+      }
       return null;
     }
   }

@@ -134,6 +134,7 @@ export function generateSlackManifest(agentName: string): Record<string, unknown
           'chat:write',
           'files:read',
           'groups:history',
+          'groups:read',
           'im:history',
           'im:read',
           'im:write',
@@ -227,7 +228,7 @@ export async function addSlack(): Promise<void> {
     // Check OAuth scopes — warn about missing required scopes
     const REQUIRED_SCOPES = [
       'app_mentions:read', 'channels:history', 'channels:join', 'channels:manage',
-      'channels:read', 'chat:write', 'files:read', 'groups:history', 'im:history',
+      'channels:read', 'chat:write', 'files:read', 'groups:history', 'groups:read', 'im:history',
       'im:read', 'im:write', 'pins:write', 'reactions:read', 'reactions:write', 'users:read',
     ];
     const scopeHeader = authResponse.headers.get('x-oauth-scopes') ?? '';

@@ -25,6 +25,7 @@ import crypto from 'node:crypto';
 import type { MeshCommand } from '../core/MeshRpc.js';
 import type { MeshRpcClientResult } from '../core/MeshRpcClient.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { checkFingerprintHealth, fetchErrorCode } from './backupRoutes.js';
 
 export type RelayForwardCommand = Extract<MeshCommand, { type: 'a2a-relay-forward' }>;
@@ -280,7 +281,10 @@ export class RelayForwarder {
       // @silent-fallback-ok — no holder found ⇒ today's 503.
       peer = null;
     }
-    if (!peer) return { kind: 'no-holder' };
+    if (!peer) {
+      featureEvidence.record('threadline.relayForward', { kind: 'held', reason: 'no-holder-found', context: { messageId: command.messageId } });
+      return { kind: 'no-holder' };
+    }
 
     let outcome: ForwardOutcome;
     try {
@@ -294,6 +298,9 @@ export class RelayForwarder {
         : { kind: 'unconfirmed', machine: peer, reason: (err as { name?: string } | null)?.name === 'AbortError' ? 'timeout' : 'transport-error' };
     }
     if (outcome.kind !== 'answered') this.d.finder.drop();
+    featureEvidence.record('threadline.relayForward', outcome.kind === 'answered'
+      ? { kind: 'fired', reason: 'forward-executed', context: { machine: peer.machineId, messageId: command.messageId, status: outcome.status } }
+      : { kind: 'error', reason: `forward-${outcome.kind}: ${outcome.kind === 'no-holder' ? 'no-holder' : outcome.reason}`, context: { machine: peer.machineId, messageId: command.messageId } });
     return outcome;
   }
 }
@@ -327,6 +334,7 @@ export async function handleRelayForwardCommand(
 ): Promise<RelayForwardVerbResult> {
   const refuse = (reason: string): RelayForwardVerbResult => {
     if (deps.counters) deps.counters.holderRefused++;
+    featureEvidence.record('threadline.relayForward', { kind: reason === 'relay-forward-disabled' || reason === 'holder-is-standby' ? 'held' : 'error', reason: `holder-refused: ${reason}`, context: { sender } });
     return { outcome: 'refused', reason };
   };
   let enabled = false;
@@ -376,6 +384,7 @@ export async function handleRelayForwardCommand(
   // The route's own 503 guard runs before the relay send: nothing was sent.
   if (res.status === 503) return refuse('holder-relay-not-connected');
   if (deps.counters) deps.counters.holderHandled++;
+  featureEvidence.record('threadline.relayForward', { kind: 'fired', reason: 'holder-ran-forwarded-send', context: { sender, status: res.status, messageId: command.messageId } });
   let parsed: unknown = null;
   try { parsed = await res.json(); } catch { /* @silent-fallback-ok — an unreadable answer is unknown, never a success */ }
   if (!parsed || typeof parsed !== 'object') return { outcome: 'unknown', reason: 'holder-answer-unreadable' };
@@ -488,12 +497,16 @@ export async function handleTopicReplyInjectCommand(
   if (deps.counters) deps.counters.injectsReceived++;
   try {
     const ok = await deps.inject(sessionName, command.text);
-    if (ok) return { injected: true };
+    if (ok) {
+      featureEvidence.record('threadline.relayForward', { kind: 'fired', reason: 'reply-injected', context: { topicId: command.topicId, messageId: command.messageId } });
+      return { injected: true };
+    }
   } catch {
     // @silent-fallback-ok — reported below as an attempted, unconfirmed inject.
   }
   // The paste was attempted and not confirmed: it may still land, so this is
   // NOT definitive — the holder must not ask another machine.
+  featureEvidence.record('threadline.relayForward', { kind: 'error', reason: 'reply-inject-unconfirmed', context: { topicId: command.topicId, messageId: command.messageId } });
   return { injected: false, definitive: false, reason: 'inject-unconfirmed' };
 }
 

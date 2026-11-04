@@ -20,6 +20,7 @@ import { multipartFileName, multipartMediaType, telegramGroupTypes, telegramKind
 import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { resolveApprovalOwner } from '../threadline/PairingInviteTelegram.js';
 import { NotificationBatcher, NotificationTier } from './NotificationBatcher.js';
 import type { ContentValidationConfig } from './TopicContentValidator.js';
 import { validateTopicContent, getTopicPurpose, classifyContent } from './TopicContentValidator.js';
@@ -51,7 +52,7 @@ import { buildStallAlertDecisionContext } from './shared/StallAlertDecisionConte
 import { DP_TELEGRAM_STALL_CONFIRM } from '../data/provenanceCoverage.js';
 import { AspAuthorshipJoin, type MessageAuthorship } from '../core/AspAuthorshipJoin.js';
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
-import { normalizeInboundThread, toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from './telegramTopicSpace.js';
+import { normalizeInboundThread, inboundTopicId, toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from './telegramTopicSpace.js';
 import { admitItemToHub, attentionPriorityRank, recordHeldHubPost, resolveHubFilterMode, type AttentionHubFilterMode } from './attentionHubPolicy.js';
 import {
   attentionConditionKeyOf, classifyAttentionLifecycle, decideAttentionExpiry, isOpenAttentionStatus, mayReopenInPlace,
@@ -586,6 +587,8 @@ interface PendingPromise {
 /** Longest a send waits at boot for the forward-to-holder wiring (see holderForwardReady). */
 export const HOLDER_FORWARD_WIRING_WAIT_MS = 30_000;
 
+const UNKNOWN_OWNER_TAP_REFUSAL = "I can't confirm who my owner is on this machine yet, so this button can't be answered here.";
+
 /** One file a Telegram inbound handler downloaded (media spec §4.9). */
 export interface TelegramInboundMedia {
   topicId: number;
@@ -963,6 +966,8 @@ export class TelegramAdapter implements MessagingAdapter {
   // Prompt Gate — relay prompts to Telegram and handle responses
   private callbackRegistry: CallbackRegistry;
   private pendingPromptReply = new Map<number, PendingPromptReply>(); // topicId → pending
+  private callbackApproverResolver: (() => number | undefined) | null = null;
+  private noApproverReported = new Set<string>();
   private promptGateDisclosureSent = new Set<number>(); // topicIds that have seen the disclosure
 
   /**
@@ -1636,6 +1641,18 @@ export class TelegramAdapter implements MessagingAdapter {
     });
   }
 
+  /** A durable origin recovery bypasses sendToTopic, so mirror its confirmed
+   * Telegram receipt into the same history used by normal session replies. */
+  logRecoveredOriginMessage(entry: { chatId: string; threadId: number | null; messageId: number; text: string; acceptedAt: number; producerKind: string }): void {
+    if (!Number.isSafeInteger(entry.messageId) || entry.messageId <= 0) return;
+    const topicId = inboundTopicId(entry.chatId, entry.threadId, this.topicSpace());
+    this.appendToLog({ messageId: entry.messageId, topicId, text: entry.text,
+      fromUser: false, forwarded: false, timestamp: new Date(entry.acceptedAt).toISOString(),
+      sessionName: this.topicToSession.get(topicId) ?? null,
+      provenance: entry.producerKind === 'session' ? 'agent' : 'automation' });
+  }
+
+
   /**
    * Send a message to a specific forum topic.
    * Returns the Telegram message ID for delivery confirmation.
@@ -2151,6 +2168,43 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   getOwnerUserId(): number | undefined {
     return this.config.ownerUserId ?? this.config.promptGate?.ownerId;
+  }
+
+  /**
+   * Who may answer an authority-bearing button (ACT-115). Wider than getOwnerUserId(), which also
+   * addresses owner DMs: it adds the one verified operator (resolveApprovalOwner). No answer means
+   * nobody may tap, never that anybody may.
+   */
+  setCallbackApproverResolver(resolve: () => number | undefined): void {
+    this.callbackApproverResolver = resolve;
+  }
+
+  /** The configured owner, normalized the way pairing reads it: config is raw JSON, so an id may be a string. */
+  private getConfiguredApprover(): number | undefined {
+    return resolveApprovalOwner(this.getOwnerUserId(), [], []);
+  }
+
+  private getCallbackApprover(): number | undefined {
+    const configured = this.getConfiguredApprover();
+    if (configured !== undefined) return configured;
+    try {
+      return this.callbackApproverResolver?.();
+    } catch {
+      // @silent-fallback-ok: an unresolved owner refuses the tap, which is the safe answer
+      return undefined;
+    }
+  }
+
+  private reportNoCallbackApprover(feature: string): void {
+    if (this.noApproverReported.has(feature)) return;
+    this.noApproverReported.add(feature);
+    DegradationReporter.getInstance().report({
+      feature: `TelegramAdapter.${feature}`,
+      primary: 'Only the verified owner can answer this button',
+      fallback: 'The tap was refused, because no single verified owner is known yet',
+      reason: feature === 'tunnelConsent' ? 'No ownerUserId is configured, and this button needs a configured owner' : 'No ownerUserId is configured and no single verified operator exists',
+      impact: 'This button cannot be answered from Telegram until the owner is known',
+    });
   }
 
   /**
@@ -6500,8 +6554,9 @@ export class TelegramAdapter implements MessagingAdapter {
     // We use getOwnerUserId() (the explicit owner principal), NOT the
     // broader authorizedUserIds set.
     if (query.data.startsWith('tc:')) {
-      const owner = this.getOwnerUserId();
-      if (owner && query.from.id !== owner) {
+      const owner = this.getConfiguredApprover();
+      if (owner === undefined) this.reportNoCallbackApprover('tunnelConsent');
+      if (owner === undefined || query.from.id !== owner) {
         await this.apiCall('answerCallbackQuery', {
           callback_query_id: query.id,
           text: 'Only the owner can approve this',
@@ -6547,11 +6602,12 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     // Authorization check: verify sender is the configured owner
-    const ownerId = this.config.promptGate?.ownerId;
-    if (ownerId && query.from.id !== ownerId) {
+    const ownerId = this.getCallbackApprover();
+    if (ownerId === undefined) this.reportNoCallbackApprover('promptGate');
+    if (ownerId === undefined || query.from.id !== ownerId) {
       await this.apiCall('answerCallbackQuery', {
         callback_query_id: query.id,
-        text: 'Only the session owner can respond to prompts',
+        text: ownerId === undefined ? UNKNOWN_OWNER_TAP_REFUSAL : 'Only the session owner can respond to prompts',
       }).catch(() => {});
       // Do NOT resolve the token — preserve it for the real owner
       return;
@@ -6669,8 +6725,9 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     // Verify sender is the authorized owner
-    const ownerId = this.config.promptGate?.ownerId;
-    if (ownerId && msg.from.id !== ownerId) {
+    const ownerId = this.getCallbackApprover();
+    if (ownerId === undefined) this.reportNoCallbackApprover('promptGate');
+    if (ownerId === undefined || msg.from.id !== ownerId) {
       return false; // Not the owner — fall through to normal routing
     }
 
@@ -6821,6 +6878,23 @@ export class TelegramAdapter implements MessagingAdapter {
     });
 
     return (result as TelegramUpdate[]) ?? [];
+  }
+
+  /**
+   * Human readers of the group, for memory privacy: members less the bots listed
+   * as administrators. A bot that is not an admin counts as a person, because
+   * Telegram offers no way to list it. That errs toward treating the group as shared.
+   */
+  async groupReaderCount(): Promise<number | null> {
+    const count = await this.apiCall('getChatMemberCount', { chat_id: this.config.chatId }) as number;
+    const admins = await this.apiCall('getChatAdministrators', { chat_id: this.config.chatId }) as Array<{ user?: { is_bot?: boolean } }>;
+    if (typeof count !== 'number' || !Array.isArray(admins)) return null;
+    return count - admins.filter((a) => a.user?.is_bot === true).length;
+  }
+
+  /** The place key for the whole group: every forum topic has the same readers. */
+  get memoryPlaceKey(): string {
+    return `telegram:${this.config.chatId}`;
   }
 
   private async apiCall(method: string, params: Record<string, unknown>, retryCount: number = 0): Promise<unknown> {

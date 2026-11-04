@@ -18,6 +18,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { Router, type Request, type Response } from 'express';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { deviceMayUse } from './mobilePairingRoutes.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import { requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
@@ -144,8 +145,12 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
       try { await media.finalizeUpload(u.uploadId); } catch (err) {
         // Recovery repeats it: the chunks are removed only after `complete`.
         svc!.deps.reportDegradation?.('AppMedia.finalize', err instanceof Error ? err.message : String(err));
+        featureEvidence.record('mobilePairing.native.media', { kind: 'error', reason: 'upload could not be finalized', context: { uploadId: u.uploadId, deviceId, declaredKind: u.declaredKind, size: u.size } });
       }
-      if (media.wasHashMismatch(u.uploadId)) { res.status(409).json({ error: 'hash-mismatch', detail: 'The file did not arrive intact. Start the upload again.' }); return; }
+      if (media.wasHashMismatch(u.uploadId)) {
+        featureEvidence.record('mobilePairing.native.media', { kind: 'error', reason: 'corrupt upload: hash mismatch', context: { uploadId: u.uploadId, deviceId, declaredKind: u.declaredKind, size: u.size } });
+        res.status(409).json({ error: 'hash-mismatch', detail: 'The file did not arrive intact. Start the upload again.' }); return;
+      }
     }
     res.json({ ok: true, state: media.getUpload(u.uploadId)?.state ?? u.state });
   });

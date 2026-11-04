@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "operator-needs-first-screen",
+  "sessionId": "30f90ccf-9e3c-4f41-80a4-df8508194972",
+  "timestamp": "2026-11-04T04:24:14.273Z",
+  "artifactPath": "upgrades/side-effects/operator-needs-first-screen.md",
+  "artifactSha256": "ea6f548415356752f25992b963d9320f017d0b1cb55ba4426cc04ec84c8bdfc0",
+  "specPath": "docs/specs/operator-needs-first-screen.md",
+  "coveredFiles": [
+    "dashboard/console/development-model.js",
+    "dashboard/console/development.js",
+    "dashboard/console/needs-model.js",
+    "docs/specs/operator-needs-first-screen.md",
+    "tests/unit/console-needs-first-screen.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-on to the gate change: resolves the merge with the agent-stop wording",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

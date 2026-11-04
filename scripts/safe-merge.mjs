@@ -2,6 +2,8 @@
 /**
  * safe-merge — merge a PR ONLY after every check (incl. the e2e job) is green.
  *
+ * Governed by: One Constitution, Two Books Aligned (it refuses a rule-book change with no declared counterpart).
+ *
  * Why: we merge with `gh pr merge --admin` to jump the hot-branch queue, but
  * `--admin` BYPASSES branch-protection's required-checks enforcement — which is
  * how PR #381 merged while the `E2E Tests` job was red and turned main red for
@@ -55,6 +57,7 @@ import { checkReleaseFragment } from './check-release-fragment.mjs';
 import { latestPerName, runTimeMs } from './latest-run-per-check.mjs';
 import { MERGE_FLOOR_MODES, selectMergeFloor, isMergeEligible, extractRulesetReviewPolicy, reviewPrecheckPasses, parseCodeowners, codeOwnedFiles } from './local-verify-floor.mjs';
 import { isTracePath } from './lib/instar-dev-trace.mjs';
+import { pairingRefusal } from './check-constitution-pairing.mjs';
 
 export { extractRulesetReviewPolicy };
 
@@ -1165,6 +1168,14 @@ async function main() {
   if (baseRefusal) {
     result({ result: baseRefusal.result, pr: Number(pr), base: baseRefusal.base });
     console.error(baseRefusal.message);
+    process.exit(1);
+  }
+  // Rule 119: a change to the constitution names its counterpart in the other
+  // book. Existence only; the review holds whether the pair means the same.
+  const pairing = pairingRefusal(repo, Number(pr));
+  if (pairing) {
+    result({ result: pairing.result, pr: Number(pr), state: pairing.state, detail: pairing.detail });
+    console.error(pairing.message);
     process.exit(1);
   }
   const pinnedHead = args.matchHeadCommit ?? view.headRefOid;
