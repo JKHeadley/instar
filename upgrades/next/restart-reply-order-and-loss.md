@@ -2,7 +2,7 @@
 
 ## What Changed
 
-The legacy Telegram recovery queue now sends older pending replies first within a conversation. The current origin outbox checks durable delivery records after restart and explains held, failed, or uncertain replies in the conversation and Attention hub. A reply that arrives late is labeled as earlier work that may be out of order.
+The legacy Telegram recovery queue now sends older pending replies first within a conversation. The current origin outbox checks durable delivery records after restart and explains held, failed, or uncertain replies in the conversation and Attention hub. A reply overtaken by a newer answer is labeled as earlier work. Replies confirmed at least five minutes after preparation are also explained.
 
 ## Evidence
 

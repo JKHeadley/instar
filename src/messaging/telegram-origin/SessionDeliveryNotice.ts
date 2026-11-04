@@ -14,7 +14,8 @@ export function sessionDeliveryNotice(state: string, uncertain = false): { summa
   };
 }
 
-export function lateRecoveredReplyNotice(preparedAt: number, acceptedAt: number): string | null {
+export function lateRecoveredReplyNotice(preparedAt: number, acceptedAt: number, outOfOrder = false): string | null {
+  if (outOfOrder) return 'An earlier reply arrived after a newer reply. Please read it as an earlier answer.';
   if (acceptedAt - preparedAt < 300_000) return null;
-  return 'An earlier reply was written before it arrived and may be out of order with newer answers.';
+  return 'An earlier reply was confirmed after a delay and may be out of order with newer answers.';
 }

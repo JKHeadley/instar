@@ -3,16 +3,16 @@
 **Version / slug:** `restart-reply-order-and-loss`  
 **Date:** 2026-11-04  
 **Author:** Echo  
-**Second-pass reviewer:** independent agent, concurred
+**Second-pass reviewer:** independent agent, concurred after follow-up
 
 ## Summary of the change
 
-Tier 1, narrow reversible repair: the legacy delivery sentinel selects the oldest queued reply in a topic; the origin outbox pages through durable session delivery exceptions after a restart; the server posts plain, deduplicated Attention and conversation notices for held, failed, or uncertain replies and marks a reply accepted late. Runtime changes are in the sentinel, origin store/service/runtime, and server wiring, with targeted tests. Roughly 10 source/test/documentation files and 150 lines; one spec review and one commit/gate attempt planned. The existing retry and receipt authority stays intact.
+Tier 1, narrow reversible repair: the legacy delivery sentinel selects the oldest queued reply in a topic; the origin outbox pages through durable session delivery exceptions after a restart; the server posts plain, deduplicated Attention and conversation notices for held, failed, or uncertain replies and marks a reply whose Telegram receipt number proves a newer answer overtook it, or whose acceptance was confirmed at least five minutes after preparation. Runtime changes are in the sentinel, origin store/service/runtime, and server wiring, with targeted tests. Roughly 10 source/test/documentation files and 150 lines; two focused review passes and two commit/gate attempts. The existing retry and receipt authority stays intact.
 
 ## Decision-point inventory
 
 - Legacy queue selection — modified — oldest queued row wins within a topic, except the explicit stampede policy.
-- Session delivery exception read — added — pages through durable session operations with unresolved delivery evidence; it also scans accepted session replies after the rollout cutoff, closing prior alerts on timely acceptance and explaining acceptance that took at least five minutes.
+- Session delivery exception read — added — pages through durable session `sendMessage` operations with unresolved delivery evidence; it also scans accepted session replies after the rollout cutoff, closing prior alerts on timely acceptance and explaining acceptance that took at least five minutes.
 - Notice wording — added — derives delayed, failed, or uncertain wording from durable transport state; it does not infer message content.
 - Origin retry/receipt decisions — passed through unchanged.
 
@@ -39,7 +39,7 @@ No competing-signals judgment heuristic is added. The state mapping is a fixed t
 ## 5. Interactions
 
 - Shadowing: the origin outbox replaces the legacy drain when enabled; the two do not both execute one row. The legacy ordering fix is for installs still using that path.
-- Double-fire: Attention ids use the original operation id. Topic sends use a stable logical id per operation and state, so a repeated check can reattempt a notice without duplicating a confirmed send. A late-recovery notice is selected only on a confirmed receipt after at least five minutes.
+- Double-fire: Attention ids use the original operation id. Topic sends use a stable logical id per operation and state, so a repeated check can reattempt a notice without duplicating a confirmed send. An order notice requires durable Telegram message ids for two `sendMessage` replies in the same account and topic. Edits are excluded because they reuse message ids. A time-only late notice requires acceptance confirmation at least five minutes after preparation; it does not assert Telegram arrival time.
 - Races: the durable sweep repairs a crash between outbox recording and the immediate callback. It reads evidence only and never claims or replays the original reply. Notice sends go through the origin automation path. The scan runs after the recovery drain without blocking it.
 - Feedback loops: a notice is server automation, so it does not trigger the session-reply alert callback.
 
@@ -66,7 +66,7 @@ The fix gives the person an explicit explanation when a reply cannot be confirme
 ## Second-pass review
 
 **Reviewer:** independent review agent  
-**Independent read of the artifact:** Concur with the review. The durable cursor, stable notice id, nonblocking scan, accepted-reply alert closure, and position-neutral wording address the identified risks. A targeted HTTP notice retry test is not included; the origin automation route and idempotent send behavior are existing paths.
+**Independent read of the artifact:** Concur with the review. The durable cursor, stable notice id, nonblocking scan, accepted-reply alert closure, and position-neutral wording address the identified risks. The follow-up review concurred with the receipt-number overtaking query and edit exclusion. The follow-up review also concurred with receipt-number order detection and edit exclusion. A targeted HTTP notice retry test is not included; the origin automation route and idempotent send behavior are existing paths.
 
 ## Evidence pointers
 

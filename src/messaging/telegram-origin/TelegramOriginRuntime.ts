@@ -80,7 +80,7 @@ export interface TelegramOriginRuntimeOptions {
   onLeaseHoldObserved?: (row: import('./StoreTypes.js').HeldOperationRow) => Promise<void> | void;
   /** Mirror a recovered, receipt-confirmed Bot API message into topic history. */
   onRecoveredMessage?: (input: { operationId: string; chatId: string; threadId: number | null; messageId: number; text: string; acceptedAt: number; preparedAt: number; producerKind: string }) => Promise<void> | void;
-  onSessionDeliveryHeld?: (input: { operationId: string; reason: string; chatId: string | null; threadId: number | null; state?: string; uncertain?: boolean; preparedAt?: number; acceptedAt?: number | null }) => Promise<void> | void;
+  onSessionDeliveryHeld?: (input: { operationId: string; reason: string; chatId: string | null; threadId: number | null; state?: string; uncertain?: boolean; preparedAt?: number; acceptedAt?: number | null; outOfOrder?: boolean }) => Promise<void> | void;
   /** Synchronous diagnostics, independent of worker/transport authority. */
   readDetectorHealth?: () => Record<string, unknown>;
 }
@@ -160,8 +160,8 @@ export class TelegramOriginRuntime {
       reviewLegacyRecovery: options.reviewLegacyRecovery,
       peerEvidence: options.peerEvidence, diagnoseUnknown: options.diagnoseUnknown,
       diagnosticMode: options.diagnosticMode,
-      onHold: ({ operationId, reason, producerKind, destination }) => {
-        if (producerKind === 'session' && reason !== 'lease-not-held' && reason !== 'destination-not-authorized' && reason !== 'original-operation-unresolved') {
+      onHold: ({ operationId, reason, producerKind, operationKind, destination }) => {
+        if (producerKind === 'session' && operationKind === 'sendMessage' && reason !== 'lease-not-held' && reason !== 'destination-not-authorized' && reason !== 'original-operation-unresolved') {
           const uncertain = reason === 'transport-acceptance-unknown' || reason === 'response-without-correlated-receipt' || reason === 'partial-platform-receipt';
           Promise.resolve(options.onSessionDeliveryHeld?.({ operationId, reason, chatId: destination.chatId,
             threadId: destination.topicId === null ? null : Number(destination.topicId), state: uncertain ? 'outcome-unknown' : 'held', uncertain }))

@@ -803,7 +803,7 @@ export class OriginStoreBackend {
    * interrupted callback cannot make a missing reply silent. */
   listSessionDeliveryExceptions(input: { afterPreparedAt?: number; afterOperationId?: string; limit?: number } = {}): Array<{
     operationId: string; state: string; reason: string; uncertain: boolean; preparedAt: number;
-    acceptedAt: number | null; chatId: string | null; threadId: number | null;
+    acceptedAt: number | null; outOfOrder: boolean; chatId: string | null; threadId: number | null;
   }> {
     const limit = input.limit ?? 100; integer(limit, 1, 500);
     const after = input.afterPreparedAt ?? -1;
@@ -816,7 +816,21 @@ export class OriginStoreBackend {
         EXISTS(SELECT 1 FROM telegram_origin_attempts a JOIN telegram_origin_children c ON c.child_id=a.child_id
           WHERE c.operation_id=o.operation_id AND a.outcome='outcome-unknown') uncertain,
         (SELECT max(a.resolved_at) FROM telegram_origin_attempts a JOIN telegram_origin_children c ON c.child_id=a.child_id
-          WHERE c.operation_id=o.operation_id AND a.outcome='accepted') acceptedAt
+          WHERE c.operation_id=o.operation_id AND a.outcome='accepted') acceptedAt,
+        EXISTS(SELECT 1 FROM telegram_origin_children c1
+          JOIN telegram_origin_platform_receipts r1 ON r1.child_id=c1.child_id
+          JOIN telegram_origin_platform_receipts r2 ON r2.transport=r1.transport
+            AND r2.account_id=r1.account_id AND r2.chat_id=r1.chat_id AND r2.topic_id=r1.topic_id
+          JOIN telegram_origin_children c2 ON c2.child_id=r2.child_id
+          JOIN telegram_origin_operations o2 ON o2.operation_id=c2.operation_id
+          JOIN telegram_origins t2 ON t2.origin_id=o2.origin_id
+          WHERE o.state='accepted' AND c1.operation_id=o.operation_id
+            AND o2.kind='ordinary' AND o2.state='accepted' AND o2.prepared_at>o.prepared_at
+            AND r1.transport='bot-api' AND r1.message_id NOT GLOB '*[^0-9]*'
+            AND r2.message_id NOT GLOB '*[^0-9]*'
+            AND CAST(r2.message_id AS INTEGER)<CAST(r1.message_id AS INTEGER)
+            AND json_extract(json_extract(t2.record_json,'$.envelopeJson'),'$.producerKind')='session'
+            AND json_extract(json_extract(t2.record_json,'$.envelopeJson'),'$.operationKind')='sendMessage') outOfOrder
       FROM telegram_origin_operations o
       JOIN telegram_origins t ON t.origin_id=o.origin_id
       JOIN telegram_origin_destinations d ON d.origin_id=o.origin_id
@@ -828,13 +842,14 @@ export class OriginStoreBackend {
           OR (o.state='accepted' AND o.prepared_at>=1793811600000))
         AND (o.hold_reason IS NULL OR o.hold_reason!='lease-not-held')
         AND json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.producerKind')='session'
+        AND json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.operationKind')='sendMessage'
       ORDER BY o.prepared_at,o.operation_id LIMIT ?`).all(after, after, afterId, Date.now() - 60_000, limit) as Array<{
         operationId: string; state: string; holdReason: string | null; preparedAt: number;
-        chatId: string | null; topicId: string | null; uncertain: number; acceptedAt: number | null;
+        chatId: string | null; topicId: string | null; uncertain: number; acceptedAt: number | null; outOfOrder: number;
       }>;
     return rows.map(row => ({ operationId: row.operationId, state: row.state,
       reason: row.holdReason ?? row.state, uncertain: row.uncertain !== 0,
-      preparedAt: row.preparedAt, acceptedAt: row.acceptedAt,
+      preparedAt: row.preparedAt, acceptedAt: row.acceptedAt, outOfOrder: row.outOfOrder !== 0,
       chatId: row.chatId, threadId: row.topicId === null ? null : Number(row.topicId) }));
   }
 

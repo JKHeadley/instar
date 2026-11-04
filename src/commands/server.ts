@@ -6999,7 +6999,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           const topicId = entry.chatId === String((originTelegramConfig.config as { issuesChatId?: unknown }).issuesChatId)
             ? 10_000_000_000 + (entry.threadId ?? 1) : entry.threadId;
           const late = entry.state === 'accepted' && entry.preparedAt !== undefined && entry.acceptedAt !== null && entry.acceptedAt !== undefined
-            ? lateRecoveredReplyNotice(entry.preparedAt, entry.acceptedAt) : null;
+            ? lateRecoveredReplyNotice(entry.preparedAt, entry.acceptedAt, entry.outOfOrder) : null;
           const attentionId = `telegram-origin-held-reply:${entry.operationId}`;
           const previous = telegram.getAttentionItem(attentionId);
           if (entry.state === 'accepted' && !late) {
@@ -7008,7 +7008,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             return;
           }
           const copy = entry.state === 'accepted'
-            ? { summary: 'An earlier reply arrived late and may be out of order with newer answers.', topicText: late! }
+            ? { summary: 'An earlier reply was confirmed after a delay and may be out of order with newer answers.', topicText: late! }
             : sessionDeliveryNotice(entry.state ?? 'held', entry.uncertain);
           if (entry.state === 'accepted' && previous?.status === 'DONE' && previous.summary === copy.summary) return;
           await telegram.upsertAttentionItem({ id: attentionId,

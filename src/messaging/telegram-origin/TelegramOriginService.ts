@@ -80,7 +80,7 @@ export interface OriginServiceOptions {
   reviewLegacyRecovery?: (text: string) => Promise<boolean>;
   spoolEvidence: (record: StoredOriginInput) => Promise<unknown>;
   peerEvidence?: (record: StoredOriginInput) => Promise<unknown>;
-  onHold: (input: { operationId: string; reason: string; producerKind: string; destination: { accountId: string; chatId: string | null; topicId: string | null } }) => void;
+  onHold: (input: { operationId: string; reason: string; producerKind: string; operationKind: string; destination: { accountId: string; chatId: string | null; topicId: string | null } }) => void;
   diagnoseUnknown?: (originId: string, reason: string) => Promise<string | void>;
   diagnosticMode?: 'local' | 'delegate';
   limits?: Partial<OriginLimits>;
@@ -427,13 +427,13 @@ export class TelegramOriginService {
     const id = operation.record.operationId;
     if (!this.#held.has(id)) {
       if (this.#held.size >= this.#limits.maxActiveOperations || this.#heldBytes + operation.admission.payloadBytes > this.#limits.maxActivePayloadBytes) {
-        this.options.onHold({ operationId: id, reason: 'held-payload-capacity-unavailable', producerKind: operation.record.producerKind, destination: operation.record.destination });
+        this.options.onHold({ operationId: id, reason: 'held-payload-capacity-unavailable', producerKind: operation.record.producerKind, operationKind: operation.record.operationKind, destination: operation.record.destination });
         throw new TelegramOriginHoldError('held-payload-capacity-unavailable', id);
       }
       this.#heldBytes += operation.admission.payloadBytes;
       this.#held.set(id, { reason, since: this.#now(), operation: structuredClone(operation) });
     } else this.#held.get(id)!.reason = reason;
-    this.options.onHold({ operationId: id, reason, producerKind: operation.record.producerKind, destination: operation.record.destination });
+    this.options.onHold({ operationId: id, reason, producerKind: operation.record.producerKind, operationKind: operation.record.operationKind, destination: operation.record.destination });
     throw new TelegramOriginHoldError(reason, id);
   }
   /** §4.2 — a refused destination is one of two facts: a foreign chat
@@ -752,7 +752,7 @@ export class TelegramOriginService {
       }
     }
     if (operation.record.producerKind === 'session') this.options.onHold({ operationId: operation.record.operationId,
-      reason, producerKind: 'session', destination: operation.record.destination });
+      reason, producerKind: 'session', operationKind: operation.record.operationKind, destination: operation.record.destination });
     this.requestDiagnosis(operation.record.originId, reason);
   }
   requestDiagnosis(originId: string, reason: string): void {

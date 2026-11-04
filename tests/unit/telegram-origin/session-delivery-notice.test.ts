@@ -10,5 +10,6 @@ describe('session delivery notices', () => {
   it('labels a late recovered reply without implying it is the latest answer', () => {
     expect(lateRecoveredReplyNotice(0, 250_000)).toBeNull();
     expect(lateRecoveredReplyNotice(0, 56 * 60_000)).toContain('may be out of order');
+    expect(lateRecoveredReplyNotice(0, 120_000, true)).toContain('after a newer reply');
   });
 });
