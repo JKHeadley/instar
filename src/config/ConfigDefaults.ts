@@ -1565,6 +1565,8 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       promotionModel: 'off',
       promotionCeiling: 'dark',
       promotionTickMs: 60000,
+      // Telegram topics the rebalance proof may move; empty ⇒ the route refuses everything.
+      rebalanceProofTopics: [],
       clockSkewToleranceMs: 300000,
       maxExpectedNtpDriftMs: 250,
       machineRecordEvictionMs: 86400000,

@@ -468,6 +468,9 @@ export class MachinePoolRegistry {
       !!live && nowMs - live.routerReceivedAtMs < this.d.failoverThresholdMs;
     const direct = this.directSuccess.get(known.machineId);
     const saved = direct ? null : this.d.evidenceStore?.get(known.machineId) ?? null;
+    const freshReport = live?.load && isLoadReportFresh(live.load.report, live.load.receivedAtMs, nowMs)
+      ? live.load.report
+      : null;
     const liveness = deriveLiveness({
       isSelf: known.machineId === this.selfId(),
       nowMs,
@@ -486,8 +489,11 @@ export class MachinePoolRegistry {
       routerReceivedAt: live ? new Date(live.routerReceivedAtMs).toISOString() : undefined,
       loadAvg: live?.obs.loadAvg,
       memPressure: live?.obs.memPressure,
-      activeSessionCount: live?.obs.activeSessionCount,
-      maxSessions: live?.obs.maxSessions,
+      // A peer's beat carries the load report, not these fields, so a fresh report
+      // fills them. A stale one fills nothing: an old count must never make a machine
+      // look free (Overload shed needs `maxSessions` to accept a target at all).
+      activeSessionCount: live?.obs.activeSessionCount ?? freshReport?.sessionsActive ?? undefined,
+      maxSessions: live?.obs.maxSessions ?? freshReport?.sessionsMax ?? undefined,
       capabilities: known.capabilities,
       modelsAvailable: known.modelsAvailable,
       agentsResident: known.agentsResident,

@@ -15,6 +15,7 @@ import type { AutoExpiryHold } from '../core/types.js';
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
 import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
+import { getActiveRebalanceProof, getActiveRebalanceProofStore } from '../core/rebalanceProof.js';
 import { getActiveDrainRehearsal } from '../monitoring/machineMaintenance/DrainRehearsal.js';
 import { getActiveBrowserCare } from '../monitoring/machineMaintenance/BrowserCare.js';
 import { getActiveWedgeMonitor } from '../monitoring/machineMaintenance/WedgeMonitor.js';
@@ -25097,7 +25098,46 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const row = store.getLatestForStage(stage);
       return { stage, result: row?.result ?? null, commitSha: row?.commitSha ?? null, ranAt: row?.ranAt ?? null, verified: row ? store.verify(row) : null };
     });
-    res.json({ latestPerStage, total: store.all().length });
+    // Stage 3 is proven by the rebalance proof's own store, not the failover rows.
+    const proof = getActiveRebalanceProofStore();
+    const proofRow = proof?.getLatestForStage(3) ?? null;
+    const stage3 = { stage: 3, result: proofRow?.result ?? null, commitSha: proofRow?.commitSha ?? null, ranAt: proofRow?.ranAt ?? null, verified: proofRow ? (proof as NonNullable<typeof proof>).verify(proofRow) : false };
+    res.json({ latestPerStage: latestPerStage.map((row) => (row.stage === 3 ? { ...row, ...stage3 } : row)), total: store.all().length });
+  });
+
+  // POST /session-pool/rebalance-proof — one real move of a listed proof topic through
+  // the production shed path, judged from outside it (session-pool-rebalancing-finish).
+  // 202 with a run id; the move and reply can take minutes, so it never holds the request.
+  router.post('/session-pool/rebalance-proof', (req, res) => {
+    const runner = getActiveRebalanceProof();
+    if (!runner) {
+      res.status(503).json({ error: 'rebalance proof not available (overload shed is off on this agent)' });
+      return;
+    }
+    const body = (req.body ?? {}) as { topic?: unknown; to?: unknown };
+    const topic = Number(body.topic);
+    const to = typeof body.to === 'string' ? body.to.trim() : '';
+    if (!Number.isInteger(topic) || topic <= 0 || !to) {
+      res.status(400).json({ error: 'topic and to are required, e.g. {"topic":13481,"to":"m_abc"}' });
+      return;
+    }
+    const started = runner.start(topic, to);
+    if ('refused' in started) {
+      res.status(409).json({ refused: started.refused });
+      return;
+    }
+    void started.finished.catch((err) => console.error('[rebalance-proof] run failed:', err));
+    res.status(202).json({ runId: started.run.runId });
+  });
+
+  // GET /session-pool/rebalance-proof/:runId — where a proof run stands.
+  router.get('/session-pool/rebalance-proof/:runId', (req, res) => {
+    const run = getActiveRebalanceProof()?.get(req.params.runId) ?? null;
+    if (!run) {
+      res.status(404).json({ error: 'no such proof run on this machine' });
+      return;
+    }
+    res.json(run);
   });
 
   // GET /session-pool/failover-runner — the in-agent failover-runner's status

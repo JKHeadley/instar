@@ -57,7 +57,10 @@ import { setAspClassifierRef, getAspClassifierRef } from '../core/aspClassifierR
 import { resolveInboundTelegramMessageId, resolveSignedByAgent, operatorAutoBindPermitted } from '../messaging/shared/signedInbound.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { StandDownRegistry } from '../core/StandDownRegistry.js';
-import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
+import { getActiveOverloadShedPlanner, getMoveAftercare } from '../core/OverloadShedPlanner.js';
+import { QuietTopicScanner, type RunningTopicSession } from '../core/quietTopicScanner.js';
+import { RebalanceProofRunner, getActiveRebalanceProof, proofSpawnBrief, setActiveRebalanceProof, setActiveRebalanceProofStore, type ProofHistoryRow } from '../core/rebalanceProof.js';
+import { rebalanceProofState } from '../core/StageAdvancer.js';
 import { buildHandoffContinuationInstruction, type HandoffCommitment } from '../core/handoffContinuation.js';
 import { BASELINE_PROCESS_PATTERNS } from '../core/baselineProcessPatterns.js';
 import { StandDownAudit } from '../core/StandDownAudit.js';
@@ -1120,6 +1123,12 @@ let _sessionRefresh: import('../core/SessionRefresh.js').SessionRefresh | null =
 let _ownershipReconciler: import('../core/OwnershipReconciler.js').OwnershipReconciler | null = null;
 /** trustworthy-machine-load D: the overload-shed evaluation timer (cleared at shutdown). */
 let _overloadShedTimer: ReturnType<typeof setInterval> | null = null;
+/** This machine's rebalance proof store (session-pool-rebalancing-finish): built with the rollout gate, read by the shed. */
+let _rebalanceProofStore: import('../core/SessionPoolE2EResultStore.js').SessionPoolE2EResultStore | null = null;
+let _sessionPoolBuildIdentity: (() => string) | null = null;
+let _shedDrainInFlight = false;
+/** Topics in a shed drain: they journal as `reconcile`, because peers reject an unknown reason. */
+const _shedDrainTopics = new Set<string>();
 // U4.2 stale-owner release — the evidence-upgraded Case C engine, hoisted so the
 // GET /pool/stale-owner-release route + the reconciler dep can reach it. Null
 // until the pool block constructs it (single-machine / dark → the route 503s).
@@ -25310,6 +25319,33 @@ export async function startServer(options: StartOptions): Promise<void> {
             overloadMoves: () => {
               try { return getActiveOverloadShedPlanner()?.overloadMoves() ?? []; } catch { return []; /* @silent-fallback-ok — no planner → no overload moves (today's behavior) */ }
             },
+            // A shed move goes through the owner-side drain: it closes the session and hands
+            // over custody. One at a time; the slot is held until the runner settles, so a
+            // hung drain blocks further moves rather than stacking them.
+            drainMove: (mv, epoch) => {
+              const planner = getActiveOverloadShedPlanner();
+              if (!planner) return;
+              if (_shedDrainInFlight) return;
+              if (!_drainRunner) { planner.noteMoveOutcome(mv.sessionKey, { status: 'refused-no-drain-runner' }); return; }
+              const target = machinePoolRegistry?.getCapacity(mv.target);
+              if (!target || target.liveness?.state !== 'live' || target.loadVerdict !== 'ok' || target.loadReport?.acceptingWork === false) {
+                planner.noteMoveOutcome(mv.sessionKey, { status: 'refused-target-changed' });
+                return;
+              }
+              _shedDrainInFlight = true;
+              const startedAt = Date.now();
+              _shedDrainTopics.add(mv.sessionKey);
+              void _drainRunner.run({ sessionKey: mv.sessionKey, target: mv.target, senderObservedEpoch: epoch, onNotQuiet: 'abort' })
+                .then((o) => {
+                  if (o.status === 'drained' || o.status === 'drained-interrupted') {
+                    const topicNum = Number(mv.sessionKey);
+                    if (Number.isFinite(topicNum)) { try { getMoveAftercare()?.(mv.target, topicNum); } catch { /* @silent-fallback-ok — the kick has bounded retries; the target can still fetch */ } }
+                  }
+                  planner.noteMoveOutcome(mv.sessionKey, { status: o.status, claimLanded: o.claimLanded, durationMs: Date.now() - startedAt, ...(o.detail ? { detail: o.detail } : {}) });
+                })
+                .catch((err) => { planner.noteMoveOutcome(mv.sessionKey, { status: 'refused-drain-threw', detail: err instanceof Error ? err.message : String(err) }); })
+                .finally(() => { _shedDrainInFlight = false; _shedDrainTopics.delete(mv.sessionKey); });
+            },
             // Live only when overload shed is enabled AND out of dry-run: driving unpinned
             // transfers (claim / abort past the deadline) is real authority over every
             // unpinned in-flight transfer, so the soft dry-run lever must hold it too.
@@ -25371,6 +25407,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   enabled: resolveDevAgentGate(c?.enabled, config),
                   dryRun: c?.dryRun ?? dflt.dryRun,
                   sourceAfterMs: c?.sourceAfterMs ?? dflt.sourceAfterMs,
+                  topicCooldownMs: c?.topicCooldownMs ?? dflt.topicCooldownMs,
                   maxMovesPerHour: c?.maxMovesPerHour ?? dflt.maxMovesPerHour,
                   recentShedMs: c?.recentShedMs ?? dflt.recentShedMs,
                 };
@@ -25381,6 +25418,31 @@ export async function startServer(options: StartOptions): Promise<void> {
                   return !!(meta?.preferredMachine || meta?.pinned);
                 } catch { return true; /* @silent-fallback-ok — an unreadable pin view treats the topic as pinned (never moved) */ }
               };
+              const shedProofTopics = (): ReadonlySet<number> => new Set(config.multiMachine?.sessionPool?.rebalanceProofTopics ?? []);
+              // Topics with a running session here, with when the conversation last moved.
+              // One cached listing; the work-state reads stay off the planner's sync tick.
+              const quietScanner = new QuietTopicScanner({
+                runningTopicSessions: () => {
+                  if (!telegram) return [];
+                  const out: RunningTopicSession[] = [];
+                  for (const s of sessionManager.getCachedRunningSessions().sessions) {
+                    const topic = telegram.getTopicForSession(s.tmuxSession);
+                    if (topic === null || topic === undefined) continue;
+                    const last = telegram.getTopicHistory(topic, 1)[0];
+                    const at = last ? Date.parse(last.timestamp) : NaN;
+                    out.push({ sessionKey: String(topic), tmuxSession: s.tmuxSession, lastActivityAt: Number.isFinite(at) ? at : null });
+                  }
+                  return out;
+                },
+                workState: (tmux) => sessionManager.checkSessionWorkState(tmux),
+                movable: (key) => {
+                  const r = ownReg.read(key);
+                  if (r?.status !== 'active' || r.ownerMachineId !== _meshSelfId) return false;
+                  if (shedPinned(key) || shedProofTopics().has(Number(key))) return false;
+                  try { return !autoSessionsMod.listAutonomousJobs(config.stateDir).find((j) => j.topic === key && j.active && !j.paused); }
+                  catch { return false; /* @silent-fallback-ok: unreadable run registry: treat the topic as not movable */ }
+                },
+              });
               const planner = new shedMod.OverloadShedPlanner({
                 config: shedCfg,
                 selfMachineId: () => _meshSelfId,
@@ -25388,7 +25450,15 @@ export async function startServer(options: StartOptions): Promise<void> {
                 capacities: () => machinePoolRegistry?.getCapacities() ?? [],
                 ownedTopics: () => ownReg.all()
                   .filter((r) => r.status === 'active' && r.ownerMachineId === _meshSelfId)
-                  .map((r) => ({ sessionKey: r.sessionKey, pinned: shedPinned(r.sessionKey) })),
+                  .map((r) => ({ sessionKey: r.sessionKey, pinned: shedPinned(r.sessionKey), lastMovedAt: r.timestamp })),
+                poolStage: () => liveConfig.get('multiMachine.sessionPool.stage', 'dark') as string,
+                proofFresh: () => {
+                  if (!_rebalanceProofStore) return false;
+                  return rebalanceProofState(_rebalanceProofStore, Date.now()).fresh;
+                },
+                quietTopics: () => quietScanner.current(),
+                moveActuatorLive: () => resolveDevAgentGate(ws13Cfg().ws13Reconcile, config) && ws13Cfg().ws13DryRun === false,
+                isProofTopic: (key) => shedProofTopics().has(Number(key)),
                 ownerOf: (key) => ownReg.read(key)?.ownerMachineId,
                 statusOf: (key) => {
                   const r = ownReg.read(key);
@@ -25409,7 +25479,69 @@ export async function startServer(options: StartOptions): Promise<void> {
                 log: (line) => console.log(pc.yellow(`  [overload-shed] ${line}`)),
               });
               shedMod.setActiveOverloadShedPlanner(planner);
+              // The rebalance proof: drives this planner's real path, judged from outside it.
+              const proofMarker = path.join(config.stateDir, 'rebalance-proof-in-flight');
+              setActiveRebalanceProof(new RebalanceProofRunner({
+                selfMachineId: () => _meshSelfId,
+                isProofTopic: (t) => shedProofTopics().has(t),
+                stage: () => liveConfig.get('multiMachine.sessionPool.stage', 'dark') as string,
+                stageAllowsProof: () => {
+                  const st = liveConfig.get('multiMachine.sessionPool.stage', 'dark') as string;
+                  return st === 'live-transfer' || st === 'rebalance';
+                },
+                readRecord: (t) => ownReg.read(String(t)),
+                hasLocalSession: (t) => {
+                  const tmux = telegram?.getSessionForTopic(t);
+                  return !!tmux && sessionManager.isSessionAlive(tmux);
+                },
+                ensureIdleSession: async (t, timeoutMs) => {
+                  if (!telegram) return false;
+                  const live = () => { const m = telegram.getSessionForTopic(t); return m && sessionManager.isSessionAlive(m) ? m : null; };
+                  if (!live()) {
+                    const name = await spawnSessionForTopic(sessionManager, telegram, `proof-${t}`, t, proofSpawnBrief());
+                    telegram.registerTopicSession(t, name, `proof-${t}`);
+                  }
+                  const deadline = Date.now() + timeoutMs;
+                  while (Date.now() < deadline) {
+                    const tmux = live();
+                    if (tmux && (await sessionManager.checkSessionWorkState(tmux)) === 'idle') return true;
+                    await new Promise((r) => setTimeout(r, 5_000));
+                  }
+                  return false;
+                },
+                move: (t, to) => planner.proofMove(String(t), to),
+                sendProbe: async (t, text, messageId) => {
+                  if (!_sessionRouter) return 'no-router';
+                  const o = await _sessionRouter.route({ sessionKey: String(t), messageId, payload: text, senderEnvelope: null });
+                  return o.action;
+                },
+                readHistory: async (t) => {
+                  const r = await fetch(`http://127.0.0.1:${config.port}/telegram/topics/${t}/messages?scope=pool&limit=50`, {
+                    headers: { Authorization: `Bearer ${config.authToken}`, 'X-Instar-AgentId': config.projectName },
+                  });
+                  if (!r.ok) throw new Error(`history ${r.status}`);
+                  const j = await r.json() as { messages?: ProofHistoryRow[]; pool?: { failed?: Array<string | { machineId?: string }> } };
+                  return { rows: j.messages ?? [], failed: (j.pool?.failed ?? []).map((f) => (typeof f === 'string' ? f : f.machineId ?? '')) };
+                },
+                record: (result, evidenceRef) => {
+                  _rebalanceProofStore?.recordResult(3, result, _sessionPoolBuildIdentity?.() ?? 'unknown', evidenceRef);
+                },
+                writeEvidence: (ev) => {
+                  const dir = path.join(config.stateDir, '..', 'logs', 'rebalance-proof');
+                  fs.mkdirSync(dir, { recursive: true });
+                  const file = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+                  fs.writeFileSync(file, JSON.stringify(ev, null, 2));
+                  return file;
+                },
+                newNonce: () => crypto.randomUUID().replace(/-/g, '').slice(0, 12),
+                markInFlight: (runId) => fs.writeFileSync(proofMarker, runId),
+                readInFlight: () => { try { return fs.readFileSync(proofMarker, 'utf8').trim() || null; } catch { return null; /* @silent-fallback-ok — no marker means no unfinished run */ } },
+                clearInFlight: () => { SafeFsExecutor.safeRmSync(proofMarker, { force: true, operation: 'rebalance-proof: run finished' }); },
+                log: (line) => console.log(pc.dim(`  [rebalance-proof] ${line}`)),
+              }));
               _overloadShedTimer = setInterval(() => {
+                // The scan is cheap to skip: it only matters while this machine is a source.
+                if (planner.status().isSource === true) void quietScanner.refresh(); else quietScanner.clear();
                 try { planner.tick(); } catch (err) { console.log(pc.yellow(`  [overload-shed] tick failed: ${err instanceof Error ? err.message : String(err)}`)); /* @silent-fallback-ok (logged) — the next tick retries */ }
               }, 15_000);
               _overloadShedTimer.unref?.();
@@ -26117,8 +26249,14 @@ export async function startServer(options: StartOptions): Promise<void> {
               const r = ownReg.cas(action, c);
               // Journal pairing (§3.3): the drain's transfer/abort/claim CASes
               // record placement history like every other CAS site.
-              emitPlacement(c.sessionKey, r, 'user-move', prev);
+              emitPlacement(c.sessionKey, r, _shedDrainTopics.has(c.sessionKey) ? 'reconcile' : 'user-move', prev);
               return r;
+            },
+            sessionIdleNow: async (sk) => {
+              const topicNum = Number(sk);
+              const tmux = Number.isFinite(topicNum) ? telegram?.getSessionForTopic(topicNum) : null;
+              if (!tmux || !sessionManager.isSessionAlive(tmux)) return true; // nothing local to disturb
+              return (await sessionManager.checkSessionWorkState(tmux)) === 'idle';
             },
             suspendAutonomousRun: (topic, target) =>
               autoMod.suspendAutonomousTopicForMove(config.stateDir, topic, target, coherenceJournal ?? undefined),
@@ -29439,6 +29577,20 @@ export async function startServer(options: StartOptions): Promise<void> {
         bootCommitSha = `package:${startupVersion}`;
       }
       const currentSessionPoolBuildIdentity = () => bootCommitSha || 'unknown';
+      _sessionPoolBuildIdentity = currentSessionPoolBuildIdentity;
+      // The rebalance proof has its own signed store: the failover rows prove failover, and
+      // 770 of them once sat at stage 3 proving nothing about rebalancing.
+      _rebalanceProofStore = new e2eMod.SessionPoolE2EResultStore({
+        filePath: path.join(config.stateDir, 'session-pool-rebalance-proof.json'),
+        sign: hmac,
+        verifySig: (c, s) => {
+          try { const exp = hmac(c); return s.length === exp.length && crypto.timingSafeEqual(Buffer.from(s), Buffer.from(exp)); } catch { return false; /* @silent-fallback-ok: HMAC verify fails closed — a malformed input is an invalid signature, never accepted */ }
+        },
+      });
+      setActiveRebalanceProofStore(_rebalanceProofStore);
+      // A failure here must not cost the agent its rollout gate below.
+      try { getActiveRebalanceProof()?.recoverInterrupted(); }
+      catch (err) { console.warn('[rebalance-proof] could not record an interrupted run:', err instanceof Error ? err.message : String(err)); /* @silent-fallback-ok (logged): the marker stays and the next boot retries */ }
       // ONE authoritative stage read for the rollout gate and its proof producer.
       // Splitting these previously let the runner stamp every green as stage 0
       // while StageAdvancer was already waiting for a green at stage 2.
@@ -29454,6 +29606,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         currentCommitSha: currentSessionPoolBuildIdentity,
         readStage: readSessionPoolStage,
         writeStageConfig: (s) => liveConfig.set(guardMod.STAGE_CONFIG_PATH, s, { stageWriteToken: guardMod.STAGE_WRITE_TOKEN }),
+        rebalanceProof: () => stageMod.rebalanceProofState(_rebalanceProofStore!, Date.now()),
         audit: (event, detail) => console.log(pc.dim(`  [stage-advancer] ${event} ${JSON.stringify(detail)}`)),
       });
       // ── Promotion activation ────────────────────────────────────────────────
@@ -29586,7 +29739,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           currentCommitSha: currentSessionPoolBuildIdentity,
           // Credit the proof to the stage that is actually running. The next
           // promotion reads this same current-stage index as its prior-stage gate.
-          provenStage: () => stageMod.stageIndex(readSessionPoolStage()),
+          provenStage: () => stageMod.failoverProvenStage(readSessionPoolStage()),
           audit: (event, detail) => console.log(pc.dim(`  [failover-runner] ${event} ${JSON.stringify(detail)}`)),
         });
         if (_sessionPoolFailoverRunnerDriver) {
