@@ -278,6 +278,9 @@ function restorePlace(root, place) {
   } finally { restoring = false; }
 }
 
+/** Marks the block that leads a page because it needs the operator. A fixed source id from needs-model.js, never a row key (some carry one-time tokens). */
+export function markNeed(node, sourceId) { if (node) node.setAttribute('data-operator-need', sourceId); return node; }
+
 /** The loading placeholder: only ever shown before a page's first real paint, never over real content. */
 export function firstPaint(main, ...kids) {
   if (main.dataset.painted) return;

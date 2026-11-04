@@ -6808,6 +6808,25 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { bootTelegramOrigin } = await import('../messaging/telegram-origin/TelegramOriginBoot.js')
         .catch(error => { releaseOriginLeaseRenewal(); throw error; });
       telegramOriginBoot = await bootTelegramOrigin({ config, token: typeof originBotToken === 'string' && originBotToken ? originBotToken : undefined,
+        onRecoveredMessage: entry => {
+          telegram?.logRecoveredOriginMessage(entry);
+          const attentionId = `telegram-origin-held-reply:${entry.operationId}`;
+          if (telegram?.clearAttentionCondition({ id: attentionId }, `Telegram accepted recovered message ${entry.messageId}.`).closed === 0) {
+            void telegram?.updateAttentionStatus(attentionId, 'DONE', { silent: true,
+              closedBy: 'cause-cleared', resolution: `Telegram accepted recovered message ${entry.messageId}.` });
+          }
+        },
+        onSessionDeliveryHeld: entry => {
+          if (!telegram || !entry.chatId) return;
+          const topicId = entry.chatId === String((originTelegramConfig.config as { issuesChatId?: unknown }).issuesChatId)
+            ? 10_000_000_000 + (entry.threadId ?? 1) : entry.threadId;
+          void telegram.createAttentionItem({ id: `telegram-origin-held-reply:${entry.operationId}`,
+            category: 'telegram-origin', priority: 'HIGH', title: 'A session reply is delayed',
+            sourceContext: 'telegram-origin-session-hold',
+            summary: `A reply to topic ${topicId ?? 'unknown'} is still in the delivery queue. Telegram was unreachable before this attempt connected; the server will retry the same message.`,
+            description: `Operation ${entry.operationId}. The advisory preflight does not confirm delivery.` }, { hubOnly: true })
+            .catch(error => console.warn('[telegram-origin] held reply attention unavailable', error instanceof Error ? error.name : 'unknown-error'));
+        },
         noticeOwner: typeof originBotToken === 'string' && !!originBotToken && !lifelineOwnsTelegramPoll(config.stateDir, originBotToken) && options.telegram !== false,
         holdsLease: () => coordinator.holdsLease(),
         isSessionLive: binding => {

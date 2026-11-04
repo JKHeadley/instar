@@ -48,6 +48,7 @@ import { APP_CONVERSATION_KEY_PATTERN, derivedEventId, hideCredentialSpans, remo
 import type { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
 import { buildSignedOrigin } from './mobileConversationRoutes.js';
+import { mountConsoleTicketDeviceRoutes } from './mobileConsoleTicket.js';
 import {
   checkSignedFiles, claimMediaUploads, mediaRecordTooLarge, mirrorMediaToTelegram, preflightMediaAttachments, publishMediaMessage, signedFileHashParts,
   type SignedAttachment, type TelegramMediaMirrorTarget,
@@ -989,6 +990,9 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     res.status(403).json({ error: 'wrong-code' });
   });
 
+  // Console sign-in from an owner phone (docs/specs/mobile-console-device-signin.md).
+  mountConsoleTicketDeviceRoutes(router, svc);
+
   // Revoke: bearer may revoke any device; a device only itself.
   router.post('/mobile/devices/:id/revoke', async (req: Request, res: Response) => {
     if (!svc.enabled()) { json503(res); return; }
@@ -1466,6 +1470,11 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     { method: 'GET', re: new RegExp(`^/mobile/media/uploads/${UUID}$`), statuses: active, body: 'none' },
     { method: 'GET', re: /^\/mobile\/media\/[0-9a-f]{64}$/, statuses: active, body: 'none', conversationRef: true },
     { method: 'POST', re: /^\/mobile\/media\/purge$/, statuses: active, body: 'json', conversationRef: true },
+    // Console sign-in from an owner phone (mobile-console-device-signin §3.1-3.2); each route
+    // re-checks owner, local TLS and the feature switch itself.
+    { method: 'POST', re: /^\/mobile\/device\/presence-key$/, statuses: active, body: 'json' },
+    { method: 'POST', re: /^\/mobile\/console-ticket\/challenge$/, statuses: active, body: 'json' },
+    { method: 'POST', re: /^\/mobile\/console-ticket$/, statuses: active, body: 'json' },
     { method: 'POST', re: /^\/mobile\/devices\/[^/]+\/revoke$/, statuses: new Set(['pending', 'active', 'declined', 'expired']), unassignedOk: true },
   ];
 })();

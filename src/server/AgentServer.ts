@@ -186,6 +186,7 @@ import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
+import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
@@ -1726,6 +1727,8 @@ export class AgentServer {
       },
     });
     mountPublicMobilePairingRoutes(this.app, this.mobilePairing);
+    // Console sign-in from an owner phone: the public, single-use ticket redeem (mobile-console-device-signin §3.3).
+    mountConsoleTicketRedeemRoute(this.app, this.mobilePairing, () => configRef.authToken);
     // Multi-route own names: the tailscale-serve boot step + the bounded probe loop (§4.1).
     if (this.mobilePairing.ownNames && (options.mobileRoutes?.start ?? !process.env.VITEST)) this.mobilePairing.ownNames.start();
     {

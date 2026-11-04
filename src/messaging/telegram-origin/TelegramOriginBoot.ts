@@ -70,6 +70,8 @@ export async function bootTelegramOrigin(options: {
   reviewLegacyRecovery?: (text: string) => Promise<boolean>;
   authorizeOrigin?: import('./TelegramOriginService.js').OriginServiceOptions['authorizeOrigin'];
   onNoticeState: (state: OutageNoticeState) => void;
+  onRecoveredMessage?: import('./TelegramOriginRuntime.js').TelegramOriginRuntimeOptions['onRecoveredMessage'];
+  onSessionDeliveryHeld?: import('./TelegramOriginRuntime.js').TelegramOriginRuntimeOptions['onSessionDeliveryHeld'];
   onBrowserRecoveryAttention?: (input: { id: string; profileId: string; publicTransportAlternative: boolean }) => Promise<void>;
   listLiveSessions?: () => Array<{ sessionId: string; harnessId: string | null }>;
   enrollmentObservations?: () => OriginActivationObservation[];
@@ -172,6 +174,8 @@ export async function bootTelegramOrigin(options: {
   const nativeCanary = new OriginNativeCanaryLane(canaryIntervalMs, nativeModelCanary);
   const runtime = await TelegramOriginRuntime.open({ storage: { stateDir: config.stateDir, agentId: config.projectName, auditRetentionDays: (originConfig as { auditRetentionDays?: number } | undefined)?.auditRetentionDays }, workerUrl: options.workerUrl,
     identity: { agentId: config.projectName, agentName: config.projectName, originMachineId: identity.machineId, originMachineName: publicMachineName },
+    onRecoveredMessage: options.onRecoveredMessage,
+    onSessionDeliveryHeld: options.onSessionDeliveryHeld,
     signingKey: { keyId: `${identity.machineId}:${identity.keyEpoch ?? 0}`, keyEpoch: identity.keyEpoch ?? 0, privateKey: identities.loadSigningKey() },
     bot: { token: options.token, accountId: options.token?.split(':')[0] ?? 'unresolved-tokenless-source', chatId: currentChatId() },
     additionalBots,

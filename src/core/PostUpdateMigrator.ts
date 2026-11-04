@@ -774,6 +774,7 @@ export const TONE_ADVISORY_FLAG_POSITION_CLAUDEMD_SECTION = `- **How to send the
   \`\`\`
   Use \`--tone-complied <RULE>\` instead of \`--tone-ack\`/\`--tone-reason\` when you agreed and revised. A flag in the wrong position is now REFUSED (it used to be sent to the user as literal text with its effect silently dropped, which is exactly how a correct check once got graded \`wrong\`). If such a token is genuinely part of your message, pipe the text on stdin — the check only inspects arguments.`;
 
+export const SURFACE_REFERRAL_CLAUDEMD_SECTION = `**Sending the operator to a page: link, words, and look first.** A message that sends the operator to a dashboard, console or app page carries a direct link and the exact words they will see there in quotes, and I load that link at their screen size (1280x728 and 390x844) and read the first screen before sending. The outbound gate nudges (\`B22_SURFACE_REFERRAL\`) until that holds: after loading the page, resend with \`--tone-complied B22_SURFACE_REFERRAL\` (its flags go before the topic id). If it cannot be loaded from here, override with \`--tone-ack\` and the reason. Anything that needs the operator also belongs on the first screen of its page and in Home's count, through \`dashboard/console/needs-model.js\`.`;
 export const TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION = `**File-path feedback is always a NUDGE, never a wall; most other checks become nudges under the advisory migration.** B2_FILE_PATH is advisory on every agent (operator decision 2026-09-03): file paths are sometimes necessary and acceptable, so the check may suggest clearer wording but must accept an explicit override even when decision-quality recording is unavailable. For the other eligible judgment rules, \`toneGate.advisoryMigration\` remains dev-gated live / fleet-dark. A nudge returns \`422 tone-gate-advisory\` with \`notSent: true\` and a \`decisionRef\` when available — the message is handed back to YOU, not dropped. Two ways forward, and **both are recorded when the evidence seam is available**:
 - **You agree** → revise and re-send with \`metadata.toneAdvisoryComplied: "<RULE>"\` + \`metadata.toneAdvisoryDecisionRef: "<decisionRef>"\` → the check is graded \`right\`.
 - **You disagree** → re-send unchanged with \`metadata.toneAdvisoryAck: "<RULE>"\` **and** \`metadata.toneAdvisoryAckReason: "<why the nudge is wrong here>"\` → the check is graded \`wrong\`. **The reason is required** — a reasonless ack is refused (\`tone-gate-advisory-reason-required\`) and nothing sends. That reason IS the evidence that tunes this gate; without it every tone decision grades \`unknown\` forever.
@@ -957,7 +958,7 @@ Every switched-off feature has numbers it must hit for each rung, read from its 
 export function MOBILE_PAIRING_CLAUDEMD_SECTION(port: number): string {
   return `\n### Mobile pairing link — add this agent to the Instar iPhone app (\`POST /mobile/pairing-codes\`)
 
-The operator can add this agent to the Instar iPhone app with a one-time link instead of typing an address and PIN. The link opens the app (a universal link on instar.sh); the phone registers its own Secure Enclave key, and I send the owner a confirmation code (like \`KITE-4172\`, or six digits) **privately** in Telegram, which the owner types into the app. Only then is the phone active. The phone never receives the API token and never gets an operator session; it can only make a fixed list of read requests (health, attention, sessions, topics, its own status) plus confirm and revoke itself. Development-agent gated (\`mobilePairing.enabled\`; 503 when off).
+The operator can add this agent to the Instar iPhone app with a one-time link instead of typing an address and PIN. The link opens the app (a universal link on instar.sh); the phone registers its own Secure Enclave key, and I send the owner a confirmation code (like \`KITE-4172\`, or six digits) **privately** in Telegram, which the owner types into the app. Only then is the phone active. The phone stores no API token and never gets an operator session; its signed requests are limited to a fixed list (reads, confirm and revoke itself, plus the owner phone's console sign-in). An owner phone opens the console without the dashboard PIN: after the owner's Face ID or passcode, the app gets a one-minute, single-use ticket (\`POST /mobile/console-ticket\`) that the console trades once for the same token a PIN unlock returns, in a web view that keeps nothing on disk; PIN-confirmed actions still ask for the PIN, and MSP phones and phones without a passcode still see the PIN box (off switch: \`mobilePairing.consoleTicket.enabled: false\`; audit: \`.instar/state/mobile-console-tickets.jsonl\`). Development-agent gated (\`mobilePairing.enabled\`; 503 when off).
 - Mint: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/mobile/pairing-codes -d '{"label":"Justin iPhone"}'\` → \`{ code, expiresAt, link, originKind }\`. Single use, 30 minutes (quote \`expiresAt\`). When \`originKind\` is \`"tailscale"\`, tell the operator the link opens only on a phone with Tailscale on and signed in to the same network.
 - **Send only the \`link\`, and only into a topic whose verified operator (\`GET /topic-operator/:topicId\`) is the person asking.** Never send the code alone or the API token. Tell them: open it on the phone, then type the confirmation code I send privately into the app.
 - **Never ask the operator for the confirmation code** (like \`KITE-4172\`, or six digits), and never repeat it. If they paste it to me, that pairing is cancelled automatically; tell them to ask for a new link.
@@ -8924,6 +8925,14 @@ setTimeout(() => process.exit(0), 2000);
     // GET /external-hog status + the PIN-gated arm / Bearer disarm routes, the two-key
     // floor+model kill rule, the watch-only/PIN-arm posture, and the proactive triggers.
     // Tone-gate advisory migration (operator approval 2026-07-19, topic 33368) —
+    // operator-needs-first-screen §6: the B22 nudge needs its reaction flag known, or an agent
+    // reads the nudge as a wall. Content-sniffed for idempotency.
+    if (!content.includes('Sending the operator to a page: link, words, and look first')) {
+      content += `\n${SURFACE_REFERRAL_CLAUDEMD_SECTION}\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added how to send the operator to a page');
+    }
+
     // Agent Awareness Standard + Migration Parity: an existing agent that does not
     // know about `toneAdvisoryAckReason` / `toneAdvisoryComplied` will keep treating
     // a nudge as a wall and will never produce the override evidence the whole
@@ -9270,6 +9279,25 @@ setTimeout(() => process.exit(0), 2000);
         content = next;
         patched = true;
         result.upgraded.push('CLAUDE.md: Mobile pairing link section updated for Tailscale origin and 30-minute links');
+      }
+    }
+
+    // mobile-console-device-signin §3.7: the opening line's "never receives the API token" is no
+    // longer true for an owner phone's console; replace that line in place (idempotent: the fresh
+    // line no longer contains the phrase, so a second run matches nothing).
+    if (content.includes('Mobile pairing link') && content.includes('never receives the API token')) {
+      const freshOpening = MOBILE_PAIRING_CLAUDEMD_SECTION(port).split('\n').find((l) => l.startsWith('The operator can add this agent to the Instar iPhone app'));
+      if (freshOpening && !freshOpening.includes('never receives the API token')) {
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i]!.startsWith('The operator can add this agent to the Instar iPhone app') && lines[i]!.includes('never receives the API token')) lines[i] = freshOpening;
+        }
+        const next = lines.join('\n');
+        if (next !== content) {
+          content = next;
+          patched = true;
+          result.upgraded.push('CLAUDE.md: Mobile pairing link section describes console sign-in from an owner phone');
+        }
       }
     }
 
@@ -14692,6 +14720,8 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // and either loop or silently drop the message, which is the pre-migration
       // failure reproduced on the frameworks that never learned the fix.
       '**File-path feedback is always a NUDGE',
+      // B22 is server-side too, so every framework's agents meet the same nudge.
+      '**Sending the operator to a page: link, words, and look first',
       // Owned-Identities Registry (correction-derived-hardening): framework-
       // agnostic — a Codex/Gemini agent provisions identities too, and its
       // self-unblock exhaustion consults the same server-side probe. It must

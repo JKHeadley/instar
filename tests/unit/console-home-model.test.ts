@@ -370,7 +370,7 @@ describe('headline()', () => {
     ], pool: { failed: [] } }), NOW);
     const h = headline({ needs: n, promised: card('ok', '', 0) });
     expect(h.text).toBe('Approve the deploy');
-    expect(h.sub).toBe('Tap to review and respond. 2 more things need you, listed below.');
+    expect(h.sub).toBe('Tap to review and respond. 2 more things need you.');
   });
   it('all quiet only when everything is known and fine', () => {
     expect(headline({ needs: card('ok'), promised: card('ok'), reach: card('ok') }).text).toBe('All quiet.');
