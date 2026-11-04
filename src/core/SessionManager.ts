@@ -4478,24 +4478,29 @@ rm()  { "${shimRunner}" rm  "$@"; }
   confinedRerouteCapacity(): 'available' | 'saturated' | 'not-rerouted' {
     const pressure = this.currentMemoryPressure();
     const running = this.listRunningSessions();
-    if (running.length + this.pendingHeadlessSpawns >= this.config.maxSessions
-      && !this.scheduledOverflowAvailable(running, pressure)) return 'saturated';
+    // Feedback canaries/builds are not scheduler-proven spawns. The early check
+    // must use their actual gate, not the scheduler's reserved global slot.
+    if (running.length + this.pendingHeadlessSpawns >= this.config.maxSessions) return 'saturated';
     if ((this.config.subscriptionPathMode ?? 'off') !== 'force') return 'not-rerouted';
-    const maxRerouted = this.config.subscriptionMaxRerouted ?? 3;
-    return this.countReroutedInteractiveSessions() >= maxRerouted
+    return this.countReroutedInteractiveSessions() >= this.rerouteAdmissionCap(false)
       || pressure === 'high' || pressure === 'critical' ? 'saturated' : 'available';
+  }
+
+  private rerouteAdmissionCap(scheduledJob: boolean): number {
+    const maxRerouted = this.config.subscriptionMaxRerouted ?? 3;
+    // A one-slot host cannot reserve without blocking all conversations.
+    return !scheduledJob && maxRerouted > 1 ? maxRerouted - 1 : maxRerouted;
   }
 
   private evaluateRerouteGate(spawnName: string, scheduledJob = false): { allow: boolean } {
     const mode = this.config.subscriptionPathMode ?? 'off';
-    const maxRerouted = this.config.subscriptionMaxRerouted ?? 3;
     const reroutedCount = this.countReroutedInteractiveSessions();
     const pressure = this.currentMemoryPressure();
     const pressureElevated = pressure === 'high' || pressure === 'critical';
     // Keep one of the existing memory-bounded slots for scheduled jobs when
     // conversations would otherwise fill the entire lane. A one-slot host
     // cannot reserve without blocking all conversations, so retain its cap.
-    const admissionCap = !scheduledJob && maxRerouted > 1 ? maxRerouted - 1 : maxRerouted;
+    const admissionCap = this.rerouteAdmissionCap(scheduledJob);
     if (reroutedCount < admissionCap && !pressureElevated) {
       return { allow: true };
     }
