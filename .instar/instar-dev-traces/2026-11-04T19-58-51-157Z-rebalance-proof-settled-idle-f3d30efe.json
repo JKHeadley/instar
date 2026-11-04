@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "rebalance-proof-settled-idle",
+  "sessionId": "f3f374fe-1740-4fac-8bbf-c32c8b60e738",
+  "timestamp": "2026-11-04T19:58:51.157Z",
+  "artifactPath": "upgrades/side-effects/rebalance-proof-settled-idle.md",
+  "artifactSha256": "98fb670065fbdc57960969fb7f73ec2a95dcfae5bb46700b318a4736c62adf64",
+  "specPath": "docs/specs/session-pool-rebalancing-finish.md",
+  "coveredFiles": [
+    "docs/specs/session-pool-rebalancing-finish.eli16.md",
+    "docs/specs/session-pool-rebalancing-finish.md",
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "src/core/baselineProcessPatterns.ts",
+    "src/core/rebalanceProof.ts",
+    "src/core/standDownDrain.ts",
+    "tests/unit/mcp-children-are-baseline.test.ts",
+    "tests/unit/rebalanceProof.test.ts",
+    "upgrades/next/rebalance-proof-settled-idle.md",
+    "upgrades/side-effects/rebalance-proof-settled-idle.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -62,7 +62,7 @@ import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { StandDownRegistry } from '../core/StandDownRegistry.js';
 import { getActiveOverloadShedPlanner, getMoveAftercare } from '../core/OverloadShedPlanner.js';
 import { QuietTopicScanner, type RunningTopicSession } from '../core/quietTopicScanner.js';
-import { RebalanceProofRunner, getActiveRebalanceProof, proofSpawnBrief, setActiveRebalanceProof, setActiveRebalanceProofStore, type ProofHistoryRow } from '../core/rebalanceProof.js';
+import { RebalanceProofRunner, getActiveRebalanceProof, waitForSettledIdle, proofSpawnBrief, setActiveRebalanceProof, setActiveRebalanceProofStore, type ProofHistoryRow } from '../core/rebalanceProof.js';
 import { rebalanceProofState } from '../core/StageAdvancer.js';
 import { buildHandoffContinuationInstruction, type HandoffCommitment } from '../core/handoffContinuation.js';
 import { BASELINE_PROCESS_PATTERNS } from '../core/baselineProcessPatterns.js';
@@ -25678,13 +25678,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                     const name = await spawnSessionForTopic(sessionManager, telegram, `proof-${t}`, t, proofSpawnBrief());
                     telegram.registerTopicSession(t, name, `proof-${t}`);
                   }
-                  const deadline = Date.now() + timeoutMs;
-                  while (Date.now() < deadline) {
+                  return waitForSettledIdle(async () => {
                     const tmux = live();
-                    if (tmux && (await sessionManager.checkSessionWorkState(tmux)) === 'idle') return true;
-                    await new Promise((r) => setTimeout(r, 5_000));
-                  }
-                  return false;
+                    return tmux && (await sessionManager.checkSessionWorkState(tmux)) === 'idle' ? tmux : null;
+                  }, timeoutMs, { now: () => Date.now(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)) });
                 },
                 move: (t, to) => planner.proofMove(String(t), to),
                 probeViaHolder: async (t, nonce) => {
