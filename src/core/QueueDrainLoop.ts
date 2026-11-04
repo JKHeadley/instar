@@ -1086,6 +1086,10 @@ export class QueueDrainLoop {
   // ── Remote receive side (§3.4 remote path — peer-side surface) ──────
 
   /** Receive-side durable receipt, canonical-id keyed (loss window 6 arm). */
+  hasRemoteReceipt(sessionKey: string, messageId: string): boolean {
+    return this.d.store.hasRemoteReceipt(sessionKey, messageId);
+  }
+
   recordRemoteReceipt(sessionKey: string, messageId: string): boolean {
     return this.d.store.recordRemoteReceipt(sessionKey, messageId, new Date(this.d.now()).toISOString());
   }
