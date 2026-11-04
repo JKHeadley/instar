@@ -7,11 +7,13 @@
  *
  *   D1  It is a PROPOSER only. It hands the OwnershipReconciler a transient
  *       `overloadMoves()` list (topic → target, episode id, expiry). The
- *       reconciler processes it after pins, at lower precedence, through its
- *       existing cooperative-transfer path. Nothing is written to the pin store.
+ *       reconciler processes it after pins, at lower precedence, through the
+ *       owner-side drain, which closes the session and hands over custody. Nothing is written to the pin store.
  *       The target is chosen by RebalancePlanner + PlacementExecutor.decide.
  *   D2  A source is THIS machine once its admission has stayed closed for
- *       `sourceAfterMs` (3 min). A target must have live direct evidence under
+ *       `sourceAfterMs` (3 min) AND it is short of session slots (`sourceSessionRatio`).
+ *       Candidates are topics with a running session that has sat quiet
+ *       (QuietTopicScanner). A target must have live direct evidence under
  *       2 min, verdict `ok`, not be refusing work, and have headroom after the
  *       capacity this machine has already reserved on it. Only Telegram topics
  *       are moved in this version: the shared Telegram chat is served by every
@@ -29,9 +31,9 @@
  *       the entry expires, or on TTL. The reconciler drives an in-flight transfer
  *       to claim or abort independently of this list, so a move outlives it.
  *
- * Posture: dev-gated, and dry-run first. In dry-run (or while admission itself
- * is not enforced, so peers would keep sending work back) it audits each move it
- * WOULD make and proposes nothing.
+ * Posture: dev-gated, and dry-run first. Below pool stage `rebalance`, without a fresh
+ * rebalance proof, or in dry-run, it audits each move it WOULD make and proposes
+ * nothing (docs/specs/session-pool-rebalancing-finish.md).
  *
  * Honest limit: reservations are local to this machine, so two overloaded
  * machines could pick the same target in the same window. The headroom margin
@@ -43,7 +45,7 @@ import fs from 'node:fs';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import path from 'node:path';
 
-import { planRebalance, type RebalanceSession } from './RebalancePlanner.js';
+import { planRebalance, sessionRatio, type RebalanceSession } from './RebalancePlanner.js';
 import { isRefusingWork, type PlacementExecutor } from './PlacementExecutor.js';
 import type { MachineCapacity } from './types.js';
 import { governor, consumeAdmissionToken } from '../monitoring/selfaction/governor.js';
@@ -55,6 +57,10 @@ export interface OverloadShedConfig {
   sourceAfterMs: number;
   maxMovesPerHour: number;
   recentShedMs: number;
+  /** A topic that arrived here, or moved, is left alone this long. Follows the topic across machines. */
+  topicCooldownMs: number;
+  /** A machine sheds only at or above this session ratio: short of slots, not just a CPU spike. */
+  sourceSessionRatio: number;
   reservationTtlMs: number;
   entryTtlMs: number;
   minTargetHeadroom: number;
@@ -66,6 +72,8 @@ export const DEFAULT_OVERLOAD_SHED: Omit<OverloadShedConfig, 'enabled'> = {
   sourceAfterMs: 3 * 60_000,
   maxMovesPerHour: 2,
   recentShedMs: 30 * 60_000,
+  topicCooldownMs: 6 * 60 * 60_000,
+  sourceSessionRatio: 0.85,
   reservationTtlMs: 10 * 60_000,
   entryTtlMs: 10 * 60_000,
   minTargetHeadroom: 2,
@@ -78,8 +86,25 @@ export interface OverloadShedDeps {
   /** This machine's admission advert (null when admission is dark). */
   admission: () => { acceptingWork: boolean; enforced: boolean } | null;
   capacities: () => MachineCapacity[];
-  /** Active topics owned by THIS machine, with whether each is pinned. */
-  ownedTopics: () => Array<{ sessionKey: string; pinned: boolean }>;
+  /**
+   * Active topics owned by THIS machine, with whether each is pinned. `lastMovedAt` is
+   * the replicated record timestamp, so the cooldown survives a move between machines.
+   */
+  ownedTopics: () => Array<{ sessionKey: string; pinned: boolean; lastMovedAt?: number }>;
+  /** The pool's live stage. Absent ⇒ no live move. */
+  poolStage?: () => string;
+  /** Does this machine hold a fresh rebalance proof? Absent ⇒ no live move. */
+  proofFresh?: () => boolean;
+  /**
+   * Topics with a running session that has sat quiet (filled by the async scanner).
+   * Only these are candidates. Absent ⇒ none: moving a topic with no running session
+   * relieves nothing, and moving a working one disturbs it.
+   */
+  quietTopics?: () => ReadonlySet<string>;
+  /** False while the reconciler itself is in dry-run, when no move could be carried out. */
+  moveActuatorLive?: () => boolean;
+  /** Topics reserved for the rebalance proof: never shed by the normal path. */
+  isProofTopic?: (sessionKey: string) => boolean;
   /** Current owner of a topic (undefined when unknown). */
   ownerOf: (sessionKey: string) => string | undefined;
   placement: PlacementExecutor;
@@ -95,6 +120,11 @@ export interface OverloadShedDeps {
   log?: (line: string) => void;
 }
 
+/** The working-set kick for a landed move: the same one POST /pool/transfer uses, owned by the server. */
+let moveAftercare: ((target: string, topic: number) => void) | null = null;
+export function setMoveAftercare(fn: ((target: string, topic: number) => void) | null): void { moveAftercare = fn; }
+export function getMoveAftercare(): ((target: string, topic: number) => void) | null { return moveAftercare; }
+
 export interface OverloadMove {
   sessionKey: string;
   target: string;
@@ -107,6 +137,16 @@ interface LiveEntry extends OverloadMove {
   proposedAt: number;
   /** Set once the reconciler's transfer was seen in flight toward the target. */
   sawTransferring?: boolean;
+  /** A rebalance-proof move: stamps no shed state and stays out of the measures. */
+  proof?: boolean;
+}
+
+/** What the drain reported for a move, in the runner's own terms. */
+export interface MoveOutcome {
+  status: string;
+  claimLanded?: boolean;
+  durationMs?: number;
+  detail?: string;
 }
 interface PersistedState {
   reservations: Reservation[];
@@ -124,7 +164,6 @@ interface PersistedState {
 
 /** Bounded audit: rotate to ONE kept segment past this size. */
 export const OVERLOAD_SHED_AUDIT_MAX_BYTES = 2 * 1024 * 1024;
-const WOULD_MOVE_AUDIT_EVERY_MS = 5 * 60_000;
 const HOUR_MS = 60 * 60_000;
 /**
  * A topic is proposed at most this many times per overload episode. A move the
@@ -151,7 +190,8 @@ function emptyState(): PersistedState {
 export class OverloadShedPlanner {
   private state: PersistedState;
   private closedSince: number | null = null;
-  private lastWouldMoveAudit = new Map<string, number>();
+  private lastWouldMoveAudit = new Set<string>();
+  private proofWaiter: ((moved: { moved: boolean; outcome: MoveOutcome }) => void) | null = null;
   private breakerAuditedAt = 0;
   private episodePersistedAt = 0;
   private lastTickAt: number | null = null;
@@ -169,6 +209,9 @@ export class OverloadShedPlanner {
     // A move whose transfer was already started is never handed out again: if it
     // was aborted (the target did not claim), the topic stays here for this try.
     if (!e || e.sawTransferring || !this.d.config().enabled || this.now() >= e.expiresAt) return [];
+    // The switches hold a proposal that has not started, not only new ones: dry-run must
+    // stop moves at once, not after this entry's 10 minutes run out.
+    if (!e.proof && this.heldReason(this.d.config()) !== null) return [];
     return [{ sessionKey: e.sessionKey, target: e.target, episodeId: e.episodeId }];
   }
 
@@ -182,7 +225,7 @@ export class OverloadShedPlanner {
       // Disabled: forget the episode; a later enable starts fresh. Reservations
       // simply age out by TTL.
       this.closedSince = null;
-      if (this.state.entry) { this.state.entry = null; this.save(); }
+      if (this.state.entry) { this.state.entry = null; this.settleProof(false, { status: 'shed-disabled' }); this.save(); }
       return;
     }
     const self = this.d.selfMachineId();
@@ -235,16 +278,18 @@ export class OverloadShedPlanner {
       if (inFlight && !e.sawTransferring) { e.sawTransferring = true; dirty = true; }
       if (safe(() => this.d.ownerOf(e.sessionKey), undefined) === e.target) {
         this.counters.claimed += 1;
-        this.audit({ event: 'claimed', sessionKey: e.sessionKey, target: e.target, episodeId: e.episodeId });
+        this.audit({ event: 'claimed', sessionKey: e.sessionKey, target: e.target, episodeId: e.episodeId, ...(e.proof ? { proof: true } : {}) });
         featureEvidence.record('monitoring.overloadShed', { kind: 'fired', reason: 'move-claimed', context: { topic: e.sessionKey, target: e.target, episodeId: e.episodeId, dryRun: cfg.dryRun } });
+        this.settleProof(true, { status: 'claimed' });
         this.state.reservations = this.state.reservations.filter((r) => r.sessionKey !== e.sessionKey);
         this.state.entry = null;
         dirty = true;
       } else if (e.sawTransferring && !inFlight) {
         // The transfer started and was aborted back (the target did not claim in time).
         this.counters.aborted += 1;
-        this.audit({ event: 'aborted', sessionKey: e.sessionKey, target: e.target, episodeId: e.episodeId });
+        this.audit({ event: 'aborted', sessionKey: e.sessionKey, target: e.target, episodeId: e.episodeId, ...(e.proof ? { proof: true } : {}) });
         featureEvidence.record('monitoring.overloadShed', { kind: 'error', reason: 'move-aborted', context: { topic: e.sessionKey, target: e.target, episodeId: e.episodeId, dryRun: cfg.dryRun } });
+        this.settleProof(false, { status: 'aborted' });
         this.state.reservations = this.state.reservations.filter((r) => r.sessionKey !== e.sessionKey);
         this.state.entry = null;
         dirty = true;
@@ -265,8 +310,9 @@ export class OverloadShedPlanner {
           const i = this.state.moveTimes.indexOf(e.proposedAt);
           if (i >= 0) this.state.moveTimes.splice(i, 1);
         }
-        this.audit({ event: 'expired', sessionKey: e.sessionKey, target: e.target, episodeId: e.episodeId, refunded: refund });
+        this.audit({ event: 'expired', sessionKey: e.sessionKey, target: e.target, episodeId: e.episodeId, refunded: refund, ...(e.proof ? { proof: true } : {}) });
         featureEvidence.record('monitoring.overloadShed', { kind: 'error', reason: 'move-expired-unstarted', context: { topic: e.sessionKey, target: e.target, episodeId: e.episodeId, refunded: refund, dryRun: cfg.dryRun } });
+        this.settleProof(false, { status: 'expired' });
         this.state.reservations = this.state.reservations.filter((r) => r.sessionKey !== e.sessionKey);
         this.state.entry = null;
         dirty = true;
@@ -277,7 +323,7 @@ export class OverloadShedPlanner {
       }
     }
 
-    const isSource = this.closedSince !== null && now - this.closedSince >= cfg.sourceAfterMs;
+    const isSource = this.isSourceNow(cfg, now, caps, self);
     if (!isSource) { if (dirty) this.save(); return; }
 
     // ── Breaker (D3), checked before proposing.
@@ -292,25 +338,19 @@ export class OverloadShedPlanner {
       return;
     }
 
-    const reservedOn = (id: string): number => this.state.reservations.filter((r) => r.target === id).length;
-    const targetEligible = (m: MachineCapacity): boolean => {
-      if (m.machineId === self) return false;
-      const l = m.liveness;
-      if (!l || l.state !== 'live' || l.evidenceAgeMs === null || l.evidenceAgeMs > cfg.targetEvidenceMaxAgeMs) return false;
-      if (m.loadVerdict !== 'ok' || isRefusingWork(m)) return false;
-      if (this.state.lastRefusingAt[m.machineId] !== undefined) return false;
-      if (typeof m.maxSessions !== 'number' || m.maxSessions <= 0) return false;
-      return m.maxSessions - (m.activeSessionCount ?? 0) - reservedOn(m.machineId) >= cfg.minTargetHeadroom;
-    };
+    const targetEligible = (m: MachineCapacity): boolean => this.isEligibleTarget(m, cfg, self);
 
-    const topics = safe(() => this.d.ownedTopics(), [] as Array<{ sessionKey: string; pinned: boolean }>);
+    const topics = safe(() => this.d.ownedTopics(), [] as Array<{ sessionKey: string; pinned: boolean; lastMovedAt?: number }>);
+    const quiet = safe(() => this.d.quietTopics?.() ?? new Set<string>(), new Set<string>() as ReadonlySet<string>);
     const sessions: RebalanceSession[] = [];
     for (const t of topics) {
       if (t.pinned || !/^[1-9]\d*$/.test(t.sessionKey)) continue; // Telegram topics only
+      if (!quiet.has(t.sessionKey)) continue; // no running quiet session: nothing to relieve
+      if (this.d.isProofTopic && safe(() => this.d.isProofTopic!(t.sessionKey), true)) continue;
       if ((this.state.topicAttempts[t.sessionKey] ?? 0) >= MAX_ATTEMPTS_PER_TOPIC) continue;
       if (this.d.hasLiveAutonomousRun && safe(() => this.d.hasLiveAutonomousRun!(t.sessionKey), true)) continue;
       if (this.d.isTopicBusy && safe(() => this.d.isTopicBusy!(t.sessionKey), true)) continue;
-      sessions.push({ sessionKey: t.sessionKey, ownerMachineId: self, lastTransferredAt: this.state.topicLastShed[t.sessionKey] });
+      sessions.push({ sessionKey: t.sessionKey, ownerMachineId: self, lastTransferredAt: Math.max(t.lastMovedAt ?? 0, this.state.topicLastShed[t.sessionKey] ?? 0) });
     }
     // The source row is THIS machine; make sure the planner sees it as online.
     const machines = caps.map((m) => (m.machineId === self ? { ...m, online: true } : m));
@@ -318,7 +358,7 @@ export class OverloadShedPlanner {
       machines,
       sessions,
       rebalanceThresholdPercent: 1,
-      placementCooldownMs: cfg.recentShedMs,
+      placementCooldownMs: cfg.topicCooldownMs,
       now,
       maxMovesPerCycle: 1,
       isSource: (m) => m.machineId === self,
@@ -333,14 +373,18 @@ export class OverloadShedPlanner {
     }
 
     const episodeId = `${self}:${this.state.episode?.startedAt ?? this.closedSince}`;
-    const live = !cfg.dryRun && adv?.enforced === true;
-    if (!live) {
+    // The stage is the gate (session-pool-rebalancing-finish). Admission enforcement no
+    // longer is: the source already needs real slot pressure, and tying moves to
+    // enforcement would hold them behind that feature's own open flapping question.
+    const held = this.heldReason(cfg);
+    if (held) {
       this.counters.wouldMove += 1;
-      featureEvidence.recordAtMostEvery('monitoring.overloadShed', `would-move:${mv.sessionKey}>${mv.toMachine}`, WOULD_MOVE_AUDIT_EVERY_MS, { kind: 'fired', reason: cfg.dryRun ? 'would-move:dry-run' : 'would-move:admission-not-enforced', context: { topic: mv.sessionKey, target: mv.toMachine, episodeId, dryRun: cfg.dryRun, movableTopics: sessions.length } });
-      const k = `${mv.sessionKey}>${mv.toMachine}`;
-      if (now - (this.lastWouldMoveAudit.get(k) ?? 0) >= WOULD_MOVE_AUDIT_EVERY_MS) {
-        this.lastWouldMoveAudit.set(k, now);
-        this.audit({ event: 'would-move', sessionKey: mv.sessionKey, target: mv.toMachine, episodeId, reason: cfg.dryRun ? 'dry-run' : 'admission-not-enforced' });
+      featureEvidence.recordAtMostEvery('monitoring.overloadShed', `would-move:${mv.sessionKey}>${mv.toMachine}`, WOULD_MOVE_AUDIT_EVERY_MS, { kind: 'fired', reason: `would-move-${held}`, context: { topic: mv.sessionKey, target: mv.toMachine, episodeId, dryRun: cfg.dryRun, movableTopics: sessions.length } });
+      const k = `${episodeId}|${mv.sessionKey}`;
+      if (!this.lastWouldMoveAudit.has(k)) {
+        if (this.lastWouldMoveAudit.size >= 1000) this.lastWouldMoveAudit.clear();
+        this.lastWouldMoveAudit.add(k);
+        this.audit({ event: 'would-move', sessionKey: mv.sessionKey, target: mv.toMachine, episodeId, reason: held, workState: 'idle', ...this.capacitySnapshot(caps, self, mv.toMachine) });
       }
       if (dirty) this.save();
       return;
@@ -369,6 +413,108 @@ export class OverloadShedPlanner {
     this.save();
   }
 
+  /**
+   * One move for the rebalance proof: the same target choice and the same path out
+   * (overloadMoves → reconciler → drain), with the source trigger, stage gate, dry-run
+   * and cooldown exempted and the target restricted to `to`. Stamps no shed state.
+   * Resolves with the move's outcome, or `refused` when it never started.
+   */
+  proofMove(sessionKey: string, to: string): { refused: string } | { outcome: Promise<{ moved: boolean; outcome: MoveOutcome }> } {
+    const cfg = this.d.config();
+    const self = this.d.selfMachineId();
+    if (!cfg.enabled || !self) return { refused: 'shed-not-enabled' };
+    if (this.state.entry || this.proofWaiter) return { refused: 'move-in-flight' };
+    if (!safe(() => this.d.moveActuatorLive?.() ?? true, false)) return { refused: 'reconciler-dry-run' };
+    const now = this.now();
+    const caps = safe(() => this.d.capacities(), [] as MachineCapacity[]);
+    const machines = caps.map((m) => (m.machineId === self ? { ...m, online: true } : m));
+    const moves = planRebalance({
+      machines,
+      sessions: [{ sessionKey: sessionKey, ownerMachineId: self }],
+      rebalanceThresholdPercent: 1,
+      placementCooldownMs: 0,
+      now,
+      maxMovesPerCycle: 1,
+      isSource: (m) => m.machineId === self,
+      targetEligible: (m) => m.machineId === to && this.isEligibleTarget(m, cfg, self),
+    }, this.d.placement);
+    const mv = moves[0];
+    if (!mv) return { refused: 'target-ineligible' };
+    this.state.entry = { sessionKey, target: mv.toMachine, episodeId: `proof:${self}:${now}`, proposedAt: now, expiresAt: now + cfg.entryTtlMs, proof: true };
+    this.audit({ event: 'proposed', sessionKey, target: mv.toMachine, episodeId: this.state.entry.episodeId, proof: true });
+    this.save();
+    return { outcome: new Promise((resolve) => { this.proofWaiter = resolve; }) };
+  }
+
+  /** The drain's result, reported straight back instead of inferred from ownership. */
+  noteMoveOutcome(sessionKey: string, outcome: MoveOutcome): void {
+    const e = this.state.entry;
+    if (!e || e.sessionKey !== sessionKey) return;
+    const moved = outcome.status === 'drained' || outcome.status === 'drained-interrupted';
+    const caps = safe(() => this.d.capacities(), [] as MachineCapacity[]);
+    this.audit({
+      event: 'move-outcome', sessionKey, target: e.target, episodeId: e.episodeId, ...outcome,
+      ...(e.proof ? { proof: true } : {}), ...this.capacitySnapshot(caps, this.d.selfMachineId() ?? '', e.target),
+    });
+    if (moved) this.counters.claimed += 1;
+    else {
+      this.counters.aborted += 1;
+      // A move that did not happen frees its hourly slot; the try is still spent, so a
+      // topic that keeps refusing settles at MAX_ATTEMPTS_PER_TOPIC.
+      const i = this.state.moveTimes.indexOf(e.proposedAt);
+      if (i >= 0) this.state.moveTimes.splice(i, 1);
+      delete this.state.topicLastShed[sessionKey]; // it never moved, so no cooldown starts
+    }
+    this.state.reservations = this.state.reservations.filter((r) => r.sessionKey !== sessionKey);
+    this.state.entry = null;
+    this.settleProof(moved, outcome);
+    this.save();
+  }
+
+  private heldReason(cfg: OverloadShedConfig): string | null {
+    if (safe(() => this.d.poolStage?.(), undefined) !== 'rebalance') return 'stage-not-rebalance';
+    if (!safe(() => this.d.proofFresh?.() === true, false)) return 'proof-not-fresh';
+    if (cfg.dryRun) return 'dry-run';
+    if (!safe(() => this.d.moveActuatorLive?.() ?? true, false)) return 'reconciler-dry-run';
+    return null;
+  }
+
+  private settleProof(moved: boolean, outcome: MoveOutcome): void {
+    const w = this.proofWaiter;
+    this.proofWaiter = null;
+    w?.({ moved, outcome });
+  }
+
+  private isSourceNow(cfg: OverloadShedConfig, now: number, caps: MachineCapacity[], self: string): boolean {
+    if (this.closedSince === null || now - this.closedSince < cfg.sourceAfterMs) return false;
+    const row = caps.find((m) => m.machineId === self);
+    return !!row && typeof row.maxSessions === 'number' && row.maxSessions > 0 && sessionRatio(row) >= cfg.sourceSessionRatio;
+  }
+
+  private isEligibleTarget(m: MachineCapacity, cfg: OverloadShedConfig, self: string): boolean {
+    if (m.machineId === self) return false;
+    const l = m.liveness;
+    if (!l || l.state !== 'live' || l.evidenceAgeMs === null || l.evidenceAgeMs > cfg.targetEvidenceMaxAgeMs) return false;
+    if (m.loadVerdict !== 'ok' || isRefusingWork(m)) return false;
+    // Closed admission counts whether or not the peer enforces it: a machine that has
+    // stopped accepting is the next source, not a target.
+    if (m.loadReport?.acceptingWork === false) return false;
+    if (this.state.lastRefusingAt[m.machineId] !== undefined) return false;
+    if (typeof m.maxSessions !== 'number' || m.maxSessions <= 0 || typeof m.activeSessionCount !== 'number') return false;
+    const reserved = this.state.reservations.filter((r) => r.target === m.machineId).length;
+    return m.maxSessions - m.activeSessionCount - reserved >= cfg.minTargetHeadroom;
+  }
+
+  /** The numbers behind a decision, so a later read can check it against what was true then. */
+  private capacitySnapshot(caps: MachineCapacity[], self: string, target: string): Record<string, unknown> {
+    const row = (id: string) => caps.find((m) => m.machineId === id);
+    const s = row(self); const t = row(target);
+    return {
+      sourceActive: s?.activeSessionCount ?? null, sourceMax: s?.maxSessions ?? null,
+      targetActive: t?.activeSessionCount ?? null, targetMax: t?.maxSessions ?? null, targetVerdict: t?.loadVerdict ?? null,
+    };
+  }
+
   status(): Record<string, unknown> {
     const cfg = this.d.config();
     const now = this.now();
@@ -376,7 +522,7 @@ export class OverloadShedPlanner {
       enabled: cfg.enabled,
       dryRun: cfg.dryRun,
       overloadedSince: this.closedSince ? new Date(this.closedSince).toISOString() : null,
-      isSource: this.closedSince !== null && now - this.closedSince >= cfg.sourceAfterMs,
+      isSource: this.isSourceNow(cfg, now, safe(() => this.d.capacities(), [] as MachineCapacity[]), this.d.selfMachineId() ?? ''),
       liveMove: this.state.entry ? { sessionKey: this.state.entry.sessionKey, target: this.state.entry.target, episodeId: this.state.entry.episodeId, expiresAt: new Date(this.state.entry.expiresAt).toISOString() } : null,
       reservations: this.state.reservations.map((r) => ({ sessionKey: r.sessionKey, target: r.target, expiresAt: new Date(r.expiresAt).toISOString() })),
       movesLastHour: this.state.moveTimes.filter((t) => now - t < HOUR_MS).length,
@@ -396,7 +542,9 @@ export class OverloadShedPlanner {
         moveTimes: Array.isArray(raw.moveTimes) ? raw.moveTimes.filter((t) => typeof t === 'number') : [],
         topicLastShed: raw.topicLastShed && typeof raw.topicLastShed === 'object' ? raw.topicLastShed : {},
         lastRefusingAt: raw.lastRefusingAt && typeof raw.lastRefusingAt === 'object' ? raw.lastRefusingAt : {},
-        entry: raw.entry && typeof raw.entry.sessionKey === 'string' && typeof raw.entry.target === 'string' && typeof raw.entry.expiresAt === 'number' ? raw.entry : null,
+        // A proof entry has no waiter after a restart, so it must not run: the proof's own
+        // marker records that run as red.
+        entry: raw.entry && raw.entry.proof !== true && typeof raw.entry.sessionKey === 'string' && typeof raw.entry.target === 'string' && typeof raw.entry.expiresAt === 'number' ? raw.entry : null,
         episode: raw.episode && typeof raw.episode.startedAt === 'number' && typeof raw.episode.lastClosedAt === 'number' ? raw.episode : null,
         topicAttempts: raw.topicAttempts && typeof raw.topicAttempts === 'object' ? raw.topicAttempts : {},
         topicRefunds: raw.topicRefunds && typeof raw.topicRefunds === 'object' ? raw.topicRefunds : {},
