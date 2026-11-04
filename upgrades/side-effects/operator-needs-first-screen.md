@@ -79,7 +79,7 @@ Concern raised, then resolved. Independent reviewer: a queued reply redriven by 
 
 ## Evidence pointers
 
-`tests/unit/console-needs-first-screen.test.ts`, `tests/unit/operator-surface-referral.test.ts`, `docs/specs/reports/operator-needs-first-screen-convergence.md`. Browser proof ran through a proxy that refused all writes; the stop latch was not touched, no enable or rollback route was called, and the dashboard PIN was never read or used.
+Real judge (Haiku tier via the Claude CLI), five sample messages: a bare referral and a link-and-words message without confirmation get the nudge, the same message with confirmation passes, a report of the agent's own work passes. "Check the page if you like" was nudged, a borderline call the agent can override. The rule's text is added only for a flagged message, so the benchmarked prompt template and its saved benchmark are unchanged, pinned by the existing mirror test. `tests/unit/console-needs-first-screen.test.ts`, `tests/unit/operator-surface-referral.test.ts`, `docs/specs/reports/operator-needs-first-screen-convergence.md`. Browser proof ran through a proxy that refused all writes; the stop latch was not touched, no enable or rollback route was called, and the dashboard PIN was never read or used.
 
 ## Class-Closure Declaration (display-only mirror)
 

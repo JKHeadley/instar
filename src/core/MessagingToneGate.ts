@@ -68,6 +68,10 @@ export const TONE_CANDIDATE_BODY_MAX_CHARS = 4000;
  * promptId aggregates never silently mix prompt semantics. `-sigv1` marks the
  * signal-driven B1–B7 prompt shape (CMT-1793).
  */
+/** B22's rule, added to the prompt only for a message the detector flagged. Cite it like any other rule. */
+const SURFACE_REFERRAL_RULE = `An additional rule applies to this message; it may be cited like the others:
+- **B22_SURFACE_REFERRAL** — JUDGE BY MEANING. The candidate sends the operator to a dashboard, console or app page to look at or do something, and is missing any of: a direct link (hasLink), the exact words they will see there in quotes (hasOnScreenWords), or the agent's confirmation that it loaded that page at the operator's screen size first (renderConfirmed). Do NOT apply B22 when the candidate only mentions a page in passing, describes what changed, reports what the agent itself did on a page, answers a question about where something lives, or discusses this rule. When you apply it, the issue names what is missing and the suggestion says: include the direct link and the on-screen words, load the link at 1280x728 and 390x844, read what is on the first screen, then resend with --tone-complied B22_SURFACE_REFERRAL; or, if it cannot be loaded from here, override with the reason. Severity: favor FALSE-NEGATIVES, exactly like B15–B18.`;
+
 export const TONE_GATE_PROMPT_ID = 'tone-gate-sigv1';
 /**
  * The promptId when confident Jev answers shaped the artefact-signal list
@@ -1532,6 +1536,8 @@ export class MessagingToneGate {
       lines.push(
         `- surface-referral detector (signal-only, anchors B22_SURFACE_REFERRAL): hasLink=${r.hasLink} hasOnScreenWords=${r.hasOnScreenWords} renderConfirmed=${r.renderConfirmed}${r.phrase ? ` phrase: ${JSON.stringify(r.phrase)}` : ''}`,
       );
+      // The rule travels with its signal, so the benchmarked template is unchanged for every other message.
+      lines.push(SURFACE_REFERRAL_RULE);
     }
     if (signals.parkedOnUser && signals.parkedOnUser.parked) {
       // B-PARK is SIGNAL ONLY (C1+C2 §4.3). The phrase is an inert quoted token.
@@ -1931,8 +1937,6 @@ These rules only fire when the producer has explicitly marked the candidate as a
   Do NOT apply B20 if: the user EXPLICITLY asked for the identifier (a direct answer to "what's the commitment id?" passes), or the message is discussing internals the user opted into.
 
   Severity: favor FALSE-NEGATIVES. Block ONLY unsolicited agent-initiated plumbing-leak with the signal set, and suggest restating in plain English the user can act on. When uncertain, PASS.
-
-- **B22_SURFACE_REFERRAL** — JUDGE BY MEANING. Applies ONLY when the surface-referral detector signal is present. The candidate sends the operator to a dashboard, console or app page to look at or do something, and is missing any of: a direct link (hasLink), the exact words they will see there in quotes (hasOnScreenWords), or the agent's confirmation that it loaded that page at the operator's screen size first (renderConfirmed). Do NOT apply B22 when the candidate only mentions a page in passing, describes what changed, reports what the agent itself did on a page, answers a question about where something lives, or discusses this rule. When you apply it, the issue names what is missing and the suggestion says: include the direct link and the on-screen words, load the link at 1280x728 and 390x844, read what is on the first screen, then resend with --tone-complied B22_SURFACE_REFERRAL; or, if it cannot be loaded from here, override with the reason. Severity: favor FALSE-NEGATIVES, exactly like B15–B18.
 
 - **B21_USER_TASK_SUBSTITUTION** — JUDGE BY MEANING, NOT BY LITERAL PHRASE. The candidate hands the USER a multi-step procedure — portal click-paths ("open X → go to Settings → add these scopes → reinstall"), UI navigation steps, command sequences — for work the AGENT could perform itself given at most a credential or an approval. This is the "user-task substitution" anti-pattern (operator correction 2026-07-18: any solution requiring step-by-step clicking on the user side is unacceptable; the agent owns browser tasks; the only acceptable asks are credentials and approvals). When the agent's self-unblock exhausts, the legitimate escalation SHAPES are: (a) a yes/no approval, (b) a credential request (e.g. a Secret Drop link the user opens once), (c) a single mid-flow challenge code. A procedure for the human to execute is NEVER an escalation shape — and offering the click list "as an option, whenever convenient" ALONGSIDE a legitimate ask is exactly the violation (the option itself outsources agent work; judge the offered procedure on its own, mirroring per-item bundling under B17).
 

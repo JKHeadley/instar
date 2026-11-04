@@ -68,12 +68,12 @@ describe('B22_SURFACE_REFERRAL in the gate', () => {
     expect(prompt).toContain('only mentions a page in passing');
   });
 
-  it('with no signal the prompt says B22 does not apply beyond its anchor', async () => {
+  it('with no signal the prompt is exactly the benchmarked one: B22 is not in it', async () => {
     const intelligence = { evaluate: vi.fn(async () => JSON.stringify({ pass: true, rule: '', issue: '', suggestion: '' })) };
     const gate = new MessagingToneGate(intelligence as never);
     await gate.review('All done.', { channel: 'telegram' } as never);
     const prompt = String(intelligence.evaluate.mock.calls[0][0]);
     expect(prompt).not.toContain('surface-referral detector (signal-only');
-    expect(prompt).toContain('Applies ONLY when the surface-referral detector signal is present');
+    expect(prompt).not.toContain('B22_SURFACE_REFERRAL');
   });
 });
