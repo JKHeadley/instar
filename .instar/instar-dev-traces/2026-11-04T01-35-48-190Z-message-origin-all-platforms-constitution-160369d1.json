@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "message-origin-all-platforms-constitution",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-04T01:35:48.190Z",
+  "artifactPath": "upgrades/side-effects/message-origin-all-platforms-constitution.md",
+  "artifactSha256": "8647379a456065e956ff593a5382be2d617332656cf0eae8031225da4e324583",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/message-origin-all-platforms-interaction-family-2026-11-03.json",
+    "docs/specs/reports/message-origin-all-platforms-constitution-review-2026-11-03.md",
+    "docs/standards-registry-area-audits.json",
+    "upgrades/next/message-origin-all-platforms-constitution.md",
+    "upgrades/side-effects/message-origin-all-platforms-constitution.eli16.md",
+    "upgrades/side-effects/message-origin-all-platforms-constitution.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "constitution text only; operator approved wording 17:25 in topic 134088; code-owner review gates merge",
+  "eli16Path": "upgrades/side-effects/message-origin-all-platforms-constitution.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/message-origin-all-platforms-constitution.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "documentation only"
+  }
+}
