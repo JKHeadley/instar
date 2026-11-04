@@ -30,6 +30,7 @@ import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { readGuardPostureBootSnapshot, resolveGuardConfigSnapshot } from '../monitoring/guardPosture.js';
 import { readAcceptedFallbacks, scopeAcceptedFallbacks } from '../monitoring/guardAcceptedFallbacks.js';
 import type { DarkFlagMaturationRegistry } from '../monitoring/DarkFlagMaturationRegistry.js';
+import type { MaturationLadderService } from '../monitoring/MaturationLadderService.js';
 import {
   BOARD_SCHEMA,
   MAX_HISTORY,
@@ -64,7 +65,7 @@ const FORBIDDEN_SEGMENTS = ['.instar', '.git', '.ssh', 'node_modules'];
 type BoardCtx = Pick<RouteContext,
   'config' | 'meshSelfId' | 'machinePoolRegistry' | 'resolvePeerUrls' | 'recordRopeResult'
   | 'commitmentTracker' | 'initiativeTracker' | 'blockerLifecycleService' | 'guardRegistry'
-> & { darkFlagRegistry?: DarkFlagMaturationRegistry | null };
+> & { darkFlagRegistry?: DarkFlagMaturationRegistry | null; maturationLadder?: () => MaturationLadderService | null };
 
 interface MaturationBoardConfig { enabled?: boolean; reviewsDir?: string }
 
@@ -190,8 +191,12 @@ export function collectLocalOwners(ctx: BoardCtx, now: number): { owners: OwnerE
       for (const a of summary.maturation?.accounting ?? []) {
         if (typeof a.featureId === 'string' && typeof a.flagPath === 'string') flagByFeature.set(a.featureId, a.flagPath);
       }
+      const initiativeIds = new Set((ctx.initiativeTracker?.list() ?? []).map(i => i.id));
+      const ladderOnly = new Set((ctx.maturationLadder?.()?.entries ?? []).map(e => e.subject).filter(s => !initiativeIds.has(s)));
       for (const f of summary.maturation?.features ?? []) {
         if (typeof f.featureId !== 'string') continue;
+        // The ladder owner row carries these in-memory subjects, so one feature stays one row.
+        if (ladderOnly.has(f.featureId)) continue;
         const flag = flagByFeature.get(f.featureId);
         owners.push({
           machine, source: 'd7', ownerId: f.featureId, aliases: flag ? [flag] : [],
@@ -252,6 +257,32 @@ export function collectLocalOwners(ctx: BoardCtx, now: number): { owners: OwnerE
     }
   } catch {
     sources.push({ name: 'dark-flag', machine, ok: false, reason: 'read-failed' });
+  }
+
+  // The ladder: rung, next rung and threshold state per feature.
+  try {
+    const ladder = ctx.maturationLadder?.() ?? null;
+    if (!ladder) {
+      sources.push({ name: 'ladder', machine, ok: false, reason: 'ladder-not-running' });
+    } else if (ladder.error) {
+      sources.push({ name: 'ladder', machine, ok: false, reason: ladder.error });
+    } else {
+      for (const f of ladder.features()) {
+        owners.push({
+          machine, source: 'ladder', ownerId: f.subject,
+          aliases: [f.id, ...f.aliases, ...(f.flagPath ? [f.flagPath, `${f.flagPath}.enabled`] : [])],
+          facts: {
+            title: f.title, rung: f.rung, next: f.next, state: f.state, because: f.because ?? null,
+            passing: f.passing, total: f.total, soakDays: f.soak.days, soakNeeded: f.soak.needed,
+            composedInto: f.composedInto ?? null,
+          },
+          at: null,
+        });
+      }
+      sources.push({ name: 'ladder', machine, ok: true });
+    }
+  } catch {
+    sources.push({ name: 'ladder', machine, ok: false, reason: 'read-failed' });
   }
 
   // Guard posture (same inputs the /guards route uses).
@@ -328,7 +359,7 @@ function sanitizeFacts(v: unknown): OwnerEntry['facts'] | null {
   return out;
 }
 
-const OWNER_SOURCES = new Set(['d7', 'rollout', 'dark-flag', 'guard']);
+const OWNER_SOURCES = new Set(['d7', 'rollout', 'dark-flag', 'guard', 'ladder']);
 
 export function sanitizePeerOwners(raw: unknown, machine: string): OwnerEntry[] | null {
   if (!Array.isArray(raw) || raw.length > 4096) return null;

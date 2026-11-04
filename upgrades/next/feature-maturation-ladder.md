@@ -1,0 +1,28 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: minor -->
+
+## What Changed
+
+Every switched-off feature now has a ladder: numbers it must hit for each rung, read from its own logged behaviour, with on-by-default as the last rung. `src/data/feature-ladders.json` holds them, and a test fails the build if a switched-off feature has no entry. The rung comes from what actually ships, not from a label. The existing readiness scorer now covers these features, with its per-feature scans reduced to one read per pass.
+
+A new evidence log lets any feature record what it did with the reason and context, and `GET /maturation/ladder` shows each feature's rung, next rung and numbers now against target. The maturation board shows the same. When a feature's numbers hold long enough it is raised to the recurring review, whose model decides; `POST /maturation/moves` applies that decision behind floors that can only refuse. Numbers never move anything by themselves, and a fleet default stays a reviewed code change. Development agents get this live; it is off on the fleet for now.
+
+In the instar source tree, a spec's maturation plan now also names its ladder entry.
+
+## What to Tell Your User
+
+Nothing changes for you today. Behind the scenes, features that are still switched off now have clear numbers they must reach before being turned on for everyone, and I can tell you exactly where any of them stands.
+
+## Summary of New Capabilities
+
+- Ask why a feature is still off and get its numbers against its targets.
+- A record of what each switched-off feature actually did, with reasons.
+- Features that meet their numbers are raised for a decision instead of waiting to be noticed.
+
+## Evidence
+
+- 186 features in the registry, covering all 185 the code reports as switched off, enforced by a test with no baseline file. 172 have thresholds on every rung they still need; 57 read real logs today and 115 read 0 samples until instrumented, by design.
+- Reproduction of the gap: GET /maturation/board on 2026-11-03 showed 224 rows, 4 really on by default, 147 "Nothing planned", 9 numeric targets.
+- Spec converged in 3 rounds with GPT-6 Astra; automatic moves were cut after all reviewers and *The Body and the Mind* said a counter must not decide. A second-family read of the thresholds found 13 wrong bars, which were fixed.
+- Unit, integration and E2E tests cover the parser, rung derivation, every state, evidence reads, move floors, revert, raising, gate and production wiring.
