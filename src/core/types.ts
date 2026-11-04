@@ -3613,6 +3613,8 @@ export interface ExternalServicePermissions {
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface InstarConfig {
+  /** Memory privacy (docs/specs/memory-privacy.md). On only when `enabled` is true. */
+  memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacyConfig;
   /**
    * message-origin-all-platforms §5: the agent-wide origin display bits for an agent with no
    * enabled Telegram entry (with one, the Telegram entry's messageOrigin.display is the setting),

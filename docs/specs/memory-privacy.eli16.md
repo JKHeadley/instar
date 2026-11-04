@@ -24,6 +24,7 @@ The bigger change is what a session can reach. The proven leak came from an ordi
 - Old memory isn't moved or rewritten. On a multi-person agent it becomes visible only in the owner's private chats, because the owner can already read those files.
 - An operator can name people who share memory freely. Luna will name Justin and Adriana. If anyone else can reach the agent, the protection turns on by itself.
 - One setting, `memoryPrivacy.enabled: false`, switches the whole thing off, with no data to repair.
+- This is off unless the owner asks for it, on every machine the agent runs on. An update never turns it on. An agent with several people keeps running as it did, so their facts stay in one pool until the owner opts in. New agents start with it off too, until a backup machine can be trusted to keep the setting.
 
 ## What it costs
 
