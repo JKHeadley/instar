@@ -30,7 +30,8 @@ function committedDocsMd(): string[] {
   return out.split('\n').map((s) => s.trim()).filter(Boolean);
 }
 function trackedSet(): Set<string> {
-  const out = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' });
+  // The full listing passed 1 MiB (execFileSync's default maxBuffer) on 2026-11-04 and died with ENOBUFS.
+  const out = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   return new Set(out.split('\n').map((s) => s.trim()).filter(Boolean));
 }
 function read(rel: string): string {
