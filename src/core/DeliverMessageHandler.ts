@@ -35,6 +35,22 @@ export interface DeliverMessageHandlerDeps {
    */
   validateSender?: (senderEnvelope: { userId?: string | number }, session: string) => boolean;
   /**
+   * session-pool-no-silent-drop: refuse what this machine would accept and then drop. The
+   * checks come as one object so a refusal can never be set up without the duplicate guard.
+   * Absent means it can serve, today's behaviour.
+   */
+  refusal?: {
+    /** Asked before the receipt, so a refused message is never recorded as received. */
+    canServe: (command: Extract<MeshCommand, { type: 'deliverMessage' }>) => boolean;
+    /**
+     * Read-only receipt check. A message taken before this machine lost the ability to serve
+     * is a duplicate on retry: refusing it would hand it back and process it twice.
+     */
+    alreadyReceived: (messageId: string, session: string) => boolean;
+    /** A fault here never changes the answer. */
+    onCannotServe?: (command: Extract<MeshCommand, { type: 'deliverMessage' }>) => void;
+  };
+  /**
    * silent-loss-refusal-conservation §2.B — the receiver-side rejection trace.
    * Fired SYNCHRONOUSLY, once, immediately before the `sender-rejected` NACK is
    * returned, so the DECIDING (owner) machine keeps a forensic record of its own
@@ -118,6 +134,16 @@ export function createDeliverMessageHandler(deps: DeliverMessageHandlerDeps): Me
         } catch { /* trace fault never changes the NACK */ }
         return { messageId: command.messageId, accepted: 'sender-rejected' };
       }
+    }
+    // Answered as stale ownership on purpose: every router, on any build, already takes that
+    // as "this message is still yours" and re-places it or keeps it. A new ack value would
+    // need every peer upgraded first, and an older peer would read it as nothing.
+    if (deps.refusal && !deps.refusal.canServe(command)) {
+      if (deps.refusal.alreadyReceived(command.messageId, command.session)) {
+        return { messageId: command.messageId, accepted: 'duplicate' };
+      }
+      try { deps.refusal.onCannotServe?.(command); } catch { /* a trace fault never changes the answer */ }
+      return { messageId: command.messageId, accepted: 'stale-ownership' };
     }
     const firstSeen = deps.recordReceipt(command.messageId, command.session);
     if (!firstSeen) return { messageId: command.messageId, accepted: 'duplicate' };
