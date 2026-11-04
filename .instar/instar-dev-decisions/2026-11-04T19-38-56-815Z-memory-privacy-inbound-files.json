@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-04T19:38:56.815Z",
+  "slug": "memory-privacy-inbound-files",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 132,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/core/memorySessionPolicy.ts",
+      "src/core/types.ts",
+      "src/messaging/slack/SlackAdapter.ts"
+    ],
+    "addedLines": 102,
+    "deletedLines": 30
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

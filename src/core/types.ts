@@ -198,6 +198,8 @@ export type SessionStatus = 'starting' | 'running' | 'completed' | 'failed' | 'k
 export type ModelTier = 'opus' | 'sonnet' | 'haiku';
 
 export interface SessionManagerConfig {
+  /** Actual agent state directory; inbound attachments may live outside projectDir/.instar. */
+  stateDir?: string;
   /** Project name used as the stable local agent id for auth-bound calls. */
   projectName: string;
   /**
