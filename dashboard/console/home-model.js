@@ -472,6 +472,8 @@ export function pullRequestRefs(row) {
  * item (its refs appear in that item) is dropped by identity: the queue item carries the action.
  */
 export function combineNeeds(needs, promised, surfaced) {
+  // Nothing surfaced was asked for: the queue alone, exactly as before.
+  if (!surfaced && (!needs || !Number.isFinite(needs.count) || !promised || promised.state === 'loading')) return needs;
   const known = surfaced && Array.isArray(surfaced.rows) ? surfaced : { rows: [], pending: [], failed: [] };
   const pending = Array.isArray(known.pending) && known.pending.length > 0;
   const failed = Array.isArray(known.failed) && known.failed.length > 0;
@@ -502,7 +504,7 @@ export function combineNeeds(needs, promised, surfaced) {
   const line = count ? '' : [notes, queueLine].filter(Boolean).join(' ') || 'Nothing is waiting on you.';
   const partial = needs.state === 'partial' || !promisesKnown || needs.unreadQueue || failed || (promisesRead && (promised.state === 'stale' || !!promised.coverage));
   return {
-    ...needs, combined: true, count, all, rows: all.slice(0, MAX_ROWS), line, surfacedPending: pending,
+    ...needs, combined: true, count, all, rows: all.slice(0, MAX_ROWS), line, surfacedPending: pending, surfacedCount: rows.length,
     note: count ? null : needs.note,
     statusNote: count ? [needs.statusNote, notes, queueLine].filter(Boolean).join(' ') : needs.statusNote,
     coverage: partial ? 'partial view' : needs.coverage,
@@ -534,7 +536,7 @@ export function headline(allCards) {
   const otherAttn = attention.length;
   const loading = list.filter((c) => c.state === 'loading').length;
   // Never announce a count, or "all quiet", before both counting cards answered.
-  if (loading === list.length || (cards.needs && cards.needs.state === 'loading' && !Number.isFinite(cards.needs.count)) || (cards.promised && cards.promised.state === 'loading' && !(cards.needs && cards.needs.count > 0)) || (cards.needs && cards.needs.surfacedPending && !(cards.needs.count > 0))) return { text: 'Checking in…', tone: 'muted' };
+  if (loading === list.length || (cards.needs && cards.needs.state === 'loading' && !Number.isFinite(cards.needs.count)) || (cards.promised && cards.promised.state === 'loading' && !(cards.needs && cards.needs.surfacedCount > 0)) || (cards.needs && cards.needs.surfacedPending && !(cards.needs.count > 0))) return { text: 'Checking in…', tone: 'muted' };
   // A known action survives incomplete coverage. Coverage belongs under agent
   // status, not in the sentence describing the action.
   const count = cards.needs && cards.needs.combined ? known(cards.needs) : known(cards.needs) + known(cards.promised);
