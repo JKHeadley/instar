@@ -28,7 +28,7 @@ export function desktopProbeUnavailableReason(probe: {
   loginDone?: boolean;
   screenLocked?: boolean;
   helperChange?: DesktopHelperPermissionChange;
-  linux?: { display: string | null; capturer: boolean; wayland?: boolean };
+  linux?: { display: string | null; capturer: boolean; wayland?: boolean; compositor?: 'hyprland' };
 }): string {
   if (probe.linux) return linuxUnavailableReason(probe, probe.linux);
   const missing = [!probe.screenPermission && 'Screen Recording',
@@ -65,11 +65,20 @@ export function desktopProbeUnavailableReason(probe: {
   return 'Remote desktop is not ready on this machine.';
 }
 
-/** Native Linux reads its own X11 session; there are no per-app permissions to grant. */
+/** Native Linux reads its own X11 or Hyprland session; there are no per-app permissions to grant. */
 function linuxUnavailableReason(probe: { sessionActive: boolean; displayCount: number; screenLocked?: boolean },
-  linux: { display: string | null; capturer: boolean; wayland?: boolean }): string {
+  linux: { display: string | null; capturer: boolean; wayland?: boolean; compositor?: 'hyprland' }): string {
+  if (linux.compositor === 'hyprland') {
+    if (!linux.display) {
+      return 'Nobody is signed in to the desktop on this computer, so there is no screen to show. Sign in at the machine or turn on automatic sign-in, then tap Retry. The Instar agent is online.';
+    }
+    if (!linux.capturer) {
+      return 'The screen tools are missing on this computer. Install grim and wtype (on Arch or Omarchy: sudo pacman -Sy grim wtype), then tap Retry. The Instar agent is online.';
+    }
+    return 'The desktop on this computer did not answer, so it may have stopped. Start it again, then tap Retry. The Instar agent is online.';
+  }
   if (linux.wayland) {
-    return 'This Linux desktop runs Wayland, which does not let other programs see or control the screen. Choose an X11 (Xorg) session at the sign-in screen, then tap Retry. The Instar agent is online.';
+    return 'This Linux desktop runs a Wayland session that remote desktop does not support yet (Hyprland is supported). Choose an X11 (Xorg) session at the sign-in screen, then tap Retry. The Instar agent is online.';
   }
   if (!linux.display) {
     return 'This Linux machine has no desktop session for remote desktop to show: no X display is running as the agent’s user. A server needs a virtual desktop (for example TigerVNC or Xvfb) started as that user. The Instar agent is online.';

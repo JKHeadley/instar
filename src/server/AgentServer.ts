@@ -222,7 +222,7 @@ import { parseScreenLockPolicy } from '../core/DesktopLockState.js';
 import { verifyDesktopLockedAssertion, type DesktopLockedAssertion } from '../core/DesktopOperatorAssertion.js';
 import { DesktopSetupTarget } from '../core/DesktopSetupTarget.js';
 import { isWslHost } from '../core/wslPlatform.js';
-import { LinuxDesktopHost } from '../core/LinuxDesktopHost.js';
+import { LinuxAutoDesktopHost } from '../core/HyprlandDesktopHost.js';
 import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
 import { windowsDesktopLocalSend } from '../core/WindowsDesktopLocalTransport.js';
 import { discoverWindowsDesktopCompanion } from '../core/WindowsDesktopCompanionDiscovery.js';
@@ -3018,10 +3018,10 @@ export class AgentServer {
           }) : null;
           if (macHost && this.desktopLockedController) macHost.setLockedRoot(this.desktopLockedController.root);
           const host: DesktopHost = macHost
-            // Native Linux (not WSL) captures its own X11 session; a server with
-            // no X display reports an inactive session and admission refuses it.
+            // Native Linux (not WSL) captures its own X11 or Hyprland session; a
+            // server with neither reports an inactive session and admission refuses it.
             ?? (process.platform === 'linux' && !isWslHost()
-              ? new LinuxDesktopHost({ display: options.config.remoteDesktop?.linuxDisplay ?? null })
+              ? new LinuxAutoDesktopHost({ display: options.config.remoteDesktop?.linuxDisplay ?? null })
               : null)
             ?? (() => {
                 const companion = discoverWindowsDesktopCompanion();
