@@ -62,7 +62,10 @@ describe('recommended services catalog', () => {
   it('a service with no proven recipe is unavailable, and none has one yet', () => {
     expect(isServiceAvailable({ ...rows[0], setupRecipe: 'tailscale-v1' })).toBe(true);
     expect(isServiceAvailable({ ...rows[0], setupRecipe: null })).toBe(false);
-    expect(rows.filter(isServiceAvailable)).toEqual([]);
+    // Giving a real service a recipe opens the confirm page to the public. Before this may change, the
+    // slice that lands the first recipe must ship: a way to say no from the list and the page, a yes for
+    // a further machine or a voided grant, and a limit on opening the page, which rewrites a file.
+    expect(rows.filter(isServiceAvailable), 'see the comment above before giving a service a recipe').toEqual([]);
   });
 
   it('a row never gives the person a task', () => {

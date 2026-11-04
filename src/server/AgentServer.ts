@@ -223,6 +223,7 @@ import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js'
 import { DesktopHelperRetention } from '../core/DesktopHelperRetention.js';
 import { getInstarVersion } from '../core/Config.js';
 import { DesktopHelperPermissionNotice } from '../core/DesktopHelperPermissionNotice.js';
+import { GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS } from '../core/PinAttemptStore.js';
 import { dashboardUnlockRefused, isLoopbackPeer, wslWindowsHostAddress } from '../core/desktopTransport.js';
 import { mountDashboardEntryRoutes, mountPairPage, resolvePairDir } from './dashboardEntry.js';
 import { mountDashboardPreview } from './dashboardPreview.js';
@@ -1588,8 +1589,7 @@ export class AgentServer {
     const pinAttempts = new Map<string, { count: number; resetAt: number }>();
     const MAX_ATTEMPTS = 5;
     const WINDOW_MS = 5 * 60 * 1000; // 5-minute window
-    const GLOBAL_MAX_ATTEMPTS = 20;
-    const GLOBAL_PIN_KEY = '__dashboard_unlock_global__';
+    const GLOBAL_MAX_ATTEMPTS = GLOBAL_PIN_MAX_ATTEMPTS;
     let globalPinAttempts = { count: 0, resetAt: 0 };
     const configRef = this.config;
 
@@ -5466,6 +5466,7 @@ export class AgentServer {
       moneyLayerAudit: this.moneyLayerAudit,
       requestSupervisedRestart: (reason: string, requestedBy?: string) => this.requestSupervisedRestart(reason, requestedBy),
       pinAttemptStore: this.pinAttemptStore,
+      pinEntryRefusedHere: (req) => dashboardUnlockRefused(Boolean(this.directDesktopAccess), req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']),
       providerCostReportStore: this.providerCostReportStore,
       resourceLedger: this.resourceLedger,
       processFootprintMonitor: this.processFootprintMonitor,

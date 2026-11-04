@@ -74,6 +74,17 @@ describe('recommended services: production wiring', () => {
     expect(no.status).toBe(200);
     expect(no.body).toMatchObject({ choice: 'no', reason: 'cost' });
     expect(makeLedger().effective('jev').choice).toBe('no');
+
+    // No token is needed to reach the confirm route, and no real service has a proven setup, so it refuses a yes.
+    const page = await request(app).get('/recommended-services/jev/confirm');
+    expect(page.status).toBe(409);
+    expect(page.body.error).toBe('not-available');
+    const yes = await request(app).post('/recommended-services/jev/confirm').set('X-Instar-Request', '1').send({ token: 'forged', pin: PIN });
+    expect(yes.status).toBe(409);
+    expect(makeLedger().effective('jev').choice).toBe('no');
+    const pageFile = await request(app).get('/dashboard/service-yes');
+    expect(pageFile.status).toBe(200);
+    expect(pageFile.headers['content-security-policy']).toContain("default-src 'none'");
   });
 
   it('answers 503 rather than pretending when this machine has no ledger', async () => {

@@ -8,6 +8,7 @@
  * Backup status is an honest record, proven by tests/unit/recommended-services-catalog.test.ts:
  * `gap` must name its spec, and `exercised` must name a drill that exists.
  */
+import crypto from 'node:crypto';
 
 export const BACKUP_STATUSES = ['exercised', 'specified', 'gap'] as const;
 export type BackupStatus = (typeof BACKUP_STATUSES)[number];
@@ -152,4 +153,10 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
 /** Deterministic: a service with no live-proven recipe is unavailable. */
 export function isServiceAvailable(row: CatalogRow): boolean {
   return row.setupRecipe !== null;
+}
+
+/** What the person read. A yes is bound to it, so changed text needs a fresh look. */
+export function offerTextHash(row: CatalogRow): string {
+  const { name, benefit, dataLeaves, cost, account, backup } = row;
+  return crypto.createHash('sha256').update(JSON.stringify({ name, benefit, dataLeaves, cost, account, backup })).digest('hex');
 }

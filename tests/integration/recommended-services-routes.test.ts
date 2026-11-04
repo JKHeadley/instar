@@ -27,6 +27,9 @@ describe('recommended services routes', () => {
     registerRecommendedServiceRoutes(router, {
       ledger: () => ledger,
       stateDir: dir,
+      owner: () => '42',
+      recordApproval: () => undefined,
+      openCommitment: () => undefined,
       checkPin: (req, res) => {
         if ((req.body as { pin?: string }).pin === '1234') return true;
         res.status(403).json({ error: 'pin' });

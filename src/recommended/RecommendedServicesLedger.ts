@@ -34,6 +34,12 @@ export interface ChoiceRow extends RowSignature {
   offerTextHash: string;
   supersedes: string[];
   at: string;
+  /** On a yes: the machine it authorizes setup on. The yes is the grant, so neither can exist alone. */
+  grantMachine?: string;
+  /** On a yes: the owner it was confirmed for. Today's PIN can't prove who typed it. */
+  principal?: string;
+  /** On a yes: every no its writer knew of. A no outside this list came later, whatever the clocks say. */
+  knownNos?: string[];
 }
 
 export interface LegacyImportRow extends RowSignature {
@@ -91,9 +97,20 @@ export function validateRow(raw: unknown): LedgerRow | null {
   if (typeof offerTextHash !== 'string' || offerTextHash.length > 128) return null;
   if (!Array.isArray(supersedes) || supersedes.length > 256) return null;
   if (!supersedes.every((id) => typeof id === 'string' && ID_RE.test(id))) return null;
+  const { grantMachine, principal, knownNos } = r;
+  if (grantMachine !== undefined || principal !== undefined || knownNos !== undefined) {
+    if (choice !== 'yes') return null;
+    for (const v of [grantMachine, principal]) {
+      if (typeof v !== 'string' || !v || v.length > 128) return null;
+    }
+    if (!Array.isArray(knownNos) || knownNos.length > MAX_ROWS) return null;
+    if (!knownNos.every((id) => typeof id === 'string' && ID_RE.test(id))) return null;
+  }
   return {
     type: 'choice', eventId, service, choice, shutdown, reason: reason as NoReason,
-    origin: origin as ChoiceOrigin, offerTextHash, supersedes: supersedes as string[], at, ...s,
+    origin: origin as ChoiceOrigin, offerTextHash, supersedes: supersedes as string[], at,
+    ...(grantMachine === undefined ? {} : { grantMachine: grantMachine as string, principal: principal as string, knownNos: knownNos as string[] }),
+    ...s,
   };
 }
 
@@ -173,12 +190,35 @@ export class RecommendedServicesLedger {
   }
 
   /** A confirmed yes replaces every no standing at this moment, and only those. */
-  recordYes(input: { service: string; origin: ChoiceOrigin; offerTextHash: string }): ChoiceRow {
+  recordYes(input: { service: string; origin: ChoiceOrigin; offerTextHash: string; grantMachine: string; principal: string }): ChoiceRow {
     const replaced = new Set(this.all().flatMap((r) => (r.type === 'choice' && r.choice === 'yes' ? r.supersedes : [])));
     const supersedes = this.all()
       .filter((r): r is ChoiceRow => r.type === 'choice' && r.service === input.service && r.choice === 'no' && !replaced.has(r.eventId))
       .map((r) => r.eventId);
-    return this.appendChoice({ ...input, choice: 'yes', shutdown: 'none', reason: 'none', supersedes });
+    return this.appendChoice({ ...input, choice: 'yes', shutdown: 'none', reason: 'none', supersedes, knownNos: this.knownNoIds(input.service) });
+  }
+
+  /**
+   * The yes that authorizes setup on this machine, if one still stands. A recipe needs it to run or
+   * resume. Every no for the service must be one that yes knew about, so a later no voids it even if
+   * another yes replaced that no, and clock skew can't bring it back.
+   */
+  activeGrant(service: string, machineId: string): ChoiceRow | null {
+    if (this.effective(service).choice !== 'yes') return null;
+    const nos = this.knownNoIds(service);
+    const standing = this.all().filter((r): r is ChoiceRow => r.type === 'choice' && r.service === service && r.choice === 'yes'
+      && r.grantMachine === machineId && nos.every((id) => r.knownNos?.includes(id)));
+    return standing.sort((a, b) => (a.at === b.at ? (a.eventId < b.eventId ? 1 : -1) : a.at < b.at ? 1 : -1))[0] ?? null;
+  }
+
+  /** Every no this machine knows of for a service, standing or replaced. */
+  knownNoIds(service: string): string[] {
+    return this.all().filter((r): r is ChoiceRow => r.type === 'choice' && r.service === service && r.choice === 'no').map((r) => r.eventId);
+  }
+
+  /** The machine writing here, which is the machine a confirm page's yes authorizes. */
+  machineId(): string {
+    return this.opts.signer.machineId();
   }
 
   /** Idempotent per service: one import row is enough, whichever machine wrote it. */
@@ -210,6 +250,7 @@ export class RecommendedServicesLedger {
     return this.signAndStore({
       type: 'choice', eventId: newId(), service: input.service, choice: input.choice, shutdown: input.shutdown,
       reason: input.reason, origin: input.origin, offerTextHash: input.offerTextHash ?? '', supersedes: input.supersedes, at: this.at(),
+      ...(input.grantMachine === undefined ? {} : { grantMachine: input.grantMachine, principal: input.principal, knownNos: input.knownNos }),
     }) as ChoiceRow;
   }
 
