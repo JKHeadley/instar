@@ -183,7 +183,7 @@ function suggestionsBlock(sg, post, refresh) {
 // ── Outside services ──────────────────────────────────────────────────────
 function servicesBlock(services) {
   if (!services.ok) return el('section', { class: 'list-section', id: 'sec-services' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Outside services' })), cantTell(services.reason));
-  const wrap = section({ id: 'services', title: 'Outside services', rows: services.rows, onRow: (r) => sheet({ title: r.main }, story(r.lines), r.yesHref ? el('a', { class: 'btn-primary btn-inline', href: r.yesHref, text: 'Set this up' }) : null) });
+  const wrap = section({ id: 'services', title: 'Outside services', rows: services.rows, onRow: (r) => sheet({ title: r.main }, story(r.lines), r.action ? el('a', { class: 'btn-primary btn-inline', href: r.action.href, text: r.action.label }) : null) });
   if (services.note) wrap.querySelector('.list-head').after(note(services.note));
   return wrap;
 }

@@ -62,11 +62,11 @@ describe('recommended services confirm wiring', () => {
     const { body: page } = await request(app).get(PATH);
     expect(page.token).toBeTruthy();
 
-    const wrong = await request(app).post(PATH).set('X-Instar-Request', '1').send({ token: page.token, pin: '000000' });
+    const wrong = await request(app).post(PATH).set('X-Instar-Request', '1').send({ token: page.token, pin: '000000', answer: 'yes' });
     expect(wrong.status).toBe(403);
     expect(ledger.effective('jev').choice).toBe('unset');
 
-    const yes = await request(app).post(PATH).set('X-Instar-Request', '1').send({ token: page.token, pin: '654321' });
+    const yes = await request(app).post(PATH).set('X-Instar-Request', '1').send({ token: page.token, pin: '654321', answer: 'yes' });
     expect(yes.status).toBe(200);
     const grant = ledger.activeGrant('jev', 'm_w')!;
     expect(grant.principal).toBe('777');
@@ -78,16 +78,16 @@ describe('recommended services confirm wiring', () => {
     const f = fixture(777);
     const { body: page } = await request(f.app).get(PATH);
     (f.ctx as { pinEntryRefusedHere?: () => boolean }).pinEntryRefusedHere = () => true;
-    const insecure = await request(f.app).post(PATH).set('X-Instar-Request', '1').send({ token: page.token, pin: '654321' });
+    const insecure = await request(f.app).post(PATH).set('X-Instar-Request', '1').send({ token: page.token, pin: '654321', answer: 'yes' });
     expect(insecure.status).toBe(403);
     expect(insecure.body.error).toBe('insecure-connection');
     (f.ctx as { pinEntryRefusedHere?: () => boolean }).pinEntryRefusedHere = () => false;
     const failures: string[] = [];
     (f.ctx as { pinAttemptStore?: unknown }).pinAttemptStore = { blocked: (key: string) => key === GLOBAL_PIN_KEY, recordFailure: (k: string) => failures.push(k), recordSuccess: () => undefined };
-    const capped = await request(f.app).post(PATH).set('X-Instar-Request', '1').send({ token: page.token, pin: '654321' });
+    const capped = await request(f.app).post(PATH).set('X-Instar-Request', '1').send({ token: page.token, pin: '654321', answer: 'yes' });
     expect(capped.status).toBe(429);
     (f.ctx as { pinAttemptStore?: unknown }).pinAttemptStore = { blocked: () => false, recordFailure: (k: string) => failures.push(k), recordSuccess: () => undefined };
-    await request(f.app).post(PATH).set('X-Instar-Request', '1').send({ token: page.token, pin: '000000' });
+    await request(f.app).post(PATH).set('X-Instar-Request', '1').send({ token: page.token, pin: '000000', answer: 'yes' });
     expect(failures).toContain(GLOBAL_PIN_KEY);
   });
 
@@ -96,7 +96,7 @@ describe('recommended services confirm wiring', () => {
     const { body: page } = await request(f.app).get(PATH);
     const failures: string[] = [];
     (f.ctx as { pinAttemptStore?: unknown }).pinAttemptStore = { blocked: () => false, recordFailure: (k: string) => failures.push(k), recordSuccess: () => undefined };
-    expect((await request(f.app).post(PATH).set('X-Instar-Request', '1').send({ token: page.token })).status).toBe(403);
+    expect((await request(f.app).post(PATH).set('X-Instar-Request', '1').send({ token: page.token, answer: 'yes' })).status).toBe(403);
     expect(failures).toEqual([]);
   });
 

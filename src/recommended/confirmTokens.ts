@@ -12,6 +12,8 @@ import type { ChoiceOrigin } from './RecommendedServicesLedger.js';
 
 export const CONFIRM_TOKEN_TTL_MS = 30 * 60_000;
 const MAX_PER_SERVICE = 50;
+/** Opening the page rewrites a file and needs no token, so it is rate-bounded across all services. */
+export const MAX_MINTS_PER_MINUTE = 30;
 
 export interface ConfirmBinding {
   service: string;
@@ -38,13 +40,22 @@ export function confirmTokensFile(stateDir: string): string {
 
 export class ConfirmTokenStore {
   private readonly file: string;
+  private recentMints: number[] = [];
 
   constructor(private readonly opts: { stateDir: string; now?: () => number }) {
     this.file = confirmTokensFile(opts.stateDir);
   }
 
+  /** False once pages are opening faster than a person could. Nothing is written. */
+  mayMint(): boolean {
+    const since = this.now() - 60_000;
+    this.recentMints = this.recentMints.filter((at) => at > since);
+    return this.recentMints.length < MAX_MINTS_PER_MINUTE;
+  }
+
   /** Oldest tokens fall off past the cap, so opening a page repeatedly can't grow the file. */
   mint(binding: ConfirmBinding): { token: string; expiresAt: number } {
+    this.recentMints.push(this.now());
     const token = crypto.randomBytes(32).toString('base64url');
     const expiresAt = this.now() + CONFIRM_TOKEN_TTL_MS;
     const others = this.live().filter((t) => t.service !== binding.service);

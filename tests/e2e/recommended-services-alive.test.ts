@@ -79,7 +79,7 @@ describe('recommended services: production wiring', () => {
     const page = await request(app).get('/recommended-services/jev/confirm');
     expect(page.status).toBe(409);
     expect(page.body.error).toBe('not-available');
-    const yes = await request(app).post('/recommended-services/jev/confirm').set('X-Instar-Request', '1').send({ token: 'forged', pin: PIN });
+    const yes = await request(app).post('/recommended-services/jev/confirm').set('X-Instar-Request', '1').send({ token: 'forged', pin: PIN, answer: 'yes' });
     expect(yes.status).toBe(409);
     expect(makeLedger().effective('jev').choice).toBe('no');
     const pageFile = await request(app).get('/dashboard/service-yes');

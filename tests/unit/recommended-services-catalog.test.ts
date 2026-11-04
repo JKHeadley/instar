@@ -62,9 +62,12 @@ describe('recommended services catalog', () => {
   it('a service with no proven recipe is unavailable, and none has one yet', () => {
     expect(isServiceAvailable({ ...rows[0], setupRecipe: 'tailscale-v1' })).toBe(true);
     expect(isServiceAvailable({ ...rows[0], setupRecipe: null })).toBe(false);
-    // Giving a real service a recipe opens the confirm page to the public. Before this may change, the
-    // slice that lands the first recipe must ship: a way to say no from the list and the page, a yes for
-    // a further machine or a voided grant, and a limit on opening the page, which rewrites a file.
+    // Giving a real service a recipe opens the confirm page to the public and promises setup. Before this
+    // may change, rollout step 3 must ship: the recipe runner that reads activeGrant and stops on a no; live
+    // proof, and the check that setup messages give the person no other task; closing the setup commitment
+    // on a no; a route to stop a running service; for address services, the owner-only button or the "an
+    // address comes first" row; and the confirm page in the CLAUDE.md section. The four questions listed
+    // under step 3 bind offers rather than recipes, and are kept here so they can't be missed.
     expect(rows.filter(isServiceAvailable), 'see the comment above before giving a service a recipe').toEqual([]);
   });
 
@@ -100,6 +103,15 @@ describe('outside services on the console', () => {
     expect(backupLine({ backupStatus: 'exercised' })).toContain('Proven');
     expect(backupLine({ backupStatus: 'gap', gapWhen: 'Only on one machine.' })).toBe('Something else. Not complete yet. Only on one machine.');
     expect(backupLine({ backupStatus: 'gap', backup: null })).toContain('None yet.');
+  });
+
+  it('offers the page wherever this machine can still act, and only then', () => {
+    expect(row({}).action).toBeNull();
+    expect(row({ available: true }).action.label).toBe('Yes or no');
+    expect(row({ available: true }).action.href).toBe('/dashboard/service-yes?service=x');
+    // A yes given for another machine, or one a later no cancelled, still needs one here.
+    expect(row({ available: true, choice: 'yes', grantedHere: false }).action.label).toBe('Yes or no');
+    expect(row({ available: true, choice: 'yes', grantedHere: true }).action.label).toBe('Change my answer');
   });
 
   it('explains why nothing can be chosen, and drops that once something can', () => {

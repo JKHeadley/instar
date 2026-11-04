@@ -32,6 +32,7 @@ export interface RecommendedServiceRouteDeps {
 export function registerRecommendedServiceRoutes(router: Router, deps: RecommendedServiceRouteDeps): void {
   const catalog = deps.catalog ?? RECOMMENDED_SERVICE_CATALOG;
   const tokens = new ConfirmTokenStore({ stateDir: deps.stateDir, now: deps.now });
+  let mintLimitReported = false;
   const ledgerOr503 = (res: Response): RecommendedServicesLedger | null => {
     const ledger = deps.ledger();
     if (!ledger) res.status(503).json({ error: 'recommended-services-unavailable', detail: 'Choices cannot be saved on this machine yet, because it has no machine identity.' });
@@ -43,7 +44,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     if (!ledger) return;
     const services = catalog.map((row) => {
       const { id, setupRecipe: _setupRecipe, ...text } = row;
-      return { ...text, ...ledger.effective(id), available: isServiceAvailable(row) };
+      return { ...text, ...ledger.effective(id), available: isServiceAvailable(row), grantedHere: ledger.activeGrant(id, ledger.machineId()) !== null };
     });
     res.json({ services, offersLive: false, migrationComplete: isMigrationComplete(deps.stateDir), firstResult: readDeliveredFirstResult(deps.stateDir), replicating: ledger.isReplicating() });
   });
@@ -106,6 +107,20 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       res.status(409).json({ error: 'no-owner' });
       return;
     }
+    if (!tokens.mayMint()) {
+      if (!mintLimitReported) {
+        mintLimitReported = true;
+        DegradationReporter.getInstance().report({
+          feature: 'RecommendedServices.confirmPage',
+          primary: 'Open a service confirm page',
+          fallback: 'The page says to wait a minute. No token is written.',
+          reason: 'The page is being opened faster than a person could, which needs no credential.',
+          impact: 'While this lasts, the owner cannot open the page to say yes or no.',
+        });
+      }
+      res.status(429).json({ error: 'too-many-pages' });
+      return;
+    }
     let minted: { token: string; expiresAt: number };
     try {
       minted = tokens.mint({ service: row.id, owner, targetMachine: ledger.machineId(), offerTextHash: offerTextHash(row), origin: 'person-asked', nosAtOpen: ledger.knownNoIds(row.id) });
@@ -129,14 +144,22 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       res.status(403).json({ error: 'X-Instar-Request: 1 required' });
       return;
     }
-    const { token } = (req.body ?? {}) as { token?: unknown };
+    const { token, answer, reason = 'none' } = (req.body ?? {}) as { token?: unknown; answer?: unknown; reason?: unknown };
     if (typeof token !== 'string' || !token || token.length > 128) {
       res.status(400).json({ error: 'token-refused' });
       return;
     }
+    if (answer !== 'yes' && answer !== 'no') {
+      res.status(400).json({ error: 'invalid-answer' });
+      return;
+    }
+    if (!NO_REASONS.includes(reason as NoReason)) {
+      res.status(400).json({ error: 'invalid-reason', valid: NO_REASONS });
+      return;
+    }
     // A PIN is only looked at for a real, live request, so this route can't test PIN guesses for
     // anyone who hasn't a page open, and a mistyped PIN doesn't spend the token.
-    if (!isServiceAvailable(row)) {
+    if (!isServiceAvailable(row) && answer === 'yes') {
       res.status(409).json({ error: 'not-available' });
       return;
     }
@@ -148,6 +171,21 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     const binding = tokens.consume(token, row.id);
     if (!binding) {
       res.status(409).json({ error: 'token-refused' });
+      return;
+    }
+    // A no never needs the page to be current: refusing it over changed text would keep a service
+    // the person just declined. It stops offers and voids grants. It doesn't stop a running service.
+    if (answer === 'no') {
+      try {
+        ledger.recordNo({ service: row.id, reason: reason as NoReason, shutdown: 'none', origin: 'owner-surface', offerTextHash: binding.offerTextHash });
+      } catch {
+        res.status(503).json({ error: 'recommended-services-unavailable', detail: 'That choice could not be saved. Nothing changed.' });
+        return;
+      }
+      try {
+        tokens.invalidateService(row.id);
+      } catch { /* @silent-fallback-ok — nosAtOpen still voids every open page */ }
+      res.json(ledger.effective(row.id));
       return;
     }
     const refusal = binding.offerTextHash !== offerTextHash(row) ? 'text-changed'

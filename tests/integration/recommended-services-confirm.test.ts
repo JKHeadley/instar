@@ -11,8 +11,8 @@ import express from 'express';
 import request from 'supertest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { RecommendedServicesLedger } from '../../src/recommended/RecommendedServicesLedger.js';
-import { RECOMMENDED_SERVICE_CATALOG, type CatalogRow } from '../../src/recommended/catalog.js';
-import { CONFIRM_TOKEN_TTL_MS, confirmTokensFile } from '../../src/recommended/confirmTokens.js';
+import { RECOMMENDED_SERVICE_CATALOG, offerTextHash, type CatalogRow } from '../../src/recommended/catalog.js';
+import { CONFIRM_TOKEN_TTL_MS, MAX_MINTS_PER_MINUTE, confirmTokensFile } from '../../src/recommended/confirmTokens.js';
 import { registerRecommendedServiceRoutes } from '../../src/server/recommendedServiceRoutes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import type { MachineKeyLookup, MachineSigner } from '../../src/core/AppRecordSignatures.js';
@@ -59,13 +59,17 @@ describe('recommended services confirm', () => {
     a.use(router);
     return a;
   };
+  const shared = { app: null as express.Express | null };
+  // The rate limit lives in the router's store, so this one test keeps a single app.
+  const app2 = () => (shared.app ??= app());
   const open = async () => (await request(app()).get(PATH)).body.token as string;
-  const confirm = (token: string, pin = '1234') => request(app()).post(PATH).set('X-Instar-Request', '1').send({ token, pin });
+  const confirm = (token: string, pin = '1234') => request(app()).post(PATH).set('X-Instar-Request', '1').send({ token, pin, answer: 'yes' });
+  const decline = (token: string, reason?: string, pin = '1234') => request(app()).post(PATH).set('X-Instar-Request', '1').send({ token, pin, answer: 'no', reason });
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'rec-confirm-'));
     ledger = new RecommendedServicesLedger({ stateDir: dir, signer: signerFor('m_a'), keyLookup: (() => ({ status: 'unknown' })) as unknown as MachineKeyLookup });
-    owner = '42'; now = 1_000_000; catalog = [PROVEN]; approvals = []; commitments = []; approvalThrows = false; pinChecks = 0;
+    owner = '42'; now = 1_000_000; catalog = [PROVEN]; approvals = []; commitments = []; approvalThrows = false; pinChecks = 0; shared.app = null;
   });
   afterEach(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/recommended-services-confirm.test.ts' }));
 
@@ -94,6 +98,13 @@ describe('recommended services confirm', () => {
     const token = await open();
     catalog = [{ ...PROVEN, setupRecipe: null }];
     expect((await confirm(token)).body.error).toBe('not-available');
+    expect(ledger.effective('jev').choice).toBe('unset');
+  });
+
+  it('an answer must be stated: leaving it out never creates a yes', async () => {
+    const res = await request(app()).post(PATH).set('X-Instar-Request', '1').send({ token: await open(), pin: '1234' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid-answer');
     expect(ledger.effective('jev').choice).toBe('unset');
   });
 
@@ -142,6 +153,95 @@ describe('recommended services confirm', () => {
     expect(ledger.activeGrant('jev', 'm_a')!.principal).toBe('99');
   });
 
+  describe('a no from the page', () => {
+    it('saves the no and its reason, and gives no grant, approval or commitment', async () => {
+      const res = await decline(await open(), 'cost');
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ choice: 'no', reason: 'cost', shutdown: 'none' });
+      expect(ledger.activeGrant('jev', 'm_a')).toBeNull();
+      expect(approvals).toEqual([]);
+      expect(commitments).toEqual([]);
+    });
+
+    it('keeps what they declined, and closes every other open page', async () => {
+      const [a, b] = [await open(), await open()];
+      await decline(a);
+      const row = ledger.all()[0];
+      expect(row.type === 'choice' && row.offerTextHash).toBe(offerTextHash(PROVEN));
+      expect(row.type === 'choice' && row.origin).toBe('owner-surface');
+      expect((await decline(b)).body.error).toBe('token-refused');
+      expect(ledger.all()).toHaveLength(1);
+    });
+
+    it('voids a grant already given', async () => {
+      await confirm(await open());
+      expect(ledger.activeGrant('jev', 'm_a')).not.toBeNull();
+      await decline(await open());
+      expect(ledger.activeGrant('jev', 'm_a')).toBeNull();
+      expect(ledger.effective('jev').choice).toBe('no');
+    });
+
+    it('still lands when the text changed, because refusing it would keep what they declined', async () => {
+      const token = await open();
+      catalog = [{ ...PROVEN, cost: 'A new price.' }];
+      expect((await decline(token)).body.choice).toBe('no');
+    });
+
+    it('needs the PIN and a live token, and spends the token', async () => {
+      const token = await open();
+      expect((await decline(token, 'none', '0000')).status).toBe(403);
+      expect(ledger.effective('jev').choice).toBe('unset');
+      expect((await decline('forged')).body.error).toBe('token-refused');
+      expect((await decline(token)).status).toBe(200);
+      expect((await decline(token)).body.error).toBe('token-refused');
+    });
+
+    it('refuses a made-up reason or answer before reading the PIN', async () => {
+      const token = await open();
+      expect((await decline(token, 'because')).status).toBe(400);
+      expect((await request(app()).post(PATH).set('X-Instar-Request', '1').send({ token, pin: '1234', answer: 'maybe' })).status).toBe(400);
+      expect(pinChecks).toBe(0);
+    });
+
+    it('a page opened before a recipe was withdrawn can still say no', async () => {
+      const token = await open();
+      catalog = [{ ...PROVEN, setupRecipe: null }];
+      expect((await decline(token)).body.choice).toBe('no');
+    });
+  });
+
+  it('the list says whether this machine holds a grant, not just whether a yes exists', async () => {
+    const read = async () => (await request(app()).get('/recommended-services')).body.services[0];
+    expect((await read()).grantedHere).toBe(false);
+    await confirm(await open());
+    expect((await read()).grantedHere).toBe(true);
+    await decline(await open());
+    expect((await read()).grantedHere).toBe(false);
+    await confirm(await open());
+    expect((await read()).grantedHere).toBe(true);
+  });
+
+  it('a no cancels a grant even when a yes follows for another machine', async () => {
+    await confirm(await open());
+    await decline(await open());
+    ledger.recordYes({ service: 'jev', origin: 'person-asked', offerTextHash: 'h', grantMachine: 'm_b', principal: '42' });
+    const row = (await request(app()).get('/recommended-services')).body.services[0];
+    expect(row.choice).toBe('yes');
+    expect(row.grantedHere).toBe(false);
+  });
+
+  it('opening the page faster than a person could is refused and writes nothing', async () => {
+    for (let i = 0; i < MAX_MINTS_PER_MINUTE; i += 1) expect((await request(app2()).get(PATH)).status).toBe(200);
+    const before = fs.readFileSync(confirmTokensFile(dir), 'utf8');
+    const res = await request(app2()).get(PATH);
+    expect(res.status).toBe(429);
+    expect(res.body.error).toBe('too-many-pages');
+    expect(res.body.token).toBeUndefined();
+    expect(fs.readFileSync(confirmTokensFile(dir), 'utf8')).toBe(before);
+    now += 60_001;
+    expect((await request(app2()).get(PATH)).status).toBe(200);
+  });
+
   it('no owner means no token', async () => {
     owner = null;
     expect((await request(app()).get(PATH)).body.error).toBe('no-owner');
@@ -155,7 +255,7 @@ describe('recommended services confirm', () => {
   });
 
   it('needs the request header', async () => {
-    const res = await request(app()).post(PATH).send({ token: await open(), pin: '1234' });
+    const res = await request(app()).post(PATH).send({ token: await open(), pin: '1234', answer: 'yes' });
     expect(res.status).toBe(403);
     expect(ledger.effective('jev').choice).toBe('unset');
   });
@@ -177,7 +277,7 @@ describe('recommended services confirm', () => {
     now = 1_000_000;
     catalog = [PROVEN, { ...PROVEN, id: 'tailscale' }];
     const other = await open();
-    const res = await request(app()).post('/recommended-services/tailscale/confirm').set('X-Instar-Request', '1').send({ token: other, pin: '1234' });
+    const res = await request(app()).post('/recommended-services/tailscale/confirm').set('X-Instar-Request', '1').send({ token: other, pin: '1234', answer: 'yes' });
     expect(res.body.error).toBe('token-refused');
   });
 
@@ -228,7 +328,7 @@ describe('recommended services confirm', () => {
   });
 
   it('opening a page again and again does not grow the file past its cap', async () => {
-    for (let i = 0; i < 60; i += 1) await open();
+    for (let i = 0; i < 60; i += 1) { now += 3_000; await open(); }
     expect(JSON.parse(fs.readFileSync(confirmTokensFile(dir), 'utf8'))).toHaveLength(50);
   });
 
