@@ -1594,7 +1594,9 @@ export async function spawnSessionForTopic(
       `[spawnSessionForTopic] Context-exhaustion latch active for topic ${topicId} — forcing fresh spawn`,
     );
   }
-  let resumeSessionId = _topicResumeMap?.get(topicId) ?? undefined;
+  // A group default can change the resolved framework without a per-topic pin
+  // event. Never pass a saved Claude UUID to Codex (or vice versa) at restart.
+  let resumeSessionId = _topicResumeMap?.getForFramework(topicId, framework) ?? undefined;
   if (resumeSessionId) {
     console.log(`[spawnSessionForTopic] Found resume UUID for topic ${topicId}: ${resumeSessionId} (source: TopicResumeMap — trusted)`);
   }
@@ -7250,6 +7252,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             dryRun?: boolean;
             switchNowConfirmTtlMs?: number;
             defaults?: Record<string, { model?: string; thinkingMode?: string; effort?: string }>;
+            groupDefaults?: { issues?: { framework?: IntelligenceFramework; model?: string } };
           };
         }).topicProfiles;
         _topicProfileStore = new TopicProfileStore({
@@ -7262,6 +7265,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           defaultFramework: () => _defaultFramework,
           configTopicFrameworks: () => _topicFrameworks,
           configProfileDefaults: () => topicProfilesCfg?.defaults ?? {},
+          configGroupDefaults: () => topicProfilesCfg?.groupDefaults ?? {},
           frameworkDefaultModels: () => config.sessions?.frameworkDefaultModels ?? {},
           tierEscalationConfig: () =>
             normalizeTierEscalationConfig(

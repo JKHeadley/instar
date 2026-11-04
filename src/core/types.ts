@@ -4160,6 +4160,8 @@ export interface InstarConfig {
      * conversation-key scheme (numeric topic id, or `slack:<channel>[:<thread>]`).
      */
     defaults?: Record<string, { model?: string; thinkingMode?: string; effort?: string }>;
+    /** Config-owned defaults for the Telegram issues group; operator pins still win. */
+    groupDefaults?: { issues?: { framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build'; model?: string } };
   };
   /**
    * Playwright Profile Registry (docs/specs/playwright-profile-registry.md).
