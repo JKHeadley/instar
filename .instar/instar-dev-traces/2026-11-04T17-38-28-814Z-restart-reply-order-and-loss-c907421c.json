@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "slug": "restart-reply-order-and-loss",
+  "sessionId": "a7ea6f94-4bfc-40be-911a-954ba8228647",
+  "timestamp": "2026-11-04T17:38:28.814Z",
+  "artifactPath": "upgrades/side-effects/restart-reply-order-and-loss.md",
+  "artifactSha256": "2d1c003b9d1396e0da8b85210f2ba7a6b04a4d0bf86452dc584228a9a22e6e3a",
+  "coveredFiles": [
+    "docs/specs/restart-reply-order-and-loss.eli16.md",
+    "src/commands/server.ts",
+    "src/messaging/telegram-origin/OriginStore.ts",
+    "src/messaging/telegram-origin/OriginStore.worker.ts",
+    "src/messaging/telegram-origin/OriginStoreBackend.ts",
+    "src/messaging/telegram-origin/SessionDeliveryNotice.ts",
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "src/monitoring/delivery-failure-sentinel.ts",
+    "tests/integration/sentinel-recovery.test.ts",
+    "tests/unit/telegram-origin/recovery-fairness.test.ts",
+    "tests/unit/telegram-origin/session-delivery-notice.test.ts",
+    "upgrades/next/restart-reply-order-and-loss.md",
+    "upgrades/side-effects/restart-reply-order-and-loss.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible repair of existing reply recovery and notice behavior; no schema migration, new retry authority, or irreversible state transition. The red/green regression and second pass cover the transport decision points.",
+  "eli16Path": "docs/specs/restart-reply-order-and-loss.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/restart-reply-order-and-loss.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

@@ -751,6 +751,8 @@ export class TelegramOriginService {
         this.#held.set(operation.record.operationId, { reason: 'receipt-store-unavailable', since: this.#now(), operation: null });
       }
     }
+    if (operation.record.producerKind === 'session') this.options.onHold({ operationId: operation.record.operationId,
+      reason, producerKind: 'session', destination: operation.record.destination });
     this.requestDiagnosis(operation.record.originId, reason);
   }
   requestDiagnosis(originId: string, reason: string): void {

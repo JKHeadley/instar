@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-04T17:38:48.600Z",
+  "slug": "restart-reply-order-and-loss",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 168,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/messaging/telegram-origin/OriginStore.ts",
+      "src/messaging/telegram-origin/OriginStore.worker.ts",
+      "src/messaging/telegram-origin/OriginStoreBackend.ts",
+      "src/messaging/telegram-origin/SessionDeliveryNotice.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts",
+      "src/monitoring/delivery-failure-sentinel.ts"
+    ],
+    "addedLines": 146,
+    "deletedLines": 22
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
