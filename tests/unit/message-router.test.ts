@@ -25,6 +25,11 @@ import type { AgentMessage, MessageEnvelope, SendMessageOptions } from '../../sr
 import { DEFAULT_TTL } from '../../src/messaging/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
+// These cases exercise routing to an unregistered agent. Keep the host-wide
+// registry out of this unit test so other concurrent suites cannot hold its
+// file lock while a MessageRouter assertion is running.
+vi.mock('../../src/core/AgentRegistry.js', () => ({ listAgents: () => [] }));
+
 // ── Helpers ──────────────────────────────────────────────────────
 
 function createTempDir(): string {
