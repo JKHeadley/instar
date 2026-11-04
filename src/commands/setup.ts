@@ -16,6 +16,7 @@
  * No flags needed. No manual config editing. Just answers.
  */
 
+import { isBlankAgentHome, markNewAgent } from '../recommended/offerPrerequisites.js';
 import { execFileSync, execSync, spawn } from 'node:child_process';
 import { telegramFetch } from '../messaging/telegram-egress.js';
 import fs from 'node:fs';
@@ -2270,6 +2271,8 @@ export async function runNonInteractiveSetup(opts: NonInteractiveOptions): Promi
     // Recovery key to stdout (single line for capture)
     console.log(key);
   }
+
+  if (isBlankAgentHome(stateDir)) markNewAgent(stateDir);
 
   // Write config
   fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify(config, null, 2));

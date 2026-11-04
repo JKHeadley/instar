@@ -1,6 +1,7 @@
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
 import { registerRecommendedServiceRoutes } from './recommendedServiceRoutes.js';
 import { isRetiredLegacyOffer } from '../recommended/legacyDeclines.js';
+import { recordDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { ISSUES_TOPIC_OFFSET } from '../messaging/telegramTopicSpace.js';
 import { SlackOriginLedger, SlackOriginRecordingError } from '../messaging/slack/SlackOriginLedger.js';
@@ -3882,6 +3883,30 @@ export function createRoutes(ctx: RouteContext): Router {
 
   // Truncation detector for Telegram messages (Drop Zone integration)
   const truncationDetector = new TruncationDetector();
+
+  // docs/specs/recommended-services.md: the first list follows a delivered first result. After the
+  // send, so nothing here can change or fail a reply. Standing notices and templates don't count.
+  let firstResultNoted = false;
+  let firstResultFailureReported = false;
+  const noteDeliveredFirstResult = (carrier: 'telegram' | 'slack', messageId: string | number | null | undefined): void => {
+    if (firstResultNoted) return;
+    try {
+      recordDeliveredFirstResult(ctx.config.stateDir, carrier, messageId);
+      if (messageId) firstResultNoted = true;
+    } catch (err) {
+      if (firstResultFailureReported) return;
+      firstResultFailureReported = true;
+      try {
+        DegradationReporter.getInstance().report({
+          feature: 'recommendedServices.firstResult',
+          primary: 'Record the first delivered result',
+          fallback: 'Tries again at the next reply; no offer goes out until it is recorded',
+          reason: err instanceof Error ? err.message : String(err),
+          impact: 'The first list of recommended services waits.',
+        });
+      } catch { /* @silent-fallback-ok — the reply was already sent, and a report can't be allowed to fail it */ }
+    }
+  };
 
   // ── /telegram/reply X-Instar-DeliveryId dedup LRU (Layer 3 §3d step 4) ──
   // 24h sliding window of seen delivery_ids. Map preserves insertion order;
@@ -16051,7 +16076,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ action: 'ignore-live', ...plan });
   });
 
-  registerRecommendedServiceRoutes(router, { ledger: () => ctx.recommendedServicesLedger ?? null, checkPin: (req, res) => checkMandatePin(req, res) });
+  registerRecommendedServiceRoutes(router, { ledger: () => ctx.recommendedServicesLedger ?? null, stateDir: ctx.config.stateDir, checkPin: (req, res) => checkMandatePin(req, res) });
   registerEcosystemIdeaRoutes(router, { ecosystem: () => ctx.ecosystemIdeas?.() ?? null, checkPin: (req, res) => checkMandatePin(req, res) });
 
   router.post('/feedback-factory/triage/commit', (req, res) => {
@@ -19816,6 +19841,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // belongs to this topic, so its pairing notices come back here, and the owner is offered
       // "It's one of my agents" (§11.6). After the send, never blocking or changing it.
       if (pairingInviteTelegram && PairingInviteTelegram.carriesInvite(text)) void pairingInviteTelegram.noteOutboundInvite(text, topicId);
+      if (!isProxy && !isSystemTemplate) noteDeliveredFirstResult('telegram', sendResult?.messageId);
       res.json({ ok: true, topicId, messageId: sendResult?.messageId, destinationStoreConfirmed });
     } catch (err) {
       // The send failed → release the in-flight reservation so the legitimate
@@ -21517,6 +21543,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
       }
 
+      if (metadata?.isProxy !== true) noteDeliveredFirstResult('slack', ts);
       res.json({ ok: true, topicId: channelId, ts });
     } catch (err) {
       // R8-M1 Arm B: an adapter-send TIMEOUT is ambiguous, not a server error.

@@ -9,13 +9,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
-import { detectClaudePath, detectCodexPath, redetectFrameworkBinary } from '../../core/Config.js';
-import { classifyCodexLoginStatus } from '../../core/CliLoginStatus.js';
-import { claudeCredentialFilePath, readClaudeOauthAsyncDetailed, refreshClaudeToken, type RefreshResult } from '../../core/OAuthRefresher.js';
-import { probeClaudeUsage, readAccountEmail, type FetchImpl } from '../../core/QuotaPoller.js';
-import { readLiveCodexRateLimitsDetailed, type CodexLiveRead } from '../../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
-import { isWslHost } from '../../core/wslPlatform.js';
-import type { InstallDoor } from '../setup-wizard/state-machine.js';
+import { detectClaudePath, detectCodexPath, redetectFrameworkBinary } from '../core/Config.js';
+import { classifyCodexLoginStatus } from '../core/CliLoginStatus.js';
+import { claudeCredentialFilePath, readClaudeOauthAsyncDetailed, refreshClaudeToken, type RefreshResult } from '../core/OAuthRefresher.js';
+import { probeClaudeUsage, readAccountEmail, type FetchImpl } from '../core/QuotaPoller.js';
+import { readLiveCodexRateLimitsDetailed, type CodexLiveRead } from '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
+import { isWslHost } from '../core/wslPlatform.js';
+import type { InstallDoor } from '../commands/setup-wizard/state-machine.js';
 
 export type SignedInVerdict = 'signed-in' | 'signed-out' | 'unknown';
 

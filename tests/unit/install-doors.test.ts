@@ -16,7 +16,7 @@ import {
   hasBrowser,
   proveClaudeSignedIn,
   proveCodexSignedIn,
-} from '../../src/commands/install/doors.js';
+} from '../../src/install/doors.js';
 
 const token = { ok: true as const, oauth: { accessToken: 'sk-ant-oat-test' } };
 const respond = (status: number) => (async () => new Response('{}', { status })) as unknown as typeof fetch;
