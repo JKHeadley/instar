@@ -263,7 +263,7 @@ import { AutonomousEvolution } from '../core/AutonomousEvolution.js';
 import { DispatchScopeEnforcer } from '../core/DispatchScopeEnforcer.js';
 import { TrustRecovery } from '../core/TrustRecovery.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
-import { reportLeaseMediumSelection, selectLeaseMedium } from '../core/leaseMediumSelection.js';
+import { gitLeaseHasNoRemote, reportLeaseMediumSelection, selectLeaseMedium } from '../core/leaseMediumSelection.js';
 import { HumanAsDetectorLog, observeInboundMessage } from '../monitoring/HumanAsDetectorLog.js';
 import { creditUsherOnMiss } from '../core/UsherActedCorrelator.js';
 import { resolveStableNodeBinary } from '../utils/resolveNodeBinary.js';
@@ -728,6 +728,8 @@ let _inboundQueue: import('../core/QueueDrainLoop.js').QueueDrainLoop | null = n
 // Late-bound self-capacity refresh. The heartbeat writer is constructed before
 // the durable inbound queue, whose live handle is one of the advertised fields.
 let _refreshPoolHeartbeat: () => void = () => {};
+/** Boot-cached takeover reading for the pool readiness report; never read from /health. */
+let _takeoverReadiness: import('../core/poolReadiness.js').ReadinessLine = { state: 'unknown', reason: 'only a real takeover proves this' };
 // Module-level handle for the machine-coherence guard (machine-coherence-guard
 // §6) so `GET /pool/machine-coherence` can read the sentinel constructed deep in
 // the mesh peer-presence wiring. Null when the guard is dark (route 503s).
@@ -2887,7 +2889,7 @@ export function wireTelegramRouting(
     // mesh) instead of handling it locally. DARK (the default) skips this block
     // entirely → byte-identical to single-machine dispatch. Any error falls back
     // to the local path below (fail-safe). The live-transfer behavior is gated by
-    // the staged rollout (StageAdvancer); shadow records ownership but stays local.
+    // the staged rollout (StageAdvancer). Any stage past dark places for real, shadow included.
     // SpawnAdmission TOCTOU guard (ownership-gated-spawn §3.1 item 2): stash the
     // router's verdict for THIS message so the seam at the spawn callsites below
     // CONSUMES it instead of re-resolving — the admission decision and the
@@ -5969,6 +5971,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       const leaseGitRef = leaseMedium.medium === 'local' ? undefined : gitSyncRef;
       const leaseStoreName = leaseGitRef ? 'GitLeaseStore' as const : 'LocalLeaseStore' as const;
       coordinator.attachLeaseMediumProvider(() => ({ ...leaseMedium, store: leaseStoreName }));
+      if (leaseGitRef && gitLeaseHasNoRemote(config.projectDir) === true) {
+        _takeoverReadiness = { state: 'failing', reason: 'this machine uses the git lease with no git remote, so it cannot take over' };
+      }
 
       try {
         // ── G1 fenced-lease integration (spec §6) ──────────────────
@@ -24148,7 +24153,22 @@ export async function startServer(options: StartOptions): Promise<void> {
           };
           _refreshPoolHeartbeat = refreshPool;
           refreshPool();
-          const poolTimer = setInterval(refreshPool, 30_000);
+          const readinessMod = await import('../core/poolReadiness.js');
+          const durableOwnershipMod = await import('../core/durableOwnershipActivation.js');
+          const poolReadinessDeps: import('../core/poolReadiness.js').PoolReadinessDeps = {
+            peerIds: () => Object.entries(coordinator.managers.identityManager.loadRegistry().machines ?? {})
+              .filter(([id, entry]) => id !== poolSelfId && !entry.revokedAt)
+              .map(([id]) => id),
+            capacity: (id) => machinePoolRegistry!.getCapacityForReport(id),
+            ownChannels: () => selfServesChannels(),
+            durableOwnership: () => durableOwnershipMod.shouldActivateDurableOwnership(config, resolveDevAgentGate),
+            duplicateCheck: () => _duplicateReconciler?.status() ?? null,
+            takeover: () => _takeoverReadiness,
+          };
+          readinessMod.setActivePoolReadiness(poolReadinessDeps);
+          const poolReadinessLog = new readinessMod.PoolReadinessLog(poolReadinessDeps, path.join(config.stateDir, '..', 'logs', 'pool-readiness.jsonl'));
+          const poolBeat = (): void => { refreshPool(); poolReadinessLog.tick(); };
+          const poolTimer = setInterval(poolBeat, 30_000);
           if (typeof poolTimer.unref === 'function') poolTimer.unref();
 
           // Boot-time pool-flag-coherence check (multi-machine-replicated-store-
