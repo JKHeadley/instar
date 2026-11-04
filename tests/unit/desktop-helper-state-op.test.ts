@@ -45,6 +45,27 @@ describe.skipIf(!usable)('helper state-op', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe('not json');
   });
 
+  it('creates a missing store root and its parents, each owner-only (a thin build has no desktop-helper folder)', () => {
+    const deep = path.join(root, 'home', '.instar', 'desktop-helper', 'locked');
+    const run = spawnSync(helper, ['state-op'], { input: JSON.stringify({ root: deep, op: 'set-disabled', disabled: false }), encoding: 'utf8' });
+    expect(run.status).toBe(0);
+    for (const dir of [path.join(root, 'home'), path.join(root, 'home', '.instar'), path.join(root, 'home', '.instar', 'desktop-helper'), deep]) {
+      expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+    }
+  });
+
+  it('names why it failed on stderr with one fixed word', () => {
+    fs.writeFileSync(path.join(root, 'file'), '');
+    const blocked = spawnSync(helper, ['state-op'], { input: JSON.stringify({ root: path.join(root, 'file', 'locked'), op: 'set-disabled', disabled: false }), encoding: 'utf8' });
+    expect(blocked.status).toBe(69);
+    expect(blocked.stderr).toBe('state-op: store-root-uncreatable\n');
+    const invalid = spawnSync(helper, ['state-op'], { input: '{bad', encoding: 'utf8' });
+    expect(invalid.status).toBe(69);
+    expect(invalid.stderr).toBe('state-op: request-invalid\n');
+    fs.writeFileSync(path.join(root, 'locked-state.json'), 'not json');
+    expect(spawnSync(helper, ['state-op'], { input: JSON.stringify({ root, op: 'read' }), encoding: 'utf8' }).stderr).toBe('state-op: store-unreadable\n');
+  });
+
   it('holds up under many processes at once', async () => {
     await Promise.all(Array.from({ length: 12 }, (_, i) => new Promise<void>((resolve, reject) => {
       const child = spawn(helper, ['state-op'], { stdio: ['pipe', 'ignore', 'ignore'] });

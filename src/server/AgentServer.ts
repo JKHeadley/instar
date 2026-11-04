@@ -529,6 +529,8 @@ export class AgentServer {
   }
 
   private desktopLockedOsMajor: number | undefined;
+  /** Removes the tunnel lifecycle listener that refreshes open desktop viewers. */
+  private desktopTunnelListenerOff: (() => void) | null = null;
   private desktopHelperNotice: DesktopHelperPermissionNotice | null = null;
   private macDesktopHost: MacDesktopHost | null = null;
   private desktopMeshBroker: DesktopMeshBroker | null = null;
@@ -899,7 +901,13 @@ export class AgentServer {
     };
     return {
       machineId,
-      status: async () => controller.status(await osMajor()),
+      status: async () => {
+        // The newest probe if recent, else one shared fresh probe; a failed
+        // probe leaves readiness as "helper-unprobed", never ready.
+        const probe = await access.readinessProbe();
+        if (probe?.osMajor !== undefined) this.desktopLockedOsMajor ??= probe.osMajor;
+        return controller.status(await osMajor(), probe);
+      },
       settings: async patch => {
         if (patch.enabled === true) {
           const refusal = controller.enableRefusal(await osMajor());
@@ -3031,6 +3039,10 @@ export class AgentServer {
               const lifecycle = options.tunnel?.lifecycleState;
               return lifecycle?.lastState === 'active' && String(lifecycle.activeProvider).startsWith('cloudflare');
             },
+            tunnelActive: () => {
+              const state = options.tunnel?.lifecycleState?.lastState;
+              return state === 'active' || state === 'relay-active';
+            },
             raiseSecurity: item => this.raiseLockedSecurityItem(item),
           }) : null;
           if (macHost && this.desktopLockedController) macHost.setLockedRoot(this.desktopLockedController.root);
@@ -3073,6 +3085,15 @@ export class AgentServer {
           this.desktopLockedController,
         );
         void this.desktopLockedController?.sweep(true).catch(() => { console.warn('[instar] locked-screen boot sweep failed'); });
+        // The browser box needs the first-tier tunnel; tell open viewers when it changes.
+        if (this.desktopLockedController) {
+          if (typeof options.tunnel?.on === 'function') {
+            const tunnel = options.tunnel;
+            const refresh = () => this.directDesktopAccess?.refreshLockedState();
+            tunnel.on('lifecycle', refresh);
+            this.desktopTunnelListenerOff = () => tunnel.off('lifecycle', refresh);
+          }
+        }
         this.desktopStreamManager = new DesktopStreamManager(request => this.directDesktopAccess!.admit(request));
         if (helperRetention) {
           const access = this.directDesktopAccess;
@@ -8358,6 +8379,8 @@ export class AgentServer {
     if (this.directDesktopAccess) this.telegramAdapter?.setDesktopApprovalHandler?.(null);
     this.desktopStreamManager?.closeAll();
     this.desktopHelperNotice?.stop();
+    this.desktopTunnelListenerOff?.();
+    this.desktopTunnelListenerOff = null;
     try { this.routeContext?.subscriptionRelogin?.close?.(); }
     catch (error) { console.warn('[subscription-relogin] clean stop failed:', error); }
     try { this.agentIdentityRuntime?.coherence.stop(); } catch { /* best-effort teardown */ }

@@ -8,10 +8,11 @@ import { DirectDesktopAccess } from '../../src/core/DirectDesktopAccess.js';
 import { DesktopLockedController, type DesktopRelockMarker } from '../../src/core/DesktopLockedController.js';
 import type { DesktopHost, DesktopInput, DesktopProbe } from '../../src/core/DesktopHost.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { DesktopAead } from '../../src/core/DesktopAead.js';
 
 interface World {
   flag: boolean; shield: boolean; asleep: boolean; console: string;
-  active: number; online: number; own: boolean; retained: boolean;
+  active: number; online: number; own: boolean; retained: boolean; box: boolean;
 }
 
 function fixture(lockedOn: boolean) {
@@ -19,7 +20,7 @@ function fixture(lockedOn: boolean) {
   let now = Date.now();
   let perf = 1_000_000;
   vi.spyOn(performance, 'now').mockImplementation(() => perf);
-  const world: World = { flag: true, shield: true, asleep: false, console: 'echo', active: 1, online: 1, own: true, retained: true };
+  const world: World = { flag: true, shield: true, asleep: false, console: 'echo', active: 1, online: 1, own: true, retained: true, box: false };
   const markers: Record<string, DesktopRelockMarker> = {};
   const inputs: DesktopInput[] = [];
   const secrets: unknown[] = [];
@@ -41,7 +42,7 @@ function fixture(lockedOn: boolean) {
     },
   };
   const controller = new DesktopLockedController({ host: lockedHost, agentId: 'echo', root,
-    settings: () => ({ enabled: lockedOn, browserBox: false, chime: true }), saveSettings: () => {},
+    settings: () => ({ enabled: lockedOn, browserBox: world.box, chime: true }), saveSettings: () => {},
     readPolicy: async () => 'on', tunnelFirstTierActive: () => true, raiseSecurity: () => {}, now: () => now,
     provenVersions: [{ osMajor: 26, p12: 'e', p15: 'e', refuse: [] }] });
   const host = {
@@ -185,6 +186,90 @@ describe('DirectDesktopAccess at the lock', () => {
     expect(f.secrets).toHaveLength(0);
     expect(Object.keys(f.markers)).toHaveLength(0);
     expect(sent.length).toBeGreaterThan(0);
+  });
+
+  it('tells the viewer why the box cannot work, and re-sends it when that changes', async () => {
+    const f = make();
+    const plain: Array<Record<string, unknown>> = [];
+    const original = DesktopAead.prototype.encryptControl;
+    vi.spyOn(DesktopAead.prototype, 'encryptControl').mockImplementation(function (this: DesktopAead, value: unknown) {
+      plain.push(value as Record<string, unknown>);
+      return original.call(this, value);
+    });
+    const { stream } = await f.open('browser');
+    stream.attachControl!(() => {});
+    await stream.assertActive();
+    const states = () => plain.filter(value => value.type === 'state');
+    expect(states().at(-1)).toMatchObject({ type: 'state', state: 'locked-in-session', box: false, boxRefusal: 'browser-box-off' });
+    const before = states().length;
+    // Nothing changed: no re-send.
+    f.authority.refreshLockedState();
+    expect(states()).toHaveLength(before);
+    // Something the box depends on changed outside a probe (as when the tunnel comes up).
+    f.world.box = true;
+    f.authority.refreshLockedState();
+    expect(states()).toHaveLength(before + 1);
+    expect(states().at(-1)).toMatchObject({ state: 'locked-in-session', box: true, boxRefusal: null });
+  });
+
+  it('re-sends the state when readiness changes with the lock state unchanged, and not otherwise', async () => {
+    const f = make();
+    const plain: Array<Record<string, unknown>> = [];
+    const original = DesktopAead.prototype.encryptControl;
+    vi.spyOn(DesktopAead.prototype, 'encryptControl').mockImplementation(function (this: DesktopAead, value: unknown) {
+      plain.push(value as Record<string, unknown>);
+      return original.call(this, value);
+    });
+    const { stream } = await f.open('app');
+    stream.attachControl!(() => {});
+    await stream.assertActive();
+    const states = () => plain.filter(value => value.type === 'state');
+    expect(states().at(-1)).toMatchObject({ state: 'locked-in-session', boxRefusal: null });
+    const before = states().length;
+    f.tickProbe();
+    await stream.assertActive();
+    f.authority.refreshLockedState();
+    expect(states()).toHaveLength(before);
+    f.world.own = false;
+    f.tickProbe();
+    await stream.assertActive();
+    expect(states()).toHaveLength(before + 1);
+    expect(states().at(-1)).toMatchObject({ state: 'locked-in-session', boxRefusal: 'own-input-grant-required' });
+  });
+
+  it('serves readiness from a recent probe and shares one fresh probe between callers', async () => {
+    const f = make();
+    let probes = 0;
+    const host = (f.authority as unknown as { host: { probe: () => Promise<unknown> } }).host;
+    const real = host.probe.bind(host);
+    host.probe = async () => { probes++; return real(); };
+    const [a, b] = await Promise.all([f.authority.readinessProbe(), f.authority.readinessProbe()]);
+    expect(probes).toBe(1);
+    expect(a).toBe(b);
+    await f.authority.readinessProbe();
+    expect(probes).toBe(1);
+    f.advance(31_000);
+    await f.authority.readinessProbe();
+    expect(probes).toBe(2);
+    f.setProbeFails(true);
+    f.advance(31_000);
+    await expect(f.authority.readinessProbe()).resolves.toBeNull();
+  });
+
+  it('names a non-retained helper to an app viewer instead of offering a dead box', async () => {
+    const f = make();
+    f.world.retained = false;
+    const plain: Array<Record<string, unknown>> = [];
+    const original = DesktopAead.prototype.encryptControl;
+    vi.spyOn(DesktopAead.prototype, 'encryptControl').mockImplementation(function (this: DesktopAead, value: unknown) {
+      plain.push(value as Record<string, unknown>);
+      return original.call(this, value);
+    });
+    const { stream } = await f.open('app');
+    stream.attachControl!(() => {});
+    await stream.assertActive();
+    expect(plain.filter(value => value.type === 'state').at(-1))
+      .toMatchObject({ box: true, boxRefusal: 'retained-helper-required' });
   });
 
   it('refuses a password without the retained helper or its own grant', async () => {

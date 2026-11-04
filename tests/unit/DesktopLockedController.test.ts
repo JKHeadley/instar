@@ -222,6 +222,48 @@ describe('DesktopLockedController', () => {
     expect(controller.passwordRefusal(ready, 'browser', 'locked-in-session')).toBeNull();
   });
 
+  it('names a missing tunnel apart from a backup one, and status says why the box is not ready', async () => {
+    let firstTier = false;
+    let anyTunnel = false;
+    const controller = new DesktopLockedController({
+      host, agentId: 'echo', root, settings: () => settings, saveSettings: next => { settings = next; },
+      readPolicy: async () => 'on', tunnelFirstTierActive: () => firstTier, tunnelActive: () => anyTunnel,
+      raiseSecurity: () => true, now: () => now, provenVersions: PROVEN,
+    });
+    const ready = { osMajor: 26, inputGrant: 'own', helperSource: 'retained' };
+    settings.browserBox = true;
+    expect(controller.browserBoxRefusal()).toBe('tunnel-not-active');
+    expect(controller.passwordRefusal(ready, 'browser', 'locked-in-session')).toBe('tunnel-not-active');
+    anyTunnel = true;
+    expect(controller.browserBoxRefusal()).toBe('tunnel-not-first-tier');
+    firstTier = true;
+    expect(controller.browserBoxRefusal()).toBeNull();
+    expect(controller.browserBoxShown()).toBe(true);
+
+    // Readiness is "could a password be typed once locked", per client.
+    firstTier = false; anyTunnel = false;
+    expect(controller.passwordReadiness(ready)).toEqual({ app: null, browser: 'tunnel-not-active' });
+    expect(controller.passwordReadiness({ ...ready, helperSource: 'packaged' }))
+      .toEqual({ app: 'retained-helper-required', browser: 'retained-helper-required' });
+    // No probe is never "ready".
+    expect(controller.passwordReadiness(null)).toEqual({ app: 'helper-unprobed', browser: 'tunnel-not-active' });
+
+    host.persist();
+    const status = await controller.status(26, { ...ready, helperSource: 'packaged' });
+    expect(status).toMatchObject({ enabled: true, active: true, refusal: null, browserBoxShown: false,
+      browserBoxRefusal: 'tunnel-not-active',
+      passwordReadiness: { app: 'retained-helper-required', browser: 'retained-helper-required' } });
+    expect((await controller.status(26)).passwordReadiness).toEqual({ app: 'helper-unprobed', browser: 'tunnel-not-active' });
+  });
+
+  it('reads an unwired any-tunnel reader as no tunnel at all', () => {
+    const controller = new DesktopLockedController({
+      host, agentId: 'echo', root, settings: () => ({ ...settings, browserBox: true }), saveSettings: () => {},
+      readPolicy: async () => 'on', tunnelFirstTierActive: () => false, raiseSecurity: () => true, provenVersions: PROVEN,
+    });
+    expect(controller.browserBoxRefusal()).toBe('tunnel-not-active');
+  });
+
   it('tells the owner once when a watch ends without a relock, with no request alive', async () => {
     const controller = build();
     host.persist();

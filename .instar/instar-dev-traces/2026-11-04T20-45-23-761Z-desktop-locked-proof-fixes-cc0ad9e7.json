@@ -1,0 +1,49 @@
+{
+  "version": 3,
+  "slug": "desktop-locked-proof-fixes",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-04T20:45:23.761Z",
+  "artifactPath": "upgrades/side-effects/desktop-locked-proof-fixes.md",
+  "artifactSha256": "58218d103e4844b23ef397d827a7e08abdc6c339dd27d7b6dc5ea5185f583fe1",
+  "specPath": "docs/specs/desktop-locked-proof-fixes.md",
+  "coveredFiles": [
+    "dashboard/desktop.css",
+    "dashboard/desktop.html",
+    "dashboard/desktop.js",
+    "docs/specs/desktop-locked-proof-fixes.eli16.md",
+    "docs/specs/desktop-locked-proof-fixes.md",
+    "docs/specs/reports/desktop-locked-proof-fixes-convergence.md",
+    "src/commands/server.ts",
+    "src/core/DesktopLockedController.ts",
+    "src/core/DirectDesktopAccess.ts",
+    "src/core/MacDesktopHost.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/dashboardPin.ts",
+    "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "src/tunnel/TunnelManager.ts",
+    "tests/unit/DesktopLockedController.test.ts",
+    "tests/unit/DirectDesktopAccess.locked.test.ts",
+    "tests/unit/desktop-helper-state-op.test.ts",
+    "tests/unit/desktop-locked-proof-fixes.test.ts",
+    "tests/unit/tunnel-manager-rewrite.test.ts",
+    "tests/vitest-setup.ts",
+    "upgrades/next/desktop-locked-proof-fixes.md",
+    "upgrades/side-effects/desktop-locked-proof-fixes.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Touches the helper that types a Mac password and dashboard PIN minting/storage (credentials); security-sensitive",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/desktop-locked-proof-fixes-convergence.md",
+      "iterations": 2,
+      "verified": true
+    }
+  }
+}

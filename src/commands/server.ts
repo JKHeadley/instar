@@ -60,6 +60,7 @@ import { setAspClassifierRef, getAspClassifierRef } from '../core/aspClassifierR
 import { resolveInboundTelegramMessageId, resolveSignedByAgent, operatorAutoBindPermitted } from '../messaging/shared/signedInbound.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { StandDownRegistry } from '../core/StandDownRegistry.js';
+import { ensureDashboardPin, persistDashboardPin, pickDashboardPin } from '../core/dashboardPin.js';
 import { getActiveOverloadShedPlanner, getMoveAftercare } from '../core/OverloadShedPlanner.js';
 import { QuietTopicScanner, type RunningTopicSession } from '../core/quietTopicScanner.js';
 import { RebalanceProofRunner, getActiveRebalanceProof, proofSpawnBrief, setActiveRebalanceProof, setActiveRebalanceProofStore, type ProofHistoryRow } from '../core/rebalanceProof.js';
@@ -489,9 +490,11 @@ async function handleFixCommand(topicId: number, text: string, deps: FixCommandD
   }
 
   if (cmd === 'fix dashboard') {
-    const existing = deps.liveConfig.get<string>('dashboardPin', '');
-    if (existing) {
-      await send(`Your dashboard already has a PIN: ${existing}`);
+    // A vault-backed config holds {secret:true}; resolve it rather than print an object.
+    const stored = deps.liveConfig.get<unknown>('dashboardPin', '');
+    if (stored) {
+      const existing = pickDashboardPin(stored, deps.config.stateDir);
+      await send(existing ? `Your dashboard already has a PIN: ${existing}` : 'Your dashboard already has a PIN, kept in its secret store.');
       return true;
     }
     const pin = String(randomInt(100000, 1000000));
@@ -32143,6 +32146,17 @@ export async function startServer(options: StartOptions): Promise<void> {
       );
     }
 
+    // Every agent gets a dashboard PIN, with or without Telegram: the PIN
+    // gates every dashboard operator route, and an agent must work without
+    // Telegram. An existing PIN (or an unresolved vault reference) is kept.
+    // Runs before the Telegram dashboard broadcast below, which reads config.dashboardPin.
+    const pinStore: { at: 'vault' | 'config' } = { at: 'config' };
+    if (ensureDashboardPin(config, pin => {
+      pinStore.at = persistDashboardPin(config.stateDir, pin, value => liveConfig.set('dashboardPin', value));
+    }).generated) {
+      console.log(pc.green(`  Auto-generated a dashboard PIN (stored in this agent's ${pinStore.at === 'vault' ? 'secret store' : 'config'})`));
+    }
+
     // ── Dashboard Topic: always-available link ──────────────────────────
     // Retroactive: creates the topic on first run for existing agents.
     // Posts tunnel URL + PIN and pins the message for instant access.
@@ -32151,17 +32165,6 @@ export async function startServer(options: StartOptions): Promise<void> {
         const dashTopicId = await telegram.ensureDashboardTopic();
         if (dashTopicId) {
           console.log(pc.green(`  Dashboard topic: ${dashTopicId}`));
-
-          // Auto-generate dashboardPin if missing — do this on every startup,
-          // not just during upgrades. The PIN should always exist.
-          if (!config.dashboardPin) {
-            const { randomInt } = await import('node:crypto');
-            const pin = String(randomInt(100000, 1000000)); // 6-digit
-            config.dashboardPin = pin;
-            // Persist via LiveConfig so it survives restart
-            liveConfig.set('dashboardPin', pin);
-            console.log(pc.green(`  Auto-generated dashboard PIN: ${pin}`));
-          }
 
           // Wire the tunnel's two-channel notifier to telegram now that
           // both telegram + Dashboard topic exist. Per
@@ -32172,8 +32175,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           // at compose time so the notifier never holds stale credentials.
           if (tunnel) {
             tunnel.attachTelegram(telegram, () => {
-              const live = liveConfig.get<string>('dashboardPin', '');
-              return live || config.dashboardPin;
+              // A vault-backed config holds {secret:true}; resolve it to the real PIN.
+              return pickDashboardPin(liveConfig.get<unknown>('dashboardPin', ''), config.stateDir)
+                ?? pickDashboardPin(config.dashboardPin, config.stateDir) ?? '';
             });
           }
 
