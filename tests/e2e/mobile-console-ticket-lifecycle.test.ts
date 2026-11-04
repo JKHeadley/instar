@@ -107,8 +107,8 @@ describe('console ticket — production wiring', () => {
     const page = await request(app).get('/dashboard/console/ticket-model.js');
     expect(page.status).toBe(200);
     expect(page.text).toContain('instar_console_ticket');
-    const boot = await request(app).get('/dashboard/console/console.js');
-    expect(boot.text).toContain('signInAtBoot');
+    const consoleJs = await request(app).get("/dashboard/console/console.js");
+    expect(consoleJs.text).toContain("signInAtBoot");
 
     // A bearer caller is refused at mint (alive: 403, not 503/404).
     const bearer = await request(app).post('/mobile/console-ticket/challenge').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'console-ticket-e2e').send({});
