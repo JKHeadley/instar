@@ -44,7 +44,7 @@ function setup(opts: { enforcing?: boolean; operatorTopic?: number | undefined; 
 }
 
 const okForward = { text: `here: ${INVITE}`, topicId: 9, fromUserId: OWNER, verified: true };
-const tap = (data: string, over: Partial<{ fromUserId: number; verified: boolean; chatId: string }> = {}) =>
+const tap = (data: string, over: Partial<{ fromUserId: number; verified: boolean; chatId: string | undefined }> = {}) =>
   ({ callbackQueryId: 'q', data, fromUserId: OWNER, verified: true, chatId: '-100', ...over });
 
 describe('PairingInviteTelegram', () => {
@@ -108,6 +108,7 @@ describe('PairingInviteTelegram', () => {
     ['unverified tap', { verified: false }],
     ['another member of the group', { fromUserId: 99 }],
     ['wrong chat', { chatId: '-200' }],
+    ['a tap that names no chat', { chatId: undefined }],
   ])('%s is refused and does NOT spend the button', async (_n, over) => {
     const { tg, sent, calls } = setup();
     await tg.onForwardedInvite(okForward);
