@@ -38,8 +38,7 @@ afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, {
 
 function git(cwd: string, ...args: string[]): { ok: boolean; out: string } {
   try {
-    const out = SafeGitExecutor.run(['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...args],
-      { cwd, operation: 'tests/integration/lease-takeover-no-remote.test.ts:git', stdio: 'pipe' });
+    const out = SafeGitExecutor.run(args, { cwd, operation: 'tests/integration/lease-takeover-no-remote.test.ts:git', stdio: 'pipe' });
     return { ok: true, out: out ?? '' };
   } catch {
     return { ok: false, out: '' }; // a failed push is the case under test
@@ -49,11 +48,14 @@ function git(cwd: string, ...args: string[]): { ok: boolean; out: string } {
 function gitStore(self: string, peer: string): { store: LeaseStore; dir: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `lease-${self}-`));
   dirs.push(dir);
-  git(dir, 'init', '-q');
+  expect(git(dir, 'init', '-q').ok).toBe(true);
+  git(dir, 'config', 'user.name', 't');
+  git(dir, 'config', 'user.email', 't@example.com');
+  git(dir, 'config', 'commit.gpgsign', 'false');
   const file = path.join(dir, 'registry.json');
   fs.writeFileSync(file, JSON.stringify({ machines: { [self]: {}, [peer]: {} } }));
   git(dir, 'add', '.');
-  git(dir, 'commit', '-qm', 'seed');
+  expect(git(dir, 'commit', '-qm', 'seed').ok).toBe(true); // a broken helper must fail here, not pass quietly
   const store = new GitLeaseStore({
     machineId: self,
     loadRegistry: () => JSON.parse(fs.readFileSync(file, 'utf-8')) as MachineRegistry,
