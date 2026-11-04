@@ -58,6 +58,8 @@ Revert. Removes the refusal and the watcher branch. No data migration. The daily
 
 ## Second-pass review
 
+**Reviewer:** independent general-purpose subagent, on claude-opus-5-5
+
 Independent subagent, 2026-11-03. Concern raised: a failed first read refused every PR on the repository, labelled as a constitution change. Verified live with a 404. Resolved: a separate `unread` state with its own message, this artifact and the spec corrected, tests added. It also found that a line naming a nonexistent PR made the whole daily run `unknown`; now one row of drift, tested. Everything else it checked held: standalone run from a temp directory, real page shapes, state mapping, `nextEligibleAt`. Recorded after fixing; the concern is resolved by these changes rather than concurred with as first written.
 
 **Second-pass re-check of the fix:** Concur with the review.
