@@ -1109,6 +1109,8 @@ export class AgentServer {
     appConversations?: AppConversationService;
     /** The bootstrap-built idea ledger (server.ts), already hooked to replication. Absent ⇒ built here. */
     ecosystemLedger?: import('../ecosystem/EcosystemLedger.js').EcosystemLedger;
+    /** docs/specs/recommended-services.md: the bootstrap-built choice ledger. Absent means the routes answer 503. */
+    recommendedServicesLedger?: import('../recommended/RecommendedServicesLedger.js').RecommendedServicesLedger;
     /** Test seams for the idea pipeline: external I/O only. */
     ecosystemDeps?: import('../ecosystem/buildEcosystemIdeas.js').BuildEcosystemInput['overrides'];
     judgmentProvenance?: import('../core/JudgmentProvenanceLog.js').JudgmentProvenanceLog;
@@ -5941,6 +5943,7 @@ export class AgentServer {
         });
       }
     }
+    routeCtx.recommendedServicesLedger = options.recommendedServicesLedger ?? null;
     this.startEcosystemIdeas(options, routeCtx);
     this.desktopSetupTarget = new DesktopSetupTarget({
       peerClaimAllowed: resolveDevAgentGate(options.config.remoteDesktop?.guidedSetup?.enabled, options.config),

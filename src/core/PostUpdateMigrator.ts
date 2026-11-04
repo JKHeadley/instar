@@ -1089,6 +1089,21 @@ A paired phone's signed request is accepted on any of this machine's own names: 
 }
 
 /**
+ * CLAUDE.md awareness block for recommended outside services (docs/specs/recommended-services.md).
+ * Unique content-sniff marker: `Recommended outside services (`. Kept short on purpose.
+ */
+export function RECOMMENDED_SERVICES_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Recommended outside services (\`GET /recommended-services\`)
+
+The saved yes or no for each outside service that helps an agent (Tailscale, Cloudflare, Telegram, Jev, Bitwarden, GitHub backup, a second AI subscription, voice transcription, email). Choices replicate across machines where machine sync is on, and the route's \`replicating\` field says whether it is. Offers are not live yet.
+- Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/recommended-services\`. A no stands until the person confirms a yes, and I never re-offer on my own for now.
+- **The person only approves, asks for changes, or supplies a credential.** After a yes, everything else is mine: research, creating accounts, getting keys, setup. They never open a browser or follow steps.
+- **Whose account is their choice.** I can fully manage their accounts like an executive assistant, use accounts of my own, or both. I make that clear and never recommend against either.
+- **When to use** (PROACTIVE): the person asks about one of these services, or "did I say no to that?" → read the route first.
+`;
+}
+
+/**
  * CLAUDE.md awareness block for the ecosystem idea pipeline (docs/specs/ecosystem-idea-pipeline.md).
  * Unique content-sniff marker: `Ideas from similar projects (`. Kept short on purpose.
  */
@@ -9395,6 +9410,13 @@ setTimeout(() => process.exit(0), 2000);
       content += MOBILE_ROUTES_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Mobile app routes section');
+    }
+
+    // Recommended services (docs/specs/recommended-services.md) — Agent Awareness + Migration Parity.
+    if (!content.includes('Recommended outside services (')) {
+      content += RECOMMENDED_SERVICES_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Recommended outside services section');
     }
 
     // Ecosystem ideas (docs/specs/ecosystem-idea-pipeline.md) — Agent Awareness + Migration Parity.

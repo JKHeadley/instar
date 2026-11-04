@@ -258,6 +258,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'recommendedServices',
+    prefixes: ['/recommended-services'],
+    description: 'Recommended outside services (docs/specs/recommended-services.md) — the saved yes or no for each service, replicated across machines where machine sync is on (the route reports `replicating`). Offers are not live yet. A no needs the dashboard PIN.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /recommended-services', 'POST /recommended-services/:id/no'],
+    }),
+  },
+  {
     key: 'ecosystemIdeas',
     prefixes: ['/ecosystem-ideas'],
     description: 'Ecosystem idea pipeline (docs/specs/ecosystem-idea-pipeline.md) — a weekly review of similar projects: each idea checked against our source and goals, ranked into bands. Advice only. 503 when dark or with no source roots.',
