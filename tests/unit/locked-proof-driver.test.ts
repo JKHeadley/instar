@@ -12,9 +12,9 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 // @ts-expect-error — plain .mjs script, no type declarations
 import { CASES, RESUME_WINDOW_MS, TERMINAL, assertProofTarget, generateProofPassword, judge, renderExpected, resetAttempts, runCase, selectCases } from '../../scripts/locked-proof/lib.mjs';
 // @ts-expect-error — plain .mjs script, no type declarations
-import { RealTarget, ownerOf, refusalFromStatus } from '../../scripts/locked-proof/driver.mjs';
+import { RealTarget, VIEWER_READY, ownerOf, refusalFromStatus, setupGaps } from '../../scripts/locked-proof/driver.mjs';
 // @ts-expect-error — plain .mjs script, no type declarations
-import { isInsideProofHome, proofConfig } from '../../scripts/locked-proof/configure-proof-agent.mjs';
+import { isInsideProofHome, proofConfig, validPin } from '../../scripts/locked-proof/configure-proof-agent.mjs';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const DIR = path.join(ROOT, 'scripts/locked-proof');
@@ -114,6 +114,43 @@ describe('locked-proof safety helpers', () => {
     expect(proofConfig({ tunnel: { enabled: true } }, { port: 4097, tunnel: false }).tunnel.enabled).toBe(false);
   });
 
+  it('sets the dashboard PIN only when given one, and only a digits PIN', () => {
+    expect(proofConfig({}, { port: 4098, tunnel: false, pin: '123456' }).dashboardPin).toBe('123456');
+    expect(proofConfig({ dashboardPin: '999999' }, { port: 4098, tunnel: false }).dashboardPin).toBe('999999');
+    expect(() => proofConfig({}, { port: 4098, tunnel: false, pin: '12 34' })).toThrow(/4 to 12 digits/);
+    expect(validPin('')).toBe(false);
+    expect(validPin('0123')).toBe(true);
+  });
+
+  it('names what setup still owes before a run, pointing at --finalize', () => {
+    const ready = { dashboardPin: '123456', remoteDesktop: { frontMachineId: 'm1' } };
+    expect(setupGaps([['/a', ready]])).toEqual([]);
+    const gaps = setupGaps([['/a', { remoteDesktop: {} }], ['/b', { dashboardPin: '123456' }]]);
+    expect(gaps).toHaveLength(3);
+    expect(gaps[0]).toMatch(/^\/a: no dashboard PIN/);
+    for (const gap of gaps) expect(gap).toContain('--finalize --agent-home DIR --execute');
+    expect(gaps.join('\n')).not.toContain('123456');
+  });
+
+  it('stage-proof-agents needs --agent-home before it touches anything, and names the steps in order', () => {
+    const script = path.join(DIR, 'stage-proof-agents.sh');
+    const finalize = spawnSync('bash', [script, '--finalize', '--execute'], { encoding: 'utf8' });
+    expect(finalize.status).toBe(2);
+    expect(finalize.stderr).toContain('--agent-home is required');
+    const home = tmp('proof-agent-home-');
+    try {
+      fs.mkdirSync(path.join(home, '.instar', 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(home, '.instar', 'scripts', 'secret-get.mjs'), 'process.exit(0);');
+      const empty = spawnSync('bash', [script, '--finalize', '--agent-home', home, '--execute'], { encoding: 'utf8' });
+      expect(empty.status).toBe(1);
+      expect(empty.stderr).toContain('vault key locked_proof_dashboard_pin is empty');
+    } finally { rm(home); }
+    const text = fs.readFileSync(script, 'utf8');
+    expect(text).toContain('REQUIRED before any driver run');
+    expect(text).toContain("printf '%s' \"$PIN\" | as_user node");
+    expect(text).not.toMatch(/echo[^\n]*\$PIN(?![_A-Za-z])/);
+  });
+
   it('configure-proof-agent refuses any directory outside the proof home, and needs --execute', () => {
     expect(isInsideProofHome('/Users/instarproof/.instar/agents/locked-proof')).toBe(true);
     expect(isInsideProofHome('/Users/instarproofX/a')).toBe(false);
@@ -127,6 +164,41 @@ describe('locked-proof safety helpers', () => {
       expect(r.stderr).toMatch(/is not inside \/Users\/instarproof/);
       expect(fs.readFileSync(path.join(d, '.instar', 'config.json'), 'utf8')).toBe('{"port":1}');
     } finally { rm(d); }
+  });
+});
+
+describe('locked-proof viewer driving', () => {
+  /** A page stand-in: records clicks and answers isVisible('#control'). */
+  const page = (open: boolean) => {
+    const clicks: string[] = [];
+    return { clicks, isVisible: async (sel: string) => sel === '#control' && open, click: async (sel: string) => { clicks.push(sel); } };
+  };
+
+  it('treats an auto-opened stream as ready, as well as an enabled request button', () => {
+    expect(VIEWER_READY).toContain('#requestButton:not([disabled])');
+    expect(VIEWER_READY).toContain('#control:not([hidden])');
+  });
+
+  it('requests a grant only when the page has not already opened one', async () => {
+    const target = Object.create(RealTarget.prototype) as { requestGrant(v: unknown): Promise<{ clicked: boolean }> };
+    const opened = page(true);
+    expect(await target.requestGrant({ page: opened })).toEqual({ clicked: false });
+    expect(opened.clicks).toEqual([]);
+    const closed = page(false);
+    expect(await target.requestGrant({ page: closed })).toEqual({ clicked: true });
+    expect(closed.clicks).toEqual(['#requestButton']);
+  });
+
+  it('opens every grant through requestGrant, never a bare click', () => {
+    const source = fs.readFileSync(path.join(DIR, 'driver.mjs'), 'utf8');
+    expect(source.match(/page\.click\('#requestButton'\)/g)).toHaveLength(1);
+    expect(source.match(/await this\.requestGrant\(v\)/g)).toHaveLength(3);
+  });
+
+  it('maps the new viewer reasons back to their words', () => {
+    expect(refusalFromStatus("Password entry from a browser is off until this Mac's secure tunnel is up. This page updates when it is.")).toBe('tunnel-not-active');
+    expect(refusalFromStatus("Password entry needs Instar's kept desktop helper on this Mac, and this install does not have one.")).toBe('retained-helper-required');
+    expect(refusalFromStatus('Password entry from a browser is off for this Mac.')).toBe('browser-box-off');
   });
 });
 
