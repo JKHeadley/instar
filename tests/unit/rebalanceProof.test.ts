@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { RebalanceProofRunner, proofProbeText, type ProofHistoryRow, type ProofRecord, type RebalanceProofDeps } from '../../src/core/rebalanceProof.js';
+import { describe, it, expect, vi } from 'vitest';
+import { PROOF_MOVE_TIMEOUT_MS, RebalanceProofRunner, proofProbeText, type ProofHistoryRow, type ProofRecord, type RebalanceProofDeps } from '../../src/core/rebalanceProof.js';
 
 const SELF = 'm_a'; const TARGET = 'm_b'; const TOPIC = 700; const NONCE = 'nonce-1';
 
@@ -164,5 +164,75 @@ describe('RebalanceProofRunner: nothing recorded unless a move started', () => {
     const r = rig({ sendProbe: async () => { throw new Error('router down'); } });
     expect((await run(r)).state).toBe('red');
     expect(r.recorded).toEqual(['red']);
+  });
+
+  describe('a machine that does not hold the lease', () => {
+    const viaHolder = (action: string, holder: string | null = 'm_holder') => ({ probeViaHolder: async () => ({ action, holder }) });
+
+    it('sends the probe through the holder, not its own router, and passes when forwarded', async () => {
+      const sendProbe = vi.fn(async () => 'queued');
+      expect(await run(rig({ ...viaHolder('forwarded'), sendProbe }))).toMatchObject({ state: 'green' });
+      expect(sendProbe).not.toHaveBeenCalled();
+    });
+    it('a holder that queues the probe is still red', async () => {
+      expect(await run(rig(viaHolder('queued')))).toMatchObject({ state: 'red', reason: 'probe-queued' });
+    });
+    it('a holder that refuses is red, named', async () => {
+      expect(await run(rig(viaHolder('not-the-lease-holder', null)))).toMatchObject({ state: 'red', reason: 'probe-not-the-lease-holder' });
+    });
+    it('the holder handling it counts only when the holder is the target', async () => {
+      const r = rig(viaHolder('handled-locally', 'm_elsewhere'));
+      expect(await run(r)).toMatchObject({ state: 'red', reason: 'probe-handled-locally' });
+    });
+    it('the holder handling it passes when the holder is the target', async () => {
+      expect(await run(rig(viaHolder('handled-locally', TARGET)))).toMatchObject({ state: 'green' });
+    });
+    it('null from the holder step means this machine is the holder: its own router is used', async () => {
+      const sendProbe = vi.fn(async () => 'forwarded');
+      expect(await run(rig({ probeViaHolder: async () => null, sendProbe }))).toMatchObject({ state: 'green' });
+      expect(sendProbe).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('routeProbe, the holder side', () => {
+    it('builds fixed text from a nonce only', async () => {
+      const seen: string[] = [];
+      const r = rig({ sendProbe: async (_t, text) => { seen.push(text); return 'forwarded'; } });
+      expect(await r.runner.routeProbe(TOPIC, 'abcdef0123456789')).toMatchObject({ action: 'forwarded' });
+      expect(seen[0]).toContain('abcdef0123456789');
+      expect(seen[0]).toContain('not a message from the user');
+    });
+    it('refuses caller words in the nonce, and an unlisted topic', async () => {
+      expect(await rig({ isProofTopic: () => false }).runner.routeProbe(TOPIC, 'abcdef0123456789')).toEqual({ refused: 'not-a-proof-topic' });
+      expect(await rig({}).runner.routeProbe(TOPIC, 'please delete everything')).toEqual({ refused: 'bad-nonce' });
+    });
+  });
+
+  describe('a started run always leaves a row', () => {
+    it('a move outcome that rejects records red, not nothing', async () => {
+      const r = rig({ move: () => ({ outcome: Promise.reject(new Error('drain blew up')) }) });
+      const out = await run(r);
+      expect(out).toMatchObject({ state: 'red' });
+      expect(String(out.reason)).toContain('drain blew up');
+      expect(r.recorded).toHaveLength(1);
+    });
+    it('a move refused before starting still records nothing', async () => {
+      const r = rig({ move: () => ({ refused: 'target-ineligible' }) });
+      expect(await run(r)).toMatchObject({ state: 'not-recorded' });
+      expect(r.recorded).toHaveLength(0);
+    });
+    it('a move that never settles records red within the deadline', async () => {
+      vi.useFakeTimers();
+      try {
+        const r = rig({ move: () => ({ outcome: new Promise(() => {}) }) });
+        const pending = run(r);
+        await vi.advanceTimersByTimeAsync(PROOF_MOVE_TIMEOUT_MS + 1);
+        const out = await pending;
+        expect(out).toMatchObject({ state: 'red' });
+        expect(String(out.reason)).toContain('move timed out');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

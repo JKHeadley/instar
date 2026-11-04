@@ -105,6 +105,32 @@ describe('GET /overload-shed (integration)', () => {
   });
 });
 
+describe('POST /session-pool/rebalance-proof/probe (integration)', () => {
+  const bearer = { Authorization: `Bearer ${AUTH}` };
+  const probeDeps = (over: Partial<RebalanceProofDeps> = {}) => ({
+    selfMachineId: () => 'm_holder', isProofTopic: (t: number) => t === 700,
+    sendProbe: async () => 'forwarded', ...over,
+  }) as unknown as RebalanceProofDeps;
+  afterEach(() => setActiveRebalanceProof(null));
+
+  it('needs auth and a runner', async () => {
+    expect((await request(app()).post('/session-pool/rebalance-proof/probe').send({ topic: 700, nonce: 'abcdef012345' })).status).toBe(401);
+    expect((await request(app()).post('/session-pool/rebalance-proof/probe').set(bearer).send({ topic: 700, nonce: 'abcdef012345' })).status).toBe(503);
+  });
+  it('the holder routes a listed topic and names itself', async () => {
+    setActiveRebalanceProof(new RebalanceProofRunner(probeDeps()));
+    const r = await request(app()).post('/session-pool/rebalance-proof/probe').set(bearer).send({ topic: 700, nonce: 'abcdef012345' });
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ action: 'forwarded', holder: 'm_holder' });
+  });
+  it('refuses an unlisted topic, a bad nonce and a malformed body', async () => {
+    setActiveRebalanceProof(new RebalanceProofRunner(probeDeps()));
+    expect((await request(app()).post('/session-pool/rebalance-proof/probe').set(bearer).send({ topic: 701, nonce: 'abcdef012345' })).status).toBe(409);
+    expect((await request(app()).post('/session-pool/rebalance-proof/probe').set(bearer).send({ topic: 700, nonce: 'do something else' })).status).toBe(409);
+    expect((await request(app()).post('/session-pool/rebalance-proof/probe').set(bearer).send({ topic: 700 })).status).toBe(400);
+  });
+});
+
 describe('POST /session-pool/rebalance-proof (integration)', () => {
   const deps = (over: Partial<RebalanceProofDeps> = {}): RebalanceProofDeps => ({
     selfMachineId: () => 'm_a', isProofTopic: (t) => t === 700, stageAllowsProof: () => true, stage: () => 'live-transfer',

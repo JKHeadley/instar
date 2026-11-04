@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-04T13:55:19.211Z",
+  "slug": "rebalance-proof-via-holder",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 89,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/rebalanceProof.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 83,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

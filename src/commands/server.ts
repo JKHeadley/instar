@@ -25679,6 +25679,18 @@ export async function startServer(options: StartOptions): Promise<void> {
                   return false;
                 },
                 move: (t, to) => planner.proofMove(String(t), to),
+                probeViaHolder: async (t, nonce) => {
+                  const holderUrl = _resolveRouterUrl?.() ?? null;
+                  if (!holderUrl) return null;
+                  const r = await fetch(`${holderUrl}/session-pool/rebalance-proof/probe`, {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${config.authToken}`, 'Content-Type': 'application/json', 'X-Instar-AgentId': config.projectName },
+                    body: JSON.stringify({ topic: t, nonce }),
+                    signal: AbortSignal.timeout(30_000),
+                  });
+                  const j = await r.json().catch(() => ({})) as { action?: string; holder?: string | null; refused?: string }; // @silent-fallback-ok: a body we cannot read is reported as the status below
+                  return { action: j.action ?? j.refused ?? `holder-status-${r.status}`, holder: j.holder ?? null };
+                },
                 sendProbe: async (t, text, messageId) => {
                   if (!_sessionRouter) return 'no-router';
                   const o = await _sessionRouter.route({ sessionKey: String(t), messageId, payload: text, senderEnvelope: null });

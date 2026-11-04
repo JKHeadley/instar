@@ -32,3 +32,7 @@ CPU, and it says so.
 agents are in the plan, and the maturation review reads them.
 
 The measured bars for this work live on the Overload shed entry of the maturation ladder.
+
+**How the check message travels.** Real messages arrive at the machine in charge, so a proof run on any other
+machine sends its check through that machine. The first live run showed why: the move worked, but a check sent
+from the wrong place got stuck, and a good move was marked as a failure.
