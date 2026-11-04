@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "mobile-native-capacity-screens",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-04T11:01:51.756Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-capacity-screens.md",
+  "artifactSha256": "da147a2754ef2ae49913998d50760a5441a3890be0c6f51702339a2c9d653a17",
+  "specPath": "docs/specs/mobile-native-capacity-screens.md",
+  "coveredFiles": [
+    "src/server/mobileCapacityRoutes.ts",
+    "tests/unit/mobile-session-terminal.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to the capacity-screens change: test reflects the owner-only rule set; eviction catch tagged. Same Tier-2 spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
