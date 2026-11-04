@@ -87,6 +87,7 @@ import { slackReplyRelayReadiness } from '../core/SlackReplyRelayInstaller.js';
 import { claimSuspensionExcludesPin } from '../core/TopicClaimAnnotationStore.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
 import { NewTopicDefaultStore, evaluateSessionPoolLocalClaim, createSpawnForTopic, createDashboardPoolClaimOps, seedTopicProfileAtCreation } from '../core/dashboardTopicProfile.js';
+import { movedMachinesMidStepNotice, SESSION_RESTARTING_NOTICE, SESSION_BACK_NOTICE } from '../messaging/userNotices.js';
 import { parseDashboardCreatePayload, safeMachineLabel, createDashboardCreateStartRunner, type DashboardCreateStart } from '../core/dashboardMachineChoice.js';
 import { slugifyChannelName } from '../messaging/slack/sanitize.js';
 import {
@@ -638,6 +639,11 @@ let _agentServerRef: import('../server/AgentServer.js').AgentServer | null = nul
 // TopicReachabilityVerifier (constructed in the outer scope) can probe whether a topic
 // is stuck-spawning. Assigned inside wireTelegramRouting; null until routing is wired.
 let _spawningTopicsRegistryRef: SpawningTopicsRegistry | null = null;
+
+// Slack channels with a session spawn in flight (channelId -> count). Read by
+// PresenceProxy.isSessionStarting so a session still starting for a message is
+// never reported as "stopped".
+const _slackSpawningChannels = new Map<string, number>();
 
 // Module-level reference for session resume mapping.
 // Set once in startServer() and used by spawnSessionForTopic/respawnSessionForTopic.
@@ -1706,7 +1712,7 @@ async function respawnSessionForTopic(
   topicMemory?: TopicMemory,
   userProfile?: UserProfile,
   recoveryPrompt?: string,
-  options?: { silent?: boolean; configHome?: string; accountId?: string; awaitInitialInjection?: boolean },
+  options?: { silent?: boolean; quietAfterRespawn?: boolean; configHome?: string; accountId?: string; awaitInitialInjection?: boolean },
 ): Promise<void> {
   console.log(`[telegram→session] Session "${targetSession}" needs respawn for topic ${topicId}`);
 
@@ -1768,11 +1774,15 @@ async function respawnSessionForTopic(
   );
 
   telegram.registerTopicSession(topicId, newSessionName, topicName);
-  if (!options?.silent) {
+  // `quietAfterRespawn`: the caller already told the person a restart is under way
+  // for their message (the dead-session and too-long paths), and the reply itself
+  // confirms it — a second "back" note is lifecycle narration (Near-Silent
+  // Notifications; UX standard Rule 8). Every other caller confirms once.
+  if (!options?.silent && !options?.quietAfterRespawn) {
     // The respawn already succeeded. A held or failed notice must not turn it
     // into a reported failure (the caller would respawn again: a duplicate session).
-    try { await telegram.sendToTopic(topicId, `Session respawned.`); }
-    catch (err) { console.warn(`[telegram→session] Respawned for topic ${topicId}, but the "Session respawned." notice was not sent: ${err instanceof Error ? err.message : String(err)}`); }
+    try { await telegram.sendToTopic(topicId, SESSION_BACK_NOTICE); }
+    catch (err) { console.warn(`[telegram→session] Respawned for topic ${topicId}, but the back-up notice was not sent: ${err instanceof Error ? err.message : String(err)}`); }
   }
   console.log(`[telegram→session] Respawned "${newSessionName}" for topic ${topicId}`);
 }
@@ -3114,7 +3124,7 @@ export function wireTelegramRouting(
           if (_topicResumeMap) {
             _topicResumeMap.remove(topicId);
           }
-          respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined)
+          respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined, undefined, { quietAfterRespawn: true })
             .then(() => confirmLocalSessionPoolClaim())
             .catch(err => {
               console.error(`[telegram→session] Context exhaustion respawn failed:`, err);
@@ -3136,7 +3146,7 @@ export function wireTelegramRouting(
             return;
           }
           const _spawnTokB = spawningTopics.add(topicId);
-          sendDeterministicTelegramNotice(telegram, 'session-lifecycle', topicId, `🔄 Session restarting — message queued.`).catch(() => {
+          sendDeterministicTelegramNotice(telegram, 'session-lifecycle', topicId, SESSION_RESTARTING_NOTICE).catch(() => {
             DegradationReporter.getInstance().report({
               feature: 'telegram-session-lifecycle-notice',
               primary: 'Confirm delivery of the recorded session lifecycle notice',
@@ -3145,7 +3155,7 @@ export function wireTelegramRouting(
               impact: 'The notice may be held or uncertain; no replacement send is authorized',
             });
           });
-          respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined)
+          respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined, undefined, { quietAfterRespawn: true })
             .then(() => confirmLocalSessionPoolClaim())
             .catch(err => {
               console.error(`[telegram→session] Respawn failed:`, err);
@@ -10070,6 +10080,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               console.warn(`[spawn-admission] slack admit error (fail-open): ${err instanceof Error ? err.message : String(err)}`);
             }
           }
+          // The unanswered-message watcher reads this: a session starting for
+          // this channel is not "stopped" (false-alarm fix, 2026-11-03).
+          _slackSpawningChannels.set(channelId, (_slackSpawningChannels.get(channelId) ?? 0) + 1);
           try {
             const newSessionName = await sessionManager.spawnInteractiveSession(
               bootstrapMessage,
@@ -10103,6 +10116,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           } catch (err) {
             console.error(`[slack] Session spawn failed: ${err instanceof Error ? err.message : err}`);
             return 'refused';
+          } finally {
+            const left = (_slackSpawningChannels.get(channelId) ?? 1) - 1;
+            if (left > 0) _slackSpawningChannels.set(channelId, left);
+            else _slackSpawningChannels.delete(channelId);
           }
         };
         // Expose to the owner-side mesh bridge (a forwarded Slack message replays
@@ -16495,6 +16512,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             return telegram?.getSessionForTopic(topicId) ?? null;
           },
           isSessionAlive: (name) => sessionManager.isSessionAlive(name),
+          // A spawn in flight for this conversation is not a stopped session.
+          isSessionStarting: (topicId) => {
+            const slackChId = slackProxyChannelMap.get(topicId);
+            if (slackChId) return (_slackSpawningChannels.get(slackChId) ?? 0) > 0;
+            return _spawningTopicsRegistryRef?.has(topicId) ?? false;
+          },
           sendMessage: async (topicId, text, metadata) => {
             // Check if this is a Slack synthetic ID (negative = Slack channel)
             const slackChannelId = slackProxyChannelMap.get(topicId);
@@ -25821,11 +25844,19 @@ export async function startServer(options: StartOptions): Promise<void> {
               });
             },
             markInterrupted: (topic) => { autoMod.markAutonomousInterruptedMidTask(config.stateDir, topic); },
-            notifyInterrupted: (topic, target, detail) => {
+            notifyInterrupted: (topic, target) => {
               const topicNum = Number(topic);
               if (!telegram || !Number.isFinite(topicNum)) return;
+              // Sent even when the session announced the move itself: that note is
+              // optional and written BEFORE the cut, so this is the only record that
+              // the last step was cut off. The person sees the machine's nickname
+              // (never its id — Rule 7); the bound and timings stay in the audit row.
+              let targetName: string | null = null;
+              try {
+                targetName = meshIdMgr.getActiveMachines().find((m) => m.machineId === target)?.entry.nickname ?? null;
+              } catch { /* @silent-fallback-ok — unresolved name is stated plainly ("another machine"), per Rule 7 */ }
               void telegram
-                .sendToTopic(topicNum, `This conversation moved machines mid-task (${detail}). Work resumes on the new machine — the final turn before the move may be partial.`)
+                .sendToTopic(topicNum, movedMachinesMidStepNotice(targetName))
                 .catch(() => { /* @silent-fallback-ok — ONE best-effort notice; the audit row is the durable record */ });
             },
             transferDeliveryLedger: createInboundDeliveryTransferStep({

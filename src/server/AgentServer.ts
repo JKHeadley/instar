@@ -185,6 +185,7 @@ import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairi
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
 import { createMobileMediaRouter } from './mobileMediaRoutes.js';
+import { createMobileSessionRouter } from './mobileSessionRoutes.js';
 import { AppConversationService, VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS } from '../core/AppConversationService.js';
 import { transcribeAudioFile, configuredVoiceProvider, resolveTranscriptionProvider } from '../core/VoiceTranscription.js';
 import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
@@ -222,7 +223,7 @@ import { parseScreenLockPolicy } from '../core/DesktopLockState.js';
 import { verifyDesktopLockedAssertion, type DesktopLockedAssertion } from '../core/DesktopOperatorAssertion.js';
 import { DesktopSetupTarget } from '../core/DesktopSetupTarget.js';
 import { isWslHost } from '../core/wslPlatform.js';
-import { LinuxDesktopHost } from '../core/LinuxDesktopHost.js';
+import { LinuxAutoDesktopHost } from '../core/HyprlandDesktopHost.js';
 import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
 import { windowsDesktopLocalSend } from '../core/WindowsDesktopLocalTransport.js';
 import { discoverWindowsDesktopCompanion } from '../core/WindowsDesktopCompanionDiscovery.js';
@@ -3018,10 +3019,10 @@ export class AgentServer {
           }) : null;
           if (macHost && this.desktopLockedController) macHost.setLockedRoot(this.desktopLockedController.root);
           const host: DesktopHost = macHost
-            // Native Linux (not WSL) captures its own X11 session; a server with
-            // no X display reports an inactive session and admission refuses it.
+            // Native Linux (not WSL) captures its own X11 or Hyprland session; a
+            // server with neither reports an inactive session and admission refuses it.
             ?? (process.platform === 'linux' && !isWslHost()
-              ? new LinuxDesktopHost({ display: options.config.remoteDesktop?.linuxDisplay ?? null })
+              ? new LinuxAutoDesktopHost({ display: options.config.remoteDesktop?.linuxDisplay ?? null })
               : null)
             ?? (() => {
                 const companion = discoverWindowsDesktopCompanion();
@@ -6359,6 +6360,39 @@ export class AgentServer {
         ...(slackRegistry ? { slackHeld: (key: string) => slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, key) } : {}),
         // Files sent from the app into a Telegram topic upload under `telegram:<topicId>` (§4.9).
         ...(options.telegram ? { telegramTopicExists: (topicId: number) => options.telegram!.getAllTopicMappings().some((m) => m.topicId === topicId) } : {}),
+      }));
+      // "Open session" (GET /mobile/conversations/session): the session driving a conversation on
+      // this machine and a dashboard link focused on it. The same "held here" checks as media.
+      const appSvcForSession = this.appConversations;
+      const leaseHolderNow = (): string | null => (options.coordinator?.enabled ? options.coordinator.getSyncStatus().leaseHolder ?? null : null);
+      const selfIdNow = (): string | null => routeCtx.meshSelfId ?? this.meshSelfId ?? appSvcForSession?.deps.machineId() ?? null;
+      this.app.use(createMobileSessionRouter({
+        pairing: this.mobilePairing,
+        conversationKnown: (ref) => {
+          if (ref.kind === 'app') return !!appSvcForSession?.liveConversation(ref.key);
+          if (ref.kind === 'telegram') return !!options.telegram && options.telegram.getAllTopicMappings().some((m) => m.topicId === ref.topicId);
+          return !!slackRegistry && slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, ref.ref);
+        },
+        sessionNameFor: (ref) => {
+          if (ref.kind === 'app') return appSvcForSession?.sessionFor(ref.key) ?? null;
+          if (ref.kind === 'telegram') return options.telegram?.getSessionForTopic(ref.topicId) ?? null;
+          const conv = slackRegistry?.resolveByKey(ref.ref);
+          if (!conv || conv.platform !== 'slack' || !options.slack) return null;
+          const routingKey = conv.threadTs ? `${conv.channelId}:${conv.threadTs}` : conv.channelId;
+          return options.slack.getSessionForChannel(routingKey) ?? options.slack.getSessionForChannel(conv.channelId);
+        },
+        runningSession: (name) => {
+          const s = options.sessionManager.listRunningSessions().find((x) => x.tmuxSession === name);
+          return s ? { startedAt: s.startedAt ?? null, framework: s.framework ?? null } : null;
+        },
+        ownerMachineFor: (ref) => {
+          // A Slack conversation is held by the machine whose registry minted it (checked above).
+          if (ref.kind === 'slack') return null;
+          if (ref.kind === 'app') return appSvcForSession?.isOwner() ? null : leaseHolderNow();
+          return routeCtx.sessionOwnershipRegistry?.ownerOf(String(ref.topicId)) ?? leaseHolderNow();
+        },
+        selfMachineId: selfIdNow,
+        nicknameOf: (id) => routeCtx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
       }));
       // Telegram media in the app's history (media spec §4.9): each file a Telegram topic receives is
       // also copied into the blob store as a replicated `platform-media` event. Media on only.

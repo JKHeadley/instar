@@ -99,8 +99,10 @@ export interface SessionDrainRunnerDeps {
   ) => Promise<{ terminated: boolean; skipped?: string }>;
   /** Stamp the topic's suspended run file `interrupted_mid_task: true` (no-op without a run). */
   markInterrupted: (topic: string) => void;
-  /** ONE honest notice for a forced close ("moved to X mid-task — final turn may be partial"). */
-  notifyInterrupted: (topic: string, target: string, detail: string) => void;
+  /** ONE plain notice for a forced close (userNotices.movedMachinesMidStepNotice).
+   *  No reason text crosses this seam: the bound and timings stay in the audit row
+   *  (Rule 8 — internal detail lives in logs, never in the user's message). */
+  notifyInterrupted: (topic: string, target: string) => void;
   /** Stage-B custody handoff. Absent means the feature is dark and legacy drain proceeds. */
   transferDeliveryLedger?: (input: {
     sessionKey: string; target: string; sourceEpoch: number; transferEpoch: number; activeEpoch: number;
@@ -293,7 +295,7 @@ export class SessionDrainRunner {
     if (interrupted) {
       try { d.markInterrupted(req.sessionKey); } catch { /* @silent-fallback-ok — marker is best-effort; the notice below is the user-facing record */ }
       try {
-        d.notifyInterrupted(req.sessionKey, req.target, `drain bound (${this.cfg.drainBoundMs}ms) reached — final turn may be partial`);
+        d.notifyInterrupted(req.sessionKey, req.target);
       } catch { /* @silent-fallback-ok — notice failure must not strand the transfer; the audit row below is the durable record */ }
     }
 
@@ -308,7 +310,7 @@ export class SessionDrainRunner {
       { sessionKey: req.sessionKey, sender: d.selfMachineId, nonce: d.nonce() },
     );
     audit(interrupted ? 'drain-completed-interrupted' : 'drain-completed', {
-      drainedInMs, claimLanded: claim.ok, ...(closeSkipped ? { closeSkipped } : {}),
+      drainedInMs, claimLanded: claim.ok, ...(interrupted ? { drainBoundMs: this.cfg.drainBoundMs } : {}), ...(closeSkipped ? { closeSkipped } : {}),
     });
     return {
       status: interrupted ? 'drained-interrupted' : 'drained',

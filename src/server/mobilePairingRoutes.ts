@@ -1442,6 +1442,8 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}$`), statuses: active, sendRoute: true, conversationRef: true },
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/messages$`), statuses: active, conversationRef: true },
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/events$`), statuses: active, conversationRef: true },
+    // "Open session": which session drives a conversation on this machine, plus a dashboard link. Read-only.
+    { method: 'GET', re: /^\/mobile\/conversations\/session$/, statuses: active, body: 'none', conversationRef: true },
     // Slack conversations from the app (§4.9): the machine-local negative durable id.
     { method: 'POST', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}$/, statuses: active, sendRoute: true, conversationRef: true },
     { method: 'GET', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/messages$/, statuses: active, conversationRef: true },

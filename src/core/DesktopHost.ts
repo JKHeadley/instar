@@ -87,9 +87,10 @@ export interface DesktopProbe {
   helperSource?: 'retained' | 'packaged';
   helperFallback?: string;
   helperChange?: DesktopHelperPermissionChange;
-  /** Native Linux only: the X display it found (null = none, a headless
-   * server) and whether the screen-capture tool (ImageMagick) is installed. */
-  linux?: { display: string | null; capturer: boolean; wayland?: boolean };
+  /** Native Linux only: the display it found (null = none, a headless server)
+   * and whether its screen tools are installed. `compositor: 'hyprland'` means
+   * Hyprland is the desktop here, even if nobody has signed in to it yet. */
+  linux?: { display: string | null; capturer: boolean; wayland?: boolean; compositor?: 'hyprland' };
   /** macOS only, while the locked-screen feature is on. */
   lockInputs?: import('./DesktopLockState.js').DesktopLockInputs;
 }
