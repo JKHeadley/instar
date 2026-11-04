@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildInstallHandlers, installInitOptions, type InstallEnv } from '../../src/commands/install.js';
 import { initProject } from '../../src/commands/init.js';
 import { newInstallProgress } from '../../src/commands/install/progress.js';
+import { isMigrationComplete } from '../../src/recommended/offerPrerequisites.js';
 
 describe('install: create the agent', () => {
   let home: string;
@@ -24,6 +25,27 @@ describe('install: create the agent', () => {
   afterEach(() => {
     homedir.mockRestore();
     SafeFsExecutor.safeRmSync(home, { recursive: true, force: true, operation: 'tests/install cleanup' });
+  });
+
+  it('a new agent is ready for offers; an existing one, a clone or a re-run is not', async () => {
+    const project = path.join(home, 'project');
+    fs.mkdirSync(project);
+    const options = { dir: project, name: 'scout', skipPrereqs: true, port: 45871 } as Parameters<typeof initProject>[0];
+    await initProject(options);
+    expect(isMigrationComplete(path.join(project, '.instar'))).toBe(true);
+
+    const existing = path.join(home, 'existing');
+    fs.mkdirSync(path.join(existing, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(existing, '.instar', 'config.json'), '{}');
+    await initProject({ ...options, dir: existing, port: 45872 });
+    expect(isMigrationComplete(path.join(existing, '.instar'))).toBe(false);
+
+    // config.json is gitignored, so a fresh clone of an agent has its identity but no config.
+    const clone = path.join(home, 'clone');
+    fs.mkdirSync(path.join(clone, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(clone, '.instar', 'AGENT.md'), '# Agent');
+    await initProject({ ...options, dir: clone, port: 45873 });
+    expect(isMigrationComplete(path.join(clone, '.instar'))).toBe(false);
   });
 
   it('creates a working agent in the default home, and redoes one left half-built', async () => {
@@ -46,6 +68,7 @@ describe('install: create the agent', () => {
     expect(fs.readFileSync(path.join(dir, '.instar', 'AGENT.md'), 'utf-8')).toContain('keep my week organized');
 
     expect(config.tunnel.enabled).toBe(false);
+    expect(isMigrationComplete(path.join(dir, '.instar'))).toBe(true);
 
     // A crash can leave a config before init finished, so a retry sets it aside and starts clean.
     expect(await handler(answers, progress)).toEqual({ kind: 'done' });

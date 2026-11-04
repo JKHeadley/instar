@@ -30,3 +30,7 @@ Instar already records whether a person accepted or declined an optional feature
 ## What needs deciding
 
 Nothing is open. Justin confirmed Jev and email go on the list, and told the agent to use judgment on re-offers. The 90-day and one-a-day limits are the agent's picks, and they're easy to change.
+
+## Still to settle before offers go live
+
+The groundwork can tell when a platform first accepted a reply, but that reply might only be a quick "got it", not useful work. A reply sent from another machine may not be seen by the machine that would send the offer. WhatsApp and the app can't prove delivery yet. These values also stay on one machine for now. Step 3 of the rollout settles all four before any offer relies on them, so until then nothing reads them.

@@ -7,6 +7,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import express from 'express';
 import request from 'supertest';
 import { RecommendedServicesLedger } from '../../src/recommended/RecommendedServicesLedger.js';
+import { markNewAgent, recordDeliveredFirstResult } from '../../src/recommended/offerPrerequisites.js';
 import { registerRecommendedServiceRoutes } from '../../src/server/recommendedServiceRoutes.js';
 import type { MachineKeyLookup, MachineSigner } from '../../src/core/AppRecordSignatures.js';
 
@@ -25,6 +26,7 @@ describe('recommended services routes', () => {
     const router = express.Router();
     registerRecommendedServiceRoutes(router, {
       ledger: () => ledger,
+      stateDir: dir,
       checkPin: (req, res) => {
         if ((req.body as { pin?: string }).pin === '1234') return true;
         res.status(403).json({ error: 'pin' });
@@ -46,6 +48,16 @@ describe('recommended services routes', () => {
     expect(res.status).toBe(200);
     expect(res.body.offersLive).toBe(false);
     expect(res.body.services.map((s: { service: string }) => s.service)).toContain('jev');
+  });
+
+  it('reports what offers still wait for', async () => {
+    let res = await request(app()).get('/recommended-services');
+    expect(res.body).toMatchObject({ migrationComplete: false, firstResult: null });
+    markNewAgent(dir);
+    recordDeliveredFirstResult(dir, 'telegram', 41);
+    res = await request(app()).get('/recommended-services');
+    expect(res.body.migrationComplete).toBe(true);
+    expect(res.body.firstResult).toMatchObject({ carrier: 'telegram', messageId: '41' });
   });
 
   it('a no needs the PIN, and a bearer token alone is not enough', async () => {

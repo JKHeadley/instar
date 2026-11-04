@@ -5,10 +5,12 @@
  */
 import type { Request, Response, Router } from 'express';
 import { NO_REASONS, type NoReason, type RecommendedServicesLedger } from '../recommended/RecommendedServicesLedger.js';
+import { isMigrationComplete, readDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
 import { RECOMMENDED_SERVICE_IDS } from '../recommended/serviceIds.js';
 
 export interface RecommendedServiceRouteDeps {
   ledger: () => RecommendedServicesLedger | null;
+  stateDir: string;
   checkPin: (req: Request, res: Response) => boolean;
 }
 
@@ -22,7 +24,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   router.get('/recommended-services', (_req, res) => {
     const ledger = ledgerOr503(res);
     if (!ledger) return;
-    res.json({ services: RECOMMENDED_SERVICE_IDS.map((id) => ledger.effective(id)), offersLive: false, replicating: ledger.isReplicating() });
+    res.json({ services: RECOMMENDED_SERVICE_IDS.map((id) => ledger.effective(id)), offersLive: false, migrationComplete: isMigrationComplete(deps.stateDir), firstResult: readDeliveredFirstResult(deps.stateDir), replicating: ledger.isReplicating() });
   });
 
   router.post('/recommended-services/:id/no', (req, res) => {

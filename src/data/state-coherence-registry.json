@@ -2174,6 +2174,21 @@
       }
     },
     {
+      "category": "offer-prerequisites",
+      "description": "Whether this machine holds a new agent or a finished per-owner migration, and the first reply a platform accepted here. Read before an offer is reserved, and only able to hold one back. Per machine today; the recommended-services rollout requires a decision before offers read them.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": ["state/offer-prerequisites/*.json"],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 2,
+        "note": "Two replace-in-place files."
+      }
+    },
+    {
       "category": "ecosystem-ideas",
       "description": "The ecosystem idea pipeline (docs/specs/ecosystem-idea-pipeline.md): an append-only event ledger that replicates as the ecosystemIdeas store, a per-machine framework admission record and notice dedupe. Source mirrors and index.db in the same directory are a rebuildable cache.",
       "scope": "must-be-coherent",
