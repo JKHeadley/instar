@@ -383,13 +383,10 @@ export interface AttentionItem {
   /** How the item was closed, as given on the status change (PATCH /attention/:id `resolution`). */
   resolution?: string;
   /**
-   * Routing lane. When `'agent-health'`, this is a routine SELF-HEALTH /
-   * housekeeping notice about the agent's OWN internal state (a stale-looking
-   * session, a peer it can't reach, etc.) rather than something the USER must act
-   * on. Such items are routed into ONE calm, persistently-named "🩺 Agent Health"
-   * topic from the very first item — they never spawn their own per-item topic
-   * (even under budget, even if mis-tagged HIGH), and same-entity re-escalations
-   * are suppression-deduped so the lane stays quiet. Absent ⇒ today's behavior.
+   * Routing lane. Agent Health describes the agent's own internal state.
+   * Routine observations stay in the attention record; only an explicit
+   * `needsUser` decision permits a Telegram post to the shared Agent Health
+   * topic. No per-item topic is created. Absent ⇒ ordinary routing.
    */
   lane?: 'agent-health';
   /**
@@ -856,7 +853,7 @@ export class TelegramAdapter implements MessagingAdapter {
    * invariant that avoids the 409-poller-conflict incident). Returns the sent
    * message's SendResult, or null if the relay could not deliver.
    */
-  public outboundRelay: ((topicId: number, text: string, options?: { silent?: boolean; kindMetadata?: Record<string, unknown>; provenance?: Exclude<MessageProvenance, 'user'> }) => Promise<SendResult | null>) | null = null;
+  public outboundRelay: ((topicId: number, text: string, options?: { silent?: boolean; formatMode?: 'html'; kindMetadata?: Record<string, unknown>; provenance?: Exclude<MessageProvenance, 'user'> }) => Promise<SendResult | null>) | null = null;
 
   /**
    * True when a `sendToTopic` will RELAY through the lease holder rather than
@@ -1767,8 +1764,8 @@ export class TelegramAdapter implements MessagingAdapter {
        *  attention-hub post) — the send carries `parse_mode: 'HTML'` +
        *  `_formatMode: 'html'` so applyTelegramFormatter's markdown converter
        *  does not re-escape the tags into literal `<b>`/`<i>` text (the
-       *  2026-07-11 attention-hub rendering bug). Direct sends only; a relayed
-       *  (tokenless-standby) send keeps today's default formatting. */
+       *  2026-07-11 attention-hub rendering bug). Relays carry this mode to
+       *  the holder too. */
       formatMode?: 'html';
       /** mobile-operator-chat mirror: the operator's own app message copied into the
        *  topic. Writes no outbound history row (the inbound row already exists) and
@@ -1846,6 +1843,7 @@ export class TelegramAdapter implements MessagingAdapter {
       try {
         relayed = await this.outboundRelay(topicId, text, {
           silent: options?.silent,
+          formatMode: options?.formatMode,
           kindMetadata: options?.kindMetadata,
           provenance: options?.provenance ?? 'automation',
         });
@@ -4650,8 +4648,21 @@ export class TelegramAdapter implements MessagingAdapter {
     // routing below.
     const admitted = this.admitAttentionObservation(item);
     if (admitted.kind === 'existing') {
-      if (admitted.repost && (routing?.hubOnly || this.attentionRoutingMode === 'single-topic')) {
-        const hubTopicId = await this.routeToAttentionHub(admitted.item);
+      const healthLane = item.lane === 'agent-health' || admitted.item.lane === 'agent-health';
+      if (healthLane) {
+        admitted.item.lane = 'agent-health';
+        admitted.item.needsUser = item.needsUser === true;
+        this.saveAttentionItems();
+      }
+      if (healthLane && item.needsUser !== true) {
+        this.holdRoutineAgentHealth(admitted.item);
+        return admitted.item;
+      }
+      if ((admitted.repost || (healthLane && admitted.item.hubHeld === true))
+        && (routing?.hubOnly || this.attentionRoutingMode === 'single-topic' || healthLane)) {
+        const hubTopicId = healthLane && this.agentHealthLaneCfg.enabled
+          ? await this.routeToAgentHealthLane(admitted.item)
+          : await this.routeToAttentionHub(admitted.item);
         admitted.item.coalesced = true;
         if (hubTopicId !== null) admitted.item.topicId = hubTopicId;
       }
@@ -4665,14 +4676,18 @@ export class TelegramAdapter implements MessagingAdapter {
     this.attentionItems.set(item.id, attention);
     this.saveAttentionItems();
 
-    // ── Agent-Health lane (calm self-health notices) ─────────────────────
-    // A routine self-health/housekeeping notice routes into ONE named "🩺 Agent
-    // Health" topic from the very first item — it never spawns its own topic
-    // (even under budget, even if mis-tagged HIGH) and same-entity re-escalations
-    // are suppression-deduped. This runs BEFORE the flood guard and bypasses it
-    // entirely, so a stale-session/peer-unreachable feature can never flood
-    // topic-after-topic. Only items that explicitly opt in are affected.
-    if (!routing?.hubOnly && this.agentHealthLaneCfg.enabled && item.lane === 'agent-health') {
+    // Agent Health is a record of the agent's own housekeeping. A priority
+    // label is not evidence that the operator can act. Only an explicit
+    // needsUser decision at the producer may turn it into a Telegram push.
+    // Keep this ahead of both lane routing and the hub-only upsert path.
+    if (item.lane === 'agent-health' && item.needsUser !== true) {
+      this.holdRoutineAgentHealth(attention);
+      return attention;
+    }
+
+    // An Agent Health item that truly needs the user keeps the established
+    // lane destination. Routine observations returned above, without egress.
+    if (this.agentHealthLaneCfg.enabled && item.lane === 'agent-health') {
       const laneTopicId = await this.routeToAgentHealthLane(attention);
       attention.coalesced = true;
       if (laneTopicId !== null) attention.topicId = laneTopicId;
@@ -4795,6 +4810,16 @@ export class TelegramAdapter implements MessagingAdapter {
     return attention;
   }
 
+  private holdRoutineAgentHealth(item: AttentionItem): void {
+    item.hubHeld = true;
+    item.coalesced = true;
+    this.saveAttentionItems();
+    recordHeldHubPost(path.join(this.botStateDir, 'logs'), {
+      kind: 'item', reason: 'agent-health-routine', id: item.id,
+      category: item.category, priority: item.priority, title: item.title,
+    });
+  }
+
   /**
    * Create an attention item, or REFRESH + REOPEN the same durable id when it already exists
    * (updated body/title, status back to OPEN, re-posted to the Attention hub). `createAttentionItem`
@@ -4812,8 +4837,9 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
-   * Create the first Agent-Health item for an entity, or refresh and visibly
-   * reopen the same durable item when the condition returns after recovery.
+   * Create the first Agent-Health item for an entity, or refresh and reopen
+   * the same durable item when the condition returns after recovery. Routine
+   * recurrences remain in the record without a Telegram post.
    *
    * `createAttentionItem` intentionally dedupes on id and returns the existing
    * row unchanged. That is right for retries inside one episode but would hide
@@ -4840,6 +4866,12 @@ export class TelegramAdapter implements MessagingAdapter {
       ...(wasClosed ? { episode: (existing.episode ?? 1) + 1, closedBy: undefined, resolution: undefined } : {}),
     });
     this.saveAttentionItems();
+
+    if (item.needsUser !== true) {
+      this.holdRoutineAgentHealth(existing);
+      return existing;
+    }
+    if (existing.hubHeld) { existing.hubHeld = false; this.saveAttentionItems(); }
 
     const topicId = await this.ensureAgentHealthLaneTopic();
     if (topicId === null) {
@@ -4904,6 +4936,7 @@ export class TelegramAdapter implements MessagingAdapter {
    * null if Telegram is unavailable (the item is still recorded in the store).
    */
   private async routeToAgentHealthLane(item: AttentionItem): Promise<number | null> {
+    if (item.hubHeld) { item.hubHeld = false; this.saveAttentionItems(); }
     const key = this.healthKeyFor(item);
     const now = Date.now();
     const last = this.agentHealthKeyRing.get(key);
@@ -4935,9 +4968,10 @@ export class TelegramAdapter implements MessagingAdapter {
     }
     if (topicId === null) return null;
 
+    const summary = String(item.summary ?? '').trim();
     const line = [
-      `<b>${this.escapeHtml(item.title)}</b>`,
-      this.escapeHtml(String(item.summary ?? '').slice(0, 400)),
+      `<b>${this.escapeHtml(item.title.slice(0, 160))}</b>`,
+      summary === item.title.trim() ? '' : this.escapeHtml(summary.slice(0, 240)),
     ].filter(Boolean).join('\n');
     // `line` is caller-authored, already-escaped Telegram HTML (<b> title +
     // escaped summary). It MUST be sent with formatMode:'html' so the markdown
@@ -5211,6 +5245,7 @@ export class TelegramAdapter implements MessagingAdapter {
   attentionHubAdmits(itemId: string): boolean {
     const item = this.attentionItems.get(itemId);
     if (!item) return true;
+    if (item.lane === 'agent-health' && item.needsUser !== true) return false;
     return admitItemToHub(item, this.attentionHubFilterMode).admit;
   }
 
