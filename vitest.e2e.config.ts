@@ -5,6 +5,7 @@ import { supertestRetryAlias } from './tests/setup/supertest-alias.js';
 import { withTestRunnerBound } from './tests/setup/test-runner-bound.config-eval.js';
 
 export default defineConfig(withTestRunnerBound('e2e', {
+  ...(process.env.VITEST_CACHE_DIR ? { cacheDir: process.env.VITEST_CACHE_DIR } : {}),
   // Inline (empty) PostCSS config: without it Vite searches parent directories for one and
   // aborts on the first unreadable package.json (EPERM). The feedback executor's sandbox
   // read-denies the agent home around its workspace, so every confined vitest run failed.
