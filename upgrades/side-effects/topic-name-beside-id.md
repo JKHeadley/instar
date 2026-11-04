@@ -30,7 +30,7 @@ the registry held "🤝 echo".
   `SeamlessOrchestratorEngine`, `ScopeVerifier`, `ColdStartFallbackReply`, `SessionManager`,
   `TelegramAdapter` (session list).
 - Ratchet `tests/unit/topic-ref-ratchet.test.ts`: per-file baseline of remaining bare
-  `topic ${…}` renders (35, all thrown errors / refusal reasons / internal strings); a new site fails.
+  `topic ${…}` renders (31, all thrown errors / refusal reasons / internal strings); a new site fails.
 
 Size: ~25 source files, ~120 changed lines + formatter + 4 test files. Effort: no spec rounds
 (Tier 1), one commit.
@@ -47,7 +47,7 @@ No block/allow surface.
 
 ## 2. Under-block
 
-- 35 bare renders remain (errors, refusal reasons, degradation messages, CLI output). Listed in the ratchet baseline, which only lets them shrink.
+- 31 bare renders remain (errors, refusal reasons, degradation messages, CLI output). Listed in the ratchet baseline, which only lets them shrink.
 - A topic the registry has never named shows "(name unresolved)" until the adapter learns its name (rename events, startup backfill).
 - Processes with no Telegram adapter (no Telegram configured) render every topic as unresolved.
 - Attention item ids, condition keys and log lines are unchanged (ids, not prose).
@@ -107,3 +107,9 @@ Wording-only change with a structural ratchet against regression.
 - **`defectClass`** — `n/a`
 - **`closure`** — `n/a`
 - **reason** — rendering change; no self-triggered action.
+
+## Main-merge review (2026-11-04)
+
+After merging current main, four source files had acquired new bare topic labels: `SessionDrainRunner`, `AgentServer`, `server.ts`, and `WorkYieldRegistry`. They now use the same `topicRef` formatter. `OriginForwardToHolder.heldExpiryItem` also uses it while retaining main's condition key and attention-item shape. This is a Tier 1 wording repair in an existing formatter path. No new gate, block, routing choice, or static judgment heuristic was added; the signal-versus-authority rule in `docs/signal-vs-authority.md` is therefore unchanged.
+
+Over-block: none. Under-block: the 31 baseline bare renders remain. The formatter is the right layer because all four callers need the same verified local topic name. Interactions: only notice and audit text changes; topic ids, attention condition keys, dedupe keys, transfer decisions, and Telegram delivery remain as before. External surface: an agent or operator may see the topic name beside the id in a transfer reason, held-reply notice, media degradation, or maintenance work label. Multi-machine posture: machine-local registry reads by design, because a serving machine knows the topic names it owns; unresolved names are stated plainly. The changes add no durable state, URL, or new notifier, so they do not create a new one-voice or transfer obligation. Rollback is a revert of this PR; no data migration is needed.

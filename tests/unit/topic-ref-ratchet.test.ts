@@ -25,13 +25,11 @@ const LOG_LINE = /console\.|log\(|\.log\?\.\(|warn\(|\.debug\(|logger\.|logger\?
 
 export const BASELINE: Record<string, number> = {
   'src/commands/postDriveTranscriptAudit.ts': 2,
-  'src/commands/server.ts': 2,
   'src/core/BetweenWindowAdmissionGate.ts': 2,
   'src/core/DirectDesktopAccess.ts': 1,
   'src/core/InputGuard.ts': 1,
   'src/core/LiveTailSource.ts': 1,
   'src/core/OwnershipApplier.ts': 1,
-  'src/core/SessionDrainRunner.ts': 2,
   'src/core/SessionManager.ts': 3,
   'src/core/TelegramLiveSender.ts': 1,
   'src/core/TopicProfileOrchestrator.ts': 1,

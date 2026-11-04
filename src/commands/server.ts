@@ -1396,7 +1396,7 @@ export async function spawnSessionForTopic(
       primary: 'SQLite-backed context with summaries and search',
       fallback: 'JSONL-based last 20 messages (no summaries, no search)',
       reason: topicMemory.isReady()
-        ? `TopicMemory returned empty context for topic ${topicId} (possible data gap)`
+        ? `TopicMemory returned empty context for ${topicRef(topicId)} (possible data gap)`
         : `TopicMemory database not open (init failure)`,
       impact: `Session for ${topicRef(topicId)} started with degraded context — no summaries, limited history.`,
     });
@@ -6998,7 +6998,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           void telegram.createAttentionItem({ id: `telegram-origin-held-reply:${entry.operationId}`,
             category: 'telegram-origin', priority: 'HIGH', title: 'A session reply is delayed',
             sourceContext: 'telegram-origin-session-hold',
-            summary: `A reply to topic ${topicId ?? 'unknown'} is still in the delivery queue. Telegram was unreachable before this attempt connected; the server will retry the same message.`,
+            summary: `A reply to ${topicRef(topicId)} is still in the delivery queue. Telegram was unreachable before this attempt connected; the server will retry the same message.`,
             description: `Operation ${entry.operationId}. The advisory preflight does not confirm delivery.` }, { hubOnly: true })
             .catch(error => console.warn('[telegram-origin] held reply attention unavailable', error instanceof Error ? error.name : 'unknown-error'));
         },
@@ -20755,10 +20755,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         stopNotifier = new StopNotifier(
           {
             notifyTopic: (topicId, sessionId, text) => {
-              stopLog({ kind: 'escalated', sessionName: sessionId, detail: `topic ${topicId}: ${text}` });
+              stopLog({ kind: 'escalated', sessionName: sessionId, detail: `${topicRef(topicId)}: ${text}` });
               localTg.sendToTopic(Number(topicId), text).then(
-                () => stopLog({ kind: 'escalation-sent', sessionName: sessionId, detail: `topic ${topicId}` }),
-                (err: unknown) => stopLog({ kind: 'notify-error', sessionName: sessionId, detail: `topic ${topicId}: ${err instanceof Error ? err.message : String(err)}` }),
+                () => stopLog({ kind: 'escalation-sent', sessionName: sessionId, detail: topicRef(topicId) }),
+                (err: unknown) => stopLog({ kind: 'notify-error', sessionName: sessionId, detail: `${topicRef(topicId)}: ${err instanceof Error ? err.message : String(err)}` }),
               );
             },
             log: (kind, sessionId, detail) => stopLog({ kind, sessionName: sessionId, detail }),
@@ -29500,7 +29500,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (count !== 0) return;
               const n = Number(topicId);
               if (Number.isSafeInteger(n)) heldCollapser.clear(n);
-              try { telegram.clearAttentionCondition({ conditionKey: `telegram-origin-held:${topicId}` }, `cleared: every held reply to topic ${topicId} was delivered or resolved`); }
+              try { telegram.clearAttentionCondition({ conditionKey: `telegram-origin-held:${topicId}` }, `cleared: every held reply to ${topicRef(topicId)} was delivered or resolved`); }
               catch (error) { heldAudit({ phase: 'clear-failed', topicId: String(topicId), error: error instanceof Error ? error.message : String(error) }); }
             };
             telegram.registerAttentionConditionResolver('telegram-origin-held', (item) => {

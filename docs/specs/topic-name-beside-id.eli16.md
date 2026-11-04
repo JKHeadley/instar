@@ -18,6 +18,7 @@ One small shared helper renders a topic everywhere the server writes one: `topic
 - The message prefix now always carries the name, looked up from the topic list when the caller did not pass one, or says `(name unresolved)`.
 - The notes the server hands a session about agent-to-agent replies (which topic the person reads, where to post) name the topics.
 - Attention items and other notices that mention a topic (held replies, duplicate sessions, autonomous runs, pins, working-set recovery, spend-alert routing, and so on) name it.
+- The transfer, maintenance, and delayed-reply notices added on the newer main branch use the same wording after this PR is merged with it.
 - A test counts every place in the code that still writes a bare `topic ${id}` and fails if a new one appears, so the rule cannot quietly erode.
 
 ## The safeguards
