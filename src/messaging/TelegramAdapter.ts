@@ -20,6 +20,7 @@ import { multipartFileName, multipartMediaType, telegramGroupTypes, telegramKind
 import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { resolveApprovalOwner } from '../threadline/PairingInviteTelegram.js';
 import { NotificationBatcher, NotificationTier } from './NotificationBatcher.js';
 import type { ContentValidationConfig } from './TopicContentValidator.js';
 import { validateTopicContent, getTopicPurpose, classifyContent } from './TopicContentValidator.js';
@@ -586,6 +587,8 @@ interface PendingPromise {
 /** Longest a send waits at boot for the forward-to-holder wiring (see holderForwardReady). */
 export const HOLDER_FORWARD_WIRING_WAIT_MS = 30_000;
 
+const UNKNOWN_OWNER_TAP_REFUSAL = "I can't confirm who my owner is on this machine yet, so this button can't be answered here.";
+
 /** One file a Telegram inbound handler downloaded (media spec §4.9). */
 export interface TelegramInboundMedia {
   topicId: number;
@@ -963,6 +966,8 @@ export class TelegramAdapter implements MessagingAdapter {
   // Prompt Gate — relay prompts to Telegram and handle responses
   private callbackRegistry: CallbackRegistry;
   private pendingPromptReply = new Map<number, PendingPromptReply>(); // topicId → pending
+  private callbackApproverResolver: (() => number | undefined) | null = null;
+  private noApproverReported = new Set<string>();
   private promptGateDisclosureSent = new Set<number>(); // topicIds that have seen the disclosure
 
   /**
@@ -2163,6 +2168,43 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   getOwnerUserId(): number | undefined {
     return this.config.ownerUserId ?? this.config.promptGate?.ownerId;
+  }
+
+  /**
+   * Who may answer an authority-bearing button (ACT-115). Wider than getOwnerUserId(), which also
+   * addresses owner DMs: it adds the one verified operator (resolveApprovalOwner). No answer means
+   * nobody may tap, never that anybody may.
+   */
+  setCallbackApproverResolver(resolve: () => number | undefined): void {
+    this.callbackApproverResolver = resolve;
+  }
+
+  /** The configured owner, normalized the way pairing reads it: config is raw JSON, so an id may be a string. */
+  private getConfiguredApprover(): number | undefined {
+    return resolveApprovalOwner(this.getOwnerUserId(), [], []);
+  }
+
+  private getCallbackApprover(): number | undefined {
+    const configured = this.getConfiguredApprover();
+    if (configured !== undefined) return configured;
+    try {
+      return this.callbackApproverResolver?.();
+    } catch {
+      // @silent-fallback-ok: an unresolved owner refuses the tap, which is the safe answer
+      return undefined;
+    }
+  }
+
+  private reportNoCallbackApprover(feature: string): void {
+    if (this.noApproverReported.has(feature)) return;
+    this.noApproverReported.add(feature);
+    DegradationReporter.getInstance().report({
+      feature: `TelegramAdapter.${feature}`,
+      primary: 'Only the verified owner can answer this button',
+      fallback: 'The tap was refused, because no single verified owner is known yet',
+      reason: feature === 'tunnelConsent' ? 'No ownerUserId is configured, and this button needs a configured owner' : 'No ownerUserId is configured and no single verified operator exists',
+      impact: 'This button cannot be answered from Telegram until the owner is known',
+    });
   }
 
   /**
@@ -6512,8 +6554,9 @@ export class TelegramAdapter implements MessagingAdapter {
     // We use getOwnerUserId() (the explicit owner principal), NOT the
     // broader authorizedUserIds set.
     if (query.data.startsWith('tc:')) {
-      const owner = this.getOwnerUserId();
-      if (owner && query.from.id !== owner) {
+      const owner = this.getConfiguredApprover();
+      if (owner === undefined) this.reportNoCallbackApprover('tunnelConsent');
+      if (owner === undefined || query.from.id !== owner) {
         await this.apiCall('answerCallbackQuery', {
           callback_query_id: query.id,
           text: 'Only the owner can approve this',
@@ -6559,11 +6602,12 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     // Authorization check: verify sender is the configured owner
-    const ownerId = this.config.promptGate?.ownerId;
-    if (ownerId && query.from.id !== ownerId) {
+    const ownerId = this.getCallbackApprover();
+    if (ownerId === undefined) this.reportNoCallbackApprover('promptGate');
+    if (ownerId === undefined || query.from.id !== ownerId) {
       await this.apiCall('answerCallbackQuery', {
         callback_query_id: query.id,
-        text: 'Only the session owner can respond to prompts',
+        text: ownerId === undefined ? UNKNOWN_OWNER_TAP_REFUSAL : 'Only the session owner can respond to prompts',
       }).catch(() => {});
       // Do NOT resolve the token — preserve it for the real owner
       return;
@@ -6681,8 +6725,9 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     // Verify sender is the authorized owner
-    const ownerId = this.config.promptGate?.ownerId;
-    if (ownerId && msg.from.id !== ownerId) {
+    const ownerId = this.getCallbackApprover();
+    if (ownerId === undefined) this.reportNoCallbackApprover('promptGate');
+    if (ownerId === undefined || msg.from.id !== ownerId) {
       return false; // Not the owner — fall through to normal routing
     }
 

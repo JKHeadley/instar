@@ -3697,6 +3697,31 @@ export function createRoutes(ctx: RouteContext): Router {
       impact: 'pairing messages may appear in the Lifeline topic rather than where the invite was made',
     }));
   }
+  // ACT-115: authority-bearing buttons accept the configured owner or the one verified operator, and nobody else.
+  const callbackApprover = () => resolveApprovalOwner(
+    ctx.telegram?.getOwnerUserId?.() ?? ctx.config.monitoring?.promptGate?.ownerId,
+    Object.values(ctx.topicOperatorStore?.allBindings() ?? {}),
+    ctx.topicOperatorStore?.everVerifiedOperatorUids() ?? null,
+  );
+  ctx.telegram?.setCallbackApproverResolver?.(callbackApprover);
+  // ACT-115 migration check: an updated agent that has met someone but has no single owner refuses every tap until
+  // one is set. A new agent nobody has messaged yet is not reported; its first authenticated message binds the owner.
+  try {
+    const everVerified = ctx.topicOperatorStore?.everVerifiedOperatorUids();
+    const configuredOwner = ctx.telegram?.getOwnerUserId?.() ?? ctx.config.monitoring?.promptGate?.ownerId;
+    if (ctx.telegram && callbackApprover() === undefined
+      && (everVerified === null || (everVerified?.length ?? 0) > 0 || (configuredOwner !== undefined && String(configuredOwner).trim() !== ''))) {
+      DegradationReporter.getInstance().report({
+        feature: 'TelegramAdapter.callbackApprover',
+        primary: 'Only the verified owner can answer approval buttons',
+        fallback: 'Approval buttons refuse every tap on this machine',
+        reason: 'No single owner can be confirmed: several people were verified, the record is unreadable, or the configured owner is invalid',
+        impact: 'Telegram approval buttons cannot be answered here until the owner messages this machine or one owner is set',
+      });
+    }
+  } catch {
+    // @silent-fallback-ok: this check only reports, so it must never stop the server's routes from loading
+  }
   const pairingInviteTelegram = ctx.pairingInvites && ctx.telegram
     ? new PairingInviteTelegram({
       // Operator acts go through the handshake (spec §11): both sides are told how a pairing ended.
