@@ -1,5 +1,7 @@
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
 import { registerRecommendedServiceRoutes } from './recommendedServiceRoutes.js';
+import { catalogWithProving } from '../recommended/recipes.js';
+import { classifyLocation, readThrowawayRecord } from '../core/ThrowawayAgentGuard.js';
 import { GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS } from '../core/PinAttemptStore.js';
 import { isRetiredLegacyOffer } from '../recommended/legacyDeclines.js';
 import { recordDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
@@ -16085,8 +16087,60 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   registerRecommendedServiceRoutes(router, {
     ledger: () => ctx.recommendedServicesLedger ?? null,
     stateDir: ctx.config.stateDir,
-    catalog: ctx.recommendedServicesCatalog,
+    catalog: ctx.recommendedServicesCatalog ?? catalogWithProving(
+      ctx.config.recommendedServices?.provingRecipes,
+      () => !!ctx.config.developmentAgent || classifyLocation({ projectDir: ctx.config.projectDir, record: readThrowawayRecord(ctx.config.projectDir) }).throwaway,
+    ),
     pinEntryRefused: (req) => ctx.pinEntryRefusedHere?.(req) ?? false,
+    port: ctx.config.port,
+    readSecret: (name) => { const v = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).get(name); return typeof v === 'string' && v ? v : null; },
+    writeSecret: (name, value) => { new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).set(name, value); },
+    // Its own conversation, because setup needs the person: for a credential, a decision, and to say it works.
+    startSetup: async (service, name, brief, existingTopic) => {
+      if (!ctx.telegram) throw new Error('setup needs a Telegram conversation to reach the person');
+      const topicName = `Set up ${name}`;
+      const topicId = existingTopic ?? (await ctx.telegram.findOrCreateForumTopic(topicName, undefined, { origin: 'system', label: 'recommended-service-setup' })).topicId;
+      // Setup runs with the owner's reach, so it can't serve a place whose readers may not see owner memory.
+      if (['place', 'person', 'none'].includes(ctx.sessionManager.memoryAudienceKind?.({ telegramTopicId: topicId }) ?? '')) {
+        throw new Error('this conversation serves people who may not see owner memory');
+      }
+      const sessionName = await ctx.sessionManager.spawnInteractiveSession(brief, `setup-${service}`, { telegramTopicId: topicId, awaitInitialInjection: true });
+      ctx.telegram.registerTopicSession(topicId, sessionName, topicName);
+      // Without this a peer's router could place the person's reply on itself and start a second copy.
+      ctx.claimTopicOwnershipOnSpawn?.(topicId);
+      return { sessionName, topicId };
+    },
+    stopSetup: (sessionName) => {
+      const session = ctx.sessionManager.listRunningSessions().find((s) => s.tmuxSession === sessionName);
+      return !session || ctx.sessionManager.killSession(session.id);
+    },
+    isSetupRunning: (sessionName) => ctx.sessionManager.listRunningSessions().some((s) => s.tmuxSession === sessionName),
+    notifyStuck: async (service, name) => {
+      if (!ctx.telegram) return false;
+      const words = `I tried to set up ${name} and it stopped each time, so I've stopped trying. Your yes still stands. Nothing is wrong with the rest of your agent, and I'll pick this up when you message me about it.`;
+      try {
+        await ctx.telegram.createAttentionItem({
+          id: `recommended-service-setup:${service}`, conditionKey: `recommended-service-setup:${service}`,
+          title: `Setting up ${name} has stopped`, summary: words, description: words,
+          priority: 'NORMAL', category: 'recommended-services', sourceContext: 'agent',
+        } as import('../messaging/TelegramAdapter.js').AttentionObservation);
+        return true;
+      } catch {
+        return false; // @silent-fallback-ok — the next check tries the notice again
+      }
+    },
+    clearStuck: (service) => { void ctx.telegram?.updateAttentionStatus(`recommended-service-setup:${service}`, 'DONE', { silent: true }).catch(() => undefined); },
+    tellOwner: (text) => {
+      const topicId = ctx.telegram?.getLifelineTopicId?.();
+      if (topicId !== undefined) void ctx.telegram?.sendToTopic(topicId, text).catch(() => undefined);
+    },
+    finishCommitment: (id) => { ctx.commitmentTracker?.deliver(id); },
+    withdrawCommitment: (id, reason) => { ctx.commitmentTracker?.withdraw(id, reason); },
+    onReady: (reconcile) => {
+      const run = (): void => { void reconcile().catch((err) => console.warn(`[recommended-services] check failed: ${err instanceof Error ? err.message : String(err)}`)); };
+      setImmediate(run);
+      setInterval(run, 5 * 60_000).unref();
+    },
     checkPin: (req, res) => checkMandatePin(req, res),
     // Reachable with no bearer token, so it holds the unlock route's limits too: the same refusal on
     // an insecure connection, and the same cap across every source address.
@@ -16112,9 +16166,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     },
     openCommitment: (name, service) => {
       if (!ctx.commitmentTracker) throw new Error('commitment tracker unavailable');
-      // The beacon only follows a commitment that has a topic to report to.
-      const topicId = ctx.telegram?.getLifelineTopicId?.();
-      ctx.commitmentTracker.record({ type: 'one-time-action', source: 'agent', topicId, beaconEnabled: topicId !== undefined, cadenceMs: 86_400_000, userRequest: `Set up ${name}, after the owner said yes`, agentResponse: `I own setup of ${service} until it passes verification or the owner says no. The person only approves decisions or supplies credentials.` });
+      // A record, not a beacon: the setup check notices a stalled session, and routine recovery stays quiet.
+      return ctx.commitmentTracker.record({ type: 'one-time-action', source: 'agent', userRequest: `Set up ${name}, after the owner said yes`, agentResponse: `I own setup of ${service} until it passes verification or the owner says no. The person only approves decisions or supplies credentials.` }).id;
     },
   });
   registerEcosystemIdeaRoutes(router, { ecosystem: () => ctx.ecosystemIdeas?.() ?? null, checkPin: (req, res) => checkMandatePin(req, res) });

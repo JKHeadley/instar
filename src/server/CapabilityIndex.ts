@@ -278,7 +278,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     description: 'Recommended outside services (docs/specs/recommended-services.md) — the catalog (benefit, what leaves the machine, cost, account, backup and its status, whether it is available) and the saved yes or no for each service, replicated across machines where machine sync is on (the route reports `replicating`). Offers are not live yet, and the route reports what they wait for (`migrationComplete`, `firstResult`). A no needs the dashboard PIN.',
     build: () => ({
       configured: true,
-      endpoints: ['GET /recommended-services', 'POST /recommended-services/:id/no', 'GET /recommended-services/:id/confirm', 'POST /recommended-services/:id/confirm'],
+      endpoints: ['GET /recommended-services', 'POST /recommended-services/:id/no', 'GET /recommended-services/:id/confirm', 'POST /recommended-services/:id/confirm', 'POST /recommended-services/:id/verify'],
     }),
   },
   {

@@ -29,7 +29,8 @@ describe('recommended services routes', () => {
       stateDir: dir,
       owner: () => '42',
       recordApproval: () => undefined,
-      openCommitment: () => undefined,
+      openCommitment: () => null,
+      finishCommitment: () => undefined, withdrawCommitment: () => undefined, startSetup: async () => ({ sessionName: 's', topicId: 1 }), stopSetup: () => true, isSetupRunning: () => false, notifyStuck: async () => true, clearStuck: () => undefined, tellOwner: () => undefined, writeSecret: () => undefined, readSecret: () => null, port: 0,
       checkPin: (req, res) => {
         if ((req.body as { pin?: string }).pin === '1234') return true;
         res.status(403).json({ error: 'pin' });
