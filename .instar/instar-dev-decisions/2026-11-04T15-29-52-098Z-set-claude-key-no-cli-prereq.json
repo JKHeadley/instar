@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-04T15:29:52.098Z",
+  "slug": "set-claude-key-no-cli-prereq",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/setClaudeKey.ts"
+    ],
+    "addedLines": 5,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

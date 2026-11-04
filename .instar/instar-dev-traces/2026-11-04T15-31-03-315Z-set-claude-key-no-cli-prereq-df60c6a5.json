@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "set-claude-key-no-cli-prereq",
+  "sessionId": "a89757c0-8675-4a39-8a87-b68b53cf4936",
+  "timestamp": "2026-11-04T15:31:03.315Z",
+  "artifactPath": "upgrades/side-effects/set-claude-key-no-cli-prereq.md",
+  "artifactSha256": "7a0b39e01c34dc92b62242613c203f9c2f9067c3f700dd6d999aa8faf183ab23",
+  "coveredFiles": [
+    "src/commands/setClaudeKey.ts",
+    "upgrades/next/set-claude-key-no-cli-prereq.md",
+    "upgrades/side-effects/set-claude-key-no-cli-prereq.eli16.md",
+    "upgrades/side-effects/set-claude-key-no-cli-prereq.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-file narrow bug fix fully undone by a revert.",
+  "eli16Path": "upgrades/side-effects/set-claude-key-no-cli-prereq.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/set-claude-key-no-cli-prereq.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
