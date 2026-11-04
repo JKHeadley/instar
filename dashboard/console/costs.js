@@ -4,7 +4,7 @@
 // reaches the DOM through textContent; the model (costs-model.js) decides everything.
 
 import { buildCostsPage, WINDOWS, DEFAULT_WINDOW, GRAINS, windowParams, spendQuery, committedLine, basisWord, fmtTokens, fmtUsd, modelWord, doorWord } from './costs-model.js';
-import { el, setKids, pageHead, section, sheet, story, details, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, section, sheet, story, details, note, cantTell, firstPaint } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { sessionLabel } from './home-model.js';
 
@@ -19,7 +19,7 @@ const view = { window: DEFAULT_WINDOW, grain: 'day' };
 
 export async function renderCosts(main, ctx) {
   const { get } = ctx;
-  if (!main.querySelector('.costs-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading what thinking costs' })));
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading what thinking costs' })));
   const w = windowParams(view.window);
   const [spend, caps, status, metrics, insights, tokens, claude, codex, orphans, chains, sessions] = await Promise.all([
     get(`/routing-spend/summary?${spendQuery(view.grain, w.sinceHours)}`), get('/routing-spend/caps'), get('/routing-spend/enable-status'),

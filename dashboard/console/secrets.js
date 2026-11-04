@@ -9,7 +9,7 @@ import {
   topicNameMap, conversationChoices, requestCard, requestBody, testRequestBody, resultWords, shareWords,
   leftWords, TTL_CHOICES,
 } from './secrets-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, firstPaint } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const RECORD_KEYS = ['token', 'topicId', 'createdAt', 'expiresAt'];
@@ -55,7 +55,7 @@ async function share(url, title, status) {
 
 export async function renderSecrets(main, ctx) {
   const { get } = ctx;
-  if (!main.querySelector('.secrets-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'People · Passwords & keys' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'People · Passwords & keys' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
   const [pendingRes, ctxRes, syncRes, topicsRes, poolRes] = await Promise.all([
     get('/secrets/pending'), get('/self-knowledge/session-context?full=1'), get('/secrets/sync-status'), get('/telegram/topics?scope=pool'), get('/pool'),
   ]);

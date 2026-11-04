@@ -3,14 +3,14 @@
 // the legacy tab until their PIN sheet is rebuilt (the plan's first cut).
 
 import { buildMachinesPage, ropesFor, healthOf, usageOf, machineCarePool } from './machines-model.js';
-import { el, setKids, pageHead, sheet, closeSheet, story, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, sheet, closeSheet, story, note, cantTell, firstPaint } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const STATE_DOT = { ok: 'dot live', attn: 'dot attn', bad: 'dot bad', stale: 'dot unknown', unknown: 'dot unknown' };
 
 export async function renderMachines(main, ctx) {
   const { get } = ctx;
-  if (!main.querySelector('.machine-cards')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Machines' }), el('h1', { class: 'page-title skeleton', text: 'Loading machines' })));
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Machines' }), el('h1', { class: 'page-title skeleton', text: 'Loading machines' })));
   const [pool, health, guards, sessions, care] = await Promise.all([get('/pool'), get('/health'), get('/guards'), get('/sessions?scope=pool', 8000), get('/machine-maintenance?scope=pool', 8000)]);
   const live = sessions.ok && Array.isArray(sessions.data && sessions.data.sessions) ? sessions.data.sessions.filter((s) => s.status === 'running' || s.status === 'starting') : [];
   const byMachine = {};

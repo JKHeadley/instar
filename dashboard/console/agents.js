@@ -14,7 +14,7 @@
 import {
   buildAgentsPage, threadModel, inviteResultWords, pinResultWords, bearerResultWords, enableWords, bindRequest, bindResultWords, localTime,
 } from './agents-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, firstPaint } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
 import { topicNameMap } from './topic-names.js';
@@ -48,7 +48,7 @@ async function send(path, body, method = 'POST') {
 }
 
 export async function renderAgents(main, ctx) {
-  if (!main.querySelector('.agents-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading other agents' })));
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading other agents' })));
   const [health, pairingRes, invitesRes, peersRes, convRes, threadsRes, poolRes, topicsRes] = await Promise.all([
     read('/threadline/health'), read('/threadline/pairing'), read('/threadline/pairing/invites'),
     read('/threadline/peers/health?scope=pool', POOL_TIMEOUT_MS), read('/threadline/conversations?scope=mesh'), read('/threadline/observability/threads'), read('/pool'), read('/telegram/topics?scope=pool', POOL_TIMEOUT_MS),

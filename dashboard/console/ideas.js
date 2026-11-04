@@ -1,7 +1,7 @@
 // Ecosystem ideas page (docs/specs/ecosystem-idea-pipeline.md §9). Advice only: it builds nothing.
 // Every value is written with textContent via el(). Decisions go through the PIN plan and commit.
 
-import { el, pageHead, cantTell, askPin, note } from './ui.js';
+import { el, pageHead, cantTell, askPin, note, setKids } from './ui.js';
 import { BANDS, ideasInBand, headline, funnelLine, admissionLine, classWords, projectLine, planRequest } from './ideas-model.js';
 
 let probeResult = null;
@@ -50,7 +50,7 @@ export async function renderIdeas(main, api) {
   const refresh = () => renderIdeas(main, api);
   const r = await api.get('/ecosystem-ideas?scope=pool', 12_000);
   if (!r.ok) {
-    main.replaceChildren(r.reason === 'switched off on this agent'
+    setKids(main, r.reason === 'switched off on this agent'
       ? el('section', {}, el('div', { class: 'eyebrow', text: 'Ideas' }), el('h1', { text: 'The idea review is not switched on for this agent.' }))
       : cantTell(r.reason));
     return;
@@ -84,7 +84,7 @@ export async function renderIdeas(main, api) {
     parts.push(el('div', { class: 'need-card' }, el('span', { class: 'need-title', text: `Suggested: ${p.repo}` }), el('p', { class: 'need-sub', text: p.reason }), add, status));
   }
   if (s.lastTickError) parts.push(note(`The last round had a problem: ${s.lastTickError}`));
-  main.replaceChildren(el('div', { class: 'ideas-page' }, parts));
+  setKids(main, el('div', { class: 'ideas-page' }, parts));
 }
 
 export function ideasTile(get) {

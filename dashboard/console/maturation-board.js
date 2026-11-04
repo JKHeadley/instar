@@ -5,7 +5,7 @@
 // Layout, top to bottom: one answer sentence · a square per feature (the glance) ·
 // plain groups (Broken, Stuck, …) with one plain line per feature · details on tap.
 
-import { el, cantTell } from './ui.js';
+import { el, cantTell, setKids, firstPaint, arrivalScroll } from './ui.js';
 import { maturationPaceNode } from './pace.js';
 import {
   GROUPS, groupOf, groupCounts, headline, subline, parseState, stateQuery, openGroups,
@@ -21,16 +21,16 @@ let lastBoard = null;
  * @param nav    { read() → query string, write(query) } — where view state lives in the URL
  */
 export async function renderMaturation(main, api, nav = consoleNav()) {
-  if (!lastBoard) main.replaceChildren(el('p', { class: 'mb-loading', text: 'Reading every machine…' }));
+  if (!lastBoard) firstPaint(main, el('p', { class: 'mb-loading', text: 'Reading every machine…' }));
   const r = await api.get('/maturation/board?scope=pool', POOL_TIMEOUT_MS);
   if (!r.ok) {
     if (r.reason === 'switched off on this agent') {
-      main.replaceChildren(el('section', { class: 'mb-hero' },
+      setKids(main, el('section', { class: 'mb-hero' },
         el('div', { class: 'eyebrow', text: 'Feature maturation' }),
         el('h1', { class: 'mb-answer', text: 'The maturation board is not switched on for this agent.' })));
       return;
     }
-    if (!lastBoard) { main.replaceChildren(cantTell(r.reason)); return; }
+    if (!lastBoard) { setKids(main, cantTell(r.reason)); return; }
   } else {
     lastBoard = r.data;
   }
@@ -111,13 +111,12 @@ function draw(main, board, nav, pace = null) {
     return el('section', { class: 'mb-group' }, head, body);
   }).filter(Boolean);
 
-  main.replaceChildren(hero, glance, tools,
+  setKids(main, hero, glance, tools,
     sections.length ? el('div', { class: 'mb-groups' }, sections) : el('p', { class: 'mb-sub', text: 'Nothing matches.' }),
     sourcesNote(board));
 
   if (st.f) {
-    const target = main.querySelector('.mb-row[aria-expanded="true"]');
-    if (target && typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center' });
+    arrivalScroll(main.querySelector('.mb-row[aria-expanded="true"]'), { key: `row:${st.f}`, block: 'center' });
   }
 }
 

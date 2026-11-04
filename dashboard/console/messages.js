@@ -3,7 +3,7 @@
 // comes from /health and needs none.
 
 import { buildMessagesPage, displayModel, heldHeadline } from './messages-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, note, cantTell, askPin, operatorSession, forgetOperatorSession } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, note, cantTell, askPin, operatorSession, forgetOperatorSession, firstPaint } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
 import { topicNameMap, isRealTopicName } from './topic-names.js';
@@ -25,7 +25,7 @@ async function opFetch(path, opts = {}) {
 export async function renderMessages(main, ctx) {
   const { get } = ctx;
   const first = !main.querySelector('.msg-page');
-  if (first) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'People · Messages to you' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
+  if (first) firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'People · Messages to you' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
   // A locked page is not re-polled against the PIN-gated routes every 30 s: only the
   // first render (and a render after an unlock) asks for the records.
   const locked = !first && !operatorSession() && main.querySelector('.need-card');
