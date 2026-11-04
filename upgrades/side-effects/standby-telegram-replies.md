@@ -43,3 +43,7 @@ Code-only hot-fix release. The origin store schema is unchanged. Reverting the h
 ## Independent review
 
 Reviewer found that the 15-minute history row lost its producer kind, forwarded acceptance could treat a multipart operation as one delivered message, and pre-send custody markers could be refused without stopping a send. All three were corrected. Receipt IDs are now constrained to safe integers, and the integration fixture supplies an actual Telegram ID. Same-holder, transferred-holder, and local-send refusal tests verify a failed marker never sends. Reviewer rechecked the revised code and concurred.
+
+## CI reconciliation after main merge (2026-11-04)
+
+Two older fixtures still treated an accepted attempt with an empty receipt as confirmed delivery, or expected a receipt response without its Telegram message ID. Those assertions failed in both Node unit shards and Integration Tests before this update. They now require the concrete `321` ID returned by the fake Telegram API and a valid ID in the unit receipt. No runtime decision or durable format changed in this reconciliation; the original review above still describes the behavior.
