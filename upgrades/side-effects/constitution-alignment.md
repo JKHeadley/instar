@@ -56,6 +56,10 @@ Revert. Removes the refusal and the watcher branch. No data migration. The daily
 - Unit: `tests/unit/check-constitution-pairing.test.ts`. Integration: `tests/integration/safe-merge-constitution-counterpart.test.ts` runs the real script with a fake `gh`, including the refusal path, the unreadable-counterpart path, and a PR touching no book.
 - Live positive control, against real history since #2323: `paired=0 declared-none=0 waiting=0 overdue=0 drift=5 no-pr=0`, naming #2682, #2380, #2194, #2323 and instar-2 #182. All five lack a line, so this proves the no-line class only; fixtures cover the rest. A real TLS failure on an earlier run printed `unknown` and did not read as clean.
 
+## Ladder line
+
+This spec has no flag, so its plan says `ladder: not applicable: no flag.` The ladder's coverage test now accepts that form, with a reason, and still refuses a name that matches no entry.
+
 ## Second-pass review
 
 **Reviewer:** independent general-purpose subagent, on claude-opus-5-5
