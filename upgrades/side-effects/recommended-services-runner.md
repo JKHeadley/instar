@@ -76,6 +76,10 @@ The catalog test's comment lists them and fails on any real recipe: live proof, 
 
 - **Third read,** limited to the dark path, meaning an agent without `provingRecipes`: "Concur with the review". It found nothing that changes such an agent, and corrected four sentences here. The second round's behaviour on a real proof hasn't been reviewed. I stopped there on purpose, because what's left depends on how a real session behaves, so the live proof on a throwaway agent is the better next check. The reviewer did not run the full suite. The verifier does.
 
+## After review
+
+Local verification failed `no-silent-fallbacks`, because four new catches only swallowed or logged. All four now report through `DegradationReporter`. The reviewer has not read this change, which only affects failure reporting.
+
 ## Class-Closure Declaration (display-only mirror)
 
 - defectClass: unbounded-self-action

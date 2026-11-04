@@ -16125,19 +16125,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           priority: 'NORMAL', category: 'recommended-services', sourceContext: 'agent',
         } as import('../messaging/TelegramAdapter.js').AttentionObservation);
         return true;
-      } catch {
-        return false; // @silent-fallback-ok — the next check tries the notice again
+      } catch (err) {
+        DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: `Send the stopped notice for ${service}`, fallback: 'The next check tries again.', reason: err instanceof Error ? err.message : String(err), impact: 'The person has not been told that setup stopped.' });
+        return false;
       }
     },
-    clearStuck: (service) => { void ctx.telegram?.updateAttentionStatus(`recommended-service-setup:${service}`, 'DONE', { silent: true }).catch(() => undefined); },
+    clearStuck: (service) => { void ctx.telegram?.updateAttentionStatus(`recommended-service-setup:${service}`, 'DONE', { silent: true }).catch((err) => { DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: `Close the stopped notice for ${service}`, fallback: 'The notice stays open.', reason: err instanceof Error ? err.message : String(err), impact: 'An old notice may still show.' }); }); },
     tellOwner: (text) => {
       const topicId = ctx.telegram?.getLifelineTopicId?.();
-      if (topicId !== undefined) void ctx.telegram?.sendToTopic(topicId, text).catch(() => undefined);
+      if (topicId !== undefined) void ctx.telegram?.sendToTopic(topicId, text).catch((err) => { DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: 'Tell the owner a service was already working', fallback: 'The dashboard row still shows it.', reason: err instanceof Error ? err.message : String(err), impact: 'The person was not told.' }); });
     },
     finishCommitment: (id) => { ctx.commitmentTracker?.deliver(id); },
     withdrawCommitment: (id, reason) => { ctx.commitmentTracker?.withdraw(id, reason); },
     onReady: (reconcile) => {
-      const run = (): void => { void reconcile().catch((err) => console.warn(`[recommended-services] check failed: ${err instanceof Error ? err.message : String(err)}`)); };
+      const run = (): void => { void reconcile().catch((err) => { DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: 'Run the regular setup check', fallback: 'The next check tries again.', reason: err instanceof Error ? err.message : String(err), impact: 'A no from another machine or a dead session waits for the next check.' }); }); };
       setImmediate(run);
       setInterval(run, 5 * 60_000).unref();
     },
