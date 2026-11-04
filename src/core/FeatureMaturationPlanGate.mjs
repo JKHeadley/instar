@@ -29,7 +29,13 @@ function reviewableMarkdown(input) {
   }).join('\n');
 }
 
-export function findMaturationPlanGaps(specBody) {
+/**
+ * `requireLadder` is set only in the instar source tree. Agents' own projects
+ * have no instar registry, so the line means nothing there. The gate checks the
+ * line is present and well-formed; the coverage test checks, at merge, that it
+ * names a real entry, so a spec can converge before its entry exists.
+ */
+export function findMaturationPlanGaps(specBody, { requireLadder = false } = {}) {
   const body = reviewableMarkdown(specBody);
   const headings = [...body.matchAll(/^##[ \t]+Maturation plan[ \t]*$/gim)];
   if (headings.length === 0) return { ok: false, reason: 'missing-section' };
@@ -51,6 +57,14 @@ export function findMaturationPlanGaps(specBody) {
   const duplicates = REQUIRED_FIELDS.filter((field) => (found.get(field)?.length ?? 0) > 1);
   if (missing.length || duplicates.length) {
     return { ok: false, reason: 'invalid-fields', missing, duplicates };
+  }
+  if (requireLadder) {
+    const ladderLines = section.split('\n')
+      .map((line) => line.match(/^\s*[-*+]\s+\*\*ladder:\*\*\s+(.+?)\s*$/i))
+      .filter(Boolean);
+    if (ladderLines.length !== 1 || !/^[A-Za-z0-9._:+\-/ (),~]{1,160}$/.test(ladderLines[0][1])) {
+      return { ok: false, reason: 'invalid-fields', missing: ladderLines.length ? [] : ['ladder'], duplicates: ladderLines.length > 1 ? ['ladder'] : [] };
+    }
   }
   return { ok: true };
 }

@@ -44,6 +44,7 @@ import { MAIN_FAIR_SHARE_MS, decideMergeHandoff, decideStart, decideStarved, dec
 import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/laneReport.js';
 import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
+import { raiseDue } from '../monitoring/MaturationLadder.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
 import { nextBreakerState, RECONCILE_LIMITS } from '../core/ReplicatedStoreReconciler.js';
 import { findStuckPreparingRuns, PREPARING_NOTICE_MAX_ATTEMPTS } from '../core/AutonomousStartAdmission.js';
@@ -1215,6 +1216,41 @@ const ecosystemIdeaReview: SelfActionController = {
  * delegated give-up. Each extra tick still passes the triage service's own single flight, rate
  * limit, quota pause and daily call cap.
  */
+/**
+ * maturation-ladder-raise — the ladder records a commitment for a feature worth a
+ * decision after each six-hour scoring pass. Worst case: one feature stays `harmed`
+ * and the review closes its commitment every time. The durable last-raised row
+ * brakes it to once a day; the commitment key dedupes while one is open.
+ */
+const maturationLadderRaise: SelfActionController = {
+  id: 'maturation-ladder-raise',
+  actionVerb: 'notify-review-by-commitment',
+  models: 'src/monitoring/MaturationLadderService.ts raise() (raiseDue cooldown from the durable audit log, 5 per pass, lease only, no beacon: a record, never a message)',
+  modelsPath: 'src/monitoring/MaturationLadderService.ts',
+  delegatedGiveUp: 'raiseDue: at most once a day per harmed feature and once a week per ready feature, read back from the audit log across restarts, and capped at 5 per pass',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 4 * 60,
+  tickMs: 6 * 60 * 60_000,
+  eternalSentinel: { reason: 'a feature that stays harmed is raised for a decision at most once a day, as a record with no message', rateFloorMs: 24 * 60 * 60_000 },
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return maturationLadderRaise.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const raw = f.durableState.get('maturation-last-raised');
+      const last = raw === undefined ? undefined : Number(raw);
+      if (!raiseDue('harmed', last, now)) return;
+      f.durableState.set('maturation-last-raised', now);
+      sink.emit({ verb: 'notify-review-by-commitment', target: 'maturation:feature' });
+      sink.emitTimesMs.push(now);
+    } };
+  },
+};
+
 const queuePaceExtraRun: SelfActionController = {
   id: 'queue-pace-extra-run',
   actionVerb: 'nudge-triage-extra-tick',
@@ -3673,6 +3709,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   feedbackTriageTick,
   ecosystemIdeaReview,
   queuePaceExtraRun,
+  maturationLadderRaise,
   jobScriptTriageEpisode,
   jobScriptTriageBackup,
   feedbackTriageActionList,

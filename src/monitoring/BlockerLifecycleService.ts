@@ -2,10 +2,18 @@ import type { CommitmentTracker, BlockerEpisode, Commitment } from './Commitment
 import crypto from 'node:crypto';
 import type { Initiative, MaturationEvaluationContract } from '../core/InitiativeTracker.js';
 import type { InitiativeTracker } from '../core/InitiativeTracker.js';
-import { BlockerLifecycleLedger, percentile, type BlockerFactor, type BlockerMetricRecord, type MaturationEvaluationRecord, type MaturationEvaluationStatus } from './BlockerLifecycleLedger.js';
+import { BlockerLifecycleLedger, percentile, type BlockerFactor, type BlockerMetricRecord, type MaturationEvaluationRecord, type MaturationEvaluationStatus, type MaturationMetricObservation } from './BlockerLifecycleLedger.js';
 import { DegradationReporter } from './DegradationReporter.js';
 
 type FailureReason = 'insufficient-days' | 'insufficient-samples' | 'zero-denominator';
+
+const PREPARE_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Blocker factor maps, built at most once per pass. */
+interface ObservationMemo {
+  summaries?: Map<BlockerFactor, Record<string, unknown>>;
+  trends?: Map<BlockerFactor, Record<string, unknown>>;
+}
 
 export class BlockerLifecycleService {
   private cursor = 0;
@@ -14,6 +22,12 @@ export class BlockerLifecycleService {
   private failures = 0;
   private breakerUntil = 0;
   private closed = false;
+  private maturationHooks: {
+    prepare?: () => Promise<void>;
+    subjects?: (initiatives: Initiative[]) => Initiative[];
+    after?: () => void;
+  } | null = null;
+  private maturationPassRunning = false;
   private maturationInitiatives: Initiative[] = [];
   private maturationAccountingInitiatives: Initiative[] = [];
   private readonly maturationProjections = new Map<string, () => { value: number; samples: number } | null>();
@@ -56,7 +70,7 @@ export class BlockerLifecycleService {
     });
     this.schedule(5_000);
     if (initiativeTracker) {
-      const evaluate = () => { try { this.evaluateMaturation(initiativeTracker.list()); } catch { /* @silent-fallback-ok — the absent durable slot is surfaced as missed cadence on the next successful pass */ } };
+      const evaluate = () => { void this.runMaturationPass(() => initiativeTracker.list()); };
       setTimeout(evaluate, 10_000).unref?.();
       this.maturationTimer = setInterval(evaluate, 6 * 60 * 60 * 1000);
       this.maturationTimer.unref?.();
@@ -70,6 +84,45 @@ export class BlockerLifecycleService {
    * snapshots only the bounded numeric pair at evaluation time. */
   registerMaturationProjection(sourceRef: string, read: () => { value: number; samples: number } | null): void {
     this.maturationProjections.set(sourceRef, read);
+  }
+
+  /** Read one registered projection, for callers showing the same number D7 scores. */
+  readMaturationProjection(sourceRef: string): { value: number; samples: number } | null {
+    try { return this.maturationProjections.get(sourceRef)?.() ?? null; } catch { /* @silent-fallback-ok — a failed read is shown as no number */ return null; }
+  }
+
+  /**
+   * Ladder wiring (docs/specs/feature-maturation-ladder.md §6): `prepare` reads
+   * evidence off the event loop before a pass, `subjects` adds in-memory features
+   * to the same scorer, and `after` raises what the pass found. D7's rule is unchanged.
+   */
+  setMaturationHooks(hooks: {
+    prepare?: () => Promise<void>;
+    subjects?: (initiatives: Initiative[]) => Initiative[];
+    after?: () => void;
+  } | null): void {
+    this.maturationHooks = hooks;
+  }
+
+  /** One timer-driven pass. Never overlaps itself and never throws. */
+  private async runMaturationPass(list: () => Initiative[]): Promise<void> {
+    if (this.maturationPassRunning) return;
+    this.maturationPassRunning = true;
+    try {
+      // A stuck read must not stop the scorer for every other feature.
+      try {
+        const prepare = this.maturationHooks?.prepare?.();
+        if (prepare) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          await Promise.race([prepare, new Promise<void>(resolve => { timer = setTimeout(resolve, PREPARE_TIMEOUT_MS); timer.unref?.(); })]);
+          if (timer) clearTimeout(timer);
+        }
+      } catch { /* @silent-fallback-ok — missing evidence scores insufficient, the honest side */ }
+      this.evaluateMaturation(list());
+      this.maturationHooks?.after?.();
+    } catch { /* @silent-fallback-ok — the absent durable slot is surfaced as missed cadence on the next successful pass */ } finally {
+      this.maturationPassRunning = false;
+    }
   }
 
   localSummary(sinceHours: number): Record<string, unknown> {
@@ -94,8 +147,9 @@ export class BlockerLifecycleService {
   }
 
   /** D7 recurring scorer. Called only by the existing rollout reconciler cadence. */
-  evaluateMaturation(initiatives: Initiative[]): { eligible: number; inserted: number } {
+  evaluateMaturation(input: Initiative[]): { eligible: number; inserted: number } {
     const now = this.now();
+    const initiatives = this.maturationHooks?.subjects ? this.maturationHooks.subjects(input) : input;
     const accounted = initiatives.filter(i => i.rolloutAccounting)
       .sort((a, b) => a.id.localeCompare(b.id)).slice(0, 512);
     const eligible = initiatives.filter(i => {
@@ -107,14 +161,34 @@ export class BlockerLifecycleService {
     this.maturationInitiatives = eligible.map(i => ({ ...i, rollout: i.rollout ? { ...i.rollout } : undefined,
       rolloutAccounting: i.rolloutAccounting ? { ...i.rolloutAccounting } : undefined }));
     let inserted = 0;
+    // One read each per pass: at 250 subjects a per-feature read is thousands of scans on the event loop.
+    const previousByFeature = new Map<string, MaturationEvaluationRecord>();
+    for (const r of this.ledger.maturationEvaluations(this.origin, now - 90 * 86_400_000)) {
+      const cur = previousByFeature.get(r.featureId);
+      if (!cur || r.dueSlotMs > cur.dueSlotMs) previousByFeature.set(r.featureId, r);
+    }
+    const contractOf = (i: Initiative) => i.rolloutAccounting?.maturationEvaluation ?? i.rollout?.maturationEvaluation;
+    const memo: ObservationMemo = {};
     for (const initiative of eligible) {
-      const contract = initiative.rolloutAccounting?.maturationEvaluation ?? initiative.rollout?.maturationEvaluation;
+      const contract = contractOf(initiative);
+      if (contract) this.captureBlockerObservations(initiative.id, contract, now, memo);
+    }
+    const longestAgeHours = eligible.reduce((max, i) => Math.max(max, contractOf(i)?.evidenceMaxAgeHours ?? 0), 0);
+    const latestByFeature = new Map<string, Map<string, MaturationMetricObservation>>();
+    if (longestAgeHours > 0) {
+      for (const row of this.ledger.maturationObservations(this.origin, now - longestAgeHours * 3_600_000)) {
+        const metrics = latestByFeature.get(row.featureId) ?? new Map<string, MaturationMetricObservation>();
+        if (!metrics.has(row.metricId)) metrics.set(row.metricId, row);
+        latestByFeature.set(row.featureId, metrics);
+      }
+    }
+    for (const initiative of eligible) {
+      const contract = contractOf(initiative);
       const rung = initiative.rolloutAccounting ? initiative.rolloutAccounting.rung : initiative.rollout?.stage ?? null;
       const cadenceHours = contract?.cadenceHours ?? 6;
       const cadenceMs = cadenceHours * 3_600_000;
       const dueSlotMs = Math.floor(now / cadenceMs) * cadenceMs;
-      const previous = this.ledger.maturationEvaluations(this.origin, now - 90 * 86_400_000)
-        .filter(r => r.featureId === initiative.id).sort((a, b) => b.dueSlotMs - a.dueSlotMs)[0];
+      const previous = previousByFeature.get(initiative.id);
       if (previous && previous.dueSlotMs < dueSlotMs - cadenceMs) {
         const missed = Math.floor((dueSlotMs - previous.dueSlotMs) / cadenceMs) - 1;
         const explicit = Math.min(4, missed);
@@ -134,10 +208,11 @@ export class BlockerLifecycleService {
           contractHash: initiative.rolloutAccounting?.maturationContractError ?? 'missing', newestEvidenceAtMs: null })) inserted++;
         continue;
       }
-      this.captureBlockerObservations(initiative.id, contract, now);
-      const observations = this.ledger.maturationObservations(this.origin, now - contract.evidenceMaxAgeHours * 3_600_000);
-      const latest = new Map<string, (typeof observations)[number]>();
-      for (const row of observations) if (row.featureId === initiative.id && !latest.has(row.metricId)) latest.set(row.metricId, row);
+      const oldestAllowed = now - contract.evidenceMaxAgeHours * 3_600_000;
+      const latest = new Map<string, MaturationMetricObservation>();
+      for (const [metricId, row] of latestByFeature.get(initiative.id) ?? []) {
+        if (row.observedAtMs >= oldestAllowed) latest.set(metricId, row);
+      }
       let status: MaturationEvaluationStatus = 'ready';
       let passing = 0; let newest: number | null = null; const margins: number[] = [];
       for (const metric of contract.metrics) {
@@ -160,17 +235,28 @@ export class BlockerLifecycleService {
     return { eligible: eligible.length, inserted };
   }
 
+  /** This machine's evaluation rows, for readers that show D7's own verdicts. */
+  maturationEvaluationRows(sinceMs: number): MaturationEvaluationRecord[] {
+    return this.ledger.maturationEvaluations(this.origin, sinceMs);
+  }
+
+  /** The hash D7 stores on each row, for readers matching a row to its contract. */
+  maturationContractHash(contract: MaturationEvaluationContract | undefined): string {
+    return this.contractHash(contract);
+  }
+
   private contractHash(contract: MaturationEvaluationContract | undefined): string {
     if (!contract) return 'missing';
     return crypto.createHash('sha256').update(JSON.stringify(contract)).digest('hex');
   }
 
-  private captureBlockerObservations(featureId: string, contract: MaturationEvaluationContract, now: number): void {
-    const summaries = new Map<BlockerFactor, Record<string, unknown>>([
+  private captureBlockerObservations(featureId: string, contract: MaturationEvaluationContract, now: number, memo: ObservationMemo = {}): void {
+    // Blocker factors are expensive and few features ask for them: build each map once, on first ask.
+    const summariesOf = () => memo.summaries ??= new Map<BlockerFactor, Record<string, unknown>>([
       ...(['request-to-persist', 'clear-latency'] as const).map(f => [f, this.factorSummary(f, now - 168 * 3_600_000)] as const),
       ['deliverable-completion', this.completionSummary(now - 168 * 3_600_000, 168)],
     ]);
-    const trends = new Map<BlockerFactor, Record<string, unknown>>([
+    const trendsOf = () => memo.trends ??= new Map<BlockerFactor, Record<string, unknown>>([
       ...(['request-to-persist', 'clear-latency'] as const).map(f => [f, this.factorTrend(f, now - 90 * 86_400_000)] as const),
       ['deliverable-completion', this.completionTrend(now - 90 * 86_400_000, 90)],
     ]);
@@ -197,7 +283,7 @@ export class BlockerLifecycleService {
         continue;
       }
       const [factor, field] = metric.sourceRef.split('.') as [BlockerFactor, string];
-      const source = metric.source === 'blocker-summary' ? summaries.get(factor) : trends.get(factor);
+      const source = metric.source === 'blocker-summary' ? summariesOf().get(factor) : trendsOf().get(factor);
       const value = source?.[field === 'p95Ms' ? 'p95Ms' : field] as number | null | undefined;
       const samples = metric.source === 'blocker-summary' ? Number(source?.completed ?? 0)
         : Number((source?.secondHalf as { samples?: number; total?: number } | undefined)?.samples ??

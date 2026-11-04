@@ -249,6 +249,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'maturationLadder',
+    prefixes: ['/maturation/ladder', '/maturation/moves', '/maturation/evidence'],
+    description: 'Maturation ladder (docs/specs/feature-maturation-ladder.md) — every switched-off feature with its rung, next rung and numbers now vs target. Numbers raise a feature to the recurring review, whose model decides; POST /maturation/moves applies that decision behind floors that can only refuse.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /maturation/ladder', 'GET /maturation/moves', 'POST /maturation/moves', 'POST /maturation/moves/:moveId/revert', 'POST /maturation/evidence'],
+    }),
+  },
+  {
     key: 'queuePace',
     prefixes: ['/queue-pace'],
     description: 'Queue pace (docs/specs/queue-pace.md) — an hourly arrivals-vs-completions ledger for every work queue (feedback sorting, feedback fixes, maturation fixes, promises, self-improvement items) with a plain 7-day verdict (falling-behind / catching-up / holding / shrinking-by-exits / unknown / owner-not-serving) and, for a queue that is behind, the named reason (person / quota / cap / worker / unknown). GET /queue-pace (?scope=pool merges every machine) returns per-queue inflowPerDay, outflowPerDay, exitedPerDay, open, daysToClear, bottleneck, coverage and tuner state. Dev-gated measure-only (queuePace.enabled); 503 when dark. The triage pace tuner has its own flag queuePace.tuner.enabled (default false, dry-run). When asked "are we keeping up with feedback / promises / action items?" → read this, don\'t guess.',

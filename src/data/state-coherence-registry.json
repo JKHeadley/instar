@@ -2172,6 +2172,38 @@
         "complianceHold": true,
         "note": "Never pruned by design: keeping declined and stopped ideas stops the same idea being argued twice, and adoption predictions are graded against the record. Volume is small: one row per idea revision, stage change and weekly run."
       }
+    },
+    {
+      "category": "feature-evidence-log",
+      "description": "Rich-context record of what each switched-off feature did on this machine, read by the maturation ladder (feature-maturation-ladder §4). Per-machine facts, read through each machine's route and the board's ladder owner.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/feature-evidence.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "size-bounded",
+        "note": "Segment rotation at 10 MB, 8 segments kept."
+      }
+    },
+    {
+      "category": "maturation-advances-audit",
+      "description": "Audit of what the ladder raised, each observed rung change, and every move the review made, with evidence and old values (feature-maturation-ladder §8).",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/maturation-advances.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "size-bounded",
+        "note": "Segment rotation at 10 MB, every segment archived: this is the record of what moved and why."
+      }
     }
   ]
 }
