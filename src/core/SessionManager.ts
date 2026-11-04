@@ -8,6 +8,9 @@
 
 import { isCredentialEnvName, CLAUDE_CONFINED_PERMISSION_ARGS } from './credentialEnvNames.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { applyMemorySessionLaunch, buildMemorySessionSettings, moveInboundFilesIntoScope } from './memorySessionPolicy.js';
+import { audienceKey, type MemoryPrivacy, type SessionPlaceInput } from '../users/MemoryPrivacy.js';
+import { isScopedAudience, memoryScopeEnvValue, type MemoryAudience, type MemoryPlace } from '../users/MemoryAudience.js';
 import { execFileSync, execFile } from 'node:child_process';
 import { isInstarSourceTree } from './SourceTreeGuard.js';
 import { AdmissionRefusedError, type AdmissionDecision, type AdmissionKind } from './workAdmission.js';
@@ -724,6 +727,22 @@ export function applyClaudeToolConfinement(argv: string[], tools: string[]): voi
   }
 }
 
+interface MemorySessionPlan {
+  audience: MemoryAudience;
+  placeKey: string | null;
+  dropResume: boolean;
+  scopeDir: string | null;
+  settingsPath: string | null;
+}
+
+/** A session that must run inside the boundary cannot, here. Never run it unprotected. */
+export class MemoryPrivacyUnavailableError extends Error {
+  constructor(framework: string) {
+    super(`memory-privacy-unavailable: no working sandbox for ${framework}`);
+    this.name = 'MemoryPrivacyUnavailableError';
+  }
+}
+
 export class SessionManager extends EventEmitter {
   private pendingHeadlessSpawns = 0;
   private pendingScheduledSpawns = 0;
@@ -1031,6 +1050,18 @@ export class SessionManager extends EventEmitter {
    * is enabled, so it is a strict no-op by default). Returns null per-call when
    * no eligible account exists. */
   private spawnAccountResolver?: () => { configHome: string; accountId: string } | null;
+  /** Memory privacy (docs/specs/memory-privacy.md). Unwired means today's behaviour. */
+  private memoryPrivacyWiring?: {
+    privacy: MemoryPrivacy;
+    /** The whole Telegram group's place key, or null when there is no group. */
+    telegramGroupKey: () => string | null;
+    /** True when the boot probe proved the OS sandbox starts here. */
+    sandboxReady: () => boolean;
+    /** Scripts a scoped session runs, as absolute paths. */
+    replyScripts: () => string[];
+    /** Finds the Slack channel of a session started before places were recorded. */
+    slackChannelForSession?: (sessionName: string) => string | null;
+  };
 
   /**
    * Census #5/#6: live credential re-pointing gate. When set AND enabled, a pinned account's
@@ -1713,6 +1744,148 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * The resolver picks the optimal pool account (the scheduler's reset-date /
    * headroom score) at spawn time and returns its configHome + id, or null.
    */
+  setMemoryPrivacy(wiring: NonNullable<SessionManager['memoryPrivacyWiring']>): void {
+    this.memoryPrivacyWiring = wiring;
+  }
+
+  /**
+   * The audience for a session about to start, and everything that follows from
+   * it. Computed here for every interactive spawn, so a caller that passes no
+   * place lands on `none` rather than on full reach. Null when unwired.
+   */
+  private planMemorySession(framework: string, tmuxSession: string, input: SessionPlaceInput): MemorySessionPlan | null {
+    const wiring = this.memoryPrivacyWiring;
+    if (!wiring || !wiring.privacy.enabled) return null;
+    const place = wiring.privacy.placeFor(input, wiring.telegramGroupKey());
+    const audience = wiring.privacy.audienceFor(place);
+    const placeKey = 'placeKey' in place ? place.placeKey : null;
+    console.log(`[memory-privacy] session=${tmuxSession} place=${place.kind} audience=${audience.kind}`);
+    const dropResume = wiring.privacy.audienceChanged(placeKey, audience);
+    if (!isScopedAudience(audience)) return { audience, placeKey, dropResume, scopeDir: null, settingsPath: null };
+    if (framework !== 'claude-code' || !wiring.sandboxReady()) {
+      throw new MemoryPrivacyUnavailableError(framework);
+    }
+    const scopeDir = wiring.privacy.ensureScopeDir(audience, tmuxSession);
+    if (!scopeDir) throw new Error('memory-session-launch-missing: no scope folder for a scoped audience');
+    const settingsDir = path.join(path.dirname(scopeDir), '.settings');
+    fs.mkdirSync(settingsDir, { recursive: true, mode: 0o700 });
+    const settingsPath = path.join(settingsDir, `${tmuxSession}.json`);
+    const settings = buildMemorySessionSettings({
+      agentHome: this.config.projectDir,
+      scopeDir,
+      homeDir: os.homedir(),
+      agentHomeEntries: fs.readdirSync(this.config.projectDir),
+      replyScripts: wiring.replyScripts(),
+      tempRoots: ['/tmp', '/private/tmp', '/var/tmp', '/private/var/tmp', '/var/folders', '/private/var/folders'],
+    });
+    fs.writeFileSync(settingsPath, JSON.stringify(settings), { mode: 0o600 });
+    return { audience, placeKey, dropResume, scopeDir, settingsPath };
+  }
+
+  /**
+   * End every running session whose audience no longer matches, so a session that
+   * loaded wider memory cannot answer a new reader. Runs on a flip and at boot,
+   * before any waiting message is delivered.
+   */
+  async retireSessionsForAudienceChange(): Promise<string[]> {
+    const wiring = this.memoryPrivacyWiring;
+    if (!wiring?.privacy.enabled) return [];
+    const retired: string[] = [];
+    for (const session of this.listRunningSessions()) {
+      if (session.jobSlug || session.launchLane) continue;
+      const input: SessionPlaceInput = session.memoryPlaceInput ?? {
+        telegramTopicId: session.telegramTopicId,
+        slackChannelId: session.slackChannelId ?? wiring.slackChannelForSession?.(session.tmuxSession) ?? undefined,
+      };
+      const expected = audienceKey(wiring.privacy.audienceFor(wiring.privacy.placeFor(input, wiring.telegramGroupKey())));
+      if (expected === (session.memoryAudience ?? 'open')) continue;
+      if (await this.retireMemorySession(session)) retired.push(session.name);
+    }
+    return retired;
+  }
+
+  /**
+   * Headless lanes are reached only by jobs and agent-token callers, so they run as
+   * `system`. Hooks read this: on a multi-person agent, no scope means no injection.
+   */
+  private memorySystemEnvFlags(): string[] {
+    const privacy = this.memoryPrivacyWiring?.privacy;
+    return privacy?.enabled && privacy.isMultiPerson() ? ['-e', 'INSTAR_MEMORY_SCOPE=system'] : [];
+  }
+
+  private async retireMemorySession(session: Session): Promise<boolean> {
+    const result = await this.#terminateSessionInternal(session.id, 'memory-audience-changed', {
+      finalStatus: 'killed', disposition: 'terminal', workEvidence: [], memoryAudienceClose: true,
+    });
+    return result.terminated;
+  }
+
+  /**
+   * The per-message check: the live session for a place must match its audience.
+   * False means it could not be ended, and the message must not be delivered to it.
+   */
+  async retireSessionUnlessAudience(tmuxSession: string, audience: string): Promise<boolean> {
+    const session = this.listRunningSessions().find((s) => s.tmuxSession === tmuxSession || s.name === tmuxSession);
+    if (!session) return true;
+    if ((session.memoryAudience ?? 'open') === audience) return true;
+    // Job and headless work is left running, but it has owner reach, so it must not
+    // receive a message from a place that is scoped.
+    if (session.jobSlug || session.launchLane) return !/^(person:|place:|none$)/.test(audience);
+    return this.retireMemorySession(session);
+  }
+
+  /** Memory privacy: a scoped session reads its files from its own inbox. */
+  private withInboundFilesInScope(tmuxSession: string, text: string): string {
+    if (!this.memoryPrivacyWiring) return text;
+    const scopeDir = this.listRunningSessions().find((s) => s.tmuxSession === tmuxSession)?.memoryScopeDir;
+    if (!scopeDir) return text;
+    const state = path.join(this.config.projectDir, '.instar');
+    return moveInboundFilesIntoScope(text, scopeDir, [
+      path.join(state, 'telegram-inbound'), path.join(state, 'telegram-images'), path.join(state, 'telegram-files'),
+      path.join(state, 'slack-files'), path.join(state, 'imessage', 'attachments'), path.join(state, 'state', 'dashboard-uploads'),
+      '/tmp/instar-slack', '/private/tmp/instar-slack',
+    ]);
+  }
+
+  /** The audience kind a place would get, for callers that shape what they send there. */
+  memoryAudienceKind(input: SessionPlaceInput): MemoryAudience['kind'] {
+    const wiring = this.memoryPrivacyWiring;
+    if (!wiring?.privacy.enabled) return 'open';
+    return wiring.privacy.audienceFor(wiring.privacy.placeFor(input, wiring.telegramGroupKey())).kind;
+  }
+
+  /** Sessions whose output may feed agent-wide digests: never one inside the boundary. */
+  sessionsForAgentDigests(): Session[] {
+    return this.listRunningSessions().filter((s) => !s.memoryScopeDir);
+  }
+
+  /** What the status route reports. No people's names beyond the owner's id. */
+  memoryPrivacyStatus(): { enabled: boolean; multiPerson: boolean; ownerUserId: string | null; sandboxReady: boolean } {
+    const wiring = this.memoryPrivacyWiring;
+    if (!wiring) return { enabled: false, multiPerson: false, ownerUserId: null, sandboxReady: false };
+    return {
+      enabled: wiring.privacy.enabled,
+      multiPerson: wiring.privacy.isMultiPerson(),
+      ownerUserId: wiring.privacy.ownerUserId(),
+      sandboxReady: wiring.sandboxReady(),
+    };
+  }
+
+  /** True when memory privacy is on and more than one person can reach this agent. */
+  isMultiPersonAgent(): boolean {
+    const privacy = this.memoryPrivacyWiring?.privacy;
+    return Boolean(privacy?.enabled && privacy.isMultiPerson());
+  }
+
+  /** Clean up after a session that ran inside the boundary. */
+  releaseMemorySession(session: Pick<Session, 'id' | 'memoryScopeDir' | 'memorySettingsPath' | 'memoryAudience'>): void {
+    if (!session.memoryScopeDir) return;
+    this.memoryPrivacyWiring?.privacy.revokeSessionTokens(session.id);
+    const op = 'SessionManager.releaseMemorySession';
+    if (session.memorySettingsPath) SafeFsExecutor.safeRmSync(session.memorySettingsPath, { force: true, operation: op });
+    if (session.memoryAudience === 'none') SafeFsExecutor.safeRmSync(session.memoryScopeDir, { recursive: true, force: true, operation: op });
+  }
+
   setSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | null): void {
     this.spawnAccountResolver = resolver;
   }
@@ -2479,6 +2652,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
       /** See SessionTerminateAuthorityOptions.topicTransferClose. */
       topicTransferClose?: boolean;
       /**
+       * Runtime-private: this session holds memory its place's readers must not see,
+       * and a message is about to reach it. The ordinary keeps protect a busy session,
+       * and a busy session is exactly the one that would answer, so they do not apply.
+       * Only `protected`, which is checked before this, still wins.
+       */
+      memoryAudienceClose?: boolean;
+      /**
        * Killer-supplied work evidence (reap-notify spec R2.1): computed at the
        * KILLER's decision point — the only moment the work was observable (the
        * quota-shed migrator computes it BEFORE its Ctrl+C grace round tears the
@@ -2573,7 +2753,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (!holdsServingLease
           && !isAuthorizedTopicMovedCloseout
           && !isAuthorizedTopicTransferClose
-          && !isAuthorizedLocalAgeLimit) {
+          && !isAuthorizedLocalAgeLimit
+          && opts?.memoryAudienceClose !== true) {
         this.emit('reapBlocked', { session, reason, skipped: 'not-lease-holder', origin });
         return { terminated: false, skipped: 'not-lease-holder' };
       }
@@ -2588,7 +2769,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // session would pin a tombstone in the running list and re-create the boot
       // death-spiral the purge guards against. A proven-dead session has no
       // liveness to protect, so skip the guard. Lease + protected + CAS still apply.
-      if (!opts?.knownDead) {
+      if (!opts?.knownDead && opts?.memoryAudienceClose !== true) {
         // Build the set of keep-reasons the active bypass flags TREAT AS BYPASSED,
         // then ask the guard for the first keep-reason that is NOT bypassed. This
         // re-checks EVERY other guard (the contract the spec's Part E promises):
@@ -4414,6 +4595,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${options.omitAuthEnv ? '' : this.config.authToken}`,
+        ...this.memorySystemEnvFlags(),
         ...headlessThreadline.secretEnvFlags, // threadline-mcp-local-http D2 (flag on only; blank when stripped)
         // Long waits (threadline-mcp-local-http "Bounds", deadline 5): the client
         // outlasts the 300 s reply wait on every claude-code spawn, stdio and HTTP alike.
@@ -4862,6 +5044,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`,
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${omitAuth ? '' : this.config.authToken}`,
+        ...this.memorySystemEnvFlags(),
         ...reroutedThreadline.secretEnvFlags, // threadline-mcp-local-http D2 (flag on only; blank when stripped)
         ...CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS, // long waits: the client outlasts the 300 s reply wait
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
@@ -7251,6 +7434,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
      * actually been injected. Used for framework handoffs so a newly mapped
      * session cannot receive a user turn before its continuation context. */
     awaitInitialInjection?: boolean;
+    /** Memory privacy: a place with no topic or channel argument (WhatsApp, iMessage, app). */
+    memoryPlaceKey?: string;
+    /** Memory privacy: set by callers that are not a conversation (dashboard, agent-to-agent). */
+    memoryPlace?: MemoryPlace;
   }): Promise<string> {
     const sanitized = name
       ? name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
@@ -7281,6 +7468,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
       try {
         withSyncOp(() => execFileSync(this.config.tmuxPath, ['kill-session', '-t', `=${tmuxSession}`], { stdio: 'ignore', timeout: 5000 }));
       } catch { /* @silent-fallback-ok — already gone */ }
+    }
+    // Memory privacy: a same-name session is reused only if it serves this audience.
+    if (this.memoryPrivacyWiring?.privacy.enabled && this.tmuxSessionExists(tmuxSession)) {
+      const wiring = this.memoryPrivacyWiring;
+      const audience = wiring.privacy.audienceFor(wiring.privacy.placeFor({
+        telegramTopicId: options?.telegramTopicId, slackChannelId: options?.slackChannelId,
+        memoryPlaceKey: options?.memoryPlaceKey, memoryPlace: options?.memoryPlace,
+      }, wiring.telegramGroupKey()));
+      const known = this.listRunningSessions().some((s) => s.tmuxSession === tmuxSession);
+      if ((!known && isScopedAudience(audience)) || !(await this.retireSessionUnlessAudience(tmuxSession, audienceKey(audience)))) {
+        throw new MemoryPrivacyUnavailableError('a session that could not be ended');
+      }
     }
     if (this.tmuxSessionExists(tmuxSession)) {
       // Session already exists — just reuse it. The initial message is
@@ -7345,6 +7544,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
       configFramework: this.config.framework,
       envFramework: frameworkFromEnv(),
     });
+
+    // Memory privacy: decide the audience before anything else, and drop a resume
+    // whose transcript was read by a different audience.
+    const memoryPlan = this.planMemorySession(framework, tmuxSession, {
+      telegramTopicId: options?.telegramTopicId,
+      slackChannelId: options?.slackChannelId,
+      memoryPlaceKey: options?.memoryPlaceKey,
+      memoryPlace: options?.memoryPlace,
+    });
+    if (memoryPlan?.dropResume && options?.resumeSessionId) {
+      options = { ...options, resumeSessionId: undefined };
+    }
+
     // Shared impersonation fence (spec §2.0) — see resolveFrameworkBinaryPath.
     const configuredBinaryPath = resolveFrameworkBinaryPath({
       framework,
@@ -7494,7 +7706,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(options?.effort ? { effort: options.effort } : {}),
     });
 
-    this.linkAgentOwnedMemory(framework, launchSpec.envOverrides, options?.cwd ?? this.config.projectDir);
+    const memoryScoped = Boolean(memoryPlan?.scopeDir && memoryPlan.settingsPath);
+    if (memoryScoped) {
+      applyMemorySessionLaunch(launchSpec.argv, memoryPlan!.settingsPath!, memoryPlan!.scopeDir!);
+    } else {
+      this.linkAgentOwnedMemory(framework, launchSpec.envOverrides, options?.cwd ?? this.config.projectDir);
+    }
+    const memoryToken = memoryScoped
+      ? this.memoryPrivacyWiring!.privacy.issueSessionToken(interactiveSessionId, memoryPlan!.audience, memoryPlan!.placeKey)
+      : null;
+    const memoryScopeEnv = memoryPlan ? memoryScopeEnvValue(memoryPlan.audience) : null;
 
     // Spawn the framework CLI in tmux — no bash -c shell intermediary.
     // Uses tmux -e flags to set/unset env vars directly, matching spawnSession pattern.
@@ -7519,8 +7740,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
         }), // Expose instar session ID to hook events
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
-        '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
-        ...interactiveThreadline.secretEnvFlags, // threadline-mcp-local-http D2 (flag on only)
+        '-e', `INSTAR_AUTH_TOKEN=${memoryToken ?? this.config.authToken}`,
+        ...(memoryScopeEnv ? ['-e', `INSTAR_MEMORY_SCOPE=${memoryScopeEnv}`] : []),
+        ...(memoryScoped ? [
+          '-e', `INSTAR_PORT=${this.config.port}`,
+          '-e', `CLAUDE_CODE_TMPDIR=${path.join(memoryPlan!.scopeDir!, 'tmp')}`,
+          '-e', `TMPDIR=${path.join(memoryPlan!.scopeDir!, 'tmp')}`,
+        ] : []),
+        ...(memoryScoped ? [] : interactiveThreadline.secretEnvFlags), // threadline-mcp-local-http D2 (flag on only)
         ...(framework === 'claude-code' ? CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS : []), // long waits
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         // The agent HOME (the `.instar` PARENT), distinct from CLAUDE_PROJECT_DIR.
@@ -7539,7 +7766,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           options?.bootstrapConversationIds ??
             (typeof options?.telegramTopicId === 'number' ? [options.telegramTopicId] : []),
         ),
-        ...this.ghTokenEnvFlags(), // P3b: per-agent vault GitHub token (empty when no vault token)
+        ...(memoryScoped ? [] : this.ghTokenEnvFlags()), // P3b: per-agent vault GitHub token (empty when no vault token)
         // Framework-specific env additions/clears (e.g., CLAUDECODE=)
         ...Object.entries(launchSpec.envOverrides).flatMap(([k, v]) => ['-e', `${k}=${v}`]),
         // OAuth tokens (sk-ant-oat01-...) go in CLAUDE_CODE_OAUTH_TOKEN to enable
@@ -7652,6 +7879,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(effectiveAccountId ? { subscriptionAccountId: effectiveAccountId } : {}),
       // §2.10 credential provenance — derived from the SAME predicate as the env block.
       ...(interactiveCredentialSource ? { credentialSource: interactiveCredentialSource } : {}),
+      ...(memoryPlan ? { memoryAudience: audienceKey(memoryPlan.audience) } : {}),
+      ...(memoryPlan?.scopeDir ? { memoryScopeDir: memoryPlan.scopeDir, memorySettingsPath: memoryPlan.settingsPath ?? undefined } : {}),
+      ...(memoryPlan ? { memoryPlaceInput: {
+        telegramTopicId: options?.telegramTopicId, slackChannelId: options?.slackChannelId,
+        memoryPlaceKey: options?.memoryPlaceKey, memoryPlace: options?.memoryPlace,
+      } } : {}),
+      ...(options?.slackChannelId ? { slackChannelId: options.slackChannelId } : {}),
       ...(options?.triggeredBy ? { triggeredBy: options.triggeredBy } : {}),
       prompt: effectiveInitialMessage,
       maxDurationMinutes: this.effectiveMaxDurationMinutes,
@@ -8197,6 +8431,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
     // Track it but with a shorter timeout (triage sessions should be brief)
     const session: Session = {
+      memoryAudience: 'system',
+      memoryPlaceInput: { memoryPlace: { kind: 'system' } },
       id: triageSessionId,
       name,
       status: 'running',
@@ -8639,6 +8875,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       conversationId?: string;
     },
   ): boolean {
+    text = this.withInboundFilesInScope(tmuxSession, text);
     // ── First-party provenance (F7): instar-authored content, verified by
     // the in-process parameter (never by what the text says) — the guard
     // layers below exist to vet content of UNVERIFIED origin, and instar's

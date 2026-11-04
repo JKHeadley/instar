@@ -64,7 +64,9 @@ fi
 
 # Get port from env or config
 PORT="${INSTAR_PORT:-}"
-AUTH=""
+# The env token first and outside the config test below: a session in the memory
+# sandbox cannot read config.json and must still authenticate.
+AUTH="${INSTAR_AUTH_TOKEN:-}"
 AGENT_ID="${INSTAR_AGENT_ID:-}"
 
 if [ -f ".instar/config.json" ]; then

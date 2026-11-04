@@ -3002,6 +3002,9 @@ export class JobScheduler {
    * Resolve the effective notification mode for a job.
    * Default (undefined) → 'on-alert': quiet unless signaled.
    */
+  /** Memory privacy: true when a job's notice would land where others can read it. Unset means no. */
+  notifyDestinationHasOtherReaders?: (job: JobDefinition) => boolean;
+
   private getNotifyMode(job: JobDefinition): 'always' | 'never' | 'on-alert' {
     if (job.telegramNotify === false) return 'never';
     if (job.telegramNotify === true) return 'always';
@@ -3262,7 +3265,11 @@ export class JobScheduler {
     summary += '\n';
     if (duration > 0) summary += `Duration: ${durationStr}\n`;
 
-    if (output) {
+    if (output && this.notifyDestinationHasOtherReaders?.(job)) {
+      // Memory privacy: a job has owner reach, so its output can hold anything. An
+      // automatic notice to a place with other readers carries name and status only.
+      summary += '\n_Output is available to the agent owner._';
+    } else if (output) {
       // Trim to last ~500 chars to keep the message readable
       const trimmed = output.length > 500
         ? '...' + output.slice(-500)

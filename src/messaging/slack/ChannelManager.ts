@@ -84,8 +84,11 @@ export class ChannelManager {
   }
 
   /** Get channel info. */
-  async getChannelInfo(channelId: string): Promise<SlackChannel> {
-    const result = await this.api.call('conversations.info', { channel: channelId });
+  async getChannelInfo(channelId: string, opts?: { includeMembers?: boolean }): Promise<SlackChannel> {
+    const result = await this.api.call('conversations.info', {
+      channel: channelId,
+      ...(opts?.includeMembers ? { include_num_members: true } : {}),
+    });
     return result.channel as SlackChannel;
   }
 

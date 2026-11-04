@@ -6835,6 +6835,23 @@ export class TelegramAdapter implements MessagingAdapter {
     return (result as TelegramUpdate[]) ?? [];
   }
 
+  /**
+   * Human readers of the group, for memory privacy: members less the bots listed
+   * as administrators. A bot that is not an admin counts as a person, because
+   * Telegram offers no way to list it. That errs toward treating the group as shared.
+   */
+  async groupReaderCount(): Promise<number | null> {
+    const count = await this.apiCall('getChatMemberCount', { chat_id: this.config.chatId }) as number;
+    const admins = await this.apiCall('getChatAdministrators', { chat_id: this.config.chatId }) as Array<{ user?: { is_bot?: boolean } }>;
+    if (typeof count !== 'number' || !Array.isArray(admins)) return null;
+    return count - admins.filter((a) => a.user?.is_bot === true).length;
+  }
+
+  /** The place key for the whole group: every forum topic has the same readers. */
+  get memoryPlaceKey(): string {
+    return `telegram:${this.config.chatId}`;
+  }
+
   private async apiCall(method: string, params: Record<string, unknown>, retryCount: number = 0): Promise<unknown> {
     // THE FUNNEL for this class. Nothing reaches the Telegram API from here without passing through
     // it, and the egress door below is where the content decision is made.

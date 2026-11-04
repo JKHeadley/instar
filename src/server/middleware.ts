@@ -2,6 +2,8 @@
  * Express middleware — JSON parsing, CORS, auth, error handling.
  */
 
+import { memorySessionAllows } from './memorySessionGuard.js';
+import type { SessionTokenRecord } from '../users/MemoryPrivacy.js';
 import { THREADLINE_MCP_DEADLINES } from '../core/threadlineMcpSpawn.js';
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
@@ -198,6 +200,12 @@ export function authMiddleware(
    * principal set) or 'refused' (already answered).
    */
   deviceAuth?: (req: Request, res: Response) => 'none' | 'ok' | 'refused',
+  /**
+   * Memory privacy (docs/specs/memory-privacy.md §5): looks up a session token. A
+   * session token never counts as the agent's token; it reaches only the routes in
+   * memorySessionGuard. When absent, session tokens are refused like any bad token.
+   */
+  memorySessionLookup?: (token: string) => SessionTokenRecord | null,
 ) {
   return (req: Request, res: Response, next: NextFunction): void => {
     // Threadline MCP over local HTTP — ONE exact-path rule, FIRST: before the
@@ -393,6 +401,21 @@ export function authMiddleware(
     const header = req.headers.authorization;
     if (!header || !header.startsWith('Bearer ')) {
       res.status(401).json({ error: 'Missing or invalid Authorization header' });
+      return;
+    }
+
+    if (header.startsWith('Bearer mps_')) {
+      const session = memorySessionLookup?.(header.slice(7)) ?? null;
+      if (!session) {
+        res.status(401).json({ error: 'Invalid session token' });
+        return;
+      }
+      if (!memorySessionAllows(req.method, req.path, session)) {
+        res.status(403).json({ error: 'not-available-to-this-session' });
+        return;
+      }
+      res.locals.memorySession = session;
+      next();
       return;
     }
 
