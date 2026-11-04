@@ -426,12 +426,20 @@ export class MobilePairingService {
     return true;
   }
 
-  /** A rule's own per-minute bucket (media chunks), independent of the read allowance. */
-  deviceBucketOk(deviceId: string, perMinute: number): boolean {
+  /**
+   * A rule's own per-minute bucket, independent of the read allowance. Each named bucket counts
+   * separately (media chunks use 'default'; the session screen has its own two), and a key whose
+   * window has emptied is deleted, so the map holds only devices active in the last minute.
+   */
+  deviceBucketOk(deviceId: string, perMinute: number, bucket = 'default'): boolean {
     const t = this.now();
-    const arr = (this.deviceBucket.get(deviceId) ?? []).filter((x) => t - x < 60_000);
-    if (arr.length >= perMinute) { this.deviceBucket.set(deviceId, arr); return false; }
-    arr.push(t); this.deviceBucket.set(deviceId, arr);
+    const key = bucket === 'default' ? deviceId : `${deviceId}\u0000${bucket}`;
+    const arr = (this.deviceBucket.get(key) ?? []).filter((x) => t - x < 60_000);
+    if (arr.length >= perMinute) { this.deviceBucket.set(key, arr); return false; }
+    arr.push(t); this.deviceBucket.set(key, arr);
+    if (this.deviceBucket.size > 64) {
+      for (const [k, v] of this.deviceBucket) if (!v.some((x) => t - x < 60_000)) this.deviceBucket.delete(k);
+    }
     return true;
   }
 
@@ -1445,7 +1453,9 @@ const UUID = APP_CONVERSATION_KEY_PATTERN;
 // `unassignedOk`: the route answers a phone whose person is no longer in the registry (people and
 // roles §3.4): only its own status, confirm and self-revoke. `conversationRef`: the route names a
 // conversation, so it must call the shared `mayUse` check (the coverage test reads this flag).
-export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySet<DeviceStatus>; sendRoute?: boolean; body?: 'json' | 'octet' | 'none'; ownBucket?: number; unassignedOk?: boolean; conversationRef?: boolean }> = (() => {
+// `ownerOnly`: only a phone whose person is the owner (403 owner-phone-required otherwise).
+// `bucket`: the name of the rule's own bucket (rules sharing a name share a count).
+export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySet<DeviceStatus>; sendRoute?: boolean; body?: 'json' | 'octet' | 'none'; ownBucket?: number; bucket?: string; unassignedOk?: boolean; conversationRef?: boolean; ownerOnly?: boolean }> = (() => {
   const active: ReadonlySet<DeviceStatus> = new Set(['active']);
   return [
     { method: 'GET', re: /^\/health$/, statuses: active },
@@ -1493,6 +1503,12 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     { method: 'POST', re: /^\/mobile\/console-ticket\/challenge$/, statuses: active, body: 'json' },
     { method: 'POST', re: /^\/mobile\/console-ticket$/, statuses: active, body: 'json' },
     { method: 'POST', re: /^\/mobile\/devices\/[^/]+\/revoke$/, statuses: new Set(['pending', 'active', 'declined', 'expired']), unassignedOk: true },
+    // The native session screen (docs/specs/mobile-native-session-screen.md): read a session's pane
+    // and type plain text into it. Owner phones only; each has its own bucket so polling and typing
+    // never use up the read allowance the chat list needs. The path is lower-cased here; the router
+    // reads the name with its case kept.
+    { method: 'GET', re: /^\/sessions\/[a-z0-9_-]{1,200}\/output$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 90, bucket: 'session-output' },
+    { method: 'POST', re: /^\/sessions\/[a-z0-9_-]{1,200}\/input$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'session-input' },
   ];
 })();
 
@@ -1571,7 +1587,7 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     }
     if (!v.ok) return refuse(v.reason === 'rate-limited' ? 429 : 401, v.reason === 'rate-limited' ? 'too-many-requests' : 'device-unauthorized');
     if (rule.ownBucket !== undefined) {
-      if (!svc.deviceBucketOk(v.deviceId, rule.ownBucket)) return refuse(429, 'too-many-requests');
+      if (!svc.deviceBucketOk(v.deviceId, rule.ownBucket, rule.bucket)) return refuse(429, 'too-many-requests');
     } else if (!(rule.sendRoute && svc.nativeOn) && !svc.deviceRateOk(v.deviceId)) return refuse(429, 'too-many-requests');
     // People and roles (spec §3.4): the phone's person, resolved once per request. A phone whose
     // person is no longer in the registry is refused everywhere except its own status, confirm and
@@ -1581,6 +1597,7 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     if (!person || !person.ok) {
       if (!rule.unassignedOk) return refuse(403, 'person-unknown');
     } else {
+      if (rule.ownerOnly && person.role !== 'owner') return refuse(403, 'owner-phone-required');
       (req as unknown as { instarDevicePerson: ResolvedPerson }).instarDevicePerson = person;
     }
     (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device', deviceId: v.deviceId };
