@@ -67,6 +67,9 @@ export interface OverloadShedConfig {
   targetEvidenceMaxAgeMs: number;
 }
 
+/** Evidence-log pace for a held move; the audit log keeps its one row per episode. */
+const WOULD_MOVE_AUDIT_EVERY_MS = 5 * 60_000;
+
 export const DEFAULT_OVERLOAD_SHED: Omit<OverloadShedConfig, 'enabled'> = {
   dryRun: true,
   sourceAfterMs: 3 * 60_000,

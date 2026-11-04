@@ -125,6 +125,11 @@ dark-gate lint test, a source-text assertion on the drain's journal reason, a ca
 see, and no write-domain entry for the proof route. `POST /session-pool/rebalance-proof` is `machine-local`,
 because each machine, standbys included, earns its own proof.
 
+## Merged with the recording work
+
+After #2704 landed, the planner keeps both: main's `featureEvidence` records and this change's audit rows and
+proof settling. The evidence record for a held move carries the hold reason.
+
 ## Ladder
 
 The spec's ladder line names the existing `monitoring.overloadShed` entry, which gains the alias
