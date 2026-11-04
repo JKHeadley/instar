@@ -8370,6 +8370,13 @@ setTimeout(() => process.exit(0), 2000);
     let patched = false;
     const port = this.config.port;
 
+    // Memory privacy (docs/specs/memory-privacy.md): idempotent, by content sniff.
+    if (!content.includes('**Memory privacy**')) {
+      content += `\n\n- **Memory privacy**: when more than one person can reach this agent, what I remember belongs to an audience, and the place sets it. A private chat serves one person; a channel or group serves everyone who can read it, even when the person asking told me the fact privately. A session for a person or a shared place keeps its memory in its own folder and cannot reach the rest, so a refused read there is expected, not a fault. I never copy a person's facts into CLAUDE.md, AGENT.md or anything shared.\n- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/memory-privacy\` → \`{ enabled, multiPerson, ownerUserId, sandboxReady }\`. People who share memory freely go in \`memoryPrivacy.sharedMemoryPeople\` in .instar/config.json (profile ids); an agent reached only by them behaves as single-person.\n- Proactive: user asks "why did you forget that here?" / "why can't you see what I told you in the channel?" / "can others see what I tell you?" → explain the audience rule, and check the status above.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Memory privacy section');
+    }
+
     // Replace a shipped legacy section before any missing capability bullets
     // are appended. An appended bullet at EOF would otherwise become part of
     // that section and make its exact-text migration refuse the replacement.
@@ -14650,6 +14657,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     // ensured exists in CLAUDE.md. Kept in document order so appended
     // sections preserve narrative ordering in the shadow.
     const markers = [
+      '**Memory privacy**',
       '### Feature switches apply their setting (read `effective` before saying a feature is on)',
       '### Telegram message origin',
       // message-origin-all-platforms: server-side and framework-neutral (app + Slack recording).
@@ -18138,8 +18146,19 @@ fi
 echo ""
 echo "Key files:"
 [ -f "$INSTAR_DIR/AGENT.md" ] && echo "  .instar/AGENT.md — Your identity (read for full context)"
-[ -f "$INSTAR_DIR/USER.md" ] && echo "  .instar/USER.md — Your collaborator"
-[ -f "$INSTAR_DIR/MEMORY.md" ] && echo "  .instar/MEMORY.md — Persistent learnings"
+# Memory privacy (docs/specs/memory-privacy.md): a session serving a person or a shared
+# place has its own memory folder, and cannot read these. The API-backed sections
+# below need no branch: its session token is refused there and curl -sf stays silent.
+case "\${INSTAR_MEMORY_SCOPE:-}" in
+  person-*|place-*|none)
+    echo "  Memory for this conversation lives in your own memory folder, and only there."
+    echo "  When something is worth remembering, note who said it."
+    ;;
+  *)
+    [ -f "$INSTAR_DIR/USER.md" ] && echo "  .instar/USER.md — Your collaborator"
+    [ -f "$INSTAR_DIR/MEMORY.md" ] && echo "  .instar/MEMORY.md — Persistent learnings"
+    ;;
+esac
 [ -f "$INSTAR_DIR/project-map.md" ] && echo "  .instar/project-map.md — Project structure map"
 
 # Relationship count
@@ -19057,7 +19076,9 @@ except Exception as e:
 fi
 
 # ── 3. MEMORY (first 50 lines — what have I learned?) ──
-if [ -f "\$INSTAR_DIR/MEMORY.md" ]; then
+MEMORY_FILE_ALLOWED=1
+case "\${INSTAR_MEMORY_SCOPE:-}" in person-*|place-*|none) MEMORY_FILE_ALLOWED=0 ;; esac
+if [ "\$MEMORY_FILE_ALLOWED" = 1 ] && [ -f "\$INSTAR_DIR/MEMORY.md" ]; then
   LINES=\$(wc -l < "\$INSTAR_DIR/MEMORY.md" | tr -d ' ')
   echo ""
   echo "--- Your Memory (.instar/MEMORY.md — \${LINES} lines, showing first 50) ---"

@@ -12179,6 +12179,11 @@ export function createRoutes(ctx: RouteContext): Router {
   // Rate limit session spawning — each session is a real Claude Code process.
   // Default: 10 spawns per 60 seconds, which is generous for normal use.
   const spawnLimiter = rateLimiter(60_000, 10);
+  // Memory privacy status (docs/specs/memory-privacy.md). Agent token only.
+  router.get('/memory-privacy', (_req, res) => {
+    res.json(ctx.sessionManager.memoryPrivacyStatus());
+  });
+
   router.post('/sessions/spawn', spawnLimiter, async (req, res) => {
     const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole } = req.body;
 
@@ -12192,6 +12197,12 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     if (typeof prompt !== 'string' || prompt.length > 500_000) {
       res.status(400).json({ error: '"prompt" must be a string under 500KB' });
+      return;
+    }
+    // Memory privacy: this route starts sessions with owner reach, so it cannot serve a
+    // place whose readers must not see owner memory.
+    if (typeof topicId === 'number' && ['place', 'person', 'none'].includes(ctx.sessionManager.memoryAudienceKind?.({ telegramTopicId: topicId }) ?? 'open')) {
+      res.status(409).json({ error: 'memory-scoped-place', message: 'This topic serves people who may not see owner memory; a session here starts from their message.' });
       return;
     }
     // Round-17 (integration): this hand-written allowlist rejected `grok-build`
@@ -13245,7 +13256,12 @@ export function createRoutes(ctx: RouteContext): Router {
       const tmuxSession = await ctx.sessionManager.spawnInteractiveSession(
         undefined, // no initial message
         topicName,
-        { triggeredBy: 'dashboard-operator' },
+        {
+          triggeredBy: 'dashboard-operator',
+          // Memory privacy: an unbound console session is the operator's. One bound to a
+          // channel serves that channel's readers, so it takes the channel's audience.
+          ...(slackChannelId ? { memoryPlaceKey: `slack:${slackChannelId}` } : topicId !== undefined ? { telegramTopicId: topicId } : { memoryPlace: { kind: 'system' as const } }),
+        },
       );
 
       // Update Slack channel-session registry and invite authorized users
@@ -21340,7 +21356,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     const { channelId } = req.params;
-    const { text, thread_ts, metadata } = req.body;
+    const { text, thread_ts: explicitThread, metadata } = req.body;
+    // A session's reply follows the thread it was asked in (fb-99bf432a-05f). System
+    // senders post where they say: they are not answering anyone.
+    const fromSession = typeof res.locals.originBoundSession === 'string' || req.path === '/slack/session-reply';
+    const thread_ts = explicitThread ?? (fromSession ? ctx.slack?.inboundThreadFor?.(String(req.params.channelId)) : undefined);
     if (!text || typeof text !== 'string') {
       res.status(400).json({ error: '"text" field required' });
       return;
@@ -21541,6 +21561,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   const APP_DUPLICATE_WINDOW_MS = 15 * 60_000;
   const APP_DUPLICATE_MIN_CHARS = 40;
   router.post('/app/session-reply', async (req, res) => {
+    // Memory privacy: the server reads these paths with its own reach, which a session
+    // inside the boundary must not borrow.
+    if (req.body?.files !== undefined && res.locals.memorySession) {
+      res.status(403).json({ error: 'not-available-to-this-session' });
+      return;
+    }
     const app = ctx.appConversations;
     if (!app) { res.status(503).json({ error: 'native-conversations-off', detail: 'App conversations are turned off on this agent.' }); return; }
     const bodyKeys = Object.keys(req.body ?? {});

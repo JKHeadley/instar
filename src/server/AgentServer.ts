@@ -1333,6 +1333,8 @@ export class AgentServer {
     /** Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md): the
      *  service behind POST /mcp/threadline. Mounted whenever Threadline runs. */
     threadlineMcpHttp?: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService;
+    /** Memory privacy: resolves session tokens at the auth layer. */
+    memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacy;
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
     a2aDeliveryTracker?: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker;
     /** Honest-delivery verdict counters (spec §1) for the authed branch of /health. */
@@ -1995,6 +1997,7 @@ export class AgentServer {
         return false;
       },
       this.mobilePairing ? deviceAuthenticator(this.mobilePairing) : undefined,
+      options.memoryPrivacy ? (token) => options.memoryPrivacy!.sessionForToken(token) : undefined,
     ));
     // Per-path request-timeout overrides for LLM-backed / third-party routes
     // (outbound messaging + the standards-conformance gate). The map and its

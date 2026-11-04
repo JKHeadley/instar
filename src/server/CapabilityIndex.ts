@@ -63,6 +63,12 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({ configured: true, endpoints: ['GET /channels'] }),
   },
   {
+    key: 'memoryPrivacy',
+    prefixes: ['/memory-privacy'],
+    description: 'Whether memory is kept per person and per place on this agent, who the owner is, and whether the sandbox runs here.',
+    build: () => ({ configured: true, endpoints: ['GET /memory-privacy'] }),
+  },
+  {
     key: 'capabilityRegistry',
     prefixes: ['/capability-registry'],
     description: 'Local capability registry read surface; dark until explicitly enabled.',
