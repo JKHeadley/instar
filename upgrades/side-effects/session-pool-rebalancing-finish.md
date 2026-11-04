@@ -118,6 +118,13 @@ and the self-action worst-case model both built the planner without the new gate
 the model's bound checked nothing. Both now open every gate; the route test also asserts a source below
 stage `rebalance` stays held.
 
+## Found by the full unit lane
+
+The first merge verify failed 4 of about 57,000 unit tests, all from this change: a hand-kept line map in the
+dark-gate lint test, a source-text assertion on the drain's journal reason, a capability prefix the lint cannot
+see, and no write-domain entry for the proof route. `POST /session-pool/rebalance-proof` is `machine-local`,
+because each machine, standbys included, earns its own proof.
+
 ## Ladder
 
 The spec's ladder line names the existing `monitoring.overloadShed` entry, which gains the alias

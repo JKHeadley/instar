@@ -609,6 +609,18 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     pathPrefix: '/session-pool/promote',
     domain: 'cluster-shared',
   });
+  // Each machine earns its own rebalance proof, so a standby must be able to run it.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/session-pool/rebalance-proof',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'the proof result is this machine\'s own signed store; the one conversation it moves goes through the fenced ownership CAS, which is the shared write',
+    },
+  });
   reg.add({
     kind: 'route',
     method: 'POST',
