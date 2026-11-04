@@ -25,8 +25,8 @@ function readHidden(): Promise<string> {
 }
 
 export async function setClaudeKey(opts: { dir?: string }): Promise<void> {
-  // Only the state dir is needed. loadConfig also demands the Claude CLI, which a
-  // key-only headless install (the case this command exists for) may not have.
+  // A key can bootstrap a headless install: resolve its state folder without
+  // loading config, which would require a framework CLI before saving the key.
   const stateDir = path.join(opts.dir || detectProjectDir(), '.instar');
   const value = (process.stdin.isTTY ? await readHidden() : await readPiped()).trim();
   if (!looksLikeClaudeToken(value)) {
