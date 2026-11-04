@@ -14543,6 +14543,8 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // Codex/Gemini agent must be able to explain it (and that it ranks Claude
       // Code's MEMORY.md), including that it ships dark and shadow-only.
       '### Jev Memory Picker',
+      // The Jev-first summary and one-provider fallback are framework-neutral.
+      '### Jev First Decisions',
       // Jev correction shadow: a server-side log-only instrument over inbound
       // user messages; any framework's agent can read its summary.
       '### Jev Correction Shadow',

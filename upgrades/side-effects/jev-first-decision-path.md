@@ -9,7 +9,7 @@
 
 `JevFirstDecision` adds a bounded, auditable yes/no first pass with the incumbent model as fallback. The first caller is `CommitmentSentinel`, shadow-only on development agents and off on the fleet. `GET /jev-first/summary` exposes observed calls and settlement counts; scaffold and migration awareness explain the feature. The review job reads the measured surface. No new Jev verdict acts until a separately measured live promotion.
 
-Declared Tier 1: the new caller is clamped to shadow, the route is read-only, and a revert restores the previous behavior. The staged change spans 28 files and about 1,300 added lines, including tests and reproducible research notes. It had one independent side-effects review and one corrective pass before the standard commit and test gates.
+Declared Tier 1: the new caller is clamped to shadow, the route is read-only, and a revert restores the previous behavior. The initial staged change spanned 28 files and about 1,300 added lines, including tests and reproducible research notes. It had one independent side-effects review and one corrective pass. The first commit gate caught two direct test cleanups; the second passed. The full suite then caught a missing non-Claude awareness marker. The follow-up commit's first gate attempt required the ELI16 overview to be restaged; this update includes it.
 
 ## Decision-point inventory
 
