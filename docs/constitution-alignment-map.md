@@ -9,13 +9,13 @@ How the 1.x registry and the 2.0 purpose and rule book compare, rule by rule. A 
 
 | Item | Count |
 |---|---|
-| 1.x articles with a `**Rule.**` line | 93 (92 at #2323, plus TCC from #2194) |
-| 2.0 rule rows | 118 (numbers 1 to 118, each once) |
+| 1.x articles with a `**Rule.**` line | 94 (92 at #2323, plus TCC from #2194, plus One Constitution, Two Books Aligned from #2708) |
+| 2.0 rule rows | 119 (numbers 1 to 119, each once, with instar-2 #189) |
 | Purpose rules | 19, labelled Rule (Rule 5 is labelled Value, so it is not counted); 13 Values |
 
-Map result: **49 aligned, 41 differs, 3 1.x-only**, plus 26 rule rows 2.0-only and 15 purpose rules 2.0-only (4 partial).
+Map result: **49 aligned, 42 differs, 3 1.x-only**, plus 26 rule rows 2.0-only and 15 purpose rules 2.0-only (4 partial).
 
-Of the differs rows: 8 `CONFLICT`, 10 `CONFLICT?` (a conflict on one reading, unsure), 14 `1x-extra`, 3 `2.0-extra`, 2 `both-extra`, 4 `minor`.
+Of the differs rows: 8 `CONFLICT`, 10 `CONFLICT?` (a conflict on one reading, unsure), 15 `1x-extra`, 3 `2.0-extra`, 2 `both-extra`, 4 `minor`.
 
 ### Against the #2323 claim
 
@@ -71,6 +71,7 @@ Ranks 1 to 7 are direct text clashes. Ranks 8 to 12 depend on a reading, so trea
 | 1.x #2194: TCC folders | New article #70, absolute refusal | **No.** Zero TCC hits in instar-2 docs and generated files. Not on the registry's amendment list either. |
 | 1.x #2305: fractal 80/20 | Added to #72 practice text, with proportion and triage | **Partly.** Fractal 80/20 is in R65. Proportion is loosely in R48. Triage is absent. 1.x keeps audits at zero-new while R65 applies 80/20 to audits, so they differ on the core case (conflict 2). |
 | 2.0 #182: Rule 118 | New rule, one provider is enough | **Yes.** Mirrored by #2380 in #30, not as its own article. |
+| 1.x #2708 and 2.0 #189: One Constitution, and the last rung | New article #94 and R119; #75 and R72 name default-on as the last rung | **Yes, as a pair.** R72 and #75 share the last rung and still differ, as row 75 says. |
 
 Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-doc commits since 2026-10-16, checked on the API with a query that does return older commits.
 
@@ -154,7 +155,7 @@ Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-do
 | 72 | Occam's Razor — Simplest Robust Route | 116 (65) | differs | 1x-extra | Rule text aligned. #2305 practice text adds proportion and on-the-spot triage (1.x only) and exempts audits from 80/20, which R65 does not. | 1.x: "A problem found during work is triaged on the spot"; "Audit-shaped sweeps keep the zero-new bar"<br>2.0: "Choose the simplest route that delivers the required behavior" |
 | 73 | Bug-Fix Evidence Bar (verify before you claim) | 70 | differs | CONFLICT? | 1.x always requires reproduction and rejects unit tests; 2.0 sets evidence by bug class. Could conflict for a class whose bar is a test. Unsure. | 1.x: "the original failure has been reproduced and verified to stop. Unit tests are not evidence."<br>2.0: "A fix carries evidence of the kind its class of bug requires" |
 | 74 | No Deferrals | 71 | aligned | — | — | — |
-| 75 | Maturation Path — Test Agent → Development Agent → Fleet | 72 | aligned | — | — | — |
+| 75 | Maturation Path — Test Agent → Development Agent → Fleet | 72 | differs | 1x-extra | Shared since #2708 and instar-2 #189: the three-rung ladder, default-on for the fleet as the last rung, and thresholds that raise and never flip. 1.x alone has the feature ladder and the build failure on a switched-off flag with no entry (2.0's equivalent needs building), two independent readings before the review opens a fleet-default change, the reviewer-independence terms, and the ban on per-agent allowlists. 1.x states the *User-Facing Fixes Ship Live* exit in this article; 2.0 holds its exemption in R76, not in R72's sentence. | R72: "1.x holds the thresholds in its feature ladder and fails the build on a switched-off flag with no entry; 2.0's equivalent needs building." |
 | 76 | A Dark Feature Guards Nothing | 73 | differs | 1x-extra | Incident-forced decision, recorded acceptance and mandatory postmortem question are 1.x only. | 1.x: "every postmortem must answer, as a mandatory section"<br>2.0: "It must have a date to graduate or be called what it is." |
 | 77 | Side-Effects Review Gate | 74 | aligned | — | — | — |
 | 78 | Token-Audit Completeness — An Unmetered LLM Call Is an Unaccountable One | 75 | aligned | — | — | — |
@@ -173,6 +174,7 @@ Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-do
 | 91 | Self-Heal Before Notify — The Operator Hears Only When Self-Healing Fails | 88 | aligned | — | — | — |
 | 92 | Truthful Provenance — Speak Only as Yourself | 89 | differs | 2.0-extra | 1.x governs messages delivered into an agent; 2.0 covers every message and requires automatic signing. | 1.x: "Every message delivered into an agent carries an identity"<br>2.0: "Outbound messages carry signed provenance." |
 | 93 | Telegram Message Origin Is Mandatory; Its Display Is Optional | NONE | 1.x-only | — | Proposed amendment. Nearest is R89 and part 8 attributable reply facts. Widened to every platform by #2682. See conflict 6. | — |
+| 94 | One Constitution, Two Books Aligned | 119 | aligned | — | — | — |
 
 ## 6. 2.0 rule rows with no 1.x article
 

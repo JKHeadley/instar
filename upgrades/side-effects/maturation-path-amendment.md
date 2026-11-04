@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-A constitution text change: *Maturation Path* gains default-on as the last rung, measured thresholds, the mind deciding every move, and a recorded preference final. The "unenforced" note comes out, replaced by what the coverage test and parser check and what they do not. The parser now requires a lower rung for a preference final, and the coverage test drops its hold on preference finals. Needs the operator's sign-off; merges after `docs/specs/feature-maturation-ladder.md`'s PR.
+A constitution text change: *Maturation Path* gains default-on as the last rung, measured thresholds, the mind deciding every move, and a recorded preference final. The "unenforced" note narrows to clauses (c) and (d), and the article now says what the coverage test and parser check and what they do not. The alignment map gains the new article's row, and the Maturation Path row moves to `differs` with the reason. The parser now requires a lower rung for a preference final, and the coverage test drops its hold on preference finals. Needs the operator's sign-off; merges after `docs/specs/feature-maturation-ladder.md`'s PR.
 
 ## Decision-point inventory
 
@@ -52,6 +52,8 @@ A revert of the text, with the area audits it re-recorded.
 **Reviewer:** independent cross-family reader, codex-cli on gpt-6-astra
 
 First read of the Maturation Path wording: five issues, applied or put to the operator. Final diff with the new article: three findings. One applied: clauses (c) and (d) stay named as unenforced, since the coverage test proves neither. Two not applied, to keep the text matching 2.0 Rule 119, with reasons in `docs/specs/reports/maturation-path-and-alignment-constitution-review-2026-11-04.md`. Concur with the review after those changes.
+
+Alignment map change, reviewed separately on 2026-11-04: first read found row 75 overclaimed ("same obligation", "differ only"), and it was corrected to name the two independent readings, reviewer independence and the allowlist ban as 1.x-only. Two further reads asked for more evidence, not changes. Final read concurred.
 
 ## One Constitution article
 
