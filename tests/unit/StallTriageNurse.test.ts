@@ -1012,6 +1012,7 @@ describe('StallTriageNurse', () => {
 
       expect(result.resolved).toBe(false);
       expect(result.fallbackReason).toBe('max_escalations_reached');
+      expect(deps.sendToTopic).not.toHaveBeenCalledWith(1, expect.stringContaining("couldn't restore"));
     });
 
     it('emits escalation events', async () => {

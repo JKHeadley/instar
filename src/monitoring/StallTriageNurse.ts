@@ -465,12 +465,9 @@ export class StallTriageNurse extends EventEmitter {
         }
       }
 
-      // Exhausted all escalations. Keep the failure plain; do not ask the
-      // person to operate session commands.
+      // Exhausted all escalations. SessionMonitor is the one voice for a
+      // dead session's failed recovery; a stall can race into that state.
       const failReason = 'max_escalations_reached';
-      await this.deps.sendToTopic(topicId,
-        `I couldn't restore this conversation. Your message is saved.`
-      ).catch(() => {});
       this.emit('triage:failed', { topicId, reason: failReason, actionsTaken });
       const result: TriageResult = {
         resolved: false, actionsTaken, diagnosis: lastDiagnosis,

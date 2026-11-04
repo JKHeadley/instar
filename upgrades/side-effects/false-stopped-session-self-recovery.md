@@ -16,7 +16,7 @@ An automatic fresh spawn after a failed resume now keeps the original registered
 - Proxy Tier 3 death claim — modified: suppresses it and leaves recovery to SessionMonitor.
 - Telegram adapter stall and promise alerts — modified: dead sessions bypass triage and user notices; a second liveness check guards live-stall notices after asynchronous triage. Live-stall text no longer asks people to interrupt or restart.
 - Slack adapter stall and promise alerts — modified: dead sessions bypass triage and user notices; live notices have no manual session commands. Server stall callback logs evidence without publishing another notice.
-- Triage Orchestrator and Stall Triage Nurse — modified: automatic restarts no longer announce death before recovery; suggestions to operate session controls stay internal. Nurse escalation failure uses one plain message without session commands.
+- Triage Orchestrator and Stall Triage Nurse — modified: automatic restarts no longer announce death before recovery; suggestions to operate session controls stay internal. Nurse escalation failure stays silent so a later monitor failure cannot double-notify.
 - System Reviewer session-health wording — modified: the operator attention alert records the check without asking someone to restart sessions.
 - Foreign owner gate — modified: non-owner machines do not announce a local session death.
 - Slack routing-key resolution — modified: watcher evidence and thread replies use the conversation's routing key.
@@ -75,7 +75,7 @@ The source fix addresses the recorded Indra split between a failed registered re
 ## Second-pass review
 
 **Reviewer:** `/root/second_pass`
-**Independent read of the artifact:** Concur with the review. The reviewer first identified thread routing gaps in monitor and recovery history, context-exhaustion notices on live sessions, and an old notice ledger blocking self-recovery. A second pass found raw channel/thread mixing and missing cold thread replies; a third found that one cached reply could hide earlier thread history. Each concern was fixed with regression coverage. The reviewer re-read the final paths and found no remaining concrete blocker. A follow-up review identified the adapter and triage notice paths; those were fixed and the reviewer concurred with the extension.
+**Independent read of the artifact:** Concur with the review. The reviewer first identified thread routing gaps in monitor and recovery history, context-exhaustion notices on live sessions, and an old notice ledger blocking self-recovery. A second pass found raw channel/thread mixing and missing cold thread replies; a third found that one cached reply could hide earlier thread history. Each concern was fixed with regression coverage. The reviewer re-read the final paths and found no remaining concrete blocker. A follow-up review identified the adapter and triage notice paths; those were fixed and the reviewer concurred with the extension. A final one-voice review concurred with keeping nurse escalation failures silent for the monitor to handle.
 
 ## Evidence pointers
 
