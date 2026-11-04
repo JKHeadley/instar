@@ -53,3 +53,7 @@ From then on, a real rule change always costs two approvals, because the books s
 ## How to undo it
 
 Turn off the daily job and remove one line from the merge tool. The rule and the map are plain documents, and nothing touches running agents.
+
+## Status
+
+Justin approved this wording on 2026-11-03 at 19:43 PST. It still lands only through his own GitHub approvals on the final versions.

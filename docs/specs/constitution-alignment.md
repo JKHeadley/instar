@@ -4,6 +4,8 @@ slug: "constitution-alignment"
 author: "echo"
 parent-principle: "Occam's Razor — Simplest Robust Route"
 eli16-overview: "constitution-alignment.eli16.md"
+approved: true
+approval-basis: "Justin approved this wording in Telegram, topic 137053, 2026-11-03 19:43 PST, in reply to the rendered link. Constitution text still lands only through his own GitHub reviews on the final heads."
 review-convergence: "2026-11-04T03:31:12.812Z"
 review-iterations: 5
 review-completed-at: "2026-11-04T03:31:12.812Z"
@@ -148,7 +150,7 @@ Positive control: before enabling the job, the script runs against the pre-basel
 
 - **The agent removes or breaks the check.** Possible: instar's scripts and instar-2's `scripts/` are not code-owned, and the registry's own CODEOWNERS note says no check the agent writes can restrain the agent. What holds regardless is the code-owner tap on both books. This check is a seatbelt for the honest case, which is the case that has actually been happening: #2194 and #2682 went unpaired, by forgetting.
 - **Merge outside safe-merge, or in instar-2.** Caught within a day by the daily job.
-- **GitHub API down.** `unknown`, the PR re-runs, and only constitution PRs wait.
+- **GitHub API down.** A failed read of a named counterpart is `unknown`. A failed read of a PR's own file list refuses any PR on instar with a separate `unread` state, since whether it touches a book isn't known; safe-merge stops on any failed read anyway. Everything re-runs.
 - **Echo's server down.** No daily run. The next run still catches everything, since it reads history from the baseline.
 - **Unpaired during the window.** Allowed for up to 48 hours, because two repositories can't merge atomically.
 

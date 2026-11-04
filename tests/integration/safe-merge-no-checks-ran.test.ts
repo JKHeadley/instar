@@ -30,6 +30,7 @@ echo "$*" >> "${log}"
 case "$*" in
   "pr view"*) if [ -f "${dir}/merged" ]; then echo '${mergedView}'; else echo '${view}'; fi ;;
   "pr checks"*) echo '${checks}' ;;
+  "api --paginate --slurp repos/"*"/files"*) echo '[[]]' ;;
   "api repos/"*"/check-runs"*) echo '${runs}' ;;
   "api repos/"*"/actions/runs"*) echo '${wf}' ;;
   "api repos/"*"/rules/branches/main"*) echo '${rules}' ;;
