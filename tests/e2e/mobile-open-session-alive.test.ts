@@ -120,8 +120,12 @@ describe('open session — production wiring', () => {
     });
     expect(typeof after.body.machineNickname === 'string' || after.body.machineNickname === null).toBe(true);
 
-    // The link opens the dashboard served by this server, which focuses `?session=`.
-    const dash = await request(app).get('/dashboard?session=app-session-1');
+    // The link opens the dashboard served by this server, which focuses `?session=`. A /dashboard
+    // link with a query goes to the legacy page with the query kept (dashboard-console-default spec §3.1).
+    const hop = await request(app).get('/dashboard?session=app-session-1');
+    expect(hop.status).toBe(302);
+    expect(hop.headers.location).toBe('/dashboard/legacy?session=app-session-1');
+    const dash = await request(app).get(hop.headers.location);
     expect(dash.status).toBe(200);
     expect(dash.text).toContain("params.get('session')");
     expect(dash.text).toContain('selectSession(match.tmuxSession, match)');
