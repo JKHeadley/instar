@@ -130,6 +130,9 @@ because each machine, standbys included, earns its own proof.
 After #2704 landed, the planner keeps both: main's `featureEvidence` records and this change's audit rows and
 proof settling. The evidence record for a held move carries the hold reason.
 
+The second verify then tripped the silent-fallback ratchet (495 over 494) on the proof runner's catch. It is not
+silent, since the error becomes the run's recorded reason, so it carries the marker and the baseline stays.
+
 ## Ladder
 
 The spec's ladder line names the existing `monitoring.overloadShed` entry, which gains the alias

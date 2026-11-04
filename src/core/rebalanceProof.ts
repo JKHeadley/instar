@@ -173,6 +173,7 @@ export class RebalanceProofRunner {
       }
       if (!reason && this.d.stage() !== stageAtStart) reason = 'stage-changed-during-run';
     } catch (err) {
+      // @silent-fallback-ok: not silent. The error becomes this run's recorded reason and evidence.
       reason = `error: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200);
       if (!('move' in steps)) return this.finish(run, null, reason, steps, self);
     }
