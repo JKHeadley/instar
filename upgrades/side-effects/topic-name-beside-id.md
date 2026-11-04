@@ -130,3 +130,8 @@ in which case the text explicitly says `name unresolved`.
 The issues-group refusal text is also read by the legacy relay replay classifier. Its parser
 now accepts the old bare-id form plus the new verified-name and unresolved-name forms; unit
 coverage checks all three so queued replies retain their replay classification across update.
+
+The full unit run exposed three integration points in the merged branch. The watch-only
+maintenance import allowlist now explicitly permits the pure formatter; the held-reply
+assertion expects the unresolved-name wording; and the release note remains under
+`upgrades/next/` so the release assembler consumes it. All three focused tests pass.
