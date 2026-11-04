@@ -1569,6 +1569,36 @@ const jobFailureAlertDelivery: SelfActionController = {
 };
 
 /**
+ * job-capacity-episode — sustained saturation polls every 15 seconds but
+ * launches nothing until admission opens. One persisted episode alert may be
+ * sent after the critical wait threshold; subsequent ticks stay silent.
+ */
+const jobCapacityEpisode: SelfActionController = {
+  id: 'job-capacity-episode',
+  actionVerb: 'job-alert-notify',
+  models: 'src/scheduler/JobScheduler.ts (capacity poll and one persisted episode notice)',
+  modelsPath: 'src/scheduler/JobScheduler.ts',
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 80,
+  tickMs: 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return jobCapacityEpisode.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    return {
+      tick() {
+        sink.considered += 1;
+        if (f.clock.nowMs() < 10 * 60_000 || f.durableState.get('capacity-episode-alerted')) return;
+        sink.emit({ verb: 'job-alert-notify', target: 'capacity-episode' });
+        f.durableState.set('capacity-episode-alerted', true);
+      },
+    };
+  },
+};
+
+/**
  * undated-action-resurfacer — bounded Attention reach for action rows that the
  * due-date checker cannot see. The backlog can remain non-empty indefinitely,
  * so this is an Eternal Sentinel rather than a controller that truthfully
@@ -3709,6 +3739,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   externalHogKillBreaker,
   meteredReserveExpirySweep,
   jobFailureAlertDelivery,
+  jobCapacityEpisode,
   checkInReminderPass,
   undatedActionResurfacer,
   spendStalePriceAlert,

@@ -336,7 +336,7 @@ describe('JobScheduler', () => {
 
       // Process the queue
       scheduler.processQueue();
-      expect(mockSM._spawnCount).toBe(2);
+      await vi.waitFor(() => expect(mockSM._spawnCount).toBe(2));
       expect(scheduler.getStatus().queueLength).toBe(0);
     });
 
@@ -382,7 +382,7 @@ describe('JobScheduler', () => {
       mockSM._aliveSet.delete(mockSM._sessions[0].tmuxSession);
 
       scheduler.resume();
-      expect(mockSM._spawnCount).toBe(2);
+      await vi.waitFor(() => expect(mockSM._spawnCount).toBe(2));
     });
 
     it('getStatus reflects paused state', () => {

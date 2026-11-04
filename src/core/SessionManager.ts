@@ -4151,7 +4151,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       throw new Error(`confinement-unsupported-framework: ${headlessFramework}`);
     }
     if (await this.shouldRerouteToInteractive(headlessFramework)) {
-      const gate = this.evaluateRerouteGate(options.name);
+      const gate = this.evaluateRerouteGate(options.name, Boolean(options.jobSlug && options.triggeredBy?.startsWith('scheduler:')));
       if (gate.allow) {
         return await this.spawnReroutedInteractive({
           sessionId,
@@ -4502,17 +4502,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return this.countReroutedInteractiveSessions() >= maxRerouted || pressure === 'high' || pressure === 'critical' ? 'saturated' : 'available';
   }
 
-  private evaluateRerouteGate(spawnName: string): { allow: boolean } {
+  private evaluateRerouteGate(spawnName: string, scheduledJob = false): { allow: boolean } {
     const mode = this.config.subscriptionPathMode ?? 'off';
     const maxRerouted = this.config.subscriptionMaxRerouted ?? 3;
     const reroutedCount = this.countReroutedInteractiveSessions();
     const pressure = this.currentMemoryPressure();
     const pressureElevated = pressure === 'high' || pressure === 'critical';
-    if (reroutedCount < maxRerouted && !pressureElevated) {
+    // Keep one of the existing memory-bounded slots for scheduled jobs when
+    // conversations would otherwise fill the entire lane. A one-slot host
+    // cannot reserve without blocking all conversations, so retain its cap.
+    const admissionCap = !scheduledJob && maxRerouted > 1 ? maxRerouted - 1 : maxRerouted;
+    if (reroutedCount < admissionCap && !pressureElevated) {
       return { allow: true };
     }
-    const why = reroutedCount >= maxRerouted
-      ? `rerouted-session cap reached (${reroutedCount}/${maxRerouted})`
+    const why = reroutedCount >= admissionCap
+      ? `rerouted-session cap reached (${reroutedCount}/${admissionCap})`
       : `host memory pressure is ${pressure} (${this.memoryPressureEvidence()})`;
     if (mode === 'force') {
       // Loud refusal — force-mode has no headless fallback. Report AND throw.
@@ -4521,7 +4525,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
         primary: 'reroute claude-code one-shot onto the interactive subscription lane',
         fallback: 'spawn REFUSED (force-mode has no headless fallback)',
         reason: `Cannot reroute: ${why}`,
-        impact: `Job/A2A spawn "${spawnName}" refused under force-mode to protect the host; it will retry on its next trigger`,
+        impact: `Spawn "${spawnName}" waited for capacity; the caller owns its retry`,
+        internalOnly: true,
       });
       throw new RerouteRefusedError(why);
     }
@@ -6649,7 +6654,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * and `indeterminate` are kept. An indeterminate session lingers one extra tick
    * (cheap, caught by monitoring) rather than being falsely reaped (expensive).
    */
-  async purgeDeadSessions(): Promise<number> {
+  async purgeDeadSessions(onlyKnownDead = false): Promise<number> {
     const running = this.state.listSessions({ status: 'running' });
     if (running.length === 0) return 0;
 
@@ -6673,6 +6678,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
         });
         if (r.terminated) purged++;
         else skipped++; // not-lease-holder / protected — recorded, kept for next awake tick
+      } else if (onlyKnownDead) {
+        kept++;
       } else if (session.launchLane === 'rerouted-interactive' && session.confinedConfigHome && !session.confinedDeliveredAt) {
         // Confined startup never completed before the restart (spec Restart boundary): its in-memory
         // startup state is gone and is never resumed, so the session is killed — nothing is typed twice.
