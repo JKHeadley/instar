@@ -75,6 +75,7 @@ import { detectRateLimited, nextIdleThrottleAction, RATE_LIMIT_SETTLED_CAPTURE_L
 import { classifyIdleError } from './IdleErrorClassifier.js';
 import { classifyLoginExpired } from './LoginExpiredSignature.js';
 import { liveTail } from './paneTail.js';
+import { claudeAuthExecPrefix, removeClaudeAuthEnvFile, writeClaudeAuthEnvFile } from './claudeChildAuth.js';
 import type { InteractiveLoginExpiredSignal } from './InteractiveLoginExpiredRecovery.js';
 import { InputGuard, type TopicBinding } from './InputGuard.js';
 import { resolveIdleSinceSeed } from './idleSincePersistence.js';
@@ -2091,6 +2092,49 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   setInteractiveLoginExpiredSink(fn: ((input: InteractiveLoginExpiredSignal) => void | Promise<unknown>) | null): void {
     this.interactiveLoginExpiredSink = fn;
+  }
+
+  /** Put a handler ahead of the sink. When it returns true the signal is handled and goes no further. */
+  prependInteractiveLoginExpiredSink(first: (input: InteractiveLoginExpiredSignal) => Promise<boolean>): void {
+    const rest = this.interactiveLoginExpiredSink;
+    this.interactiveLoginExpiredSink = async (input) => {
+      if (await first(input)) return;
+      await rest?.(input);
+    };
+  }
+
+  /** A restored sign-in key for every later launch. `config` here is a copy, so server code can't reach it. */
+  setAnthropicKey(key: string | null): void {
+    this.config.anthropicApiKey = key ?? undefined;
+  }
+
+  /** Forget which sessions were already reported, so a stuck one is offered again on the next check. */
+  clearInteractiveLoginReports(): void {
+    this.interactiveLoginReportedAt.clear();
+  }
+
+  /** Unprotected topic sessions showing Claude Code's own login frame right now. */
+  async listSessionsAtLoginScreen(): Promise<string[]> {
+    const stuck: string[] = [];
+    for (const session of this.listRunningSessions()) {
+      if ((session.framework ?? 'claude-code') !== 'claude-code' || session.jobSlug) continue;
+      if (this.config.protectedSessions.includes(session.tmuxSession)) continue;
+      const pane = (await this.captureOutputMaybeAsync(session.tmuxSession, 40)) || '';
+      const verdict = classifyLoginExpired(pane);
+      if (verdict.loginExpired && verdict.messageLed) stuck.push(session.tmuxSession);
+    }
+    return stuck;
+  }
+
+  /** The key a session was launched with, as tmux holds it. Read for comparison only: never log it. */
+  sessionLaunchKey(tmuxSession: string): string | null {
+    try {
+      const line = withSyncOp(() => execFileSync(this.config.tmuxPath, ['show-environment', '-t', `=${tmuxSession}:`, 'CLAUDE_CODE_OAUTH_TOKEN'], {
+        encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+      })).trim();
+      const value = line.startsWith('CLAUDE_CODE_OAUTH_TOKEN=') ? line.slice('CLAUDE_CODE_OAUTH_TOKEN='.length) : '';
+      return value || null;
+    } catch { return null; } // @silent-fallback-ok: unset or unreadable means no launch key, and no key means no refresh
   }
 
   setCodexSigninTriggerSink(fn: ((input: { accountId: string; session: string }) => Promise<boolean | void> | void) | null): void {
@@ -7932,6 +7976,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
     this.linkAgentOwnedMemory('claude-code', {}, this.config.projectDir);
     // Planned once the triage binary is resolved (below); the env slot needs it first.
     let triageThreadline: ThreadlineSpawnPlan = { transport: 'stdio', reason: 'not-wired', secretEnvFlags: [] };
+    let triageCredentialSource: 'env' | 'store' = 'store';
+    let triageAuthFile: string | null = null;
     const triageBinaryForPlan = resolveFrameworkBinaryPath({
       framework: 'claude-code',
       frameworkBinaryPaths: this.config.frameworkBinaryPaths,
@@ -8014,6 +8060,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
             'spawning another framework\'s binary with Claude flags.',
         );
       }
+      // A key-only agent has no stored login, so triage answered "Not logged in". The key arrives
+      // through a private file, not `-e`, so it stays out of argv (spec cloud-key-internal-calls).
+      triageAuthFile = writeClaudeAuthEnvFile(path.join(this.config.projectDir, '.instar'));
+      triageCredentialSource = triageAuthFile ? 'env' : 'store';
+      if (triageAuthFile) tmuxArgs.push(...claudeAuthExecPrefix(triageAuthFile));
       // CMT-798: triage panes are claude-code sessions too — retained copy.
       tmuxArgs.push(this.resolveLaunchBinary('claude-code', triageBinary));
 
@@ -8043,6 +8094,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // @silent-fallback-ok — history-limit is a nice-to-have
       }
     } catch (err) {
+      removeClaudeAuthEnvFile(triageAuthFile);
       this.revokeOriginSession(triageSessionId);
       throw new Error(`Failed to create triage tmux session: ${this.originSpawnError(err)}`);
     }
@@ -8055,11 +8107,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
       tmuxSession,
       startedAt: new Date().toISOString(),
       maxDurationMinutes: 10,
-      // §2.10 provenance — the triage lane hardcodes an EMPTY `ANTHROPIC_API_KEY=` above
-      // (it always reads the per-CLAUDE_CONFIG_DIR store, never an env token), so 'store' is
-      // the deterministic provenance here. Set explicitly so no claude-code spawn record is
-      // provenance-blind (an env-token lane that forgot the flag would be a lint-caught bug).
-      credentialSource: 'store',
+      // §2.10 provenance — 'env' when the configured sign-in key was handed over above, 'store'
+      // otherwise. Set explicitly so no claude-code spawn record is provenance-blind (an env-token
+      // lane that forgot the flag would be a lint-caught bug).
+      credentialSource: triageCredentialSource,
       ...this.threadlineTransportTag(triageThreadline),
     };
     this.state.saveSession(session);

@@ -48,6 +48,7 @@ import { emergencyStopUserMessage } from '../messaging/shared/emergencyStopUserM
 import { isVerifiedChannelName, verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import { execFileSync } from 'node:child_process';
+import { activeClaudeKeyHealth } from '../core/ClaudeKeyHealth.js';
 import { createHash, createHmac, timingSafeEqual, randomBytes, randomUUID } from 'node:crypto';
 import { governor as selfActionGovernorSurface } from '../monitoring/selfaction/governor.js';
 import { classifyActionClaim, classifyApprovalRequest, excerptAround } from '../core/action-claim.js';
@@ -5397,7 +5398,8 @@ export function createRoutes(ctx: RouteContext): Router {
       sessionExhausted
       || totalFailures >= 5
       || degradations.length > 0
-      || (llmReliability !== null && llmReliability.status !== 'ok');
+      || (llmReliability !== null && llmReliability.status !== 'ok')
+      || activeClaudeKeyHealth()?.status()?.status === 'dead';
 
     const base: Record<string, unknown> = {
       status: isDegraded ? 'degraded' : 'ok',
@@ -5420,6 +5422,8 @@ export function createRoutes(ctx: RouteContext): Router {
     // (`bearerMatches`): byte-identical to the inline check it replaced.
     const isAuthed = bearerMatches(req, ctx.config.authToken);
     if (isAuthed) {
+      const claudeKey = activeClaudeKeyHealth()?.status();
+      if (claudeKey) base.claudeKey = claudeKey;
       // job-cost-reduction §5.3: the stable feature ids behind degradationSummary.
       // The narrative strings carry per-occurrence values, so they are evidence
       // only; health-check keys its `degradation:<feature>` reasons on these.
