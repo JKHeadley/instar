@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "ls-files-buffer",
+  "sessionId": "58f67d35-e862-45fd-a8db-06c862c54056",
+  "timestamp": "2026-11-04T16:18:54.767Z",
+  "artifactPath": "upgrades/side-effects/ls-files-buffer.md",
+  "artifactSha256": "98dfcd1f6642d08b210ed7f5fc5038c85e48399a38aa8bccaed3012b5c7c26c8",
+  "coveredFiles": [
+    "docs/specs/ls-files-buffer.eli16.md",
+    "tests/unit/audit-convergence-reports.test.ts",
+    "upgrades/next/ls-files-buffer.md",
+    "upgrades/side-effects/ls-files-buffer.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only buffer size, fully undone by a revert.",
+  "eli16Path": "docs/specs/ls-files-buffer.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ls-files-buffer.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "A buffer size in a test. Nothing acts on its own."
+  }
+}

@@ -22,15 +22,18 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 
+// The list of tracked files outgrew Node's default 1 MB on 2026-11-04, which failed this test for every PR.
+const GIT_LIST_BUFFER = 64 * 1024 * 1024;
+
 // Full repo-relative paths of pre-gate stamped reports. Extend ONLY by PR.
 const GRANDFATHERED_AUDIT_SLUGS: string[] = [];
 
 function committedDocsMd(): string[] {
-  const out = execFileSync('git', ['ls-files', 'docs/**/*.md'], { cwd: ROOT, encoding: 'utf8' });
+  const out = execFileSync('git', ['ls-files', 'docs/**/*.md'], { cwd: ROOT, encoding: 'utf8', maxBuffer: GIT_LIST_BUFFER });
   return out.split('\n').map((s) => s.trim()).filter(Boolean);
 }
 function trackedSet(): Set<string> {
-  const out = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' });
+  const out = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8', maxBuffer: GIT_LIST_BUFFER });
   return new Set(out.split('\n').map((s) => s.trim()).filter(Boolean));
 }
 function read(rel: string): string {
