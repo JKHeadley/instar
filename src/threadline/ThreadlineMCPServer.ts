@@ -108,6 +108,8 @@ export interface ThreadlineMCPDeps {
   registry: RegistryClient | null;
   /** State directory (.instar path) for config access */
   stateDir?: string;
+  /** Read the agent-wide relay verdict from the running agent server. */
+  agentRelayStatus?: () => Promise<unknown>;
   /**
    * Relay client for live network-scope discover. Optional — when absent or
    * disconnected, threadline_discover with scope=network falls back to the
@@ -523,7 +525,7 @@ export class ThreadlineMCPServer {
             agents = await this.deps.discovery.discoverLocal();
           } else {
             const relay = this.deps.relayClient;
-            if (relay && relay.connectionState === 'connected') {
+            if (relay?.connectionState === 'connected') {
               try {
                 const relayAgents = await relay.discover(
                   args.capability ? { capability: args.capability } : undefined,
@@ -539,9 +541,7 @@ export class ThreadlineMCPServer {
             } else {
               agents = this.deps.discovery.loadKnownAgents();
               source = 'cache';
-              staleReason = relay
-                ? `relay not connected (state=${relay.connectionState})`
-                : 'relay client not configured';
+              staleReason = relay ? `relay disconnected (${relay.connectionState})` : 'relay client not configured';
             }
           }
 
@@ -1464,6 +1464,15 @@ export class ThreadlineMCPServer {
               ?? DEFAULT_RELAY_URL;
             const visibility = threadlineConfig?.visibility ?? 'public';
 
+            // The agent server owns the cross-machine verdict. A local config file
+            // only describes this machine and must never answer for the agent.
+            let agent: unknown = {
+              state: 'unknown', throughMachine: null,
+              reason: 'The agent-wide status service could not be reached.',
+            };
+            try {
+              agent = await this.deps.agentRelayStatus?.() ?? agent;
+            } catch { /* unknown is explicit above */ }
             // Try to check relay health
             let relayHealth: Record<string, unknown> | null = null;
             try {
@@ -1473,18 +1482,19 @@ export class ThreadlineMCPServer {
             } catch { /* relay unreachable is fine */ }
 
             return jsonResult({
+              agent,
+              localMachine: {
               enabled: relayEnabled,
               relayUrl,
               visibility,
               capabilities: threadlineConfig?.capabilities ?? ['chat', 'threadline'],
+              },
               relayHealth: relayHealth ? {
                 status: relayHealth.status,
                 registeredAgents: (relayHealth.registry as Record<string, unknown>)?.totalAgents ?? relayHealth.agents,
                 onlineAgents: relayHealth.connections,
               } : 'unreachable',
-              note: relayEnabled
-                ? 'Relay is enabled. Your agent will connect on next server start.'
-                : 'Relay is disabled. Enable it to join the Threadline network.',
+              note: 'The agent verdict above is authoritative for reachability; localMachine describes only this machine.',
             });
           }
 

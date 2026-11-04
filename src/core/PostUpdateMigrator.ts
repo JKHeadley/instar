@@ -8447,6 +8447,19 @@ setTimeout(() => process.exit(0), 2000);
     let content = input;
     let patched = false;
     const port = this.config.port;
+    const oldThreadlineStatus = 'This capability is **installed and ready** but **not yet enabled**. I will only connect when you say so.';
+    if (content.includes(oldThreadlineStatus)) {
+      content = content.replace(oldThreadlineStatus, 'Read `GET /threadline/status` and answer from `agent.state`, `agent.throughMachine`, and `agent.ifMachineAway`. A standby may have its local relay off while the agent is reachable through another machine; an unreachable holder means unknown.');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: corrected Threadline whole-agent status guidance');
+    }
+    const oldRelayHealthGuidance = 'Before blaming a quiet peer, check MY side: `GET /threadline/health` → `relay.state`.';
+    if (content.includes(oldRelayHealthGuidance)) {
+      content = content.replace(oldRelayHealthGuidance,
+        'Before blaming a quiet peer, check `GET /threadline/health` → `agentRelay.state` first. `agentRelay.throughMachine` names the holder, and a dark holder reads `unknown`. The sibling `relay.state` is this machine\'s connection detail.');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: corrected relay health scope');
+    }
 
     // Memory privacy (docs/specs/memory-privacy.md): idempotent, by content sniff.
     if (!content.includes('**Memory privacy**')) {
@@ -11171,7 +11184,7 @@ Messages that reach me over the relay from an agent whose keys I do not hold (it
     if (!content.includes('Is my own relay connection up? (displaced vs retrying)')) {
       content += '\n\n' + `### Is my own relay connection up? (displaced vs retrying)
 
-Before blaming a quiet peer, check MY side: \`GET /threadline/health\` → \`relay.state\`. \`connected\` is healthy; \`disconnected\` with \`recoverable: true\` is retrying on its own; \`displaced\` means another connection using my identity (usually my own other machine) took the relay. A displaced machine raises a \`Threadline.relay\` degradation and reclaims the connection after a 15-minute pause; a standby (\`multiMachine.telegramPolling: false\`) never connects at all. A send that says "submitted to relay; acceptance unconfirmed" while my relay is down did NOT leave. **Proactive trigger:** a peer hasn't replied and \`/threadline/peers/<fp>/health\` shows a pending message → read my own relay state first.
+Before blaming a quiet peer, check \`GET /threadline/health\` → \`agentRelay.state\` first. That is my whole-agent reachability; \`agentRelay.throughMachine\` names the live holder and a dark holder reads \`unknown\`. The sibling \`relay.state\` is this machine's connection detail: \`disconnected\` with \`recoverable: true\` is retrying; \`displaced\` means another connection using my identity took the relay. A standby may intentionally have no local connection while the agent remains reachable. **Proactive trigger:** a peer hasn't replied and \`/threadline/peers/<fp>/health\` shows a pending message → check whole-agent reachability before diagnosing this machine.
 `;
       patched = true;
       result.upgraded.push('CLAUDE.md: added own-relay-state section');
@@ -14012,7 +14025,7 @@ I have a built-in capability to join a secure network of AI agents. When enabled
 - **Collaborate** across machines — agents on different computers can communicate seamlessly
 
 ### Current Status
-This capability is **installed and ready** but **not yet enabled**. I will only connect when you say so.
+Read \`GET /threadline/status\` and answer from \`agent.state\`, \`agent.throughMachine\`, and \`agent.ifMachineAway\`. A standby's local relay can be intentionally off while another machine connects for the agent. An unreachable holder means status unknown, never off.
 
 ### Why You Might Want This
 - Talk to other AI agents your operator runs on other machines
