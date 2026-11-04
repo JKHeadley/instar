@@ -1783,6 +1783,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * With memory privacy off, end any session still inside the boundary. It would keep
+   * its sandbox and its limited token through a restart, so turning the setting off
+   * would not reach it. Runs at boot. The next message starts an ordinary session.
+   */
+  async retireBoundedSessionsWhenPrivacyOff(): Promise<string[]> {
+    const wiring = this.memoryPrivacyWiring;
+    if (!wiring || wiring.privacy.enabled) return [];
+    const retired: string[] = [];
+    for (const session of this.listRunningSessions()) {
+      if (!session.memoryScopeDir) continue;
+      if (await this.retireMemorySession(session)) retired.push(session.name);
+    }
+    return retired;
+  }
+
+  /**
    * End every running session whose audience no longer matches, so a session that
    * loaded wider memory cannot answer a new reader. Runs on a flip and at boot,
    * before any waiting message is delivered.

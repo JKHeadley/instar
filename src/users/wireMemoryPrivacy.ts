@@ -79,7 +79,12 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
     stateDir: input.stateDir,
     instarRoot: input.instarRoot ?? path.join(os.homedir(), '.instar'),
     agentId: input.projectName,
-    config: () => input.memoryPrivacy() ?? {},
+    // Off unless asked for. An agent must never be restricted by an update, including
+    // the first boot before its migration has reached this in-memory config.
+    config: () => {
+      const memoryConfig = input.memoryPrivacy() ?? {};
+      return { ...memoryConfig, enabled: memoryConfig.enabled === true };
+    },
     users,
     reachable,
     telegramGroupKey: () => telegramKey(),
@@ -107,7 +112,9 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
   });
 
   const probe = input.probe ?? (async () => (await memorySandboxWorks()) && (await claudeMeetsFloor(input.claudePath, MEMORY_PRIVACY_CLAUDE_FLOOR)));
-  const ready = probe().then(async (first) => {
+  // With it off there is nothing to protect: no probe, no install, no report. Turning it
+  // on takes a restart, which runs this.
+  const ready = !privacy.enabled ? Promise.resolve() : probe().then(async (first) => {
     let works = first;
     if (!works && process.platform === 'linux' && !input.probe) {
       await installSandboxPackages();

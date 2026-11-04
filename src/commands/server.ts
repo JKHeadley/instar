@@ -6940,6 +6940,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     };
     sessionManager.on('sessionComplete', (session) => sessionManager.releaseMemorySession(session));
     await _memoryWiring.ready.catch((err) => console.error('[memory-privacy] boot probe failed; scoped conversations stay refused:', err));
+    await sessionManager.retireBoundedSessionsWhenPrivacyOff()
+      .then((names) => { if (names.length) console.log(`[memory-privacy] off: ended ${names.length} bounded session(s)`); })
+      .catch((err) => console.error('[memory-privacy] could not end bounded sessions:', err));
 
     // Native hook events (docs/specs/native-hook-events.md D4): reconcile the
     // reporter entries in .claude/settings.json to this machine's decision at
