@@ -10,6 +10,7 @@ import Database from 'better-sqlite3';
 import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 import { PendingRelayStore } from '../pending-relay-store.js';
 import { legacyAttributionValid, snapshotLegacyOrigin } from './OriginLegacy.js';
+import { receiptMessageIds } from './OriginOperationOutcome.js';
 import type { OriginLegacySnapshot } from './OriginLegacy.js';
 import { advanceBrowserRecovery, type BrowserRecoveryState, type BrowserRecoveryAction, type BrowserRecoveryDecision } from './OriginBrowserRecovery.js';
 import type {
@@ -878,12 +879,16 @@ export class OriginStoreBackend {
   }
   recordForwardedAcceptance(input: { operationId: string; deliveryMachineId: string; receiptJson: string; now?: number }): boolean {
     id(input.operationId); id(input.deliveryMachineId); json(input.receiptJson, 64 * 1024);
+    // A transport acknowledgement without Telegram's message id is not
+    // delivery evidence. Keep the hold for receipt recovery instead.
+    if (receiptMessageIds(input.receiptJson).length !== 1) return false;
     const now = input.now ?? Date.now();
     return this.db.transaction(() => {
       const op = this.operation(input.operationId); if (!op || op.kind !== 'ordinary') return false;
       if (!['admitted', 'held'].includes(op.state)) return false;
       const children = this.db.prepare('SELECT * FROM telegram_origin_children WHERE operation_id=? ORDER BY rowid').all(op.operation_id) as DbChild[];
-      if (!children.length || children.some(child => child.state !== 'queued')) return false;
+      // The holder-forward protocol carries one Telegram id and cannot attest multiple children.
+      if (children.length !== 1 || children.some(child => child.state !== 'queued')) return false;
       const active = this.db.prepare("SELECT 1 FROM entries e JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id WHERE c.operation_id=? AND e.state='claimed'").get(op.operation_id);
       if (active) return false;
       const ownerBootId = `forwarded:${input.deliveryMachineId}`;

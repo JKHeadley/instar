@@ -1660,6 +1660,18 @@ export class TelegramAdapter implements MessagingAdapter {
     } catch { /* history is best-effort here; the send outcome is already decided */ }
   }
 
+  /** A held standby reply was later confirmed by the lease holder. Record the
+   * Telegram receipt in the topic owner's history; no new send occurs here. */
+  recordRecoveredOutbound(topicId: number, text: string, messageId: number, provenance: Exclude<MessageProvenance, 'user'> = 'automation'): void {
+    if (!Number.isSafeInteger(topicId) || topicId < 1 || !Number.isSafeInteger(messageId) || messageId < 1) return;
+    this.appendToLog({
+      messageId, topicId, text, fromUser: false, forwarded: false,
+      timestamp: new Date().toISOString(),
+      sessionName: this.topicToSession.get(topicId) ?? null,
+      provenance,
+    });
+  }
+
   /**
    * Send files into a topic (docs/specs/mobile-native-chat-media.md §4.9: the mirror of a photo or
    * file the operator sent from the Instar app). One file goes up as sendPhoto / sendVideo /

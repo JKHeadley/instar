@@ -28967,10 +28967,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                 receipt: async (machineId, operationId) => {
                   try {
                     const reply = await sendToHolder(machineId)({ type: 'telegram-origin', protocol: 'instar-telegram-origin-v1', action: 'receipt', operationId });
-                    const result = reply.result as { ok?: boolean; state?: string; originReceiptConfirmed?: boolean; operationId?: string } | undefined;
+                    const result = reply.result as { ok?: boolean; state?: string; originReceiptConfirmed?: boolean; operationId?: string; messageIds?: string[] } | undefined;
                     if (reply.ok && result?.ok && result.operationId === operationId) {
                       const state = String(result.state);
-                      if (state === 'accepted' && result.originReceiptConfirmed === true) return { state: 'accepted', receiptJson: JSON.stringify({ confirmedVia: 'receipt', deliveryMachineId: machineId, operationId }) };
+                      if (state === 'accepted' && result.originReceiptConfirmed === true && result.messageIds?.length === 1 && /^[1-9]\d*$/.test(result.messageIds[0])) return { state: 'accepted', receiptJson: JSON.stringify({ messageId: result.messageIds[0], confirmedVia: 'receipt', deliveryMachineId: machineId, operationId }) };
                       // Definite non-admission: never seen, evidence only, or terminal without delivery.
                       if (['no-record', 'not-admitted', 'known-failed', 'expired', 'suppressed', 'superseded'].includes(state)) return { state: 'not-accepted' };
                       // The holder has custody (its own recovery delivers it): wait, never re-forward.
@@ -28985,7 +28985,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 },
                 resolve: (operationId, deliveryMachineId, receiptJson) => runtime.store.recordForwardedAcceptance({ operationId, deliveryMachineId, receiptJson }),
                 settleUnknown: (operationId, deliveryMachineId) => runtime.store.recordForwardedOutcomeUnknown({ operationId, deliveryMachineId }),
-                rehold: async (operationId, detail) => { await runtime.store.recordOperationState({ operationId, state: 'held', holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> }); },
+                rehold: async (operationId, detail) => runtime.store.recordOperationState({ operationId, state: 'held', holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> }),
                 supersede: (operationId, next, detail) => runtime.store.supersedeWithAdmission({ operationId, admission: next.admission,
                   holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> }),
                 sendLocal: async detail => {
@@ -28994,6 +28994,14 @@ export async function startServer(options: StartOptions): Promise<void> {
                 },
               }, row, operation);
                 // §3.3 — a delivered/resolved forward may have emptied the topic's held set.
+                if (outcome === 'sent' || outcome === 'resolved') {
+                  // The original adapter call returned HELD, so it never wrote its
+                  // outbound topic row. Only a durable receipt with a concrete
+                  // Telegram id may fill that gap; this never sends a second copy.
+                  const recovered = await originForwardMod.confirmedRecoveredForward(row, id => runtime.store.getOperation(id)).catch(() => null);
+                  if (recovered) telegram.recordRecoveredOutbound(recovered.topicId, recovered.text, recovered.messageId,
+                    row.producerKind === 'session' ? 'agent' : 'automation');
+                }
                 if (outcome === 'sent' || outcome === 'resolved' || outcome === 'settled') await clearHeldItemIfResolved(row.destination.topicId);
                 return outcome;
               };

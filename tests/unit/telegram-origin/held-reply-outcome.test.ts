@@ -15,7 +15,7 @@ import { RuntimeOriginObserver } from '../../../src/messaging/telegram-origin/Ru
 import { TelegramOriginService } from '../../../src/messaging/telegram-origin/TelegramOriginService.js';
 import { TelegramOriginRuntime } from '../../../src/messaging/telegram-origin/TelegramOriginRuntime.js';
 import { OriginUnrecordedReceipts } from '../../../src/messaging/telegram-origin/OriginUnrecordedReceipts.js';
-import { classifyOperationOutcome } from '../../../src/messaging/telegram-origin/OriginOperationOutcome.js';
+import { classifyOperationOutcome, receiptMessageIds } from '../../../src/messaging/telegram-origin/OriginOperationOutcome.js';
 import { TelegramOriginHoldError } from '../../../src/messaging/telegram-origin/types.js';
 import { compileOriginWorker, temporaryState } from '../../helpers/telegramOriginStore.js';
 import { fixtureOriginContentDedup } from '../../helpers/originContentDedup.js';
@@ -78,6 +78,13 @@ describe('accepted-unrecorded capture', () => {
   });
 });
 
+describe('Telegram receipt ID validity', () => {
+  it('accepts a positive safe integer ID and refuses an unsafe numeric string', () => {
+    expect(receiptMessageIds('{"messageId":"1508"}')).toEqual(['1508']);
+    expect(receiptMessageIds('{"messageId":"9007199254740993"}')).toEqual([]);
+  });
+});
+
 describe('operation outcome verdicts', () => {
   it('delivered from the fallback record; unknown without it — never not-delivered after a dispatch', async () => {
     const h = await harness();
@@ -96,6 +103,17 @@ describe('operation outcome verdicts', () => {
     const origin = await h.store.getOrigin(response.headers.get('X-Instar-Origin-Id')!);
     const verdict = classifyOperationOutcome(origin!.operation!.operationId, origin, []);
     expect(verdict).toMatchObject({ outcome: 'delivered', source: 'origin-store', messageIds: ['8812'] });
+  });
+
+  it('never calls an accepted row delivered without a Telegram message id', async () => {
+    const h = await harness();
+    const response = await h.send();
+    const origin = await h.store.getOrigin(response.headers.get('X-Instar-Origin-Id')!);
+    const audit = { ...origin!, attempts: origin!.attempts.map(attempt => ({ ...attempt,
+      receiptJson: '{"confirmedVia":"receipt","deliveryMachineId":"holder"}' })) };
+    expect(classifyOperationOutcome(audit.operation!.operationId, audit, [])).toMatchObject({
+      outcome: 'unknown', safeToResend: false, messageIds: [],
+    });
   });
 
   it('not-delivered (safe to resend) only when Telegram definitely refused it', async () => {

@@ -519,7 +519,7 @@ export class TelegramOriginRuntime {
               state: audit.operation.state === 'expired' ? 'expired' : 'held', holdReason: audit.operation.holdReason ?? null, holdDetail: audit.operation.holdDetail ?? null,
               preparedAt: audit.operation.preparedAt, deadlineAt: audit.operation.deadlineAt, executionOwnerMachineId: operation.record.executionOwnerMachineId,
               destination: { accountId: operation.record.destination.accountId, chatId: operation.record.destination.chatId, topicId: operation.record.destination.topicId },
-              recovery: audit.recovery ?? null, expiryReportedAt: null };
+              recovery: audit.recovery ?? null, expiryReportedAt: null, producerKind: operation.record.producerKind };
             if (!await this.store.reserveRecoveryAttempt({ operationId: operation.record.operationId })) continue;
             processed++;
             const outcome = await this.options.forwardRecovery(operation, row);
