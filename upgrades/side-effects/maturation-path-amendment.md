@@ -57,6 +57,10 @@ First read of the Maturation Path wording: five issues, applied or put to the op
 
 This PR also adds *One Constitution, Two Books Aligned*, whose check merged in #2689. `scripts/safe-merge.mjs` gains only a comment naming the article, which the back-reference lint requires. Its counterpart in instar-2 is PR 189, and the master merges first.
 
+## Test expectations changed
+
+`tests/unit/standards-coverage-ratchet.test.ts`: article count 93 to 94. `tests/unit/feature-maturation-plan-gate.test.ts`: the article now classifies as a ratchet, not a gate, because it cites a test that really fails the build. It used to cite only the plan gate on purpose, since no test enforced it then.
+
 ## Evidence
 
 GPT-6 Astra read the diff and raised five issues (preference closure could bypass maturation, classification standing in for preference, unclear decider, overclaimed enforcement, scope of "switched-off"), all applied or put to the operator as a decision.
