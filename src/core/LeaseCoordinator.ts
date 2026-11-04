@@ -178,6 +178,12 @@ export interface LeaseCoordinatorDeps {
   isPreferredAwakeAgreed?: () => boolean;
   /** True iff EVERY peer is presumed-gone by liveness-silence (Layer 3 gate). */
   allPeersPresumedGone?: () => boolean;
+  /**
+   * lease-takeover-no-shared-medium: true when this machine has a peer and no machine is
+   * named preferred, read live. Absent or false keeps today's behaviour exactly, so a
+   * single machine and a pool with a named captain are untouched.
+   */
+  survivorMayHold?: () => boolean;
   logger?: (msg: string) => void;
 }
 
@@ -527,9 +533,14 @@ export class LeaseCoordinator {
   private soloCaptainHoldEligible(ourEpoch: number): boolean {
     const cfg = this.d.soloCaptainHold?.();
     if (!cfg?.enabled) return false;
-    if (!this.d.isPreferredAwakeAgreed?.()) return false;
-    const authorizedByPeerTakeover = this.peerTakeoverAuthorizedEpoch === ourEpoch;
-    if (!authorizedByPeerTakeover && !this.d.allPeersPresumedGone?.()) return false;
+    // With nobody named preferred, a dead peer and a cut link look the same and there is no
+    // captain to defer to, so the holder keeps its epoch and only a higher one ends that. A
+    // pool that names a captain keeps its rule whole, takeovers included.
+    if (!this.d.survivorMayHold?.()) {
+      if (!this.d.isPreferredAwakeAgreed?.()) return false;
+      const authorizedByPeerTakeover = this.peerTakeoverAuthorizedEpoch === ourEpoch;
+      if (!authorizedByPeerTakeover && !this.d.allPeersPresumedGone?.()) return false;
+    }
     // No higher epoch observed than the one we hold (a real takeover dominates).
     const view = this.effectiveView();
     if (view.epoch > ourEpoch) return false;
@@ -649,6 +660,19 @@ export class LeaseCoordinator {
     this.emitEpoch(res.observed.epoch);
     this.log(`contested-win advance lost CAS to epoch ${res.observed.epoch} — adopting the higher lease`);
     return res.observed.lease?.holder === this.selfMachineId;
+  }
+
+  private static readonly OWN_LAPSE_PULL_DEADLINE_MS = 10_000;
+
+  /** A pull that cannot hold up acquisition: an unreachable peer is the expected case here. */
+  private async pullWithin(deadlineMs: number): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>((resolve) => { timer = setTimeout(resolve, deadlineMs); timer.unref?.(); });
+    try {
+      await Promise.race([this.pullFromPeers().catch(() => undefined), deadline]); // @silent-fallback-ok: no answer means re-acquire, which is this path's purpose
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /**
@@ -830,6 +854,7 @@ export class LeaseCoordinator {
     const liveness = this.d.getLivenessEnabled?.() ?? true;
     const legacyDead = liveness ? undefined : this.d.presumedDeadHolders({ liveness: false });
     let retries = 0;
+    let askedPeers = false;
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const view = this.effectiveView();
@@ -842,6 +867,19 @@ export class LeaseCoordinator {
       if (!decision.can) {
         this.log(`acquire skipped: ${decision.reason}`);
         return false;
+      }
+      // Taking back our own lapsed lease (restart, wake): ask the peers first, once, so a
+      // takeover that happened meanwhile is seen rather than tied at the same epoch.
+      if (
+        !askedPeers &&
+        view.lease?.holder === this.selfMachineId &&
+        this.d.soloCaptainHold?.()?.enabled &&
+        this.d.survivorMayHold?.() &&
+        this.canPullPeers()
+      ) {
+        askedPeers = true;
+        await this.pullWithin(LeaseCoordinator.OWN_LAPSE_PULL_DEADLINE_MS);
+        continue;
       }
       const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
       const res = this.casWrite(candidate);
@@ -1072,10 +1110,15 @@ export class LeaseCoordinator {
     // peer's lease, so even a wrongly-presumed-gone live peer cannot double-write
     // (the intact epoch-CAS + signature fence remains the authority). The monotonic
     // self-fence stays armed whenever the presumed-gone gate is NOT satisfied.
+    // Exception, by design (lease-takeover-no-shared-medium): a pool with no named captain
+    // skips the preferred and presumed-gone gates, so during a cut both machines may believe
+    // they hold until reconnect, when the higher epoch wins.
     if (this.soloCaptainHoldEligible(view.epoch)) {
       this.selfIssued = renewed;
       this.markRenewOk(); // hold the SAME epoch — no re-acquire, no inflation
-      this.log('solo-captain hold: preferred + all peers presumed-gone + no higher epoch — held lease without medium confirm');
+      this.log(this.d.survivorMayHold?.()
+        ? 'solo-captain hold: unnamed pool, no higher epoch — held lease without medium confirm'
+        : 'solo-captain hold: preferred + all peers presumed-gone + no higher epoch — held lease without medium confirm');
       if (this.soloHoldEvidenceEpoch !== view.epoch) {
         this.soloHoldEvidenceEpoch = view.epoch;
         featureEvidence.record('multiMachine.leaseSelfHeal.soloCaptainHold', {

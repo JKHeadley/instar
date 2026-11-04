@@ -3,6 +3,8 @@
  *
  * Spec: docs/specs/feature-maturation-ladder.md (Justin, topic 136110, 2026-11-03).
  *
+ * Governed by: Maturation Path — Test Agent → Development Agent → Fleet
+ *
  * This module parses the registry (src/data/feature-ladders.json), derives each
  * feature's rung from what the code actually ships, turns the next rung into a
  * D7 contract, and reduces D7's rows to one plain state. It reads no files,
@@ -294,6 +296,8 @@ export function parseLadderRegistry(text: string): LadderParseResult {
         }
       }
       if (!rungs.fleet && e.final === 'default-on') return { ok: false, reason: `${at}.default-on-needs-a-fleet-rung` };
+      // A preference final closes only the step to default-on; the feature still earns its lower rung.
+      if (e.final === 'default-off-by-preference' && !rungs['dev-agent-live']) return { ok: false, reason: `${at}.preference-still-needs-a-dev-rung` };
       if (!rungs['dev-agent-live'] && !rungs.fleet) return { ok: false, reason: `${at}.ladder-needs-a-rung` };
     } else {
       return { ok: false, reason: `${at}.disposition` };

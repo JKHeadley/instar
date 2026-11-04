@@ -296,12 +296,29 @@ export class TelegramOriginRuntime {
       browsers: [...this.browsers].map(([profileId, browser]) => ({ profileId, ...browser.executor.broker.readStatus() })),
       notices: this.options.alertDestinations().map(d => this.remoteNotices.get(d.id) ?? this.notifier.getState(d.id)) };
   }
+  /**
+   * The phone's Messages summary inputs (docs/specs/mobile-native-phones-messages.md): exactly the
+   * held, heldForward, expiredHolds, activation and metrics values status() returns, without the
+   * notice sockets, browser, detector, storage and retention reads the phone does not use.
+   */
+  async deliverySummaryInputs() {
+    const held = await this.#heldWithDurable();
+    return { held: held.rows, heldComplete: held.complete, heldForward: this.heldForwardHealth(), expiredHolds: this.service.expiredHeldStatus(),
+      activation: assessOriginActivation(this.closed ? null : this.enrollment), metrics: await this.service.metrics() };
+  }
   /** §4.2 — the in-memory held map is a CACHE of the store: durable held rows
    * (with their reason) are listed beside it, deduped on operation id. */
   async heldStatusWithDurable(): Promise<Array<Record<string, unknown>>> {
+    return (await this.#heldWithDurable()).rows;
+  }
+  /** The held rows, and whether the durable read was complete: false when it failed or filled its
+   * 200-row page (more may exist), so a count built from the rows is then a lower bound. */
+  async #heldWithDurable(): Promise<{ rows: Array<Record<string, unknown>>; complete: boolean }> {
+    const limit = 200;
     const memory = this.service.heldStatus() as Array<Record<string, unknown> & { operationId: string }>;
     let durable: import('./StoreTypes.js').HeldOperationRow[] = [];
-    try { durable = await this.store.listHeldOperations({ limit: 200 }); } catch { durable = []; }
+    let complete = true;
+    try { durable = await this.store.listHeldOperations({ limit }); complete = durable.length < limit; } catch { durable = []; complete = false; } // @silent-fallback-ok — not silent: `complete: false` reaches the phone summary, which marks the count incomplete; the store reports its own health
     const seen = new Set(memory.map(row => row.operationId));
     const rows: Array<Record<string, unknown>> = memory.map(row => {
       const match = durable.find(d => d.operationId === row.operationId);
@@ -313,8 +330,9 @@ export class TelegramOriginRuntime {
         payloadRetainedInMemory: false, durable: true, deadlineAt: row.deadlineAt, topicId: row.destination.topicId,
         holder: row.executionOwnerMachineId, recovery: row.recovery, producerKind: row.producerKind });
     }
-    return rows;
+    return { rows, complete };
   }
+
   #heldForward: { count: number; sessionReplies: number; automaticMessages: number; otherMessages: number; topics: string[]; oldestSince: number | null; observedAt: number | null; expiredUnreported: number } =
     { count: 0, sessionReplies: 0, automaticMessages: 0, otherMessages: 0, topics: [], oldestSince: null, observedAt: null, expiredUnreported: 0 };
   #heldForwardRefreshedAt = 0;

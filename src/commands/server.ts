@@ -6044,7 +6044,12 @@ export async function startServer(options: StartOptions): Promise<void> {
       const leaseGitRef = leaseMedium.medium === 'local' ? undefined : gitSyncRef;
       const leaseStoreName = leaseGitRef ? 'GitLeaseStore' as const : 'LocalLeaseStore' as const;
       coordinator.attachLeaseMediumProvider(() => ({ ...leaseMedium, store: leaseStoreName }));
-      if (leaseGitRef && gitLeaseHasNoRemote(config.projectDir) === true) {
+      // Read live: a peer can join and a preferred machine can be named without a restart.
+      const survivorMayHold = (): boolean => !config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId
+        && Object.entries(idMgr.loadRegistry().machines ?? {}).some(([id, entry]) => id !== selfMachineId && !entry.revokedAt);
+      const takeoverFixOn = !!config.multiMachine?.leaseSelfHeal?.soloCaptainHold?.enabled
+        && !config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId;
+      if (leaseGitRef && !takeoverFixOn && gitLeaseHasNoRemote(config.projectDir) === true) {
         _takeoverReadiness = { state: 'failing', reason: 'this machine uses the git lease with no git remote, so it cannot take over' };
       }
 
@@ -6080,6 +6085,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             registryAbsPath: idMgr.registryPath,
             pullRebase: () => gs.pullRebase(),
             commitAndPush: (msg, paths) => gs.commitAndPush(msg, paths),
+            localCommitIsFinal: () => !!config.multiMachine?.leaseSelfHeal?.soloCaptainHold?.enabled
+              && survivorMayHold() && gitLeaseHasNoRemote(config.projectDir) === true,
             logger: (m) => console.log(pc.dim(m)),
           });
         } else {
@@ -6260,6 +6267,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             return !!pref && pref === selfMachineId;
           },
           allPeersPresumedGone: leaseLiveness.allPeersPresumedGone,
+          survivorMayHold,
           onSelfSuspend: (reason) => console.log(pc.yellow(`  [lease] self-suspend: ${reason}`)),
           onEscalate: (info) => console.log(pc.yellow(`  [lease] split-brain escalation: ${info.reason} (holder ${info.holder})`)),
           logger: (m) => console.log(pc.dim(m)),

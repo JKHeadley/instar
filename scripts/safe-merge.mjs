@@ -2,6 +2,8 @@
 /**
  * safe-merge — merge a PR ONLY after every check (incl. the e2e job) is green.
  *
+ * Governed by: One Constitution, Two Books Aligned (it refuses a rule-book change with no declared counterpart).
+ *
  * Why: we merge with `gh pr merge --admin` to jump the hot-branch queue, but
  * `--admin` BYPASSES branch-protection's required-checks enforcement — which is
  * how PR #381 merged while the `E2E Tests` job was red and turned main red for
