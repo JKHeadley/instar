@@ -30,7 +30,7 @@ import { governor } from '../../monitoring/selfaction/governor.js';
 import type { DerivedTarget } from '../../monitoring/selfaction/types.js';
 import { FeedbackExecuteStore, OPEN_PR_STATES, type ExecutionRow, type ExecutionState } from './FeedbackExecuteStore.js';
 import {
-  CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, commandFailureTail, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL, PREVIOUS_REVIEW_FILE,
+  CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, CONFINED_RELATED_TIMEOUT_MS, commandFailureTail, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL, PREVIOUS_REVIEW_FILE,
   MERGE_ARMED_DEADLINE_MS, MERGE_RETRY_DELAY_MS, SANDBOX_RUNTIME_VERSION, VERIFY_QUIET_MS, WORKSPACE_DISK_CAP_BYTES,
   buildClaudeSandboxSettings, buildSandboxRuntimeSettings, clampProbeDetail, confinedCacheEnv, confinedEnv, effectiveLatchUntil, pathSlug, publishFork, safeSlug, type ConfinementPaths, type ExecuteLiveConfig,
 } from './executePolicy.js';
@@ -1142,12 +1142,12 @@ export class FeedbackExecutorService {
     const diskOk = (clone: string) => treeBytes(clone, WORKSPACE_DISK_CAP_BYTES) + treeBytes(p.tmpDir, WORKSPACE_DISK_CAP_BYTES) <= WORKSPACE_DISK_CAP_BYTES;
     // Each run gets its own clone AND its own temp directory, and its sandbox may write only those:
     // a process left behind by one run (attempt test code) can never reach a tree a later check reads.
-    const run = async (cwd: string, label: string, command: string) => {
+    const run = async (cwd: string, label: string, command: string, timeoutMs = CONFINED_COMMAND_TIMEOUT_MS) => {
       const runTmp = path.join(p.tmpDir, `check-${label}`);
       fs.mkdirSync(runTmp, { recursive: true, mode: 0o700 });
       return this.opts.runner.run({
         command, cwd, settings: buildSandboxRuntimeSettings(this.confinementPaths(cwd, p.publishClone, runTmp, depsDir)),
-        env: confinedEnv(process.env, confinedCacheEnv(runTmp)), timeoutMs: CONFINED_COMMAND_TIMEOUT_MS,
+        env: confinedEnv(process.env, confinedCacheEnv(runTmp)), timeoutMs,
       });
     };
     const limit = (r: { timedOut: boolean; outputCapped: boolean }) => (r.timedOut ? 'limit:command-wall-clock' : r.outputCapped ? 'limit:output' : null);
@@ -1194,7 +1194,7 @@ export class FeedbackExecutorService {
       const sources = sourcePaths(changeSet).filter((s) => /\.[cm]?[jt]sx?$/.test(s));
       if (sources.length > 0) {
         // './' prefix: a changed file can never be read as a command-line option.
-        const related = await run(p.gateClone, 'related', `npx vitest related --run --no-cache ${sources.map((s) => shq(`./${s}`)).join(' ')}`);
+        const related = await run(p.gateClone, 'related', `npx vitest related --run --no-cache ${sources.map((s) => shq(`./${s}`)).join(' ')}`, CONFINED_RELATED_TIMEOUT_MS);
         if (limit(related)) return { ok: false, reason: limit(related)! };
         if (related.exitCode !== 0) return failed('gate:related-tests', related);
       }

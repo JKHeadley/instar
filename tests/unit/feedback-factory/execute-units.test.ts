@@ -778,6 +778,19 @@ describe('runner and filesystem helpers', () => {
     expect(big.outputCapped).toBe(true);
   });
 
+  it('ends at the wall clock when a child exits but its descendant keeps the output pipe open', async () => {
+    for (const detached of [false, true]) {
+      const code = `const { spawn } = require('node:child_process');
+        spawn(process.execPath, ['-e', 'setTimeout(() => {}, 3000)'], { stdio: 'inherit', detached: ${detached} }).unref();`;
+      const started = Date.now();
+      const result = await runCapped(process.execPath, ['-e', code], {
+        cwd: os.tmpdir(), env: process.env as Record<string, string>, timeoutMs: 100,
+      });
+      expect(result.timedOut).toBe(true);
+      expect(Date.now() - started).toBeLessThan(2_000);
+    }
+  });
+
   it('the sandbox runtime is refused unless the exact pinned version resolves', () => {
     const missing = resolveSandboxRuntime(tmp());
     expect(missing).toEqual({ error: 'sandbox-runtime-not-installed' });

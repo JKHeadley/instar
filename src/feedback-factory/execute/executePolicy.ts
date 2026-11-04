@@ -21,6 +21,9 @@ export const DAY_MS = 24 * HOUR_MS;
 export const EXECUTION_LEASE_MS = 6 * HOUR_MS;
 /** Each confined test or gate run (§4 step 4, resource limits). */
 export const CONFINED_COMMAND_TIMEOUT_MS = 20 * 60_000;
+/** Core modules can pull much of the unit suite into `vitest related`; keep it bounded
+ * while allowing the same breadth that the full unit gate already exercises. */
+export const CONFINED_RELATED_TIMEOUT_MS = 45 * 60_000;
 /** Captured output per confined command. */
 export const CONFINED_OUTPUT_CAP_BYTES = 5 * 1024 * 1024;
 /** Workspace plus temp directory, checked between steps. */
