@@ -141,3 +141,18 @@ export function telegramIssuesGroupAwareness(port: number): string {
 export function telegramSystemTopicsAwareness(): string {
   return `**System topics (📢 Updates, 🔔 Attention, 🩺 Agent Health) are ONE record for the whole agent.** Only the machine holding the serving lease ever creates one; every other machine copies the holder's topic ids (on boot, then every 30 min) and never makes its own. Read a machine's record (authed): \`GET /telegram/system-topics\` → \`{ topics: { updates, attention, agentHealth }, holdsLease }\`. **When the user reports duplicate Updates/Attention/Agent Health topics** → compare this route on each machine (\`GET /pool\` lists them); a standby whose ids differ from the holder's converges on its next pass. Old duplicates already in Telegram stay until deleted — offer to delete the empty ones; never delete a topic with real messages without asking.\n`;
 }
+
+/** message-origin-all-platforms: app and Slack recording, the phone row and the setting. Every agent. */
+export const MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING = '### Message origin on app and Slack';
+export function messageOriginAllPlatformsAwareness(port: number): string {
+  return `${MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING}
+
+Every message I send to the user records which machine, harness and model wrote it, on every platform, whether or not it is shown. Telegram already did this; app conversations and Slack now do too, in the send path itself.
+- **App replies** (\`app-reply.sh\`): the reply is stored together with its origin. **Slack** (every post, edit and file share): an origin row is written to \`.instar/state/slack-origins.jsonl\` before the message leaves. If that row cannot be written, the Slack send is refused: \`slack-reply.sh\` prints \`NOT SENT\` (HTTP 503 \`origin-recording-unavailable\`), nothing reached Slack, and one fixed notice tells the conversation. Do not resend in a loop; check \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/health\` → \`messageOrigin\` first.
+- **How it is known:** my session's origin credential (observed harness and model), else my launch record (status \`configured\`), else \`unknown\`. My own Slack replies carry a one-line footer (\`agent · machine · harness · model\`) like Telegram's.
+- **The phone:** agent rows of the app's history reads (app, Slack, Telegram) carry \`origin: {recorded, machine, harness, model, display}\`. \`recorded: null\` means this machine cannot tell (another machine, not retained, lookup timeout), never "not recorded".
+- **When the user asks to hide or show it** (PROACTIVE): it is on by default. The agent-wide setting is \`messageOrigin.display\` (\`enabled\`, \`machine\`, \`harness\`, \`model\`) on the enabled Telegram messaging entry, or at the top level of \`.instar/config.json\` when there is no Telegram; I set those bits myself and they apply within seconds. App and Slack conversations follow the agent-wide setting, so hiding it there also hides the Telegram footer; a single Telegram topic can still be overridden with the topic profile's \`messageOriginDisplay\`. The app's own hide toggle affects only that phone. Hiding never stops recording.
+- **The Slack refusal's off switch** (\`messageOrigin.recording.slackFailClosed: false\`) is an operator exception: set it only on a verified operator's instruction, never on my own initiative.
+- WhatsApp and iMessage do not record origin yet.
+`;
+}

@@ -1,4 +1,9 @@
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
+import { ISSUES_TOPIC_OFFSET } from '../messaging/telegramTopicSpace.js';
+import { SlackOriginLedger, SlackOriginRecordingError } from '../messaging/slack/SlackOriginLedger.js';
+import { slackOriginFooter, currentAgentDisplay, deviceOriginRow, effectiveDisplay, originEvidenceFromProducer, validateDeviceOriginRow, validateMessageOriginEvidence, type DeviceOriginRow } from '../messaging/messageOrigin.js';
+import type { OriginDisplaySettings, TelegramOriginProducer } from '../messaging/telegram-origin/types.js';
+import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyOriginDeps } from './replyOrigin.js';
 import { stripViewSignatures } from './mobilePairingRoutes.js';
 import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
@@ -5466,6 +5471,14 @@ export function createRoutes(ctx: RouteContext): Router {
       // live load oracle must never be handed to an unauthenticated caller.
       if (ctx.writeAdmission) {
         base.eventLoop = ctx.writeAdmission.eventLoopStats();
+      }
+      // message-origin-all-platforms §6: recording counters since boot (never message content).
+      {
+        const ledger = ctx.slack?.originLedger;
+        base.messageOrigin = {
+          app: { recorded: appOriginRecordedCount },
+          slack: ledger ? { ...ledger.counters, coversSince: ledger.coversSince === null ? null : new Date(ledger.coversSince).toISOString() } : null,
+        };
       }
       // Origin worker health rides the AUTHED extension: a held-sends outage is
       // visible without a status fan-out, and never inferred from silence.
@@ -19876,6 +19889,61 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
+  // message-origin-all-platforms §4/§5: the display bits for one Telegram topic (agent default, then
+  // the topic's own override) and the batched origin join for a page of its rows.
+  const telegramOriginDisplay = (topicId: number): OriginDisplaySettings => {
+    let override: unknown;
+    try { override = ctx.topicProfile?.store.resolve(String(topicId))?.messageOriginDisplay ?? undefined; }
+    catch { override = undefined; } // @silent-fallback-ok — no readable override means the agent default
+    return effectiveDisplay(currentAgentDisplay({ liveConfig: ctx.liveConfig, config: ctx.config as unknown as Record<string, unknown> }), override);
+  };
+  const ORIGIN_LOOKUP_BUDGET_MS = 750;
+  const joinTelegramOrigin = async (topicId: number, rows: ReadonlyArray<Record<string, unknown>>,
+    _unused: null): Promise<Array<Record<string, unknown>>> => {
+    const display = telegramOriginDisplay(topicId);
+    const agentRows = rows.filter(m => m.fromUser === false && (typeof m.messageId === 'number' || typeof m.messageId === 'string'));
+    if (agentRows.length === 0) return rows.map(m => ({ ...m }));
+    const tgConfig = ctx.config.messaging?.find(m => m.type === 'telegram')?.config as { chatId?: unknown; issuesChatId?: unknown } | undefined;
+    const issues = topicId >= ISSUES_TOPIC_OFFSET;
+    const rawChat = issues ? tgConfig?.issuesChatId : (ctx.telegramOrigin?.options.bot.chatId ?? tgConfig?.chatId);
+    const chatId = rawChat === undefined || rawChat === null || rawChat === '' ? null : String(rawChat);
+    const store = ctx.telegramOrigin?.store;
+    let found: Map<string, { state: string; producer?: Record<string, unknown> }> | null = null;
+    let lookupFailure: 'lookup-timeout' | 'lookup-failed' = 'lookup-failed';
+    if (store && chatId) {
+      try {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const page = await Promise.race([
+          store.lookupOriginEvidence({ transport: 'bot-api', chatId, messageIds: agentRows.slice(0, 100).map(m => String(m.messageId)) }),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('origin-lookup-timeout')), ORIGIN_LOOKUP_BUDGET_MS); }),
+        ]).finally(() => { if (timer) clearTimeout(timer); });
+        found = new Map(page.results.map(r => [r.messageId, r]));
+      } catch (err) { // @silent-fallback-ok — rows read recorded:null with the reason, never a guess
+        found = null;
+        lookupFailure = err instanceof Error && err.message === 'origin-lookup-timeout' ? 'lookup-timeout' : 'lookup-failed';
+      }
+    }
+    const now = Date.now();
+    return rows.map(m => {
+      if (m.fromUser !== false) return { ...m };
+      const hit = found?.get(String(m.messageId));
+      let origin: DeviceOriginRow;
+      if (found === null) origin = deviceOriginRow(null, display, !(store && chatId) ? 'not-found' : lookupFailure);
+      else if (!hit) origin = deviceOriginRow(null, display, 'not-found');
+      else if (hit.state === 'ambiguous') origin = deviceOriginRow(null, display, 'ambiguous');
+      else if (hit.state !== 'found' || !hit.producer) origin = deviceOriginRow(null, display, 'not-retained');
+      else {
+        const p = hit.producer as Partial<TelegramOriginProducer>;
+        const evidence = p.machine && p.harness && p.model ? validateMessageOriginEvidence(originEvidenceFromProducer({
+          producerKind: p.producerKind ?? 'session', originMachineId: String(p.originMachineId ?? ''), originMachineName: String(p.originMachineName ?? ''),
+          harnessName: p.harnessName ?? null, machine: p.machine, harness: p.harness, model: p.model,
+        } as TelegramOriginProducer, now)) : null;
+        origin = evidence ? deviceOriginRow(evidence, display) : deviceOriginRow(null, display, 'not-retained');
+      }
+      return { ...m, origin };
+    });
+  };
+
   router.get('/telegram/topics/:topicId/messages', async (req, res) => {
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
@@ -19911,9 +19979,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // `attachments`, and never a server path in the text.
     const joinForDevice = (rows: ReadonlyArray<Record<string, unknown>>) =>
       (isDevice ? withTelegramMediaForDevice(ctx.appConversations ?? null, topicId, ctx.appConversations ? joinTelegramHistory(ctx.appConversations, topicId, rows, limit) : rows) : rows);
+    // message-origin-all-platforms §4: agent rows carry `origin` for a device, and for a Bearer read
+    // that asks (`includeOrigin=1`, set by the pool fan-out so each peer answers with its own join).
+    const withOrigin = isDevice || req.query.includeOrigin === '1';
     if (req.query.scope !== 'pool') {
       const joined = joinForDevice(local as unknown as Array<Record<string, unknown>>);
-      res.json({ topicId, messages: isDevice ? stripViewSignatures(joined) : joined });
+      const shaped = withOrigin ? await joinTelegramOrigin(topicId, joined, null) : joined;
+      res.json({ topicId, messages: isDevice ? stripViewSignatures(shaped) : shaped });
       return;
     }
     // Pool read (mobile-operator-chat §2.4a): every answering machine's rows, tagged with the
@@ -19926,7 +19998,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       try {
         const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
         if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allowlist).ok) { failed.push({ machineId: p.machineId, error: 'peer URL refused' }); return; }
-        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/telegram/topics/${topicId}/messages?limit=${limit}${beforeMs === null ? '' : `&before=${beforeMs}`}`, {
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/telegram/topics/${topicId}/messages?limit=${limit}${beforeMs === null ? '' : `&before=${beforeMs}`}${withOrigin ? '&includeOrigin=1' : ''}`, {
           headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000), redirect: 'manual',
         });
         if (!r.ok) { failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` }); return; }
@@ -19944,6 +20016,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }));
     const keyOf = (m: Record<string, unknown>) => typeof m.eventId === 'string' && m.eventId ? `e:${m.eventId}` : `m:${m.fromUser ? 'in' : 'out'}:${m.messageId}`;
+    if (withOrigin) {
+      // Own rows join here; a peer row's origin is re-checked (its display bits replaced by this
+      // machine's). On a collision a peer's recorded origin fills in one this machine cannot tell.
+      const own = await joinTelegramOrigin(topicId, rows.filter(m => m.machine === self), null);
+      const ownByKey = new Map(own.map(m => [keyOf(m), m]));
+      const display = telegramOriginDisplay(topicId);
+      for (let i = 0; i < rows.length; i++) {
+        const m = rows[i];
+        if (m.machine === self) { rows[i] = ownByKey.get(keyOf(m)) ?? m; continue; }
+        if (m.fromUser !== false) { delete m.origin; continue; }
+        m.origin = validateDeviceOriginRow(m.origin, display) ?? deviceOriginRow(null, display, 'other-machine');
+        const mine = ownByKey.get(keyOf(m)) as Record<string, unknown> | undefined;
+        if (mine && (mine.origin as { recorded?: unknown } | undefined)?.recorded !== true && (m.origin as { recorded?: unknown }).recorded === true) mine.origin = m.origin;
+      }
+    }
     // This machine's own rows win a key collision; a peer's row is untrusted display data.
     const seen = new Set<string>(rows.filter(m => m.machine === self).map(keyOf));
     const merged = rows
@@ -21030,6 +21117,30 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // ── Slack ──────────────────────────────────────────────────────
 
+  // message-origin-all-platforms §2: the evidence ladder for app and Slack replies (no refusal here).
+  /** App agent replies stored with their origin since boot (§6). */
+  let appOriginRecordedCount = 0;
+  const localMachine = localMachineIdentity(ctx.config.stateDir);
+  const replyOriginDeps = (machineIdOverride?: string | null): ReplyOriginDeps => ({
+    machine: () => {
+      const local = localMachine();
+      const selfId = machineIdOverride ?? local.id ?? ctx.meshSelfId ?? null;
+      const name = ctx.telegramOrigin?.options.identity.originMachineName ?? local.name
+        ?? (ctx.meshSelfId ? ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname ?? null : null);
+      return { id: selfId, name: name ?? null };
+    },
+    originService: () => ctx.telegramOrigin?.service ?? null,
+    runningSessionByTmux: (tmuxName) => {
+      const s = ctx.state.listSessions({ status: 'running' }).find((x) => x.tmuxSession === tmuxName);
+      return s ? { id: s.id, framework: s.framework ?? null, model: typeof s.model === 'string' ? s.model : null } : null;
+    },
+    tmuxForSessionId: (sessionId) => ctx.state.getSession(sessionId)?.tmuxSession ?? null,
+  });
+  const originHeader = (req: import('express').Request): unknown => {
+    const raw = req.headers['x-instar-origin-session'];
+    return Array.isArray(raw) ? raw[0] : raw;
+  };
+
   const handleSlackReply = async (req: ExpressRequest, res: ExpressResponse): Promise<void> => {
     if (!ctx.slack) {
       res.status(503).json({ error: 'Slack not configured' });
@@ -21096,8 +21207,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // `finalize-ambiguous`, NEVER re-posted), NOT the 500 catch-all below
       // (500 → recovery-policy retry → double-post). The still-alive adapter
       // call is abandoned; it must NOT record a delivery-id on this path.
+      // message-origin-all-platforms §2/§3: the reply's origin, scoped to exactly this one send to
+      // this target, plus the one-line footer the agent's display bits allow.
+      // The same channel/thread the adapter will post to (sendToChannel: options.thread_ts ?? the routing key's thread).
+      const [scopeChannel, routedThread] = String(channelId).split(':');
+      const effectiveThread: unknown = thread_ts ?? routedThread;
+      const scopeThread = typeof effectiveThread === 'string' && effectiveThread ? effectiveThread : null;
+      const replyOrigin = await resolveReplyOrigin(replyOriginDeps(), {
+        boundSession: typeof res.locals.originBoundSession === 'string' ? res.locals.originBoundSession : null,
+        originCredential: originHeader(req),
+      });
+      let originFooter = '';
+      try {
+        originFooter = slackOriginFooter(ctx.config.projectName ?? 'agent', replyOrigin,
+          currentAgentDisplay({ liveConfig: ctx.liveConfig, config: ctx.config as unknown as Record<string, unknown> }));
+        // The labels are outgoing content: the deterministic credential wall sees them too (§5).
+        if (originFooter && detectOutboundCredential(originFooter).detected) originFooter = '';
+      } catch { originFooter = ''; } // @silent-fallback-ok — the footer is presentation; it never fails the send
       const ts = await sendWithAdapterTimeout(
-        () => ctx.slack!.sendToChannel(channelId, text, { thread_ts, formatMode }),
+        () => SlackOriginLedger.runInScope({ evidence: replyOrigin, channel: scopeChannel, threadTs: scopeThread },
+          () => ctx.slack!.sendToChannel(channelId, text, { thread_ts, formatMode, ...(originFooter ? { originFooter } : {}) })),
         SLACK_ADAPTER_SEND_TIMEOUT_MS,
       );
 
@@ -21151,6 +21280,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(408).json({ error: 'adapter-send-timeout', ambiguous: true });
         return;
       }
+      // message-origin-all-platforms §3: no origin record, no send. Nothing left; say so plainly.
+      if (err instanceof SlackOriginRecordingError) {
+        res.status(503).json({ error: 'origin-recording-unavailable', notSent: true,
+          detail: 'Not sent: this machine could not record which machine and model wrote the reply.' });
+        return;
+      }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   };
@@ -21185,6 +21320,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(403).json({ error: 'conversation-bind-refused', detail: verdict.detail });
       return;
     }
+    res.locals.originBoundSession = boundSessionName((verdict as { boundBy?: string }).boundBy);
     const target = ctx.conversationRegistry?.resolve(conversationId);
     if (!target || target.platform !== 'slack' || target.origin === 'replicated') {
       res.status(409).json({ error: 'slack-adapter-authority-unavailable' });
@@ -21256,6 +21392,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(403).json({ error: 'conversation-bind-refused', detail: verdict.detail });
       return;
     }
+    const appBoundSession = boundSessionName((verdict as { boundBy?: string }).boundBy);
     const key = ctx.conversationRegistry?.appConversationFor(conversationId) ?? null;
     if (!key || !app.liveConversation(key)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
     if (!app.ownsAlias(conversationId)) {
@@ -21308,8 +21445,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const messageId = derivedEventId('am', key, seed);
+    // message-origin-all-platforms §3: the origin is part of the same append as the reply.
+    const agentOrigin = await resolveReplyOrigin(replyOriginDeps(app.deps.machineId()), { boundSession: appBoundSession, originCredential: originHeader(req) });
     try {
-      const common = { eventId, conversationKey: key, messageId, role: 'agent' as const, text, at: new Date().toISOString(), machineId: app.deps.machineId() };
+      const common = { eventId, conversationKey: key, messageId, role: 'agent' as const, text, at: new Date().toISOString(), machineId: app.deps.machineId(), agentOrigin };
       if (preparedFiles) {
         // Publish the snapshots that were scanned, then the event: never an event without its blobs.
         const attachments = preparedFiles.snapshots.map((snap, index) => {
@@ -21322,9 +21461,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           };
         });
         app.store.append({ ...common, kind: 'media-message', attachments });
+        appOriginRecordedCount++;
         for (const id of preparedFiles.reservationIds) app.media.releaseReply(id);
       } else {
         app.store.append({ ...common, kind: 'message' });
+        appOriginRecordedCount++;
       }
     } catch (err) {
       if (preparedFiles) discardPrepared(app.media, preparedFiles);

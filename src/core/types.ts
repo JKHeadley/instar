@@ -3594,6 +3594,15 @@ export interface ExternalServicePermissions {
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface InstarConfig {
+  /**
+   * message-origin-all-platforms §5: the agent-wide origin display bits for an agent with no
+   * enabled Telegram entry (with one, the Telegram entry's messageOrigin.display is the setting),
+   * and the operator exception for the Slack recording refusal (§3). Absent ⇒ shown, fail-closed.
+   */
+  messageOrigin?: {
+    display?: { enabled?: boolean; machine?: boolean; harness?: boolean; model?: boolean };
+    recording?: { slackFailClosed?: boolean };
+  };
   /** Machine self-maintenance (docs/specs/machine-self-maintenance.md). Watch-only: `enabled` is dev-gated, omit it to follow the gate. */
   machineMaintenance?: {
     enabled?: boolean;

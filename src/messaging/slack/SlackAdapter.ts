@@ -42,6 +42,8 @@ import type { SlackApiResponse } from './SlackApiClient.js';
 import type { SlackPermissionObserver } from '../../permissions/SlackPermissionObserver.js';
 import type { AmbientContributionGate } from '../../permissions/AmbientContributionGate.js';
 import { buildStallAlertDecisionContext } from '../shared/StallAlertDecisionContext.js';
+// CONTRACT-EVIDENCE: EXEMPT — message-origin-all-platforms adds no Slack API method, parameter or response field: the origin ledger wraps the existing calls (reading only `ts`) and the footer is one more line of `text`. Echo's Slack bot token was revoked 2026-07-01, so no live contract run is available.
+import { ORIGIN_OUTAGE_NOTICE_TEXT, RECORDED_SLACK_METHODS, SlackOriginLedger, SlackOriginRecordingError, refusalWarrantsNotice } from './SlackOriginLedger.js';
 
 export const SLACK_STALL_CONFIRM_PROMPT_ID = 'slack-stall-confirm-v1';
 
@@ -264,6 +266,18 @@ export class SlackAdapter implements MessagingAdapter {
   /** Intelligence provider for LLM-gated stall confirmation */
   intelligence: IntelligenceProvider | null = null;
 
+  /** message-origin-all-platforms §3: the origin ledger every outbound call writes to first. */
+  readonly originLedger: SlackOriginLedger;
+  private originContext: { machine: () => { id: string | null; name: string | null }; failClosed: () => boolean; report: (feature: string, detail: string) => void } = {
+    machine: () => ({ id: null, name: null }), failClosed: () => true,
+    report: (feature, detail) => console.warn(`[slack] ${feature}: ${detail}`),
+  };
+
+  /** Wired at server boot: this machine's identity, the live fail-closed switch and the degradation reporter. */
+  setOriginContext(ctx: Partial<SlackAdapter['originContext']>): void {
+    this.originContext = { ...this.originContext, ...ctx };
+  }
+
   constructor(config: Record<string, unknown>, stateDir: string) {
     this.config = config as unknown as SlackConfig;
     this.stateDir = stateDir;
@@ -302,7 +316,14 @@ export class SlackAdapter implements MessagingAdapter {
     const rawAgentName = this.config.workspaceName?.replace(/-agent$/i, '') || 'agent';
     const agentName = rawAgentName.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
     this.channelManager = new ChannelManager(this.apiClient, agentName);
-    this.fileHandler = new FileHandler(this.apiClient, this.config.botToken, stateDir);
+    // message-origin-all-platforms §3: every Slack send records its origin before it leaves.
+    this.originLedger = new SlackOriginLedger({
+      file: path.join(stateDir, 'state', 'slack-origins.jsonl'),
+      machine: () => this.originContext.machine(),
+      failClosed: () => this.originContext.failClosed(),
+      report: (feature, detail) => this.originContext.report(feature, detail),
+    });
+    this.fileHandler = new FileHandler(this.apiClient, this.config.botToken, stateDir, this.originLedger);
     this.logger = new MessageLogger({
       logPath: path.join(stateDir, 'slack-messages.jsonl'),
       maxLines: 100_000,
@@ -478,9 +499,41 @@ export class SlackAdapter implements MessagingAdapter {
    * mrkdwn. Non-send methods and Block Kit payloads pass through unchanged —
    * see applySlackFormatter for the exact skip rules.
    */
-  private formattedApiCall(method: string, params: Record<string, unknown>): Promise<SlackApiResponse> {
-    const { outgoingParams } = applySlackFormatter(method, params, this.config.formatMode);
-    return this.apiClient.call(method, outgoingParams);
+  private async formattedApiCall(method: string, params: Record<string, unknown>): Promise<SlackApiResponse> {
+    // The origin footer is already-escaped mrkdwn: appended after formatting, never re-processed.
+    const { _originFooter: footer, ...rest } = params;
+    const { outgoingParams } = applySlackFormatter(method, rest, this.config.formatMode);
+    if (typeof footer === 'string' && footer && typeof outgoingParams.text === 'string') {
+      outgoingParams.text = `${outgoingParams.text}\n${footer}`;
+    }
+    if (!RECORDED_SLACK_METHODS.has(method)) return this.apiClient.call(method, outgoingParams);
+    const channel = String(outgoingParams.channel ?? '');
+    const threadTs = typeof outgoingParams.thread_ts === 'string' ? outgoingParams.thread_ts : null;
+    let intent: ReturnType<SlackOriginLedger['beginIntent']>;
+    try {
+      intent = this.originLedger.beginIntent(method, channel, threadTs);
+    } catch (err) {
+      if (err instanceof SlackOriginRecordingError && refusalWarrantsNotice(method)) void this.sendOriginOutageNotice(channel, threadTs);
+      throw err;
+    }
+    const result = await this.apiClient.call(method, outgoingParams);
+    const ts = method === 'chat.update' ? String(outgoingParams.ts ?? '') || null
+      : typeof result.ts === 'string' ? result.ts : null;
+    this.originLedger.completeReceipt(intent, ts);
+    return result;
+  }
+
+  /** The pre-recorded reachability notice for a conversation whose send was refused (§3). Never throws. */
+  private async sendOriginOutageNotice(channel: string, threadTs: string | null): Promise<void> {
+    const notice = this.originLedger.takeOutageNotice(channel, threadTs);
+    if (!notice) return;
+    try {
+      const result = await this.apiClient.call('chat.postMessage', { channel, text: ORIGIN_OUTAGE_NOTICE_TEXT, ...(threadTs ? { thread_ts: threadTs } : {}) });
+      this.originLedger.completeReceipt({ id: notice.reserveId, method: 'chat.postMessage', channel, threadTs, evidence: notice.evidence },
+        typeof result.ts === 'string' ? result.ts : null, notice.reserveId);
+    } catch (err) {
+      console.warn(`[slack] origin outage notice not sent: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   onMessage(handler: (message: Message) => Promise<void>): void {
@@ -647,7 +700,7 @@ export class SlackAdapter implements MessagingAdapter {
   async sendToChannel(
     channelId: string,
     text: string,
-    options?: { thread_ts?: string; formatMode?: SlackFormatMode },
+    options?: { thread_ts?: string; formatMode?: SlackFormatMode; originFooter?: string },
   ): Promise<string> {
     const parsed = this.parseRoutingKey(channelId);
     const params: Record<string, unknown> = { channel: parsed.channelId, text };
@@ -656,6 +709,7 @@ export class SlackAdapter implements MessagingAdapter {
     // Per-call formatter opt-out for callers that already author mrkdwn
     // (stripped from params inside the formatting funnel, never sent to Slack).
     if (options?.formatMode) params._formatMode = options.formatMode;
+    if (options?.originFooter) params._originFooter = options.originFooter;
     const result = await this.formattedApiCall('chat.postMessage', params);
     return result.ts as string;
   }

@@ -9,7 +9,7 @@
  * When augmenting an existing project, only missing files are created.
  */
 
-import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramDashboardEditAwareness, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness } from "../messaging/telegram-origin/OriginAwareness.js";
+import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramDashboardEditAwareness, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, messageOriginAllPlatformsAwareness } from "../messaging/telegram-origin/OriginAwareness.js";
 import { poolReadSelectionAwareness } from "../core/poolReadAwareness.js";
 import { peerHomebaseAwareness } from "../core/peerHomebaseAwareness.js";
 import { FEEDBACK_INBOX_TOKEN_SENTENCE } from "../feedback-factory/inbox/inboxAwareness.js";
@@ -1930,6 +1930,9 @@ A pull/audit-only view measures project PR movement and manager outbound silence
 
 The AutonomousLivenessReconciler also covers a second dead-work shape: an autonomous run can remain active while its Codex/Claude process sits at a positively identified completed-turn prompt. A newline cannot revive a turn that already ended, so after the normal debounce, ownership, lease, stop, pressure, quota, and loop-cap gates, the reconciler replaces that session through the canonical SessionRefresh funnel. A failed refresh raises one aggregated attention item instead of silently nudging forever. Read \`GET /autonomous/liveness\`; conditions include \`terminal-turn\` and \`turn-revived\`.
 `;
+
+  // message-origin-all-platforms: every agent (app and Slack record origin without Telegram).
+  content += '\n' + messageOriginAllPlatformsAwareness(port);
 
   if (hasTelegram) {
     content += telegramOriginAwareness(port);

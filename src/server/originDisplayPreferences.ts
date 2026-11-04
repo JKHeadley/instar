@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import { agentDisplaySetting, singleEnabledTelegram } from '../messaging/messageOrigin.js';
+import type { OriginDisplaySettings } from '../messaging/telegram-origin/types.js';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Router, Request, Response } from 'express';
@@ -21,10 +23,14 @@ export function mountOriginDisplayPreferences(router: Router, ctx: RouteContext)
   const read = () => {
     const file = path.join(ctx.config.stateDir, 'config.json');
     const bytes = fs.readFileSync(file, 'utf8'), config = JSON.parse(bytes);
-    const candidates = Array.isArray(config.messaging) ? config.messaging.filter((m: { type?: string; enabled?: boolean }) => m.type === 'telegram' && m.enabled === true) : [];
-    if (candidates.length !== 1 || !candidates[0].config) throw new Error('telegram-display-config-unavailable');
-    const telegram = candidates[0].config;
-    return { file, bytes, config, telegram, defaults: resolveOriginDisplay(telegram.messageOrigin?.display), revision: revision(bytes) };
+    // message-origin-all-platforms §5: one resolver. The single enabled Telegram entry holds the
+    // agent-wide setting; with none, the top-level messageOrigin.display does.
+    const telegramEntry = singleEnabledTelegram(config.messaging);
+    if (telegramEntry && !telegramEntry.config) throw new Error('telegram-display-config-unavailable');
+    const holder: { messageOrigin?: Record<string, unknown> } = telegramEntry ? telegramEntry.config as { messageOrigin?: Record<string, unknown> } : config;
+    if (!holder || typeof holder !== 'object') throw new Error('display-config-unavailable');
+    return { file, bytes, config, holder, onTelegram: !!telegramEntry,
+      defaults: resolveOriginDisplay(agentDisplaySetting(config.messaging, config.messageOrigin) as Partial<OriginDisplaySettings> | undefined), revision: revision(bytes) };
   };
   const topics = () => (ctx.telegram?.getAllTopicMappings() ?? []).slice(0, 1000).map(item => {
     const id = String(item.topicId), pin = ctx.topicProfile?.store.resolve(id)?.messageOriginDisplay ?? null;
@@ -61,7 +67,7 @@ export function mountOriginDisplayPreferences(router: Router, ctx: RouteContext)
         const current = read();
         if (current.revision !== body.revision) { res.status(409).json({ error: 'settings-changed-refresh-required' }); return; }
         const { version: _resolvedVersion, ...display } = resolveOriginDisplay(mergeDefaults(current.defaults, validated.patch.messageOriginDisplay));
-        current.telegram.messageOrigin = { ...current.telegram.messageOrigin, display };
+        current.holder.messageOrigin = { ...current.holder.messageOrigin, display };
         const temporary = `${current.file}.${randomUUID()}.tmp`;
         try {
           fs.writeFileSync(temporary, JSON.stringify(current.config, null, 2) + '\n', { mode: fs.statSync(current.file).mode & 0o777, flag: 'wx' });
@@ -72,8 +78,12 @@ export function mountOriginDisplayPreferences(router: Router, ctx: RouteContext)
         } finally {
           if (fs.existsSync(temporary)) SafeFsExecutor.safeUnlinkSync(temporary, { operation: 'origin-display-staging-cleanup' });
         }
-        const runtimeTelegram = ctx.config.messaging?.find(m => m.type === 'telegram' && m.enabled === true)?.config as { messageOrigin?: Record<string, unknown> } | undefined;
-        if (runtimeTelegram) runtimeTelegram.messageOrigin = { ...runtimeTelegram.messageOrigin, display };
+        if (current.onTelegram) {
+          const runtimeTelegram = ctx.config.messaging?.find(m => m.type === 'telegram' && m.enabled === true)?.config as { messageOrigin?: Record<string, unknown> } | undefined;
+          if (runtimeTelegram) runtimeTelegram.messageOrigin = { ...runtimeTelegram.messageOrigin, display };
+        } else {
+          ctx.config.messageOrigin = { ...ctx.config.messageOrigin, display };
+        }
       }
       res.json({ ok: true, message: 'Display saved. New messages use it after the configuration refresh (normally within a few seconds). Origin recording continues.' });
     } catch { res.status(503).json({ error: 'origin-display-save-unavailable' }); }

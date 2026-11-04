@@ -30,6 +30,7 @@
  * RETENTION: kept until the operator deletes the conversation (a `tombstone` event); the file then
  * moves to `app-conversations/deleted/` and is kept, never destroyed by this feature.
  */
+import { validateMessageOriginEvidence, type MessageOriginEvidence } from '../messaging/messageOrigin.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -100,6 +101,11 @@ export interface MessageEvent extends AppEventBase {
   senderName?: string;
   senderRole?: 'owner' | 'msp';
   senderPerson?: ConversationOwner;
+  /**
+   * message-origin-all-platforms §3: which machine, harness and model wrote an AGENT reply,
+   * recorded in the same append as the reply. Information only; nothing decides on it.
+   */
+  agentOrigin?: MessageOriginEvidence;
 }
 export interface DeliveryEvent extends AppEventBase { kind: 'delivery'; messageId: string; state: DeliveryEventState }
 /** A message with files (media spec §4.1): every field of `message` plus 1-10 attachments. */
@@ -166,6 +172,7 @@ export interface BrowsedMessage {
   attachments?: AppAttachment[];
   senderName?: string;
   senderRole?: 'owner' | 'msp';
+  agentOrigin?: MessageOriginEvidence;
 }
 
 /** One attachment reference as the index holds it. */
@@ -268,6 +275,12 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       if (r.senderRole === 'owner' || r.senderRole === 'msp') out.senderRole = r.senderRole;
       const senderPerson = validConversationOwner(r.senderPerson);
       if (senderPerson) out.senderPerson = senderPerson;
+      // Only an agent reply carries origin, only a valid one, and only one recorded by the machine
+      // that wrote the event (a peer cannot attach another machine's identity to it).
+      if (r.role === 'agent' && r.agentOrigin !== undefined) {
+        const agentOrigin = validateMessageOriginEvidence(r.agentOrigin);
+        if (agentOrigin && agentOrigin.machineId === machineId) out.agentOrigin = agentOrigin;
+      }
       return out;
     }
     case 'delivery': {
@@ -912,6 +925,7 @@ export class AppConversationStore {
         ...(ev.receipt ? { receipt: ev.receipt } : {}),
         ...(ev.kind === 'media-message' ? { attachments: ev.attachments } : {}),
         ...(ev.senderName ? { senderName: ev.senderName } : {}), ...(ev.senderRole ? { senderRole: ev.senderRole } : {}),
+        ...(ev.agentOrigin ? { agentOrigin: ev.agentOrigin } : {}),
       });
     }
     out.reverse();

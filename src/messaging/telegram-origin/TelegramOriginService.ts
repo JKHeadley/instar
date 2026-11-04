@@ -31,6 +31,7 @@ import type { OriginUnrecordedReceipts } from './OriginUnrecordedReceipts.js';
 import type { RuntimeOriginObserver } from './RuntimeOriginObserver.js';
 import type { AdmissionResult, ClaimInput, ClaimResult, ClaimFence, ClaimedChild, EvidenceReceipt, OriginAdmission, OutcomeInput, OutcomeWriteResult, StoredOriginInput, OriginAuditRecord, OriginListQuery, OriginListPage, OriginMetrics } from './StoreTypes.js';
 import { mergeDefaults } from '../../core/mergeDefaults.js';
+import { HARNESS_NAMES } from '../messageOrigin.js';
 
 export interface OriginServiceStore {
   getOperation?(operationId: string): Promise<OriginAuditRecord | null>;
@@ -95,7 +96,7 @@ function normalizedModel(value: { value: string | null; status: 'observed' | 'co
   return { value: value.value, status: value.status, sourceEventRef: value.sourceEventRef ?? null,
     observedAt: typeof value.observedAt === 'number' ? value.observedAt : value.observedAt ? Date.parse(value.observedAt) : null, reason: value.reason ?? null };
 }
-const harnessNames: Record<string, string> = { 'codex-cli': 'Codex', 'claude-code': 'Claude Code', 'gemini-cli': 'Gemini', 'pi-cli': 'Pi', 'grok-build': 'Grok' };
+const harnessNames: Readonly<Record<string, string>> = HARNESS_NAMES;
 async function within<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -177,6 +178,13 @@ export class TelegramOriginService {
     return this.#scope.run({ producer: entry.producer, operations: [], logicalSendKey: entry.logicalSendKey, logicalOrdinal: 0 }, fn);
   }
   async runWithSessionToken<T>(token: string, fn: () => Promise<T>): Promise<T> {
+    const producer = await this.sessionProducer(token);
+    return this.#scope.run({ producer, operations: [] }, fn);
+  }
+  /** The session producer a verified origin credential names (machine, harness, model evidence).
+   * Shared by the Telegram send scope and the app/Slack recorders (message-origin-all-platforms §2).
+   * Throws TelegramOriginHoldError when the credential does not verify or the observer is not bound. */
+  async sessionProducer(token: string): Promise<TelegramOriginProducer> {
     const verified = this.options.sessions.verify(token);
     if (!verified.ok) throw new TelegramOriginHoldError(verified.reason);
     const b = verified.binding;
@@ -194,7 +202,7 @@ export class TelegramOriginService {
       machine: { value: this.options.identity.originMachineName, status: 'observed', sourceEventRef: 'machine-identity', observedAt: now, reason: null },
       harness: { value: b.harnessId, status: 'observed', sourceEventRef: `session:${b.sessionId}`, observedAt: now, reason: null },
       model: normalizedModel(observation.model) };
-    return this.#scope.run({ producer, operations: [] }, fn);
+    return producer;
   }
   hasProducerContext(): boolean { return this.#scope.getStore() !== undefined; }
   runWithSendPolicyInput<T>(text: string, metadata: unknown, fn: () => T): T {

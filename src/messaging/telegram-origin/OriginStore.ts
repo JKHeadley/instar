@@ -52,7 +52,7 @@ function workerInputBytes(input: unknown, maximum: number): number {
   }
   return bytes;
 }
-const READS = new Set(['listHeldOperations', 'unresolvedHeldOperationCount', 'heldForwardAdmissions', 'getOrigin', 'getChild', 'getOperation', 'getPayload', 'listOrigins', 'getMetrics', 'diagnostics', 'recoverableAdmissions', 'legacyCandidates', 'undiagnosedOrigins', 'getFederatedMetrics', 'getBrowserRecoveryStates']);
+const READS = new Set(['listHeldOperations', 'unresolvedHeldOperationCount', 'heldForwardAdmissions', 'getOrigin', 'getChild', 'getOperation', 'getPayload', 'listOrigins', 'lookupOriginEvidence', 'getMetrics', 'diagnostics', 'recoverableAdmissions', 'legacyCandidates', 'undiagnosedOrigins', 'getFederatedMetrics', 'getBrowserRecoveryStates']);
 // Request deadlines protect an already-running worker operation. Starting a
 // fresh worker is a different boundary: under host pressure Node can defer the
 // worker bootstrap well beyond an ordinary DB request without the worker being
@@ -316,6 +316,7 @@ export class OriginStore {
   getPayload(payloadId: string): Promise<Uint8Array> { return this.call('getPayload', payloadId); }
   consumeAuditAssertion(input: { jti: string; expiresAt: number }): Promise<boolean> { return this.call('consumeAuditAssertion', input); }
   listOrigins(query: OriginListQuery = {}): Promise<OriginListPage> { return this.call('listOrigins', query); }
+  lookupOriginEvidence(input: { transport: string; chatId: string; messageIds: string[] }): Promise<ReturnType<import('./OriginStoreBackend.js').OriginStoreBackend['lookupOriginEvidence']>> { return this.call('lookupOriginEvidence', input); }
   getMetrics(): Promise<OriginMetrics> { return this.call('getMetrics'); }
   undiagnosedOrigins(): Promise<Array<{ originId: string; reason: string }>> { return this.call('undiagnosedOrigins'); }
   getBrowserRecoveryStates(): Promise<ReturnType<import('./OriginStoreBackend.js').OriginStoreBackend['getBrowserRecoveryStates']>> { return this.call('getBrowserRecoveryStates'); }

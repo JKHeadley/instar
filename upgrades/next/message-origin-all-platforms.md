@@ -1,0 +1,22 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Every message the agent sends now records which machine, harness ("door", such as Claude Code or Codex) and model wrote it on app conversations and Slack too, not only on Telegram. An app reply is stored together with its origin. Every Slack post, edit and file share writes a small origin record before it leaves; if that record cannot be written the message is not sent, and one short pre-recorded notice tells the conversation, so the agent is never silent. The agent's own Slack replies carry the same one-line origin footer Telegram replies have, under the same show/hide setting.
+
+The Instar app's history reads (app conversations, Slack and Telegram) now return an `origin` block on each agent message with the machine, harness, model, how each was known, and the agent's current show/hide setting. `recorded: null` means this machine cannot tell, never "not recorded". On an agent without Telegram the setting lives at the top level of the config (`messageOrigin.display`).
+
+## What to Tell Your User
+
+My messages now carry where they came from on every platform you use with me: which of your machines wrote them, which tool I was running in, and which model. It shows by default. If you would rather not see it, just tell me and I will hide it; it is still recorded either way. Slack replies get the same small footer Telegram already has. The app shows it once its next update reads the new data.
+
+## Summary of New Capabilities
+
+- App and Slack replies record machine, harness and model, like Telegram.
+- Phone history reads return the origin of each agent message, with the display setting.
+- Slack replies carry the origin footer.
+- A Slack message is never sent without its origin record; a pre-recorded notice keeps the conversation informed.
+
+## Evidence
+
+Unit tests cover the evidence model, the reply-origin ladder, the Slack ledger (refusal, recovery, rotation, the reserved notice), the app store field and its replication, the batched Telegram lookup and its index. An integration test drives the three phone reads and the Slack reply route through the production device authenticator; an end-to-end test boots the server with no Telegram, replies in an app conversation and reads the recorded origin back from the phone route.

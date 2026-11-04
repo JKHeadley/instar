@@ -9,6 +9,8 @@
  * Download validates paths to prevent traversal attacks.
  */
 
+// CONTRACT-EVIDENCE: EXEMPT — message-origin-all-platforms adds no Slack API method, parameter or response field: the origin ledger wraps the existing calls (reading only `ts`) and the footer is one more line of `text`. Echo's Slack bot token was revoked 2026-07-01, so no live contract run is available.
+import type { SlackOriginLedger } from './SlackOriginLedger.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { SlackApiClient } from './SlackApiClient.js';
@@ -26,7 +28,7 @@ export class FileHandler {
   private botToken: string;
   private filesDir: string;
 
-  constructor(api: SlackApiClient, botToken: string, stateDir: string) {
+  constructor(api: SlackApiClient, botToken: string, stateDir: string, private readonly originLedger?: SlackOriginLedger) {
     this.api = api;
     this.botToken = botToken;
     this.filesDir = path.join(stateDir, 'slack-files');
@@ -67,6 +69,10 @@ export class FileHandler {
     }
 
     // Step 3: Complete upload and share to channel
+    // message-origin-all-platforms §3: the share puts a file (and its comment) in front of a user,
+    // so it records its origin first; a refused record refuses the share.
+    const intent = this.originLedger?.beginIntent('files.completeUploadExternal', channelId, options?.threadTs ?? null);
+    // (A refused share throws SlackOriginRecordingError here; the caller's mirror reports "failed".)
     await this.api.call('files.completeUploadExternal', {
       files: [{ id: urlResponse.file_id as string, title: title || fileName }],
       channel_id: channelId,
@@ -74,6 +80,7 @@ export class FileHandler {
       ...(options?.threadTs ? { thread_ts: options.threadTs } : {}),
       ...(options?.initialComment ? { initial_comment: options.initialComment } : {}),
     });
+    if (intent) this.originLedger!.completeReceipt(intent, null);
   }
 
   /**

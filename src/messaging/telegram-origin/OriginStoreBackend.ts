@@ -143,6 +143,7 @@ export class OriginStoreBackend {
         child_id TEXT NOT NULL, origin_id TEXT NOT NULL, transport TEXT NOT NULL, account_id TEXT NOT NULL,
         chat_id TEXT NOT NULL, topic_id TEXT NOT NULL, message_id TEXT NOT NULL, PRIMARY KEY(child_id,message_id));
       CREATE INDEX IF NOT EXISTS telegram_origin_receipt_namespace ON telegram_origin_platform_receipts(transport,account_id,chat_id,topic_id,message_id,origin_id);
+      CREATE INDEX IF NOT EXISTS telegram_origin_receipt_message ON telegram_origin_platform_receipts(transport,chat_id,message_id,origin_id);
       CREATE TABLE IF NOT EXISTS telegram_origin_notices (
         child_id TEXT PRIMARY KEY, alert_destination_id TEXT NOT NULL, generation TEXT NOT NULL,
         owner_boot_id TEXT NOT NULL, claim_token TEXT NOT NULL UNIQUE, request_bytes INTEGER NOT NULL,
@@ -1012,6 +1013,36 @@ export class OriginStoreBackend {
         phase: a.phase, outcome: a.outcome, receiptJson: a.receipt_json, createdAt: a.created_at, resolvedAt: a.resolved_at })) };
   }
 
+  /** message-origin-all-platforms §4: the producer evidence behind a page of delivered Telegram
+   * messages, in one bounded read-only query. Never loads attempts, children or archives: a purged
+   * record answers `archived`. Two origins for one message answer `ambiguous`. */
+  lookupOriginEvidence(input: { transport: string; chatId: string; messageIds: string[] }): {
+    results: Array<{ messageId: string; state: 'found' | 'ambiguous' | 'archived'; producer?: Record<string, unknown> }> } {
+    id(input.transport); id(input.chatId);
+    if (!Array.isArray(input.messageIds) || input.messageIds.length > 100) fail('invalid-message-ids');
+    for (const messageId of input.messageIds) id(messageId);
+    if (!input.messageIds.length) return { results: [] };
+    const marks = input.messageIds.map(() => '?').join(',');
+    const rows = this.db.prepare(`SELECT DISTINCT r.message_id messageId, o.origin_id originId, o.record_json recordJson
+      FROM telegram_origin_platform_receipts r JOIN telegram_origins o ON o.origin_id=r.origin_id
+      WHERE r.transport=? AND r.chat_id=? AND r.message_id IN (${marks})`)
+      .all(input.transport, input.chatId, ...input.messageIds) as Array<{ messageId: string; originId: string; recordJson: string | null }>;
+    const byMessage = new Map<string, Array<{ originId: string; recordJson: string | null }>>();
+    for (const row of rows) byMessage.set(row.messageId, [...(byMessage.get(row.messageId) ?? []), row]);
+    const results: Array<{ messageId: string; state: 'found' | 'ambiguous' | 'archived'; producer?: Record<string, unknown> }> = [];
+    for (const [messageId, matches] of byMessage) {
+      if (new Set(matches.map(m => m.originId)).size > 1) { results.push({ messageId, state: 'ambiguous' }); continue; }
+      const recordJson = matches[0].recordJson;
+      if (recordJson === null) { results.push({ messageId, state: 'archived' }); continue; }
+      try {
+        const envelope = JSON.parse((JSON.parse(recordJson) as { envelopeJson: string }).envelopeJson) as Record<string, unknown>;
+        const producer: Record<string, unknown> = {};
+        for (const key of ['producerKind', 'originMachineId', 'originMachineName', 'harnessName', 'machine', 'harness', 'model']) producer[key] = envelope[key];
+        results.push({ messageId, state: 'found', producer });
+      } catch { results.push({ messageId, state: 'archived' }); }
+    }
+    return { results };
+  }
   listOrigins(query: OriginListQuery = {}): OriginListPage {
     return this.withArchiveReads(() => this.listOriginsInReadScope(query));
   }

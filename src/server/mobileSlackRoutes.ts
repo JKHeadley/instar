@@ -26,6 +26,10 @@
  * this agent ⇒ 503 `slack-not-configured`. `mobilePairing.slackOwnerUserId` unset ⇒ 503
  * `slack-owner-unset` (the owner's Slack identity is a config field, never inferred).
  */
+import { DEFAULT_ORIGIN_DISPLAY } from '../messaging/telegram-origin/OriginPresentation.js';
+import type { OriginDisplaySettings } from '../messaging/telegram-origin/types.js';
+import { deviceOriginRow, type MessageOriginEvidence } from '../messaging/messageOrigin.js';
+import type { SlackOriginLedger } from '../messaging/slack/SlackOriginLedger.js';
 import crypto from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
@@ -81,6 +85,8 @@ export interface MobileSlackBridge {
   conversations(): SlackAppConversation[];
   /** Recent rows of one channel or thread, oldest first, bounded. */
   history(conv: SlackAppConversation, limit: number): SlackHistoryRow[];
+  /** The recorded origin of an agent message (§4), or why there is none. Absent ⇒ no ledger here. */
+  originOf?(conv: SlackAppConversation, ts: string): { evidence: MessageOriginEvidence } | { missing: 'not-retained' | 'other-machine' | 'unlinked' };
   /** The latest row of each conversation, for the list (bounded read). */
   lastActivity(): Map<string, { at: string; preview: string }>;
   /** The Slack inbound dispatch, with the operator as sender. Null when it is not wired yet. */
@@ -113,6 +119,8 @@ export interface MobileSlackRouteDeps {
   sentinel?: { decideInboundDisposition(message: string, topicId?: number): Promise<{ disposition: string }> } | null;
   /** This machine's id: the `machine` the list puts on Slack rows, which every Slack request must name. */
   machineId: () => string;
+  /** The agent's current origin display bits (message-origin-all-platforms §5). Absent ⇒ all on. */
+  originDisplay?: () => OriginDisplaySettings;
   now?: () => number;
 }
 
@@ -195,6 +203,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     const isBefore = (at: string, eventId: string) => !before || before.length !== 2 || at < before[0]! || (at === before[0] && eventId < before[1]!);
 
     const isDevice = principalDevice(req) !== null;
+    const display = deps.originDisplay?.() ?? { ...DEFAULT_ORIGIN_DISPLAY };
     const byId = new Map<string, Record<string, unknown>>();
     // App-sent messages from the store, with their verdict (the store is the evidence, never rotated).
     let stored: ReturnType<typeof svc.store.browseMessages>['messages'] = [];
@@ -226,7 +235,14 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
         text = slackDeviceText(r.text, recorded);
         if (recorded) { try { attachments = attachmentRows(recorded, svc); } catch { attachments = null; } } // @silent-fallback-ok — the row is still returned, path-free
       }
-      byId.set(eventId, { eventId, messageId: r.ts, role: r.fromUser ? 'participant' : 'agent', fromUser: r.fromUser, senderName: r.senderName, text, at: r.at, originVerified: 'none', ...(attachments ? { attachments } : {}) });
+      // §4: an agent row carries its recorded origin (Slack rows never claim `false`).
+      let origin: Record<string, unknown> | null = null;
+      if (!r.fromUser) {
+        const found = ready.bridge.originOf?.(conv, r.ts) ?? { missing: 'other-machine' as const };
+        origin = 'evidence' in found ? deviceOriginRow(found.evidence, display) as unknown as Record<string, unknown>
+          : deviceOriginRow(null, display, found.missing) as unknown as Record<string, unknown>;
+      }
+      byId.set(eventId, { eventId, messageId: r.ts, role: r.fromUser ? 'participant' : 'agent', fromUser: r.fromUser, senderName: r.senderName, text, at: r.at, originVerified: 'none', ...(attachments ? { attachments } : {}), ...(origin ? { origin } : {}) });
     }
     const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
     const desc = [...byId.values()].sort((x, y) => cmp(String(y.at), String(x.at)) || cmp(String(y.eventId), String(x.eventId)));
@@ -474,6 +490,8 @@ export interface SlackAdapterLike {
   uploadFile?(channelId: string, filePath: string, title?: string, options?: { threadTs?: string; initialComment?: string; filename?: string }): Promise<void>;
   getSessionForChannel(routingKey: string): string | null;
   isAuthorized(userId: string): boolean;
+  /** message-origin-all-platforms §3: the origin ledger every Slack send writes to first. */
+  originLedger?: Pick<SlackOriginLedger, 'lookup'>;
 }
 
 /** The slice of ConversationRegistry the bridge uses. */
@@ -539,6 +557,9 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
       return d.registry.list({ platform: 'slack', limit: 500 })
         .filter((x) => x.entry.origin !== 'replicated')
         .map((x) => toConv(x.key, x.entry));
+    },
+    originOf(conv, ts) {
+      return d.adapter.originLedger ? d.adapter.originLedger.lookup(conv.channelId, ts) : { missing: 'other-machine' };
     },
     history(conv, limit) {
       const out = new Map<string, SlackHistoryRow>();

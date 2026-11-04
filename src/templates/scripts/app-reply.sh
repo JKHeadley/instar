@@ -126,6 +126,22 @@ DELIVERY_ID="${INSTAR_DELIVERY_ID:-}"
 [[ "$DELIVERY_ID" =~ ^[0-9a-fA-F-]{16,64}$ ]] || DELIVERY_ID=""
 [ -n "$DELIVERY_ID" ] || DELIVERY_ID=$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)
 
+# message-origin-all-platforms §2: pass this session's origin credential so the server can record
+# which harness and model wrote the reply. A surviving session can be re-enrolled after a server
+# update without killing its process: read only its own server-published tmux credential, never
+# print it. Absent or unverifiable, the server records what it can and the reply still sends.
+if [ -n "${INSTAR_SESSION_NAME:-}" ] && command -v tmux >/dev/null 2>&1; then
+  ORIGIN_ENV_ROW=$(tmux show-environment -t "=${INSTAR_SESSION_NAME}" INSTAR_ORIGIN_TOKEN 2>/dev/null || true)
+  case "$ORIGIN_ENV_ROW" in
+    INSTAR_ORIGIN_TOKEN=ior1_*) INSTAR_ORIGIN_TOKEN="${ORIGIN_ENV_ROW#INSTAR_ORIGIN_TOKEN=}" ;;
+  esac
+  unset ORIGIN_ENV_ROW
+fi
+case "${INSTAR_ORIGIN_TOKEN:-}" in
+  ior1_*) ;;
+  *) INSTAR_ORIGIN_TOKEN="" ;;
+esac
+
 set +e
 RESPONSE=$(curl -sS --connect-timeout 3 --max-time "$MAX_TIME" -w "\n%{http_code}" -X POST \
   "http://localhost:${PORT}/app/session-reply" \
@@ -133,6 +149,7 @@ RESPONSE=$(curl -sS --connect-timeout 3 --max-time "$MAX_TIME" -w "\n%{http_code
   ${AUTH:+-H "Authorization: Bearer $AUTH"} \
   ${AGENT_ID:+-H "X-Instar-AgentId: $AGENT_ID"} \
   ${INSTAR_BIND_TOKEN:+-H "X-Instar-Bind-Token: $INSTAR_BIND_TOKEN"} \
+  ${INSTAR_ORIGIN_TOKEN:+-H "X-Instar-Origin-Session: $INSTAR_ORIGIN_TOKEN"} \
   ${DELIVERY_ID:+-H "X-Instar-DeliveryId: $DELIVERY_ID"} \
   -d "$BODY_JSON")
 CURL_STATUS=$?
