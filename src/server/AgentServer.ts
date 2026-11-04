@@ -983,6 +983,7 @@ export class AgentServer {
     quotaPoller?: import('../core/QuotaPoller.js').QuotaPoller;
     quotaAwareScheduler?: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler;
     proactiveSwapMonitor?: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor;
+    usageWallRescue?: import('../core/UsageWallRescue.js').UsageWallRescue;
     inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
     enrollmentWizard?: import('../core/EnrollmentWizard.js').EnrollmentWizard;
     accountFollowMeRevocation?: import('../core/AccountFollowMeRevocation.js').AccountFollowMeRevocation;
@@ -5349,6 +5350,7 @@ export class AgentServer {
       quotaPoller: options.quotaPoller ?? null,
       quotaAwareScheduler: options.quotaAwareScheduler ?? null,
       proactiveSwapMonitor: options.proactiveSwapMonitor,
+      usageWallRescue: options.usageWallRescue,
       inUseAccountResolver: options.inUseAccountResolver,
       enrollmentWizard: options.enrollmentWizard ?? null,
       accountFollowMeRevocation: options.accountFollowMeRevocation ?? null,

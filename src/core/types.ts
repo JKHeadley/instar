@@ -4952,6 +4952,23 @@ export interface InstarConfig {
      *  swap engine to move it). Unset → spawns use the default config (no-op). */
     pinSessionsToPool?: boolean;
     /**
+     * Usage-wall rescue (docs/specs/usage-wall-rescue.md) — ON by default
+     * (operator-approved 2026-11-04). The one switch for: a session that sits
+     * at its account's usage wall is moved to an account with room and
+     * continues (tagged OR untagged sessions); new claude-code spawns are
+     * tagged with a pool account so no session rides the default login
+     * untagged; a spawn never lands on a default login the pool knows is
+     * walled. EFFECTIVE only while the pool holds 2+ usable accounts of the
+     * session's framework — with 0 or 1 nothing changes. An explicit
+     * `autoSwapOnRateLimit: false` turns the wall swap off; an explicit
+     * `pinSessionsToPool: false` limits spawn tagging to the walled-default
+     * guard. Read live.
+     */
+    wallRescue?: {
+      /** Default true. `false` turns the whole rescue off. */
+      enabled?: boolean;
+    };
+    /**
      * DARK by default: the PRE-LIMIT swap. When enabled, the ProactiveSwapMonitor
      * moves a session OFF an account that crosses `thresholdPct` on its binding
      * window BEFORE it walls — vs. the reactive `autoSwapOnRateLimit`, which only

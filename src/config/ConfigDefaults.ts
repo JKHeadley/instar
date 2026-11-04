@@ -2180,6 +2180,15 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // (a baked-in false would dark dev agents too — the #1001 shape the dark-gate lint
   // forbids for a dev-gated block).
   subscriptionPool: {
+    // Usage-wall rescue (docs/specs/usage-wall-rescue.md) — ON by default,
+    // operator-approved 2026-11-04. A session at its account's usage wall moves
+    // to an account with room; spawns are tagged with a pool account. Only
+    // EFFECTIVE when the pool holds 2+ usable accounts of the framework, so a
+    // 0/1-account agent is unchanged. Existing agents receive this through
+    // applyDefaults (add-missing): an operator's explicit `false` is kept.
+    wallRescue: {
+      enabled: true,
+    },
     // Assisted re-login is authority-bearing browser + credential work. Ship
     // fleet-dark and dry-run-first; a development install must still make an
     // explicit local promotion to approval/live after its controlled canary.
