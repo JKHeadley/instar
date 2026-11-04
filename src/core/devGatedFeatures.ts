@@ -858,6 +858,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Raw blocker lifecycle timing ledger and bounded summary/trend read surfaces.',
     justification: 'Observe-only and machine-local: records already-persisted commitment lifecycle events into a bounded SQLite ledger; no LLM spend, outbound messages, autonomous action, scalar score, or gating authority. Routes are reads and pool scope only proxies bounded per-origin results.',
   },  {
+    name: 'maturationLadder',
+    configPath: 'maturation.ladder.enabled',
+    description: 'The measured path to default-on: per-rung thresholds for every switched-off feature, evidence reads, D7 scoring and raising to the review (GET /maturation/ladder).',
+    justification: 'Measures and raises only: it reads logs off the event loop, adds in-memory subjects to the existing scorer, and records commitments with no beacon. It never moves a feature by itself; POST /maturation/moves applies only a decision the review model made, behind floors that can only refuse. No LLM spend, no outbound messages. Raising needs maturation.ladder.reviewTopic, unset by default.',
+  },
+  {
     name: 'maturationBoard',
     configPath: 'maturationBoard.enabled',
     description: 'Read-only maturation board: every maturing feature with its review verdict, live owner facts, follow-ups and recorded dates (GET /maturation/board, /dashboard/maturation/).',

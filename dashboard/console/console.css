@@ -1136,6 +1136,9 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .mb-card dt { color: var(--text-faint); font-size: 14px; padding-top: 1px; }
 .mb-card dd { margin: 0; font-size: 16px; line-height: 1.4; }
 .mb-card dd[data-tone="bad"] { color: #ef5b5b; font-weight: 600; }
+.mb-numbers { margin: 10px 0 0; padding: 0; list-style: none; font-size: 15px; line-height: 1.5; }
+.mb-numbers li[data-tone="bad"] { color: #ef5b5b; }
+.mb-numbers li[data-tone="ok"] { color: #34c38f; }
 .mb-card dd[data-tone="ok"] { color: #34c38f; font-weight: 600; }
 .mb-next { margin: 0 0 8px; }
 .mb-detail-line { margin: 0 0 8px; color: var(--text-muted); }

@@ -289,7 +289,7 @@ export function historySeries(reviews: ParsedReview[]): ParsedReview[] {
 
 // ── Live owner facts ───────────────────────────────────────────────────────
 
-export type OwnerSource = 'd7' | 'rollout' | 'dark-flag' | 'guard';
+export type OwnerSource = 'd7' | 'rollout' | 'dark-flag' | 'guard' | 'ladder';
 
 export interface OwnerEntry {
   machine: string;
@@ -477,6 +477,8 @@ export function buildMaturationBoard(input: BoardInput): MaturationBoardResponse
     if (claimed.has(o)) continue;
     // A rollout or dark-flag/D7 record is a maturing feature; a bare guard row is not.
     if (o.source === 'guard') continue;
+    // A composed flag moves with its parent and is shown there, not as a row of its own.
+    if (o.source === 'ladder' && o.facts.state === 'composed') continue;
     const key = o.ownerId.endsWith('.enabled') ? o.ownerId.slice(0, -'.enabled'.length) : o.ownerId;
     extraIds.add(key);
   }
@@ -598,7 +600,8 @@ export function buildMaturationBoard(input: BoardInput): MaturationBoardResponse
       }
     }
 
-    const title = row?.title ?? null;
+    const ladderTitle = attached.find(o => o.source === 'ladder')?.facts.title;
+    const title = row?.title ?? (typeof ladderTitle === 'string' ? ladderTitle : null);
     features.push({
       id,
       title,
