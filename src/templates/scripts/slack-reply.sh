@@ -9,6 +9,9 @@
 #   cat <<'EOF' | slack-reply.sh CHANNEL_ID
 #   Multi-line message here
 #   EOF
+#   cat <<'EOF' | slack-reply.sh --native-reference U1234567890 --native-reference C1234567890  # in a bound session
+#   Thanks <@U1234567890>. See <#C1234567890>.
+#   EOF
 #
 # THREAD_TS (optional, 2nd positional): when this session belongs to a Slack
 # thread (threads-as-sessions, §5.3), pass the thread id so the reply lands in
@@ -39,6 +42,16 @@ if [ "$SESSION_MODE" = false ] && [ $# -gt 0 ] && [[ "$1" =~ ^[0-9]+\.[0-9]+$ ]]
   THREAD_TS="$1"
   shift
 fi
+
+# An explicit author choice is required before raw Slack references become
+# active. Inbound text, copied files, and ordinary replies remain literal.
+NATIVE_REFERENCES=()
+while [ "${1:-}" = '--native-reference' ]; do
+  [ $# -ge 2 ] || { echo "Error: --native-reference needs a Slack ID or URL" >&2; exit 1; }
+  NATIVE_REFERENCES+=("$2")
+  shift 2
+done
+REFS_JSON=$(printf '%s\n' "${NATIVE_REFERENCES[@]}" | python3 -c 'import json,sys; print(json.dumps([s.strip() for s in sys.stdin if s.strip()]))')
 
 # Read message from args or stdin
 if [ $# -gt 0 ]; then
@@ -99,7 +112,7 @@ fi
 # Build JSON body — include thread_ts only when threading a reply.
 if [ "$SESSION_MODE" = true ]; then
   [ -n "${INSTAR_BIND_TOKEN:-}" ] || { echo "Error: spawned Slack session binding is missing" >&2; exit 1; }
-  BODY_JSON="{\"text\": ${ESCAPED}, \"conversationId\": ${INSTAR_CONVERSATION_ID}}"
+  BODY_JSON="{\"text\": ${ESCAPED}, \"conversationId\": ${INSTAR_CONVERSATION_ID}, \"nativeReferences\": ${REFS_JSON}}"
 elif [ -n "$THREAD_TS" ]; then
   BODY_JSON="{\"text\": ${ESCAPED}, \"thread_ts\": \"${THREAD_TS}\"}"
 else

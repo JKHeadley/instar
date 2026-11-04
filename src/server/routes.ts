@@ -21549,9 +21549,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // The labels are outgoing content: the deterministic credential wall sees them too (§5).
         if (originFooter && detectOutboundCredential(originFooter).detected) originFooter = '';
       } catch { originFooter = ''; } // @silent-fallback-ok — the footer is presentation; it never fails the send
+      const nativeReferences = fromSession && Array.isArray(metadata?.nativeReferences)
+        ? metadata.nativeReferences.filter((v: unknown): v is string => typeof v === 'string' && v.length <= 2048).slice(0, 16)
+        : [];
       const ts = await sendWithAdapterTimeout(
         () => SlackOriginLedger.runInScope({ evidence: replyOrigin, channel: scopeChannel, threadTs: scopeThread },
-          () => ctx.slack!.sendToChannel(channelId, text, { thread_ts, formatMode, ...(originFooter ? { originFooter } : {}) })),
+          () => ctx.slack!.sendToChannel(channelId, text, { thread_ts, formatMode, nativeReferences, ...(originFooter ? { originFooter } : {}) })),
         SLACK_ADAPTER_SEND_TIMEOUT_MS,
       );
 
@@ -21621,8 +21624,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // authority (slack-session-reply-relay §Authority and source binding).
   router.post('/slack/session-reply', async (req, res) => {
     const bodyKeys = Object.keys(req.body ?? {}).sort();
-    if (bodyKeys.some(key => key !== 'conversationId' && key !== 'text')) {
-      res.status(400).json({ error: 'spawned Slack session body permits only conversationId and text' });
+    if (bodyKeys.some(key => key !== 'conversationId' && key !== 'text' && key !== 'nativeReferences')) {
+      res.status(400).json({ error: 'spawned Slack session body permits only conversationId, text, and nativeReferences' });
       return;
     }
     if ('channelId' in (req.body ?? {}) || 'thread_ts' in (req.body ?? {}) || 'threadTs' in (req.body ?? {})) {
@@ -21659,6 +21662,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     (req.params as Record<string, string>).channelId = target.channelId;
     req.body.thread_ts = target.threadTs ?? undefined;
+    if (Array.isArray(req.body.nativeReferences)) req.body.metadata = { nativeReferences: req.body.nativeReferences };
     await handleSlackReply(req, res);
   });
 

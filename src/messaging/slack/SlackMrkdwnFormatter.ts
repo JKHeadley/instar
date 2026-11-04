@@ -217,6 +217,31 @@ function extractInlineCode(text: string, code: string[]): string {
   });
 }
 
+/** Preserve only the native references an agent can deliberately author.
+ * Broadcast tokens are deliberately absent: they can notify a whole workspace.
+ * Code is extracted first, so quoted examples never become live references.
+ */
+function extractNativeReferences(text: string, raw: string[], allowed: ReadonlySet<string>): string {
+  return text.replace(/<([^<>\n]{1,2048})>/g, (whole, body: string) => {
+    let reference: string | null = null;
+    if ((/^@U[A-Z0-9]{8,12}$/.test(body) || /^#[CG][A-Z0-9]{3,12}$/.test(body)) && allowed.has(body.slice(1))) {
+      reference = whole;
+    } else {
+      const separator = body.indexOf('|');
+      const url = separator < 0 ? body : body.slice(0, separator);
+      const label = separator < 0 ? null : body.slice(separator + 1);
+      const safe = isSafeUrl(url);
+      if (safe && allowed.has(url) && !url.includes('|') && (!label || !label.includes('|'))) {
+        reference = `<${escapeMrkdwn(safe)}${label === null ? '' : `|${escapeMrkdwn(label)}`}>`;
+      }
+    }
+    if (reference === null) return whole;
+    const index = raw.length;
+    raw.push(reference);
+    return makeSentinel(KIND_RAW, index);
+  });
+}
+
 // ─── Blockquotes ────────────────────────────────────────────────────────────
 
 /**
@@ -424,13 +449,14 @@ function splicePlaceholders(text: string, seg: Segments): string {
 
 // ─── Main entry ─────────────────────────────────────────────────────────────
 
-function convertMarkdownToMrkdwn(text: string): string {
+function convertMarkdownToMrkdwn(text: string, nativeReferences: readonly string[]): string {
   const seg: Segments = { pre: [], table: [], code: [], raw: [] };
 
   // 1. Extract literal segments (never re-processed → no double-escaping).
   text = extractFencedCode(text, seg.pre);
   text = extractTables(text, seg.table);
   text = extractInlineCode(text, seg.code);
+  if (nativeReferences.length) text = extractNativeReferences(text, seg.raw, new Set(nativeReferences));
   // 2. Escape remaining prose ONCE (&, <, > — Slack's three specials).
   text = escapeMrkdwn(text);
   // 3. Restore blockquote markers the escape consumed.
@@ -459,6 +485,7 @@ function convertMarkdownToMrkdwn(text: string): string {
 export function formatForSlack(
   text: string,
   mode: SlackFormatMode = 'mrkdwn',
+  nativeReferences: readonly string[] = [],
 ): SlackFormatResult {
   if (mode === 'legacy-passthrough') {
     return {
@@ -477,7 +504,7 @@ export function formatForSlack(
   // exactly today's pre-formatter behavior).
   if (working.length > MAX_INPUT_LENGTH) {
     return {
-      text,
+      text: escapeMrkdwn(working),
       modeApplied: 'mrkdwn',
       conversionSkipped: true,
       legacyPassthrough: false,
@@ -485,7 +512,7 @@ export function formatForSlack(
   }
 
   return {
-    text: convertMarkdownToMrkdwn(working),
+    text: convertMarkdownToMrkdwn(working, nativeReferences),
     modeApplied: 'mrkdwn',
     conversionSkipped: false,
     legacyPassthrough: false,
@@ -521,9 +548,12 @@ export function applySlackFormatter(
   didFormat: boolean;
 } {
   const callerMode = (params as { _formatMode?: SlackFormatMode })._formatMode;
+  const nativeReferences = Array.isArray(params._nativeReferences)
+    ? params._nativeReferences.filter((v): v is string => typeof v === 'string') : [];
   // Strip internal flags before sending to the Slack API.
   const stripped: Record<string, unknown> = { ...params };
   delete (stripped as { _formatMode?: SlackFormatMode })._formatMode;
+  delete stripped._nativeReferences;
 
   const mode: SlackFormatMode = callerMode ?? configMode ?? 'mrkdwn';
 
@@ -537,7 +567,7 @@ export function applySlackFormatter(
     return { outgoingParams: stripped, didFormat: false };
   }
 
-  const result = formatForSlack(stripped.text, mode);
+  const result = formatForSlack(stripped.text, mode, nativeReferences);
   return {
     outgoingParams: { ...stripped, text: result.text },
     didFormat: !result.legacyPassthrough && !result.conversionSkipped,
