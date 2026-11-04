@@ -8,6 +8,7 @@ import { withTestRunnerBound } from './tests/setup/test-runner-bound.config-eval
 const unitWorkers = resolveUnitLaneWorkers();
 
 export default defineConfig(withTestRunnerBound('unit', {
+  ...(process.env.VITEST_CACHE_DIR ? { cacheDir: process.env.VITEST_CACHE_DIR } : {}),
   // Inline (empty) PostCSS config: without it Vite searches parent directories for one and
   // aborts on the first unreadable package.json (EPERM). The feedback executor's sandbox
   // read-denies the agent home around its workspace, so every confined vitest run failed.

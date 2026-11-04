@@ -229,7 +229,7 @@ const FLAKY_TESTS = [
 
 ];
 
-const ISOLATED_CACHE_DIR = process.env.INSTAR_VITEST_CACHE_DIR?.trim();
+const ISOLATED_CACHE_DIR = process.env.INSTAR_VITEST_CACHE_DIR?.trim() || process.env.VITEST_CACHE_DIR?.trim();
 
 export default defineConfig(withTestRunnerBound('push', {
   // Inline (empty) PostCSS config: without it Vite searches parent directories for one and
