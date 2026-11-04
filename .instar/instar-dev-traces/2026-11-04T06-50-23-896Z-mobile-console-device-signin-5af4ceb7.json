@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "mobile-console-device-signin",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-04T06:50:23.896Z",
+  "artifactPath": "upgrades/side-effects/mobile-console-device-signin.md",
+  "artifactSha256": "92c5c1c5f75f25ef433c06de32510c0720fc24e8360cdda7977fd50894b1f51d",
+  "specPath": "docs/specs/mobile-console-device-signin.md",
+  "coveredFiles": [
+    "tests/e2e/mobile-console-ticket-lifecycle.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Test-only fix inside the Tier-2 console sign-in change.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
