@@ -1,0 +1,43 @@
+{
+  "version": 3,
+  "slug": "threadline-unread-peer-receipt",
+  "sessionId": "0f903681-6f31-4d1b-b4fd-53b4e7a960f8",
+  "timestamp": "2026-11-04T18:36:19.542Z",
+  "artifactPath": "upgrades/side-effects/threadline-unread-peer-receipt.md",
+  "artifactSha256": "04741834eefbc52266422191e26f09a167b0eeec0df2d7157a6abb0a8ae8ca82",
+  "coveredFiles": [
+    "docs/specs/threadline-unread-peer-receipt.eli16.md",
+    "src/commands/server.ts",
+    "src/threadline/PipeSessionSpawner.ts",
+    "src/threadline/ThreadlineBootstrap.ts",
+    "src/threadline/ThreadlineRouter.ts",
+    "src/threadline/autoAck.ts",
+    "src/threadline/client/ThreadlineClient.ts",
+    "src/threadline/relayUnknownSenderTrust.ts",
+    "tests/integration/threadline/relay-ack-waits-for-delivery.test.ts",
+    "tests/unit/a2a-relay-unknown-sender-trust.test.ts",
+    "tests/unit/threadline/ack-stage-wiring.test.ts",
+    "tests/unit/threadline/autoAck.test.ts",
+    "upgrades/next/threadline-unread-peer-receipt.md",
+    "upgrades/side-effects/threadline-unread-peer-receipt.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible bug repair: a typed status is capability-gated to upgraded peers, does not change processing authority or durable state, and a revert restores prior behavior.",
+  "eli16Path": "docs/specs/threadline-unread-peer-receipt.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/threadline-unread-peer-receipt.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One receipt is triggered by one admitted peer message after an undelivered verdict. The inbound ID ledger deduplicates replays and a separate five-per-minute sender limit bounds output; the receipt is consumed without routing and cannot trigger another receipt."
+  }
+}

@@ -24,6 +24,7 @@ import {
   createRelayAckSettler,
   relayOutcomeDelivered,
   describeUndeliveredRouterResult,
+  sendUndeliveredReceipt,
   type RelayRoutingOutcome,
   NO_REPLY_ACK_MESSAGE,
   type RelayAckStageDeps,
@@ -311,6 +312,21 @@ describe('deferred relay ack (ACT-091 — no reply promised for an undelivered m
       expect(settleDeferredRelayAck(d, input(i as Record<string, unknown>), { delivered: true })).toBe('skipped-policy');
       expect(d.sendAck).not.toHaveBeenCalled();
     }
+  });
+});
+
+describe('unread server receipt', () => {
+  it('uses an independent flood limit and never consumes the processed-ack allowance', () => {
+    const sendReceipt = vi.fn();
+    const isReceiptRateLimited = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const isAckRateLimited = vi.fn(() => false);
+    const deps = { autoAckEnabled: true, sendAck: vi.fn(), sendReceipt, isAckRateLimited, isReceiptRateLimited, recordDelivery: vi.fn() };
+    const input = { senderFingerprint: PEER, threadId: 'thread-1', trustLevel: 'trusted', msgType: 'chat' };
+    expect(sendUndeliveredReceipt(deps, input, 'queued')).toBe(true);
+    expect(sendUndeliveredReceipt(deps, input, 'queued')).toBe(false);
+    expect(sendReceipt).toHaveBeenCalledTimes(1);
+    expect(isAckRateLimited).not.toHaveBeenCalled();
+    expect(deps.sendAck).not.toHaveBeenCalled();
   });
 });
 

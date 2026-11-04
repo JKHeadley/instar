@@ -30,7 +30,7 @@ describe('relay handler (src/commands/server.ts)', () => {
   it('recognises acks structurally through the shared helper; the prefix test only spares the reply waiter', () => {
     expect(handler).toContain('isAutoAckInbound({ type: msgType, text: textContent })');
     expect(handler).not.toMatch(/textContent\.startsWith\('Message received/);
-    expect(handler).toContain('if (waiter && !isAutoAck && !looksLikeAutoAckText(textContent))');
+    expect(handler).toContain("if (waiter && !isAutoAck && (msgType === 'receipt' ? trustLevel !== 'untrusted' : !looksLikeAutoAckText(textContent)))");
     // The loose test is used exactly once in the handler, and never to stop a message.
     expect(handler.split('looksLikeAutoAckText(').length - 1).toBe(1);
   });
@@ -54,8 +54,27 @@ describe('relay handler (src/commands/server.ts)', () => {
 
   it('returns as soon as the stage consumed an ack', () => {
     const stage = handler.indexOf('runRelayAckStage(');
-    const inbox = handler.indexOf('appendCanonicalInboxEntry(');
+    const inbox = handler.indexOf('// Canonical inbox write');
     expect(handler.slice(stage, inbox)).toMatch(/if \(ackStage === 'ack-consumed'\) \{[\s\S]*?return;\s*\}/);
+  });
+
+  it('consumes an unread receipt after the ack stage without routing or closing the processed tracker', () => {
+    const stage = handler.indexOf('runRelayAckStage(');
+    const receipt = handler.indexOf("if (msgType === 'receipt') {");
+    const inbox = handler.indexOf('// Canonical inbox write');
+    expect(receipt).toBeGreaterThan(stage);
+    expect(receipt).toBeLessThan(inbox);
+    expect(handler.slice(receipt, inbox)).toContain('return;');
+    expect(handler.slice(receipt, inbox)).not.toContain('recordRelayDelivery()');
+  });
+
+  it('wires unread receipts on all undelivered exits and only for capable peers', () => {
+    expect(src).toContain("'unread-receipt-v1'");
+    expect(handler).toContain("result.queued ? 'queued' : 'refused'");
+    expect(handler).toContain("sendUndeliveredReceipt(relayAckDeps, relayAckInput, 'queued');");
+    expect(handler).toContain("if (!delivered) sendUndeliveredReceipt(relayAckDeps, relayAckInput, 'refused');");
+    expect(src).toContain('const isReceiptRateLimited = createAckRateLimiter(');
+    expect(handler).toContain('isReceiptRateLimited,');
   });
 
   it('gives the stage the ledger ticket and the real delivery recorder', () => {
@@ -146,14 +165,16 @@ describe('relay handler (src/commands/server.ts)', () => {
     // Cut the rest of the handler at every bare `return;`: each piece is the
     // code that runs between one exit and the next.
     const pieces = afterStage.split(/\breturn;/);
-    // ack-consumed, gate suppress, pipe spawned, listener — then the router exit, the function's end.
-    expect(pieces).toHaveLength(5);
+    // Ack and unread receipt are both control messages with no consumer promise.
+    expect(pieces).toHaveLength(6);
     const count = (piece: string) => piece.split('relayAck.settle(').length - 1;
     // The inbound-ack exit is the one deliberate non-settle: an ack is never acked.
     expect(pieces[0]).toContain("if (ackStage === 'ack-consumed')");
     expect(count(pieces[0])).toBe(0);
+    expect(pieces[1]).toContain("if (msgType === 'receipt')");
+    expect(count(pieces[1])).toBe(0);
     // Every routed exit before the router settles exactly once on the way out.
-    for (const piece of pieces.slice(1, -1)) expect(count(piece)).toBe(1);
+    for (const piece of pieces.slice(2, -1)) expect(count(piece)).toBe(1);
     // The router exit settles exactly once too — but at one of TWO sites: now,
     // from `result.delivered`, or late, from `deliveryPending` (a reply queued
     // in a busy session). The one-shot settler makes that one ack, not two.

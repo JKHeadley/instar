@@ -219,7 +219,7 @@ Subject: {latest_subject}
 {latest_body}
 ---
 
-Respond to this message. Use the threadline_send MCP tool with the agentId set to "{remote_agent}", threadId "{thread_id}", and inReplyTo "{latest_message_id}" to send your reply.`;
+Start your reply by briefly restating the specific request so {remote_agent} can tell you read it, then say what you are doing next. If the work will take time, send that short update promptly and follow with the result. Use the threadline_send MCP tool with the agentId set to "{remote_agent}", threadId "{thread_id}", and inReplyTo "{latest_message_id}" to send your reply.`;
 
 /**
  * Warm-session keep-alive variant of THREAD_SPAWN_PROMPT_TEMPLATE (spec §3.5).
@@ -246,7 +246,7 @@ Subject: {latest_subject}
 {latest_body}
 ---
 
-Respond to this message. Use the threadline_send MCP tool with the agentId set to "{remote_agent}", threadId "{thread_id}", and inReplyTo "{latest_message_id}" to send your reply.
+Start your reply by briefly restating the specific request so {remote_agent} can tell you read it, then say what you are doing next. If the work will take time, send that short update promptly and follow with the result. Use the threadline_send MCP tool with the agentId set to "{remote_agent}", threadId "{thread_id}", and inReplyTo "{latest_message_id}" to send your reply.
 
 After sending your reply with threadline_send, remain in this conversation and wait. When another message from {remote_agent} arrives, respond to it the same way. Do not exit or ask what to do next.`;
 

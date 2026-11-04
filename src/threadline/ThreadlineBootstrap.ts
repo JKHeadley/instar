@@ -525,7 +525,7 @@ export async function bootstrapThreadline(
       name: config.agentName,
       relayUrl,
       framework: config.framework ?? 'instar',
-      capabilities: config.capabilities ?? ['chat', 'threadline'],
+      capabilities: [...new Set([...(config.capabilities ?? ['chat', 'threadline']), 'unread-receipt-v1'])],
       visibility: config.visibility ?? 'public',
       stateDir: config.stateDir,
     });

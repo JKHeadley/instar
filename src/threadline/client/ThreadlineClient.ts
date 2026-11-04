@@ -492,6 +492,11 @@ export class ThreadlineClient extends EventEmitter {
     return this.sendPlaintextTyped(AUTO_ACK_TYPE, recipientId, content, threadId);
   }
 
+  /** Transport receipt only: the server has the message, but no session has read it. */
+  sendReceipt(recipientId: AgentFingerprint, content: string, threadId?: string): string {
+    return this.sendPlaintextTyped('receipt', recipientId, content, threadId);
+  }
+
   /**
    * Every typed plaintext send funnels here. Ordinary chat (`type: 'chat'`) to a pinned invite
    * peer is NEVER sent as plaintext (spec D9): when the pin resolves, it goes ENCRYPTED to the

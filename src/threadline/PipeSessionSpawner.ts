@@ -233,6 +233,7 @@ CONSTRAINTS (non-negotiable, tool-enforced):
 - This is a pipe-mode session. You will auto-exit when done.
 - You have read-only access to paths listed in your tool config.
 - Reply ONLY via the threadline_send tool. Include the threadId: ${request.threadId}.
+- Begin your reply with a short summary of the request and what you are doing next, so the sender knows you read it.
 - If the request requires file modifications, code changes, or complex analysis,
   reply saying you'll handle it in a full session and exit.
 

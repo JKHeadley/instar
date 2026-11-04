@@ -62,6 +62,7 @@ describe('relay unknown-sender trust — decision logic (real AgentTrustManager)
     expect(classifyRelayPlaintextOperation(undefined)).toBe('message');
     expect(classifyRelayPlaintextOperation('chat')).toBe('message');
     expect(classifyRelayPlaintextOperation('ack')).toBe('ack');
+    expect(classifyRelayPlaintextOperation('receipt')).toBe('ack'); // unread control receipt, not a chat operation
     expect(classifyRelayPlaintextOperation('query')).toBe('query');
     expect(classifyRelayPlaintextOperation('')).toBe(INVALID_RELAY_OPERATION);
     expect(classifyRelayPlaintextOperation(7)).toBe(INVALID_RELAY_OPERATION);

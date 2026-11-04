@@ -54,6 +54,9 @@ const ACK_OP = 'ack';
  */
 export function classifyRelayPlaintextOperation(wireType: unknown): string {
   if (wireType === undefined || wireType === null || wireType === 'chat') return 'message';
+  // The unread receipt is a control response like an ack. It cannot request
+  // work, and must pass the same plaintext/downgrade gates for pinned peers.
+  if (wireType === 'receipt') return 'ack';
   if (typeof wireType === 'string' && wireType) return wireType;
   return INVALID_RELAY_OPERATION;
 }

@@ -32,6 +32,7 @@ import {
   decodePlaintextPayload,
   describeUndeliveredRouterResult,
   runRelayAckStage,
+  sendUndeliveredReceipt,
   type RelayAckStageDeps,
 } from '../../../src/threadline/autoAck.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
@@ -79,6 +80,7 @@ describe('relay ack waits for delivery on a non-topic-bound thread (ACT-091)', (
       autoAckEnabled: true,
       isAckRateLimited: createAckRateLimiter(5, 60_000),
       sendAck: (to, text, threadId) => { client.sendAck(to, text, threadId); },
+      sendReceipt: (to, text, threadId) => { client.sendReceipt(to, text, threadId); },
       recordDelivery: vi.fn(),
     };
   });
@@ -117,7 +119,7 @@ describe('relay ack waits for delivery on a non-topic-bound thread (ACT-091)', (
     expect(acks()).toEqual([{ to: PEER, threadId, text: DEFAULT_AUTO_ACK_MESSAGE, type: 'ack', resend: false }]);
   });
 
-  it('the spawn is denied → the router reports not delivered and NO ack goes out', async () => {
+  it('the spawn is denied → a truthful unread receipt goes out, without a processing ack', async () => {
     const threadId = crypto.randomUUID();
     const evaluate = vi.fn().mockResolvedValue({ approved: false, reason: 'session limit reached' });
     const relayAck = begin(threadId);
@@ -125,17 +127,19 @@ describe('relay ack waits for delivery on a non-topic-bound thread (ACT-091)', (
     expect(result.delivered).toBe(false);
     expect(result.handled).toBe(false);
     expect(relayAck.settle(result.delivered === true ? 'router-delivered' : 'router-undelivered')).toBe('skipped-undelivered');
-    expect(wire).toHaveLength(0);
+    expect(sendUndeliveredReceipt(deps, { senderFingerprint: PEER, threadId, trustLevel: 'trusted', msgType: 'chat' }, 'refused')).toBe(true);
+    expect(acks()).toEqual([{ to: PEER, threadId, text: expect.stringContaining('no session has read'), type: 'receipt', resend: false }]);
   });
 
-  it('the spawn is queued → accepted but not delivered, and NO ack goes out', async () => {
+  it('the spawn is queued → the peer receives an unread, queued receipt', async () => {
     const threadId = crypto.randomUUID();
     const evaluate = vi.fn().mockResolvedValue({ approved: false, queued: true, reason: 'queued behind another spawn' });
     const relayAck = begin(threadId);
     const result = await router(evaluate).handleInboundMessage(envelope(threadId), relayCtx);
     expect(result).toMatchObject({ delivered: false, queued: true });
     expect(relayAck.settle(result.delivered === true ? 'router-delivered' : 'router-undelivered')).toBe('skipped-undelivered');
-    expect(wire).toHaveLength(0);
+    expect(sendUndeliveredReceipt(deps, { senderFingerprint: PEER, threadId, trustLevel: 'trusted', msgType: 'chat' }, 'queued')).toBe(true);
+    expect(acks()).toEqual([{ to: PEER, threadId, text: expect.stringContaining('waiting for a session'), type: 'receipt', resend: false }]);
   });
 
   /**

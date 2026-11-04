@@ -307,7 +307,7 @@ import { ConversationStore } from '../threadline/ConversationStore.js';
 import { ThreadLog } from '../threadline/ThreadLog.js';
 import { ThreadMessageRecorder } from '../threadline/recordThreadMessage.js';
 import { recordInboundAck } from '../threadline/recordInboundAck.js';
-import { isAutoAckInbound, autoAckRecognition, looksLikeAutoAckText, createAckRateLimiter, runRelayAckStage, createRelayAckSettler, describeUndeliveredRouterResult } from '../threadline/autoAck.js';
+import { isAutoAckInbound, autoAckRecognition, looksLikeAutoAckText, createAckRateLimiter, runRelayAckStage, createRelayAckSettler, describeUndeliveredRouterResult, sendUndeliveredReceipt } from '../threadline/autoAck.js';
 import { type LiveInjectOutcome } from '../threadline/TopicLinkageHandler.js';
 import type { InjectionConfirmation } from '../core/SessionManager.js';
 
@@ -20149,6 +20149,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         // Per-sender ack rate limiter (flood protection; an ack itself is never
         // acked — see runRelayAckStage / docs/specs/a2a-ack-never-acked.md).
         const isAckRateLimited = createAckRateLimiter(config.threadline?.ackRateLimit ?? 5, 60 * 1000);
+        const isReceiptRateLimited = createAckRateLimiter(config.threadline?.ackRateLimit ?? 5, 60 * 1000);
 
         // Wire router reference into InboundMessageGate
         if (threadline.inboundGate) {
@@ -20226,7 +20227,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (resolvedName) waiter = threadlineReplyWaiters.get(resolvedName);
             }
           }
-          if (waiter && !isAutoAck && !looksLikeAutoAckText(textContent)) {
+          if (waiter && !isAutoAck && (msgType === 'receipt' ? trustLevel !== 'untrusted' : !looksLikeAutoAckText(textContent))) {
             waiter.resolve(textContent);
             // Don't return — still process the message normally for routing
           }
@@ -20255,7 +20256,15 @@ export async function startServer(options: StartOptions): Promise<void> {
             autoAckEnabled: config.threadline?.autoAck !== false,
             autoAckMessage: config.threadline?.autoAckMessage,
             isAckRateLimited,
+            isReceiptRateLimited,
             sendAck: (to: string, text: string, threadId?: string) => { threadlineRelayClient!.sendAck(to, text, threadId); },
+            // An older peer routes unknown control types as chat and could
+            // spawn a worker to answer the receipt. Only send when the relay
+            // advertises support for the non-routing receipt type.
+            sendReceipt: threadlineRelayClient!.getKnownAgents().some(a =>
+              a.agentId === senderFingerprint && a.capabilities?.includes('unread-receipt-v1'))
+              ? (to: string, text: string, threadId?: string) => { threadlineRelayClient!.sendReceipt(to, text, threadId); }
+              : undefined,
             recordDelivery: recordRelayDelivery,
           };
           const relayAckInput = {
@@ -20266,6 +20275,35 @@ export async function startServer(options: StartOptions): Promise<void> {
           const ackStage = runRelayAckStage(relayAckDeps, relayAckInput);
           if (ackStage === 'ack-consumed') {
             console.log(`[relay] delivery ack from ${senderName} (thread: ${msg.threadId ?? 'none'}, by ${autoAckRecognition({ type: msgType, text: textContent })}) recorded — not acked, not routed`);
+            return;
+          }
+
+          if (msgType === 'receipt') {
+            // A receipt reports server custody, not a read or a reply. It may
+            // satisfy a synchronous caller, but must never spawn a session or
+            // close the sender's processed-ack tracker.
+            console.log(`[relay] unread server receipt from ${senderName} (thread: ${msg.threadId ?? 'none'})`);
+            if (trustLevel !== 'untrusted') {
+              try { listenerManager?.appendCanonicalInboxEntry({
+                from: senderFingerprint, senderName, trustLevel,
+                threadId: msg.threadId ?? getSyntheticThreadId(senderFingerprint),
+                text: textContent, messageId: msg.messageId,
+              }); } catch (err) { console.warn(`[relay] Receipt inbox append failed: ${err instanceof Error ? err.message : err}`); }
+              const originTopicId = msg.threadId ? threadResumeMap.get(msg.threadId)?.originTopicId : undefined;
+              if (originTopicId !== undefined && telegram) {
+                void telegram.sendToTopic(originTopicId, `${senderName}: ${textContent}`).catch(err => console.warn(`[relay] Receipt topic post failed: ${err instanceof Error ? err.message : err}`));
+              } else if (telegramBridge) {
+                void telegramBridge.mirrorInbound({
+                  threadId: msg.threadId ?? getSyntheticThreadId(senderFingerprint),
+                  remoteAgent: senderFingerprint, remoteAgentName: senderName,
+                  text: textContent, messageId: msg.messageId,
+                }).catch(err => console.warn(`[tg-bridge] receipt mirror: ${err instanceof Error ? err.message : err}`));
+              } else if (collaborationSurfacer) {
+                void collaborationSurfacer.notify({ threadId: msg.threadId ?? getSyntheticThreadId(senderFingerprint),
+                  title: 'Peer has your message but has not read it', body: textContent, peerName: senderName })
+                  .catch(err => console.warn(`[relay] Receipt hub notice failed: ${err instanceof Error ? err.message : err}`));
+              }
+            }
             return;
           }
 
@@ -20480,6 +20518,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const listenerAck = relayAck.settle(listenerManager.hasLiveReader() ? 'listener-delivered' : 'listener-queued');
             if (listenerAck === 'skipped-undelivered') {
               console.warn(`[relay] Auto-ack withheld for ${senderName} (thread: ${msg.threadId ?? 'none'}) — queued in the listener inbox; no live listener is proven`);
+              sendUndeliveredReceipt(relayAckDeps, relayAckInput, 'queued');
             }
             return;
           }
@@ -20542,11 +20581,13 @@ export async function startServer(options: StartOptions): Promise<void> {
               const late = relayAck.settle(delivered ? 'router-delivered' : 'router-undelivered');
               if (delivered) console.log(`[relay] Queued reply for ${senderName} (thread: ${result.threadId}) left the prompt (${reason}) — delivered${late === 'sent' ? ', ack sent' : ''}`);
               else console.warn(`[relay] Auto-ack withheld for ${senderName} (thread: ${result.threadId}) — queued text never left the prompt (${reason})`);
+              if (!delivered) sendUndeliveredReceipt(relayAckDeps, relayAckInput, 'refused');
             });
           } else {
             const ackOutcome = relayAck.settle(result.delivered === true ? 'router-delivered' : 'router-undelivered');
             if (ackOutcome === 'skipped-undelivered') {
               console.warn(`[relay] Auto-ack withheld for ${senderName} (thread: ${result.threadId}) — ${describeUndeliveredRouterResult(result)}`);
+              sendUndeliveredReceipt(relayAckDeps, relayAckInput, result.queued ? 'queued' : 'refused');
             }
           }
         }

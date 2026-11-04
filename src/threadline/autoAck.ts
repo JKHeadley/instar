@@ -119,6 +119,10 @@ export interface RelayAckStageDeps {
   isAckRateLimited: (fingerprint: string) => boolean;
   /** Sends the ack on the wire (`ThreadlineClient.sendAck`). May throw. */
   sendAck: (recipient: string, text: string, threadId?: string) => void;
+  /** A non-terminal server receipt; never closes the sender's processing tracker. */
+  sendReceipt?: (recipient: string, text: string, threadId?: string) => void;
+  /** Separate flood budget; unread statuses must not consume real ack capacity. */
+  isReceiptRateLimited?: (fingerprint: string) => boolean;
   /** Records the implicit delivery ack (`recordInboundAck`). Never throws. */
   recordDelivery: () => void;
 }
@@ -196,6 +200,26 @@ export function settleDeferredRelayAck(
   return sendRelayAckIfAllowed(deps, input, deps.autoAckMessage ?? DEFAULT_AUTO_ACK_MESSAGE) ? 'sent' : 'skipped-policy';
 }
 
+/** Tell a peer what the server knows when no live session got its message. */
+export function sendUndeliveredReceipt(
+  deps: RelayAckStageDeps,
+  input: Pick<RelayAckStageInput, 'senderFingerprint' | 'threadId' | 'trustLevel' | 'msgType'>,
+  state: 'queued' | 'refused',
+): boolean {
+  if (!deps.sendReceipt || !deps.autoAckEnabled || input.trustLevel === 'untrusted' || input.msgType === 'status' || input.msgType === 'receipt') return false;
+  if (deps.isReceiptRateLimited?.(input.senderFingerprint)) return false;
+  const text = state === 'queued'
+    ? 'My server received your message, but no session has read it yet. It is waiting for a session. Please retry if no reply follows.'
+    : 'My server received your message, but no session has read it. I cannot start a session right now; please retry if you do not hear back soon.';
+  try {
+    deps.sendReceipt(input.senderFingerprint, text, input.threadId);
+    return true;
+  } catch (err) {
+    console.error(`[relay] Unread receipt failed: ${err instanceof Error ? err.message : err}`);
+    return false;
+  }
+}
+
 /**
  * Where the relay inbound handler's routing ended (ACT-091). Each terminal exit
  * of the handler names exactly one:
@@ -220,8 +244,8 @@ export function settleDeferredRelayAck(
  *                           without a live session receiving the message. This
  *                           includes a capacity refusal the spawn manager
  *                           QUEUED (`queued: true`, e.g. "Session limit reached
- *                           (5/5)"). Deliberately no ack, and no separate
- *                           "queued" receipt: see `describeUndeliveredRouterResult`.
+ *                           (5/5)"). Deliberately no processed ack. A capable
+ *                           peer can receive a separate unread control receipt.
  *  - `no-reply`           — the warrants-reply gate decided not to answer
  *                           (a no-reply verdict or an exhausted loop budget).
  */
@@ -243,25 +267,15 @@ export type RelayAckSettlement =
 /**
  * The log wording for a router result that reached no live session.
  *
- * DECISION (ACT-091, queued spawns): a capacity refusal that the spawn manager
- * queued (`queued: true`; only reported when `SpawnRequestManager`'s queue
- * actually admitted the payload) keeps the message for a later spawn. It still
- * gets NO ack, and we do not send a third fixed "received, queued" text:
- *
- *  - The queue is in memory, bounded per agent and globally, and expires entries
- *    after 10 minutes, and a later arrival can evict an older entry. "Queued" is
- *    a hope of a later session, not a hand-off to one, so a receipt would claim
- *    more than we know.
- *  - A new ack text is recognised as an ack only through the `ack` wire type.
- *    `isAutoAckInbound` matches untyped text only when it is exactly
- *    DEFAULT_AUTO_ACK_MESSAGE, and `looksLikeAutoAckText` (prefix "Message
- *    received." / "Message received,") only spares a reply waiter and stops
- *    nothing. A peer from before the wire type routes ANY ack text to a session
- *    as a message, so a queued receipt would spend a session on that peer at the
- *    moment our own side is out of sessions.
+ * A capacity refusal that the spawn manager queued (`queued: true`) keeps the
+ * message for a later attempt but does not prove a live reader has it. It gets
+ * no processed ack. The separate unread `receipt` control type states only the
+ * server's observation, and is sent only to peers advertising support. The
+ * queue remains in memory, bounded and expiring; the receipt does not promise
+ * that it will survive.
  *
  * If the queued message later reaches a session, that session's reply is the
- * sender's acknowledgement. The wording below names the queued case so the log
+ * sender's processing acknowledgement. The wording below names the queued case so the log
  * says "queued", not "lost".
  */
 export function describeUndeliveredRouterResult(result: { queued?: boolean; error?: string }): string {
