@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 const ROOT = path.resolve(__dirname, '../..');
 
 const EXEMPT: Record<string, string> = {
+  'src/core/memorySandboxProbe.ts': 'runs `claude --version` only; no model call, so no key is needed',
   'src/core/Prerequisites.ts': '--version only, no model call',
   'src/core/crossModelReviewer.ts': '--help only; its model calls go through ClaudeCliIntelligenceProvider',
   'src/feedback-factory/execute/buildFeedbackExecutor.ts': '--version only',
