@@ -49,7 +49,7 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
     expect(DEVICE_ALLOWLIST.some((r) => r.method !== 'GET' && r.re.test('/sessions/a/output'))).toBe(false);
     expect(DEVICE_ALLOWLIST.some((r) => r.method !== 'POST' && r.re.test('/sessions/a/input'))).toBe(false);
   });
-  it('the owner-only rules are exactly this named set (session screen + capacity, ops, and plans and people screens)', () => {
+  it('the owner-only rules are exactly this named set (session screen + capacity, ops, plans and people, and messages and insights screens)', () => {
     // Each owner-only rule, named by one request it admits. A new owner-only route adds its line here.
     const named: Array<[string, string]> = [
       ['GET', '/sessions/a/output'],
@@ -63,6 +63,8 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/mobile/plans'],
       ['GET', '/mobile/learned'],
       ['GET', '/mobile/agents'],
+      ['GET', '/mobile/messages'],
+      ['GET', '/mobile/insights'],
     ];
     const ownerOnly = DEVICE_ALLOWLIST.filter((r) => r.ownerOnly);
     for (const [method, p] of named) expect(ownerOnly.filter((r) => r.method === method && r.re.test(p)), `${method} ${p}`).toHaveLength(1);

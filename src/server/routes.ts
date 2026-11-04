@@ -14,6 +14,7 @@ import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS 
 import { stripViewSignatures } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
+import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
 import type { AutoExpiryHold } from '../core/types.js';
@@ -37603,6 +37604,66 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return { state: 'ok', rows: view.peers as unknown[], failedMachineIds: failed.filter((f) => f.error !== 'offline').map((f) => f.machineId) };
       },
       channels: () => channelRegistryReport(),
+      nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+      bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    });
+  }
+
+  // Native Messages to you and Insights reads for the iPhone app (docs/specs/mobile-native-phones-messages.md):
+  // owner phone or bearer; trimmed summaries, read across the machines that answer (each peer's
+  // `?scope=local` summary). Read-only; insights are read cached-only, so a phone read never spends on a model.
+  {
+    /** Peer answers are read up to this many bytes (the 5 s timeout covers the body too); past it the read stops and the peer counts as not answering. */
+    const PEER_BODY_MAX_BYTES = 500_000;
+    const onlinePeers = () => (ctx.resolvePeerUrls?.() ?? []).filter((p) => ctx.machinePoolRegistry?.getCapacity(p.machineId)?.online !== false);
+    // One online peer's `?scope=local` summary, or not answering. At most MAX_PHONE_PEERS are read; the rest count as not answering.
+    const peerSummaries = async (path: string): Promise<Array<{ machineId: string; state: 'ok'; data: unknown } | { machineId: string; state: 'unreached' }>> => {
+      const peers = onlinePeers();
+      const read = peers.slice(0, MAX_PHONE_PEERS); // bounded-input-reviewed: a list of peer machines to ask, not text fed to a prompt; the rest are counted as not answering
+      const skipped = peers.slice(MAX_PHONE_PEERS).map((p) => ({ machineId: p.machineId, state: 'unreached' as const }));
+      const answers = await Promise.all(read.map(async (p) => {
+        try {
+          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, path, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (!r.ok) { await r.body?.cancel().catch(() => undefined); return { machineId: p.machineId, state: 'unreached' as const }; } // @silent-fallback-ok — releasing an unread body; the peer is already counted as not answering
+          // Read incrementally and stop at the byte cap, so an oversized answer is never buffered whole.
+          const reader = r.body?.getReader();
+          if (!reader) return { machineId: p.machineId, state: 'unreached' as const };
+          const chunks: Uint8Array[] = [];
+          let size = 0;
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            size += value.byteLength;
+            if (size > PEER_BODY_MAX_BYTES) { await reader.cancel().catch(() => undefined); return { machineId: p.machineId, state: 'unreached' as const }; } // @silent-fallback-ok — an oversized peer answer is counted as not answering
+            chunks.push(value);
+          }
+          return { machineId: p.machineId, state: 'ok' as const, data: JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown };
+        } catch {
+          // @silent-fallback-ok — a peer that is down, slow or unreadable is named as not answering in the answer.
+          return { machineId: p.machineId, state: 'unreached' as const };
+        }
+      }));
+      return [...answers, ...skipped];
+    };
+    mountMobilePhonesMessagesRoutes(router, {
+      originStatus: async () => (ctx.telegramOrigin ? { state: 'ok', data: await ctx.telegramOrigin.deliverySummaryInputs() } : { state: 'off' }),
+      heldForward: () => ctx.telegramOrigin?.heldForwardHealth() ?? null,
+      peerMessages: () => peerSummaries('/mobile/messages?scope=local'),
+      topicName: (topicId) => {
+        const id = Number(topicId);
+        const name = Number.isSafeInteger(id) && id > 0 ? ctx.telegram?.getTopicName(id) ?? null : null;
+        return isVerifiedChannelName('telegram', id, name) ? name : null;
+      },
+      insights: async () => (ctx.dashboardInsightEngine ? { state: 'ok', data: await ctx.dashboardInsightEngine.getAll({ cachedOnly: true }) } : { state: 'off' }),
+      peerInsights: () => peerSummaries('/mobile/insights?scope=local'),
+      offlineMachineIds: () => {
+        if (!ctx.meshSelfId) return [];
+        const online = new Set([...onlinePeers().map((p) => p.machineId), ctx.meshSelfId]);
+        return (ctx.machinePoolRegistry?.getCapacities() ?? []).map((m) => m.machineId).filter((id) => !online.has(id));
+      },
       nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
       bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     });
