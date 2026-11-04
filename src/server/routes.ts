@@ -217,6 +217,7 @@ import { discardPrepared, prepareReplyFiles } from '../core/appMediaReplyFiles.j
 import { MEDIA_PATH_WAIT_MS } from '../core/AppMediaReplicator.js';
 import { isNeverServed } from './fileRoutes.js';
 import { isMobileMediaEnabled } from './mobilePairingRoutes.js';
+import { mountMobileOpsRoutes } from './mobileOpsRoutes.js';
 import { joinTelegramHistory, withTelegramMediaForDevice } from './mobileConversationRoutes.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
 import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
@@ -23333,7 +23334,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // liveness, load, clock-skew status). Backs the Machines dashboard tab. Always
   // 200 (Bearer-auth via the global middleware); `enabled:false` + an empty/
   // single-machine view on installs where the pool registry isn't wired (dark).
-  router.get('/pool', (_req, res) => {
+  // The /pool view, shared with the phone's GET /mobile/machines (mobile-native-ops-screens).
+  function poolView(): Record<string, unknown> {
     const sync = ctx.coordinator ? ctx.coordinator.getSyncStatus() : null;
     // Rope-condition decoration: the registry's `online` flag feeds placement and
     // ages out on the conservative failoverThreshold (~15 min observed), while
@@ -23351,7 +23353,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ...(m.liveness ? { livenessLine: formatLivenessLine(m.liveness, nickOf) } : {}),
     }));
     const sshEnrollment = ctx.mutualSshHealth ? ctx.mutualSshHealth() : null;
-    res.json({
+    return {
       enabled: !!ctx.machinePoolRegistry,
       // dashboard-new-session-machine-choice §3.5 — the page labels its OWN server.
       selfMachineId: ctx.meshSelfId ?? null,
@@ -23367,7 +23369,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         : null,
       machines,
       sshEnrollment,
-    });
+    };
+  }
+
+  router.get('/pool', (_req, res) => {
+    res.json(poolView());
+  });
+
+  // Native "is everything up" reads for the iPhone app (docs/specs/mobile-native-ops-screens.md):
+  // GET /mobile/jobs, /mobile/commitments, /mobile/machines. Owner phone or bearer; trimmed summaries
+  // of the same reads the console's Schedule, Promises and Machines pages use.
+  mountMobileOpsRoutes(router, {
+    jobsView: () => jobsPoolMerge(ctx.scheduler ? buildLocalJobs() : []),
+    schedulerRunning: () => ctx.scheduler !== null,
+    commitmentsView: async () => (ctx.commitmentTracker ? commitmentsMeshRows(false) : null),
+    poolView,
+    nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+    selfVersion: () => ProcessIntegrity.getInstance()?.runningVersion ?? ctx.config.version ?? null,
+    bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
   });
 
   router.get('/machines/ssh-health', (_req, res) => {
@@ -34986,6 +35005,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ schemaVersion: 2, scope, ...pool, generatedAt: new Date().toISOString() });
   });
 
+  // The ?scope=mesh merge, shared with the phone's GET /mobile/commitments (mobile-native-ops-screens).
+  async function commitmentsMeshRows(activeOnly: boolean): Promise<unknown[]> {
+    const tracker = ctx.commitmentTracker!;
+    const syncMod = await import('../core/CommitmentsSync.js');
+    const own = activeOnly ? tracker.getActive() : tracker.getAll();
+    const replicas = ctx.commitmentReplicaStore?.allReplicas() ?? [];
+    return syncMod.mergeCommitmentViews({
+      ownMachineId: ctx.meshSelfId ?? 'local',
+      own,
+      replicas: activeOnly
+        ? replicas.map((r) => ({ ...r, records: r.records.filter((c) => c.status === 'pending') }))
+        : replicas,
+    });
+  }
+
   router.get('/commitments', async (req, res) => {
     if (!ctx.commitmentTracker) {
       res.json({ enabled: false, commitments: [] });
@@ -34998,17 +35032,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // (own rows only); a dark replica layer degrades mesh scope to own
     // rows too (200, never 503 — single-machine agents answer normally).
     if (req.query.scope === 'mesh') {
-      const syncMod = await import('../core/CommitmentsSync.js');
-      const own = status === 'active' ? ctx.commitmentTracker.getActive() : ctx.commitmentTracker.getAll();
-      const replicas = ctx.commitmentReplicaStore?.allReplicas() ?? [];
-      const rows = syncMod.mergeCommitmentViews({
-        ownMachineId: ctx.meshSelfId ?? 'local',
-        own,
-        replicas: status === 'active'
-          ? replicas.map((r) => ({ ...r, records: r.records.filter((c) => c.status === 'pending') }))
-          : replicas,
-      });
-      res.json({ enabled: true, scope: 'mesh', commitments: rows });
+      res.json({ enabled: true, scope: 'mesh', commitments: await commitmentsMeshRows(status === 'active') });
       return;
     }
     if (status === 'active') {

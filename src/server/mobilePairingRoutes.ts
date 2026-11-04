@@ -1502,6 +1502,11 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     { method: 'POST', re: /^\/mobile\/device\/presence-key$/, statuses: active, body: 'json' },
     { method: 'POST', re: /^\/mobile\/console-ticket\/challenge$/, statuses: active, body: 'json' },
     { method: 'POST', re: /^\/mobile\/console-ticket$/, statuses: active, body: 'json' },
+    // Native schedule, promises and machines (mobile-native-ops-screens): read-only trimmed
+    // summaries; the routes themselves refuse a phone whose person is not the owner.
+    { method: 'GET', re: /^\/mobile\/jobs$/, statuses: active, body: 'none', ownerOnly: true },
+    { method: 'GET', re: /^\/mobile\/commitments$/, statuses: active, body: 'none', ownerOnly: true },
+    { method: 'GET', re: /^\/mobile\/machines$/, statuses: active, body: 'none', ownerOnly: true },
     { method: 'POST', re: /^\/mobile\/devices\/[^/]+\/revoke$/, statuses: new Set(['pending', 'active', 'declined', 'expired']), unassignedOk: true },
     // The native session screen (docs/specs/mobile-native-session-screen.md): read a session's pane
     // and type plain text into it. Owner phones only; each has its own bucket so polling and typing
