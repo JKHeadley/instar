@@ -51,6 +51,7 @@ import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
 import { reportDeliverySinkFailure } from '../messaging/DeliverySinkFailure.js';
 import { RerouteRefusedError } from '../core/rerouteRefusedError.js';
+import { SessionCapacityRefusedError } from '../core/sessionCapacityRefusedError.js';
 import { jobCapacityNotice, jobFailureNotice } from '../messaging/userNotices.js';
 import type { JobClaimManager } from './JobClaimManager.js';
 import type { JobLeaseClaimStore } from './JobLeaseClaimStore.js';
@@ -1654,6 +1655,10 @@ export class JobScheduler {
   }
 
   private recordCapacityWait(slug: string): void {
+    // A pending capacity episode owns the operator notice until this job can
+    // run again. Suspend any older per-job failure reminder, including one
+    // left by a pre-upgrade capacity error; a later real failure re-arms it.
+    this.clearFailureAlertState(slug);
     const key = 'job-capacity-episode';
     const prior = this.state.get<JobCapacityEpisode>(key);
     const episode: JobCapacityEpisode = prior?.version === 1
@@ -2805,7 +2810,7 @@ export class JobScheduler {
         metadata: { slug: job.slug, reason, model: job.model },
       });
     }).catch((err) => {
-      if (err instanceof RerouteRefusedError) {
+      if (err instanceof RerouteRefusedError || err instanceof SessionCapacityRefusedError) {
         this.releaseClaim(job.slug, 'waited');
         this.enqueue(job.slug, reason, true);
         return;

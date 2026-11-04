@@ -84,6 +84,7 @@ vi.mock('node:child_process', () => {
 });
 
 import { SessionManager } from '../../src/core/SessionManager.js';
+import { SessionCapacityRefusedError } from '../../src/core/sessionCapacityRefusedError.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 import type { SessionManagerConfig } from '../../src/core/types.js';
@@ -104,6 +105,7 @@ const CLAUDE = '/usr/local/bin/claude';
 function makeManager(opts: {
   mode?: 'off' | 'auto' | 'force';
   maxRerouted?: number;
+  maxSessions?: number;
   framework?: 'claude-code' | 'codex-cli' | 'gemini-cli';
   credit?: () => Promise<{ remainingUsd: number; totalUsd: number } | null>;
 }, tmpDir: string): { manager: SessionManager; state: StateManager; maintenanceTick: () => Promise<void> } {
@@ -116,7 +118,7 @@ function makeManager(opts: {
     frameworkBinaryPaths: { 'claude-code': CLAUDE, 'codex-cli': '/usr/local/bin/codex', 'gemini-cli': '/usr/local/bin/gemini' },
     projectName: 'proj',
     projectDir: tmpDir,
-    maxSessions: 10,
+    maxSessions: opts.maxSessions ?? 10,
     protectedSessions: [],
     completionPatterns: ['has been automatically paused'],
     ...(opts.framework ? { framework: opts.framework } : {}),
@@ -392,6 +394,55 @@ describe('headless-spawn reroute', () => {
     await expect(
       manager.spawnSession({ name: 'job-force-2', prompt: 'p' }),
     ).rejects.toThrow(/Reroute refused \(force-mode\)/);
+  });
+
+  it('global cap: one scheduler job can use a guarded reserve beyond the conversation limit', async () => {
+    const { manager } = makeManager({ mode: 'force', maxRerouted: 6, maxSessions: 2 }, tmpDir);
+    await manager.spawnSession({ name: 'conversation-one', prompt: 'p' });
+    await manager.spawnSession({ name: 'conversation-two', prompt: 'p' });
+    await expect(manager.spawnSession({ name: 'direct-spawn', prompt: 'p', jobSlug: 'claimed-job' }))
+      .rejects.toBeInstanceOf(SessionCapacityRefusedError);
+    const health = await manager.spawnSession({ name: 'health-job', prompt: 'p', jobSlug: 'health-check', triggeredBy: 'scheduler:scheduled' });
+    expect(health.jobSlug).toBe('health-check');
+    expect(manager.confinedRerouteCapacity()).toBe('saturated');
+    await expect(manager.spawnSession({ name: 'second-job', prompt: 'p', jobSlug: 'other-job', triggeredBy: 'scheduler:scheduled' }))
+      .rejects.toBeInstanceOf(SessionCapacityRefusedError);
+  });
+
+  it('global cap: high memory pressure closes the extra scheduler slot', async () => {
+    const { manager } = makeManager({ mode: 'off', maxSessions: 2 }, tmpDir);
+    await manager.spawnSession({ name: 'conversation-one', prompt: 'p' });
+    await manager.spawnSession({ name: 'conversation-two', prompt: 'p' });
+    (manager as unknown as { currentMemoryPressure: () => string }).currentMemoryPressure = () => 'high';
+    expect(manager.confinedRerouteCapacity()).toBe('saturated');
+    await expect(manager.spawnSession({ name: 'health-job', prompt: 'p', jobSlug: 'health-check', triggeredBy: 'scheduler:scheduled' }))
+      .rejects.toBeInstanceOf(SessionCapacityRefusedError);
+  });
+
+  it('global cap: simultaneous scheduler requests cannot both take the reserve', async () => {
+    const { manager } = makeManager({ mode: 'off', maxSessions: 2 }, tmpDir);
+    await manager.spawnSession({ name: 'conversation-one', prompt: 'p' });
+    await manager.spawnSession({ name: 'conversation-two', prompt: 'p' });
+    const results = await Promise.allSettled([
+      manager.spawnSession({ name: 'health-job', prompt: 'p', jobSlug: 'health-check', triggeredBy: 'scheduler:scheduled' }),
+      manager.spawnSession({ name: 'other-job', prompt: 'p', jobSlug: 'other-job', triggeredBy: 'scheduler:scheduled' }),
+    ]);
+    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(r => r.status === 'rejected' && r.reason instanceof SessionCapacityRefusedError)).toHaveLength(1);
+  });
+
+  it('global cap: a scheduler job still has one slot when conversations exceed the soft cap', async () => {
+    const { manager, state } = makeManager({ mode: 'force', maxRerouted: 6, maxSessions: 2 }, tmpDir);
+    for (let i = 0; i < 3; i++) {
+      const tmuxSession = `proj-conversation-${i}`;
+      state.saveSession({ id: `conversation-${i}`, name: `conversation-${i}`, status: 'running',
+        tmuxSession, startedAt: new Date().toISOString(), framework: 'claude-code', launchLane: 'interactive' });
+      mockTmuxSessions.add(tmuxSession);
+    }
+    expect(manager.confinedRerouteCapacity()).toBe('available');
+    const health = await manager.spawnSession({ name: 'health-job', prompt: 'p', jobSlug: 'health-check', triggeredBy: 'scheduler:scheduled' });
+    expect(health.jobSlug).toBe('health-check');
+    expect(manager.confinedRerouteCapacity()).toBe('saturated');
   });
 });
 
