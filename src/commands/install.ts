@@ -6,6 +6,7 @@
  * continue it.
  */
 import { looksLikeClaudeToken, writeClaudeKeyToConfig as writeClaudeToken } from '../core/claudeChildAuth.js';
+import { codePageUrlForOrigin } from '../server/dashboardPaths.js';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { randomInt } from 'node:crypto';
 import fs from 'node:fs';
@@ -547,7 +548,7 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
         if (pairing.tailscale) env.print('  Your iPhone needs Tailscale on, signed in to the same account as this computer.');
         env.print(telegram
           ? '  The app then asks for a code. Your agent sends it to you privately in Telegram.'
-          : `  The app then asks for a code. To see it, open ${origin}/dashboard on your phone, enter your PIN, and open Phones.`);
+          : `  The app then asks for a code. To see it, open ${codePageUrlForOrigin(origin!)} on your phone and enter your PIN. Tap Copy, then paste it into the app.`);
       }
       env.print('');
       return { kind: 'done' };

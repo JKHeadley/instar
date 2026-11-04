@@ -337,7 +337,7 @@ export async function runRunnerCanary(input: {
   await mustSucceed('sqlite-open', node(`const D=require('better-sqlite3');const d=new D(':memory:');if(d.prepare('select 1 as x').get().x!==1)process.exit(1);console.log('sqlite-ok')`));
   if (input.fullGate) {
     await mustSucceed('base-lint-gate', input.fullGate.lintCommand, CONFINED_COMMAND_TIMEOUT_MS);
-    await mustSucceed('base-unit-smoke', `npx vitest run --no-cache ${input.fullGate.smokeTests.map(shq).join(' ')}`, CONFINED_COMMAND_TIMEOUT_MS);
+    await mustSucceed('base-unit-smoke', `./node_modules/.bin/vitest run --no-cache ${input.fullGate.smokeTests.map(shq).join(' ')}`, CONFINED_COMMAND_TIMEOUT_MS);
   }
   if (fs.existsSync(path.join(paths.publishClone, `.canary-${fx.nonce}`))) results.push({ probe: 'publish-clone-untouched', expect: 'fail', ok: false, detail: 'a canary file appeared in the publish clone' });
   results.push(...linkEffectChecks(paths, fx));

@@ -1137,7 +1137,7 @@ export class FeedbackExecutorService {
     // One vitest run per config: the unit config collects only unit files, so an
     // integration or e2e test file needs its own lane config or it runs nothing.
     const testCmd = groupTestFilesByConfig(result.testFiles)
-      .map((g) => `npx vitest run --no-cache --config ${shq(g.config)} ${g.files.map(shq).join(' ')} -t ${shq(testNamePattern(result.testName))}`)
+      .map((g) => `./node_modules/.bin/vitest run --no-cache --config ${shq(g.config)} ${g.files.map(shq).join(' ')} -t ${shq(testNamePattern(result.testName))}`)
       .join(' && ');
     const diskOk = (clone: string) => treeBytes(clone, WORKSPACE_DISK_CAP_BYTES) + treeBytes(p.tmpDir, WORKSPACE_DISK_CAP_BYTES) <= WORKSPACE_DISK_CAP_BYTES;
     // Each run gets its own clone AND its own temp directory, and its sandbox may write only those:
@@ -1194,7 +1194,7 @@ export class FeedbackExecutorService {
       const sources = sourcePaths(changeSet).filter((s) => /\.[cm]?[jt]sx?$/.test(s));
       if (sources.length > 0) {
         // './' prefix: a changed file can never be read as a command-line option.
-        const related = await run(p.gateClone, 'related', `npx vitest related --run --no-cache ${sources.map((s) => shq(`./${s}`)).join(' ')}`, CONFINED_RELATED_TIMEOUT_MS);
+        const related = await run(p.gateClone, 'related', `./node_modules/.bin/vitest related --run --no-cache ${sources.map((s) => shq(`./${s}`)).join(' ')}`, CONFINED_RELATED_TIMEOUT_MS);
         if (limit(related)) return { ok: false, reason: limit(related)! };
         if (related.exitCode !== 0) return failed('gate:related-tests', related);
       }

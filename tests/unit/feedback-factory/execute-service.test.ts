@@ -5,10 +5,11 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { BASE_SHA, HEAD_SHA, createExecHarness, defaultRun, finishSessions, isBaseState, type ExecHarness } from '../../fixtures/feedbackExecuteHarness.js';
 import { DrainConflictError } from '../../../src/feedback-factory/drain/FeedbackDrainStore.js';
-import { CANARY_PROBE_DETAIL_BUDGET, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, CONFINED_RELATED_TIMEOUT_MS, EVIDENCE_FILE, RESULT_FILE, pathSlug } from '../../../src/feedback-factory/execute/executePolicy.js';
+import { CANARY_PROBE_DETAIL_BUDGET, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, CONFINED_RELATED_TIMEOUT_MS, EVIDENCE_FILE, RESULT_FILE, SANDBOX_RUNTIME_VERSION, pathSlug } from '../../../src/feedback-factory/execute/executePolicy.js';
 import { PROBE_TAIL_CHARS } from '../../../src/feedback-factory/execute/confinementCanary.js';
 
 const DAY = 24 * 60 * 60_000;
@@ -294,10 +295,26 @@ describe('workspaces and the confined spawn', () => {
     // confinement had already installed. The fix ships with a new canary version, so it clears itself.
     h.store.setMeta('exec:profile_unenforceable', JSON.stringify({ until: h.now.value + 24 * 60 * 60_000, episode: 1, failures: 8, canaryVersion: 'feedback-canary-v1', failed: ['session-bash-write-in-workspace'] }));
     expect((await h.exec.refreshAvailability()).reason).toBe('ok');
-    h.runScript.fn = (cmd) => (/^npx vitest run --no-cache/.test(cmd.command) ? { exitCode: 1, stdout: '', stderr: 'x' } : defaultRun(cmd));
+    h.runScript.fn = (cmd) => (/^\.\/node_modules\/\.bin\/vitest run --no-cache/.test(cmd.command) ? { exitCode: 1, stdout: '', stderr: 'x' } : defaultRun(cmd));
     await h.exec.tick();
     expect(h.exec.summary().profileUnenforceable).toMatchObject({ canaryVersion: CANARY_VERSION, failures: 9 });
     expect((await h.exec.refreshAvailability()).reason).toBe('profile-unenforceable');
+  });
+
+  it('an old npx-era full-gate stamp reruns the smoke with the direct local executable', async () => {
+    h = await createExecHarness();
+    await h.workItem('c1');
+    const oldStamp = createHash('sha256').update(JSON.stringify({
+      v: 'feedback-canary-v3', framework: 'claude-code',
+      frameworkVersion: '2.1.295 (Claude Code)', sandboxRuntimeVersion: SANDBOX_RUNTIME_VERSION,
+      depsHash: 'abcdefabcdefabcdefab',
+    })).digest('hex').slice(0, 24);
+    h.store.setMeta('exec:canary_full_gate', JSON.stringify({ stamp: oldStamp, at: h.now.value }));
+
+    await h.exec.tick();
+
+    expect(h.runs.some((r) => r.command.startsWith('./node_modules/.bin/vitest run --no-cache ')
+      && r.command.includes('tests/unit/smoke.test.ts'))).toBe(true);
   });
 
   it('a failing base-unit-smoke probe stores its own output: the real latch write keeps the whole tail', async () => {
@@ -305,7 +322,7 @@ describe('workspaces and the confined spawn', () => {
     await h.workItem('c1');
     // Padding first, the error last — a test runner and a shell both put the error at the END, which
     // is why the tail is kept rather than the head.
-    const err = `${'E'.repeat(900)}\nEPERM: operation not permitted, mkdir '/home/agent/.npm'`;
+    const err = `${'E'.repeat(900)}\nEPERM: operation not permitted, mkdir '/home/agent/.vite'`;
     const out = `${'O'.repeat(900)}\nTest Files  1 failed (1)`;
     // The probe fails through the REAL canary, so profileUnenforceable's scrub + clamp is on the path.
     // Also: a clear DURING an in-flight tick would be overwritten by that tick's own latch write
@@ -313,7 +330,7 @@ describe('workspaces and the confined spawn', () => {
     let duringTick: unknown = null;
     h.runScript.fn = (cmd) => {
       duringTick ??= h.exec.retryCanaryNow('test');
-      return /^npx vitest run --no-cache/.test(cmd.command) ? { exitCode: 1, stdout: out, stderr: err } : defaultRun(cmd);
+      return /^\.\/node_modules\/\.bin\/vitest run --no-cache/.test(cmd.command) ? { exitCode: 1, stdout: out, stderr: err } : defaultRun(cmd);
     };
     await h.exec.tick();
     expect(duringTick).toEqual({ cleared: false, reason: 'tick-in-flight' });
@@ -342,7 +359,7 @@ describe('workspaces and the confined spawn', () => {
     const unit = 'pwd:abcdefghijkl ';
     const err = `${unit.repeat(60)}EPERM-AT-THE-END`;
     const out = `${unit.repeat(60)}FAILED-AT-THE-END`;
-    h.runScript.fn = (cmd) => (/^npx vitest run --no-cache/.test(cmd.command)
+    h.runScript.fn = (cmd) => (/^\.\/node_modules\/\.bin\/vitest run --no-cache/.test(cmd.command)
       ? { exitCode: 1, stdout: out, stderr: err }
       : defaultRun(cmd));
     await h.exec.tick();
@@ -469,7 +486,7 @@ describe('verification and publication', () => {
 
   it('all-skipped named tests fail closed at head', async () => {
     h = await createExecHarness();
-    h.runScript.fn = (cmd) => (/-head$/.test(cmd.cwd) && /^npx vitest run --no-cache/.test(cmd.command)
+    h.runScript.fn = (cmd) => (/-head$/.test(cmd.cwd) && /^\.\/node_modules\/\.bin\/vitest run --no-cache/.test(cmd.command)
       ? { exitCode: 0, stdout: ' Test Files  1 skipped (1)\n      Tests  33 skipped (33)', stderr: ' Tests  1 passed (1)' }
       : null);
     const { initiativeId } = await startOne();
@@ -1611,7 +1628,7 @@ describe('focused review round regressions', () => {
     await toPrOpen('c1');
     const verify = h.runs.filter((r) => /-(base|head|gate)$/.test(r.cwd));
     const where = (re: RegExp) => verify.filter((r) => re.test(r.command)).map((r) => r.cwd.split('-').pop());
-    expect(where(/^npx vitest run/)).toEqual(['base', 'head']);
+    expect(where(/^\.\/node_modules\/\.bin\/vitest run/)).toEqual(['base', 'head']);
     expect(where(/^npm run lint$/)).toEqual(['gate']);
     expect(where(/vitest related/)).toEqual(['gate']);
     expect(verify.filter((r) => /vitest related/.test(r.command)).map((r) => r.timeoutMs)).toEqual([CONFINED_RELATED_TIMEOUT_MS]);

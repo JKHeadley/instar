@@ -56,6 +56,12 @@ describe('MessageRouter', () => {
 
   beforeEach(async () => {
     tmpDir = createTempDir();
+    // send() reads the agent registry (a locked file under the home folder) and drops undeliverable
+    // envelopes under ~/.instar/messages. Point both at this test's folder, so the test never takes
+    // the real machine registry's lock (it raced the live server and parallel test files) and never
+    // writes into the real home.
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpDir);
+    vi.stubEnv('INSTAR_TEST_REGISTRY_DIR', path.join(tmpDir, '.instar'));
     store = new MessageStore(tmpDir);
     await store.initialize();
 
@@ -70,6 +76,8 @@ describe('MessageRouter', () => {
 
   afterEach(async () => {
     await store.destroy();
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     cleanup(tmpDir);
   });
 

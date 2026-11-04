@@ -117,6 +117,17 @@ describe.skipIf(!HAS_PY)('the ledger', () => {
     expect(Date.parse(e.leaseUntil) - Date.parse(e.openedAt)).toBe(45 * 60_000);
   });
 
+  it('chrome-launch.sh keeps pages drawing on a locked screen and adds no automation or debug flag', () => {
+    const argsFile = path.join(bin, 'open-args.txt');
+    stub('open', `printf '%s\\n' "$@" > '${argsFile}'`);
+    expect(run('chrome-launch.sh', ['--new', 'acct-draw', 'https://example.com/']).status).toBe(0);
+    const args = fs.readFileSync(argsFile, 'utf-8').trim().split('\n');
+    expect(args).toContain('--disable-backgrounding-occluded-windows');
+    expect(args).toContain('--disable-renderer-backgrounding');
+    expect(args.filter((a) => /remote-debugging|enable-automation|headless|webdriver/i.test(a))).toEqual([]);
+    expect(args.at(-1)).toBe('https://example.com/');
+  });
+
   it('without --ttl-minutes the lease is the default and not declared; a bad ttl is refused', () => {
     expect(run('chrome-launch.sh', ['--new', 'acct-b']).status).toBe(0);
     expect(JSON.parse(fs.readFileSync(ledgerFile(profile('acct-b')), 'utf-8'))).toMatchObject({ ttlMinutes: 120, ttlDeclared: false, purpose: null });

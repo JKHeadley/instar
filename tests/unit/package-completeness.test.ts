@@ -170,6 +170,7 @@ describe('Package completeness', () => {
     const requiredDirs = [
       'dist',                           // Compiled JS — the actual code
       'dashboard',                      // Dashboard UI served by AgentServer
+      'dashboard-pair',                 // The pairing code page, outside the static mount (resolvePairDir)
       'upgrades',                       // Upgrade guides read by UpgradeGuideProcessor + AutoUpdater
       '.claude/skills/setup-wizard',    // Setup wizard skill loaded by setup.ts
     ];

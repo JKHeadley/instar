@@ -442,7 +442,7 @@ describe('browser helper scripts — behaviour with stubbed system tools', () =>
     expect(prefs.browser.allow_javascript_apple_events).toBe(true);
     const opened = fs.readFileSync(openLog, 'utf-8');
     expect(opened).toContain('-g -na Google Chrome --args'); // -g: never brings Chrome to the foreground
-    expect(opened).toContain(`--user-data-dir=${dir} HTTPS://example.com`);
+    expect(opened).toContain(`--user-data-dir=${dir} --disable-backgrounding-occluded-windows --disable-renderer-backgrounding HTTPS://example.com`);
     expect(opened).not.toContain('remote-debugging');
   });
 
