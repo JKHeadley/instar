@@ -22,6 +22,17 @@ import path from 'node:path';
 import type { SessionRecovery, RecoveryResult } from './SessionRecovery.js';
 import { detectContextExhaustion } from './QuotaExhaustionDetector.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import type { SessionOwnershipRecord } from '../core/SessionOwnership.js';
+
+/** A recorded owner, not peer reachability, decides who may speak about a topic's
+ * session. A failed peer is handled by ownership transfer; the old machine must
+ * not invent a local session death while that process is under way. */
+export function isForeignTopicOwner(
+  record: Pick<SessionOwnershipRecord, 'ownerMachineId' | 'status'> | null | undefined,
+  selfMachineId: string | null | undefined,
+): boolean {
+  return !!record && !!selfMachineId && record.status !== 'released' && record.ownerMachineId !== selfMachineId;
+}
 
 export interface SessionMonitorConfig {
   /** Enable the session monitor (default: true) */
@@ -81,7 +92,9 @@ export interface SessionMonitorDeps {
    *  runs elsewhere. Such a topic is skipped entirely — no recovery, no triage,
    *  and no "session has stopped, send a new message" notice (2026-10-25: the
    *  Studio told the operator to resend a message the Mama PC was already
-   *  answering). A throw is treated as not-owned-elsewhere (today's behavior). */
+   *  answering). The check must use ownership rather than peer reachability;
+   *  an offline owner's topic remains foreign until ownership moves. A throw
+   *  is treated as not-owned-elsewhere (today's behavior). */
   isTopicOwnedByPeer?: (topicId: number) => boolean;
   /** Optional path to the persisted "session has stopped" notice ledger. When
    *  set, the dead-session notice is once per death across server restarts:
@@ -330,6 +343,12 @@ export class SessionMonitor extends EventEmitter {
     }
   }
 
+  private stopIfOwnedByPeer(topicId: number): boolean {
+    if (!this.ownedByPeer(topicId)) return false;
+    this.snapshots.delete(topicId);
+    return true;
+  }
+
   private async checkSession(topicId: number, sessionName: string): Promise<void> {
     const now = Date.now();
     const alive = this.deps.isSessionAlive(sessionName);
@@ -413,6 +432,7 @@ export class SessionMonitor extends EventEmitter {
           } catch (err) {
             console.error(`[SessionMonitor] Context exhaustion recovery error for topic ${topicId}:`, err);
           }
+          if (this.stopIfOwnedByPeer(topicId)) return;
           // DEFERRED ≠ dead. The work-check found the session alive and actively
           // producing work, so the kill was deferred — the session is FINE.
           // Telling the user it "hit conversation too long and can't continue"
@@ -512,6 +532,7 @@ export class SessionMonitor extends EventEmitter {
       } catch (err) {
         console.error(`[SessionMonitor] Mechanical recovery error for topic ${topicId}:`, err);
       }
+      if (this.stopIfOwnedByPeer(topicId)) return;
     }
 
     switch (snap.status) {
@@ -519,6 +540,7 @@ export class SessionMonitor extends EventEmitter {
         this.emit('monitor:recovery-triggered', { topicId, sessionName, reason: 'session_dead' });
         if (this.deps.triggerTriage) {
           const result = await this.deps.triggerTriage(topicId, sessionName, 'Session died while user was waiting');
+          if (this.stopIfOwnedByPeer(topicId)) return;
           if (result.resolved) {
             snap.status = 'healthy';
             snap.notifiedAt = now;

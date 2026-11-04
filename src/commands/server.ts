@@ -199,7 +199,7 @@ import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from '../server
 import { formatWatchdogUserMessage, formatWatchdogSessionNotice } from '../monitoring/watchdog-notifications.js';
 import { StallTriageNurse } from '../monitoring/StallTriageNurse.js';
 import { TriageOrchestrator } from '../monitoring/TriageOrchestrator.js';
-import { SessionMonitor } from '../monitoring/SessionMonitor.js';
+import { SessionMonitor, isForeignTopicOwner } from '../monitoring/SessionMonitor.js';
 import { SessionRecovery } from '../monitoring/SessionRecovery.js';
 import { MultiMachineCoordinator } from '../core/MultiMachineCoordinator.js';
 import { MachineIdentityManager } from '../core/MachineIdentity.js';
@@ -13446,21 +13446,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           statePath: path.join(config.stateDir, 'state', 'session-monitor-ctx-notified.json'),
           // Same for "session has stopped": one notice per death, across restarts.
           deadNoticeStatePath: path.join(config.stateDir, 'state', 'session-monitor-dead-notified.json'),
-          // A topic an ONLINE peer actively owns is not this machine's to monitor:
-          // route() forwards its inbound to that owner, so a stale local mapping
-          // must never produce a "session has stopped" notice or a local triage
-          // respawn. Placing/transferring records and a dark owner can fall
-          // through to local dispatch, so those keep today's monitoring. Late-bound
-          // reads (assigned further down; a read before assignment throws and the
-          // monitor treats it as owned here).
+          // The ownership record decides who may describe a topic's session.
+          // A stale local mapping is not authority to announce a death, even
+          // when the pool switch is dark or the owner is temporarily offline.
+          // Recovery/failover must transfer ownership first. Late-bound reads
+          // (assigned further down) fail open before the registry exists.
           isTopicOwnedByPeer: (topicId) => {
-            if (_sessionPoolStage() === 'dark') return false;
             const reg = sessionOwnershipRegistry;
             const self = _meshSelfId;
             if (!reg || !self) return false;
-            const rec = reg.read(String(topicId));
-            if (!rec || rec.status !== 'active' || rec.ownerMachineId === self) return false;
-            return isOwnerReachableShared(rec.ownerMachineId);
+            return isForeignTopicOwner(reg.read(String(topicId)), self);
           },
         },
         config.monitoring.sessionMonitor,

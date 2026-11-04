@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "session-monitor-foreign-topic-ownership",
+  "sessionId": "e2e1665f-ddf9-4c56-b8a7-2b79f12887ff",
+  "timestamp": "2026-11-04T18:25:38.739Z",
+  "artifactPath": "upgrades/side-effects/session-monitor-foreign-topic-ownership.md",
+  "artifactSha256": "b0a0753d9a6013359d09b712cfb8a710eb03b551fb8872122482293b9d9d0013",
+  "coveredFiles": [
+    "docs/specs/session-monitor-foreign-topic-ownership.eli16.md",
+    "src/commands/server.ts",
+    "src/monitoring/SessionMonitor.ts",
+    "tests/unit/SessionMonitor.test.ts",
+    "tests/unit/session-monitor-topic-ownership.test.ts",
+    "upgrades/next/session-monitor-foreign-topic-ownership.md",
+    "upgrades/side-effects/session-monitor-foreign-topic-ownership.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible fix to machine-generated session notices using existing topic ownership authority; no data migration or reply-route change.",
+  "eli16Path": "docs/specs/session-monitor-foreign-topic-ownership.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/session-monitor-foreign-topic-ownership.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

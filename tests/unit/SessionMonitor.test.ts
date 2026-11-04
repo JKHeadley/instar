@@ -163,6 +163,33 @@ describe('SessionMonitor', () => {
       expect(monitor.getStatus().trackedSessions).toBe(0);
     });
 
+    it('stops before triage if ownership moves during mechanical recovery', async () => {
+      let ownedByPeer = false;
+      const recovery = { checkAndRecover: vi.fn(async () => {
+        ownedByPeer = true;
+        return { recovered: false, failureType: null, message: '' };
+      }) };
+      deps = { ...deadTopicDeps(() => ownedByPeer), sessionRecovery: recovery as any };
+      monitor = new SessionMonitor(deps);
+      await monitor.poll();
+      expect(recovery.checkAndRecover).toHaveBeenCalledTimes(1);
+      expect(deps.triggerTriage).not.toHaveBeenCalled();
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
+    });
+
+    it('does not announce a death if ownership moves during triage', async () => {
+      let ownedByPeer = false;
+      deps = deadTopicDeps(() => ownedByPeer);
+      deps.triggerTriage = vi.fn(async () => {
+        ownedByPeer = true;
+        return { resolved: false };
+      });
+      monitor = new SessionMonitor(deps);
+      await monitor.poll();
+      expect(deps.triggerTriage).toHaveBeenCalledTimes(1);
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
+    });
+
     it('still notifies for a topic this machine owns', async () => {
       deps = deadTopicDeps(vi.fn(() => false));
       monitor = new SessionMonitor(deps);
