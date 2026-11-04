@@ -194,6 +194,11 @@ describe('MemoryPrivacy', () => {
       expect(p.observeSender('telegram:9')).toBe(true);
       expect(p.isMultiPerson()).toBe(true);
     });
+    it('count as one during the boot window, before the bot id is known', () => {
+      lists = { telegramAuthorizedIds: [1, 2], slackAuthorizedIds: ['UBOT'] };
+      config = { sharedMemoryPeople: ['j', 'a'] };
+      expect(make().isMultiPerson()).toBe(false);
+    });
     it('can bring an agent back after an earlier flip', () => {
       expect(make().isMultiPerson()).toBe(true);
       config = { sharedMemoryPeople: ['j', 'a'] };
