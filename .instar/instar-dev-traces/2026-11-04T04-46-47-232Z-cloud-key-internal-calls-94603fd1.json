@@ -47,5 +47,14 @@
   "tier": 2,
   "tierReasoning": "Touches credentials: how the sign-in key reaches child processes and how a dead key is handled.",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "claude-key-session-refresh: decideKeyRefresh caps a session at 3 attempts, then it leaves the pending list and is reported. Nothing re-adds it within the episode, and a session already moved onto this key is skipped, so the count settles. Dead-key probes back off to a 1-hour ceiling and stop after 24 hours."
+    }
+  }
 }
