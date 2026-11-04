@@ -367,6 +367,7 @@ export class AgentStopSurfacer {
     const entry = this.state.stops[latchId] ?? (this.state.stops[latchId] = {});
     const now = this.now();
     const verdict = await this.evaluate(latchId, origin).catch((e): ReleaseConditionVerdict => ({
+      // @silent-fallback-ok: a failed read answers unverifiable, never met; the evidence is kept and the next pass retries
       met: false, unverifiable: true, evidence: { problem: String((e as Error)?.message).slice(0, 120) },
     }));
     // A release or /enable may have landed while that read was out.

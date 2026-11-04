@@ -67,6 +67,11 @@ Revert the PR. Origins become ignored fields and those stops become PIN-only. An
 
 ## Second-pass review
 
+**Reviewer:** independent general-purpose subagent, run for this build with no prior context beyond this artifact and the spec
+**Independent read of the artifact: concur**
+
 Independent subagent, reading the code and verifying at file:line, with no prior context beyond this artifact and the spec. No blockers: a Bearer caller cannot release or downgrade an operator or legacy stop, stopping is no harder or slower, and the compare direction was checked live. Five minor findings in the surfacer's notify and wake path, all fixed before this commit with tests: first pass ran before the server listened; the spawn path retitled the topic and skipped the ownership claim; a failed met wake retried every 10 minutes; a transient GitHub failure counted as unmet; and a release during a pass could reopen a closed notice.
 
 **Concur with the review.**
+
+After the review, one comment-only line was added to `src/monitoring/agentStopRelease.ts`: the `@silent-fallback-ok` exemption on the evaluate catch. No behaviour changed, so the concurrence stands.
