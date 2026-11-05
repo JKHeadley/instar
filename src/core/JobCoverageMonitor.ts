@@ -162,7 +162,7 @@ export class JobCoverageMonitor {
                 fs.renameSync(cursorTmp, this.portableCursorFile);
                 for (const job of selected) {
                   try { await this.options.onPortableCandidate(peer, job, payload.generation); }
-                  catch (error) {
+                  catch (error) { // @silent-fallback-ok — evidence and warning report transfer failure; no candidate is admitted by this handler
                     featureEvidence.record('multiMachine.jobDefinitionSync', { kind: 'error',
                       reason: 'portable transfer unavailable', context: { source: id, slug: job.slug } });
                     console.warn(`[job-coverage] portable transfer unavailable for ${job.slug}:`, error);
