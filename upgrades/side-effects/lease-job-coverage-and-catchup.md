@@ -74,3 +74,13 @@ The final full unit run caught a real migration collision: new coverage URL refe
 The final full run exposed a deterministic diagnosis-restart failure. A direct real ps measurement returned ERR_CHILD_PROCESS_STDIO_MAXBUFFER at 1,038,731 output bytes in 93ms. The default 1 MiB allowance made an otherwise readable table unknown. The existing recovery scan now allows at most 8 MiB and keeps its two-second timeout. Output errors, overflows, ambiguous identities and live unknown children still prevent cleanup and new admission. This fixes the failure at the process-discovery layer without changing its authority or matching rules. No new under-block issue identified; legitimate tables over 8 MiB remain intentionally unknown rather than consuming unbounded memory. On each machine this scan is machine-local by design because process IDs belong to that host. There is no copied credential or replicated-state change. Rollback is a code revert; no data migration is needed.
 
 Real child-executed ps fixtures cover a listing over 1 MiB and an overflow over 8 MiB. The overflow must preserve the durable intent and input file and refuse a distinct new attempt as busy. Independent review concurred and requested those explicit no-cleanup/no-new-admission assertions; they are included. Build passed. The new focused tests are pending normal host capacity, not claimed as passed. The earlier real-host existing lifecycle test failed in both the full suite and an isolated rerun before this repair; both logs remain preserved. A separate standards CLI/library mismatch passed all 38 tests on untouched rerun, with its cause still unknown. Final full-suite and exact-head verification remain required.
+
+## Second-pass review
+
+**Reviewer:** /root/review_transfer_resume
+
+Concur with the side-effects assessment of the incremental repairs and this artifact. This review covers the bounded process scan, its explicit overflow safety assertions, the migration interaction repair, bootstrap compatibility, and awareness delivery reviewed during this session. Earlier implementation-review statements above remain prior recorded review history.
+
+## Current verification evidence — 2026-11-05
+
+The combined runtime source at 4009a9d28cbcf15086d1021d79513111f0f9e427 passed the full unit lane (58,591 tests) and full integration lane (5,841 tests), with zero failures. The new real subprocess buffer boundaries also passed both cases. The earlier pending-test paragraphs describe their point in the chronological repair history. Full E2E and required exact-head verification remain pending. This review-name/trace correction changes no runtime source or tests and does not replace either remaining gate.
