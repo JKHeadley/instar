@@ -46,3 +46,7 @@ Source rollback leaves metadata snapshots and catch-up journals inert. The separ
 ## Verification follow-up (2026-11-05)
 
 The full-suite silent-fallback ratchet found five new fallback shapes in the coverage implementation. They are now explicitly marked with their safe behavior: unreadable peer snapshots become unknown coverage, tick and audit errors are logged and retried on the bounded cadence, absence of a prior episode is normal, and an unreadable catch-up journal refuses catch-up. This adds no new write or execution authority. Targeted ratchet and coverage tests pass. The first commit attempt was rejected by the fresh-trace gate; this artifact and the new trace record the follow-up review.
+
+## HTTP and lifecycle proof completion (2026-11-05)
+
+Added real route integration coverage for authentication, invalid nonces, nonce-bound signatures, and a scheduler-less standby. Added an AgentServer lifecycle test proving production route construction installs a real signing monitor rather than leaving the endpoint at 503. The fixture uses a real identity manager, coordinator, state store, and on-disk catalog. Tests are queued behind normal host capacity; completion is required before merge. No runtime behavior changed in this proof-only commit.
