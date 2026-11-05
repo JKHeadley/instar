@@ -10,9 +10,32 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { withSyncOp } from './InFlightSyncOpMarker.js';
 
 /** Memoized per binaryPath — `codex --help` is invoked at most once per path per process. */
 const hookTrustBypassCache = new Map<string, boolean>();
+const gpt61Cache = new Map<string, { supported: boolean; checkedAt: number }>();
+
+/** The earliest CLI release on which gpt-6.1-sol answered a subscription probe. */
+export function codexSupportsGpt61Sol(binaryPath: string): boolean {
+  if (!binaryPath) return false;
+  const cached = gpt61Cache.get(binaryPath);
+  if (cached && Date.now() - cached.checkedAt < 60_000) return cached.supported;
+  let supported = false;
+  try {
+    const version = withSyncOp(() => execFileSync(binaryPath, ['--version'], {
+      encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+    }));
+    const match = /^codex-cli (\d+)\.(\d+)\.(\d+)/m.exec(version.trim());
+    if (match) {
+      const major = Number(match[1]);
+      const minor = Number(match[2]);
+      supported = major > 0 || (major === 0 && minor >= 166);
+    }
+  } catch { /* An unreadable/older CLI takes the known-working model. */ }
+  gpt61Cache.set(binaryPath, { supported, checkedAt: Date.now() });
+  return supported;
+}
 
 /**
  * Whether `<binaryPath>` accepts `--dangerously-bypass-hook-trust`.
@@ -53,4 +76,5 @@ export function codexSupportsHookTrustBypass(binaryPath: string): boolean {
 /** Test-only: clear the memoization cache so a probe re-runs. */
 export function __resetCodexCapabilityCache(): void {
   hookTrustBypassCache.clear();
+  gpt61Cache.clear();
 }

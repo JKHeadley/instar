@@ -702,6 +702,13 @@ export class PendingInboundStore {
     return res.changes === 1;
   }
 
+  /** Read-only: has this remote message already been received here? */
+  hasRemoteReceipt(sessionKey: string, messageId: string): boolean {
+    return !!this.#db
+      .prepare(`SELECT 1 FROM receipts WHERE session_key = ? AND message_id = ? AND class = 'remote'`)
+      .get(sessionKey, messageId);
+  }
+
   /** Flip the `injected` marker after the local inject completes (§3.4 remote
    *  path round-8 — makes peer-crash-between-receipt-and-inject boot-detectable). */
   markReceiptInjected(sessionKey: string, messageId: string, cls: ReceiptClass): void {

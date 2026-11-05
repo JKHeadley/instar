@@ -6,6 +6,7 @@
  * and can be monitored/reaped by the server.
  */
 
+import type { MemoryPrivacyRecovery } from '../users/MemoryPrivacyRecovery.js';
 import { isCredentialEnvName, CLAUDE_CONFINED_PERMISSION_ARGS } from './credentialEnvNames.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { applyMemorySessionLaunch, buildMemorySessionSettings, moveInboundFilesIntoScope } from './memorySessionPolicy.js';
@@ -33,7 +34,7 @@ import { captureOriginHookSettings } from '../messaging/telegram-origin/OriginNa
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
 // ONE definition, imported by both this probe and the stand-down drain predicate
 // (a leaf module, so no load-order cycle — see baselineProcessPatterns.ts).
-import { BASELINE_PROCESS_PATTERNS, CLAUDE_TOOL_SHELL_PATTERN, isToolShellCommand } from './baselineProcessPatterns.js';
+import { BASELINE_PROCESS_PATTERNS, CLAUDE_TOOL_SHELL_PATTERN, isMcpLauncherShell, isToolShellCommand } from './baselineProcessPatterns.js';
 import { chunkLiteralForTmux, buildLiteralSendArgs } from './tmuxLiteralSend.js';
 import { isReadyPromptTail, classifyPaneReadiness, type PaneReadiness } from './claudeReadinessProbe.js';
 import { RerouteRefusedError } from './rerouteRefusedError.js';
@@ -111,6 +112,7 @@ import {
   computeGrokInteractiveOptIn,
 } from './frameworkSessionLaunch.js';
 import { frameworkFromEnv } from './intelligenceProviderFactory.js';
+import { codexSupportsGpt61Sol } from './codexCapabilities.js';
 import { decideSdkVsSubscription, DEFAULT_SAFETY_MARGIN_FRACTION } from '../providers/costAwareRouting.js';
 import {
   resolveCodexLaunchModelWithUsage,
@@ -1058,6 +1060,11 @@ export class SessionManager extends EventEmitter {
     telegramGroupKey: () => string | null;
     /** True when the boot probe proved the OS sandbox starts here. */
     sandboxReady: () => boolean;
+    /** Why scoped sessions cannot run, and the plain fix. Null when they can. */
+    blocker?: () => string | null;
+    fix?: () => string | null;
+    /** The owner's one-time repair link. */
+    recovery?: () => MemoryPrivacyRecovery;
     /** Scripts a scoped session runs, as absolute paths. */
     replyScripts: () => string[];
     /** Finds the Slack channel of a session started before places were recorded. */
@@ -1784,6 +1791,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * With memory privacy off, end any session still inside the boundary. It would keep
+   * its sandbox and its limited token through a restart, so turning the setting off
+   * would not reach it. Runs at boot. The next message starts an ordinary session.
+   */
+  async retireBoundedSessionsWhenPrivacyOff(): Promise<string[]> {
+    const wiring = this.memoryPrivacyWiring;
+    if (!wiring || wiring.privacy.enabled) return [];
+    const retired: string[] = [];
+    for (const session of this.listRunningSessions()) {
+      if (!session.memoryScopeDir) continue;
+      if (await this.retireMemorySession(session)) retired.push(session.name);
+    }
+    return retired;
+  }
+
+  /**
    * End every running session whose audience no longer matches, so a session that
    * loaded wider memory cannot answer a new reader. Runs on a flip and at boot,
    * before any waiting message is delivered.
@@ -1861,15 +1884,27 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /** What the status route reports. No people's names beyond the owner's id. */
-  memoryPrivacyStatus(): { enabled: boolean; multiPerson: boolean; ownerUserId: string | null; sandboxReady: boolean } {
+  memoryPrivacyStatus(): { enabled: boolean; multiPerson: boolean; ownerUserId: string | null; sandboxReady: boolean; blocker: string | null; fix: string | null } {
     const wiring = this.memoryPrivacyWiring;
-    if (!wiring) return { enabled: false, multiPerson: false, ownerUserId: null, sandboxReady: false };
+    if (!wiring) return { enabled: false, multiPerson: false, ownerUserId: null, sandboxReady: false, blocker: null, fix: null };
     return {
       enabled: wiring.privacy.enabled,
       multiPerson: wiring.privacy.isMultiPerson(),
       ownerUserId: wiring.privacy.ownerUserId(),
       sandboxReady: wiring.sandboxReady(),
+      blocker: wiring.blocker?.() ?? null,
+      fix: wiring.fix?.() ?? null,
     };
+  }
+
+  memoryPrivacyRecovery(): MemoryPrivacyRecovery | null {
+    return this.memoryPrivacyWiring?.recovery?.() ?? null;
+  }
+
+  /** New sessions launch from this binary. Live sessions keep the one they started with. */
+  setClaudeBinary(binaryPath: string): void {
+    this.config.claudePath = binaryPath;
+    if (this.config.frameworkBinaryPaths?.['claude-code']) this.config.frameworkBinaryPaths['claude-code'] = binaryPath;
   }
 
   /** True when memory privacy is on and more than one person can reach this agent. */
@@ -5668,6 +5703,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // agent's own command line, which may merely mention a baseline name
     // (`caffeinate`, `mcp-stdio-entry`, a bare `mcp`, …).
     const activeProcesses = descendants.filter(p => {
+      if (isMcpLauncherShell(p.command, processes.get(processes.get(p.pid)?.ppid ?? '')?.command)) return false;
       if (isToolShellCommand(p.command)) return true;
       return !BASELINE_PROCESS_PATTERNS.some(pattern => pattern.test(p.command));
     });
@@ -7284,9 +7320,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
     });
     if (decision.swapped) {
       console.log(`[SessionManager] ${decision.reason}`);
-      return decision.model;
     }
-    return requestedModel;
+    const selected = decision.swapped ? decision.model : requestedModel;
+    if (framework === 'codex-cli' && selected === 'gpt-6.1-sol') {
+      const binary = resolveFrameworkBinaryPath({
+        framework,
+        frameworkBinaryPaths: this.config.frameworkBinaryPaths,
+        claudePath: this.config.claudePath,
+        configuredFramework: this.config.framework,
+      });
+      if (!binary || !codexSupportsGpt61Sol(binary)) {
+        console.warn('[SessionManager] This machine has an older Codex CLI; using gpt-6-sol for this session.');
+        return 'gpt-6-sol';
+      }
+    }
+    return selected;
   }
 
   /**

@@ -16,6 +16,23 @@ import type { OriginSendPolicyDecision } from './OriginSendPolicy.js';
 export type OriginSendPolicyRefusalDecision = Extract<OriginSendPolicyDecision, { ok: false }>;
 import type { HeldOperationRow } from './StoreTypes.js';
 import { topicRef } from '../shared/topicRef.js';
+import type { OriginAuditRecord } from './StoreTypes.js';
+import { classifyOperationOutcome } from './OriginOperationOutcome.js';
+
+/** Only a durable Telegram receipt may turn a recovered hold into a topic
+ * history row. Follow a lease-transfer supersession to the delivered copy. */
+export async function confirmedRecoveredForward(row: HeldOperationRow, getOperation: (id: string) => Promise<OriginAuditRecord | null>): Promise<{ topicId: number; text: string; messageId: number } | null> {
+  const detail = row.holdDetail as { text?: unknown } | null;
+  const topicId = Number(row.destination.topicId);
+  if (typeof detail?.text !== 'string' || !Number.isSafeInteger(topicId) || topicId < 1) return null;
+  const original = await getOperation(row.operationId);
+  const supersededBy = (original?.operation?.holdDetail as { supersededBy?: unknown } | null)?.supersededBy;
+  const deliveredId = typeof supersededBy === 'string' && supersededBy !== row.operationId ? supersededBy : row.operationId;
+  const audit = deliveredId === row.operationId ? original : await getOperation(deliveredId);
+  const verdict = classifyOperationOutcome(deliveredId, audit, []);
+  if (verdict.outcome !== 'delivered' || verdict.messageIds.length !== 1) return null;
+  return { topicId, text: detail.text, messageId: Number(verdict.messageIds[0]) };
+}
 
 export const HOLD_REASON_LEASE_NOT_HELD = 'lease-not-held';
 /** Execution owner recorded on a hold taken while NO holder could be named.
@@ -317,7 +334,7 @@ export interface ForwardRecoveryDeps {
   /** Resolve a local held row (the holder delivered or confirmed it). */
   resolve: (operationId: string, deliveryMachineId: string, receiptJson: string) => Promise<boolean>;
   /** Re-record the hold with an updated detail (same reason). */
-  rehold: (operationId: string, detail: HeldForwardDetail) => Promise<void>;
+  rehold: (operationId: string, detail: HeldForwardDetail) => Promise<boolean>;
   /** ATOMICALLY admit + hold the NEW operation and mark the old one superseded
    * (terminal, linked by id) in ONE store transaction. False = the old row is no
    * longer plainly held (a child left `queued` or an entry is claimed — it may
@@ -356,7 +373,10 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
   if (detail?.lastAttempt === 'outcome-unknown' && detail.machineId) {
     const answer = await deps.receipt(detail.machineId, operationId);
     if (answer.state === 'accepted') {
-      await deps.resolve(operationId, detail.machineId, answer.receiptJson);
+      if (!await deps.resolve(operationId, detail.machineId, answer.receiptJson)) {
+        await retain({ lastAttempt: 'outcome-unknown', machineId: detail.machineId });
+        audit({ outcome: 'retained-receipt-store-refused', machineId: detail.machineId }); return 'retained';
+      }
       audit({ outcome: 'resolved-by-receipt', machineId: detail.machineId });
       return 'resolved';
     }
@@ -385,17 +405,28 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     if (!detail) { audit({ outcome: 'retained-no-detail' }); return 'retained'; }
     // Mark BEFORE sending: the marker, not the send, is what makes a second
     // local send structurally impossible.
-    await deps.rehold(operationId, { ...detail, lastAttempt: 'local-sent', machineId: deps.lease.selfMachineId, at: deps.now(), ladder: nextLadderState(detail.ladder, deps.now(), delays) });
+    if (!await deps.rehold(operationId, { ...detail, lastAttempt: 'local-sent', machineId: deps.lease.selfMachineId, at: deps.now(), ladder: nextLadderState(detail.ladder, deps.now(), delays) })) {
+      audit({ outcome: 'retained-marker-store-refused' }); return 'retained';
+    }
     const sent = await deps.sendLocal(detail);
     const resolved = await deps.resolve(operationId, deps.lease.selfMachineId, JSON.stringify({ messageId: sent.messageId, deliveryMachineId: deps.lease.selfMachineId, supersededLocally: true }));
     audit({ outcome: resolved ? 'sent-locally' : 'sent-locally-resolve-refused', messageId: sent.messageId });
-    return 'sent';
+    return resolved ? 'sent' : 'retained';
   }
   const holder = route.holder;
   if (operation.record.executionOwnerMachineId === holder) {
+    if (!detail) return 'retained';
+    // Mark custody uncertainty BEFORE the RPC. If the standby store refuses
+    // the receipt afterward, the next tick asks this holder; it never submits
+    // the same potentially delivered message again.
+    if (!await deps.rehold(operationId, { ...detail, machineId: holder, lastAttempt: 'outcome-unknown', at: deps.now(), ladder: nextLadderState(detail.ladder, deps.now(), delays) })) {
+      audit({ outcome: 'retained-marker-store-refused', holder }); return 'retained';
+    }
     const result = await deps.submit(holder, operation);
     if (result.ok) {
-      await deps.resolve(operationId, result.deliveryMachineId, result.receiptJson);
+      if (!await deps.resolve(operationId, result.deliveryMachineId, result.receiptJson)) {
+        audit({ outcome: 'retained-store-refused', holder, messageId: result.messageId }); return 'retained';
+      }
       audit({ outcome: 'sent', holder, messageId: result.messageId });
       return 'sent';
     }
@@ -418,9 +449,14 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
   const superseded = await deps.supersede(operationId, next, nextDetail);
   audit({ outcome: superseded ? 'superseded' : 'supersede-refused', holder, previousOwner: operation.record.executionOwnerMachineId, supersededBy: next.record.operationId });
   if (!superseded) return 'retained';
+  if (!await deps.rehold(next.record.operationId, { ...nextDetail, lastAttempt: 'outcome-unknown', at: deps.now() })) {
+    audit({ outcome: 'retained-superseding-marker-store-refused', holder, operationId: next.record.operationId }); return 'retained';
+  }
   const result = await deps.submit(holder, next);
   if (result.ok) {
-    await deps.resolve(next.record.operationId, result.deliveryMachineId, result.receiptJson);
+    if (!await deps.resolve(next.record.operationId, result.deliveryMachineId, result.receiptJson)) {
+      audit({ outcome: 'retained-superseding-store-refused', holder, operationId: next.record.operationId }); return 'retained';
+    }
     audit({ outcome: 'sent-superseding', holder, operationId: next.record.operationId, messageId: result.messageId });
     return 'sent';
   }

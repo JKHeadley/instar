@@ -205,12 +205,23 @@ describe('recoverForwardedHold — re-forward the SAME operation, supersede on a
     const submit = vi.fn<(holder: string, op: OriginPreparedBotOperation) => Promise<HolderSubmitResult>>(async (holder) => ({ ok: true, messageId: 9, deliveryMachineId: holder, receiptJson: '{"messageId":9}' }));
     const receipt = vi.fn(async () => ({ state: 'unreachable' as const }));
     const resolve = vi.fn(async () => true);
-    const rehold = vi.fn(async () => undefined);
+    const rehold = vi.fn(async () => true);
     const supersede = vi.fn(async (_old: string, _next: OriginPreparedBotOperation, _detail: HeldForwardDetail) => true);
     const sendLocal = vi.fn(async () => ({ messageId: 3 }));
     const settleUnknown = vi.fn(async () => true);
     return { prepare, submit, receipt, resolve, rehold, supersede, sendLocal, settleUnknown, d: { lease: lease(), prepare, submit, receipt, resolve, rehold, supersede, sendLocal, settleUnknown, now: () => 5, ...overrides } };
   }
+  it.each([
+    ['same holder', lease(), 'holder'],
+    ['new holder', lease({ leaseHolder: () => 'holder-2' }), 'holder'],
+    ['self', lease({ leaseHolder: () => 'standby' }), 'holder'],
+  ] as const)('does not send when the pre-send custody marker is refused: %s', async (_label, leaseView, owner) => {
+    const h = rdeps({ lease: leaseView });
+    h.rehold.mockResolvedValue(false);
+    expect(await recoverForwardedHold(h.d, row({}, owner), fakeOperation(owner, 'op-1'))).toBe('retained');
+    expect(h.submit).not.toHaveBeenCalled();
+    expect(h.sendLocal).not.toHaveBeenCalled();
+  });
   it('holder unchanged → re-submits the stored operation as-is and resolves the local row', async () => {
     const h = rdeps();
     expect(await recoverForwardedHold(h.d, row({}), fakeOperation('holder', 'op-1'))).toBe('sent');
@@ -231,7 +242,22 @@ describe('recoverForwardedHold — re-forward the SAME operation, supersede on a
     expect(h.supersede.mock.calls[0][1].record.operationId).toBe('op-new');
     expect(h.supersede.mock.calls[0][2]).toMatchObject({ supersedes: 'op-1', machineId: 'holder-2', ladder: { attempts: 1, nextAt: 20_005 } });
     expect(h.resolve).toHaveBeenCalledWith('op-new', 'holder-2', '{}');
-    expect(h.rehold).not.toHaveBeenCalled();
+    expect(h.rehold).toHaveBeenCalledWith('op-new', expect.objectContaining({ lastAttempt: 'outcome-unknown' }));
+  });
+  it('a holder send with a refused standby receipt stays outcome-unknown and is checked before retry', async () => {
+    const h = rdeps(); h.resolve.mockResolvedValue(false);
+    expect(await recoverForwardedHold(h.d, row({}), fakeOperation('holder', 'op-1'))).toBe('retained');
+    expect(h.submit).toHaveBeenCalledTimes(1);
+    expect(h.rehold).toHaveBeenCalledWith('op-1', expect.objectContaining({ lastAttempt: 'outcome-unknown', machineId: 'holder' }));
+    const next = rdeps(); next.receipt.mockResolvedValue({ state: 'owned-by-holder' } as never);
+    expect(await recoverForwardedHold(next.d, row({ lastAttempt: 'outcome-unknown' }), fakeOperation('holder', 'op-1'))).toBe('retained');
+    expect(next.submit).not.toHaveBeenCalled();
+  });
+  it('a confirmed receipt with a refused standby write remains held without a new send', async () => {
+    const h = rdeps(); h.receipt.mockResolvedValue({ state: 'accepted', receiptJson: '{"messageId":9}' } as never);
+    h.resolve.mockResolvedValue(false);
+    expect(await recoverForwardedHold(h.d, row({ lastAttempt: 'outcome-unknown' }), fakeOperation('holder', 'op-1'))).toBe('retained');
+    expect(h.submit).not.toHaveBeenCalled();
   });
   it('holder changed and the new holder refuses → the NEW row is re-held with the refusal; the old stays superseded', async () => {
     const h = rdeps({ lease: lease({ leaseHolder: () => 'holder-2' }) });
@@ -260,9 +286,9 @@ describe('recoverForwardedHold — re-forward the SAME operation, supersede on a
     expect(h.rehold).toHaveBeenCalledWith('op-1', expect.objectContaining({ lastAttempt: 'outcome-unknown', ladder: { attempts: 1, nextAt: 20_005 } }));
   });
   it('outcome-unknown: the old holder confirms acceptance → resolved WITHOUT any submit', async () => {
-    const h = rdeps(); h.receipt.mockResolvedValue({ state: 'accepted', receiptJson: '{"confirmedVia":"receipt"}' } as never);
+    const h = rdeps(); h.receipt.mockResolvedValue({ state: 'accepted', receiptJson: '{"messageId":9,"confirmedVia":"receipt"}' } as never);
     expect(await recoverForwardedHold(h.d, row({ lastAttempt: 'outcome-unknown' }), fakeOperation('holder', 'op-1'))).toBe('resolved');
-    expect(h.submit).not.toHaveBeenCalled(); expect(h.resolve).toHaveBeenCalledWith('op-1', 'holder', '{"confirmedVia":"receipt"}');
+    expect(h.submit).not.toHaveBeenCalled(); expect(h.resolve).toHaveBeenCalledWith('op-1', 'holder', '{"messageId":9,"confirmedVia":"receipt"}');
   });
   it('outcome-unknown: the holder OWN send ended unknown → settled as unknown at once, never re-forwarded or held to the deadline', async () => {
     const h = rdeps(); h.receipt.mockResolvedValue({ state: 'outcome-unknown' } as never);
@@ -292,7 +318,7 @@ describe('recoverForwardedHold — re-forward the SAME operation, supersede on a
   it('the lease now held HERE → marks local-sent BEFORE sending, delivers locally from the stored detail and resolves', async () => {
     const calls: string[] = [];
     const h = rdeps({ lease: lease({ holdsLease: () => true }) });
-    h.rehold.mockImplementation(async () => { calls.push('rehold'); });
+    h.rehold.mockImplementation(async () => { calls.push('rehold'); return true; });
     h.sendLocal.mockImplementation(async () => { calls.push('send'); return { messageId: 3 }; });
     expect(await recoverForwardedHold(h.d, row({}), fakeOperation('holder', 'op-1'))).toBe('sent');
     expect(calls).toEqual(['rehold', 'send']);
@@ -458,6 +484,8 @@ describe('durable hold rows (OriginStoreBackend)', () => {
     // A re-hold without a reason keeps the recorded one.
     expect(await store.recordOperationState({ operationId: a.operationId, state: 'held' })).toBe(true);
     expect((await store.listHeldOperations())[0].holdReason).toBe('lease-not-held');
+    expect(await store.recordForwardedAcceptance({ operationId: a.operationId, deliveryMachineId: 'holder', receiptJson: '{}' })).toBe(false);
+    expect((await store.getOperation(a.operationId))?.operation?.state).toBe('held');
     // Resolution by the holder's acceptance: same operation id, delivery machine named.
     expect(await store.recordForwardedAcceptance({ operationId: a.operationId, deliveryMachineId: 'holder', receiptJson: JSON.stringify({ messageId: 321, forwardedFromMachine: 'studio' }) })).toBe(true);
     const audit = await store.getOperation(a.operationId);
@@ -574,6 +602,15 @@ describe('TelegramAdapter — the send decision with a lease policy', () => {
     const mockFetch = vi.fn(); vi.stubGlobal('fetch', mockFetch);
     expect((await a.sendToTopic(42, 'hello from the standby')).messageId).toBe(99);
     expect(relay).toHaveBeenCalledTimes(1); expect(mockFetch).not.toHaveBeenCalled();
+  });
+  it('records a recovered standby reply in topic history without sending it again', () => {
+    const a = make(() => 'forward');
+    const mockFetch = vi.fn(); vi.stubGlobal('fetch', mockFetch);
+    a.recordRecoveredOutbound(42, 'delayed reply', 991, 'agent');
+    expect(a.getMessageLog(10)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ topicId: 42, text: 'delayed reply', fromUser: false, provenance: 'agent' }),
+    ]));
+    expect(mockFetch).not.toHaveBeenCalled();
   });
   it('a boot-time send waits for the forward wiring instead of taking the direct path', async () => {
     const a = make(() => 'forward'); a.holderForwardPolicy = null; // not wired yet: the first seconds after a restart

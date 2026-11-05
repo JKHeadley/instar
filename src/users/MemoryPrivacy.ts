@@ -242,6 +242,20 @@ export class MemoryPrivacy {
     });
   }
 
+  /**
+   * The owner by verified person. With no owner profile, also the configured Telegram
+   * owner id, which Telegram itself vouches for: a real owner profile always wins. Operator
+   * keys are inferred from who could reach the agent at baseline, so they can hold a
+   * colleague and must never unlock this.
+   */
+  isOwnerSender(senderKey: string | null, personId: string | null): boolean {
+    if (personId !== null && personId === this.ownerUserId()) return true;
+    const owner = this.ownerUserId();
+    if (owner !== null && owner !== OPERATOR_PERSON_ID) return false;
+    const telegramOwner = this.deps.reachable().telegramOwnerId;
+    return telegramOwner != null && senderKey === `telegram:${telegramOwner}`;
+  }
+
   ownerUserId(): string | null {
     const owner = resolveMemoryOwner({
       configuredOwnerUserId: this.deps.config().ownerUserId ?? null,

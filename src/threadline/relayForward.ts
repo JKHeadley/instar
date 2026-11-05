@@ -201,7 +201,9 @@ export class RelayHolderFinder {
       for (const peer of peers) {
         void (async () => {
           try {
-            const res = await fetchFn(peer.url.replace(/\/$/, '') + '/threadline/health', { signal: controller.signal });
+            // Probe the peer's own relay state. The default health view is
+            // agent-wide and would recursively fan out through every sibling.
+            const res = await fetchFn(peer.url.replace(/\/$/, '') + '/threadline/health?scope=local', { signal: controller.signal });
             let body: unknown = null;
             try { body = await res.json(); } catch { /* @silent-fallback-ok — no body ⇒ fingerprint absent ⇒ not the holder */ }
             if (checkFingerprintHealth(res.ok, body, want).ok) { finish(peer); return; }

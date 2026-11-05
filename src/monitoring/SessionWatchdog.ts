@@ -22,6 +22,7 @@ import crypto from 'node:crypto';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
 import {
   evaluateThrottleSettle,
+  evaluateUsageWallSettle,
   RATE_LIMIT_SETTLED_CAPTURE_LINES,
   RATE_LIMIT_DEFAULT_SETTLE_MS,
   type ThrottleSettleState,
@@ -605,6 +606,18 @@ export class SessionWatchdog extends EventEmitter {
   /** How long a throttled pane must be byte-identical before recovery (configurable for tests/tuning). */
   private readonly rateLimitSettleMs: number;
 
+  /**
+   * Settle tracking for the USAGE WALL (the account's own quota, not a server
+   * throttle). Kept apart from throttleSettle because the two need different
+   * remedies: a throttle is retried in place, a wall is solved by moving the
+   * session to an account with room (usage-wall-rescue).
+   */
+  private usageWallSettle = new Map<string, ThrottleSettleState>();
+  private usageWallCooldowns = new Map<string, number>();
+  /** A walled pane stays walled for hours; one 'usage-wall' per 5 min is plenty
+   *  (the rescue dedupes and backs off on its own as well). */
+  private static readonly USAGE_WALL_COOLDOWN_MS = 300_000;
+
   constructor(config: InstarConfig, sessionManager: SessionManager, state: StateManager, options: {
     onProvenanceCanaryAlert?: (message: string) => void;
     readLiveWatchdogConfig?: () => { stuckCommandSec?: unknown; hardCeilingSec?: unknown } | undefined;
@@ -980,6 +993,9 @@ export class SessionWatchdog extends EventEmitter {
   checkRateLimited(tmuxSession: string): void {
     const output = this.sessionManager.captureOutput(tmuxSession, RATE_LIMIT_SETTLED_CAPTURE_LINES);
     const now = Date.now();
+    // The usage wall is its own signal (evaluateThrottleSettle reports a wall
+    // as 'no-throttle' on purpose — a wall is not something to retry in place).
+    this.checkUsageWall(tmuxSession, output, now);
     const { decision, next } = evaluateThrottleSettle(
       output,
       this.throttleSettle.get(tmuxSession),
@@ -1016,6 +1032,42 @@ export class SessionWatchdog extends EventEmitter {
     );
     this.rateLimitedCooldowns.set(tmuxSession, now);
     this.emit('rate-limited', tmuxSession);
+  }
+
+  /**
+   * Detects a session sitting at its account's USAGE WALL ("Usage limit
+   * reached · limit resets 8am", "You've hit your weekly limit") and emits
+   * 'usage-wall'. Signal-only: the consumer (UsageWallRescue) decides whether
+   * another account has room and moves the session; this method never acts.
+   *
+   * Same settled-output discipline as the throttle: the banner must be the
+   * current pane state (only Claude Code chrome below it) AND the pane must be
+   * byte-identical across polls for the settle window.
+   */
+  checkUsageWall(tmuxSession: string, output: string | null | undefined, now: number = Date.now()): void {
+    const { decision, next } = evaluateUsageWallSettle(
+      output,
+      this.usageWallSettle.get(tmuxSession),
+      now,
+      { settleMs: this.rateLimitSettleMs },
+    );
+    if (decision === 'no-throttle') {
+      // A wall this session had settled on (it emitted) is now gone: say so,
+      // so the episode's last outcome stops speaking for a later wall.
+      if (this.usageWallCooldowns.has(tmuxSession)) {
+        this.usageWallCooldowns.delete(tmuxSession);
+        this.emit('usage-wall-cleared', tmuxSession);
+      }
+      this.usageWallSettle.delete(tmuxSession);
+      return;
+    }
+    if (next) this.usageWallSettle.set(tmuxSession, next);
+    if (decision === 'waiting') return;
+    const lastEmitted = this.usageWallCooldowns.get(tmuxSession);
+    if (lastEmitted && (now - lastEmitted) < SessionWatchdog.USAGE_WALL_COOLDOWN_MS) return;
+    this.usageWallCooldowns.set(tmuxSession, now);
+    console.log(`[Watchdog] "${tmuxSession}": usage wall detected — pane settled at the account's usage limit`);
+    this.emit('usage-wall', tmuxSession);
   }
 
   /**

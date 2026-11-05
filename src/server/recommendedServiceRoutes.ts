@@ -9,6 +9,9 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { NO_REASONS, type NoReason, type RecommendedServicesLedger } from '../recommended/RecommendedServicesLedger.js';
 import { RECOMMENDED_SERVICE_CATALOG, isServiceAvailable, offerTextHash, type CatalogRow } from '../recommended/catalog.js';
 import { ConfirmTokenStore } from '../recommended/confirmTokens.js';
+import { recipeFor, type VerifyResult } from '../recommended/recipes.js';
+import { readSetupStates, updateSetupState, type ServiceSetupState } from '../recommended/setupState.js';
+import { decideSetupRestart } from '../recommended/setupRestart.js';
 import { isMigrationComplete, readDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
 import { RECOMMENDED_SERVICE_IDS } from '../recommended/serviceIds.js';
 
@@ -23,16 +26,146 @@ export interface RecommendedServiceRouteDeps {
   /** The one verified owner, or null when none can be told. */
   owner: () => string | null;
   recordApproval: (subject: string, evidenceRef: string) => void;
-  openCommitment: (name: string, service: string) => void;
+  /** Returns the commitment's id. */
+  openCommitment: (name: string, service: string) => string | null;
+  /** Done: verify passed. */
+  finishCommitment: (id: string) => void;
+  /** Off: the person said no. */
+  withdrawCommitment: (id: string, reason: string) => void;
+  /** Starts the session in its own conversation, reusing that topic on a restart. */
+  startSetup: (service: string, name: string, brief: string, topicId?: number) => Promise<{ sessionName: string; topicId: number }>;
+  /** False when the session didn't stop. */
+  stopSetup: (sessionName: string) => boolean;
+  /** Sessions outlive a server restart, so a resume must not start a second copy. */
+  isSetupRunning: (sessionName: string) => boolean;
+  /** Starts ran out. One notice to the person, because nothing else would say so. True once it's sent. */
+  notifyStuck: (service: string, name: string) => Promise<boolean>;
+  /** Closes that notice when a pass or a no makes it moot. */
+  clearStuck: (service: string) => void;
+  /** A plain line to the person, for a yes that needed no setup. */
+  tellOwner: (text: string) => void;
+  writeSecret: (name: string, value: string) => void;
+  readSecret: (name: string) => string | null;
+  port: number;
+  fetch?: typeof fetch;
+  /** Hands over the check to run once sessions can start, and on a timer after that. */
+  onReady?: (reconcile: () => Promise<void>) => void;
   /** Tests supply a row with a recipe, since no real service has one yet. */
   catalog?: readonly CatalogRow[];
   now?: () => number;
+}
+
+/** What the list shows about setup on this machine. */
+function setupView(state: ServiceSetupState | undefined): { verified: ServiceSetupState['verified'] | null; alreadyHeld: boolean; stalled: boolean } {
+  return { verified: state?.verified ?? null, alreadyHeld: !!state?.alreadyHeld, stalled: !!state?.exhausted };
 }
 
 export function registerRecommendedServiceRoutes(router: Router, deps: RecommendedServiceRouteDeps): void {
   const catalog = deps.catalog ?? RECOMMENDED_SERVICE_CATALOG;
   const tokens = new ConfirmTokenStore({ stateDir: deps.stateDir, now: deps.now });
   let mintLimitReported = false;
+  const starting = new Set<string>();
+  const report = (primary: string, err: unknown, impact: string): void => {
+    DegradationReporter.getInstance().report({
+      feature: 'RecommendedServices.setup', primary, fallback: 'The choice is saved. This step did not happen.',
+      reason: err instanceof Error ? err.message : String(err), impact,
+    });
+  };
+  const hasGrant = (service: string): boolean => {
+    const ledger = deps.ledger();
+    return !!ledger && ledger.activeGrant(service, ledger.machineId()) !== null;
+  };
+  /** A no ends the work in progress and the promise to finish it, on this machine. */
+  const endSetup = (service: string): void => {
+    const state = readSetupStates(deps.stateDir)[service];
+    if (!state) return;
+    try {
+      // Only forget a session that really stopped, so the next tick tries again if it didn't.
+      const stopped = !state.sessionName || !deps.isSetupRunning(state.sessionName) || deps.stopSetup(state.sessionName);
+      if (state.commitmentId) deps.withdrawCommitment(state.commitmentId, 'The owner said no.');
+      updateSetupState(deps.stateDir, service, {
+        sessionName: stopped ? undefined : state.sessionName, commitmentId: undefined, verified: undefined,
+        // keyStoredBySetup stays: the key itself stays after a no, so a later yes can still replace one that has died.
+        alreadyHeld: undefined, attempts: undefined, lastAttemptAt: undefined, exhausted: undefined, dormant: undefined,
+      });
+      deps.clearStuck(service);
+    } catch (err) {
+      report(`End setup of ${service} after a no`, err, 'A setup session or its promise may still be open. The next check tries again, and verifying is refused.');
+    }
+  };
+  const recordVerify = (service: string, outcome: VerifyResult, alreadyHeld: boolean): void => {
+    const before = readSetupStates(deps.stateDir)[service];
+    // An outage says nothing new, so it never takes a pass away. That would restart setup on a working service.
+    if (outcome.result === 'unknown' && before?.verified?.result === 'pass') return;
+    const state = updateSetupState(deps.stateDir, service, {
+      verified: { at: new Date(deps.now?.() ?? Date.now()).toISOString(), ...outcome },
+      ...(alreadyHeld ? { alreadyHeld: true } : {}),
+    });
+    if (outcome.result !== 'pass' || !state.commitmentId) return;
+    try {
+      deps.finishCommitment(state.commitmentId);
+      updateSetupState(deps.stateDir, service, { commitmentId: undefined, attempts: undefined, exhausted: undefined, dormant: undefined });
+      deps.clearStuck(service);
+    } catch (err) {
+      report(`Close the setup commitment for ${service}`, err, 'The service works, but its promise still reads as open.');
+    }
+  };
+  /**
+   * Starts the session, unless this machine already passes the check or a session is already at work.
+   * A key already held must never lead to a new sign-up that replaces it, so an unreadable check starts
+   * nothing and costs nothing: the next regular check looks again.
+   */
+  const beginSetup = async (row: CatalogRow): Promise<void> => {
+    const recipe = recipeFor(row);
+    if (!recipe || starting.has(row.id)) return;
+    const before = readSetupStates(deps.stateDir)[row.id];
+    if (before?.sessionName && deps.isSetupRunning(before.sessionName)) return;
+    starting.add(row.id);
+    try {
+      const preflight = await recipe.verify({ readSecret: deps.readSecret, fetch: deps.fetch });
+      if (!hasGrant(row.id) || preflight.result === 'unknown') return;
+      if (preflight.result === 'pass') {
+        recordVerify(row.id, preflight, true);
+        deps.tellOwner(`${row.name} was already working on this machine, so there's nothing for me to set up.`);
+        return;
+      }
+      updateSetupState(deps.stateDir, row.id, { attempts: (before?.attempts ?? 0) + 1, lastAttemptAt: new Date(deps.now?.() ?? Date.now()).toISOString(), dormant: undefined });
+      const { sessionName, topicId } = await deps.startSetup(row.id, row.name, recipe.brief({ port: deps.port }), before?.topicId);
+      updateSetupState(deps.stateDir, row.id, { sessionName, topicId });
+      // A no can land while the session starts, when there was nothing yet to stop.
+      if (!hasGrant(row.id)) endSetup(row.id);
+    } catch (err) {
+      report(`Start setup of ${row.id}`, err, `${row.name} is approved but nothing is setting it up yet. The next check tries again, a limited number of times.`);
+    } finally {
+      starting.delete(row.id);
+    }
+  };
+  /**
+   * Runs at boot and on a timer. A no from another machine ends the work here. A granted service with
+   * no live session and no pass gets a bounded restart, then one notice, because nothing else would
+   * say that setup quietly died.
+   */
+  const reconcile = async (): Promise<void> => {
+    const ledger = deps.ledger();
+    if (!ledger) return;
+    const states = readSetupStates(deps.stateDir);
+    const nowMs = deps.now?.() ?? Date.now();
+    for (const row of catalog) {
+      const state = states[row.id];
+      if (!hasGrant(row.id)) {
+        if (state?.commitmentId || state?.sessionName) endSetup(row.id);
+        continue;
+      }
+      if (!isServiceAvailable(row) || state?.verified?.result === 'pass' || state?.exhausted || state?.dormant) continue;
+      if (state?.sessionName && deps.isSetupRunning(state.sessionName)) continue;
+      const decision = decideSetupRestart({ starts: state?.attempts ?? 0, lastStartMs: state?.lastAttemptAt ? Date.parse(state.lastAttemptAt) : null, nowMs });
+      if (decision === 'restart') await beginSetup(row);
+      else if (decision === 'dormant') updateSetupState(deps.stateDir, row.id, { dormant: true, sessionName: undefined });
+      else if (decision === 'give-up' && await deps.notifyStuck(row.id, row.name)) updateSetupState(deps.stateDir, row.id, { exhausted: true });
+    }
+  };
+  deps.onReady?.(reconcile);
+
   const ledgerOr503 = (res: Response): RecommendedServicesLedger | null => {
     const ledger = deps.ledger();
     if (!ledger) res.status(503).json({ error: 'recommended-services-unavailable', detail: 'Choices cannot be saved on this machine yet, because it has no machine identity.' });
@@ -44,7 +177,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     if (!ledger) return;
     const services = catalog.map((row) => {
       const { id, setupRecipe: _setupRecipe, ...text } = row;
-      return { ...text, ...ledger.effective(id), available: isServiceAvailable(row), grantedHere: ledger.activeGrant(id, ledger.machineId()) !== null };
+      return { ...text, ...ledger.effective(id), available: isServiceAvailable(row), grantedHere: ledger.activeGrant(id, ledger.machineId()) !== null, ...setupView(readSetupStates(deps.stateDir)[id]) };
     });
     res.json({ services, offersLive: false, migrationComplete: isMigrationComplete(deps.stateDir), firstResult: readDeliveredFirstResult(deps.stateDir), replicating: ledger.isReplicating() });
   });
@@ -80,6 +213,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     try {
       tokens.invalidateService(req.params.id);
     } catch { /* @silent-fallback-ok — nosAtOpen still voids every open page */ }
+    endSetup(req.params.id);
     res.json(ledger.effective(req.params.id));
   });
 
@@ -185,6 +319,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       try {
         tokens.invalidateService(row.id);
       } catch { /* @silent-fallback-ok — nosAtOpen still voids every open page */ }
+      endSetup(row.id);
       res.json(ledger.effective(row.id));
       return;
     }
@@ -214,7 +349,12 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     // The yes is saved and stands. These two are records of it, so a failure here is reported, not refused.
     const followUps: [string, () => void][] = [
       ['approval record', () => deps.recordApproval(`recommended-service:${row.id}`, yes.eventId)],
-      ['setup commitment', () => deps.openCommitment(row.name, row.id)],
+      ['setup commitment', () => {
+        // A fresh yes to changed text keeps the promise already open.
+        if (readSetupStates(deps.stateDir)[row.id]?.commitmentId) return;
+        const commitmentId = deps.openCommitment(row.name, row.id);
+        if (commitmentId) updateSetupState(deps.stateDir, row.id, { commitmentId });
+      }],
     ];
     for (const [what, run] of followUps) {
       try {
@@ -229,6 +369,86 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
         });
       }
     }
+    void beginSetup(row);
     res.json(ledger.effective(row.id));
+  });
+
+  /** The session's way to report it's finished. Only the recipe's own check can say so. */
+  router.post('/recommended-services/:id/verify', async (req, res) => {
+    const ledger = ledgerOr503(res);
+    if (!ledger) return;
+    const row = catalog.find((r) => r.id === req.params.id);
+    if (!row) {
+      res.status(404).json({ error: 'unknown-service' });
+      return;
+    }
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'X-Instar-Request: 1 required' });
+      return;
+    }
+    const recipe = recipeFor(row);
+    if (!recipe) {
+      res.status(409).json({ error: 'no-recipe' });
+      return;
+    }
+    if (!ledger.activeGrant(row.id, ledger.machineId())) {
+      res.status(409).json({ error: 'not-granted-here' });
+      return;
+    }
+    try {
+      const outcome = await recipe.verify({ readSecret: deps.readSecret, fetch: deps.fetch });
+      // A no can land during the call. It wins, and nothing is recorded.
+      if (!ledger.activeGrant(row.id, ledger.machineId())) {
+        res.status(409).json({ error: 'not-granted-here' });
+        return;
+      }
+      recordVerify(row.id, outcome, false);
+      res.json(outcome);
+    } catch (err) {
+      report(`Verify ${row.id}`, err, 'The check could not run.');
+      res.status(503).json({ error: 'verify-failed' });
+    }
+  });
+
+  /** Stores the one secret a recipe names, so a session never improvises where a key goes. */
+  router.post('/recommended-services/:id/key', (req, res) => {
+    const ledger = ledgerOr503(res);
+    if (!ledger) return;
+    const row = catalog.find((r) => r.id === req.params.id);
+    const recipe = row ? recipeFor(row) : null;
+    if (!row || !recipe) {
+      res.status(404).json({ error: 'no-recipe' });
+      return;
+    }
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'X-Instar-Request: 1 required' });
+      return;
+    }
+    if (!ledger.activeGrant(row.id, ledger.machineId())) {
+      res.status(409).json({ error: 'not-granted-here' });
+      return;
+    }
+    // Plain text, parsed by its own route-level parser: a JSON slip here would put part of the key in a parse-error log.
+    const value = typeof req.body === 'string' ? req.body.trim() : '';
+    if (!value || value.length > 4096 || /[\s\p{Cc}]/u.test(value)) {
+      res.status(400).json({ error: 'invalid-value' });
+      return;
+    }
+    try {
+      // Live features may read a key that was already here, so a setup session never replaces one. It
+      // may correct its own, until that key has passed.
+      const state = readSetupStates(deps.stateDir)[row.id];
+      if (deps.readSecret(recipe.secretName) && (!state?.keyStoredBySetup || state.verified?.result === 'pass')) {
+        res.status(409).json({ error: 'already-held' });
+        return;
+      }
+      deps.writeSecret(recipe.secretName, value);
+      updateSetupState(deps.stateDir, row.id, { keyStoredBySetup: true });
+    } catch (err) {
+      report(`Store the key for ${row.id}`, err, 'The key was not saved.');
+      res.status(503).json({ error: 'key-not-saved' });
+      return;
+    }
+    res.json({ stored: true });
   });
 }

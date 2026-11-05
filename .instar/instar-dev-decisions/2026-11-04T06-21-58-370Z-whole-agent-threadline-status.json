@@ -1,0 +1,41 @@
+{
+  "ts": "2026-11-04T06:21:58.370Z",
+  "slug": "whole-agent-threadline-status",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/threadline/agentRelayStatus.ts matches relay / delivery path",
+    "safety-invariant proximity: src/threadline/relayForward.ts matches relay / delivery path",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 14,
+  "loc": 311,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-machine-local-justification.js",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/channelRegistry.ts",
+      "src/core/instarChannels.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts",
+      "src/threadline/ThreadlineEndpoints.ts",
+      "src/threadline/ThreadlineMCPServer.ts",
+      "src/threadline/ThreadlineMcpHttpService.ts",
+      "src/threadline/agentRelayStatus.ts",
+      "src/threadline/mcp-http-client.ts",
+      "src/threadline/mcp-stdio-entry.ts",
+      "src/threadline/relayForward.ts"
+    ],
+    "addedLines": 277,
+    "deletedLines": 34
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

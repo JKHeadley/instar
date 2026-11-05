@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "echo-bugs-codex-default",
+  "sessionId": "c1315f81-f67a-4fd7-af64-2be476fb5738",
+  "timestamp": "2026-11-04T20:19:09.809Z",
+  "artifactPath": "upgrades/side-effects/echo-bugs-codex-default.md",
+  "artifactSha256": "b7c69fac4f1e6220ee60b0fcec4d4f6c97cdc43e2708b589ddc7ada2610cf344",
+  "coveredFiles": [
+    "docs/eli16/echo-bugs-codex-default.eli16.md",
+    "src/commands/server.ts",
+    "src/core/ModelTierEscalation.ts",
+    "src/core/SessionManager.ts",
+    "src/core/TopicProfileResolver.ts",
+    "src/core/codexCapabilities.ts",
+    "src/core/types.ts",
+    "tests/unit/codexCapabilities.test.ts",
+    "tests/unit/echo-bugs-profile-default.test.ts",
+    "upgrades/next/echo-bugs-codex-default.md",
+    "upgrades/side-effects/echo-bugs-codex-default.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible issues-group profile default with local CLI fallback; a revert restores previous resolution.",
+  "eli16Path": "docs/eli16/echo-bugs-codex-default.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/echo-bugs-codex-default.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

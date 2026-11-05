@@ -101,6 +101,7 @@ const TRANSIENT_SKIP: Record<string, string> = {
   'src/commands/server.ts': ':memory: probe testDb — closes itself immediately',
   'src/server/routes.ts': 'readonly per-request open — closed per request, not process-lifetime',
   'src/memory/NativeModuleHealer.ts': 'generic ABI-heal helper — owns no handle (a comment mentions new Database)',
+  'src/core/UpdateChecker.ts': 'candidate startup probe opens an in-memory database in a child process and closes it in finally',
 };
 
 function walkTs(dir: string, acc: string[] = []): string[] {

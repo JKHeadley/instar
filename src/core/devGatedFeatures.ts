@@ -911,6 +911,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Several routes per agent for the Instar iPhone app (docs/specs/mobile-multi-route.md): a paired phone\'s signature is accepted on any of this machine\'s proven own names (Cloudflare tunnel hostname, Tailscale HTTPS name), GET /mobile/routes lists them, and a boot step maps tailscale serve HTTPS 443 to the agent port when 443 has no serve config.',
     justification: 'Own names come only from local configuration and are proven by the per-process pairing ping (echoed Host, local-TLS arrival, no sibling claim); a request is accepted only on a still-configured own name that arrived through this machine\'s own TLS front, and a captured signature names its exact host. Probes are bounded (one in flight, 3 s, backoff to 15 min, breaker after 8). The serve step never overwrites an existing 443 config. Switching it off restores the single paired host exactly.',
   },
+  {
+    name: 'mobilePairingPermissionActions',
+    configPath: 'mobilePairing.permissionActions.enabled',
+    description: 'Face ID-confirmed permission writes from the owner\'s phone (docs/specs/mobile-native-permissions.md): approve or decline a waiting authorization request held on this machine, and turn a feature switch on or off, each with a fresh presence-key signature over a single-use challenge bound to the device, Host and exact action (POST /mobile/permissions/challenge, /requests/:id/approve|decline, /features/:id).',
+    justification: 'No authority beyond the PIN-confirmed console: the action runs the console\'s own approve, deny and operator-switch code; the bearer is refused; it needs an active owner phone, a configured dashboard PIN, local TLS or loopback, the phone\'s Secure Enclave presence key and a 60-second single-use challenge naming the exact action (an approve also names the proposal\'s hash). Every write and refusal is audited. Switching it off stops the writes at once (re-checked live); the read-only lists stay. Dark on the fleet until the development-agent live proof passes.',
+  },
 ];
 
 /**

@@ -360,6 +360,14 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     fileLevel: 'git-sync-excluded',
     note: 'activation requests a supervised restart on this host; no grant or shared state is written',
   } });
+  // Memory-privacy owner fix link: spends a process-local token and points THIS
+  // machine's sessions.claudePath at a Claude binary measured on this machine.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/memory-privacy/fix/', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'the link token lives only in this process; the repair writes sessions.claudePath in .instar/config.json (sync-excluded in FileClassifier), a path to a binary on this machine\'s disk',
+  } });
 
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
 
