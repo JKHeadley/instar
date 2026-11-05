@@ -536,6 +536,10 @@ export interface JobDefinition {
   frameworkModel?: string;
   /** Opt-in to reviewed, non-safety session-start context omissions. */
   leanContext?: boolean;
+  /** Explicit missed-work handling after a verified lease promotion. Absent means ask. */
+  catchUpPolicy?: 'skip' | 'run-once' | 'ask';
+  /** Explicit project-relative prerequisites. Never interpreted as commands. */
+  requiredPaths?: string[];
   /** Whether this job is currently enabled */
   enabled: boolean;
   /** The skill or prompt to execute */

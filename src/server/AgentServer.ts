@@ -549,6 +549,7 @@ export class AgentServer {
     senderBotId: string;
   }) => Promise<{ ok: boolean; agentMessage?: boolean; reason?: string }>;
   private routeContext: {
+    jobCoverageStop?: (() => void) | null;
     telegramOrigin?: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime | null;
     wsManager: import('./WebSocketManager.js').WebSocketManager | null;
     directDesktopAccess?: DirectDesktopAccess | null;
@@ -8381,6 +8382,7 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    this.routeContext?.jobCoverageStop?.();
     this.mobilePairing?.push?.stop();
     this.mobilePairing?.stop();
     this.appConversations?.stop();
