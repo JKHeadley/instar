@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-`TelegramAdapter` records Agent Health attention observations and holds Telegram delivery unless the producer sets `needsUser: true`. This covers creation, refresh and reopen paths. `sendToTopic` carries its HTML formatting choice through the standby relay to the holder. The server's holder wiring uses that choice. Tests cover the quiet record, later user need, system topic creation, and formatting relay.
+`TelegramAdapter` records Agent Health attention observations and holds Telegram delivery unless the producer sets `needsUser: true`. This covers creation, refresh and reopen paths. `sendToTopic` carries its HTML formatting choice through the standby relay to the holder. The server's holder wiring uses that choice. Tests cover the quiet record, later user need, recent WONT_DO suppression, system topic creation, and formatting relay. Tier 1; the PR adds two integration test files on top of the original patch. One focused failing run and one passing run preceded this correction, with one review iteration.
 
 ## Decision-point inventory
 
@@ -17,7 +17,7 @@
 
 ## 1. Over-block
 
-An Agent Health producer that truly needs the person but omits `needsUser` will stay in the attention record. The producer must set that field after a bounded repair attempt. Existing Agent Health sources do not set it; their current notices are housekeeping.
+An Agent Health producer that truly needs the person but omits `needsUser` will stay in the attention record. The producer must set that field after a bounded repair attempt. Existing Agent Health sources do not set it. The working-set and commitment expiry notices describe operations the agent can retry after a peer returns, while the tmux refresh is optional and disruptive; none is an immediate, phone-completable decision for the person. The expiry ledgers drop automatic retries, so their source-specific recovery and wording audit remain in #2738 <!-- tracked: 2738 -->.
 
 ## 2. Under-block
 
@@ -39,7 +39,7 @@ No new static heuristic at a competing-signals decision point. The source decide
 
 ## 5. Interactions
 
-The hold runs before the old lane and hub paths, including `hubOnly` upserts. A held item remains in the attention store and gets a JSONL hold record. Reopening it does not post. A later `needsUser` transition sends once and clears the held marker; a reverse transition updates the stored decision and holds further posts. Real `/telegram/reply` traffic is outside this path. HTML relay forwarding changes presentation of caller-authored HTML, not the send decision.
+The hold runs before the old lane and hub paths, including `hubOnly` upserts. A held item remains in the attention store and gets a JSONL hold record. Reopening it does not post. A later `needsUser` transition on an open row sends once and clears the held marker; a recent WONT_DO stays closed and silent. A reverse transition updates the stored decision and holds further posts. An explicit Agent Health reopen now replaces a stale needsUser value when the new observation omits it. Real `/telegram/reply` traffic is outside this path. HTML relay forwarding changes presentation of caller-authored HTML, not the send decision.
 
 ## 6. External surfaces
 
@@ -63,11 +63,11 @@ The first slice is ready to ship on Echo. It stops the observed lane noise witho
 
 ## Second-pass review
 
-**Reviewer:** independent reviewer agent. **Independent read:** The reviewer initially found that repeated observations did not update the stored `needsUser` value. That is fixed and tested in both directions. The reviewer confirmed that this slice covers attention routing only and that direct sends remain for #2738 <!-- tracked: 2738 -->. Final verdict: concur.
+**Reviewer:** independent reviewer agent. **Independent read:** The original reviewer found that repeated observations did not update the stored `needsUser` value. In this rebased pass, a reviewer found that held-to-actionable routing could bypass a recent WONT_DO; the route now requires an open row, and a regression test pins that behavior. The reviewer confirmed that this slice covers attention routing only and that direct sends remain for #2738 <!-- tracked: 2738 -->. The rebased review concurs with the WONT_DO fix and the documented producer disposition. Final verdict: concur.
 
 ## Evidence pointers
 
-`tests/unit/attention-single-topic-routing.test.ts`, `tests/unit/telegram-tokenless-relay.test.ts`, `tests/unit/system-topic-single-creator.test.ts`.
+`tests/unit/attention-single-topic-routing.test.ts`, `tests/unit/telegram-tokenless-relay.test.ts`, `tests/unit/system-topic-single-creator.test.ts`, `tests/integration/agent-health-lane.test.ts`, and `tests/integration/notification-flood-burst-invariant.test.ts`. The two integration files reproduced all four local-verify failures before their expectations were updated and pass together (20/20); targeted unit tests pass (58/58), and full lint passed.
 
 ## Class-Closure Declaration
 

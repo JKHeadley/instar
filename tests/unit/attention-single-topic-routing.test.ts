@@ -332,6 +332,20 @@ describe('Single-alerts-topic routing (default mode)', () => {
     expect(rec.messagesByThread.get(item.topicId!)?.filter(m => m.includes('Recovered'))).toEqual([]);
   });
 
+  it('a recent WONT_DO keeps a held Agent Health item quiet when a producer marks it actionable', async () => {
+    makeAdapter({ getAttentionHubTopicId: () => 780 });
+    const rec = installApiStub(adapter);
+    const base = { id: 'dismissed-health', healthKey: 'dismissed-machine', lane: 'agent-health' as const,
+      title: 'Machine needs attention', summary: 'Routine observation',
+      category: 'agent-health', priority: 'NORMAL' as const };
+    await adapter.createAttentionItem(base);
+    await adapter.updateAttentionStatus(base.id, 'WONT_DO');
+    const item = await adapter.createAttentionItem({ ...base, needsUser: true });
+    expect(item.status).toBe('WONT_DO');
+    expect(rec.forumTopicsCreated).toBe(0);
+    expect([...rec.messagesByThread.values()].flat()).toEqual([]);
+  });
+
   it('an actionable Agent Health post renders formatting without raw tags', async () => {
     makeAdapter({ getAttentionHubTopicId: () => 781 });
     const rec = installApiStub(adapter);

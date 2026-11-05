@@ -4658,7 +4658,9 @@ export class TelegramAdapter implements MessagingAdapter {
         this.holdRoutineAgentHealth(admitted.item);
         return admitted.item;
       }
-      if ((admitted.repost || (healthLane && admitted.item.hubHeld === true))
+      const actionableTransition = healthLane && admitted.item.hubHeld === true
+        && isOpenAttentionStatus(admitted.item.status);
+      if ((admitted.repost || actionableTransition)
         && (routing?.hubOnly || this.attentionRoutingMode === 'single-topic' || healthLane)) {
         const hubTopicId = healthLane && this.agentHealthLaneCfg.enabled
           ? await this.routeToAgentHealthLane(admitted.item)
@@ -4859,6 +4861,7 @@ export class TelegramAdapter implements MessagingAdapter {
 
     const wasClosed = !isOpenAttentionStatus(existing.status);
     Object.assign(existing, item, {
+      needsUser: item.needsUser === true,
       status: 'OPEN' as const,
       updatedAt: new Date().toISOString(),
       lastSeenAt: new Date().toISOString(),
