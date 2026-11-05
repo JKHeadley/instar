@@ -20,10 +20,10 @@ function fixture(routingKey = 'C0BA4F4E0FP:1700000000.000100') {
   const registry = new ConversationRegistry({ stateDir: dir, machineId: () => 'm-local' });
   const minted = registry.mintForInbound(routingKey);
   const bindAuth = createConversationBindAuth(dir);
-  const calls: Array<{ channel: string; thread_ts?: string }> = [];
+  const calls: Array<{ channel: string; thread_ts?: string; nativeReferences?: string[] }> = [];
   const slack = {
-    sendToChannel: async (channel: string, _text: string, opts: { thread_ts?: string }) => {
-      calls.push({ channel, thread_ts: opts.thread_ts });
+    sendToChannel: async (channel: string, _text: string, opts: { thread_ts?: string; nativeReferences?: string[] }) => {
+      calls.push({ channel, thread_ts: opts.thread_ts, ...(opts.nativeReferences?.length ? { nativeReferences: opts.nativeReferences } : {}) });
       return '1700000001.000001';
     },
     resolveRoutingKey: (channel: string, thread?: string) => thread ? `${channel}:${thread}` : channel,
@@ -63,6 +63,16 @@ describe('POST /slack/session-reply', () => {
       .send({ conversationId: f.id, text: 'bound DM reply' });
     expect(res.status).toBe(200);
     expect(f.calls).toEqual([{ channel: 'D0CODEYDEMO', thread_ts: undefined }]);
+  });
+
+  it('passes explicit reference intent only from a bound session', async () => {
+    const f = fixture();
+    const token = f.bindAuth.mint('spawned', [f.id]);
+    const res = await request(f.app).post('/slack/session-reply')
+      .set('X-Instar-Bind-Token', token)
+      .send({ conversationId: f.id, text: 'Thanks <@U0C62ABNDK8>', nativeReferences: ['U0C62ABNDK8'] });
+    expect(res.status).toBe(200);
+    expect(f.calls[0].nativeReferences).toEqual(['U0C62ABNDK8']);
   });
 
   it('refuses missing/foreign bindings and any caller-supplied destination', async () => {
