@@ -16,7 +16,7 @@ Tier 1, reversible enforcement of an existing safety rule; no credentials or pro
 
 ## 1. Over-block
 
-Normal Chrome with a full profile path originally matched the word playwright in its directory; independent review caught this and classification now checks automation syntax instead. Normal Chrome repair, registry reads and source edits have explicit allow tests. A corrupt registry/config refuses automated access rather than risking saved credentials. MCP startup refuses the unsafe session configuration; remove its saved-profile browser binding to continue. Disposable profiles stay allowed.
+Normal Chrome with a full profile path originally matched the word playwright in its directory; independent review caught this and classification now checks automation syntax instead. Normal Chrome repair, registry reads and source edits have explicit allow tests. Additional adversarial tests exposed relative alias and quoted-space path gaps; the hook now resolves literal paths against the execution working directory and MCP startup resolves arguments against the session project. Both tests failed before the correction. Bare relative names are covered too; startup, dynamic load and provider registration now share the configured project base directory. The independent reviewer exercised both relative forms and concurred with this correction. A corrupt registry/config refuses automated access rather than risking saved credentials. MCP startup refuses the unsafe session configuration; remove its saved-profile browser binding to continue. Disposable profiles stay allowed.
 
 ## 2. Under-block
 

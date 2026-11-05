@@ -84,6 +84,16 @@ export function signinProfileGuardHook(): string {
   const canonical = p => { try { return fs.realpathSync(p); } catch (error) { if (error.code !== 'ENOENT') throw error; return path.resolve(p); } };
   const protectedDirs = profiles.flatMap(p => [p.userDataDir, p.windowsUserDataDir]).filter(Boolean).map(p => canonical(p));
   const paths = [text];
+  const workingDir = input.workdir || event.cwd || process.cwd();
+  for (const match of text.matchAll(/(["'])([^"'\n]+)\1/g)) {
+    if (match[2].startsWith('/') || match[2].startsWith('.')) paths.push(canonical(path.resolve(workingDir, match[2])));
+  }
+  for (const match of text.matchAll(/(?:launchPersistentContext|launch_persistent_context|userDataDir["']?\s*[:=]|user_data_dir["']?\s*[:=])\s*\(?\s*(["'])([^"'\n]+)\1/g)) {
+    paths.push(canonical(path.resolve(workingDir, match[2])));
+  }
+  for (const match of text.matchAll(/--user-data-dir(?:=|\s+)(?:"([^"]+)"|'([^']+)'|([^\s"';,)]+))/g)) {
+    paths.push(canonical(path.resolve(workingDir, match[1] || match[2] || match[3])));
+  }
   for (const match of text.matchAll(/(?:^|[\s"'=,([])(\/[^\s"',;)\]]+)/g)) paths.push(canonical(match[1]));
   if (profiles.some(p => (p.id && text.includes(p.id)) || ([p.userDataDir, p.windowsUserDataDir].filter(Boolean).some(dir => text.includes(dir) || text.includes(JSON.stringify(dir).slice(1, -1))))) || paths.some(p => protectedDirs.includes(p))) {
     deny('registered-signin-profile-automation-refused'); return;

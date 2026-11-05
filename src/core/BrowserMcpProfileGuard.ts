@@ -15,12 +15,12 @@ export function assertBrowserMcpProfilesSafe(projectDir: string, framework: stri
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
     const parsed = (toml ? parseToml(raw) : JSON.parse(raw)) as Record<string, any>;
     for (const definition of Object.values(parsed.mcpServers ?? parsed.mcp_servers ?? {})) {
-      assertMcpDoesNotExposeManagedTelegram(definition, protectedDirs);
+      assertMcpDoesNotExposeManagedTelegram(definition, protectedDirs, projectDir);
     }
     // Claude's user file can carry project-scoped MCP entries too.
     for (const key of [projectDir, path.resolve(projectDir)]) {
       for (const definition of Object.values(parsed.projects?.[key]?.mcpServers ?? {})) {
-        assertMcpDoesNotExposeManagedTelegram(definition, protectedDirs);
+        assertMcpDoesNotExposeManagedTelegram(definition, protectedDirs, projectDir);
       }
     }
   };

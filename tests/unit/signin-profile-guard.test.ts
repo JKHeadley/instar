@@ -45,6 +45,14 @@ describe('registered sign-in browser guard', () => {
     fs.mkdirSync(profile); const alias = path.join(root, 'innocent'); fs.symlinkSync(profile, alias);
     expect(run('Bash', { command: `chrome --remote-debugging-pipe --user-data-dir=${alias}` }).status).toBe(2);
   });
+  it('refuses relative aliases and quoted paths with spaces', () => {
+    fs.mkdirSync(profile);
+    fs.symlinkSync(profile, path.join(root, 'alias with spaces'));
+    expect(run('Bash', { command: 'node -e "chromium.launchPersistentContext(\'./alias with spaces\')"' }).status).toBe(2);
+    expect(run('Bash', { command: `chrome --remote-debugging-pipe --user-data-dir="${root}/alias with spaces"` }).status).toBe(2);
+    expect(run('Bash', { command: "node -e \"chromium.launchPersistentContext('alias with spaces')\"" }).status).toBe(2);
+    expect(run('mcp__playwright__browser_launch', { userDataDir: 'alias with spaces' }).status).toBe(2);
+  });
   it('allows disposable tests, normal Chrome repair, source edits, and registry reads', () => {
     expect(run('Bash', { command: 'node -e "chromium.launchPersistentContext(\'/tmp/disposable\')"' }).status).toBe(0);
     expect(run('Bash', { command: 'chrome-js.sh dawn-google document.title https://accounts.google.com' }).status).toBe(0);
@@ -94,6 +102,17 @@ describe('MCP startup protection', () => {
     fs.writeFileSync(registry, JSON.stringify({ profiles: [{ id: 'default', userDataDir: null, accounts: [{ service: 'google' }] }] }));
     fs.writeFileSync(path.join(root, '.mcp.json'), JSON.stringify({ mcpServers: { safe: { command: 'npx', args: ['@playwright/mcp', '--user-data-dir', '/tmp/disposable'] }, playwright: { command: 'npx', args: ['@playwright/mcp'] } } }));
     expect(() => assertBrowserMcpProfilesSafe(root, 'codex-cli', path.join(root, 'codex'))).toThrow('managed-telegram-profile-private');
+  });
+  it('resolves relative MCP startup paths against the session project directory', async () => {
+    const { assertBrowserMcpProfilesSafe } = await import('../../src/core/BrowserMcpProfileGuard.js');
+    fs.mkdirSync(profile); fs.symlinkSync(profile, path.join(root, 'alias'));
+    fs.writeFileSync(path.join(root, '.mcp.json'), JSON.stringify({ mcpServers: { playwright: { command: 'npx', args: ['--user-data-dir=./alias'] } } }));
+    expect(() => assertBrowserMcpProfilesSafe(root, 'codex-cli', path.join(root, 'codex'))).toThrow('managed-telegram-profile-private');
+  });
+  it('uses the configured project directory for provider registration aliases', async () => {
+    const { assertManagedTelegramMcpRegistration } = await import('../../src/providers/primitives/integration/mcpToolRegistry.js');
+    fs.mkdirSync(profile); fs.symlinkSync(profile, path.join(root, 'alias'));
+    expect(() => assertManagedTelegramMcpRegistration({ command: 'npx', args: ['--user-data-dir=./alias'] } as any, root)).toThrow('managed-telegram-profile-private');
   });
   it('refuses Windows profile paths without relying on their profile IDs', () => {
     const windowsDir = 'C:\\Users\\agent\\Signin';

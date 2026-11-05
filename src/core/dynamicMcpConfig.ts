@@ -57,10 +57,11 @@ export function readManagedTelegramUserDataDirs(projectDir: string): string[] {
 
 /** Shared by launch, dynamic load and provider registration. No server may receive a managed
  * Telegram profile capability, including an alias through a symlink or environment value. */
-export function assertMcpDoesNotExposeManagedTelegram(definition: unknown, managedUserDataDirs: readonly string[]): void {
+export function assertMcpDoesNotExposeManagedTelegram(definition: unknown, managedUserDataDirs: readonly string[], baseDir = process.cwd()): void {
   const canonical = (value: string): string => {
-    const resolved = path.resolve(value);
-    return fs.existsSync(resolved) ? fs.realpathSync(resolved) : resolved;
+    const resolved = path.resolve(baseDir, value);
+    try { return fs.realpathSync(resolved); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; return resolved; }
   };
   if (managedUserDataDirs.includes(DEFAULT_SIGNIN_PROFILE)) {
     const serialized = JSON.stringify(definition);
@@ -72,11 +73,10 @@ export function assertMcpDoesNotExposeManagedTelegram(definition: unknown, manag
     if (typeof value === 'string') {
       let decoded = value;
       try { decoded = decodeURIComponent(value); } catch { /* Literal non-URL strings remain inspectable. */ }
-      const pieces = [decoded, ...decoded.split(/[\s="']/)].filter(Boolean);
+      const pieces = [decoded.startsWith('--user-data-dir=') ? decoded.slice(16) : decoded, ...decoded.split(/[\s="']/)].filter(Boolean);
       for (const owner of managed) {
         if (decoded.includes(owner.original) || decoded.includes(owner.real)) throw new Error('managed-telegram-profile-private');
         for (const piece of pieces) {
-          if (!piece.startsWith('/') && !piece.startsWith('.')) continue;
           const resolved = canonical(piece);
           if (resolved === owner.real || resolved.startsWith(owner.real + path.sep)) throw new Error('managed-telegram-profile-private');
         }
