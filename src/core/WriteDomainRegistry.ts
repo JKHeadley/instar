@@ -361,6 +361,16 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     note: 'activation requests a supervised restart on this host; no grant or shared state is written',
   } });
 
+  // a2a-required-acknowledgment D4: closes a watch on the machine whose session has the
+  // message. A standby forwards the receipt to the relay holder over the mesh, so this
+  // must admit on every machine; the sender's health read merges across the pool.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/threadline/ack', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'watch and pending rows live in this machine\'s delivery-tracker database; visible pool-wide through the merged ?scope=pool peer-health read',
+  } });
+
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
 
   // POST /hooks/native-events (docs/specs/native-hook-events.md): a Claude Code

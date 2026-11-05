@@ -120,3 +120,11 @@ Real relay, throwaway agents, this build:
 Found in that run:
 - A thread-matched delivery ack flipped an older held row instead of the row that reached a session. Fixed by preferring rows with no held state, with a test. This small change came after the second-pass review and has not been re-reviewed.
 - Filed as fb-d110c68f-227: a receipt lost with asymmetric pairing keys, and receipts counting toward the relay's new-agent budget.
+
+## Fixes from the first full CI run
+
+- `POST /threadline/ack` is declared machine-local in the write-domain registry. It has to admit on a standby, which forwards the receipt to the relay holder. The rows sit in the gitignored `.instar/state/a2a-delivery.*.sqlite`.
+- `refusalReason` is allowlisted in the keyword-intent ratchet. It reads this server's own spawn-refusal text and only picks a display reason.
+- One integration test relied on a tmux session named `s` existing on the machine, so it passed here and failed in CI. The test now pins its thread.
+
+These change no runtime logic beyond the admission declaration, and they were not re-reviewed.

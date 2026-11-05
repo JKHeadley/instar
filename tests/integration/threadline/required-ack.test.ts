@@ -189,7 +189,7 @@ describe('threadline_ack on both transports', () => {
     // D6: threadline_history shows receipts on the thread, without a separate lookup.
     tracker.recordSent({ messageId: 'hist-1', peerFp: PEER, threadId: 'thread-hist', transport: 'relay' });
     tracker.recordHeld('hist-1', 'unacknowledged', null);
-    resumeMap.save('thread-hist', { uuid: 'u', sessionName: 's', createdAt: new Date().toISOString(), savedAt: new Date().toISOString(), lastAccessedAt: new Date().toISOString(), remoteAgent: PEER, subject: 'S', state: 'active', pinned: false, messageCount: 1 });
+    resumeMap.save('thread-hist', { uuid: 'u', sessionName: 's', createdAt: new Date().toISOString(), savedAt: new Date().toISOString(), lastAccessedAt: new Date().toISOString(), remoteAgent: PEER, subject: 'S', state: 'active', pinned: true, messageCount: 1 });
     const hist = callJson(await client.callTool({ name: 'threadline_history', arguments: { threadId: 'thread-hist' } }));
     expect((hist.receipts as Array<Record<string, unknown>>)[0]).toMatchObject({ messageId: 'hist-1', heldState: 'unacknowledged' });
     const bad = await client.callTool({ name: 'threadline_ack', arguments: { ackRefs: ['x'], summary: 'two\nlines' } });
