@@ -1137,7 +1137,14 @@ export class JobScheduler {
 
     // Run gate command if configured — zero-token pre-screening (async, non-blocking)
     if (job.gate) {
-      if (!await this.runGateAsync(job)) {
+      const gatePassed = await this.runGateAsync(job);
+      // A lease can move while the shell gate is waiting. Refuse this fire
+      // before it reaches a claim, script launch, or session spawn.
+      if (this.paused || this.state.readOnly) {
+        this.skipLedger.recordSkip(slug, 'role-guard');
+        return 'skipped';
+      }
+      if (!gatePassed) {
         this.scheduleRetry(slug, 'gate');
         return 'skipped';
       }
@@ -3552,7 +3559,7 @@ export class JobScheduler {
     const gateCmd = job.gate!.length > 200 ? job.gate!.slice(0, 200) + '…' : job.gate!;
 
     this.skipLedger.recordSkip(job.slug, 'gate');
-    this.state.appendEvent({
+    if (!this.state.readOnly) this.state.appendEvent({
       type: 'job_gate_skip',
       summary: `Job "${job.slug}" skipped — gate returned exit ${exitCode} after ${maxAttempts} attempts${stderr ? `: ${stderr.slice(0, 200)}` : ''}`,
       timestamp: new Date().toISOString(),

@@ -126,6 +126,8 @@ import { resolveFrameworkBinaryPath, computeGrokInteractiveOptIn } from '../core
 import type { TopicProfileStore } from '../core/TopicProfileStore.js';
 import type { TopicResumeMap } from '../core/TopicResumeMap.js';
 import { runResumeHeartbeatTick } from '../core/ResumeHeartbeat.js';
+import { activatedAtPairing, readPairDecision } from '../core/sessionPoolPairActivation.js';
+import { liveCopyInList, probeLiveCopyOnPeer } from '../core/sessionLiveProbe.js';
 import type { IdleReading } from '../core/classifyProfileChange.js';
 import { closeAllSqlite } from '../core/SqliteRegistry.js';
 import { DP_SUBSCRIPTION_RELOGIN_ACTION, DP_TELEGRAM_ORIGIN_RECOVERY } from '../data/provenanceCoverage.js';
@@ -209,7 +211,8 @@ import { isRemotelyHandled } from '../core/SessionRouter.js';
 import { confirmLocalPlacementAfterDelivery } from '../core/SessionPoolLocalClaim.js';
 import { decideLeaseGatedSpawn, sharedG3SoakLedger, applyBindingCleanupOnKill } from '../core/leaseGatedSpawn.js';
 import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForwardBridge.js';
-import { formatForwardedTopicContext } from '../core/ForwardedTopicContext.js';
+import { formatForwardedTopicContext, crossMachineReplyEvidence, INCOMPLETE_TOPIC_HISTORY_WARNING } from '../core/ForwardedTopicContext.js';
+import { CoherenceJournalReader } from '../core/CoherenceJournalReader.js';
 import { createTopicHistoryPullHandler, pullMovedTopicHistory, TOPIC_HISTORY_PULL_MAX_MESSAGES, TOPIC_HISTORY_PULL_TIMEOUT_MS } from '../core/topicHistoryPull.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl, detectTailscaleIp, pickPrimaryLanIp, computeSelfMeshEndpoints, advertiseSelfMeshEndpoints, resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { PeerEndpointResolver } from '../core/PeerEndpointResolver.js';
@@ -693,6 +696,12 @@ let _clearContextExhaustionFreshRequired: ((topicId: number) => void) | null = n
 // is byte-identical to today's always-local dispatch. Set once in startServer().
 let _sessionRouter: import('../core/SessionRouter.js').SessionRouter | null = null;
 let _sessionPoolStage: () => string = () => 'dark';
+/** A pool started at pairing, stepped down to dark, with this conversation on a peer: the
+ *  next message still goes there (session-pool-activation-at-pairing, Change 7). */
+/** The signed duplicate probe, both sides (set where the mesh client and the check are built). */
+let _signedLiveCopyProbe: ((machineId: string, url: string, platform: string, platformId: string) => Promise<{ ok: boolean; result?: unknown } | null>) | null = null;
+let _serveLiveCopyProbe: ((platform: string, platformId: string) => Promise<import('../core/sessionLiveProbe.js').LiveCopyProbeResponse>) | null = null;
+let _routesToPeerAtDark: (sessionKey: string) => boolean = () => false;
 // Self-placement deliberately falls through from SessionRouter into this file's
 // established local inject/spawn tail. Confirming inside SessionRouter would be
 // premature because handleLocally is only that fall-through marker. This callback
@@ -2636,6 +2645,7 @@ export function wireTelegramRouting(
     modelTier: 'fast' | 'balanced' | 'capable';
     stateDir: string;
   } | null,
+  poolHistoryAccess?: { port: number; authToken: string },
 ): void {
   // Guard: tracks which topic IDs have a spawn in progress.
   // Prevents duplicate concurrent spawns for the same topic when messages
@@ -2957,7 +2967,8 @@ export function wireTelegramRouting(
     // CONSUMES it instead of re-resolving — the admission decision and the
     // routing decision cannot disagree mid-dispatch.
     let _admissionVerdict: { messageId: string; action: string; acked: boolean } | undefined;
-    if (_sessionRouter && _sessionPoolStage() !== 'dark') {
+    const _routingOnly = _routesToPeerAtDark(String(topicId));
+    if (_sessionRouter && (_sessionPoolStage() !== 'dark' || _routingOnly)) {
       // Ordering gate (Durable Inbound Message Queue §2.3): a live message for
       // a session with queued custody enqueues BEHIND the existing entries —
       // injecting it now would deliver out of order. Gated on a live engine.
@@ -2985,6 +2996,7 @@ export function wireTelegramRouting(
           sessionKey: String(topicId),
           messageId: String(msg.id),
           payload: text,
+          ...(_routingOnly ? { routingOnly: true } : {}),
           topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)), // U4.1 §2D: local pin ⊕ fold winner by HLC
           // §2.2: sender identity captured at ingress, persisted with custody.
           senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName, ...mobileEnvelope(msg) },
@@ -3320,7 +3332,23 @@ export function wireTelegramRouting(
       if (!spawnName) spawnName = `topic-${topicId}`;
 
       // Use the shared spawn helper that includes topic history + user context
-      spawnSessionForTopic(sessionManager, telegram, spawnName, topicId, text, topicMemory, resolvedUser ?? undefined).then((newSessionName) => {
+      (async () => {
+        let movedContext: string | undefined;
+        if (poolHistoryAccess && _sessionPoolStage() !== 'dark') {
+          try {
+            const r = await fetch(`http://127.0.0.1:${poolHistoryAccess!.port}/telegram/topics/${topicId}/messages?limit=100&scope=pool`, {
+              headers: { Authorization: `Bearer ${poolHistoryAccess!.authToken}` }, signal: AbortSignal.timeout(8_000),
+            });
+            if (r.ok) {
+              const j = await r.json() as { messages?: import('../core/ForwardedTopicContext.js').ForwardedHistoryMessage[]; pool?: { failed?: unknown[]; queried?: unknown[] } };
+              const history = Array.isArray(j.messages) ? j.messages : [];
+              movedContext = `${INCOMPLETE_TOPIC_HISTORY_WARNING}\n\n${formatForwardedTopicContext(history, spawnName)}`;
+              if (j.pool?.failed?.length || history.length >= 100) movedContext = `${INCOMPLETE_TOPIC_HISTORY_WARNING}\n\n${movedContext ?? ''}`;
+            } else movedContext = INCOMPLETE_TOPIC_HISTORY_WARNING;
+          } catch { movedContext = INCOMPLETE_TOPIC_HISTORY_WARNING; }
+        }
+        return spawnSessionForTopic(sessionManager, telegram, spawnName, topicId, text, topicMemory, resolvedUser ?? undefined, movedContext);
+      })().then((newSessionName) => {
         telegram.registerTopicSession(topicId, newSessionName, spawnName);
         confirmLocalSessionPoolClaim();
         sendDeterministicTelegramNotice(telegram, 'session-lifecycle', topicId, `Session starting up — reading your message now. One moment.`).catch(() => {
@@ -3403,7 +3431,8 @@ export function wireTelegramRouting(
     // enabled, but cross-machine routing is the failover machinery a red E2E
     // demoted. At dark the drain delivers on THIS machine only, exactly like the
     // live path, which skips the router at dark.
-    const poolDark = _sessionPoolStage() === 'dark';
+    const drainRoutingOnly = _routesToPeerAtDark(dmsg.sessionKey);
+    const poolDark = _sessionPoolStage() === 'dark' && !drainRoutingOnly;
     if (!poolDark && !_sessionRouter) return { kind: 'un-routable', reason: 'router-not-constructed' };
 
     // Routing first — ownership may have moved while the entry waited.
@@ -3411,6 +3440,7 @@ export function wireTelegramRouting(
       sessionKey: dmsg.sessionKey,
       messageId: dmsg.messageId,
       payload: dmsg.payload,
+      ...(drainRoutingOnly ? { routingOnly: true } : {}),
       topicMetadata: (dmsg.topicMetadata as import('../core/PlacementExecutor.js').TopicPlacement | undefined)
         ?? (_pinPlacementMetadata ? _pinPlacementMetadata(dmsg.sessionKey) : _topicPinStore?.asTopicMetadata(dmsg.sessionKey)), // U4.1 §2D
       senderEnvelope: dmsg.senderEnvelope,
@@ -8343,11 +8373,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       try {
         const nowAwake = coordinator.isAwake;
         if (nowAwake === bootAwake) return;
-        const lease = config.multiMachine?.leaseSelfHeal;
-        const peer = Object.entries(coordinator.managers.identityManager.loadRegistry().machines ?? {})
-          .some(([id, entry]) => id !== coordinator.identity?.machineId && !entry.revokedAt);
         const decision = decideRoleRestart({
-          applies: !!lease?.soloCaptainHold?.enabled && !lease?.preferredAwakeMachineId && peer,
+          // Every scheduler-enabled lease holder needs the awake boot path. The
+          // optional self-heal policy and preferred-machine hint do not change
+          // which machine currently owns the lease.
+          applies: config.scheduler.enabled,
           bootAwake, nowAwake, lastRestartAtMs: readLastRoleRestart(config.stateDir), nowMs: Date.now(),
         });
         if (decision === 'restart') {
@@ -8359,11 +8389,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     };
     coordinator.on('roleChange', (_from, to) => {
-      const lease = config.multiMachine?.leaseSelfHeal;
-      if (lease?.soloCaptainHold?.enabled && !lease?.preferredAwakeMachineId) {
-        if (to === 'awake') scheduler?.resume();
-        else scheduler?.pause();
-      }
+      // A demoted holder stops jobs immediately, even while the planned
+      // restart is throttled or pending. A promoted standby restarts through
+      // the normal boot path, which constructs its missing scheduler.
+      if (to === 'awake') scheduler?.resume();
+      else scheduler?.pause();
       reconcileRole();
     });
     // A change inside the restart window, or a failed request, is retried until the role matches.
@@ -8811,7 +8841,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null,
         () => _agentServerRef?.getTopicOperatorStore() ?? null,
         () => state.get<number>('agent-attention-topic'),
-        () => resolveHubClassifierDeps(config, _sharedIntelligence));
+        () => resolveHubClassifierDeps(config, _sharedIntelligence),
+        { port: config.port, authToken: config.authToken ?? '' });
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, undefined, config.sessions.claudePath, topicMemory);
       console.log(pc.green('  Telegram routing + command callbacks wired (send-only)'));
     }
@@ -8938,7 +8969,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null,
         () => _agentServerRef?.getTopicOperatorStore() ?? null,
         () => state.get<number>('agent-attention-topic'),
-        () => resolveHubClassifierDeps(config, _sharedIntelligence));
+        () => resolveHubClassifierDeps(config, _sharedIntelligence),
+        { port: config.port, authToken: config.authToken ?? '' });
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, accountSwitcher, config.sessions.claudePath, topicMemory);
 
       // Wire up unknown-user handling (Multi-User Setup Wizard Phase 4.5)
@@ -10639,12 +10671,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           // SpawnAdmission TOCTOU guard (ownership-gated-spawn §3.1 item 2):
           // stash the router verdict so the dispatch's seam consumes it.
           let _slackAdmissionVerdict: { messageId: string; action: string; acked: boolean } | undefined;
-          if (_sessionRouter && _sessionPoolStage() !== 'dark') {
+          const _slackRoutingOnly = _routesToPeerAtDark(routingKey);
+          if (_sessionRouter && (_sessionPoolStage() !== 'dark' || _slackRoutingOnly)) {
             try {
               const outcome = await _sessionRouter.route({
                 sessionKey: routingKey,
                 messageId: String(message.id),
                 payload: message.content,
+                ...(_slackRoutingOnly ? { routingOnly: true } : {}),
                 topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(routingKey) : _topicPinStore?.asTopicMetadata(routingKey), // U4.1 §2D: local pin ⊕ fold winner by HLC
                 senderEnvelope: {
                   userId: (message.metadata?.slackUserId as string) || undefined,
@@ -24676,6 +24710,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               .map(([id]) => id),
             capacity: (id) => machinePoolRegistry!.getCapacityForReport(id),
             ownChannels: () => selfServesChannels(),
+            pairingDeclined: () => {
+              const decision = readPairDecision(config.stateDir);
+              return decision && !decision.activate ? decision.reason : null;
+            },
             durableOwnership: () => durableOwnershipMod.shouldActivateDurableOwnership(config, resolveDevAgentGate),
             duplicateCheck: () => _duplicateReconciler?.status() ?? null,
             takeover: () => _takeoverReadiness,
@@ -26695,6 +26733,15 @@ export async function startServer(options: StartOptions): Promise<void> {
             // every follow-up — the moved conversation never advances. So: if a live
             // session exists, inject the text into it (with the [telegram:N …] prefix the
             // session expects) and return; only spawn when there is none.
+            // The receiver owns the reply, so claim the original inbound key here.
+            // Its outbound commit then broadcasts a marker back to the router's
+            // ledger, which otherwise stays processing forever.
+            if (messageLedger && currentInboundByTopic && /^\d+$/.test(cmd.messageId)) {
+              const key = dedupeKeyFor('telegram', topicId, cmd.messageId);
+              if (messageLedger.claimForwardedInbound(key, String(topicId), text ?? '', 0)) {
+                currentInboundByTopic.set(String(topicId), key);
+              }
+            }
             const existing = tg.getSessionForTopic(topicId);
             if (existing && sessionManager.isSessionAlive(existing)) {
               if (text) {
@@ -26734,17 +26781,19 @@ export async function startServer(options: StartOptions): Promise<void> {
                   bearerFetch: async (topic) => {
                     const url = _resolveRouterUrl?.() ?? null;
                     if (!url) return null;
-                    const resp = await fetch(`${url}/telegram/topics/${topic}/messages?limit=${TOPIC_HISTORY_PULL_MAX_MESSAGES}`, {
+                    const resp = await fetch(`${url}/telegram/topics/${topic}/messages?limit=${TOPIC_HISTORY_PULL_MAX_MESSAGES}&scope=pool`, {
                       headers: { 'Authorization': `Bearer ${config.authToken}` },
                       signal: AbortSignal.timeout(TOPIC_HISTORY_PULL_TIMEOUT_MS),
                     });
                     if (!resp.ok) return null;
-                    const j = (await resp.json()) as { messages?: unknown[] };
+                    const j = (await resp.json()) as { messages?: unknown[]; pool?: { failed?: unknown[] } };
+                    if (j.pool?.failed?.length) console.warn(`  [session-pool] pool history incomplete for topic ${topic}`);
                     return Array.isArray(j.messages) ? j.messages : null;
                   },
                   log: (m) => console.warn(`  [session-pool] ${m}`),
                 }, topicId);
-                const movedContext = formatForwardedTopicContext(history.messages, tg.getTopicName?.(topicId) ?? undefined) || undefined;
+                // A bounded pull cannot prove that no older messages lived on a prior machine.
+                const movedContext = `${INCOMPLETE_TOPIC_HISTORY_WARNING}\n\n${formatForwardedTopicContext(history.messages, tg.getTopicName?.(topicId) ?? undefined)}`;
                 return spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text, undefined, undefined, movedContext);
               })()
                 .then((name) => {
@@ -27175,6 +27224,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             'topic-history-pull': (cmd) => createTopicHistoryPullHandler({
               readHistory: telegram ? (topic, limit) => telegram!.getTopicHistory(topic, limit) : null,
             })(cmd as { topic?: unknown; limit?: unknown }),
+            'session-live-probe': async (cmd) => {
+              const { platform, platformId } = cmd as { platform?: unknown; platformId?: unknown };
+              if (typeof platform !== 'string' || typeof platformId !== 'string') return { ok: false, reason: 'malformed' };
+              return _serveLiveCopyProbe ? _serveLiveCopyProbe(platform, platformId) : { ok: false, reason: 'no-duplicate-check' };
+            },
             'topic-profile-pull': (cmd) => {
               if (!_topicProfileStore) return { ok: false, reason: 'topic-profile disabled' };
               return createTopicProfilePullHandler({
@@ -27761,6 +27815,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             const h = coordinator.getSyncStatus().leaseHolder;
             return h && h !== meshSelfId ? peerUrl(h) : null;
           };
+          _signedLiveCopyProbe = (machineId, url, platform, platformId) =>
+            meshClient.send({ machineId, url }, { type: 'session-live-probe', platform, platformId }, 0, { timeoutMs: 5_000 });
           _pullRouterHistory = async (topic) => {
             const h = coordinator.getSyncStatus().leaseHolder;
             const url = h && h !== meshSelfId ? peerUrl(h) : null;
@@ -29090,6 +29146,13 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (!r.ok) throw new Error(`HTTP ${r.status}`);
               return r.json();
             };
+            _serveLiveCopyProbe = async (platform, platformId) => {
+              try {
+                return { ok: true, live: liveCopyInList(await fetchJson(`${selfBase}/sessions`, 5_000), platform, platformId) };
+              } catch (err) {
+                return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+              }
+            };
             const dupCfgResolved = {
               enabled: resolveDevAgentGate(dupCfgRaw.enabled, config),
               dryRun: dupCfgRaw.dryRun !== false,
@@ -29149,16 +29212,14 @@ export async function startServer(options: StartOptions): Promise<void> {
                   const sep = key.indexOf(':');
                   const platform = key.slice(0, sep);
                   const pid = key.slice(sep + 1);
-                  const base =
-                    machineId === _meshSelfId
-                      ? selfBase
-                      : (_resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId)?.url;
+                  const onSelf = machineId === _meshSelfId;
+                  const base = onSelf ? selfBase : (_resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId)?.url;
                   if (!base) return { ok: false, live: false };
-                  const list = (await fetchJson(`${base}/sessions`, 5_000)) as Array<Record<string, unknown>>;
-                  const live = (Array.isArray(list) ? list : []).some(
-                    (s) => String(s.platform) === platform && String(s.platformId) === pid,
-                  );
-                  return { ok: true, live };
+                  const bearer = async () => liveCopyInList(await fetchJson(`${base}/sessions`, 5_000), platform, pid);
+                  return await probeLiveCopyOnPeer({
+                    signed: async () => (onSelf || !_signedLiveCopyProbe ? null : _signedLiveCopyProbe(machineId, base, platform, pid)),
+                    bearer,
+                  });
                 } catch {
                   // @silent-fallback-ok: ok:false is the DEFERRAL signal — the
                   // reconciler journals probe-failed-deferred and burns an
@@ -29813,6 +29874,15 @@ export async function startServer(options: StartOptions): Promise<void> {
               return _resolveSessionPoolStage(live);
             } catch { return 'dark'; }
           };
+          _routesToPeerAtDark = (sessionKey) => {
+            try {
+              const live = liveConfig.get('multiMachine.sessionPool', config.multiMachine?.sessionPool ?? {}) as { enabled?: boolean };
+              if (live.enabled !== true || _sessionPoolStage() !== 'dark') return false;
+              if (!activatedAtPairing({ multiMachine: { sessionPool: live } })) return false;
+              const own = _ownershipReadForDrain?.(sessionKey);
+              return !!own && own.status === 'active' && own.ownerMachineId !== _meshSelfId;
+            } catch { return false; } // @silent-fallback-ok — an unreadable record falls back to local delivery, as at any dark stage
+          };
           console.log(pc.green('  SessionRouter wired (L4) — inert until rollout stage advances past dark'));
 
           // bug #7: tokenless-standby outbound Telegram relay. TelegramAdapter.sendToTopic
@@ -30215,6 +30285,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           'multiMachine.sessionPool.stage',
           'dark',
         ) as import('../core/StageAdvancer.js').SessionPoolStage;
+      // A pool started at pairing has its own green and expiry. Every other pool keeps today's rules.
+      const pairStartedPool = activatedAtPairing(config);
+      const pairGreenMod = await import('../core/sessionPoolPairGreen.js');
+      const pairPeerExists = (): boolean => (coordinator?.managers.identityManager.getActiveMachines() ?? [])
+        .some((m) => m.machineId !== _meshSelfId);
+      let pairGreenProducer: import('../core/sessionPoolPairGreen.js').PairGreenProducer | null = null;
       // StageAdvancer: the sole stage writer. Held for the rollout job/route to drive;
       // constructed here so the write path (liveConfig + token) is wired in one place.
       const stageAdvancer = new stageMod.StageAdvancer({
@@ -30223,6 +30299,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         readStage: readSessionPoolStage,
         writeStageConfig: (s) => liveConfig.set(guardMod.STAGE_CONFIG_PATH, s, { stageWriteToken: guardMod.STAGE_WRITE_TOKEN }),
         rebalanceProof: () => stageMod.rebalanceProofState(_rebalanceProofStore!, Date.now()),
+        ...(pairStartedPool ? {
+          shadowProof: () => pairGreenMod.pairShadowProofState(sessionPoolE2EResultStore!, Date.now(), pairPeerExists()),
+        } : {}),
         audit: (event, detail) => console.log(pc.dim(`  [stage-advancer] ${event} ${JSON.stringify(detail)}`)),
       });
       // ── Promotion activation ────────────────────────────────────────────────
@@ -30250,6 +30329,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         if (promotionCfg.model === 'auto-climb') {
           const promotionTimer = setInterval(() => {
             try {
+              pairGreenProducer?.tick();
               _sessionPoolPromotionActivation?.autoTick();
             } catch (err) {
               console.warn(
@@ -30274,6 +30354,19 @@ export async function startServer(options: StartOptions): Promise<void> {
         config.multiMachine?.sessionPool?.failoverRunner,
         (explicit) => resolveDevAgentGate(explicit, config),
       );
+      // One stage-0 producer only: where the failover runner runs, it decides.
+      if (pairStartedPool && !failoverRunnerCfg.enabled) {
+        const readinessMod = await import('../core/poolReadiness.js');
+        pairGreenProducer = new pairGreenMod.PairGreenProducer({
+          store: sessionPoolE2EResultStore,
+          commitSha: currentSessionPoolBuildIdentity,
+          ready: () => {
+            const deps = readinessMod.getActivePoolReadiness();
+            return !!deps && readinessMod.computePoolReadiness(deps).ready === true;
+          },
+          now: () => Date.now(),
+        });
+      }
       if (failoverRunnerCfg.enabled) {
         // The dry-run SIDE store: a separate signed file the promotion path
         // (StageAdvancer/driver) NEVER reads, so a would-record green captured
@@ -32344,14 +32437,56 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
         } as Message);
       };
-      const runStuckRecovery = (): void => {
+      let stuckRecoveryRunning = false;
+      const runStuckRecovery = async (): Promise<void> => {
+        if (stuckRecoveryRunning) return;
+        stuckRecoveryRunning = true;
         try {
+          if (!coordinator.holdsLease()) return;
+          const remoteEvidence = new Map<string, 'answered' | 'unanswered' | 'unknown'>();
+          if (sessionOwnershipRegistry || _sessionPoolStage() !== 'dark') {
+            const placementReader = new CoherenceJournalReader({ stateDir: config.stateDir });
+            const entries = ledgerForRecovery.reclaimStuck(seamlessness.maxProcessingMs);
+            const topics = [...new Set(entries.map(e => e.topic).filter((t): t is string => !!t))];
+            await Promise.all(topics.map(async topic => {
+              let history: import('../core/ForwardedTopicContext.js').ForwardedHistoryMessage[] = [];
+              let failed = true;
+              let failedIds: string[] = [];
+              let queriedIds: string[] = [];
+              try {
+                const r = await fetch(`http://127.0.0.1:${config.port}/telegram/topics/${topic}/messages?limit=100&scope=pool`, {
+                  headers: { Authorization: `Bearer ${config.authToken}` }, signal: AbortSignal.timeout(8_000),
+                });
+                if (r.ok) {
+                  const j = await r.json() as { messages?: import('../core/ForwardedTopicContext.js').ForwardedHistoryMessage[]; pool?: { failed?: unknown[]; queried?: unknown[] } };
+                  history = Array.isArray(j.messages) ? j.messages : [];
+                  failedIds = (j.pool?.failed ?? []).map(f => (f as { machineId?: string }).machineId ?? '');
+                  queriedIds = (j.pool?.queried ?? []).filter((id): id is string => typeof id === 'string');
+                  failed = !Array.isArray(j.messages) || !Array.isArray(j.pool?.queried);
+                }
+              } catch { /* missing peer evidence remains unknown */ }
+              let priorOwners: string[] = [];
+              try {
+                const placements = placementReader.query({ topic: Number(topic), kind: 'topic-placement', limit: 100 });
+                if (placements.truncated || placements.entries.length === 0) failed = true;
+                priorOwners = placements.entries.map(e => (e.data as { owner?: unknown }).owner)
+                  .filter((owner): owner is string => typeof owner === 'string' && owner !== _meshSelfId);
+              } catch { failed = true; }
+              for (const entry of entries.filter(e => e.topic === topic)) {
+                const id = Number(entry.dedupeKey.split(':').at(-1));
+                remoteEvidence.set(entry.dedupeKey,
+                  Number.isSafeInteger(id) ? crossMachineReplyEvidence(history, id, priorOwners, queriedIds, failedIds, !failed) : 'unknown');
+              }
+            }));
+          }
           const res = recoverStuckMessages({
             ledger: ledgerForRecovery,
             holdsLease: () => coordinator.holdsLease(),
             epoch: coordinator.getLeaseEpoch(),
             maxProcessingMs: seamlessness.maxProcessingMs,
             reinject: reinjectStuck,
+            remoteReplyEvidence: sessionOwnershipRegistry || _sessionPoolStage() !== 'dark'
+              ? entry => remoteEvidence.get(entry.dedupeKey) ?? 'unknown' : undefined,
             // Part D, third site (ownership-follows-live-work): per-topic owner check
             // ON TOP of the existing machine-level holdsLease() gate. SKIP a topic
             // owned by a REACHABLE peer (leave its stuck messages in the ledger for
@@ -32396,10 +32531,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
         } catch (err) {
           console.error(`[stuck-recovery] ${err instanceof Error ? err.message : err}`);
-        }
+        } finally { stuckRecoveryRunning = false; }
       };
-      runStuckRecovery(); // boot: re-run anything a prior crash left mid-turn
-      const stuckTimer = setInterval(runStuckRecovery, Math.max(30_000, seamlessness.maxProcessingMs));
+      void runStuckRecovery(); // boot: re-run anything a prior crash left mid-turn
+      const stuckTimer = setInterval(() => { void runStuckRecovery(); }, Math.max(30_000, seamlessness.maxProcessingMs));
       if (stuckTimer.unref) stuckTimer.unref();
       console.log(pc.dim('  Stuck-message recovery active (no-loss half, spec §8 G3a)'));
     }
