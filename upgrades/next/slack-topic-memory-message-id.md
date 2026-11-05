@@ -27,11 +27,17 @@ id.
 If your agent uses Slack, it will start remembering your Slack conversations
 from now on, and its Slack summaries and searches will start working properly.
 
-Slack history from **before** this update was not saved and most of it is gone.
-Some is recoverable: your agent's `slack-messages.jsonl` log still holds the
-inbound Slack messages from roughly the last 90 days, and they can be replayed
-into memory. Anything older than that log's retention window has no copy left.
-This update does not do that replay — ask your agent if you want it done.
+Slack history from before this update was not saved and most of it is gone.
+Some is recoverable: your agent's Slack message log still holds the inbound
+Slack messages from roughly the last 90 days, and they can be replayed into
+memory. Anything older than that log's retention window has no copy left. This
+update does not do that replay — ask your agent if you want it done.
+
+One caution worth knowing now that Slack history is actually being kept: the
+topic-memory rebuild action clears stored messages and reloads them from the
+Telegram message log only. It cannot reload Slack messages, so running a rebuild
+will discard your Slack history with no way to bring it back. Avoid it on an
+agent whose Slack history you care about until that gap is closed.
 
 ## Summary of New Capabilities
 

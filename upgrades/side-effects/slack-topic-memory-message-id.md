@@ -163,6 +163,27 @@ bound, or it does not), and the fallback order is declared in the module.
   work that previously never triggered. Flagged rather than hidden: the volume
   is bounded by real message traffic (hundreds, not millions — 568 across two
   machines' full retention windows).
+- **`TopicMemory.rebuild()` destroys Slack rows with no restore path — a new
+  exposure created by this fix.** Verified by reading the code this session:
+  `rebuild()` runs an unconditional `DELETE FROM messages` +
+  `DELETE FROM topic_meta`, then calls `importFromJsonl(jsonlPath)` — and that
+  importer requires `entry.topicId`, which Slack entries never carry (they have
+  `channelId`). So a rebuild deletes every Slack row and restores none of them,
+  and on an agent with no `telegram-messages.jsonl` at all the import also
+  returns 0 immediately, leaving the store empty. This is the same `topicId`
+  gap described in §6, seen from the destructive side.
+
+  Before this change the exposure was ~1 row per channel and therefore
+  invisible. This fix makes Slack history actually accumulate, which makes it
+  actually destroyable — so the hazard is genuinely *introduced* by this change
+  even though the defective code is not in it, and it should not be left for a
+  reader to notice. Not fixed here: the honest fix is to teach
+  `importFromJsonl` the `topicId ?? channelId` compatibility that
+  `TelegramAdapter.scanLogForTopic` already does, which is the same work a
+  backfill needs, so the two belong together and in their own change. Recorded
+  in the PR, and the release note warns users away from rebuild in the meantime.
+  (Independently raised by the concurrent PROP-1289 session; re-derived here
+  from the source rather than taken on report.)
 - **Ordering dependency (the subtle one):** `getMessagesSinceSummary` selects
   `WHERE message_id > ?`. Slack ids are now ~1.7e15 while the system-notice rows
   arriving via the other path carry small Telegram-style ids (~5e4). Within a
