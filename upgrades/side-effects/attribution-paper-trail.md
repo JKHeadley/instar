@@ -100,7 +100,7 @@ No dashboard or operator-facing page is added or changed. `GET /attribution/stat
 `unbounded-self-action`, closure `guard`, enforcement `ratchet`, citing `tests/unit/self-action-convergence.test.ts`. The audit's retry is registered as `attribution-audit-retry`: a failing run backs off from an hour to a day, and its breaker settles to one try a day however long the model stays down.
 
 ## Second-pass review
-Reviewer: fresh-context subagent, reading the code; it ran nothing.
+**Reviewer:** fresh-context general-purpose subagent, reading the code; it ran nothing.
 
 First reading raised four concerns, all fixed and re-read by the same reviewer:
 
