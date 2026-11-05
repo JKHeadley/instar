@@ -12,7 +12,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 // @ts-expect-error — plain .mjs script, no type declarations
 import { CASES, RESUME_WINDOW_MS, TERMINAL, assertProofTarget, generateProofPassword, judge, renderExpected, resetAttempts, runCase, selectCases } from '../../scripts/locked-proof/lib.mjs';
 // @ts-expect-error — plain .mjs script, no type declarations
-import { RealTarget, VIEWER_READY, ownerOf, refusalFromStatus, setupGaps } from '../../scripts/locked-proof/driver.mjs';
+import { RealTarget, VIEWER_READY, ownerOf, recordPersonStep, refusalFromStatus, setupGaps } from '../../scripts/locked-proof/driver.mjs';
 // @ts-expect-error — plain .mjs script, no type declarations
 import { isInsideProofHome, proofConfig, validPin } from '../../scripts/locked-proof/configure-proof-agent.mjs';
 
@@ -199,6 +199,26 @@ describe('locked-proof viewer driving', () => {
     expect(refusalFromStatus("Password entry from a browser is off until this Mac's secure tunnel is up. This page updates when it is.")).toBe('tunnel-not-active');
     expect(refusalFromStatus("Password entry needs Instar's kept desktop helper on this Mac, and this install does not have one.")).toBe('retained-helper-required');
     expect(refusalFromStatus('Password entry from a browser is off for this Mac.')).toBe('browser-box-off');
+  });
+});
+
+describe('locked-proof person steps', () => {
+  const rows = (out: string) => fs.readFileSync(path.join(out, 'person-steps.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+
+  it('records a refused send, so a person step cannot vanish', () => {
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), 'lp-person-'));
+    const row = recordPersonStep({ out, notifyTopic: 138345 }, 'Unlock the test account', () => ({ status: 1 }));
+    expect(row.sent).toBe(false);
+    expect(rows(out)).toEqual([expect.objectContaining({ text: 'Unlock the test account', topic: 138345, sent: false })]);
+    rm(out);
+  });
+
+  it('records a delivered send, and a run with no topic never calls the sender', () => {
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), 'lp-person-'));
+    expect(recordPersonStep({ out, notifyTopic: 138345 }, 'one', () => ({ status: 0 })).sent).toBe(true);
+    expect(recordPersonStep({ out }, 'two', () => { throw new Error('must not send'); }).sent).toBe(false);
+    expect(rows(out).map(row => row.topic)).toEqual([138345, null]);
+    rm(out);
   });
 });
 

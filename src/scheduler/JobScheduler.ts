@@ -169,6 +169,7 @@ type ProjectedSpawnOptions = Parameters<SessionManager['spawnSession']>[0] & {
 };
 
 /* @self-action-controller: job-failure-alert-delivery */
+/* @self-action-controller: job-silence-alert */
 export class JobScheduler {
   private config: JobSchedulerConfig;
   private sessionManager: SessionManager;
@@ -233,6 +234,9 @@ export class JobScheduler {
   private missedJobStartupTimer: ReturnType<typeof setTimeout> | null = null;
   private catchUpNoticeTimer: ReturnType<typeof setInterval> | null = null;
   private catchUpAlertsInFlight = new Set<string>();
+  private silenceCheckTimer: ReturnType<typeof setInterval> | null = null;
+  private silenceAlertsInFlight = new Set<string>();
+  private silenceAlertEpoch = new Map<string, number>();
 
   /** Retry delays in ms: 1min, 5min, 15min, 30min, 1h, 2h */
   private static readonly RETRY_DELAYS_MS = [
@@ -383,6 +387,7 @@ export class JobScheduler {
     this.state = state;
     this.stateDir = stateDir;
     this.skipLedger = new SkipLedger(stateDir);
+    this.skipLedger.onSkip = (event) => this.observeContinuitySkip(event.slug, event.reason);
     this.runHistory = new JobRunHistory(stateDir);
     this.promotionCatchUpStore = new PromotionCatchUpStore(stateDir);
   }
@@ -794,6 +799,8 @@ export class JobScheduler {
     this.refreshJobs();
     this.promotionCatchUpPending = readRecentPromotion(this.stateDir, Date.now(), this.promotionLeaseProvider?.()) !== null;
     this.running = true;
+    this.silenceCheckTimer = setInterval(() => this.checkSilentJobs(), 5 * 60_000);
+    this.silenceCheckTimer.unref?.();
     const persistedWait = this.state.get<JobCapacityEpisode>('job-capacity-episode');
     if (persistedWait?.version === 1) {
       for (const slug of persistedWait.jobs) {
@@ -803,6 +810,7 @@ export class JobScheduler {
       }
     }
     const scopedJobs = this.rebuildCronTasks();
+    this.checkSilentJobs();
     const enabledJobs = this.jobs.filter(j => j.enabled);
     const skippedByScope = enabledJobs.length - scopedJobs.length;
 
@@ -856,6 +864,8 @@ export class JobScheduler {
    */
   stop(): void {
     if (!this.running) return;
+    if (this.silenceCheckTimer) clearInterval(this.silenceCheckTimer);
+    this.silenceCheckTimer = null;
 
     for (const [, task] of this.cronTasks) {
       task.stop();
@@ -1881,6 +1891,7 @@ export class JobScheduler {
         });
       } catch { /* @silent-fallback-ok — the audit must never break completion handling. */ }
       this.clearFailureAlertState(job.slug);
+      this.noteContinuitySuccess(job.slug);
       this.releaseClaim(job.slug, 'success');
     }).catch((err: unknown) => {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -2492,6 +2503,7 @@ export class JobScheduler {
         captureJev('success');
         this.clearRetryState(slug);
         this.clearFailureAlertState(slug);
+        this.noteContinuitySuccess(slug);
       }
       this.releaseClaim(slug, historyRecorded ? 'success' : 'failure');
     } else if (parsed.result === 'skipped') {
@@ -3184,6 +3196,7 @@ export class JobScheduler {
 
     if (!failed) {
       this.clearFailureAlertState(job.slug);
+      this.noteContinuitySuccess(job.slug);
     }
 
     // Alert on consecutive failures
@@ -3693,6 +3706,112 @@ export class JobScheduler {
       }
     } finally {
       this.failureAlertsInFlight.delete(job.slug);
+    }
+  }
+
+  /** A quiet gate or machine pin is evidence of lost job coverage, not success. */
+  private observeContinuitySkip(slug: string, reason: SkipReason): void {
+    if (this.state.readOnly || (reason !== 'gate' && reason !== 'machine-scope')) return;
+    const job = this.jobs.find((candidate) => candidate.slug === slug);
+    if (!job?.enabled) return;
+    const key = `job-silence-${slug}`;
+    const previous = this.state.get<{ count: number; lastSkip: string; lastNotified?: string; lastAttemptAt?: string }>(key);
+    const now = new Date().toISOString();
+    const count = (previous?.count ?? 0) + 1;
+    const next = { count, lastSkip: now, lastNotified: previous?.lastNotified, lastAttemptAt: previous?.lastAttemptAt };
+    this.state.set(key, next);
+    if (count >= 3) this.raiseContinuityAlert(job, `${count} scheduled attempts were skipped (${reason})`, key);
+  }
+
+  /** A completed success closes the silence episode; a skip never does. */
+  private noteContinuitySuccess(slug: string): void {
+    if (this.state.readOnly) return;
+    try {
+      this.state.set(`job-last-success-${slug}`, new Date().toISOString());
+      const key = `job-silence-${slug}`;
+      this.silenceAlertEpoch.set(key, (this.silenceAlertEpoch.get(key) ?? 0) + 1);
+      this.state.delete(key);
+    } catch (error) {
+      // Alert bookkeeping must never turn a completed job into a failed run.
+      console.error(`[scheduler] Could not close silence alert for ${slug}:`, error);
+    }
+  }
+
+  private raiseContinuityAlert(job: JobDefinition, detail: string, key: string): void {
+    if (this.state.readOnly) return;
+    const previous = this.state.get<{ count: number; lastSkip: string; lastNotified?: string; lastAttemptAt?: string }>(key);
+    const now = Date.now();
+    if (previous?.lastNotified && now - Date.parse(previous.lastNotified) < 24 * 60 * 60_000) return;
+    if (previous?.lastAttemptAt && now - Date.parse(previous.lastAttemptAt) < 60 * 60_000) return;
+    if (this.silenceAlertsInFlight.has(key)) return;
+    const topicId = job.topicId ?? this.state.get<number>('agent-attention-topic');
+    const message = `Scheduled job ${job.name} is not running as expected: ${detail}. Check its gate, machine scope and last successful run.`;
+    const send = this.telegram && topicId
+      ? () => this.telegram!.sendToTopic(topicId, message)
+      : !this.telegram && this.messenger
+        ? () => this.messenger!.send({ userId: 'system', content: message })
+        : null;
+    if (!send) return; // No sink yet: the next five-minute check retries.
+    this.silenceAlertsInFlight.add(key);
+    const epoch = this.silenceAlertEpoch.get(key) ?? 0;
+    const attemptedAt = new Date(now).toISOString();
+    this.state.set(key, { count: previous?.count ?? 0, lastSkip: previous?.lastSkip ?? attemptedAt, lastNotified: previous?.lastNotified, lastAttemptAt: attemptedAt });
+    void Promise.resolve().then(async () => {
+      if (this.state.readOnly || this.paused) return false;
+      await send();
+      return true;
+    }).then((delivered) => {
+      if (!delivered || this.state.readOnly || (this.silenceAlertEpoch.get(key) ?? 0) !== epoch) return;
+      const current = this.state.get<{ count: number; lastSkip: string; lastNotified?: string; lastAttemptAt?: string }>(key);
+      this.state.set(key, { count: current?.count ?? 0, lastSkip: current?.lastSkip ?? attemptedAt, lastAttemptAt: attemptedAt, lastNotified: new Date().toISOString() });
+      this.state.appendEvent({ type: 'job_alert_delivered', summary: `Continuity alert delivered for ${job.slug}`,
+        timestamp: new Date().toISOString(), metadata: { slug: job.slug, kind: 'silence' } });
+    }).catch((error) => {
+      console.error(`[scheduler] Could not deliver silence alert for ${job.slug}:`, error);
+    }).finally(() => this.silenceAlertsInFlight.delete(key));
+  }
+
+  /** Check every enabled job, including machine-pinned jobs with no local cron task. */
+  private checkSilentJobs(): void {
+    if (!this.running || this.state.readOnly || this.paused) return;
+    const now = Date.now();
+    for (const job of this.jobs) {
+      if (!job.enabled) continue;
+      // A failure episode already has a durable alert and reminder cadence.
+      // Keep silence alerts focused on jobs that stopped being attempted.
+      if (this.state.get(this.failureAlertStateKey(job.slug))) continue;
+      if (!this.isJobScopedToThisMachine(job)) {
+        this.raiseContinuityAlert(job, 'this machine holds the scheduler but the job is pinned elsewhere', `job-silence-${job.slug}`);
+        continue;
+      }
+      const state = this.state.getJobState(job.slug);
+      const knownSuccess = this.state.get<string>(`job-last-success-${job.slug}`);
+      // Legacy job states contain the latest attempt, not the latest success.
+      // Keep a durable observation baseline so repeated failed/skipped attempts
+      // cannot move the silence clock forward indefinitely, even when an old
+      // job has no firstSeenAt stamp.
+      const baselineKey = `job-continuity-first-seen-${job.slug}`;
+      let baseline = this.state.get<string>(baselineKey);
+      if (!baseline) {
+        baseline = state?.firstSeenAt ?? new Date(now).toISOString();
+        this.state.set(baselineKey, baseline);
+      }
+      const reference = knownSuccess ?? (state?.lastResult === 'success' ? state.lastRun : baseline);
+      const last = reference ? Date.parse(reference) : NaN;
+      if (!Number.isFinite(last)) continue;
+      try {
+        const cron = new Cron(job.schedule, { paused: true });
+        const next = cron.nextRuns(2, new Date(last));
+        cron.stop();
+        if (next.length < 2) continue;
+        const intervalMs = next[1].getTime() - next[0].getTime();
+        const graceMs = Math.max(5 * 60_000, Math.min(intervalMs * 0.5, 60 * 60_000));
+        if (now > next[0].getTime() + graceMs) {
+          this.raiseContinuityAlert(job, `no successful completion after its scheduled time`, `job-silence-${job.slug}`);
+        }
+      } catch (error) {
+        console.error(`[scheduler] Could not check silence for ${job.slug}:`, error);
+      }
     }
   }
 

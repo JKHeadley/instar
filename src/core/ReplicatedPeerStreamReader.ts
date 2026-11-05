@@ -172,6 +172,13 @@ export class ReplicatedPeerStreamReader {
     return byOrigin ? [...byOrigin.values()] : [];
   }
 
+  /** Every record the store holds, keyed by recordKey, from one scan (per-key reads rescan the store). */
+  loadAllOriginRecords(store: string): Map<string, OriginRecord[]> {
+    const out = new Map<string, OriginRecord[]>();
+    for (const [recordKey, byOrigin] of this.materialize(store)) out.set(recordKey, [...byOrigin.values()]);
+    return out;
+  }
+
   /** Every recordKey the store currently holds across ALL origins (for readAll). */
   listRecordKeys(store: string): string[] {
     return [...this.materialize(store).keys()];

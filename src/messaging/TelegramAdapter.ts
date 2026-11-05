@@ -3119,102 +3119,20 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
-  /**
-   * Actively resolve a topic's name from Telegram by sending a temporary probe message
-   * that replies to the topic's service message (whose message_id = topic_id).
-   * The API response includes reply_to_message.forum_topic_created.name.
-   * The probe message is deleted immediately after.
-   */
+  /** Return a captured topic name. Sending a temporary message to discover a
+   * missing name can leave a visible dot when deletion or routing is delayed. */
   async resolveTopicName(topicId: number): Promise<string | null> {
-    if (this.notAForum) return null;
-    await this.awaitHolderForwardWiring();
-    // The probe is a real message. A machine that would not send locally (it
-    // forwards to the lease holder) cannot probe: a direct send is held and its
-    // "." replayed into the topic later. Fall back to the stored/default name.
-    if (typeof this.config.token === 'string' && this.config.token.length > 0 && this.outboundRelay
-      && (this.holderForwardPolicy?.decide() ?? 'local') !== 'local') return null;
-    try {
-      // Send a temp message replying to the topic creation service message
-      const result = await this.apiCall('sendMessage', {
-        chat_id: this.config.chatId,
-        text: '.', // minimal probe message — deleted immediately after
-        message_thread_id: topicId,
-        reply_to_message_id: topicId,
-      }) as { message_id: number; chat?: { id: number }; reply_to_message?: { forum_topic_created?: { name: string } } };
-
-      // Extract topic name from the reply target
-      const name = result.reply_to_message?.forum_topic_created?.name;
-
-      // Delete the probe message immediately (in the chat it landed in — the issues
-      // group for an issues topic)
-      try {
-        await this.apiCall('deleteMessage', {
-          chat_id: result.chat?.id ?? this.config.chatId,
-          message_id: result.message_id,
-        });
-      } catch {
-        // @silent-fallback-ok — best-effort cleanup
-      }
-
-      if (name) {
-        this.topicToName.set(topicId, name);
-        this.saveRegistry();
-        console.log(`[telegram] Resolved topic name: ${topicId} → "${name}"`);
-        return name;
-      }
-    } catch (err) {
-      const errStr = String(err);
-      console.log(`[telegram] Could not resolve topic name for ${topicId}: ${err}`);
-      // A definite refusal by Telegram (HTTP 400), not a transient failure.
-      if (/telegram-400|Bad Request|message thread not found|TOPIC_DELETED/i.test(errStr)) this.lastProbeRefused = topicId;
-      // If the topic was deleted, mark it so we don't retry resolution on every startup
-      if (errStr.includes('message thread not found') || errStr.includes('TOPIC_DELETED')) {
-        this.topicToName.set(topicId, `[deleted] topic-${topicId}`);
-        this.saveRegistry();
-      }
-    }
-    return null;
+    return this.getTopicName(topicId);
   }
 
   /**
    * Resolve all topic names that are still using the fallback "topic-NNNN" pattern.
    * Called on startup to backfill names for topics created before name tracking.
    */
-  private static readonly PROBE_REFUSAL_BACKOFF_MS = 7 * 24 * 60 * 60 * 1000;
-  private lastProbeRefused: number | null = null;
-  private probeRefusalsPath(): string { return path.join(this.stateDir, 'topic-name-probe-refusals.json'); }
-  private readProbeRefusals(): Record<number, number> {
-    try {
-      const raw = JSON.parse(fs.readFileSync(this.probeRefusalsPath(), 'utf-8')) as Record<string, unknown>;
-      const out: Record<number, number> = {};
-      for (const [k, v] of Object.entries(raw)) if (Number.isSafeInteger(Number(k)) && typeof v === 'number') out[Number(k)] = v;
-      return out;
-    } catch { return {}; } // @silent-fallback-ok: no record yet means every topic may be probed
-  }
-  private writeProbeRefusals(r: Record<number, number>): void {
-    try { fs.writeFileSync(this.probeRefusalsPath(), JSON.stringify(r)); } catch { /* @silent-fallback-ok: worst case the topic is probed again next start */ }
-  }
-
+  /** Unknown names keep their fallback label until a real Telegram service
+   * update supplies the name. No user-visible network probe is permitted. */
   async resolveUnknownTopicNames(): Promise<void> {
-    const unknowns: number[] = [];
-    for (const topicId of this.topicToSession.keys()) {
-      if (!this.getTopicName(topicId)) unknowns.push(topicId);
-    }
-    // General (1) has no creation message to reply to, and a topic Telegram
-    // refused recently (deleted, or not in this chat) is not asked again every
-    // start: each refused probe is a real refused send (2026-11-02: ~190 a week).
-    const refused = this.readProbeRefusals();
-    const now = Date.now();
-    const toProbe = unknowns.filter((id) => id > 1 && !(now - (refused[id] ?? 0) < TelegramAdapter.PROBE_REFUSAL_BACKOFF_MS));
-    if (toProbe.length === 0) return;
-    console.log(`[telegram] Resolving ${toProbe.length} unknown topic names...`);
-    for (const topicId of toProbe) {
-      this.lastProbeRefused = null;
-      const ok = await this.resolveTopicName(topicId);
-      if (ok === null && this.lastProbeRefused === topicId) { refused[topicId] = Date.now(); this.writeProbeRefusals(refused); }
-      // Small delay to avoid hitting rate limits
-      await new Promise(r => setTimeout(r, 200));
-    }
+    return;
   }
 
   // ── Topic Purpose Management ─────────────────────────────────

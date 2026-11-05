@@ -1037,6 +1037,14 @@ export function MOBILE_PERMISSIONS_LINE(port: number): string {
 }
 export const MOBILE_PERMISSIONS_MARKER = 'GET /mobile/permissions/slips';
 /**
+ * The native Passwords & keys screen (docs/specs/mobile-native-secrets.md), one bullet in the Mobile app
+ * routes block after the permissions bullet. Sniff: `GET /mobile/secrets`.
+ */
+export function MOBILE_SECRETS_LINE(port: number): string {
+  return `- The app's native Passwords & keys screen reads \`GET /mobile/secrets\` (what's waiting on each machine that answers, this machine's key names, whether the vault opens and whether keys sync; names only, never a value, length, token or Secret Drop link; owner phone or bearer): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/secrets\`. Filling in a request stays the web page the person was sent.`;
+}
+export const MOBILE_SECRETS_MARKER = 'GET /mobile/secrets';
+/**
  * The native Proposals / How I'm doing inside screens (docs/specs/mobile-native-proposals-inside.md),
  * one bullet in the Mobile app routes block after the permissions bullet. Sniff: `GET /mobile/proposals`.
  */
@@ -1170,6 +1178,7 @@ ${MOBILE_PLANS_PEOPLE_LINE(port)}
 ${MOBILE_PHONES_MESSAGES_LINE(port)}
 ${MOBILE_PERMISSIONS_LINE(port)}
 ${MOBILE_PROPOSALS_INSIDE_LINE(port)}
+${MOBILE_SECRETS_LINE(port)}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }
@@ -9659,6 +9668,22 @@ setTimeout(() => process.exit(0), 2000);
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added the native Permission slips and What I\'m allowed to do line');
+    }
+
+    // Native Passwords & keys (docs/specs/mobile-native-secrets.md): one bullet after the permissions
+    // bullet of an existing Mobile app routes block (a block added below already has it).
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_SECRETS_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_PERMISSIONS_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_SECRETS_LINE(port));
+        content = lines.join('\n');
+      } else {
+        // A block without the permissions bullet: append the line rather than skip it.
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_SECRETS_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the native Passwords & keys line');
     }
 
     // Native Proposals / How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): one bullet

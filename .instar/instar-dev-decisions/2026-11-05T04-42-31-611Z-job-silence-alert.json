@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-05T04:42:31.611Z",
+  "slug": "job-silence-alert",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 153,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/scheduler/JobScheduler.ts",
+      "src/scheduler/SkipLedger.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 153,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The job-silence-alert registry model uses the durable last-attempt floor; under permanent delivery failure its send rate never exceeds one per hour, including reconstruction."
+    }
+  },
+  "verdict": "pass"
+}

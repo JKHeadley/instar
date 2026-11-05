@@ -55,6 +55,8 @@ export interface TelegramOriginRuntimeOptions {
   authorizeOrigin?: OriginServiceOptions['authorizeOrigin'];
   resolveOriginKey?: (machineId: string, epoch?: number) => OriginVerificationKey | null;
   reviewLegacyRecovery?: OriginServiceOptions['reviewLegacyRecovery'];
+  /** Retire an unsent recovery reply when newer conversation has overtaken it. */
+  reviewQueuedReply?: (input: { operationId: string; chatId: string | null; topicId: number; preparedAt: number }) => Promise<import('./QueuedReplySupersession.js').QueuedReplyReview>;
   peerEvidence?: OriginServiceOptions['peerEvidence'];
   diagnoseUnknown: NonNullable<OriginServiceOptions['diagnoseUnknown']>;
   diagnosticMode?: OriginServiceOptions['diagnosticMode'];
@@ -401,6 +403,7 @@ export class TelegramOriginRuntime {
         if (!operation.record.executionOwnerMachineId || operation.record.executionOwnerMachineId === this.options.identity.originMachineId) continue;
         try {
           processed++;
+          if (!await this.allowQueuedRecovery(operation, row)) continue;
           const outcome = await this.options.forwardRecovery(operation, row);
           if (outcome === 'sent' || outcome === 'resolved') recovered++;
         } catch (error) {
@@ -552,6 +555,7 @@ export class TelegramOriginRuntime {
               recovery: audit.recovery ?? null, expiryReportedAt: null, producerKind: operation.record.producerKind };
             if (!await this.store.reserveRecoveryAttempt({ operationId: operation.record.operationId })) continue;
             processed++;
+            if (!await this.allowQueuedRecovery(operation, row, audit)) continue;
             const outcome = await this.options.forwardRecovery(operation, row);
             if (outcome === 'sent' || outcome === 'resolved') recovered++;
           } catch (error) {
@@ -584,6 +588,7 @@ export class TelegramOriginRuntime {
         if (!await this.store.reserveRecoveryAttempt({ operationId: operation.record.operationId })) continue;
         processed++;
         const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson);
+        if (!await this.allowQueuedRecovery(operation)) continue;
         const response = await telegramFetch(`https://api.telegram.org/bot${owners[0].token}/${request.method}`,
           { method: 'POST', headers: { 'Content-Type': request.contentType }, body: request.body,
             networkTimeoutMs: 10_000 }, undefined, operation);
@@ -617,6 +622,40 @@ export class TelegramOriginRuntime {
       void this.reportSessionDeliveryExceptions();
       return { processed, recovered };
     } finally { this.recovering = false; }
+  }
+  /** Shared gate for direct recovery and both forward retry schedulers. */
+  private async allowQueuedRecovery(operation: OriginPreparedBotOperation,
+    row?: import('./StoreTypes.js').HeldOperationRow,
+    knownAudit?: import('./StoreTypes.js').OriginAuditRecord): Promise<boolean> {
+    const originalKind = typeof row?.holdDetail?.authoredProducerKind === 'string'
+      ? row.holdDetail.authoredProducerKind : operation.record.producerKind;
+    const originalPreparedAt = typeof row?.holdDetail?.authoredPreparedAt === 'number' && Number.isFinite(row.holdDetail.authoredPreparedAt)
+      ? row.holdDetail.authoredPreparedAt : operation.admission.preparedAt;
+    if (!this.options.reviewQueuedReply || operation.record.destination.topicId === null ||
+      (originalKind !== 'session' && originalKind !== 'imported-legacy')) return true;
+    const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson);
+    if (request.method !== 'sendMessage') return true;
+    const audit = knownAudit ?? await this.store.getOperation(operation.record.operationId);
+    if (!audit?.operation) return false;
+    // Visible or uncertain children must be reconciled through their original
+    // receipt path. Suppression is allowed only for definite non-delivery.
+    if (audit.children.some(child => child.state === 'accepted' || child.state === 'outcome-unknown')) return true;
+    // Forward attempts can retain historical uncertainty after the holder's
+    // receipt has proven nonacceptance. The current marker is authoritative.
+    if (!row && audit.attempts.some(attempt => attempt.outcome === 'outcome-unknown')) return true;
+    const lastAttempt = row?.holdDetail?.lastAttempt;
+    if (lastAttempt === 'outcome-unknown' || lastAttempt === 'local-sent') return true;
+    const review = await this.options.reviewQueuedReply({ operationId: operation.record.operationId,
+      chatId: operation.record.destination.chatId,
+      topicId: Number(operation.record.destination.topicId), preparedAt: originalPreparedAt });
+    if (review === 'hold') return false;
+    if (review === 'retire') {
+      if (await this.store.recordOperationState({ operationId: operation.record.operationId, state: 'suppressed' })) {
+        console.info('[telegram-origin] retired overtaken queued reply', operation.record.operationId);
+      }
+      return false;
+    }
+    return true;
   }
   private async reportSessionDeliveryExceptions(): Promise<void> {
     if (this.#reportingSessionExceptions || !this.options.onSessionDeliveryHeld || this.closed) return;

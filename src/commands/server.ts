@@ -64,7 +64,7 @@ import { StandDownRegistry } from '../core/StandDownRegistry.js';
 import { ensureDashboardPin, persistDashboardPin, pickDashboardPin } from '../core/dashboardPin.js';
 import { getActiveOverloadShedPlanner, getMoveAftercare } from '../core/OverloadShedPlanner.js';
 import { QuietTopicScanner, type RunningTopicSession } from '../core/quietTopicScanner.js';
-import { RebalanceProofRunner, getActiveRebalanceProof, waitForSettledIdle, proofSpawnBrief, setActiveRebalanceProof, setActiveRebalanceProofStore, type ProofHistoryRow } from '../core/rebalanceProof.js';
+import { RebalanceProofRunner, deliverProbeLocally, getActiveRebalanceProof, waitForSettledIdle, proofSpawnBrief, setActiveRebalanceProof, setActiveRebalanceProofStore, type ProofHistoryRow } from '../core/rebalanceProof.js';
 import { rebalanceProofState } from '../core/StageAdvancer.js';
 import { buildHandoffContinuationInstruction, type HandoffCommitment } from '../core/handoffContinuation.js';
 import { BASELINE_PROCESS_PATTERNS } from '../core/baselineProcessPatterns.js';
@@ -7088,6 +7088,29 @@ export async function startServer(options: StartOptions): Promise<void> {
         reviewLegacyRecovery: async text => {
           const { checkToneLocally } = await import('../messaging/local-tone-check.js');
           return (await checkToneLocally(messagingToneGate ?? null, text, { channel: 'telegram' })).passed;
+        },
+        reviewQueuedReply: async ({ chatId, topicId, preparedAt }) => {
+          if (!telegram) return 'hold';
+          const issuesChatId = (originTelegramConfig.config as { issuesChatId?: unknown }).issuesChatId;
+          const historyTopicId = chatId === String(issuesChatId) ? 10_000_000_000 + topicId : topicId;
+          const { queuedReplyOvertaken, reviewQueuedReplyHistory } = await import('../messaging/telegram-origin/QueuedReplySupersession.js');
+          const local = telegram.getTopicHistory(historyTopicId, 500);
+          if (queuedReplyOvertaken(preparedAt, local)) return 'retire';
+          try {
+            const response = await fetch(`http://127.0.0.1:${config.port}/telegram/topics/${historyTopicId}/messages?limit=100&scope=pool`, {
+              headers: { Authorization: `Bearer ${config.authToken ?? ''}`, 'X-Instar-AgentId': config.projectName },
+              signal: AbortSignal.timeout(6_000),
+            });
+            if (!response.ok) return 'hold';
+            const body = await response.json() as { messages?: unknown; pool?: { failed?: unknown } };
+            if (!Array.isArray(body.messages) || !Array.isArray(body.pool?.failed)) return 'hold';
+            const pooled = body.messages.filter((m): m is { timestamp: string; fromUser: boolean; provenance?: string } =>
+              !!m && typeof m === 'object' && typeof m.timestamp === 'string' && Number.isFinite(Date.parse(m.timestamp)) &&
+              typeof m.fromUser === 'boolean');
+            if (pooled.length !== body.messages.length) return 'hold';
+            return reviewQueuedReplyHistory({ preparedAt, local, pooled,
+              failedPeers: body.pool.failed.length, poolPageLimit: 100 });
+          } catch { return 'hold'; }
         },
         diagnoseUnknown: async (originId, reason) => {
           if (!sharedIntelligence) throw new Error('origin diagnostic intelligence unavailable');
@@ -21662,6 +21685,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             get: (dedupeKey) => replicatedPeerStreamReader.loadOriginRecords(CLASS_REVIEW_STORE_KEY, dedupeKey)
               .flatMap((record) => { const parsed = classReviewFromOriginRecord(record); return parsed ? [parsed] : []; }),
             keys: () => replicatedPeerStreamReader.listRecordKeys(CLASS_REVIEW_STORE_KEY),
+            all: () => new Map([...replicatedPeerStreamReader.loadAllOriginRecords(CLASS_REVIEW_STORE_KEY)].map(([key, records]) => [key,
+              records.flatMap((record) => { const parsed = classReviewFromOriginRecord(record); return parsed ? [parsed] : []; })])),
           });
         }
         const classReviewAuditPath = path.join(config.stateDir, 'logs', 'correction-class-review.jsonl');
@@ -26032,10 +26057,21 @@ export async function startServer(options: StartOptions): Promise<void> {
                 sendProbe: async (t, text, messageId) => {
                   if (!_sessionRouter) return 'no-router';
                   const o = await _sessionRouter.route({ sessionKey: String(t), messageId, payload: text, senderEnvelope: null });
-                  return o.action;
+                  return deliverProbeLocally(o.action, async () => {
+                    if (!telegram) throw new Error('no telegram adapter');
+                    const tmux = telegram.getSessionForTopic(t);
+                    if (tmux && sessionManager.isSessionAlive(tmux)) {
+                      const injected = sessionManager.injectTelegramMessage(tmux, t, text, telegram.getTopicName(t) ?? `proof-${t}`, 'Proof', 0);
+                      if (injected === false) throw new Error('inject returned false');
+                      return;
+                    }
+                    const name = await spawnSessionForTopic(sessionManager, telegram, `proof-${t}`, t, text);
+                    telegram.registerTopicSession(t, name, `proof-${t}`);
+                  }, (line) => console.warn(line));
                 },
+                machineName: (id) => _listPoolMachines?.().find((m) => m.machineId === id)?.nickname ?? null,
                 readHistory: async (t) => {
-                  const r = await fetch(`http://127.0.0.1:${config.port}/telegram/topics/${t}/messages?scope=pool&limit=50`, {
+                  const r = await fetch(`http://127.0.0.1:${config.port}/telegram/topics/${t}/messages?scope=pool&includeOrigin=1&limit=50`, {
                     headers: { Authorization: `Bearer ${config.authToken}`, 'X-Instar-AgentId': config.projectName },
                   });
                   if (!r.ok) throw new Error(`history ${r.status}`);
@@ -29975,7 +30011,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                 supersede: (operationId, next, detail) => runtime.store.supersedeWithAdmission({ operationId, admission: next.admission,
                   holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> }),
                 sendLocal: async detail => {
-                  const sent = await telegram.sendToTopic(detail.topicId, detail.text, { silent: detail.silent, kindMetadata: detail.kindMetadata, provenance: 'automation' });
+                  const sent = await telegram.sendToTopic(detail.topicId, detail.text, { silent: detail.silent, kindMetadata: detail.kindMetadata,
+                    provenance: originForwardMod.recoveredForwardProvenance(detail, row.producerKind) });
                   return { messageId: sent.messageId };
                 },
               }, row, operation);
@@ -29986,7 +30023,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   // Telegram id may fill that gap; this never sends a second copy.
                   const recovered = await originForwardMod.confirmedRecoveredForward(row, id => runtime.store.getOperation(id)).catch(() => null);
                   if (recovered) telegram.recordRecoveredOutbound(recovered.topicId, recovered.text, recovered.messageId,
-                    row.producerKind === 'session' ? 'agent' : 'automation');
+                    originForwardMod.recoveredForwardProvenance(row.holdDetail, row.producerKind));
                 }
                 if (outcome === 'sent' || outcome === 'resolved' || outcome === 'settled') await clearHeldItemIfResolved(row.destination.topicId);
                 return outcome;
