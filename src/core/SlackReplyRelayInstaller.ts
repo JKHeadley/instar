@@ -23,6 +23,8 @@ export const PRIOR_SHIPPED_SLACK_RELAY_SHA256 = new Set([
   // Earlier revisions of this PR remain in first-parent history after its main merge.
   'be2654a519d8cf4d727ea65ca5dce19bb3e47839cc0748034ab4d97a0c11c881',
   '973691e6e54b7c0426d53679493b530ac72ed50364c526bff4fb1e44a1ba3342',
+  // Shipped by cloud-key recovery (#2762) after this PR's earlier main merge.
+  '4b3d610d88e7566dd6390721f97c697dcc533bf9e9b6d3731750d225f8c2986f',
 ]);
 
 export interface SlackRelayInstallResult {
