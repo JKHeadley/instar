@@ -52,3 +52,7 @@ The full-suite silent-fallback ratchet found five new fallback shapes in the cov
 Added real route integration coverage for authentication, invalid nonces, nonce-bound signatures, and a scheduler-less standby. Added an AgentServer lifecycle test proving production route construction installs a real signing monitor rather than leaving the endpoint at 503. The fixture uses a real identity manager, coordinator, state store, and on-disk catalog. Tests are queued behind normal host capacity; completion is required before merge. No runtime behavior changed in this proof-only commit.
 
 Fixture review confirmed auth lives in AgentServer middleware, so the integration fixture now mounts that real middleware before createRoutes. It therefore exercises the actual authenticated pipeline rather than asserting against an unauthenticated router.
+
+## Full-integration startup repair (2026-11-05)
+
+Full integration found route construction assumed scheduler settings and coordinator manager dependencies existed. Coverage now falls back to the standard on-disk jobs catalog when scheduler settings are absent, and remains unavailable without crashing unrelated routes when identity-manager dependencies are absent. Added both boundary cases to the real HTTP integration tests. Independent second-pass review concurred: configured behavior is unchanged, unavailable dependencies grant no coverage or execution authority. Fresh full-suite evidence remains required.

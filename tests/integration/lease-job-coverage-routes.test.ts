@@ -16,6 +16,40 @@ describe('lease coverage real HTTP routes', () => {
     if (fixture) SafeFsExecutor.safeRmSync(fixture.root, { recursive: true, force: true, operation: 'lease-job-coverage-routes-cleanup' });
   });
 
+  it('uses the on-disk catalog when scheduler settings are absent', async () => {
+    fixture = await leaseJobHttpFixture();
+    fixture.config.scheduler = undefined as never;
+    ctx = { config: fixture.config, state: fixture.state, coordinator: fixture.coordinator,
+      meshSelfId: fixture.identity.machineId, scheduler: null, telegram: null,
+      startTime: new Date(), currentInboundByTopic: new Map(), resolvePeerUrls: () => [],
+    } as unknown as RouteContext;
+    const app = express();
+    app.use(express.json());
+    app.use(authMiddleware(fixture.config.authToken!));
+    app.use(createRoutes(ctx));
+    const response = await request(app).get('/jobs/coverage-snapshot?nonce=' + 'd'.repeat(64))
+      .set('Authorization', `Bearer ${fixture.config.authToken}`);
+    expect(response.status).toBe(200);
+    expect(response.body.complete).toBe(true);
+  });
+
+  it('keeps other routes alive when the coordinator has no identity manager', async () => {
+    fixture = await leaseJobHttpFixture();
+    ctx = { config: fixture.config, state: fixture.state,
+      coordinator: { enabled: false, getSyncStatus: () => ({ holdsLease: false }) },
+      meshSelfId: fixture.identity.machineId, scheduler: null, telegram: null,
+      startTime: new Date(), currentInboundByTopic: new Map(), resolvePeerUrls: () => [],
+    } as unknown as RouteContext;
+    const app = express();
+    app.use(express.json());
+    app.use(authMiddleware(fixture.config.authToken!));
+    app.use(createRoutes(ctx));
+    const response = await request(app).get('/jobs/coverage-snapshot?nonce=' + 'd'.repeat(64))
+      .set('Authorization', `Bearer ${fixture.config.authToken}`);
+    expect(response.status).toBe(503);
+    expect(response.body.error).toBe('job-coverage-unavailable');
+  });
+
   it('serves a signed nonce-bound catalog on scheduler-less standby and enforces authentication', async () => {
     fixture = await leaseJobHttpFixture();
     ctx = {
