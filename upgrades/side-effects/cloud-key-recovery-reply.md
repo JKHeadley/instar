@@ -12,7 +12,7 @@ Follow-up to `cloud-key-internal-calls` (#2695), from the 2026-11-04 nimbus bad-
 Three fixes:
 
 1. `slack-reply.sh` in a bound Slack session drops a leading channel id (and thread id) instead of sending it as the message. This was the direct cause: the sessions ran `cat <<EOF | slack-reply.sh C0…`, and in session mode any argument became the text, so the channel id was posted and the piped reply was thrown away. The old template's hash is added to `PRIOR_SHIPPED_SLACK_RELAY_SHA256`, so existing agents get the new copy on update.
-2. `ClaudeKeyHealth` restarts each stuck conversation with its own prompt (`claudeKeyRecovery.buildKeyRecoveryPrompt`): the held messages quoted (people's messages after the agent's last real reply; the server's own key notices and a bare channel id don't count as replies), and the exact reply command. A Slack prompt carries the `[slack:<channel>]` tag. Then a restart counts as done only when a real reply appears in the conversation. If none appears within 15 minutes, the person is asked once to send again and the miss is reported. The waiting list is persisted, so it survives a server restart.
+2. `ClaudeKeyHealth` restarts each stuck conversation with its own prompt (`claudeKeyRecovery.buildKeyRecoveryPrompt`): the held messages quoted (people's messages after the agent's last real reply; the server's own key notices and a bare channel id don't count as replies), and the exact reply command. A Slack prompt carries the `[slack:<channel>]` tag. Then, when messages were held, a restart counts as done only once a real reply appears in the conversation. If none appears within 15 minutes, the person is asked once to send again and the miss is reported. When nothing was held, nothing is awaited, so nobody is asked to resend. When the held messages can't be read, the conversation restarts with the general prompt, the gap is reported, and no resend request is guessed. The waiting list is persisted, so it survives a server restart.
 3. The operator notice counts as delivered only when a person can read it: the Telegram attention topic, a Slack alert channel with an operator in it, or a direct message. On Slack the operators are the authorized people whose user profile is an owner or admin. With no ranked profile, an authorized list of three or fewer stands in. A larger unranked list gets no direct messages, so a team workspace is never mass-messaged. When the alert channel has no operator in it, it is skipped (a post there reaches nobody, and retries would repeat it) and each operator gets a direct message. When its members can't be read, it gets the post and the operators get direct messages too. `deliverOperatorNotice` is a pure function; the SlackAdapter gains `authorizedMembersOf`, `sendDirectMessage`, `getAuthorizedUserIds` and `recentConversationMessages`.
 
 ## Decision-point inventory
@@ -31,6 +31,8 @@ Nothing is blocked. The script change only affects bound sessions whose first ar
 ---
 
 ## 2. Under-block
+
+The answer check is per conversation, not per message. It confirms that the agent replied after the restart, not that each held message got its own answer. The prompt quotes every held message and asks for each to be answered, and one reply may rightly cover several, but a reply that skips one is not caught. Matching replies to messages would need a model judgment. That is not added here.
 
 A conversation that answers late (more than 15 minutes) still gets the resend request. That costs one extra line, and nothing is lost. A conversation respawned a second time within the 15 minutes (a new session name) can't be checked under its old name: it is reported as unchecked, and the resend request may not reach the person. Held messages read straight from Slack in a mention-only channel can include an authorized person's message that didn't mention the agent (the ring buffer marks those, Slack's own history doesn't), so the agent may answer one message too many. A Telegram row with no provenance (legacy) is treated as the agent's reply. The answer check reads the latest 50 messages, so a very busy channel could push the reply out of view and cause a needless resend request.
 
@@ -110,6 +112,12 @@ Replaying the drill's message order showed that the server's standby note (":tel
 5. Repeated posts to an empty channel, and a mass message to every authorized user: the empty channel is skipped, and only operators get direct messages.
 6. A second rename within the wait: disclosed under Under-block.
 7. The script ate an all-capital first word: a channel id must now contain a digit (8–11 characters), so `CONFIRMED` is kept.
+
+---
+
+## Live proof scope
+
+The live rerun is on nimbus, which is Slack only. The Telegram side (the reply command naming the topic, the answer check reading Telegram log rows by provenance) is covered by unit tests only. No key-only test agent with Telegram exists today (Cirrus has no Slack and runs on the exhausted key). The Telegram live proof is owed and is listed as open in the coordination ledger, not claimed here.
 
 ---
 

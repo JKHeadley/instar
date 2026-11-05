@@ -558,6 +558,7 @@ describe('a session at the login screen with a good key', () => {
 });
 
 describe('a restarted conversation must really answer (2026-11-04 drill)', () => {
+  const HELD = async () => ({ prompt: 'held: ECHO-ONE', held: 1 });
   async function recover(t: ReturnType<typeof rig>, h: ClaudeKeyHealth) {
     await kill(h, t.r);
     t.r.disk = KEY_B;
@@ -568,7 +569,7 @@ describe('a restarted conversation must really answer (2026-11-04 drill)', () =>
   it("each conversation gets its own prompt, with the held messages and reply command", async () => {
     const prompts: Array<[string, string]> = [];
     const t = rig({
-      recoveryPrompt: async (s) => `prompt for ${s}`,
+      recoveryPrompt: async (s) => ({ prompt: `prompt for ${s}`, held: 1 }),
       refresh: async (s, p) => { prompts.push([s, p]); return { ok: true }; },
     });
     t.r.stuck = ['dawn', 'echo'];
@@ -576,19 +577,36 @@ describe('a restarted conversation must really answer (2026-11-04 drill)', () =>
     expect(prompts).toEqual([['dawn', 'prompt for dawn'], ['echo', 'prompt for echo']]);
   });
 
-  it('a prompt that cannot be built falls back to the generic one and still restarts', async () => {
+  it('a prompt that cannot be built falls back to the generic one, restarts, and says it is unchecked', async () => {
     const prompts: string[] = [];
     const t = rig({
       recoveryPrompt: async () => { throw new Error('history unavailable'); },
+      answeredSince: async () => false,
       refresh: async (_s, p) => { prompts.push(p); return { ok: true }; },
     });
     t.r.stuck = ['one'];
-    await recover(t, t.make());
+    const h = t.make();
+    await recover(t, h);
     expect(prompts).toEqual([RECOVERY_PROMPT]);
+    expect(t.r.reports.some((m) => m.includes('Could not read what "one" had waiting'))).toBe(true);
+    t.r.clock += ANSWER_WAIT_MS;
+    await h.tick();
+    expect(t.r.people.filter(([, text]) => text === PERSON_RESEND_TEXT)).toEqual([]); // never a guess
+  });
+
+  it('nothing held: nobody is asked to resend, however long no reply comes', async () => {
+    const t = rig({ recoveryPrompt: async () => ({ prompt: 'nothing waiting', held: 0 }), answeredSince: async () => false });
+    t.r.stuck = ['one'];
+    const h = t.make();
+    await recover(t, h);
+    t.r.clock += ANSWER_WAIT_MS * 2;
+    await h.tick();
+    expect(t.r.people.filter(([, text]) => text === PERSON_RESEND_TEXT)).toEqual([]);
+    expect(t.r.reports.some((m) => m.includes('did not answer'))).toBe(false);
   });
 
   it('a restart that shows an answer is done: nobody is asked to resend', async () => {
-    const t = rig({ answeredSince: async () => true });
+    const t = rig({ recoveryPrompt: HELD, answeredSince: async () => true });
     t.r.stuck = ['one'];
     const h = t.make();
     await recover(t, h);
@@ -600,6 +618,7 @@ describe('a restarted conversation must really answer (2026-11-04 drill)', () =>
 
   it('a restart that reports done but answers nobody: the person is asked to resend and it is reported', async () => {
     const t = rig({
+      recoveryPrompt: HELD,
       answeredSince: async () => false,
       refresh: async (s) => { t.r.refreshed.push(s); return { ok: true, newSessionName: 'echo-new' }; },
     });
@@ -617,7 +636,7 @@ describe('a restarted conversation must really answer (2026-11-04 drill)', () =>
   });
 
   it('a conversation that cannot be read is reported as unchecked, not as answered', async () => {
-    const t = rig({ answeredSince: async () => null });
+    const t = rig({ recoveryPrompt: HELD, answeredSince: async () => null });
     t.r.stuck = ['one'];
     const h = t.make();
     await recover(t, h);
@@ -627,7 +646,7 @@ describe('a restarted conversation must really answer (2026-11-04 drill)', () =>
   });
 
   it('a key that dies again while a conversation waits: no "I\'m back" during the outage', async () => {
-    const t = rig({ answeredSince: async () => false });
+    const t = rig({ recoveryPrompt: HELD, answeredSince: async () => false });
     t.r.stuck = ['one'];
     const h = t.make();
     await recover(t, h);
@@ -639,7 +658,7 @@ describe('a restarted conversation must really answer (2026-11-04 drill)', () =>
   });
 
   it('the wait survives a restart of the server', async () => {
-    const t = rig({ answeredSince: async () => false });
+    const t = rig({ recoveryPrompt: HELD, answeredSince: async () => false });
     t.r.stuck = ['one'];
     await recover(t, t.make());
     t.r.clock += ANSWER_WAIT_MS;

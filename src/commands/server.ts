@@ -22062,7 +22062,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         recoveryPrompt: async (sessionName) => {
           const convo = await keyConversationLines(sessionName);
-          return convo ? buildKeyRecoveryPrompt(convo.channel, heldMessages(convo.lines, keyNoticeTexts)) : null;
+          if (!convo) return null;
+          const held = heldMessages(convo.lines, keyNoticeTexts);
+          return { prompt: buildKeyRecoveryPrompt(convo.channel, held), held: held.length };
         },
         answeredSince: async (sessionName, sinceMs) => {
           const convo = await keyConversationLines(sessionName);
