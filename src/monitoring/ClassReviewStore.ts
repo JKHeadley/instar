@@ -78,6 +78,8 @@ export interface ClassReviewReplicationEmitter { emitPut(record: ClassReviewReco
 export interface ClassReviewRemoteReader {
   get(dedupeKey: string): ClassReviewRecord[];
   keys(): string[];
+  /** Every key's records from one scan; a list reads this rather than scanning once per key. */
+  all?(): Map<string, ClassReviewRecord[]>;
 }
 
 export interface CollapseCandidate {
@@ -226,7 +228,11 @@ export class ClassReviewStore {
   }
 
   get(dedupeKey: string): ClassReviewRecord | null {
-    const records = [this.getLocal(dedupeKey), ...(this.remoteReader?.get(dedupeKey) ?? [])]
+    return this.mergeWithRemote(dedupeKey, this.remoteReader?.get(dedupeKey) ?? []);
+  }
+
+  private mergeWithRemote(dedupeKey: string, remote: ClassReviewRecord[]): ClassReviewRecord | null {
+    const records = [this.getLocal(dedupeKey), ...remote]
       .filter((record): record is ClassReviewRecord => record !== null);
     return records.length ? mergeClassReviewRecords(records) : null;
   }
@@ -245,9 +251,10 @@ export class ClassReviewStore {
       ? this.db.prepare(`SELECT * FROM class_reviews WHERE review_lifecycle=? ORDER BY updated_at DESC LIMIT ?`).all(opts.lifecycle, limit)
       : this.db.prepare(`SELECT * FROM class_reviews ORDER BY updated_at DESC LIMIT ?`).all(limit);
     const local = (rows as Record<string, unknown>[]).map((r) => this.fromRow(r));
-    const keys = new Set([...local.map((record) => record.dedupeKey), ...(this.remoteReader?.keys() ?? [])]);
+    const remote = this.remoteReader?.all?.();
+    const keys = new Set([...local.map((record) => record.dedupeKey), ...(remote ? remote.keys() : this.remoteReader?.keys() ?? [])]);
     return [...keys].flatMap((key) => {
-      const merged = this.get(key);
+      const merged = remote ? this.mergeWithRemote(key, remote.get(key) ?? []) : this.get(key);
       return merged && (!opts.lifecycle || merged.reviewLifecycle === opts.lifecycle) ? [merged] : [];
     }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, limit);
   }
