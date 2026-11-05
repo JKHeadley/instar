@@ -29,6 +29,13 @@ describe('stateOpRefusal', () => {
   });
 });
 
+// A local-verify clone is a source tree, so its cleanup needs the verify carve-out.
+function cleanupScope(filename: string): { localVerifyScopeOk?: { verifyRoot: string } } {
+  const marker = `${path.sep}.worktrees${path.sep}.verify${path.sep}`;
+  const at = filename.indexOf(marker);
+  return at < 0 ? {} : { localVerifyScopeOk: { verifyRoot: filename.slice(0, at + marker.length - 1) } };
+}
+
 // The trusted binary path is dist/native, so the stand-in helper lives there.
 const helpers: string[] = [];
 function standIn(body: string): MacDesktopHost {
@@ -44,7 +51,7 @@ function standIn(body: string): MacDesktopHost {
 describe.skipIf(process.platform !== 'darwin')('MacDesktopHost.lockedOp failure', () => {
   afterEach(() => {
     for (const filename of helpers.splice(0)) {
-      SafeFsExecutor.safeUnlinkSync(filename, { operation: 'tests/unit/desktop-locked-proof-fixes.test.ts:cleanup' });
+      SafeFsExecutor.safeUnlinkSync(filename, { operation: 'tests/unit/desktop-locked-proof-fixes.test.ts:cleanup', ...cleanupScope(filename) });
     }
   });
 

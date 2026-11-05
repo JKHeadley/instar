@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "locked-proof-test-cleanup-scope",
+  "sessionId": "501849a3-8fc5-483e-b8f2-b09fce0f4d96",
+  "timestamp": "2026-11-05T01:26:09.713Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-test-cleanup-scope.md",
+  "artifactSha256": "e631173fdcadf8708a90f10f623b57e622e19a63fe2eb74f69366d623658274c",
+  "coveredFiles": [
+    "docs/specs/locked-proof-test-cleanup-scope.eli16.md",
+    "tests/unit/desktop-locked-proof-fixes.test.ts",
+    "upgrades/next/locked-proof-test-cleanup-scope.md",
+    "upgrades/side-effects/locked-proof-test-cleanup-scope.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only, one file, a revert undoes it.",
+  "eli16Path": "docs/specs/locked-proof-test-cleanup-scope.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-test-cleanup-scope.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Test cleanup only; no loop or action added."
+  }
+}
