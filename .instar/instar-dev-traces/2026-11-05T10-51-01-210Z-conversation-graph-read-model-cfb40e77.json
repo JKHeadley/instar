@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-read-model",
+  "sessionId": "c4773de8-715f-445f-8ae8-f1db863b24a3",
+  "timestamp": "2026-11-05T10:51:01.210Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-read-model.md",
+  "artifactSha256": "9afb74bb5016059022385f3b6ba62e0662d6595a8c57e5a66480515e168729a1",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/core/conversationGraphRead.ts",
+    "src/server/conversationGraphRoutes.ts",
+    "tests/unit/conversation-graph-read.test.ts",
+    "upgrades/side-effects/conversation-graph-read-model.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Owner-only read surface over private conversation structure (increment B); unmounted and gated on A-proof readiness",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No self-triggered action: a request/response read model and router; no timer, loop, retry, restart, spawn or notification"
+  }
+}
