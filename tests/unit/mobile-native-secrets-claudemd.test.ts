@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
-import { MOBILE_PERMISSIONS_LINE, MOBILE_SECRETS_LINE, MOBILE_PROPOSALS_INSIDE_LINE, MOBILE_SECRETS_MARKER, MOBILE_ROUTES_CLAUDEMD_SECTION, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { MOBILE_PERMISSIONS_LINE, MOBILE_SECRETS_LINE, MOBILE_PROPOSALS_INSIDE_LINE, MOBILE_SECRETS_MARKER, MOBILE_SECRETS_WRITES_LINE, MOBILE_SECRETS_WRITES_MARKER, MOBILE_ROUTES_CLAUDEMD_SECTION, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const count = (s: string) => s.split(MOBILE_SECRETS_MARKER).length - 1;
@@ -24,6 +24,13 @@ describe('passwords and keys screen awareness', () => {
 
   it('generateClaudeMd includes it once', () => {
     expect(count(generateClaudeMd('p', 'echo', 4042, true))).toBe(1);
+  });
+
+  it('the ask and cancel bullet follows it, with the injected port, once', () => {
+    const lines = MOBILE_ROUTES_CLAUDEMD_SECTION(9999).split('\n');
+    expect(lines[lines.indexOf(MOBILE_SECRETS_LINE(9999)) + 1]).toBe(MOBILE_SECRETS_WRITES_LINE(9999));
+    expect(MOBILE_SECRETS_WRITES_LINE(9999)).toContain('localhost:9999');
+    expect(generateClaudeMd('p', 'echo', 4042, true).split(MOBILE_SECRETS_WRITES_MARKER).length - 1).toBe(1);
   });
 });
 
@@ -49,6 +56,16 @@ describe('migrateClaudeMd inserts the bullet into an existing Mobile app routes 
     expect(lines[lines.indexOf(MOBILE_PERMISSIONS_LINE(4042)) + 1]).toBe(MOBILE_SECRETS_LINE(4042));
     new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0', port: 4042 } as any).migrate();
     expect(count(fs.readFileSync(claudeMdPath, 'utf-8'))).toBe(1);
+  });
+
+  it('an existing block without the ask and cancel bullet gets it after the Passwords & keys bullet, once', () => {
+    const old = MOBILE_ROUTES_CLAUDEMD_SECTION(4042).split('\n').filter((l) => l !== MOBILE_SECRETS_WRITES_LINE(4042)).join('\n');
+    fs.writeFileSync(claudeMdPath, `# CLAUDE.md\n${old}`);
+    for (let i = 0; i < 2; i++) new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0', port: 4042 } as any).migrate();
+    const text = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(text.split(MOBILE_SECRETS_WRITES_MARKER).length - 1).toBe(1);
+    const lines = text.split('\n');
+    expect(lines[lines.indexOf(MOBILE_SECRETS_LINE(4042)) + 1]).toBe(MOBILE_SECRETS_WRITES_LINE(4042));
   });
 
   it('a hand-edited block gets the line once, not skipped', () => {

@@ -62,6 +62,8 @@ function setup(cfg: Record<string, unknown> = {}) {
     featureDefinition: (id) => (id === relay.id ? relay : id === backup.id ? backup : null),
     approve: (id, hash, deviceId): ActionResult => { calls.push(['approve', id, hash, deviceId]); return { status: 201, body: { approved: true } }; },
     deny: (id, reason, deviceId): ActionResult => { calls.push(['deny', id, reason, deviceId]); return { status: 200, body: { denied: true } }; },
+    requestSecret: (label, note, topicId): ActionResult => { calls.push(['ask', label, note, topicId]); return { status: 201, body: { ok: true, key: 'abcdef0123456789', expiresAt: new Date().toISOString() } }; },
+    cancelSecret: (key): ActionResult => { calls.push(['cancel', key]); return key === 'ffffffffffffffff' ? { status: 404, body: { error: 'request-gone' } } : { status: 200, body: { ok: true } }; },
     setFeature: async (_req, id, to, deviceId, still) => {
       if (hold.wait) await hold.wait;
       const refusal = still();
@@ -306,5 +308,122 @@ describe('writes: refusals', () => {
     const done = await pending;
     expect(done.status).toBe(503);
     expect(c.calls.at(-1)).toEqual(['feature', 'git-backup', 'disabled', q.id, 'permission-actions-off']);
+  });
+});
+
+describe('asking for a key and cancelling a request (docs/specs/mobile-native-secrets-writes.md)', () => {
+  const KEY = 'abcdef0123456789';
+  const ask = { action: 'request-secret', target: 'new', label: 'OpenAI key', note: 'For the bot', topicId: 12 };
+  const askBody = { label: ask.label, note: ask.note, topicId: ask.topicId };
+  const askLine = actionLine({ kind: 'request-secret', target: 'new', label: ask.label, note: ask.note, topicId: 12 });
+  const cancelLine = actionLine({ kind: 'cancel-secret', target: KEY });
+  const cancelPath = `/mobile/secrets/requests/${KEY}/cancel`;
+
+  it('an owner phone asks with a fresh proof; the action runs once, audited without the label or note', async () => {
+    const c = setup();
+    const owner = c.pair();
+    const ch = await challenge(c.app, owner, ask);
+    const r = await send(c.app, owner, 'POST', '/mobile/secrets/requests', { ...askBody, challenge: ch, presenceSig: sig(owner, ch, askLine) });
+    expect(r.status, JSON.stringify(r.body)).toBe(201);
+    expect(r.headers['cache-control']).toBe('no-store');
+    expect(c.calls).toEqual([['ask', 'OpenAI key', 'For the bot', 12]]);
+    const rows = auditRows(c.dir);
+    expect(rows.map((x) => x.event)).toEqual(['challenge', 'secret-requested']);
+    expect(rows[1]).toMatchObject({ action: 'request-secret', target: 'new', requestKey: 'abcdef0123456789' });
+    expect(JSON.stringify(rows)).not.toContain('OpenAI key');
+    expect(JSON.stringify(rows)).not.toContain('For the bot');
+    // Single use.
+    const again = await send(c.app, owner, 'POST', '/mobile/secrets/requests', { ...askBody, challenge: ch, presenceSig: sig(owner, ch, askLine) });
+    expect(again.status).toBe(401);
+    expect(again.body.error).toBe('challenge-invalid');
+    expect(c.calls).toHaveLength(1);
+  });
+
+  it('a proof for one request does not cover a changed label, note or conversation', async () => {
+    const c = setup();
+    const owner = c.pair();
+    for (const changed of [{ label: 'Stripe key' }, { note: 'Other' }, { topicId: 13 }]) {
+      const ch = await challenge(c.app, owner, ask);
+      const r = await send(c.app, owner, 'POST', '/mobile/secrets/requests', { ...askBody, ...changed, challenge: ch, presenceSig: sig(owner, ch, askLine) });
+      expect(r.status, JSON.stringify(changed)).toBe(401);
+    }
+    expect(c.calls).toEqual([]);
+  });
+
+  it('a cancel proof covers exactly its key, and a bad signature runs nothing', async () => {
+    const c = setup();
+    const owner = c.pair();
+    const ch = await challenge(c.app, owner, { action: 'cancel-secret', target: KEY });
+    const other = 'bbbbbbbbbbbbbbbb';
+    const wrong = await send(c.app, owner, 'POST', `/mobile/secrets/requests/${other}/cancel`, { challenge: ch, presenceSig: sig(owner, ch, cancelLine) });
+    expect(wrong.status).toBe(401);
+    const ch2 = await challenge(c.app, owner, { action: 'cancel-secret', target: KEY });
+    const bad = await send(c.app, owner, 'POST', cancelPath, { challenge: ch2, presenceSig: sig(owner, ch2, askLine) });
+    expect(bad.status).toBe(401);
+    expect(bad.body.error).toBe('presence-invalid');
+    expect(c.calls).toEqual([]);
+    const ch3 = await challenge(c.app, owner, { action: 'cancel-secret', target: KEY });
+    const ok = await send(c.app, owner, 'POST', cancelPath, { challenge: ch3, presenceSig: sig(owner, ch3, cancelLine) });
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect(c.calls).toEqual([['cancel', KEY]]);
+    expect(auditRows(c.dir).some((x) => x.event === 'secret-cancelled' && x.target === KEY)).toBe(true);
+  });
+
+  it('a refused action is audited as refused and its code reaches the phone', async () => {
+    const c = setup();
+    const owner = c.pair();
+    const gone = 'ffffffffffffffff';
+    const ch = await challenge(c.app, owner, { action: 'cancel-secret', target: gone });
+    const r = await send(c.app, owner, 'POST', `/mobile/secrets/requests/${gone}/cancel`, { challenge: ch, presenceSig: sig(owner, ch, actionLine({ kind: 'cancel-secret', target: gone })) });
+    expect(r.status).toBe(404);
+    expect(r.body.error).toBe('request-gone');
+    expect(auditRows(c.dir).at(-1)).toMatchObject({ event: 'refused', target: gone });
+  });
+
+  it('a pasted key is refused at the challenge, before any Face ID prompt', async () => {
+    const c = setup();
+    const owner = c.pair();
+    const r = await send(c.app, owner, 'POST', '/mobile/permissions/challenge', { ...ask, label: '0123456789abcdef0123' });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toBe('looks-like-a-secret');
+  });
+
+  it('the bearer, an MSP phone, a phone with no key, a revoked phone, and the switch off all stop it', async () => {
+    const c = setup();
+    const bearer = await request(c.app).post('/mobile/secrets/requests').set('Authorization', 'Bearer tok-1').send(askBody);
+    expect(bearer.status).toBe(403);
+    expect(bearer.body.error).toBe('device-signature-required');
+    const msp = c.pair({ userId: 'justin', role: 'msp' });
+    expect((await send(c.app, msp, 'POST', '/mobile/secrets/requests', askBody)).status).toBe(403);
+    expect((await send(c.app, msp, 'POST', cancelPath, {})).status).toBe(403);
+    const noKey = c.pair(undefined, false);
+    const nk = await send(c.app, noKey, 'POST', '/mobile/secrets/requests', askBody);
+    expect(nk.status).toBe(409);
+    expect(nk.body.error).toBe('presence-key-missing');
+    const gone = c.pair();
+    c.svc.devices.revoke(gone.id, new Date().toISOString());
+    expect((await send(c.app, gone, 'POST', '/mobile/secrets/requests', askBody)).status).toBe(401);
+    const off = setup({ mobilePairing: { multiRoute: { enabled: false }, permissionActions: { enabled: false } } });
+    const phone = off.pair();
+    const o = await send(off.app, phone, 'POST', '/mobile/secrets/requests', askBody);
+    expect(o.status).toBe(503);
+    expect(o.body.error).toBe('permission-actions-off');
+    expect(c.calls.concat(off.calls)).toEqual([]);
+  });
+
+  it('a token pasted into a cancel path never reaches the audit file', async () => {
+    const c = setup();
+    const token = 'c'.repeat(64);
+    const r = await request(c.app).post(`/mobile/secrets/requests/${token}/cancel`).set('Authorization', 'Bearer tok-1').send({});
+    expect(r.status).toBe(403);
+    expect(fs.readFileSync(path.join(c.dir, 'state', 'mobile-permission-actions.jsonl'), 'utf8')).not.toContain(token);
+  });
+
+  it('a malformed cancel key never reaches the route', async () => {
+    const c = setup();
+    const owner = c.pair();
+    const r = await send(c.app, owner, 'POST', `/mobile/secrets/requests/${'a'.repeat(64)}/cancel`, {});
+    expect(r.status).toBe(403);
+    expect(r.body.error).toBe('device-not-allowed');
   });
 });
