@@ -73,7 +73,7 @@ export class DynamicMcpService {
         const full = JSON.parse(fs.readFileSync(path.join(p.projectDir, '.mcp.json'), 'utf8')) as McpJson;
         const definition = full.mcpServers?.[server];
         if (!definition) throw new Error('managed-telegram-mcp-config-unreadable');
-        assertMcpDoesNotExposeManagedTelegram(definition, managed);
+        assertMcpDoesNotExposeManagedTelegram(definition, managed, p.projectDir);
       },
     };
     this.manager = new DynamicMcpManager(deps);
