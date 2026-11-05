@@ -44,7 +44,7 @@ describe('installBuiltinSkills — normal-chrome-browser', () => {
     const content = fs.readFileSync(skillPath(), 'utf-8');
     expect(content).toMatch(/^---\nname: normal-chrome-browser\n/);
     expect(content).toContain('user_invocable: "true"');
-    expect(content).toContain('instar_skill_version: "2"');
+    expect(content).toContain('instar_skill_version: "3"');
     expect(content).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT);
   });
 
@@ -70,7 +70,7 @@ describe('installBuiltinSkills — normal-chrome-browser', () => {
     expect(content).toContain('ERR wsl-only');
     expect(content).toContain('ERR macos-only');
     expect(content).toContain('ERR windows-only');
-    expect(content).toContain('ACT-138');
+    expect(content).toContain('### Linux (xdrive.sh, the agent display)');
     expect(content).not.toContain('**macOS only.**');
     // Both driver sections, the marker heading, the capability note, invoke named, the forward-window decision.
     expect(content).toContain(NORMAL_CHROME_BROWSER_SKILL_MARKER);
@@ -109,9 +109,9 @@ describe('installBuiltinSkills — normal-chrome-browser', () => {
   });
 
   it('the Windows appendix carries the marker, the Windows section and the Linux statement', () => {
-    expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX.startsWith(NORMAL_CHROME_BROWSER_SKILL_MARKER)).toBe(true);
+    expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX.startsWith('## Drivers by operating system')).toBe(true);
     expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX).toContain(NORMAL_CHROME_BROWSER_WINDOWS_SECTION.trim());
-    expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX).toContain('### Linux (no Windows underneath)');
+    expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX).toContain(NORMAL_CHROME_BROWSER_SKILL_MARKER);
     expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX).toContain('Your edited copy of the skill was kept');
   });
 
@@ -135,8 +135,8 @@ describe('installBrowserScripts', () => {
 
   it('writes all five helpers, executable and byte-preserving', () => {
     const written = installBrowserScripts(tmp);
-    expect(written).toEqual([...BROWSER_SCRIPT_NAMES, ...BROWSER_CARE_SCRIPT_NAMES]);
-    expect(BROWSER_SCRIPT_NAMES).toEqual(['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh']);
+    expect(written).toEqual([...BROWSER_SCRIPT_NAMES, ...BROWSER_CARE_SCRIPT_NAMES, 'xdrive-provision.sh']);
+    expect(BROWSER_SCRIPT_NAMES).toEqual(['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh', 'xdrive.sh', 'x-drive.py']);
     expect(MACOS_BROWSER_SCRIPT_NAMES).toEqual(['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh']);
     for (const name of BROWSER_SCRIPT_NAMES) {
       const stat = fs.statSync(target(name));

@@ -42,7 +42,7 @@ describe('fresh init delivers the normal-Chrome browser method', () => {
     const refDir = path.join(agentDir, '.instar', 'reference');
     const md = [path.join(agentDir, 'CLAUDE.md'), ...fs.readdirSync(refDir).map(f => path.join(refDir, f))]
       .map(p => fs.readFileSync(p, 'utf-8')).join('\n');
-    expect(md).toContain('### Normal-Chrome browser (account-bound web tasks, macOS + Windows)');
+    expect(md).toContain('### Normal-Chrome browser (account-bound web tasks, macOS + Windows + Linux)');
     expect(md).not.toContain('### Normal-Chrome browser (account-bound web tasks, macOS)\n');
 
     const browserDir = path.join(agentDir, '.instar', 'scripts', 'browser');

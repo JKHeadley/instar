@@ -35,6 +35,13 @@
  *     retrieve-then-consume whenever the value feeds a single command.
  *     Example: `... <token> github_token --run -- gh auth login --with-token`
  *
+ *   XD_PROFILE=<id> node .instar/scripts/secret-drop-retrieve.mjs <token> <field> --browser
+ *     → a password requested with `browserHost`. Runs `xdrive.sh typesecret <that host>` with the value
+ *     on stdin and consumes the submission only on exit 0. The host comes from the request, which the
+ *     person saw on the form; the caller cannot name another. This is the only exit for such a
+ *     submission: stdout, --run and --consume are refused.
+ *     Spec: docs/specs/normal-chrome-linux.md.
+ *
  * Config:
  *   Reads `authToken` and `port` from `.instar/config.json` relative to cwd.
  *   `INSTAR_PORT` env var overrides the config port.
@@ -51,7 +58,11 @@ import { spawnSync } from 'node:child_process';
 const args = process.argv.slice(2);
 const token = args[0];
 const mode = args[1];
-const consume = args.includes('--consume');
+// Flags end at `--`: anything after it belongs to the --run command.
+const sepIdx = args.indexOf('--');
+const ownArgs = sepIdx === -1 ? args : args.slice(0, sepIdx);
+const consume = ownArgs.includes('--consume');
+const browserMode = ownArgs.includes('--browser');
 
 // Atomic use-and-consume: `<token> <field> --run -- <cmd...>`. Everything after
 // the first `--` (which must follow `--run`) is the command to run with the
@@ -65,8 +76,8 @@ if (runMode) {
   runCmd = sep !== -1 ? args.slice(sep + 1) : [];
 }
 
-if (!token || !mode || mode === '--consume' || mode === '--run') {
-  process.stderr.write('usage: secret-drop-retrieve.mjs <token> <field-name|--names> [--consume | --run -- <cmd...>]\n');
+if (!token || !mode || mode === '--consume' || mode === '--run' || mode === '--browser') {
+  process.stderr.write('usage: secret-drop-retrieve.mjs <token> <field-name|--names> [--consume | --run -- <cmd...> | --browser]\n');
   process.exit(2);
 }
 if (runMode && runCmd.length === 0) {
@@ -103,7 +114,8 @@ if (!resolvedPort) {
   process.exit(2);
 }
 
-const url = `http://localhost:${resolvedPort}/secrets/retrieve/${token}${consume ? '?consume=true' : ''}`;
+// Always peek first: the rules below need to see the submission before anything can consume it.
+const url = `http://localhost:${resolvedPort}/secrets/retrieve/${token}`;
 const res = await fetch(url, {
   method: 'POST',
   headers: {
@@ -142,14 +154,27 @@ if (!values || typeof values !== 'object') {
   process.exit(1);
 }
 
+const browserHost = typeof body?.browserHost === 'string' ? body.browserHost : '';
+
+if (browserMode && !browserHost) {
+  process.stderr.write('retrieve: --browser is only for a request made with browserHost; this one has none, so nothing was typed\n');
+  process.exit(1);
+}
+
 if (mode === '--names') {
   // Field-name listing for debugging — names + lengths only, never values.
+  // A browser password's length is not shown either.
   for (const k of Object.keys(values)) {
     const v = values[k];
     const len = typeof v === 'string' ? v.length : -1;
-    process.stderr.write(`  ${k} (length ${len})\n`);
+    process.stderr.write(browserHost ? `  ${k}\n` : `  ${k} (length ${len})\n`);
   }
   process.exit(0);
+}
+
+if (browserHost && !browserMode) {
+  process.stderr.write(`retrieve: this password is for ${browserHost} and leaves only with --browser; nothing was printed or consumed\n`);
+  process.exit(1);
 }
 
 const v = values[mode];
@@ -170,19 +195,45 @@ async function consumeSubmission() {
         ...(agentId ? { 'X-Instar-AgentId': agentId } : {}),
       },
     });
-  } catch {
-    // Non-fatal — the sliding/absolute-cap cleanup will reclaim it regardless.
+  } catch (e) {
+    // Non-fatal — the sliding/absolute-cap cleanup will reclaim it regardless. Said out loud, because
+    // --consume used to be one atomic call and a caller may rely on the value being gone.
+    process.stderr.write(`consume failed (${e.message}); the submission stays until its cleanup\n`);
   }
+}
+
+if (browserMode) {
+  const here = new URL('.', import.meta.url).pathname;
+  const child = spawnSync(`${here}browser/xdrive.sh`, ['typesecret', browserHost], {
+    input: v,
+    stdio: ['pipe', 'inherit', 'inherit'],
+    encoding: 'utf-8',
+    env: { ...process.env, XD_SECRET_BROWSER: '1' },
+  });
+  if (child.error) {
+    process.stderr.write(`browser: failed to launch xdrive.sh: ${child.error.message} — secret NOT consumed (safe to retry)\n`);
+    process.exit(1);
+  }
+  const code = child.status ?? 1;
+  if (code === 0) {
+    await consumeSubmission();
+    process.stderr.write('browser: typed — secret consumed. If the sign-in fails, ask for a new Secret Drop.\n');
+  } else {
+    process.stderr.write(`browser: exited ${code} — secret NOT consumed (read the page before retrying).\n`);
+  }
+  process.exit(code);
 }
 
 if (runMode) {
   // Pipe the value into the command's stdin; never let it touch argv (process
   // listings / shell history) or stdout (transcript). Inherit stdout/stderr so
   // the operator sees the command's own (non-secret) output.
+  // XD_SECRET_RUN: xdrive.sh refuses a value arriving this way (only --browser may reach typesecret).
   const child = spawnSync(runCmd[0], runCmd.slice(1), {
     input: v,
     stdio: ['pipe', 'inherit', 'inherit'],
     encoding: 'utf-8',
+    env: { ...process.env, XD_SECRET_RUN: '1' },
   });
   if (child.error) {
     process.stderr.write(`run: failed to launch '${runCmd[0]}': ${child.error.message} — secret NOT consumed (safe to retry)\n`);
@@ -202,3 +253,4 @@ if (runMode) {
 // `gh secret set` or `bw unlock --raw`. process.stdout.write (not console.log)
 // — no extra newline, no trailing whitespace to confuse downstream consumers.
 process.stdout.write(v);
+if (consume) await consumeSubmission();

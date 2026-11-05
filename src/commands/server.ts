@@ -32220,6 +32220,22 @@ export async function startServer(options: StartOptions): Promise<void> {
     // no per-session write admission.
     sessionManager.startMonitoring();
     await server.start();
+    // After the port is bound: installs the Linux Chrome driver's packages on a new agent. All
+    // asynchronous and detached, so it cannot delay or fail this boot.
+    {
+      const { provisionLinuxBrowser, startProvisionTimer } = await import('../core/linuxBrowserProvision.js');
+      const { classifyLocation, readThrowawayRecord } = await import('../core/ThrowawayAgentGuard.js');
+      const browserProjectDir = path.dirname(config.stateDir);
+      const browserThrowaway = classifyLocation({ projectDir: browserProjectDir, record: readThrowawayRecord(browserProjectDir) }).throwaway;
+      const browserDeps = () => ({
+        stateDir: config.stateDir,
+        projectDir: browserProjectDir,
+        configured: liveConfig.get<boolean | undefined>('browser.linuxDriver.autoInstall', undefined),
+        throwaway: browserThrowaway,
+      });
+      void provisionLinuxBrowser(browserDeps());
+      if (process.platform === 'linux') startProvisionTimer(browserDeps);
+    }
     // Boot recovery runs before the evidence log exists, so its verdict is recorded here.
     if (resolveDevAgentGate(config.multiMachine?.recoveryKeyEscrow?.enabled, config)) {
       const escrowDryRun = config.multiMachine?.recoveryKeyEscrow?.dryRun !== false;

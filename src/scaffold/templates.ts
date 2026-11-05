@@ -343,6 +343,7 @@ Server: curl http://localhost:${port}/health | Capabilities: curl -H "Authorizat
 | When asked about... | First check... |
 |---------------------|----------------|
 | What can I do? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities\` |
+| Can I use a browser? / can this be done on a website? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/browser/state\` |
 | Adding users / access | \`GET /capabilities\` → users section |
 | Multi-machine / pairing | \`instar machines --help\` |
 | Architecture / how I work | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context/dispatch\` |
@@ -713,6 +714,7 @@ ${POOL_READINESS_CLAUDE_MD_LINE}
 - When the user submits the secret through the form, you receive a Telegram confirmation in the specified topic.
 - **Retrieve the secret (HARDENED — required)**: \`node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name\` — streams the field VALUE to stdout, prints field NAMES + lengths to stderr, NEVER prints the response body. Pipe directly: \`node .instar/scripts/secret-drop-retrieve.mjs TOKEN password | gh secret set FOO\`. Discover available fields with \`... TOKEN --names\`.
 - **NEVER use \`curl /secrets/retrieve\` directly** — the raw curl pattern dumps the full JSON response (including the secret value) into the Bash tool transcript. The hardened script exists specifically to close that leak class (origin: 2026-05-20 incident).
+- **Website passwords for the Linux browser**: request with \`browserHost\` set to the host the operator named (the person sees it on the form), then \`XD_PROFILE=<id> node .instar/scripts/secret-drop-retrieve.mjs TOKEN password --browser\` with the password box focused. It types straight into that site's box and you never see it; stdout, --run and --consume are refused, and the submission is not stored, so a server restart loses it.
 - **Atomic use-and-consume (PREFERRED when the value feeds one command)**: \`node .instar/scripts/secret-drop-retrieve.mjs TOKEN field --run -- <cmd...>\` — pipes the value to \`<cmd>\`'s stdin and consumes the submission ONLY if \`<cmd>\` exits 0. A failed handoff never destroys the secret, so the user never has to resubmit. Example: \`node .instar/scripts/secret-drop-retrieve.mjs TOKEN github_token --run -- gh auth login --with-token\`. Do NOT fire a standalone \`--consume\` after a step that has not verified success.
 - List pending: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/secrets/pending\`
 - Cancel: \`curl -X DELETE -H "Authorization: Bearer $AUTH" http://localhost:${port}/secrets/pending/TOKEN\`
@@ -1313,6 +1315,7 @@ I maintain registries that are the source of truth for specific categories. Thes
 | Question | Check First |
 |----------|-------------|
 | What can I do? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities\` |
+| Can I use a browser? / can this be done on a website? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/browser/state\` |
 | Which machine can serve a capability? | **Registry First — capability registry:** \`GET /capability-registry\` distinguishes unavailable, unobserved, stale, and available evidence |
 | Which way of reaching another agent works right now? | **Registry First — channel registry:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/channels\` — every peer channel with purpose / when-preferred / cost / live verdict. A channel that failed to start still gets a row; \`unknown\` means undetermined, NEVER healthy. Read it BEFORE reporting that a peer is unreachable |
 | What are we working on? / status of a project or initiative? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/initiatives\` + \`/projects\` (and \`/initiatives/digest\` for what needs a decision) — NEVER answer this from memory |
@@ -2411,6 +2414,7 @@ Before answering ANY question about my capabilities or architecture from memory 
 | When asked about... | First check... |
 |---------------------|----------------|
 | What can I do? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities\` |
+| Can I use a browser? / can this be done on a website? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/browser/state\` |
 | Adding users / access | \`GET /capabilities\` → users section |
 | Multi-machine / pairing | \`instar machines --help\` |
 | Architecture / how I work | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context/dispatch\` |
