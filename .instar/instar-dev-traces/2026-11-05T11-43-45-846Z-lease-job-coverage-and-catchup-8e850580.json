@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "lease-job-coverage-and-catchup",
+  "sessionId": "6e60beaa-e310-4179-aa75-c7985b17f28f",
+  "timestamp": "2026-11-05T11:43:45.846Z",
+  "artifactPath": "upgrades/side-effects/lease-job-coverage-and-catchup.md",
+  "artifactSha256": "72080b7d81e5ad60b299dca4d31be0583eab96b058202ed998e81d71be77b637",
+  "specPath": "docs/specs/lease-job-coverage-and-catchup.md",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/PostUpdateMigrator-jobsPoolScope.test.ts",
+    "upgrades/side-effects/lease-job-coverage-and-catchup.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Repairs the full-suite-discovered interaction between coverage guidance and existing scheduler migration.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
