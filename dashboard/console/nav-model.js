@@ -106,6 +106,7 @@ export const NATIVE_PAGES = {
   initiatives: '#/work/plans',
   blockers: '#/work/plans?s=in-the-way',
   machines: '#/capacity/machines',
+  systems: '#/capacity/health',
   subscriptions: '#/capacity/accounts',
   spend: '#/capacity/costs',
   tokens: '#/capacity/costs',

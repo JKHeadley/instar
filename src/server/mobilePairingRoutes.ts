@@ -1551,6 +1551,9 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     { method: 'GET', re: /^\/mobile\/maturation$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'console-pages-reads' },
     { method: 'GET', re: /^\/mobile\/files$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'console-files-reads' },
     { method: 'GET', re: /^\/mobile\/files\/read$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'console-files-reads' },
+    // What /health means for the person (docs/specs/mobile-health-issues.md): a read-only trimmed summary,
+    // owner phones only. The Fleet screen reads it every 30 s, so it has its own bucket.
+    { method: 'GET', re: /^\/mobile\/health-issues$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'health-issues-reads' },
     // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): read-only
     // trimmed summaries, owner phones only, with one shared bucket of their own (they read peers).
     { method: 'GET', re: /^\/mobile\/proposals$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'proposals-inside-reads' },

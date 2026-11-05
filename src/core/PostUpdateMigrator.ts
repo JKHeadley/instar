@@ -1112,6 +1112,15 @@ export function MOBILE_CONSOLE_PAGES_LINE(port: number): string {
   return `- The app's native Ideas, Pace, Development, Maturation and Files screens read \`GET /mobile/ideas\`, \`/mobile/pace\`, \`/mobile/development\`, \`/mobile/maturation\`, \`/mobile/files?path=\` and \`/mobile/files/read?path=\` (owner phone or bearer, read-only, each built from the console route it mirrors so a phone never sees more than the console; files whose name says they hold a secret are hidden even where the console shows them). Check one: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/pace\`. **When to use**: the owner asks how queues, shipping or features are doing from the phone, or asks to see a file. Changes stay in the console.`;
 }
 export const MOBILE_CONSOLE_PAGES_MARKER = 'GET /mobile/ideas';
+
+/**
+ * The owner's health reading (docs/specs/mobile-health-issues.md), one bullet in the Mobile app routes block
+ * after the console pages bullet. Sniff: `GET /mobile/health-issues`.
+ */
+export function MOBILE_HEALTH_ISSUES_LINE(port: number): string {
+  return `- The app's Fleet and Machines and health screens and the console read \`GET /mobile/health-issues\` (\`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/health-issues\`): why \`/health\` says degraded, each reason sorted into \`user-affecting\`, \`internal\` or \`unclassified\` from the declared table in \`src/monitoring/healthIssues.ts\`, with plain words, details, a next step and the message "Ask the agent about this" starts from. Owner phone or bearer, read-only. Verdicts: \`attention\`, \`unsure\`, \`running\`, \`healthy\`. An id the table doesn't name is \`unclassified\`: it shows in the details and never reads as healthy. **When to use** (PROACTIVE): "why does it say degraded?" → read this before answering, and answer in its words. When the person asks about a \`reference:\` id from this page, look at \`/health/degradations\` for that feature and say what happened and what to do.`;
+}
+export const MOBILE_HEALTH_ISSUES_MARKER = 'GET /mobile/health-issues';
 export const MOBILE_ROUTES_PROBE_LINE_PREFIX = '- A probe that fails 8 times in a row pauses for that name';
 
 /** The increment-1 wording of the verdict bullet's tail, replaced in place on update. */
@@ -1241,6 +1250,7 @@ ${MOBILE_PROPOSALS_INSIDE_LINE(port)}
 ${MOBILE_SECRETS_LINE(port)}
 ${MOBILE_SECRETS_WRITES_LINE(port)}
 ${MOBILE_CONSOLE_PAGES_LINE(port)}
+${MOBILE_HEALTH_ISSUES_LINE(port)}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }
@@ -9875,6 +9885,22 @@ setTimeout(() => process.exit(0), 2000);
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added the native console pages line');
+    }
+
+    // The owner's health reading (docs/specs/mobile-health-issues.md): one bullet after the console pages
+    // bullet of an existing Mobile app routes block (a block added below already has it).
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_HEALTH_ISSUES_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_CONSOLE_PAGES_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_HEALTH_ISSUES_LINE(port));
+        content = lines.join('\n');
+      } else {
+        // A block without that bullet: append the line rather than skip it.
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_HEALTH_ISSUES_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the owner health reading line');
     }
 
     // Mobile app routes (docs/specs/mobile-multi-route.md) — Agent Awareness + Migration Parity.

@@ -9463,7 +9463,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           if (recoveryFiredOnce || recoveryRefusedOnce) {
             console.warn(`[SessionManager] Injection recovery FAILED in "${tmuxSession}" — marker "${marker.slice(0, 30)}…" is still at an idle prompt after the full ladder. The message is NOT delivered; handing off to StuckInputSentinel.`);
             DegradationReporter.getInstance().report({
-              feature: 'SessionManager.verifyInjection',
+              feature: 'SessionManager.verifyInjection.unsubmitted',
               primary: 'Bracketed paste + Enter submits injected message',
               fallback: 'Persistent StuckInputSentinel continues recovery across server restarts',
               reason: 'Marker still at an idle prompt after every in-process recovery rung',
@@ -9484,7 +9484,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
             recoveryRefusedOnce = true;
             console.warn(`[SessionManager] Injection stuck in "${tmuxSession}" and recovery was REFUSED (${fired.reason ?? 'no reason given'}) — marker "${marker.slice(0, 30)}…" is still at the prompt and no key was sent. The message is NOT delivered.`);
             DegradationReporter.getInstance().report({
-              feature: 'SessionManager.verifyInjection',
+              feature: 'SessionManager.verifyInjection.unsubmitted',
               primary: 'Bracketed paste + Enter submits injected message',
               fallback: 'None — the recovery keypress was refused before it was sent',
               reason: `Recovery refused: ${fired.reason ?? 'unknown'}`,
