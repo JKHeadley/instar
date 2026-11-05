@@ -269,7 +269,9 @@ export class RebalanceProofRunner {
         steps.probeAction = action;
         if (viaHolder) steps.probeVia = viaHolder.holder ?? 'holder';
         // The move's target can be the holder itself, which handles the probe rather than forwarding.
-        const reached = action === 'forwarded' || (action === 'handled-locally' && viaHolder?.holder === run.to);
+        // Through the holder, `queued` is the durable queue holding it until the new owner is
+        // known, which is what a real message gets. The reply is still what proves it.
+        const reached = action === 'forwarded' || (action === 'handled-locally' && viaHolder?.holder === run.to) || (action === 'queued' && !!viaHolder);
         if (!reached) reason = `probe-${action}`;
         else {
           const reply = await this.awaitReply(run, nonce);
