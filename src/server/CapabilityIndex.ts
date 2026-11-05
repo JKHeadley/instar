@@ -499,6 +499,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobileHealthIssues',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'What a degraded /health means for the person (docs/specs/mobile-health-issues.md): each reason sorted into user-affecting, internal or unclassified from a declared table, with plain words and a next step. Read-only, owner phone or bearer. /health itself is unchanged.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/health-issues'],
+    }),
+  },
+  {
     key: 'releaseReadiness',
     prefixes: ['/release-readiness'],
     description: 'Release-readiness watchdog (instar-dev / maintainer environments). Surfaces a stalled release as one deduped, age-escalating Attention item. Null on installs with no analyzable instar repo.',

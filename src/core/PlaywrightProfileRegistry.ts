@@ -1,3 +1,4 @@
+import { isSigninProfile } from './SigninProfileGuard.js';
 /**
  * PlaywrightProfileRegistry — the durable per-agent map of which Playwright
  * browser PROFILE holds which logged-in ACCOUNT, plus the compact boot-awareness
@@ -816,6 +817,7 @@ export class PlaywrightProfileRegistry {
     const store = this.ensureSeeded();
     const profile = store.profiles.find((p) => p.id === profileId);
     if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
+    if (isSigninProfile(profile) || (profile.userDataDir && store.profiles.some(other => isSigninProfile(other) && other.userDataDir && canonicalProfileDirectory(other.userDataDir) === canonicalProfileDirectory(profile.userDataDir!)))) throw new PlaywrightRegistryError('registered sign-in profile refuses automation; use normal Chrome and subscription-signin', 409);
     if (profile.executionOwner === 'telegram-origin-broker') throw new PlaywrightRegistryError('managed Telegram profile is available through typed broker operations only', 409);
     if (profile.userDataDir) this.assertDirectoryNotManaged(store, profile.userDataDir);
 

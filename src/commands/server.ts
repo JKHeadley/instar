@@ -87,6 +87,7 @@ import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGat
 import { JOB_LEASE_POOL_AUTHORITY_READY } from '../scheduler/JobLeaseClaimStore.js';
 import { resolveRelayUnknownSenderTrustMode } from '../threadline/relayUnknownSenderTrust.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { OwnershipNudgeReceiver, parseOwnershipNudge, sendOwnershipNudges } from '../core/OwnershipNudge.js';
 import { resolveEncryptToPinnedMode, encryptToPinnedModeName } from '../threadline/encryptToPinned.js';
 import { resolveRefuseDowngradeMode } from '../threadline/refuseDowngrade.js';
 import { MarkedPairingInviteFlow } from '../threadline/PairingPendingAcceptMarkers.js';
@@ -890,6 +891,11 @@ let _threadlineBoot: import('../threadline/ThreadlineBootstrap.js').ThreadlineBo
 let _agentIdentityServer: import('../core/AgentIdentityAdoption.js').AgentIdentityServer | null = null;
 let _identityMeshSend: ((machineId: string, command: import('../core/MeshRpc.js').MeshCommand, timeoutMs: number) => Promise<{ ok: boolean; result?: unknown; reason?: string }>) | null = null;
 let _identityPresencePull: (() => Promise<unknown>) | null = null;
+// session-pool-move-nudge — late-bound for the same reason: the drain wrapper and the verb's
+// handler are built before the puller and the mesh client. Null ⇒ replication off ⇒ strict no-op.
+let _ownershipNudgePull: ((sender: string) => Promise<boolean>) | null = null;
+let _ownershipNudgeTick: (() => void) | null = null;
+let _ownershipNudgeReceiver: import('../core/OwnershipNudge.js').OwnershipNudgeReceiver | null = null;
 let _agentIdentityDeps: import('../core/AgentIdentityRuntime.js').AgentIdentityRuntimeDeps | undefined;
 /** A2A inbound message-id ledger controller (docs/specs/a2a-inbound-id-ledger.md).
  *  Built at the inbound-queue sweep's boot site (before recoverPendingInjects),
@@ -16971,6 +16977,172 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.yellow(`  Correction meaning grouping: not constructed (${(err as Error)?.message ?? 'unknown'})`));
     }
 
+    // ── AutonomousProgressHeartbeat ──────────────────────────────────
+    // Every machine reports its own registered autonomous runs after a
+    // long user silence. Observation determines honest wording, never
+    // whether a run may go entirely silent. A moved-away run belongs to
+    // the destination; a locally suspended move is reported here.
+    try {
+      // Reporting is an autonomous-run invariant on every machine. The
+      // legacy dev-gated heartbeat settings must not leave fleet owners
+      // silent (or stuck in dry-run) after an update.
+      if (telegram) {
+        const { AutonomousProgressHeartbeat } = await import('../monitoring/AutonomousProgressHeartbeat.js');
+        const { AutonomousHeartbeatRunStateStore } = await import('../monitoring/AutonomousHeartbeatRunStateStore.js');
+        const {
+          reportableAutonomousJobs,
+          readAutonomousRunMarkers,
+        } = await import('../core/AutonomousSessions.js');
+        const { ParallelActivityIndex: AHParallelActivityIndex, runningTopicIds: ahRunningTopicIds } = await import('../core/ParallelActivityIndex.js');
+        // Own ParallelActivityIndex (focus source) — fetched ONCE per tick
+        // and indexed by topic inside the deps closure.
+        // Wired even though this caller reads only topicId/focus today: an
+        // omitted `isRunning` is indistinguishable from "nothing is running",
+        // so a future consumer of `running` here would inherit a silent false.
+        const ahActivityIndex = new AHParallelActivityIndex({
+          stateDir: config.stateDir,
+          isRunning: (topicId) => {
+            try {
+              return ahRunningTopicIds(
+                sessionManager.listRunningSessions(),
+                (name) => telegram?.getTopicForSession?.(name),
+              ).has(topicId);
+            } catch {
+              // @silent-fallback-ok: `false` is the pre-existing value for an
+              // unresolvable topic — the same value the optional dependency
+              // defaults to — and this index feeds a focus lookup, never a gate.
+              return false;
+            }
+          },
+        });
+        const ahRunStateStore = new AutonomousHeartbeatRunStateStore(
+          path.join(config.stateDir, 'state', 'autonomous-heartbeat.json'),
+        );
+        const localTelegram2 = telegram;
+        const autonomousHeartbeat = new AutonomousProgressHeartbeat(
+          {
+            listActiveAutonomousRuns: () => {
+              const out: import('../monitoring/AutonomousProgressHeartbeat.js').ActiveAutonomousRun[] = [];
+              for (const { job, remainingSeconds } of reportableAutonomousJobs(config.stateDir)) {
+                if (job.topic == null) continue;
+                const topicId = Number(job.topic);
+                if (!Number.isFinite(topicId)) continue;
+                out.push({
+                  topicId,
+                  sessionName: localTelegram2.getSessionForTopic(topicId) ?? null,
+                  remainingSeconds,
+                  paused: job.paused,
+                });
+              }
+              return out;
+            },
+            isLocalTopicOwner: (topicId) => {
+              try {
+                const owner = sessionOwnershipRegistry?.ownerOf(String(topicId));
+                return owner && _meshSelfId ? owner === _meshSelfId : null;
+              } catch (err) {
+                DegradationReporter.getInstance().report({
+                  feature: 'AutonomousProgressHeartbeat.ownership',
+                  primary: 'Read the confirmed owner of an autonomous topic',
+                  fallback: 'Treat topic ownership as unknown',
+                  reason: err instanceof Error ? err.message : String(err),
+                  impact: 'Suspended move reporting waits for confirmed local ownership',
+                  internalOnly: true,
+                });
+                return null;
+              }
+            },
+            getRunMarkers: (topicId) => readAutonomousRunMarkers(config.stateDir, topicId),
+            isSessionAlive: (name) => sessionManager.isSessionAlive(name),
+            getTopicHistory: (topicId) =>
+              localTelegram2.getTopicHistory(topicId, 50).map((e) => ({
+                fromUser: e.fromUser,
+                at: new Date(e.timestamp).getTime(),
+              })),
+            // Predicate #8 — read ActiveWorkSilenceSentinel's ALREADY-computed
+            // snapshot (the shared OutputActivityTracker). NEVER a capture.
+            // Missing when the sentinel is disabled → report uncertainty.
+            getSharedLastOutputAt: (name) =>
+              sharedOutputTracker ? sharedOutputTracker.lastOutputAtFor(name) : null,
+            getFocusForTopic: (() => {
+              // Index the cross-topic activities ONCE per tick (O(1)/topic).
+              let cachedAt = 0;
+              let cache = new Map<number, string | null>();
+              return (topicId: number): string | null => {
+                const now = Date.now();
+                if (now - cachedAt > 5_000) {
+                  cache = new Map(
+                    ahActivityIndex.activities(now).map((a) => [a.topicId, a.focus]),
+                  );
+                  cachedAt = now;
+                }
+                return cache.get(topicId) ?? null;
+              };
+            })(),
+            proxyCoordinator,
+            runStateStore: ahRunStateStore,
+            // Tick cadence and the observation window remain live tuning inputs.
+            getConfig: () => {
+              // Read only this non-secret block. Calling loadConfig here
+              // would re-run binary discovery + secret merge every minute.
+              const disk = JSON.parse(
+                fs.readFileSync(path.join(config.stateDir, 'config.json'), 'utf8'),
+              ) as { monitoring?: { autonomousHeartbeat?: { tickIntervalMs?: number; recentOutputChangeWindowMs?: number } } };
+              const live = disk.monitoring?.autonomousHeartbeat ?? {};
+              return {
+                enabled: true,
+                dryRun: false,
+                guaranteedReporting: true,
+                silenceThresholdMinutes: 30,
+                tickIntervalMs: live.tickIntervalMs,
+                recentOutputChangeWindowMs: live.recentOutputChangeWindowMs,
+              };
+            },
+            sendMessage: async (topicId, text, metadata) => {
+              const response = await sendAutomationReply('autonomous-heartbeat', topicId, { text, metadata }, deterministicAutomationAuthor());
+              if (!response.ok) throw new Error(`Autonomous-heartbeat reply failed: ${response.status}`);
+            },
+          },
+          {
+            enabled: true,
+            dryRun: false,
+            guaranteedReporting: true,
+            silenceThresholdMinutes: 30,
+          },
+        );
+        // The focus line is a session's own words: never in a row. Suppressions run every tick, so only a change of reason per topic writes one.
+        const ahLastHold = new Map<number, string>();
+        autonomousHeartbeat.on('would-emit', (e: { topicId: number; minutesSilent: number }) => {
+          ahLastHold.delete(e.topicId);
+          featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'fired', reason: 'would emit (dry run)', context: { topicId: e.topicId, minutesSilent: e.minutesSilent, dryRun: true } });
+        });
+        autonomousHeartbeat.on('emitted', (e: { topicId: number; minutesSilent: number }) => {
+          ahLastHold.delete(e.topicId);
+          featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'fired', reason: 'emitted', context: { topicId: e.topicId, minutesSilent: e.minutesSilent, dryRun: false } });
+        });
+        autonomousHeartbeat.on('send-error', (e: { topicId: number; err: unknown }) => {
+          featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'error', reason: 'send failed', context: { topicId: e.topicId, errorName: e.err instanceof Error ? e.err.name : 'unknown' } });
+        });
+        autonomousHeartbeat.on('tick-error', (err: unknown) => {
+          featureEvidence.recordAtMostEvery('monitoring.autonomousHeartbeat', 'tick-error', 60 * 60 * 1000, { kind: 'error', reason: 'tick failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
+        });
+        autonomousHeartbeat.on('suppressed', (e: { topicId: number; reason: string }) => {
+          if (ahLastHold.get(e.topicId) === e.reason) return;
+          if (ahLastHold.size >= 256) ahLastHold.clear();
+          ahLastHold.set(e.topicId, e.reason);
+          featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'held', reason: `suppressed: ${e.reason}`, context: { topicId: e.topicId } });
+        });
+        autonomousHeartbeat.start();
+        (globalThis as Record<string, unknown>).__instarAutonomousHeartbeat = autonomousHeartbeat;
+        guardRegistry.register('monitoring.autonomousHeartbeat.enabled', () => autonomousHeartbeat.guardStatus());
+        console.log(pc.green(
+          '  AutonomousProgressHeartbeat enabled (all-machine autonomous-run reporting)',
+        ));
+      }
+    } catch (err) {
+      console.warn('[AutonomousProgressHeartbeat] init failed (non-fatal):', (err as Error).message);
+    }
+
     let presenceProxy: import('../monitoring/PresenceProxy.js').PresenceProxy | undefined;
     // The unanswered-message watcher (and everything wired alongside it) used to
     // require a Telegram adapter to exist. Its Slack support is written and sits
@@ -17855,167 +18027,6 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
           promiseBeacon.start();
           (globalThis as Record<string, unknown>).__instarPromiseBeacon = promiseBeacon;
-
-          // ── AutonomousProgressHeartbeat ──────────────────────────────────
-          // Hedged, change-gated, sparse liveness BACKSTOP for an autonomous run
-          // gone silent-to-user while its terminal output is STILL changing. NOT
-          // the suppressed PromiseBeacon §B1 filler — much higher bar (long
-          // user-silence gate + corroborated recent output change from
-          // ActiveWorkSilenceSentinel's shared snapshot + per-topic cooldown +
-          // widening per-run backoff + hard cap + the shared one-voice lease).
-          // DEV-GATED dark: enabled via resolveDevAgentGate (LIVE on a dev agent,
-          // DARK on the fleet); dryRun defaults true (would-emit log, no send).
-          // Spec: docs/specs/autonomous-progress-heartbeat.md.
-          try {
-            const ahRawCfg = config.monitoring?.autonomousHeartbeat ?? {};
-            const ahEnabled = resolveDevAgentGate(ahRawCfg.enabled, config);
-            if (ahEnabled && telegram) {
-              const { AutonomousProgressHeartbeat } = await import('../monitoring/AutonomousProgressHeartbeat.js');
-              const { AutonomousHeartbeatRunStateStore } = await import('../monitoring/AutonomousHeartbeatRunStateStore.js');
-              const {
-                activeAutonomousJobs,
-                autonomousRunRemainingForTopic,
-                readAutonomousRunMarkers,
-              } = await import('../core/AutonomousSessions.js');
-              const { ParallelActivityIndex: AHParallelActivityIndex, runningTopicIds: ahRunningTopicIds } = await import('../core/ParallelActivityIndex.js');
-              // Own ParallelActivityIndex (focus source) — fetched ONCE per tick
-              // and indexed by topic inside the deps closure.
-              // Wired even though this caller reads only topicId/focus today: an
-              // omitted `isRunning` is indistinguishable from "nothing is running",
-              // so a future consumer of `running` here would inherit a silent false.
-              const ahActivityIndex = new AHParallelActivityIndex({
-                stateDir: config.stateDir,
-                isRunning: (topicId) => {
-                  try {
-                    return ahRunningTopicIds(
-                      sessionManager.listRunningSessions(),
-                      (name) => telegram?.getTopicForSession?.(name),
-                    ).has(topicId);
-                  } catch {
-                    // @silent-fallback-ok: `false` is the pre-existing value for an
-                    // unresolvable topic — the same value the optional dependency
-                    // defaults to — and this index feeds a focus lookup, never a gate.
-                    return false;
-                  }
-                },
-              });
-              const ahRunStateStore = new AutonomousHeartbeatRunStateStore(
-                path.join(config.stateDir, 'state', 'autonomous-heartbeat.json'),
-              );
-              const localTelegram2 = telegram;
-              const autonomousHeartbeat = new AutonomousProgressHeartbeat(
-                {
-                  listActiveAutonomousRuns: () => {
-                    const out: import('../monitoring/AutonomousProgressHeartbeat.js').ActiveAutonomousRun[] = [];
-                    const now = Date.now();
-                    for (const job of activeAutonomousJobs(config.stateDir)) {
-                      if (job.topic == null) continue; // legacy single-file job has no topic
-                      const remaining = autonomousRunRemainingForTopic(config.stateDir, job.topic, now);
-                      if (!remaining) continue;
-                      const topicId = Number(job.topic);
-                      if (!Number.isFinite(topicId)) continue;
-                      out.push({
-                        topicId,
-                        sessionName: localTelegram2.getSessionForTopic(topicId) ?? null,
-                        remainingSeconds: remaining.remainingSeconds,
-                      });
-                    }
-                    return out;
-                  },
-                  getRunMarkers: (topicId) => readAutonomousRunMarkers(config.stateDir, topicId),
-                  isSessionAlive: (name) => sessionManager.isSessionAlive(name),
-                  getTopicHistory: (topicId) =>
-                    localTelegram2.getTopicHistory(topicId, 50).map((e) => ({
-                      fromUser: e.fromUser,
-                      at: new Date(e.timestamp).getTime(),
-                    })),
-                  // Predicate #8 — read ActiveWorkSilenceSentinel's ALREADY-computed
-                  // snapshot (the shared OutputActivityTracker). NEVER a capture.
-                  // undefined when the silence sentinel is disabled → fails closed.
-                  getSharedLastOutputAt: (name) =>
-                    sharedOutputTracker ? sharedOutputTracker.lastOutputAtFor(name) : null,
-                  getFocusForTopic: (() => {
-                    // Index the cross-topic activities ONCE per tick (O(1)/topic).
-                    let cachedAt = 0;
-                    let cache = new Map<number, string | null>();
-                    return (topicId: number): string | null => {
-                      const now = Date.now();
-                      if (now - cachedAt > 5_000) {
-                        cache = new Map(
-                          ahActivityIndex.activities(now).map((a) => [a.topicId, a.focus]),
-                        );
-                        cachedAt = now;
-                      }
-                      return cache.get(topicId) ?? null;
-                    };
-                  })(),
-                  proxyCoordinator,
-                  runStateStore: ahRunStateStore,
-                  // The spec's rollback/tuning contract is tick-live. The old
-                  // constructor-only snapshot meant an operator edit to the
-                  // silence threshold was invisible until server restart.
-                  getConfig: () => {
-                    // Read only this non-secret block. Calling loadConfig here
-                    // would re-run binary discovery + secret merge every minute.
-                    const disk = JSON.parse(
-                      fs.readFileSync(path.join(config.stateDir, 'config.json'), 'utf8'),
-                    ) as { monitoring?: { autonomousHeartbeat?: typeof ahRawCfg } };
-                    const live = disk.monitoring?.autonomousHeartbeat ?? {};
-                    return {
-                      enabled: resolveDevAgentGate(live.enabled, config),
-                      dryRun: live.dryRun !== false,
-                      silenceThresholdMinutes: live.silenceThresholdMinutes,
-                      tickIntervalMs: live.tickIntervalMs,
-                      maxHeartbeatsPerRun: live.maxHeartbeatsPerRun,
-                      recentOutputChangeWindowMs: live.recentOutputChangeWindowMs,
-                    };
-                  },
-                  sendMessage: async (topicId, text, metadata) => {
-                    const response = await sendAutomationReply('autonomous-heartbeat', topicId, { text, metadata }, deterministicAutomationAuthor());
-                    if (!response.ok) throw new Error(`Autonomous-heartbeat reply failed: ${response.status}`);
-                  },
-                },
-                {
-                  enabled: true, // gate already resolved above
-                  dryRun: ahRawCfg.dryRun !== false,
-                  silenceThresholdMinutes: ahRawCfg.silenceThresholdMinutes,
-                  tickIntervalMs: ahRawCfg.tickIntervalMs,
-                  maxHeartbeatsPerRun: ahRawCfg.maxHeartbeatsPerRun,
-                  recentOutputChangeWindowMs: ahRawCfg.recentOutputChangeWindowMs,
-                },
-              );
-              // The focus line is a session's own words: never in a row. Suppressions run every tick, so only a change of reason per topic writes one.
-              const ahLastHold = new Map<number, string>();
-              autonomousHeartbeat.on('would-emit', (e: { topicId: number; minutesSilent: number }) => {
-                ahLastHold.delete(e.topicId);
-                featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'fired', reason: 'would emit (dry run)', context: { topicId: e.topicId, minutesSilent: e.minutesSilent, dryRun: true } });
-              });
-              autonomousHeartbeat.on('emitted', (e: { topicId: number; minutesSilent: number }) => {
-                ahLastHold.delete(e.topicId);
-                featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'fired', reason: 'emitted', context: { topicId: e.topicId, minutesSilent: e.minutesSilent, dryRun: false } });
-              });
-              autonomousHeartbeat.on('send-error', (e: { topicId: number; err: unknown }) => {
-                featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'error', reason: 'send failed', context: { topicId: e.topicId, errorName: e.err instanceof Error ? e.err.name : 'unknown' } });
-              });
-              autonomousHeartbeat.on('tick-error', (err: unknown) => {
-                featureEvidence.recordAtMostEvery('monitoring.autonomousHeartbeat', 'tick-error', 60 * 60 * 1000, { kind: 'error', reason: 'tick failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
-              });
-              autonomousHeartbeat.on('suppressed', (e: { topicId: number; reason: string }) => {
-                if (ahLastHold.get(e.topicId) === e.reason) return;
-                if (ahLastHold.size >= 256) ahLastHold.clear();
-                ahLastHold.set(e.topicId, e.reason);
-                featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'held', reason: `suppressed: ${e.reason}`, context: { topicId: e.topicId } });
-              });
-              autonomousHeartbeat.start();
-              (globalThis as Record<string, unknown>).__instarAutonomousHeartbeat = autonomousHeartbeat;
-              guardRegistry.register('monitoring.autonomousHeartbeat.enabled', () => autonomousHeartbeat.guardStatus());
-              console.log(pc.green(
-                `  AutonomousProgressHeartbeat enabled (silence backstop — ${(ahRawCfg.dryRun !== false) ? 'dry-run observe-only' : 'LIVE'})`,
-              ));
-            }
-          } catch (err) {
-            console.warn('[AutonomousProgressHeartbeat] init failed (non-fatal):', (err as Error).message);
-          }
 
           // ── "keep watching" resume detector ─────────────────────────────
           // When a user replies on a topic that has any auto-paused beacons,
@@ -26401,6 +26412,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         if (ownershipApplier) {
           try { ownershipApplier.tick(); } catch { /* @silent-fallback-ok — boot tick best-effort; the interval converges */ }
+          _ownershipNudgeTick = () => { ownershipApplier.tick(); };
           const applierTimer = setInterval(() => {
             try {
               const r = ownershipApplier.tick();
@@ -26957,6 +26969,15 @@ export async function startServer(options: StartOptions): Promise<void> {
               // Journal pairing (§3.3): the drain's transfer/abort/claim CASes
               // record placement history like every other CAS site.
               emitPlacement(c.sessionKey, r, _shedDrainTopics.has(c.sessionKey) ? 'reconcile' : 'user-move', prev);
+              const landedEpoch = (r as { record?: { ownershipEpoch?: number } }).record?.ownershipEpoch;
+              if (action.type === 'claim' && r.ok && typeof landedEpoch === 'number' && _ownershipNudgePull) {
+                sendOwnershipNudges({
+                  selfMachineId: meshSelfId,
+                  activeMachineIds: () => meshIdMgr.getActiveMachines().map((m) => m.machineId),
+                  flush: () => coherenceJournal?.flush(),
+                  send: (machineId, n) => _identityMeshSend?.(machineId, { type: 'ownership-nudge', ...n }, 3000) ?? Promise.resolve(),
+                }, { sessionKey: c.sessionKey, epoch: landedEpoch, landedAt: Date.now() });
+              }
               return r;
             },
             sessionIdleNow: async (sk) => {
@@ -27264,6 +27285,28 @@ export async function startServer(options: StartOptions): Promise<void> {
                 );
                 return { ok: true, result: r };
               }
+              return { ok: true };
+            },
+            // session-pool-move-nudge — "pull placements from me now". Answers at once; the pull
+            // follows. A strict no-op, with an evidence row, while replication is off.
+            'ownership-nudge': (cmd, sender) => {
+              const nudge = parseOwnershipNudge(cmd as { sessionKey?: unknown; epoch?: unknown; landedAt?: unknown });
+              if (!nudge) return { ok: false, reason: 'malformed' };
+              _ownershipNudgeReceiver ??= new OwnershipNudgeReceiver({
+                available: () => !!_ownershipNudgePull && !!_ownershipNudgeTick,
+                pullPlacements: (from) => _ownershipNudgePull?.(from) ?? Promise.resolve(false),
+                tickApplier: () => _ownershipNudgeTick?.(),
+                localEpoch: (key) => ownReg.read(key)?.ownershipEpoch ?? null,
+                wake: (key) => { void _inboundQueue?.onOwnershipTransition(key); },
+                record: ({ outcome, ...context }) => {
+                  featureEvidence.record('multiMachine.sessionPool.moveNudge', {
+                    kind: outcome === 'reached' ? 'fired' : 'held',
+                    reason: `ownership nudge: ${outcome}`,
+                    context,
+                  });
+                },
+              });
+              _ownershipNudgeReceiver.receive(sender, nudge);
               return { ok: true };
             },
             // WORKING-SET-HANDOFF-SPEC §3.2 — the chunked working-set serve
@@ -29633,6 +29676,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             },
           });
           _identityPresencePull = () => peerPresencePuller.pullOnce();
+          if (_replicationEnabled) {
+            _ownershipNudgePull = async (sender) => {
+              const url = peerUrl(sender);
+              return url ? peerPresencePuller.pullKindFrom(sender, url, 'topic-placement') : false;
+            };
+          }
           let identityActivationInFlight: Promise<void> | null = null;
           const reconcileIdentityActivation = (): Promise<void> => {
             if (identityActivationInFlight) return identityActivationInFlight;

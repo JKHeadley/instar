@@ -32,6 +32,7 @@ const FIXTURES: Record<string, { render: [string, string]; reads: Record<string,
   approvals: { render: ['mandates.js', 'renderMandates'], reads: { '/authorization-requests?status=pending': ok({ requests: [{ id: 'r1', status: 'pending', headline: 'Let PP sign code reviews', reason: 'it asked', createdByAgent: 'Echo', heldOnThisMachine: true, requestExpiresAt: iso(60) }] }) } },
   plans: { render: ['plans.js', 'renderPlans'], reads: { '/initiatives': ok({ items: [{ id: 'i1', title: 'Pick a name', description: 'd', status: 'active', kind: 'task', currentPhaseIndex: 0, phases: [], lastTouchedAt: minsAgo(60), needsUser: true, needsUserReason: 'pick a name', blockers: [], links: [], createdAt: iso(-999), updatedAt: iso(-60) }], count: 1 }) } },
   secrets: { render: ['secrets.js', 'renderSecrets'], reads: { '/secrets/pending': ok({ pending: [{ token: 'tok1', label: 'OpenAI API key', createdAt: minsAgo(4), expiresAt: NOW + 660000, expired: false, localUrl: '/secrets/drop/tok1' }] }) } },
+  health: { render: ['health.js', 'renderHealth'], reads: { '/mobile/health-issues': ok({ verdict: 'attention', headline: 'iMessage isn’t connected.', uptime: '2h', counts: { userAffecting: 1, internal: 0, unclassified: 0 }, truncated: false, issues: [{ id: 'iMessage', impact: 'user-affecting', title: 'iMessage isn’t connected', detail: 'Messages through iMessage won’t reach me.', evidence: null, count: 1, lastAt: null, action: null, ask: 'What happened?' }] }) } },
   spending: { render: ['costs.js', 'renderCosts'], reads: { '/routing-spend/enable-status': ok({ lifecycleState: 'probe-failed', enforcementReady: false }) } },
 };
 
@@ -241,7 +242,7 @@ describe('population floors', () => {
   it('a file that says "needs you" is registered, or names its exact phrase and reason', async () => {
     const { NEED_SOURCES, NEED_EXEMPT } = await import(path.join(CONSOLE, 'needs-model.js'));
     const own = new Set<string>(['needs-model.js']);
-    const pageFile: Record<string, string> = { 'work/development': 'development', 'capacity/accounts': 'accounts', 'people/agents': 'agents', 'people/mandates': 'mandates', 'work/plans': 'plans', 'people/secrets': 'secrets', 'capacity/costs': 'costs' };
+    const pageFile: Record<string, string> = { 'work/development': 'development', 'capacity/health': 'health', 'capacity/accounts': 'accounts', 'people/agents': 'agents', 'people/mandates': 'mandates', 'work/plans': 'plans', 'people/secrets': 'secrets', 'capacity/costs': 'costs' };
     for (const s of NEED_SOURCES) { own.add(`${pageFile[s.page]}.js`); own.add(`${pageFile[s.page]}-model.js`); }
     const bad = consoleFiles().flatMap((f) => unregisteredNeedLines(f, fs.readFileSync(path.join(CONSOLE, f), 'utf8'), own, NEED_EXEMPT).map((l) => `${f}: ${l.trim().slice(0, 110)}`));
     expect(bad).toEqual([]);

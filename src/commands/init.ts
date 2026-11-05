@@ -4460,8 +4460,8 @@ if echo "\$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
 fi
 
 # Risky commands — behavior depends on safety level
-for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd"; do
-  if echo "\$INPUT" | grep -qi "\$pattern"; then
+for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "git +([^|;&]* +)?reset +([^|;&]* +)?--hard" "git +([^|;&]* +)?clean +([^|;&]* +)?(-[a-zA-Z]*f|--force)" "git +([^|;&]* +)?push +([^|;&]* +)?(--force|-f)([^a-zA-Z0-9-]|$)"; do
+  if echo "\$INPUT" | grep -qiE "\$pattern"; then
     if [ "\$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "\$pattern" | grep -qiE 'git push (--force|-f)'; then
       continue
     fi
@@ -4587,6 +4587,7 @@ fi
   // deferred-install gap widening). Dev-gated dark + fail-open on every
   // uncertainty, so on a fresh fleet agent it is one config read per tool call.
   fs.writeFileSync(path.join(hooksDir, 'standdown-guard.js'), migrator.getHookContent('standdown-guard'), { mode: 0o755 });
+  fs.writeFileSync(path.join(hooksDir, 'signin-profile-guard.js'), migrator.getHookContent('signin-profile-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'telegram-origin-guard.js'), migrator.getHookContent('telegram-origin-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'post-action-reflection.js'), migrator.getHookContent('post-action-reflection'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'external-communication-guard.js'), migrator.getHookContent('external-communication-guard'), { mode: 0o755 });

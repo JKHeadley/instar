@@ -1,3 +1,4 @@
+import { signinProfileGuardHook } from './SigninProfileGuard.js';
 import { ORIGIN_LOCAL_GITIGNORE } from '../messaging/telegram-origin/OriginLocalPaths.js';
 
 /** One handoff rule shared by new installs and existing-agent migrations. */
@@ -1112,6 +1113,15 @@ export function MOBILE_CONSOLE_PAGES_LINE(port: number): string {
   return `- The app's native Ideas, Pace, Development, Maturation and Files screens read \`GET /mobile/ideas\`, \`/mobile/pace\`, \`/mobile/development\`, \`/mobile/maturation\`, \`/mobile/files?path=\` and \`/mobile/files/read?path=\` (owner phone or bearer, read-only, each built from the console route it mirrors so a phone never sees more than the console; files whose name says they hold a secret are hidden even where the console shows them). Check one: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/pace\`. **When to use**: the owner asks how queues, shipping or features are doing from the phone, or asks to see a file. Changes stay in the console.`;
 }
 export const MOBILE_CONSOLE_PAGES_MARKER = 'GET /mobile/ideas';
+
+/**
+ * The owner's health reading (docs/specs/mobile-health-issues.md), one bullet in the Mobile app routes block
+ * after the console pages bullet. Sniff: `GET /mobile/health-issues`.
+ */
+export function MOBILE_HEALTH_ISSUES_LINE(port: number): string {
+  return `- The app's Fleet and Machines and health screens and the console read \`GET /mobile/health-issues\` (\`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/health-issues\`): why \`/health\` says degraded, each reason sorted into \`user-affecting\`, \`internal\` or \`unclassified\` from the declared table in \`src/monitoring/healthIssues.ts\`, with plain words, details, a next step and the message "Ask the agent about this" starts from. Owner phone or bearer, read-only. Verdicts: \`attention\`, \`unsure\`, \`running\`, \`healthy\`. An id the table doesn't name is \`unclassified\`: it shows in the details and never reads as healthy. **When to use** (PROACTIVE): "why does it say degraded?" → read this before answering, and answer in its words. When the person asks about a \`reference:\` id from this page, look at \`/health/degradations\` for that feature and say what happened and what to do.`;
+}
+export const MOBILE_HEALTH_ISSUES_MARKER = 'GET /mobile/health-issues';
 export const MOBILE_ROUTES_PROBE_LINE_PREFIX = '- A probe that fails 8 times in a row pauses for that name';
 
 /** The increment-1 wording of the verdict bullet's tail, replaced in place on update. */
@@ -1241,6 +1251,7 @@ ${MOBILE_PROPOSALS_INSIDE_LINE(port)}
 ${MOBILE_SECRETS_LINE(port)}
 ${MOBILE_SECRETS_WRITES_LINE(port)}
 ${MOBILE_CONSOLE_PAGES_LINE(port)}
+${MOBILE_HEALTH_ISSUES_LINE(port)}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }
@@ -2374,6 +2385,8 @@ export function migrateConfigAccountFollowMeRevocationDeadline(config: Record<st
 const CLAUDE_MD_CLEANUP_MIN_UNITS = 10;
 
 const CONTEXT_DEATH_MARKER_ID = 'INSTAR:ANTI-PATTERN-CONTEXT-DEATH';
+
+export const POOL_MOVE_NUDGE_CLAUDE_MD_LINE = `- **Why a message waited after a move:** after a move, the old machine tells the others to check for the new owner, so this should take seconds. If someone asks why a message waited, read the \`multiMachine.sessionPool.moveNudge\` rows in \`logs/feature-evidence.jsonl\`: each says whether the machine caught up and how long it took. A missing or \`not-reached\` row means the normal 30-second check delivered it instead, and nothing was lost.`;
 
 export const POOL_READINESS_CLAUDE_MD_LINE = `- **Pool readiness:** can this agent move conversations between machines, or take over if a machine dies? \`GET /session-pool/readiness\` answers line by line per peer: contact, clock, capacity, no start failure seen, channels, follow-ups, plus this machine's takeover, ownership and duplicate check. Each is \`ok\`, \`failing\` or \`unknown\`. It only reports: ready means the known prerequisites look met, not that a real conversation has been placed. History is in \`logs/pool-readiness.jsonl\` on agents with 2 or more machines. Takeover reads \`failing\` on a machine using the git lease with no git remote, because it cannot take over yet. When the user asks "would my conversations work on the other machine?" or "what happens if this machine dies?" → read this before answering.`;
 
@@ -7132,6 +7145,11 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     this.migrateHookLayout(hooksDir, instarHooksDir, result);
 
     try {
+      fs.writeFileSync(path.join(instarHooksDir, 'signin-profile-guard.js'), signinProfileGuardHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/signin-profile-guard.js');
+    } catch (error) { result.errors.push(`signin-profile-guard.js: ${error instanceof Error ? error.message : String(error)}`); }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'telegram-origin-guard.js'), originToolGuardHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/telegram-origin-guard.js');
     } catch (error) { result.errors.push(`telegram-origin-guard.js: ${error instanceof Error ? error.message : String(error)}`); }
@@ -7505,7 +7523,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       'slopcheck-guard.js',
       'analysis-paralysis-guard.js',
       'post-action-reflection.js', 'external-communication-guard.js',
-      'telegram-origin-guard.js',
+      'telegram-origin-guard.js', 'signin-profile-guard.js',
       'scope-coherence-collector.js', 'scope-coherence-checkpoint.js',
       'instructions-loaded-tracker.js', 'subagent-start-tracker.js',
       'free-text-guard.sh', 'claim-intercept.js', 'claim-intercept-response.js', 'response-review.js',
@@ -9875,6 +9893,22 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added the native console pages line');
     }
 
+    // The owner's health reading (docs/specs/mobile-health-issues.md): one bullet after the console pages
+    // bullet of an existing Mobile app routes block (a block added below already has it).
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_HEALTH_ISSUES_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_CONSOLE_PAGES_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_HEALTH_ISSUES_LINE(port));
+        content = lines.join('\n');
+      } else {
+        // A block without that bullet: append the line rather than skip it.
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_HEALTH_ISSUES_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the owner health reading line');
+    }
+
     // Mobile app routes (docs/specs/mobile-multi-route.md) — Agent Awareness + Migration Parity.
     if (!content.includes('Mobile app routes')) {
       content += MOBILE_ROUTES_CLAUDEMD_SECTION(port);
@@ -10123,6 +10157,19 @@ setTimeout(() => process.exit(0), 2000);
       content = content.replace(oldHeartbeatStatus, liveHeartbeatStatus);
       patched = true;
       result.upgraded.push('CLAUDE.md: corrected autonomous-heartbeat live-config status');
+    }
+    // The fleet reporting contract supersedes the original dev-gated,
+    // output-only description. Replace that whole section once for existing
+    // agents as well as the newly generated section above.
+    const runReportingHeading = '## Autonomous-run silence backstop (AutonomousProgressHeartbeat)';
+    const reportingStart = content.indexOf(runReportingHeading);
+    if (reportingStart >= 0 && !content.includes('Autonomous-run reporting is live on every machine')) {
+      const nextHeading = content.indexOf('\n## ', reportingStart + runReportingHeading.length);
+      const reportingEnd = nextHeading < 0 ? content.length : nextHeading;
+      const newSection = `${runReportingHeading}\n\nAutonomous-run reporting is live on every machine. After 30 minutes without a message, the owner machine posts a brief status. Recent session output is described as observed activity, not task progress. A paused run, suspended move, missing session, or missing output is reported plainly rather than going silent. Messages use a durable per-run cooldown and the shared one-voice lease; a normal outbound message resets the silence clock. The legacy monitoring.autonomousHeartbeat enabled, dryRun, silenceThresholdMinutes, and maxHeartbeatsPerRun settings no longer suppress these reports. See GET /autonomous-heartbeat for the local reporter status.\n`;
+      content = content.slice(0, reportingStart) + newSection + content.slice(reportingEnd);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated autonomous-run reporting contract');
     }
     // Auth read after secret externalization (ACT-1303, 2026-10-05): once
     // `instar pair` moves authToken into the secret store, config.json holds
@@ -12472,6 +12519,14 @@ ${OVERLOAD_SHED_CLAUDE_MD_LINE}
       content += '\n' + POOL_READINESS_CLAUDE_MD_LINE + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added pool readiness line');
+    }
+
+    // session-pool-move-nudge: where to read why a message waited after a move. Idempotent via
+    // the unique marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('**Why a message waited after a move:**')) {
+      content += '\n' + POOL_MOVE_NUDGE_CLAUDE_MD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added pool move nudge line');
     }
 
     // trustworthy-machine-load-and-mesh-floor P3 (2026-10-26): overload shed — agents
@@ -18050,8 +18105,9 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'telegram-origin-guard' | 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
+  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
     switch (name) {
+      case 'signin-profile-guard': return signinProfileGuardHook();
       case 'telegram-origin-guard': return originToolGuardHook();
       case 'session-start': return this.getSessionStartHook();
       case 'mcp-health-autorefresh': return this.getMcpHealthAutorefreshHook();
@@ -18933,8 +18989,8 @@ if echo "$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
 fi
 
 # Risky commands — behavior depends on safety level
-for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd"; do
-  if echo "$INPUT" | grep -qi "$pattern"; then
+for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "git +([^|;&]* +)?reset +([^|;&]* +)?--hard" "git +([^|;&]* +)?clean +([^|;&]* +)?(-[a-zA-Z]*f|--force)" "git +([^|;&]* +)?push +([^|;&]* +)?(--force|-f)([^a-zA-Z0-9-]|$)"; do
+  if echo "$INPUT" | grep -qiE "$pattern"; then
     if [ "$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "$pattern" | grep -qiE 'git push (--force|-f)'; then
       continue
     fi

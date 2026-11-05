@@ -6711,31 +6711,20 @@ export interface MonitoringConfig {
      */
     wakeGraceMaxMs?: number;
   };
-  /**
-   * AutonomousProgressHeartbeat — a hedged, change-gated, sparse liveness
-   * BACKSTOP that posts ONE purely-observational line when an autonomous run
-   * has gone silent on the user for a long stretch while its terminal output is
-   * STILL changing. NOT the suppressed PromiseBeacon §B1 filler — it fires only
-   * on a LONG user-silence gate AND a corroborated recent output change (read
-   * from ActiveWorkSilenceSentinel's already-computed snapshot), with a
-   * per-topic cooldown + a widening per-run backoff + hard cap + the shared
-   * one-voice lease. Signal-only; never gates.
-   *
-   * `enabled` is DELIBERATELY OPTIONAL (dev-gate convention): omitted from
-   * ConfigDefaults so resolveDevAgentGate decides — LIVE on a development agent,
-   * DARK on the fleet (GET /autonomous-heartbeat 503s). `dryRun` defaults true.
-   * Spec: docs/specs/autonomous-progress-heartbeat.md.
-   */
+  /** Autonomous-run reporting on every machine. Legacy switches are kept in
+   * the type for config compatibility; server.ts ignores enabled, dryRun,
+   * silenceThresholdMinutes and maxHeartbeatsPerRun so old fleet-dark config
+   * cannot silence the reporting invariant. */
   autonomousHeartbeat?: {
-    /** Dev-gate convention: omit to let resolveDevAgentGate decide. */
+    /** Legacy switch; ignored for autonomous-run reporting. */
     enabled?: boolean;
-    /** Log the intended heartbeat instead of sending (default: true). */
+    /** Legacy switch; ignored for autonomous-run reporting. */
     dryRun?: boolean;
     /** User-silence gate, minutes (default 25; floor-clamped to ~5). */
     silenceThresholdMinutes?: number;
     /** Check cadence, ms (default 60_000; floor-clamped to ~30_000). */
     tickIntervalMs?: number;
-    /** Hard per-run heartbeat cap (default 6). */
+    /** Legacy cap; ignored for autonomous-run reporting. */
     maxHeartbeatsPerRun?: number;
     /** How recently the shared snapshot's lastOutputAt must have advanced (default 300_000). */
     recentOutputChangeWindowMs?: number;

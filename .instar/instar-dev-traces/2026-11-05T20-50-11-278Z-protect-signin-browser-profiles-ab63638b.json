@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "slug": "protect-signin-browser-profiles",
+  "sessionId": "38f76726-b5f6-43f7-80d6-f2f9336d860a",
+  "timestamp": "2026-11-05T20:50:11.278Z",
+  "artifactPath": "upgrades/side-effects/protect-signin-browser-profiles.md",
+  "artifactSha256": "da5cda2f3454610279fb3e12b09697a6254d50aeaf744ede48ab2c63d5300c88",
+  "coveredFiles": [
+    "docs/incidents/2026-11-04-saved-browser-signout.md",
+    "docs/specs/protect-signin-browser-profiles.eli16.md",
+    "upgrades/side-effects/protect-signin-browser-profiles.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only correction to primary incident timing: first import failed; successful retries and raw Slack sign-in result are precisely cited. No runtime change.",
+  "eli16Path": "docs/specs/protect-signin-browser-profiles.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/protect-signin-browser-profiles.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

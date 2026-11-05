@@ -70,7 +70,9 @@ export function driftSentence(round) {
   const v = round && round.lastDriftVerdict;
   if (!v || !v.verdict) return { text: 'No plan check recorded yet.', tone: 'unknown' };
   if (v.verdict === 'no-drift') return { text: 'Last check: the plan still holds.', tone: 'ok' };
+  // warning-path: askLink
   if (v.verdict === 'minor-drift') return { text: 'Last check: the plan has drifted a little; still workable.', tone: 'attn' };
+  // warning-path: askLink
   if (v.verdict === 'premise-violated') return { text: 'The plan’s starting assumption no longer holds — the agent paused it.', tone: 'bad' };
   if (v.verdict === 'manual-review-required') return { text: `Needs a human look${v.reason ? ` (${String(v.reason).replace(/[-_]/g, ' ')})` : ''}.`, tone: 'unknown' };
   return { text: `Last check: ${String(v.verdict).replace(/[-_]/g, ' ')}.`, tone: 'unknown' };
@@ -278,6 +280,7 @@ export function planRow(rec, detail, now = Date.now()) {
   else sub = initiativeLine(rec, now);
   return {
     key: `plan:${rec.id}`, id: rec.id, type: isProject ? 'project' : 'initiative', main: verifiedDisplayName(rec.title, rec.id) || (isProject ? 'Project name unavailable' : 'Initiative name unavailable'), sub,
+    // warning-path: row
     end: need ? 'Open' : statusWord(rec.status), tone: need ? 'attn' : rec.status === 'halted' ? 'bad' : null,
     needs: need, status: rec.status, record: p, children, detailFailed: detail && detail.failed ? detail.failed : null, touched: touchedAt(p, children),
   };
@@ -373,7 +376,9 @@ export function buildPlansPage(res, now = Date.now(), opts = {}) {
     'Plans on this machine.',
   ].filter(Boolean).join(' ');
   const facts = [
+    // warning-path: inline
     { n: counts.needsYou, label: counts.needsYou === 1 ? 'needs you' : 'need you', tone: counts.needsYou ? 'attn' : null, href: '#/work/plans?s=needsYou' },
+    // warning-path: inline
     inTheWay.state === 'ok' ? { n: counts.stuck + counts.working, label: 'in the way', tone: counts.stuck ? 'bad' : null, href: '#/work/plans?s=in-the-way' }
       : inTheWay.state === 'off' ? { n: 'off', label: 'blocker tracking', tone: 'unknown', href: '#/work/plans?s=in-the-way' }
         : { n: 'Can’t tell', label: 'in the way', tone: 'unknown', href: '#/work/plans?s=in-the-way' },
@@ -381,6 +386,7 @@ export function buildPlansPage(res, now = Date.now(), opts = {}) {
     { n: counts.idle + counts.older, label: 'idle', href: '#/work/plans?s=idle' },
   ];
   return {
+    // warning-path: pageHead
     ok: true, headline, sub, tone: counts.needsYou ? 'attn' : counts.stuck ? 'bad' : 'ok', facts, counts, sections, chips, doneChips,
     inTheWay, runs: buildAutonomousRuns(r.floor, opts.topicNames || {}), notes, digestReasons, truncated,
   };

@@ -9,7 +9,7 @@ import {
   buildPreferences, buildCorrections, buildConflicts, machineNames, learnedHeadline, learnedFacts,
   correctionsUrl, kindWords, confidenceWords, correctionStatusWords, ADVISORY_LINE,
 } from './learned-model.js';
-import { el, setKids, pageHead, section, sheet, story, details, note, cantTell, firstPaint } from './ui.js';
+import { el, setKids, pageHead, section, sheet, story, details, note, cantTell, firstPaint, askLink } from './ui.js';
 
 const PAGE = 20;
 // The last good preferences build, so a failed refresh shows it with its age (stale) instead of nothing.
@@ -84,7 +84,7 @@ function prefCard(p, prefs) {
 function conflictsBlock(conflicts) {
   if (!conflicts.ok) return el('section', { class: 'list-section', id: 'sec-conflicts' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Two machines disagree' })), el('p', { class: 'card-note', text: conflicts.reason }));
   return section({ id: 'conflicts', title: 'Two machines disagree', rows: conflicts.rows, onRow: (r) => sheet({ title: 'Machines disagree' },
-    story([{ label: 'What happened', text: r.main }, { label: 'When', text: r.sub }, { label: 'What I do meanwhile', text: 'I use both versions as hints. Settling it from here comes later; for now, tell me in chat which one you mean.' }]),
+    askLink(r.main), story([{ label: 'What happened', text: r.main }, { label: 'When', text: r.sub }, { label: 'What I do meanwhile', text: 'I use both versions as hints. Settling it from here comes later; for now, tell me in chat which one you mean.' }]),
     details({ ...r.record, versions: r.record.versions }, ['conflictId', 'recordKey', 'versions', 'firstSeenAt', 'lastSeenAt', 'recurrenceCount', 'forcedResolution'])) });
 }
 
