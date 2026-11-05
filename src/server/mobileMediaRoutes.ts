@@ -28,7 +28,7 @@ import { canonicalConversationKey, isAppConversationKey, parseAppCanonicalKey } 
 import type { UploadRow } from '../core/AppMediaStore.js';
 import { PLATFORM_CONVERSATION_KEY_RE } from '../core/AppConversationStore.js';
 import { slackMediaKeys } from '../core/appPlatformMedia.js';
-import { HOLDER_MEDIA_HEADER, type HolderMedia } from './mobileMediaHolderProxy.js';
+import { HOLDER_MEDIA_HEADER, type HolderMedia, HOLDER_MEDIA_HOP_SOCKET_MS } from './mobileMediaHolderProxy.js';
 
 export interface MobileMediaRouteDeps {
   pairing: MobilePairingService;
@@ -262,7 +262,11 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     res.setHeader('Accept-Ranges', hop ? 'none' : 'bytes');
-    if (hop) res.setHeader(HOLDER_MEDIA_HEADER, '1');
+    if (hop) {
+      res.setHeader(HOLDER_MEDIA_HEADER, '1');
+      // Runs after the server's own finish handler, which is what starts its keep-alive timer.
+      res.once('finish', () => { req.socket.setTimeout(HOLDER_MEDIA_HOP_SOCKET_MS); });
+    }
     let start = 0;
     let end = size - 1;
     const range = req.headers.range;

@@ -97,7 +97,7 @@ async function machine(id: string, peers: () => Peer[], over: { maxBytes?: numbe
     if (!done.recorded) throw new Error(`file not recorded: ${JSON.stringify(done)}`);
     return key;
   };
-  return { id, app, url, pairing, config, dir, svc, hops, held, registry, holder };
+  return { id, app, url, pairing, config, dir, svc, hops, held, registry, holder, server };
 }
 type Machine = Awaited<ReturnType<typeof machine>>;
 
@@ -341,6 +341,61 @@ describe('the owner phone opens a Slack file held by another machine', () => {
     for (const q of stalledPhones.splice(0)) q.destroy();
     await untilEmpty(a);
   }, 30_000);
+
+  it('real sockets: 6 runnable is its own limit, below the total of 8', async () => {
+    let list: Peer[] = [];
+    const a = await machine('m_a', () => list, { waitingOnPhoneMs: 60_000 });
+    list = await Promise.all(['m_1', 'm_2', 'm_3', 'm_4'].map(floodHolder));
+    const p = await phone(a);
+    for (const id of ['m_1', 'm_1', 'm_2', 'm_2', 'm_3', 'm_3']) expect((await openPaused(a, p, id)).status).toBe(200);
+    expect(a.holder.counts()).toMatchObject({ runnable: 6, quiet: 0, open: 6 });
+    expect((await openPaused(a, p, 'm_4')).status).toBe(202);
+    expect(a.holder.counts().open).toBe(6);
+    for (const q of stalledPhones.splice(0)) q.destroy();
+    await untilEmpty(a);
+  }, 30_000);
+
+  it('real sockets: a stream refused a quiet slot tries again and takes it when one frees', async () => {
+    let list: Peer[] = [];
+    const a = await machine('m_a', () => list, { waitingOnPhoneMs: 100 });
+    list = [await floodHolder('m_b')];
+    const p = await phone(a);
+    const first = await openPaused(a, p, 'm_b');
+    await pause(400); // the first takes the quiet slot alone
+    expect(a.holder.counts()).toMatchObject({ runnable: 0, quiet: 1 });
+    await openPaused(a, p, 'm_b');
+    await pause(400); // two tries pass with quiet full
+    expect(a.holder.counts()).toMatchObject({ runnable: 1, quiet: 1 });
+    first.q.destroy();
+    await pause(400);
+    expect(a.holder.counts()).toEqual({ runnable: 0, quiet: 1, open: 1, openByHolder: { m_b: 1 } });
+    for (const q of stalledPhones.splice(0)) q.destroy();
+    await untilEmpty(a);
+  }, 30_000);
+
+  it('real sockets: the holder keeps a hop open past its keep-alive, so a slow phone gets the end of the file', async () => {
+    const { a, b } = await pair();
+    b.server.keepAliveTimeout = 200; // the same race as the default 5 s, at a rate a test can wait for
+    const bytes = jpeg(1_000_000);
+    const key = await b.held('C0TAIL111', bytes);
+    const p = await phone(a);
+    const r = route(sha(bytes), key, 'm_b');
+    const u = new URL(a.url);
+    const got = await new Promise<{ status: number; body: Buffer; complete: boolean }>((resolve, reject) => {
+      http.get({ host: u.hostname, port: u.port, path: r, headers: signedHeaders(p, r) }, (m) => {
+        const parts: Buffer[] = [];
+        m.pause();
+        const pump = setInterval(() => { const c = m.read(2_500) ?? m.read(); if (c) parts.push(c as Buffer); }, 25);
+        m.on('readable', () => undefined);
+        m.on('close', () => { clearInterval(pump); const c = m.read(); if (c) parts.push(c as Buffer); resolve({ status: m.statusCode ?? 0, body: Buffer.concat(parts), complete: m.complete }); });
+        m.on('error', () => undefined);
+      }).on('error', reject);
+    });
+    expect(got.status).toBe(200);
+    expect(got.complete).toBe(true);
+    expect(sha(got.body)).toBe(sha(bytes));
+    await untilEmpty(a);
+  }, 60_000);
 
   it('real sockets: revoking a phone cuts its quiet and runnable streams and returns both permits', async () => {
     let list: Peer[] = [];

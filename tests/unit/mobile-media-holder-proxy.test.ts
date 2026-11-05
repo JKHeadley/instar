@@ -177,6 +177,30 @@ describe('buildMediaHolderStream', () => {
     expect(stream.counts()).toEqual({ runnable: 0, quiet: 0, open: 0, openByHolder: {} });
   });
 
+  it('a phone already gone before the handler runs takes no permit and dials nothing', async () => {
+    const f = vi.fn();
+    const stream = buildMediaHolderStream({ peers: () => [{ machineId: 'm_b', url: 'http://127.0.0.1:9', kind: 'lan' }], token: () => 't', selfMachineId: () => 'm_a', fetchImpl: f as unknown as typeof fetch });
+    const res = new FakeRes();
+    res.destroyed = true;
+    await stream({ sha256: 'a'.repeat(64), ref: 'slack:_:C', machine: 'm_b', isCurrent: () => true }, res as unknown as ExpressResponse);
+    expect(f).not.toHaveBeenCalled();
+    expect(stream.counts().open).toBe(0);
+  });
+
+  it('the overall deadline ends a stream by itself, on the holder and on the phone', async () => {
+    const decided = (p: Promise<void>) => Promise.race([p.then(() => true), settle(1_500).then(() => false)]);
+    const hang = ((_u: unknown, init: { signal: AbortSignal }) => new Promise((_ok, no) => { init.signal.addEventListener('abort', () => no(init.signal.reason)); })) as unknown as typeof fetch;
+    const silent = buildMediaHolderStream({ peers: () => [{ machineId: 'm_b', url: 'http://127.0.0.1:9', kind: 'lan' }], token: () => 't', selfMachineId: () => 'm_a', fetchImpl: hang, recheckMs: 60_000, firstByteMs: 60_000, deadlineMs: 60 });
+    const res = new FakeRes();
+    expect(await decided(silent({ sha256: 'a'.repeat(64), ref: 'slack:_:C', machine: 'm_b', isCurrent: () => true }, res as unknown as ExpressResponse))).toBe(true);
+    expect(res.statusCode).toBe(504);
+    const { stream, q } = stuckStream({ deadlineMs: 60, waitingOnPhoneMs: 60_000 });
+    const phone = new Stuck();
+    expect(await decided(stream(q, phone as unknown as ExpressResponse))).toBe(true);
+    expect(phone.destroyed).toBe(true);
+    expect(stream.counts().open).toBe(0);
+  });
+
   it('every way a stream ends returns its permit once', async () => {
     const zero = { runnable: 0, quiet: 0, open: 0, openByHolder: {} };
     const list = [Buffer.from('one'), Buffer.from('two'), Buffer.from('three')];

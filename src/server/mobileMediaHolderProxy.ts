@@ -42,6 +42,12 @@ export const HOLDER_MEDIA_MAX_OPEN_PER_HOLDER = 3;
 export const HOLDER_MEDIA_BUSY_RETRY_MS = 5_000;
 /** 50 MiB in this time needs about 1.4 Mbit/s end to end; a read cut here restarts, with no Range. */
 export const HOLDER_MEDIA_DEADLINE_MS = 300_000;
+/**
+ * How long a holder keeps a hop's socket open after its last byte reaches the kernel. The near machine
+ * may still be reading slowly for a phone, and the server's 5 s keep-alive would otherwise close it
+ * under that tail and break the file. Only hops get this; it ends with the socket's next use or close.
+ */
+export const HOLDER_MEDIA_HOP_SOCKET_MS = HOLDER_MEDIA_DEADLINE_MS + 30_000;
 export const HOLDER_MEDIA_MAX_IN_FLIGHT = 6;
 /** Per holder, so one dead machine cannot take every slot. Separate from the history read's slots. */
 export const HOLDER_MEDIA_MAX_PER_HOLDER = 2;
@@ -139,6 +145,8 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia & { c
   const recheckMs = deps.recheckMs ?? HOLDER_MEDIA_OWNER_RECHECK_MS;
 
   const stream: HolderMedia = async (q, res) => {
+    // Gone before this ran: 'close' will not fire again, so a permit would stay out to the deadline.
+    if (res.destroyed) return;
     // A corrupt registry throws here, and nothing above this handler catches an async rejection.
     let peer: PoolPeerTarget | undefined;
     let token: string | undefined;
