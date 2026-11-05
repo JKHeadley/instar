@@ -5907,6 +5907,20 @@ export interface ThreadlineListenerConfig {
 export interface ThreadlineConfig {
   /** Whether cloud relay is enabled (default: false, opt-in) */
   relayEnabled: boolean;
+  /**
+   * A sender is never left guessing (docs/specs/a2a-required-acknowledgment.md).
+   * On unless `enabled: false`, which turns off sending, watching and the instruction;
+   * inbound kinded acks are always consumed safely.
+   */
+  requiredAck?: {
+    enabled?: boolean;
+    /** Reminder to an interactive session. Default 5 minutes. */
+    reminderMs?: number;
+    /** Tell the sender `unacknowledged`. Default 15 minutes. */
+    attentionMs?: number;
+    /** Reminders per peer per day. Default 20. */
+    reminderDailyCap?: number;
+  };
   /** Cloud relay URL (default: 'wss://threadline-relay.fly.dev/v1/connect') */
   relayUrl?: string;
   /** Agent visibility on the relay network: 'public' (discoverable), 'unlisted' (direct only), 'private' (no relay) */

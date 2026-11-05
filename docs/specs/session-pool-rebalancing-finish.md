@@ -243,6 +243,12 @@ session, five seconds apart, before asking for the move; any other read starts t
 than that can still abort a move, which is a named red and never a false green. The evidence's `sourceSessionGone` is a
 real session read on every path, so a failed move that leaves the session running says so.
 
+**A conversation that comes back.** A tmux session name is reused when a conversation returns to a machine, so finished
+records can share the name of a live session. Lookups by name took the first file listed, so a drain closed a finished
+record, heard `already-completed`, and left the running session on the machine the conversation had left. Found live on
+2026-11-04, Studio to Mini, after this topic had been on the Studio before. `StateManager.findSessionByTmux` now prefers a
+running record, then the newest, at every such lookup, and a test keeps the pattern out of `src`.
+
 **What "exactly one reply" covers.** It is read across the machines that can be read, and the target must be one of
 them. A machine that is off cannot make the proof red: only the source and the target can receive the probe, and
 requiring every machine would fail a whole ring because one laptop is shut. Any step that could hang has its own

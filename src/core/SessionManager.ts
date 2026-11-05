@@ -9,7 +9,7 @@
 import type { MemoryPrivacyRecovery } from '../users/MemoryPrivacyRecovery.js';
 import { isCredentialEnvName, CLAUDE_CONFINED_PERMISSION_ARGS } from './credentialEnvNames.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
-import { applyMemorySessionLaunch, buildMemorySessionSettings, moveInboundFilesIntoScope } from './memorySessionPolicy.js';
+import { applyMemorySessionLaunch, buildMemorySessionSettings, moveInboundFilesIntoScope, prepareSessionCurlHome } from './memorySessionPolicy.js';
 import { audienceKey, type MemoryPrivacy, type SessionPlaceInput } from '../users/MemoryPrivacy.js';
 import { isScopedAudience, memoryScopeEnvValue, type MemoryAudience, type MemoryPlace } from '../users/MemoryAudience.js';
 import { execFileSync, execFile } from 'node:child_process';
@@ -1375,11 +1375,10 @@ export class SessionManager extends EventEmitter {
         store: this.inboundDeliveries,
         hmacKey: this.inboundDeliveryHmacKey,
         resolveRolloutPath: (delivery) => {
-          const session = this.state.listSessions().find((candidate) => candidate.tmuxSession === delivery.incarnation);
+          const session = this.state.findSessionByTmux(delivery.incarnation);
           return session ? this.codexRolloutPathForSession(session) : null;
         },
-        resolveRolloutId: (delivery) => this.state.listSessions()
-          .find((candidate) => candidate.tmuxSession === delivery.incarnation)?.claudeSessionId ?? null,
+        resolveRolloutId: (delivery) => this.state.findSessionByTmux(delivery.incarnation)?.claudeSessionId ?? null,
         bindImportedSuccessor: (delivery) => {
           if (delivery.ownerMachineId !== this.localMachineId()) return false;
           const topicId = Number(delivery.conversationId);
@@ -2184,7 +2183,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (!newName || typeof newName !== 'string') return false;
     const trimmed = newName.trim();
     if (!trimmed) return false;
-    const session = this.state.listSessions().find((s) => s.tmuxSession === tmuxSession);
+    const session = this.state.findSessionByTmux(tmuxSession);
     if (!session) return false;
     if (session.name === trimmed) return false;
     session.name = trimmed;
@@ -7764,6 +7763,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ? this.memoryPrivacyWiring!.privacy.issueSessionToken(interactiveSessionId, memoryPlan!.audience, memoryPlan!.placeKey)
       : null;
     const memoryScopeEnv = memoryPlan ? memoryScopeEnvValue(memoryPlan.audience) : null;
+    // Linux: the sandboxed shell reaches the agent server only through the sandbox proxy.
+    const memoryCurlHome = memoryScoped ? prepareSessionCurlHome(memoryPlan!.scopeDir!) : null;
 
     // Spawn the framework CLI in tmux — no bash -c shell intermediary.
     // Uses tmux -e flags to set/unset env vars directly, matching spawnSession pattern.
@@ -7795,6 +7796,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           '-e', `CLAUDE_CODE_TMPDIR=${path.join(memoryPlan!.scopeDir!, 'tmp')}`,
           '-e', `TMPDIR=${path.join(memoryPlan!.scopeDir!, 'tmp')}`,
         ] : []),
+        ...(memoryCurlHome ? ['-e', `CURL_HOME=${memoryCurlHome}`] : []),
         ...(memoryScoped ? [] : interactiveThreadline.secretEnvFlags), // threadline-mcp-local-http D2 (flag on only)
         ...(framework === 'claude-code' ? CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS : []), // long waits
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
@@ -9308,7 +9310,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   private injectionIncarnationId(tmuxSession: string): string | null {
     try {
-      return this.state.listSessions().find((s) => s.tmuxSession === tmuxSession)?.claudeSessionId ?? null;
+      return this.state.findSessionByTmux(tmuxSession)?.claudeSessionId ?? null;
     } catch {
       return null; // a state read failure must never turn into a false verdict
     }

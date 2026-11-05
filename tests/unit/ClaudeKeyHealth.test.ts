@@ -18,6 +18,9 @@ import {
   PROBE_CEILING_MS,
   REFRESH_BATCH,
   REFRESH_MAX_ATTEMPTS,
+  ANSWER_WAIT_MS,
+  PERSON_RESEND_TEXT,
+  RECOVERY_PROMPT,
 } from '../../src/core/ClaudeKeyHealth.js';
 import { classifyClaudeAuthFailure } from '../../src/core/claudeChildAuth.js';
 import { interpretProbe } from '../../src/core/claudeKeyProbe.js';
@@ -551,5 +554,117 @@ describe('a session at the login screen with a good key', () => {
     t.r.launch.chat = claudeKeyFingerprint(KEY_B);
     await h.handle({ session: 'chat', protected: true });
     expect(t.r.refreshed).toEqual([]);
+  });
+});
+
+describe('a restarted conversation must really answer (2026-11-04 drill)', () => {
+  const HELD = async () => ({ prompt: 'held: ECHO-ONE', held: 1 });
+  async function recover(t: ReturnType<typeof rig>, h: ClaudeKeyHealth) {
+    await kill(h, t.r);
+    t.r.disk = KEY_B;
+    t.r.probeResults.push('ok');
+    await h.tick();
+  }
+
+  it("each conversation gets its own prompt, with the held messages and reply command", async () => {
+    const prompts: Array<[string, string]> = [];
+    const t = rig({
+      recoveryPrompt: async (s) => ({ prompt: `prompt for ${s}`, held: 1 }),
+      refresh: async (s, p) => { prompts.push([s, p]); return { ok: true }; },
+    });
+    t.r.stuck = ['dawn', 'echo'];
+    await recover(t, t.make());
+    expect(prompts).toEqual([['dawn', 'prompt for dawn'], ['echo', 'prompt for echo']]);
+  });
+
+  it('a prompt that cannot be built falls back to the generic one, restarts, and says it is unchecked', async () => {
+    const prompts: string[] = [];
+    const t = rig({
+      recoveryPrompt: async () => { throw new Error('history unavailable'); },
+      answeredSince: async () => false,
+      refresh: async (_s, p) => { prompts.push(p); return { ok: true }; },
+    });
+    t.r.stuck = ['one'];
+    const h = t.make();
+    await recover(t, h);
+    expect(prompts).toEqual([RECOVERY_PROMPT]);
+    expect(t.r.reports.some((m) => m.includes('Could not read what "one" had waiting'))).toBe(true);
+    t.r.clock += ANSWER_WAIT_MS;
+    await h.tick();
+    expect(t.r.people.filter(([, text]) => text === PERSON_RESEND_TEXT)).toEqual([]); // never a guess
+  });
+
+  it('nothing held: nobody is asked to resend, however long no reply comes', async () => {
+    const t = rig({ recoveryPrompt: async () => ({ prompt: 'nothing waiting', held: 0 }), answeredSince: async () => false });
+    t.r.stuck = ['one'];
+    const h = t.make();
+    await recover(t, h);
+    t.r.clock += ANSWER_WAIT_MS * 2;
+    await h.tick();
+    expect(t.r.people.filter(([, text]) => text === PERSON_RESEND_TEXT)).toEqual([]);
+    expect(t.r.reports.some((m) => m.includes('did not answer'))).toBe(false);
+  });
+
+  it('a restart that shows an answer is done: nobody is asked to resend', async () => {
+    const t = rig({ recoveryPrompt: HELD, answeredSince: async () => true });
+    t.r.stuck = ['one'];
+    const h = t.make();
+    await recover(t, h);
+    t.r.clock += ANSWER_WAIT_MS + 1;
+    await h.tick();
+    expect(t.r.people.filter(([, text]) => text === PERSON_RESEND_TEXT)).toEqual([]);
+    expect(t.r.reports.some((m) => m.includes('did not answer'))).toBe(false);
+  });
+
+  it('a restart that reports done but answers nobody: the person is asked to resend and it is reported', async () => {
+    const t = rig({
+      recoveryPrompt: HELD,
+      answeredSince: async () => false,
+      refresh: async (s) => { t.r.refreshed.push(s); return { ok: true, newSessionName: 'echo-new' }; },
+    });
+    t.r.stuck = ['echo'];
+    const h = t.make();
+    await recover(t, h);
+    await h.tick();
+    expect(t.r.people.filter(([, text]) => text === PERSON_RESEND_TEXT)).toEqual([]); // still within the wait
+    t.r.clock += ANSWER_WAIT_MS;
+    await h.tick();
+    expect(t.r.people.filter(([, text]) => text === PERSON_RESEND_TEXT)).toEqual([['echo-new', PERSON_RESEND_TEXT]]);
+    expect(t.r.reports.some((m) => m.includes('"echo-new"') && m.includes('did not answer'))).toBe(true);
+    await h.tick();
+    expect(t.r.people.filter(([, text]) => text === PERSON_RESEND_TEXT)).toHaveLength(1); // once
+  });
+
+  it('a conversation that cannot be read is reported as unchecked, not as answered', async () => {
+    const t = rig({ recoveryPrompt: HELD, answeredSince: async () => null });
+    t.r.stuck = ['one'];
+    const h = t.make();
+    await recover(t, h);
+    t.r.clock += ANSWER_WAIT_MS;
+    await h.tick();
+    expect(t.r.reports.some((m) => m.includes('Could not check'))).toBe(true);
+  });
+
+  it('a key that dies again while a conversation waits: no "I\'m back" during the outage', async () => {
+    const t = rig({ recoveryPrompt: HELD, answeredSince: async () => false });
+    t.r.stuck = ['one'];
+    const h = t.make();
+    await recover(t, h);
+    t.r.clock += OK_MIN_PROBE_INTERVAL_MS;
+    await kill(h, t.r);
+    t.r.clock += ANSWER_WAIT_MS;
+    await h.tick();
+    expect(t.r.people.filter(([, text]) => text === PERSON_RESEND_TEXT)).toEqual([]);
+  });
+
+  it('the wait survives a restart of the server', async () => {
+    const t = rig({ recoveryPrompt: HELD, answeredSince: async () => false });
+    t.r.stuck = ['one'];
+    await recover(t, t.make());
+    t.r.clock += ANSWER_WAIT_MS;
+    const next = t.make();
+    await next.boot();
+    await next.tick();
+    expect(t.r.people.filter(([, text]) => text === PERSON_RESEND_TEXT)).toEqual([['one', PERSON_RESEND_TEXT]]);
   });
 });

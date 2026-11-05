@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-04T23:30:31.431Z",
+  "slug": "recommended-services-proof-fixes",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 6,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/recommended/recipes.ts",
+      "src/server/recommendedServiceRoutes.ts"
+    ],
+    "addedLines": 5,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "closure": "n/a",
+    "reason": "A single state field and prompt wording, with no loop or new surface."
+  },
+  "verdict": "pass"
+}

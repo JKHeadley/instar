@@ -29,6 +29,8 @@ export const PROBE_BREAKER_MS = 24 * 60 * 60_000;
 export const NOTICE_MAX_ATTEMPTS = 5;
 export const REFRESH_MAX_ATTEMPTS = 3;
 export const REFRESH_BATCH = 10;
+/** How long a restarted conversation has to show a real answer before the person is asked to resend. */
+export const ANSWER_WAIT_MS = 15 * 60_000;
 
 export const OPERATOR_DEAD_TEXT =
   "Your agent can't reach Claude because its sign-in key was rejected. It can't reply to anyone until this is fixed. " +
@@ -37,9 +39,15 @@ export const OPERATOR_DEAD_TEXT =
 export const OPERATOR_OK_TEXT = "Your agent's Claude sign-in key is working again. Open conversations are picking up.";
 export const PERSON_TEXT = "I can't reply right now because my sign-in key stopped working. I'll pick this conversation up once it's fixed.";
 export const PERSON_TOLD_SUFFIX = ' My operator has been told.';
+export const PERSON_RESEND_TEXT =
+  "I'm back, but I couldn't pick up what you sent while my sign-in key was broken. Please send it again.";
+/** Fallback only: the server builds a per-conversation prompt with the held messages and reply command. */
 export const RECOVERY_PROMPT =
   'Your sign-in key stopped working for a while and has now been fixed. Messages sent during that time were not answered. ' +
   'Read the conversation and answer anything still unanswered.';
+
+/** Fixed texts the server posts into conversations. None of them is the agent answering. */
+export const KEY_NOTICE_TEXTS: readonly string[] = [PERSON_TEXT, PERSON_RESEND_TEXT, OPERATOR_DEAD_TEXT, OPERATOR_OK_TEXT];
 
 export function claudeKeyFingerprint(key: string): string {
   return crypto.createHash('sha256').update(key).digest('hex').slice(0, 16);
@@ -56,6 +64,7 @@ export function nextProbeDelay(currentMs: number): number {
 }
 
 interface PendingRefresh { session: string; attempts: number }
+interface AwaitingAnswer { session: string; since: number }
 
 interface PersistedState {
   status: ClaudeKeyStatus;
@@ -70,11 +79,12 @@ interface PersistedState {
   sweepPending: boolean;
   pending: PendingRefresh[];
   refreshed: Record<string, string>; // session → fingerprint of the key it was refreshed onto
+  awaiting: AwaitingAnswer[]; // restarted conversations not yet seen answering
 }
 
 const initialState = (): PersistedState => ({
   status: 'ok', fingerprint: null, since: null, probeDelayMs: DEAD_PROBE_START_MS, nextProbeAt: 0, keySeenAt: null,
-  operatorTold: false, noticeAttempts: 0, peopleTold: [], sweepPending: false, pending: [], refreshed: {},
+  operatorTold: false, noticeAttempts: 0, peopleTold: [], sweepPending: false, pending: [], refreshed: {}, awaiting: [],
 });
 
 export interface ClaudeKeyHealthDeps {
@@ -97,6 +107,16 @@ export interface ClaudeKeyHealthDeps {
   listStuckSessions: () => Promise<string[]>;
   /** Fingerprint of the key the session was launched with, or null when it has none. */
   sessionLaunchFingerprint: (tmuxSession: string) => string | null;
+  /**
+   * The prompt for one restarted conversation (its held messages and the exact reply command),
+   * and how many messages were held. Null (or absent) falls back to RECOVERY_PROMPT.
+   */
+  recoveryPrompt?: (sessionName: string) => Promise<{ prompt: string; held: number } | null>;
+  /**
+   * Whether the conversation shows a real reply from the agent since `sinceMs`. Null when it
+   * can't be read. Absent: a restart is trusted as done (the old behaviour).
+   */
+  answeredSince?: (sessionName: string, sinceMs: number) => Promise<boolean | null>;
   /** Through SessionRefresh, ordinary work gate. */
   refresh: (sessionName: string, prompt: string) => Promise<{ ok: boolean; reason?: string; newSessionName?: string }>;
   /** Forget the monitor's report marks so a stuck session is offered again promptly. */
@@ -206,6 +226,7 @@ export class ClaudeKeyHealth {
       if (!brokenOut && this.now() >= this.state.nextProbeAt) await this.runProbe({ force: true });
     }
     await this.workPending();
+    await this.checkAnswers();
     this.ensureTimer();
   }
 
@@ -317,6 +338,8 @@ export class ClaudeKeyHealth {
       ...this.state, status: 'dead', fingerprint: fp, since: sameEpisode ? this.state.since : this.now(),
       probeDelayMs: DEAD_PROBE_START_MS, nextProbeAt: this.now() + DEAD_PROBE_START_MS, keySeenAt: this.now(),
       operatorTold: false, noticeAttempts: 0, peopleTold: [],
+      // A conversation waiting on an answer is stuck again; this episode's notice covers it.
+      awaiting: sameEpisode ? this.state.awaiting : [],
     };
     this.save();
     this.logger.warn('[ClaudeKeyHealth] Anthropic rejected the configured sign-in key');
@@ -337,7 +360,7 @@ export class ClaudeKeyHealth {
 
   private async recovered(): Promise<void> {
     // Written first: a crash before the sweep finishes resumes it at boot.
-    this.state = { ...initialState(), sweepPending: true, pending: this.state.pending, refreshed: this.state.refreshed };
+    this.state = { ...initialState(), sweepPending: true, pending: this.state.pending, refreshed: this.state.refreshed, awaiting: this.state.awaiting };
     this.save();
     this.logger.log('[ClaudeKeyHealth] the sign-in key works again');
     this.deps.clearLoginReports();
@@ -400,8 +423,23 @@ export class ClaudeKeyHealth {
       item.attempts += 1;
       let done = false;
       let newName: string | undefined;
+      let prompt = RECOVERY_PROMPT;
+      // Null: not known what was held. An answer is awaited only when something was.
+      let held: number | null = null;
       try {
-        const result = await this.deps.refresh(item.session, RECOVERY_PROMPT);
+        const built = await this.deps.recoveryPrompt?.(item.session);
+        if (built) { prompt = built.prompt; held = built.held; }
+      } catch (err) { /* @silent-fallback-ok: reported just below as unchecked, and the generic prompt still restarts it */ this.logger.warn(`[ClaudeKeyHealth] recovery prompt for "${item.session}" failed: ${err instanceof Error ? err.message : String(err)}`); }
+      if (held === null && this.deps.recoveryPrompt) {
+        // The generic prompt still restarts it, but nothing can check it answered: say so.
+        this.deps.report({
+          reason: `Could not read what "${item.session}" had waiting when the sign-in key was fixed.`,
+          impact: 'It restarts with a general prompt, and whether it answered is not checked.',
+        });
+      }
+      const startedAt = this.now();
+      try {
+        const result = await this.deps.refresh(item.session, prompt);
         done = result.ok;
         newName = result.newSessionName;
       }
@@ -410,9 +448,42 @@ export class ClaudeKeyHealth {
         this.drop(item.session);
         // A Slack respawn gets a new name, and that is the name the next sweep will see.
         this.state.refreshed[newName ?? item.session] = fp;
+        // A restart is not an answer: the drill's session reported done and answered nobody.
+        // With nothing held there is nothing to answer, so nobody is asked to resend.
+        if (this.deps.answeredSince && held !== null && held > 0) this.state.awaiting.push({ session: newName ?? item.session, since: startedAt });
       }
     }
     this.save();
+  }
+
+  /** Restarted conversations: done once a real reply shows; past the wait, the person is asked to resend. */
+  private async checkAnswers(): Promise<void> {
+    const check = this.deps.answeredSince;
+    // While the key is dead again nobody can answer; that episode tells the person itself.
+    if (!check || this.state.awaiting.length === 0 || this.state.status !== 'ok') return;
+    const still: AwaitingAnswer[] = [];
+    for (const item of this.state.awaiting) {
+      let answered: boolean | null = null;
+      try { answered = await check(item.session, item.since); }
+      catch (err) { this.logger.warn(`[ClaudeKeyHealth] answer check for "${item.session}" failed: ${err instanceof Error ? err.message : String(err)}`); }
+      if (answered === true) continue;
+      if (this.now() - item.since < ANSWER_WAIT_MS) { still.push(item); continue; }
+      let told = false;
+      try { told = await this.deps.notifyPerson(item.session, PERSON_RESEND_TEXT); }
+      catch (err) { this.logger.warn(`[ClaudeKeyHealth] resend request for "${item.session}" failed: ${err instanceof Error ? err.message : String(err)}`); }
+      this.deps.report({
+        reason: answered === null
+          ? `Could not check whether "${item.session}" answered after the sign-in key was fixed.`
+          : `"${item.session}" restarted after the sign-in key was fixed but did not answer within ${ANSWER_WAIT_MS / 60_000} minutes.`,
+        impact: told
+          ? 'The person was asked to send their message again.'
+          : 'The person may still be waiting, and could not be told to resend.',
+      });
+    }
+    if (still.length !== this.state.awaiting.length) {
+      this.state.awaiting = still;
+      this.save();
+    }
   }
 
   private drop(session: string): void {
@@ -450,12 +521,12 @@ export class ClaudeKeyHealth {
   private reset(): void {
     if (this.confirmTimer) clearTimeout(this.confirmTimer);
     this.confirmTimer = null;
-    this.state = { ...initialState(), pending: this.state.pending, refreshed: this.state.refreshed };
+    this.state = { ...initialState(), pending: this.state.pending, refreshed: this.state.refreshed, awaiting: this.state.awaiting };
     this.save();
   }
 
   private ensureTimer(): void {
-    const needed = this.state.status === 'dead' || this.state.pending.length > 0;
+    const needed = this.state.status === 'dead' || this.state.pending.length > 0 || this.state.awaiting.length > 0;
     if (this.deps.manualTimers) return;
     if (needed && !this.timer) {
       this.timer = setInterval(() => this.background(this.tick()), TICK_MS);

@@ -32,6 +32,27 @@ describe('claude key wiring', () => {
     expect(source).toMatch(/configureClaudeChildAuth\(\(\) =>/);
   });
 
+  it('recovery is wired to answer held messages and to reach a person (2026-11-04 drill)', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'src/commands/server.ts'), 'utf-8');
+    const start = source.indexOf('new ClaudeKeyHealth({');
+    const block = source.slice(start, source.indexOf('setActiveClaudeKeyHealth(claudeKeyHealth)', start));
+    // Each restarted conversation gets its held messages and reply command, and is checked for a real answer.
+    expect(block).toMatch(/recoveryPrompt: async \(sessionName\) => \{[\s\S]*const held = heldMessages\(convo\.lines, keyNoticeTexts\);\s*return \{ prompt: buildKeyRecoveryPrompt\(convo\.channel, held\), held: held\.length \};/);
+    expect(block).toMatch(/answeredSince: async \(sessionName, sinceMs\) => \{[\s\S]*answeredSince\(convo\.lines, sinceMs/);
+    // The operator notice counts only when a person can read it.
+    expect(block).toMatch(/notifyOperator: \(text\) => \{[\s\S]*deliverOperatorNotice\(/);
+    expect(block).toMatch(/readersOf: async \(channelId\) => \{[\s\S]*slack\.authorizedMembersOf\(channelId\)/);
+    expect(block).toContain('people: () => keyOperators(slack)');
+    // Server posts (standby notes) are told apart from session replies by the origin ledger.
+    expect(source).toContain('isServerPost: (ts) => slack.isServerAutomationPost(channelId, ts)');
+    expect(block).toContain('directMessage: async (userId, t) => { await slack.sendDirectMessage(userId, t); }');
+  });
+
+  it('the shipped Slack reply script drops a channel id in a bound session', () => {
+    const script = fs.readFileSync(path.join(ROOT, 'src/templates/scripts/slack-reply.sh'), 'utf-8');
+    expect(script).toContain('slack-reply-feature: session-drops-channel-arg');
+  });
+
   it('a restored key reaches the copy SessionManager launches from', () => {
     const { sm, config } = manager();
     sm.setAnthropicKey(KEY);

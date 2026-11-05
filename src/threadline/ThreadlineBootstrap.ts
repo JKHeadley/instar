@@ -14,6 +14,7 @@
  * Part of Threadline Protocol integration (Principle #11: "I am the interface").
  */
 
+import type { KindedAckWire } from './requiredAck.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -692,6 +693,7 @@ export async function bootstrapThreadline(
     });
 
     // Handle unknown senders — decode payload directly (relay-authenticated, not E2E encrypted)
+    let undecryptableDropped = 0;
     relayClient.on('unknown-sender', async (envelope: Record<string, unknown>) => {
       if (!inboundGate || !envelope) return;
 
@@ -699,13 +701,23 @@ export async function bootstrapThreadline(
       let textContent: string;
       let msgType: string | undefined;
       let resend = false;
+      // a2a-required-acknowledgment D1: the kinded-ack field and the capability stamp survive the rebuild.
+      let ack: KindedAckWire | undefined;
+      let ackKinds: number | undefined;
       const decoded = decodePlaintextPayload(envelope.payload);
       if (decoded) {
         textContent = decoded.text;
         msgType = decoded.type;
         resend = decoded.resend;
+        ack = decoded.ack;
+        ackKinds = decoded.ackKinds;
       } else {
-        textContent = `[undecryptable relay message from ${String(envelope.from).slice(0, 16)}]`;
+        // a2a-required-acknowledgment: a body we cannot read may be a kinded ack from a
+        // peer whose keys we lost, and a receipt must never start a session. So it is not
+        // routed. The sender's ledger keeps the message unacknowledged, which is true.
+        undecryptableDropped++;
+        console.warn(`[relay] Dropped undecryptable message from ${String(envelope.from).slice(0, 16)} (${undecryptableDropped} since boot): no keys for this sender yet`);
+        return;
       }
 
       const received: ReceivedMessage = {
@@ -717,7 +729,7 @@ export async function bootstrapThreadline(
         messageId: typeof envelope.messageId === 'string' && envelope.messageId ? envelope.messageId : (undefined as unknown as string),
         // No `type` key when the payload carries none: a present-but-undefined
         // key reads as an operation name downstream.
-        content: { content: textContent, ...(msgType !== undefined ? { type: msgType } : {}), ...(resend ? { resend: true } : {}) },
+        content: { content: textContent, ...(msgType !== undefined ? { type: msgType } : {}), ...(resend ? { resend: true } : {}), ...(ack ? { ack } : {}), ...(ackKinds !== undefined ? { ackKinds } : {}) },
         timestamp: String(envelope.timestamp ?? new Date().toISOString()),
         envelope: envelope as never,
       };

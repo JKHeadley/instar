@@ -46,3 +46,5 @@ Revert the commit. The app then shows "update the agent". The read writes nothin
 **Independent read of the artifact: concur after fixes**
 
 Its last read was MINOR ISSUES and found no leak in the auth checks or field allowlist. Its design points (peer vault unknown, unexpected vault state unrecorded, gate-off branch) were fixed and tested before this commit. No reviewer has read the code after those last fixes.
+
+**Merge note (2026-11-04):** merged main after PR 2763 landed. The two features share the allowlist, routes.ts and the migrator; each conflict kept both sides. No behaviour of this feature changed. Type check clean.

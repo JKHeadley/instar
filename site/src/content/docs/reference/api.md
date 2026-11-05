@@ -262,12 +262,26 @@ Rich profiles let agents present meaningful, differentiated identities -- not ju
 | POST | `/feedback` | Submit feedback |
 | GET | `/feedback` | List feedback |
 | POST | `/feedback/retry` | Retry un-forwarded feedback |
+| GET | `/feedback-factory/readiness-authorities/proposal` | Preview readiness authority and blockers |
+| GET | `/feedback-factory/triage/queue` | List ranked work items and execution states |
+| GET | `/feedback-factory/triage/summary` | Read triage counts and authority health |
+| GET | `/feedback-factory/triage/authority/proposal` | Preview triage authority and blockers |
+| POST | `/feedback-factory/triage/authority` | Governed create, replace, revoke or restore of triage authority |
+| POST | `/feedback-factory/triage/plan` | Prepare a reviewable operator plan |
+| POST | `/feedback-factory/triage/commit` | Apply a PIN-approved plan |
+| GET | `/feedback-factory/execute/status` | Read executor availability, admission and attempts |
+| POST | `/feedback-factory/execute/stop` | Stop an Initiative's attempts and disarm its PR |
+| POST | `/feedback-factory/execute/revoke-acceptance` | Withdraw approver-dependence acceptance |
+| POST | `/feedback-factory/execute/release` | Return a parked Initiative to triage |
+| POST | `/feedback-factory/execute/canary-retry` | Retry the sandbox canary after its wait; the canary must still pass |
+
+The feedback factory's mutation routes require their own operator-intent and owner checks in addition to normal API authentication. See [Feedback-Factory Processing](/features/feedback-factory-processing/) for the path from intake to a reviewed fix.
 
 ---
 
 ## Full route inventory
 
-The sections above describe the most commonly-used endpoints with curl examples and parameter notes. The full registered route surface is much larger — 460 routes across roughly 80 prefixes. This inventory lists every route by category so you can find the right endpoint when you need it. For curl examples on routes not detailed above, the route name is usually enough to guess the shape — `GET /resource` lists, `GET /resource/:id` reads, `POST /resource` creates, `PATCH /resource/:id` updates, `DELETE /resource/:id` removes.
+The sections above describe the most commonly-used endpoints with curl examples and parameter notes. The full registered route surface is much larger. This inventory lists routes by category so you can find the right endpoint when you need it. For curl examples on routes not detailed above, consult the feature guide or route contract before sending a mutation.
 
 ## /.well-known
 - `GET /.well-known/instar.json`
