@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "slack-topic-memory-message-id",
+  "sessionId": "537edc50-aede-46c5-b98c-673cb1a574fa",
+  "timestamp": "2026-11-05T01:33:04.889Z",
+  "artifactPath": "upgrades/side-effects/slack-topic-memory-message-id.md",
+  "artifactSha256": "173330da8eeaa4f5c1fa10fa214b4bb1968fe6f07609d3ef8a3f6ec23280c73c",
+  "coveredFiles": [
+    "docs/specs/slack-topic-memory-message-id.eli16.md",
+    "src/commands/server.ts",
+    "src/messaging/slack/slackMessageId.ts",
+    "tests/unit/slack-topic-memory-message-id.test.ts",
+    "upgrades/side-effects/slack-topic-memory-message-id.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One expression replaced in server.ts plus one new pure, side-effect-free helper module and its tests. No spec surface, no decision/gate authority, no schema change, no external or operator surface. The LOC count is carried almost entirely by doc comments in the new module and by the test file, not by behaviour.",
+  "eli16Path": "docs/specs/slack-topic-memory-message-id.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/slack-topic-memory-message-id.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

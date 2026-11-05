@@ -8,6 +8,7 @@ import { SlackPrincipalResolver } from '../permissions/SlackPrincipalResolver.js
 import type { InboundFacts } from '../users/MemoryInboundTracker.js';
 import { whatsappPersonKey, whatsappSpeakerJid } from '../users/MemoryAudience.js';
 import { slackHistoryLabel } from '../messaging/slack/threadHistoryLabel.js';
+import { slackEntryMessageId } from '../messaging/slack/slackMessageId.js';
 import { readPairingOwnerName } from '../threadline/pairingOwnerName.js';
 import { buildThrowawayJobGuard, checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
 import { appendGuardEvidence } from '../core/guardEvidenceLog.js';
@@ -17916,7 +17917,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (entry.channelId && topicMemory) {
               const synId = slackChannelToSyntheticId(String(entry.channelId));
               topicMemory.insertMessage({
-                messageId: typeof entry.messageId === 'number' ? entry.messageId : 0,
+                // A Slack ts is a string, so the old `: 0` fallback gave every
+                // message in a channel the same id; UNIQUE(message_id, topic_id)
+                // then dropped all but the first. See slackMessageId.ts.
+                messageId: slackEntryMessageId(entry),
                 topicId: synId,
                 text: entry.text,
                 fromUser: entry.fromUser,
