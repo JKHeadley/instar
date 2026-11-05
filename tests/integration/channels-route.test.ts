@@ -52,14 +52,19 @@ function mount(tmpDir: string, over: Record<string, unknown> = {}): express.Expr
 
 describe('GET /channels (integration — the wiring, not just the resolver)', () => {
   let tmpDir: string;
+  let originalRegistryDir: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'channels-route-'));
     fs.mkdirSync(path.join(tmpDir, '.instar'), { recursive: true });
+    originalRegistryDir = process.env.INSTAR_TEST_REGISTRY_DIR;
+    process.env.INSTAR_TEST_REGISTRY_DIR = path.join(tmpDir, 'registry');
     AUTH = generateAgentToken(PROJECT_NAME);
   });
   afterEach(() => {
     try { deleteAgentToken(PROJECT_NAME); } catch { /* best-effort */ }
+    if (originalRegistryDir === undefined) delete process.env.INSTAR_TEST_REGISTRY_DIR;
+    else process.env.INSTAR_TEST_REGISTRY_DIR = originalRegistryDir;
     SafeFsExecutor.safeRmSync(tmpDir, {
       recursive: true, force: true, operation: 'tests/integration/channels-route.test.ts:cleanup',
     });
@@ -107,20 +112,27 @@ describe('GET /channels (integration — the wiring, not just the resolver)', ()
     }
   });
 
-  it('with NO relay client, threadline reports not-configured rather than working', async () => {
+  it('with NO relay client, the local view reports not-configured rather than working', async () => {
     // The failure direction that matters: absent infrastructure must never read as healthy.
-    const res = await request(mount(tmpDir)).get('/channels').set('Authorization', `Bearer ${AUTH}`);
+    const res = await request(mount(tmpDir)).get('/channels?scope=local').set('Authorization', `Bearer ${AUTH}`);
     const relay = res.body.channels.find((c: { id: string }) => c.id === 'threadline-relay');
     expect(relay.state).toBe('not-configured');
     expect(res.body.summary.working).toBe(0);
   });
 
-  it('with a DISCONNECTED relay client, it reports broken — the incident state', async () => {
+  it('with a DISCONNECTED relay client, the local view reports broken — the incident state', async () => {
     const res = await request(mount(tmpDir, { threadlineRelayClient: { connectionState: 'disconnected' } }))
-      .get('/channels').set('Authorization', `Bearer ${AUTH}`);
+      .get('/channels?scope=local').set('Authorization', `Bearer ${AUTH}`);
     const relay = res.body.channels.find((c: { id: string }) => c.id === 'threadline-relay');
     expect(relay.state).toBe('broken');
     expect(relay.detail).toContain('connected=false');
+  });
+
+  it('with no verified agent identity, the agent view stays unknown even when local relay is absent', async () => {
+    const res = await request(mount(tmpDir)).get('/channels').set('Authorization', `Bearer ${AUTH}`);
+    const relay = res.body.channels.find((c: { id: string }) => c.id === 'threadline-relay');
+    expect(relay.state).toBe('unknown');
+    expect(res.body.scope).toBe('agent');
   });
 
   it('with a CONNECTED relay client, it reports working — the surface discriminates', async () => {

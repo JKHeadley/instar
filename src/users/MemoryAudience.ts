@@ -248,3 +248,9 @@ export function memoryScopeEnvValue(audience: MemoryAudience): string | null {
     default: return memoryScopeFolderName(audience);
   }
 }
+
+/** Who spoke on WhatsApp. In a group the chat id is the group's, and the adapter names the speaker. */
+export function whatsappSpeakerJid(metadata: Record<string, unknown> | undefined, chatJid: string): string {
+  const participant = metadata?.participant;
+  return typeof participant === 'string' && participant ? participant : chatJid;
+}

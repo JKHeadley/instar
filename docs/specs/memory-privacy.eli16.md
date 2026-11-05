@@ -20,14 +20,16 @@ The bigger change is what a session can reach. The proven leak came from an ordi
 
 - If the agent can't tell who a conversation is for, it loads no memory.
 - If the sandbox can't run, the agent first tries to set it up itself. If it still can't, it sends a fixed reply and tells the owner how to fix it. It doesn't run unprotected.
+- The owner hears the real reason, and only in private. In a channel, the channel sees just that a private message was sent. The message links to a page with the solution, open for up to 30 minutes. If a working Claude Code is on the machine, that page can also switch to it in one click, once. The link can't turn privacy off.
 - An agent with one person is unchanged in that person's private chats, and a test checks that its sessions start exactly as they do today. In a channel with other readers it now keeps private memory out, on purpose.
 - Old memory isn't moved or rewritten. On a multi-person agent it becomes visible only in the owner's private chats, because the owner can already read those files.
 - An operator can name people who share memory freely. Luna will name Justin and Adriana. If anyone else can reach the agent, the protection turns on by itself.
 - One setting, `memoryPrivacy.enabled: false`, switches the whole thing off, with no data to repair.
+- This is off unless the owner asks for it, on every machine the agent runs on. An update never turns it on. An agent with several people keeps running as it did, so their facts stay in one pool until the owner opts in. New agents start with it off too, until a backup machine can be trusted to keep the setting.
 
 ## What it costs
 
-Outside the owner's private chats, the agent loses its search-based recall and doesn't learn across people. Private folders stay on one machine, so if a conversation moves to another machine it starts with an empty folder, never a wider one. On standard Ubuntu the sandbox needs two packages and one setup step as an administrator; the agent does these itself if it has passwordless sudo.
+Outside the owner's private chats, the agent loses its search-based recall and doesn't learn across people. Private folders stay on one machine, so if a conversation moves to another machine it starts with an empty folder, never a wider one. On standard Ubuntu the sandbox needs two packages and one setup step as an administrator; the agent does these itself if it has passwordless sudo. On Linux the sandbox also has its own network, so the session's replies to the agent's server go through the sandbox's own gateway; without that, a Linux agent with privacy on saved memory but could not answer anyone.
 
 ## What it does not do
 

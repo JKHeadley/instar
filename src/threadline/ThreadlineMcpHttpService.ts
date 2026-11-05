@@ -454,6 +454,13 @@ export class ThreadlineMcpHttpService implements ThreadlineMcpSpawnWiring {
         registry: null,
         relayClient: createHttpRelayDiscoverer(port, token),
         stateDir: this.opts.stateDir,
+        agentRelayStatus: async () => {
+          const response = await fetch(`http://127.0.0.1:${port}/threadline/status`, {
+            headers: { Authorization: `Bearer ${token()}` }, signal: AbortSignal.timeout(4000),
+          });
+          if (!response.ok) throw new Error(`status-${response.status}`);
+          return ((await response.json()) as { agent?: unknown }).agent;
+        },
         toolCallTracker: (_name, run) => track(run()),
       },
     );

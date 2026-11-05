@@ -444,8 +444,8 @@ export function createHttpRelayDiscoverer(serverPort: number, agentToken: string
         headers: { 'Authorization': `Bearer ${token()}` },
       });
       if (!res.ok) return (lastState = 'unavailable');
-      const body = await res.json() as { relay?: { connected?: boolean } };
-      lastState = body.relay?.connected ? 'connected' : 'disconnected';
+      const body = await res.json() as { agent?: { state?: string } };
+      lastState = body.agent?.state === 'reachable' ? 'connected' : body.agent?.state === 'unreachable' ? 'disconnected' : 'unavailable';
       return lastState;
     } catch {
       return (lastState = 'unavailable');
@@ -455,9 +455,8 @@ export function createHttpRelayDiscoverer(serverPort: number, agentToken: string
     get connectionState(): string { return lastState; },
     async discover(filter) {
       const state = await refreshState();
-      if (state !== 'connected') return [];
-      try {
-        const res = await fetch(`http://localhost:${serverPort}/threadline/relay-discover`, {
+      if (state !== 'connected') throw new Error(`agent relay ${state}`);
+      const res = await fetch(`http://localhost:${serverPort}/threadline/relay-discover`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -465,18 +464,16 @@ export function createHttpRelayDiscoverer(serverPort: number, agentToken: string
           },
           body: JSON.stringify({ filter }),
         });
-        if (!res.ok) return [];
-        const body = await res.json() as {
+      if (!res.ok) throw new Error(`relay discover HTTP ${res.status}`);
+      const body = await res.json() as {
           success?: boolean;
           agents?: Array<{
             agentId: string; name: string; publicKey?: string;
             framework?: string; capabilities?: string[]; lastSeen?: string;
           }>;
         };
-        return body.success && Array.isArray(body.agents) ? body.agents : [];
-      } catch {
-        return [];
-      }
+      if (!body.success || !Array.isArray(body.agents)) throw new Error('relay discover failed');
+      return body.agents;
     },
   };
 }

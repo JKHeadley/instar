@@ -384,6 +384,13 @@ export function authMiddleware(
       return;
     }
 
+    // Memory privacy owner recovery: the one-time token in the URL is the auth, and it
+    // can only point this agent at a Claude binary the server already measured.
+    if (/^\/memory-privacy\/fix\/[A-Za-z0-9_-]{43}$/.test(req.path)) {
+      next();
+      return;
+    }
+
     // Dynamic-MCP operator-approval TAP pages — opened by the operator's BROWSER,
     // which carries no Bearer token (the operator has the dashboard PIN, not the
     // agent token). Same posture as Secret Drop: the opaque single-use requestId in

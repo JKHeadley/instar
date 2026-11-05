@@ -39,6 +39,25 @@ export function realHelperBlockedUnderTest(resolved: string, realHelper: string,
   return Boolean(env.VITEST) && env.INSTAR_REAL_DESKTOP_HELPER_TESTS !== '1' && resolved === realHelper;
 }
 
+/** How much of a failed state-op's stderr is read; the rest is dropped. */
+const STATE_OP_STDERR_LIMIT = 256;
+
+/**
+ * Names a failed state-op from its exit code and the helper's one fixed word
+ * ("state-op: store-root-uncreatable"), kept only when it is one of the words
+ * the helper is known to write. Anything else on stderr is dropped, so no path,
+ * value or free text reaches a route answer or a peer.
+ */
+const STATE_OP_WORDS = new Set(['request-invalid', 'op-invalid', 'reply-unencodable', 'store-root-uncreatable',
+  'store-lock-unopenable', 'store-lock-unavailable', 'store-unreadable', 'store-unencodable', 'store-unwritable']);
+
+export function stateOpRefusal(code: number | null, stderr: string): string {
+  const said = /^state-op: ([a-z][a-z0-9-]{0,47})$/m.exec(stderr)?.[1];
+  const word = said && STATE_OP_WORDS.has(said) ? said : undefined;
+  const exit = code === null ? 'signal' : `exit-${Math.max(0, Math.min(255, code))}`;
+  return `mac-desktop-host-state-op-failed-${exit}${word ? `-${word}` : ''}`;
+}
+
 export class MacDesktopHost implements DesktopHost {
   readonly platform = 'macos' as const;
   /** null is the main display, resolved by the helper at each start. */
@@ -304,8 +323,15 @@ export class MacDesktopHost implements DesktopHost {
         else chunks.push(chunk);
       });
       // Native diagnostics are deliberately discarded: input text and frame
-      // bytes must never reach durable logs through an error path.
-      child.stderr.resume();
+      // bytes must never reach durable logs through an error path. The one
+      // exception is state-op, which carries no input or frame and names its
+      // failure with a fixed word; only that word is kept (stateOpRefusal).
+      let stderrHead = '';
+      if (command === 'state-op') {
+        child.stderr.on('data', (chunk: Buffer) => {
+          if (stderrHead.length < STATE_OP_STDERR_LIMIT) stderrHead = (stderrHead + chunk.toString('utf8')).slice(0, STATE_OP_STDERR_LIMIT);
+        });
+      } else child.stderr.resume();
       child.on('error', () => fail('mac-desktop-host-launch-failed'));
       child.stdin.on('error', () => fail('mac-desktop-host-unavailable'));
       child.on('close', code => {
@@ -313,7 +339,7 @@ export class MacDesktopHost implements DesktopHost {
         clearTimeout(timer);
         if (settled) return;
         settled = true;
-        if (code !== 0) reject(new Error('mac-desktop-host-unavailable'));
+        if (code !== 0) reject(new Error(command === 'state-op' ? stateOpRefusal(code, stderrHead) : 'mac-desktop-host-unavailable'));
         else resolve(Buffer.concat(chunks));
       });
       child.stdin.end(input);

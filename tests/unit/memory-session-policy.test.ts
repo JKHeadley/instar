@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  buildMemorySessionSettings, memorySessionAllowedTools, applyMemorySessionLaunch, moveInboundFilesIntoScope,
+  buildMemorySessionSettings, memorySessionAllowedTools, applyMemorySessionLaunch, moveInboundFilesIntoScope, prepareSessionCurlHome,
 } from '../../src/core/memorySessionPolicy.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -108,5 +108,27 @@ describe('moveInboundFilesIntoScope', () => {
   it('leaves text alone when the file does not exist or the path is elsewhere', () => {
     const typed = `${dir}/inbound/none.txt and ${dir}/other.txt`;
     expect(moveInboundFilesIntoScope(typed, path.join(dir, 'scope'), roots())).toBe(typed);
+  });
+});
+
+describe('prepareSessionCurlHome', () => {
+  let scope: string;
+  beforeEach(() => { scope = fs.mkdtempSync(path.join(os.tmpdir(), 'mp-curl-')); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(scope, { recursive: true, force: true, operation: 'tests/unit/memory-session-policy.test.ts:curl' }); });
+
+  it('on Linux, writes a curl config that sends localhost through the sandbox proxy', () => {
+    const home = prepareSessionCurlHome(scope, 'linux');
+    expect(home).toBe(path.join(scope, '.curl'));
+    expect(fs.readFileSync(path.join(home!, '.curlrc'), 'utf8')).toBe('noproxy = ""\n');
+  });
+  it('restores the config when the session changed it', () => {
+    const home = prepareSessionCurlHome(scope, 'linux')!;
+    fs.writeFileSync(path.join(home, '.curlrc'), 'proxy = "http://elsewhere"\n');
+    prepareSessionCurlHome(scope, 'linux');
+    expect(fs.readFileSync(path.join(home, '.curlrc'), 'utf8')).toBe('noproxy = ""\n');
+  });
+  it('does nothing on macOS, where the session shares the host loopback', () => {
+    expect(prepareSessionCurlHome(scope, 'darwin')).toBeNull();
+    expect(fs.existsSync(path.join(scope, '.curl'))).toBe(false);
   });
 });
