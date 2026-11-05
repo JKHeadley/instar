@@ -87,6 +87,7 @@ import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGat
 import { JOB_LEASE_POOL_AUTHORITY_READY } from '../scheduler/JobLeaseClaimStore.js';
 import { resolveRelayUnknownSenderTrustMode } from '../threadline/relayUnknownSenderTrust.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { OwnershipNudgeReceiver, parseOwnershipNudge, sendOwnershipNudges } from '../core/OwnershipNudge.js';
 import { resolveEncryptToPinnedMode, encryptToPinnedModeName } from '../threadline/encryptToPinned.js';
 import { resolveRefuseDowngradeMode } from '../threadline/refuseDowngrade.js';
 import { MarkedPairingInviteFlow } from '../threadline/PairingPendingAcceptMarkers.js';
@@ -889,6 +890,11 @@ let _threadlineBoot: import('../threadline/ThreadlineBootstrap.js').ThreadlineBo
 let _agentIdentityServer: import('../core/AgentIdentityAdoption.js').AgentIdentityServer | null = null;
 let _identityMeshSend: ((machineId: string, command: import('../core/MeshRpc.js').MeshCommand, timeoutMs: number) => Promise<{ ok: boolean; result?: unknown; reason?: string }>) | null = null;
 let _identityPresencePull: (() => Promise<unknown>) | null = null;
+// session-pool-move-nudge — late-bound for the same reason: the drain wrapper and the verb's
+// handler are built before the puller and the mesh client. Null ⇒ replication off ⇒ strict no-op.
+let _ownershipNudgePull: ((sender: string) => Promise<boolean>) | null = null;
+let _ownershipNudgeTick: (() => void) | null = null;
+let _ownershipNudgeReceiver: import('../core/OwnershipNudge.js').OwnershipNudgeReceiver | null = null;
 let _agentIdentityDeps: import('../core/AgentIdentityRuntime.js').AgentIdentityRuntimeDeps | undefined;
 /** A2A inbound message-id ledger controller (docs/specs/a2a-inbound-id-ledger.md).
  *  Built at the inbound-queue sweep's boot site (before recoverPendingInjects),
@@ -26333,6 +26339,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         if (ownershipApplier) {
           try { ownershipApplier.tick(); } catch { /* @silent-fallback-ok — boot tick best-effort; the interval converges */ }
+          _ownershipNudgeTick = () => { ownershipApplier.tick(); };
           const applierTimer = setInterval(() => {
             try {
               const r = ownershipApplier.tick();
@@ -26889,6 +26896,15 @@ export async function startServer(options: StartOptions): Promise<void> {
               // Journal pairing (§3.3): the drain's transfer/abort/claim CASes
               // record placement history like every other CAS site.
               emitPlacement(c.sessionKey, r, _shedDrainTopics.has(c.sessionKey) ? 'reconcile' : 'user-move', prev);
+              const landedEpoch = (r as { record?: { ownershipEpoch?: number } }).record?.ownershipEpoch;
+              if (action.type === 'claim' && r.ok && typeof landedEpoch === 'number' && _ownershipNudgePull) {
+                sendOwnershipNudges({
+                  selfMachineId: meshSelfId,
+                  activeMachineIds: () => meshIdMgr.getActiveMachines().map((m) => m.machineId),
+                  flush: () => coherenceJournal?.flush(),
+                  send: (machineId, n) => _identityMeshSend?.(machineId, { type: 'ownership-nudge', ...n }, 3000) ?? Promise.resolve(),
+                }, { sessionKey: c.sessionKey, epoch: landedEpoch, landedAt: Date.now() });
+              }
               return r;
             },
             sessionIdleNow: async (sk) => {
@@ -27196,6 +27212,28 @@ export async function startServer(options: StartOptions): Promise<void> {
                 );
                 return { ok: true, result: r };
               }
+              return { ok: true };
+            },
+            // session-pool-move-nudge — "pull placements from me now". Answers at once; the pull
+            // follows. A strict no-op, with an evidence row, while replication is off.
+            'ownership-nudge': (cmd, sender) => {
+              const nudge = parseOwnershipNudge(cmd as { sessionKey?: unknown; epoch?: unknown; landedAt?: unknown });
+              if (!nudge) return { ok: false, reason: 'malformed' };
+              _ownershipNudgeReceiver ??= new OwnershipNudgeReceiver({
+                available: () => !!_ownershipNudgePull && !!_ownershipNudgeTick,
+                pullPlacements: (from) => _ownershipNudgePull?.(from) ?? Promise.resolve(false),
+                tickApplier: () => _ownershipNudgeTick?.(),
+                localEpoch: (key) => ownReg.read(key)?.ownershipEpoch ?? null,
+                wake: (key) => { void _inboundQueue?.onOwnershipTransition(key); },
+                record: ({ outcome, ...context }) => {
+                  featureEvidence.record('multiMachine.sessionPool.moveNudge', {
+                    kind: outcome === 'reached' ? 'fired' : 'held',
+                    reason: `ownership nudge: ${outcome}`,
+                    context,
+                  });
+                },
+              });
+              _ownershipNudgeReceiver.receive(sender, nudge);
               return { ok: true };
             },
             // WORKING-SET-HANDOFF-SPEC §3.2 — the chunked working-set serve
@@ -29561,6 +29599,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             },
           });
           _identityPresencePull = () => peerPresencePuller.pullOnce();
+          if (_replicationEnabled) {
+            _ownershipNudgePull = async (sender) => {
+              const url = peerUrl(sender);
+              return url ? peerPresencePuller.pullKindFrom(sender, url, 'topic-placement') : false;
+            };
+          }
           let identityActivationInFlight: Promise<void> | null = null;
           const reconcileIdentityActivation = (): Promise<void> => {
             if (identityActivationInFlight) return identityActivationInFlight;

@@ -190,6 +190,11 @@ describe('MeshRpc — per-command RBAC (§L0)', () => {
     const cmd: MeshCommand = { type: 'state-snapshot', request: { store: 'pref' } };
     expect(checkCommandRBAC(cmd, 'ANY_PEER', rbac()).ok).toBe(true);
   });
+
+  it('ownership-nudge is registered-peer class; an unknown sender never reaches RBAC, verifyEnvelope refuses it', () => {
+    const cmd: MeshCommand = { type: 'ownership-nudge', sessionKey: '1', epoch: 2, landedAt: 3 };
+    expect(checkCommandRBAC(cmd, 'ANY_PEER', rbac()).ok).toBe(true);
+  });
 });
 
 describe('MeshRpc — acceptEnvelope (verify THEN rbac)', () => {

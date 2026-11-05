@@ -379,6 +379,34 @@ export class PeerPresencePuller {
     return { recorded };
   }
 
+  /**
+   * ownership-nudge: pull one kind from one peer now, walking pages to the head the peer
+   * advertises. Records no heartbeat and no presence: this is not a sighting pass. Resolves
+   * true only if this machine has reached that head. Never throws.
+   */
+  async pullKindFrom(machineId: string, url: string, kind: string, maxPages = 3): Promise<boolean> {
+    if (!this.d.requestJournalDelta || !this.d.applyDelta || !this.d.localAdvertFor) return false;
+    let advert: { incarnation: string; lastSeq: number } | undefined;
+    try {
+      advert = (await this.d.fetchPeerCapacity(machineId, url))?.journalAdvert?.[kind];
+    } catch { /* @silent-fallback-ok: an unreachable peer reads as not reached, and the 30 s pull retries */
+      return false;
+    }
+    if (!advert) return false;
+    const reached = (): boolean => {
+      try {
+        const held = this.d.localAdvertFor?.(machineId)?.[kind];
+        return !!held && held.incarnation === advert!.incarnation && held.lastSeq >= advert!.lastSeq;
+      } catch { /* @silent-fallback-ok: an unreadable view reads as not reached */
+        return false;
+      }
+    };
+    for (let page = 0; page < maxPages && !reached(); page++) {
+      await this.driveJournalDelta(machineId, url, { [kind]: advert });
+    }
+    return reached();
+  }
+
   private noteFailure(machineId: string, shape: PullFailureShape): void {
     try { this.d.recordPullFailure?.(machineId, shape); } catch { /* @silent-fallback-ok: display-only failure evidence must never break the presence pass (the puller's never-throw contract) */ }
   }
