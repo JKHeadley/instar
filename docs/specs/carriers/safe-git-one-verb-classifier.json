@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-05T03:47:29.643Z",
+  "slug": "safe-git-one-verb-classifier",
+  "carriers": {
+    "CMT-1124": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "I will build these through /instar-dev outside the 10-minute scheduled job, one spec at a time, starting with EVO-028 + EVO-029 (one spec, SafeGitExecutor) and EVO-022 (spec already drafted). The job only re-reads them; no session owned the backlog until this commitment. EVO-030 stays under CMT-1088."
+    }
+  }
+}
