@@ -25,7 +25,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mobile-health-issues.test.ts' });
 });
 
-function setup(readHealth: () => Promise<{ status: number; body: unknown }>, events: Array<Record<string, unknown>> = []) {
+function setup(readHealth: () => Promise<{ status: number; body: unknown }>, events: Array<Record<string, unknown>> = [], current?: () => { iMessage?: 'down' | 'up' | 'off' }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mhealth-int-'));
   dirs.push(dir);
   fs.writeFileSync(path.join(dir, 'users.json'), JSON.stringify([{ id: 'justin', name: 'Justin', channels: [], permissions: ['user'] }]));
@@ -36,7 +36,7 @@ function setup(readHealth: () => Promise<{ status: number; body: unknown }>, eve
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(svc)));
   const router = express.Router();
-  mountMobileHealthRoutes(router, { readHealth, recentEvents: () => events, bearerOk: (req) => req.headers.authorization === 'Bearer tok-1' });
+  mountMobileHealthRoutes(router, { readHealth, recentEvents: () => events, current, bearerOk: (req) => req.headers.authorization === 'Bearer tok-1' });
   app.use(router);
   const pair = (person?: { userId: string; role: 'msp' }) => {
     const dev = makeDevice();
@@ -67,6 +67,13 @@ describe('GET /mobile/health-issues', () => {
     expect(r.body.issues[0]).toMatchObject({ id: 'SessionManager.verifyInjection', impact: 'internal', count: 1 });
     expect(JSON.stringify(r.body)).not.toContain('SECRET-REASON');
     expect(r.body).not.toHaveProperty('sessions');
+  });
+
+  it('iMessage down shows with no event in the window', async () => {
+    const { app } = setup(healthy, [], () => ({ iMessage: 'down' }));
+    const r = await request(app).get(PATH).set('Authorization', 'Bearer tok-1');
+    expect(r.body.verdict).toBe('attention');
+    expect(r.body.issues[0].action.app).toBe('desktop');
   });
 
   it('the bearer reads it too', async () => {

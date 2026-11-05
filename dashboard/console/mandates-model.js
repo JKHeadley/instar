@@ -163,6 +163,7 @@ export function slipCard(m, { names = {}, users = [], now = Date.now() } = {}) {
     peopleLine: people.length ? `Also lets ${joinHuman(people)} act.` : '',
     invalidLine: invalid ? 'This slip’s signature doesn’t check out. Treat it as unusable and tell the agent.' : '',
     grants,
+    // warning-path: row
     tone: invalid ? 'bad' : state === 'active' ? null : 'unknown',
     record: m,
   };
@@ -208,6 +209,7 @@ export function auditRow(e, { names = {}, users = [], now = Date.now() } = {}) {
     main: `${allowed ? 'Allowed' : 'Refused'} · ${what}`,
     sub: e.reason ? String(e.reason) : '',
     end: ago(e.ts, now) || '',
+    // warning-path: row
     tone: allowed ? null : 'attn',
     allowed,
     record: e,
@@ -275,13 +277,16 @@ export function buildApprovals(res) {
 
 // ── Headline + facts ──────────────────────────────────────────────────────
 export function mandatesHeadline({ slips, approvals, audit }) {
+  // warning-path: pageHead
   if (audit && audit.ok && audit.chain.state === 'broken') return { text: 'The decision record is broken — treat this as an incident.', tone: 'bad' };
   if (approvals && approvals.ok && approvals.rows.length) {
     const n = approvals.rows.length;
     const who = approvals.rows[0].agent;
+    // warning-path: pageHead
     return { text: `${n === 1 ? who : `${n} requests`} ${n === 1 ? 'is asking you to approve 1 thing.' : 'are waiting for your approval.'}`, tone: 'attn' };
   }
   if (!slips || !slips.ok) return { text: slips && slips.off ? 'Permission slips are switched off on this agent.' : 'Can’t tell what you have allowed.', tone: 'muted' };
+  // warning-path: pageHead
   if (slips.counts.invalid) return { text: `${slips.counts.invalid === 1 ? 'One slip’s' : `${slips.counts.invalid} slips’`} signature doesn’t check out.`, tone: 'bad' };
   const waitUnknown = approvals && !approvals.ok && !approvals.hidden;
   if (slips.counts.active === 0) return { text: 'No slips — every agent-to-agent action is refused until you sign one.', tone: 'ok' };
@@ -290,9 +295,11 @@ export function mandatesHeadline({ slips, approvals, audit }) {
 
 export function mandatesFacts({ slips, approvals, audit }) {
   const facts = [];
+  // warning-path: pageHead
   if (approvals && !approvals.hidden) facts.push(approvals.ok ? { n: approvals.rows.length, label: 'waiting on you', tone: approvals.rows.length ? 'attn' : null } : { n: '?', label: 'waiting on you' });
   facts.push(slips && slips.ok ? { n: slips.counts.active, label: slips.counts.active === 1 ? 'active slip' : 'active slips' } : { n: '?', label: 'active slips' });
   if (slips && slips.ok) facts.push({ n: slips.counts.people, label: slips.counts.people === 1 ? 'person with a grant' : 'people with grants' });
+  // warning-path: pageHead
   if (audit && audit.ok) facts.push({ n: audit.chain.state === 'broken' ? 'broken' : audit.chain.state === 'intact' ? 'intact' : '?', label: 'decision record', tone: audit.chain.state === 'broken' ? 'bad' : null });
   else facts.push({ n: '?', label: 'decision record' });
   return facts.slice(0, 4);

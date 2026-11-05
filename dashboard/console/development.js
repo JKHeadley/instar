@@ -13,7 +13,7 @@ import {
   buildShipping, buildPace, buildFeedback, developmentHeadline, stoppedLead, foldFromHash, maintainerMode, authorityCard, holdWords, verifyWords, rollbackWords,
   readinessAuthorityRequest, triageAuthorityRequest, commitRequest, authorityResultWords, commitResultWords, newDecisionRef, PACE_METRICS, DEV_TOOLS_KEY,
 } from './development-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, firstPaint, arrivalScroll, markNeed } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, firstPaint, arrivalScroll, markNeed, askLink } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const EYEBROW = 'Work · Development';
@@ -166,7 +166,7 @@ function tiles(list) {
 }
 function toneLine(l, extra) {
   if (!l) return null;
-  return el('p', { class: 'tone-line', 'data-tone': l.tone || 'ok' }, document.createTextNode(l.text), extra || null);
+  return el('p', { class: 'tone-line', 'data-tone': l.tone || 'ok' }, document.createTextNode(l.text), extra || null, !extra && (l.tone === 'attn' || l.tone === 'bad') ? askLink(l.text) : null);
 }
 function block(title, ...kids) { return el('section', { class: 'sheet-block' }, el('h3', { class: 'eyebrow', text: title }), ...kids); }
 function sub(title, ...kids) { return el('div', { class: 'dev-sub' }, el('h3', { class: 'eyebrow sub-label', text: title }), ...kids); }

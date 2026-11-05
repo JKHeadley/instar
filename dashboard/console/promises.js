@@ -52,11 +52,13 @@ export async function renderPromises(main, ctx) {
   setKids(main, 
     pageHead({
       eyebrow: 'Work · Promises', headline: page.headline, sub: page.sub, tone: page.tone,
+      // warning-path: inline
       facts: n.waiting ? [{ n: n.waiting, label: 'waiting on you', tone: 'attn', href: '#/work/promises?s=waiting' }] : [],
     }),
     page.coverage ? note(page.coverage) : null,
     el('div', { class: 'page-sections' },
       // When nothing waits on the operator the headline already says so; an empty card would repeat it.
+      // warning-path: row
       s.waiting.length ? section({ id: 'waiting', title: 'Waiting on you', rows: s.waiting.map((r) => ({ ...r, tone: 'attn' })), empty: 'Nothing is waiting on you.', onRow: open }) : null,
       section({ id: 'carrying', title: 'I’m handling', rows: s.carrying, collapsed: true, onRow: open }),
       section({ id: 'handled', title: 'Older, still open', rows: s.handled.map((r) => ({ ...r, tone: 'unknown' })), collapsed: true, onRow: open }),

@@ -23,15 +23,15 @@ export type HealthImpact = 'user-affecting' | 'internal' | 'unclassified';
 export type HealthVerdict = 'healthy' | 'running' | 'unsure' | 'attention';
 
 /** Screens the phone can open by name. The app maps each to a native view; an unknown name shows no button. */
-export const HEALTH_APP_SCREENS = ['accounts', 'schedule', 'sessions', 'machines', 'agents'] as const;
+export const HEALTH_APP_SCREENS = ['accounts', 'schedule', 'sessions', 'machines', 'agents', 'desktop'] as const;
 export type HealthAppScreen = typeof HEALTH_APP_SCREENS[number];
 
 export interface HealthAction {
   label: string;
   /** The native screen, by name. */
   app: HealthAppScreen;
-  /** The console page. */
-  console: `#/${string}`;
+  /** The console page: a route, or a page of its own under /dashboard. */
+  console: `#/${string}` | `/dashboard/${string}`;
 }
 
 export interface HealthRule {
@@ -78,6 +78,7 @@ const ACCOUNTS: HealthAction = { label: 'Open Accounts', app: 'accounts', consol
 const SCHEDULE: HealthAction = { label: 'Open Schedule', app: 'schedule', console: '#/work/schedule' };
 const SESSIONS: HealthAction = { label: 'Open Sessions', app: 'sessions', console: '#/work/sessions' };
 const MACHINES: HealthAction = { label: 'Open Machines', app: 'machines', console: '#/capacity/machines' };
+const DESKTOP: HealthAction = { label: 'Open Remote Desktop', app: 'desktop', console: '/dashboard/desktop.html' };
 const AGENTS: HealthAction = { label: 'Open Other agents', app: 'agents', console: '#/people/agents' };
 
 /**
@@ -86,7 +87,7 @@ const AGENTS: HealthAction = { label: 'Open Other agents', app: 'agents', consol
  */
 export const HEALTH_RULES: readonly HealthRule[] = [
   // ── Affects the person ──
-  { key: 'iMessage', impact: 'user-affecting', title: 'iMessage isn’t connected', detail: 'Messages sent to me through iMessage won’t reach me until this is fixed. Other ways of reaching me still work.', action: null },
+  { key: 'iMessage', impact: 'user-affecting', title: 'iMessage isn’t connected', detail: 'Messages sent to me through iMessage won’t reach me until this is fixed. Other ways of reaching me still work. To fix it, someone at this Mac allows my program in System Settings, under Privacy & Security, then Full Disk Access, and then I restart. If you don’t use iMessage, ask me to turn it off.', action: DESKTOP },
   { key: 'WhatsApp', impact: 'user-affecting', title: 'WhatsApp isn’t connected', detail: 'Messages sent to me through WhatsApp won’t reach me until this is fixed. Other ways of reaching me still work.', action: null },
   { key: 'Slack', impact: 'user-affecting', title: 'Slack isn’t connected', detail: 'Messages sent to me through Slack won’t reach me until this is fixed. Other ways of reaching me still work.', action: null },
   { key: 'Telegram.Lifeline', impact: 'user-affecting', title: 'My Telegram connection is struggling', detail: 'Messages through Telegram may be slow or missing until it recovers.', action: null },
@@ -124,8 +125,8 @@ export function ruleFor(id: string): HealthRule | null {
 /** One reason /health is not plainly ok. `id` is a degradation's feature, or a `health:` id for the other checks. */
 export interface HealthSignal {
   id: string;
-  /** What to show when no rule names this id. */
-  fallbackTitle?: string;
+  /** A title written here, in plain words, for an id no rule names. Never a reporter's text. */
+  plainTitle?: string;
   /** Replaces the rule's detail with the numbers of this occurrence. */
   detail?: string;
   evidence?: string | null;
@@ -164,17 +165,17 @@ export function signalsFromHealth(health: unknown): HealthSignal[] {
   const review = rec(rec(h.systemReview).lastReview);
   if (review.status === 'critical') {
     const failed = num(review.failed);
-    out.push({ id: 'health:system-review', fallbackTitle: 'My last self-review found a serious problem', detail: failed === null ? undefined : `${failed} of my self-checks failed.`, at: typeof review.timestamp === 'string' ? review.timestamp : null });
+    out.push({ id: 'health:system-review', plainTitle: 'My last self-review found a serious problem', detail: failed === null ? undefined : `${failed} of my self-checks failed.`, at: typeof review.timestamp === 'string' ? review.timestamp : null });
   }
   const reliability = rec(h.llmReliability);
-  if (reliability.status === 'unavailable') out.push({ id: 'health:llm-unavailable', fallbackTitle: 'I can’t read how my background checks are doing' });
+  if (reliability.status === 'unavailable') out.push({ id: 'health:llm-unavailable', plainTitle: 'I can’t read how my background checks are doing' });
   else if (typeof reliability.status === 'string' && reliability.status !== 'ok') {
     for (const c of Array.isArray(reliability.components) ? reliability.components : []) {
       const row = rec(c);
       if (typeof row.feature !== 'string' || !row.feature) continue;
       const errors = num(row.errors);
       const calls = num(row.realCalls);
-      out.push({ id: `health:llm:${row.feature}`, fallbackTitle: 'A background check is failing often', detail: errors !== null && calls !== null ? `${errors} of its last ${calls} calls failed in the past day.` : undefined });
+      out.push({ id: `health:llm:${row.feature}`, plainTitle: 'A background check is failing often', detail: errors !== null && calls !== null ? `${errors} of its last ${calls} calls failed in the past day.` : undefined });
     }
   }
   return out;
@@ -182,6 +183,12 @@ export function signalsFromHealth(health: unknown): HealthSignal[] {
 
 const askFor = (title: string, id: string): string =>
   `Your health page shows this problem: "${title}" (reference: ${id}). What happened, does it affect me, and what should we do about it?`;
+
+/** What is true right now, for a channel whose failure is reported once and never again. */
+export interface HealthCurrentState {
+  /** down: switched on and not connected. up: connected. off: not switched on here. Undefined: not asked. */
+  iMessage?: 'down' | 'up' | 'off';
+}
 
 const IMPACT_ORDER: Record<HealthImpact, number> = { 'user-affecting': 0, unclassified: 1, internal: 2 };
 
@@ -192,20 +199,24 @@ const IMPACT_ORDER: Record<HealthImpact, number> = { 'user-affecting': 0, unclas
 export function summarizeHealth(
   health: unknown,
   events: ReadonlyArray<{ feature?: unknown; timestamp?: unknown; internalOnly?: unknown; narrative?: unknown }>,
+  current: HealthCurrentState = {},
 ): HealthIssuesSummary {
   const h = rec(health);
+  // iMessage fails once at startup and is never retried, so its event ages out of the window while it stays down.
+  // The present state decides when it is known: down stays, up or off drops the old event.
+  const known = current.iMessage !== undefined;
   const signals: HealthSignal[] = [
-    ...events.map((e): HealthSignal => {
+    ...events.filter((e) => !(known && e.feature === 'iMessage')).map((e): HealthSignal => {
       const named = typeof e.feature === 'string' && e.feature.length > 0;
       return {
         id: named ? (e.feature as string) : 'health:unnamed-event',
-        fallbackTitle: text(e.narrative, 120) ?? 'Something fell back to a backup path',
         evidence: typeof e.narrative === 'string' ? e.narrative : null,
         at: typeof e.timestamp === 'string' ? e.timestamp : null,
         internalOnly: e.internalOnly === true,
       };
     }),
     ...signalsFromHealth(health),
+    ...(current.iMessage === 'down' ? [{ id: 'iMessage', evidence: events.find((e) => e.feature === 'iMessage')?.narrative as string | undefined ?? null, at: (events.find((e) => e.feature === 'iMessage')?.timestamp as string | undefined) ?? null }] : []),
   ];
   const groups = new Map<string, HealthIssue>();
   for (const s of signals) {
@@ -214,7 +225,8 @@ export function summarizeHealth(
     // A reporter's own `internalOnly` mark counts as a declaration. It can only quieten an unnamed id, never a row.
     const impact: HealthImpact = rule ? rule.impact : s.internalOnly ? 'internal' : 'unclassified';
     // A self-marked internal event's narrative is written for logs; only an unsorted one needs its own words as a title.
-    const title = rule?.title ?? (impact === 'internal' ? 'A background step used its backup' : s.fallbackTitle) ?? 'Something isn’t working as it should';
+    // Never the reporter's own words as a title: they can hold setting names and session ids. They stay in `evidence`.
+    const title = rule?.title ?? (impact === 'internal' ? 'A background step used its backup' : s.plainTitle) ?? 'Something inside me used a backup path';
     const seen = groups.get(key);
     const evidence = text(s.evidence, EVIDENCE_MAX);
     if (seen) {
@@ -240,7 +252,9 @@ export function summarizeHealth(
     });
   }
   // /health says something is wrong and nothing above explains it: say so, never read as healthy.
-  if (h.status !== 'ok' && h.status !== 'healthy' && groups.size === 0) {
+  // Not when the only reason was an iMessage event the present state just cleared.
+  const cleared = known && current.iMessage !== 'down' && events.some((e) => e.feature === 'iMessage');
+  if (h.status !== 'ok' && h.status !== 'healthy' && groups.size === 0 && !cleared) {
     const title = 'The agent reports a problem I can’t name';
     groups.set('health:unnamed', { id: 'health:unnamed', impact: 'unclassified', title, detail: 'The health check says something is off but didn’t say what. Ask me and I’ll look into it.', evidence: null, count: 1, lastAt: null, action: null, ask: askFor(title, 'health:unnamed') });
   }
@@ -268,5 +282,5 @@ export function summarizeHealth(
 
 /** A console or app rule must stay inside this list; tests hold the table to it. */
 export function isDeclaredAction(a: HealthAction | null): boolean {
-  return a === null || ((HEALTH_APP_SCREENS as readonly string[]).includes(a.app) && a.console.startsWith('#/') && a.label.length > 0);
+  return a === null || ((HEALTH_APP_SCREENS as readonly string[]).includes(a.app) && (a.console.startsWith('#/') || a.console.startsWith('/dashboard/')) && a.label.length > 0);
 }

@@ -806,6 +806,9 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .dev-tile.bad { border-color: var(--bad-line); } .dev-tile.bad .dev-tile-n { color: var(--bad); }
 .dev-tile.unknown, .dev-tile.off { border-style: dashed; border-color: var(--unknown-line); }
 .dev-tile.unknown .dev-tile-n, .dev-tile.off .dev-tile-n { color: var(--unknown); font-size: 15px; }
+.hero-ask { margin: var(--s-2) 0 0; font-size: 13.5px; }
+.ask-link { color: var(--accent); font-weight: 600; display: inline-block; min-height: 32px; line-height: 32px; }
+.tone-line .ask-link { margin-left: 8px; }
 .tone-line { margin: 0; padding: 8px 10px; border-radius: var(--r-sm); font-size: 13.5px; color: var(--text); border: 1px solid var(--hairline); }
 .tone-line[data-tone="attn"] { border-color: var(--attn-line); background: var(--attn-wash); }
 .tone-line[data-tone="bad"] { border-color: var(--bad-line); background: var(--bad-wash); color: var(--bad); }

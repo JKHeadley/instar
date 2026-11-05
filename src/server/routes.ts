@@ -38129,6 +38129,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         });
         return { status: r.status, body: await r.json().catch(() => null) }; // @silent-fallback-ok — an unreadable body has no status, so the summary says it can't name the problem
       },
+      current: () => {
+        if (!ctx.config.messaging?.some((m) => m.type === 'imessage' && m.enabled)) return { iMessage: 'off' };
+        return { iMessage: ctx.imessage?.getConnectionInfo().state === 'connected' ? 'up' : 'down' };
+      },
       bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     });
     // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): trimmed

@@ -40,11 +40,14 @@ describe('the declared table', () => {
 
   it('every console page a row names is a registered console route', () => {
     const src = fs.readFileSync(path.resolve(__dirname, '../../dashboard/console/console.js'), 'utf8');
-    for (const r of HEALTH_RULES) if (r.action) expect(src, r.key).toContain(`'${r.action.console.slice(2)}'`);
+    for (const r of HEALTH_RULES) {
+      if (r.action?.console.startsWith('#/')) expect(src, r.key).toContain(`'${r.action.console.slice(2)}'`);
+      else if (r.action) expect(fs.existsSync(path.resolve(__dirname, '../..', r.action.console.slice(1))), r.key).toBe(true);
+    }
   });
 
   it('every app screen name is one the app declares', () => {
-    expect([...HEALTH_APP_SCREENS].sort()).toEqual(['accounts', 'agents', 'machines', 'schedule', 'sessions']);
+    expect([...HEALTH_APP_SCREENS].sort()).toEqual(['accounts', 'agents', 'desktop', 'machines', 'schedule', 'sessions']);
   });
 
   it('an exact id beats a family, and a family covers its members only', () => {
@@ -113,6 +116,31 @@ describe('summarizeHealth', () => {
     expect(s.headline).not.toMatch(/healthy|normally/i);
     expect(s.issues[0]).toMatchObject({ id: 'SomethingNew.happened', impact: 'unclassified', action: null });
     expect(s.issues[0].evidence).toContain('SomethingNew.happened used a backup.');
+  });
+
+  it('an unknown id never shows the reporter\'s words as its title; they stay in the details', () => {
+    const raw = 'threadline.encryptToPinned is enforce on a 5-machine agent, but multiMachine.stateSync.threadlinePairing.enabled is off';
+    const [i] = summarizeHealth(degraded, [ev('Threadline.encryptToPinned', { narrative: raw })]).issues;
+    expect(i.title).toBe('Something inside me used a backup path');
+    expect(i.evidence).toContain('threadline.encryptToPinned');
+  });
+
+  it('iMessage follows the present state, not the event window', () => {
+    // Long after the event aged out, still down: still a problem, with its fix.
+    const down = summarizeHealth(ok, [], { iMessage: 'down' });
+    expect(down.verdict).toBe('attention');
+    expect(down.issues[0]).toMatchObject({ id: 'iMessage', impact: 'user-affecting', action: { app: 'desktop' } });
+    // A recent event while the adapter is connected, or iMessage is off: not a problem any more.
+    for (const state of ['up', 'off'] as const) {
+      const s = summarizeHealth(degraded, [ev('iMessage')], { iMessage: state });
+      expect(s.issues).toEqual([]);
+      expect(s.verdict).toBe('healthy');
+    }
+    // The event's words are kept as details, once, and no state supplied keeps the event path.
+    const both = summarizeHealth(degraded, [ev('iMessage')], { iMessage: 'down' });
+    expect(both.issues).toHaveLength(1);
+    expect(both.issues[0].evidence).toContain('iMessage used a backup.');
+    expect(summarizeHealth(degraded, [ev('iMessage')]).verdict).toBe('attention');
   });
 
   it('a reporter\'s internalOnly mark quietens an unnamed id, but never a declared row', () => {

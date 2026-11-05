@@ -7,7 +7,7 @@
  */
 import type { Request, Response, Router } from 'express';
 import { ownerOrBearer, singleFlight } from './mobileCapacityRoutes.js';
-import { summarizeHealth, type HealthIssuesSummary } from '../monitoring/healthIssues.js';
+import { summarizeHealth, type HealthCurrentState, type HealthIssuesSummary } from '../monitoring/healthIssues.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 export const MOBILE_HEALTH_SCHEMA_VERSION = 1;
@@ -20,6 +20,8 @@ export interface MobileHealthDeps {
   bearerOk: (req: Request) => boolean;
   /** The recent degradations /health counted. Defaults to the reporter. */
   recentEvents?: () => ReadonlyArray<{ feature?: unknown; timestamp?: unknown; internalOnly?: unknown; narrative?: unknown }>;
+  /** What is true now for channels that report a failure only once. */
+  current?: () => HealthCurrentState;
   now?: () => number;
 }
 
@@ -49,7 +51,7 @@ export function mountMobileHealthRoutes(router: Router, deps: MobileHealthDeps):
       const summary = await cached('health', async () => {
         const r = await deps.readHealth();
         if (r.status !== 200) throw new Error(`/health answered ${r.status}`);
-        return summarizeHealth(r.body, events());
+        return summarizeHealth(r.body, events(), deps.current?.() ?? {});
       });
       res.json({ schemaVersion: MOBILE_HEALTH_SCHEMA_VERSION, generatedAt: new Date(now()).toISOString(), ...summary });
     } catch (err) {

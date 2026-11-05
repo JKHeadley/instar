@@ -146,16 +146,20 @@ export function entryStatus(e, now = Date.now(), medians = {}) {
     const forS = Number.isFinite(since) ? Math.max(0, (now - since) / 1000) : null;
     const b = baselineFor(e.job, medians);
     if (forS !== null && b && forS > b.seconds * RUNNING_LONG_FACTOR) {
+      // warning-path: row
       return { kind: 'running-long', tone: 'attn', words: `running for ${spell(forS)}, usually ${spell(b.seconds)}`, runningFor: forS, usual: b, failures };
     }
+    // warning-path: row
     return { kind: 'running', tone: failures ? 'bad' : null, words: [forS !== null ? `running for ${spell(forS)}` : 'running', failWords].filter(Boolean).join(' · '), runningFor: forS, failures };
   }
   const next = Date.parse(s.nextScheduled);
   const late = e.local && Number.isFinite(next) && now - next > LATE_GRACE_MS;
   const lateWords = late ? `past its recorded next-run time by ${spell((now - next) / 1000)}, not running` : null;
+  // warning-path: row
   if (failures) return { kind: 'failing', tone: 'bad', words: [failWords, lateWords].filter(Boolean).join(' · '), failures, late };
   if (!e.local) return { kind: 'elsewhere', tone: null, words: machinesWords(e.job), failures };
   if (!Number.isFinite(next)) return { kind: 'next-unknown', tone: 'unknown', words: 'next run unknown', failures };
+  // warning-path: row
   if (late) return { kind: 'late', tone: 'attn', words: lateWords, byMs: now - next, failures, late: true };
   return { kind: 'ok', tone: null, words: next > now ? `next ${until(next, now)}` : 'due now', next, failures };
 }
@@ -315,8 +319,11 @@ export function buildSchedulePage(res, now = Date.now(), opts = {}) {
   const machineCount = new Set(rows.flatMap((x) => x.statuses.map((s) => s.entry.machineId || 'self'))).size;
   const sub = !rows.length ? 'Ask me in chat to do something on a schedule.' : multi ? `Jobs across ${machineCount} ${machineCount === 1 ? 'machine' : 'machines'}.` : 'Jobs on this machine.';
   const facts = [
+    // warning-path: inline
     { n: counts.late, label: 'late', tone: counts.late ? 'attn' : null, href: '#/work/schedule?s=needs' },
+    // warning-path: inline
     { n: counts.failing, label: 'failing', tone: counts.failing ? 'bad' : null, href: '#/work/schedule?s=needs' },
+    // warning-path: inline
     { n: counts.running, label: counts.runningLong ? `running, ${counts.runningLong} longer than usual` : 'running', tone: counts.runningLong ? 'attn' : null, href: counts.runningLong ? '#/work/schedule?s=needs' : '#/work/schedule?s=everything' },
     { n: counts.off, label: 'off', href: '#/work/schedule?s=everything' },
   ];
