@@ -6,8 +6,9 @@
  *   POST /mobile/chat/slack/:conversationId                           send {text, requestId, machine}
  *
  * `machine` is the `machine` field of the conversation's list row. Slack ids are local to the
- * machine that minted them, so a request naming another machine is refused (409 wrong-machine)
- * and a request naming none is refused (400 machine-required).
+ * machine that minted them. A history read naming another machine is forwarded to that machine for
+ * the owner's phone only (docs/specs/mobile-slack-holder-proxy.md); every other caller, and every
+ * send, is refused (409 wrong-machine). A request naming none is refused (400 machine-required).
  *
  * `:conversationId` is the machine-local negative durable id the conversation registry minted
  * for the Slack channel or thread ("Durable Conversation Identity"). It is translated on this
@@ -49,6 +50,7 @@ import { appOwnerName, attachmentRows, buildSignedOrigin, historyRow } from './m
 import { slackDeviceText, slackPlatformMediaFor } from '../core/appPlatformMedia.js';
 import type { OriginVerdict } from '../core/AppRecordSignatures.js';
 import { readJsonlTailLastLines } from '../utils/jsonl-tail.js';
+import type { HolderRead } from './mobileSlackHolderProxy.js';
 
 /** A Slack conversation as this machine knows it (a local registry entry). */
 export interface SlackAppConversation {
@@ -122,6 +124,8 @@ export interface MobileSlackRouteDeps {
   /** The agent's current origin display bits (message-origin-all-platforms §5). Absent ⇒ all on. */
   originDisplay?: () => OriginDisplaySettings;
   now?: () => number;
+  /** Reads history from the machine that holds it, for the owner's phone. Absent: 409 wrong-machine, as before. */
+  holderRead?: HolderRead;
 }
 
 /** The operator's Slack user id (`mobilePairing.slackOwnerUserId`), or null when unset or malformed. */
@@ -167,7 +171,8 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
    * name the machine its row came from (`machine` from the list row: a query parameter on the read,
    * a body field on the send, both covered by the device signature). A missing or different
    * machine is refused before anything is read or written: this machine never reads or sends to
-   * a conversation that merely shares the number.
+   * a conversation that merely shares the number. The history route tries the owner's holder read
+   * first, which never looks the number up here.
    */
   const rightMachine = (res: Response, named: unknown): boolean => {
     const self = deps.machineId();
@@ -188,21 +193,38 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
   };
 
   // ── History ──
-  router.get('/mobile/chat/slack/:conversationId/messages', (req: Request, res: Response) => {
+  router.get('/mobile/chat/slack/:conversationId/messages', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!deps.pairing.enabled() || !svc) { res.status(503).json({ error: 'native-conversations-off', detail: 'App conversations are turned off on this agent.' }); return; }
     if (!deviceMayUse(deps.pairing, req, 'slack:')) { ownerOnly(res); return; }
     const id = parseSlackConversationId(String(req.params.conversationId));
     if (id === null) { res.status(400).json({ error: 'bad-conversation' }); return; }
-    if (!rightMachine(res, req.query.machine)) return;
+    const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 100));
+    // Another machine's row: only the owner's phone is read through, by the trusted holder. A token
+    // read is never forwarded, so the holder's own hop cannot go on to a third machine.
+    const named = req.query.machine;
+    const deviceId = principalDevice(req);
+    const stillOwner = () => {
+      const rec = deviceId === null ? undefined : deps.pairing.devices.get(deviceId);
+      if (!rec || rec.status !== 'active') return false;
+      const person = deps.pairing.personOfDevice(rec);
+      return person.ok === true && person.role === 'owner';
+    };
+    if (deps.holderRead && typeof named === 'string' && named && named !== deps.machineId() && stillOwner()) {
+      const answer = await deps.holderRead({ id, machine: named, limit, before: typeof req.query.before === 'string' ? req.query.before : null, stillOwner });
+      res.status(answer.status).json(answer.body);
+      return;
+    }
+    if (!rightMachine(res, named)) return;
     const ready = slackReady(res); if (!ready) return;
     const conv = ready.bridge.resolve(id);
     if (!conv) { res.status(404).json({ error: 'unknown-conversation' }); return; }
-    const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 100));
     const before = typeof req.query.before === 'string' ? req.query.before.split(',') : null;
     const isBefore = (at: string, eventId: string) => !before || before.length !== 2 || at < before[0]! || (at === before[0] && eventId < before[1]!);
 
-    const isDevice = principalDevice(req) !== null;
+    // A holder hop asks for the phone's shape by token, so the owner's phone gets what a local read gives.
+    const deviceViewAsked = deviceId === null && req.query.deviceView === '1';
+    const isDevice = deviceId !== null || deviceViewAsked;
     const display = deps.originDisplay?.() ?? { ...DEFAULT_ORIGIN_DISPLAY };
     const byId = new Map<string, Record<string, unknown>>();
     // App-sent messages from the store, with their verdict (the store is the evidence, never rotated).
@@ -250,6 +272,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     const oldest = page[page.length - 1];
     res.json({
       // `conversationKey` is the `ref` a download of this conversation's files names (§4.9).
+      ...(deviceViewAsked ? { deviceView: true } : {}),
       conversationId: id, title: slackConversationTitle(conv), conversationKey: conv.key, messages: page.reverse(),
       nextBefore: desc.length > limit && oldest ? `${String(oldest.at)},${String(oldest.eventId)}` : null,
     });
