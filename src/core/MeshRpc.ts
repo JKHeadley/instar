@@ -280,6 +280,14 @@ export type MeshCommand =
       limit?: number;
     }
   | {
+      // session-pool-move-nudge. Registered-peer class: "pull placements from me now". Names the
+      // claim to look for and grants nothing; ownership crosses only as signed journal entries.
+      type: 'ownership-nudge';
+      sessionKey: string;
+      epoch: number;
+      landedAt: number;
+    }
+  | {
       // Duplicate check (session-pool-activation-at-pairing, Change 8). Read/observe class:
       // says only whether this machine holds a live session for one conversation.
       type: 'session-live-probe';
@@ -530,6 +538,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'topic-profile-pull':
     case 'topic-history-pull':
     case 'session-live-probe':
+    case 'ownership-nudge':
     case 'commitments-sync':
     case 'preferences-sync':
     case 'state-snapshot':

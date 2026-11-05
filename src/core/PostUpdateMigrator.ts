@@ -2375,6 +2375,8 @@ const CLAUDE_MD_CLEANUP_MIN_UNITS = 10;
 
 const CONTEXT_DEATH_MARKER_ID = 'INSTAR:ANTI-PATTERN-CONTEXT-DEATH';
 
+export const POOL_MOVE_NUDGE_CLAUDE_MD_LINE = `- **Why a message waited after a move:** after a move, the old machine tells the others to check for the new owner, so this should take seconds. If someone asks why a message waited, read the \`multiMachine.sessionPool.moveNudge\` rows in \`logs/feature-evidence.jsonl\`: each says whether the machine caught up and how long it took. A missing or \`not-reached\` row means the normal 30-second check delivered it instead, and nothing was lost.`;
+
 export const POOL_READINESS_CLAUDE_MD_LINE = `- **Pool readiness:** can this agent move conversations between machines, or take over if a machine dies? \`GET /session-pool/readiness\` answers line by line per peer: contact, clock, capacity, no start failure seen, channels, follow-ups, plus this machine's takeover, ownership and duplicate check. Each is \`ok\`, \`failing\` or \`unknown\`. It only reports: ready means the known prerequisites look met, not that a real conversation has been placed. History is in \`logs/pool-readiness.jsonl\` on agents with 2 or more machines. Takeover reads \`failing\` on a machine using the git lease with no git remote, because it cannot take over yet. When the user asks "would my conversations work on the other machine?" or "what happens if this machine dies?" → read this before answering.`;
 
 /**
@@ -12472,6 +12474,14 @@ ${OVERLOAD_SHED_CLAUDE_MD_LINE}
       content += '\n' + POOL_READINESS_CLAUDE_MD_LINE + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added pool readiness line');
+    }
+
+    // session-pool-move-nudge: where to read why a message waited after a move. Idempotent via
+    // the unique marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('**Why a message waited after a move:**')) {
+      content += '\n' + POOL_MOVE_NUDGE_CLAUDE_MD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added pool move nudge line');
     }
 
     // trustworthy-machine-load-and-mesh-floor P3 (2026-10-26): overload shed — agents
