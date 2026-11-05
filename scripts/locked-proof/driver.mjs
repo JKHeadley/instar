@@ -35,7 +35,9 @@ import { BLOCKING, PROOF_USER, TERMINAL, VAULT_KEY, assertProofTarget, launchdSe
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** The viewer is ready when it offers a request or has already opened the stream. */
-export const VIEWER_READY = '#requestButton:not([disabled]), #control:not([hidden])';
+// Playwright waits on the FIRST element a selector list resolves to. An auto-opened page keeps an
+// enabled but hidden #requestButton ahead of #control, so every alternative must be :visible.
+export const VIEWER_READY = '#requestButton:not([disabled]):visible, #control:visible';
 const LOCK_PY = 'import ctypes; ctypes.CDLL("/System/Library/PrivateFrameworks/login.framework/Versions/Current/login").SACLockScreenImmediate()';
 
 function opt(name, fallback) {

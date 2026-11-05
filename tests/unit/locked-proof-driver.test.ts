@@ -175,8 +175,14 @@ describe('locked-proof viewer driving', () => {
   };
 
   it('treats an auto-opened stream as ready, as well as an enabled request button', () => {
-    expect(VIEWER_READY).toContain('#requestButton:not([disabled])');
-    expect(VIEWER_READY).toContain('#control:not([hidden])');
+    expect(VIEWER_READY).toContain('#requestButton:not([disabled]):visible');
+    expect(VIEWER_READY).toContain('#control:visible');
+  });
+
+  it('never waits on the hidden request button an auto-opened stream leaves behind', () => {
+    // Playwright resolves a selector list to its first match, so a hidden-but-enabled
+    // #requestButton ahead of #control would stall the wait unless every alternative is :visible.
+    for (const alt of VIEWER_READY.split(',').map(s => s.trim())) expect(alt).toMatch(/:visible$/);
   });
 
   it('requests a grant only when the page has not already opened one', async () => {
