@@ -5,7 +5,7 @@
  * Trusted code walks the session workspace with lstat and never follows a link; it runs no git
  * and no tool there. Any symlink, device or other special file that is not byte-identical to
  * the publish clone fails the attempt (`special-file`). The change set is compared against the
- * publish clone (a tree the session can neither read nor write) and capped at 200 files / 4 MB.
+ * publish clone (a tree the session can neither read nor write) and capped at 200 files / 5 MiB.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -166,6 +166,18 @@ export function buildChangeSet(workspace: string, publishClone: string): ChangeS
     totalBytes += bytes.length;
     if (entries.length > CHANGESET_MAX_FILES || totalBytes > CHANGESET_MAX_BYTES) {
       throw new ChangeSetError('changeset-too-large', `more than ${CHANGESET_MAX_FILES} files or ${CHANGESET_MAX_BYTES} bytes`);
+    }
+  }
+  // The extra MiB is for reviewable source text. Keep opaque binary payloads at the former
+  // 4 MiB aggregate ceiling: a PR diff may show only binary metadata to an independent reviewer.
+  if (totalBytes > 4 * 1024 * 1024) {
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    for (const entry of entries) {
+      if (!entry.bytes) continue;
+      if (entry.bytes.includes(0)) throw new ChangeSetError('changeset-too-large', 'binary content above 4 MiB text allowance');
+      try { decoder.decode(entry.bytes); } catch {
+        throw new ChangeSetError('changeset-too-large', 'non-UTF-8 content above 4 MiB text allowance');
+      }
     }
   }
   for (const [rel, b] of base) {

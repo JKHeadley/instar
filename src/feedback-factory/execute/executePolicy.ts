@@ -28,9 +28,9 @@ export const CONFINED_RELATED_TIMEOUT_MS = 45 * 60_000;
 export const CONFINED_OUTPUT_CAP_BYTES = 5 * 1024 * 1024;
 /** Workspace plus temp directory, checked between steps. */
 export const WORKSPACE_DISK_CAP_BYTES = 2 * 1024 * 1024 * 1024;
-/** Change set caps (§4 step 8). A modified server.ts alone is ~1.9 MB. */
+/** Change set caps (§4 step 8). server.ts and routes.ts together exceed 4 MiB. */
 export const CHANGESET_MAX_FILES = 200;
-export const CHANGESET_MAX_BYTES = 4 * 1024 * 1024;
+export const CHANGESET_MAX_BYTES = 5 * 1024 * 1024;
 /** Result file notes cap (§4 step 7). */
 export const RESULT_NOTES_MAX = 1_000;
 /** merge-armed confirmation deadline and the single merge retry delay (§4 step 9). */
