@@ -1949,7 +1949,7 @@ Progress monitoring must not manufacture user-facing narration. These systems ar
 
 ## Autonomous-run silence backstop (AutonomousProgressHeartbeat)
 
-Autonomous-run reporting is live on every machine. After 30 minutes without a message, the owner machine posts a brief status. Recent session output is described as observed activity, not task progress. A paused run, suspended move, missing session, or missing output is reported plainly rather than going silent. Messages use a durable per-run cooldown and the shared one-voice lease; a normal outbound message resets the silence clock. The legacy monitoring.autonomousHeartbeat enabled, dryRun, silenceThresholdMinutes, and maxHeartbeatsPerRun settings no longer suppress these reports. See GET /autonomous-heartbeat for the local reporter status.
+Autonomous-run reporting is live on every machine. After 30 minutes without a message, the owner machine posts a brief status. Later updates use a widening cooldown capped at 90 minutes. Recent session output is described as observed activity, not task progress. A paused run, suspended move, missing session, or missing output is reported plainly rather than going silent. Messages use a durable per-run cooldown and the shared one-voice lease; a normal outbound message resets the silence clock. The legacy monitoring.autonomousHeartbeat enabled, dryRun, silenceThresholdMinutes, and maxHeartbeatsPerRun settings no longer suppress these reports. See GET /autonomous-heartbeat for the local reporter status.
 
 ## Autonomous Throughput Floor
 
