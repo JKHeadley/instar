@@ -21,7 +21,7 @@ function setup() {
   gate.preferences = new NotificationPreferences({ root, self: () => 'machine-a', peers: () => ['machine-b'], apply, send });
   const app = express(); app.use(express.json()); const router = express.Router();
   mountNotificationRoutes(router, { config: { stateDir: root }, telegram: { selectivity: gate, sendToTopic },
-    liveConfig: { set: (key: string, value: unknown) => values.set(key, value), get: (key: string, fallback: unknown) => values.get(key) ?? fallback },
+    liveConfig: { get: (key: string, fallback: unknown) => values.get(key) ?? fallback },
     verifyDashboardOperatorSession: (proof: string | undefined) => proof === 'pin-proof',
   } as unknown as RouteContext, () => false);
   app.use(router);
@@ -129,5 +129,14 @@ describe('bounded preference queue fairness', () => {
       await prefs.drain(); expect(send).toHaveBeenCalledTimes(144);
       expect(prefs.status().pending).toBe(16);
     } finally { clock.mockRestore(); await prefs.close(); }
+  });
+});
+
+
+describe('fixed conversation floors are not preference switches', () => {
+  it('refuses a floor preference even with valid operator confirmation', async () => {
+    const { app, apply } = setup();
+    const response = await request(app).post('/notifications/categories/command-response/push').set('X-Instar-Operator-Session', 'pin-proof').send({ enabled: false, confirmedBy: 'dashboard-pin' });
+    expect(response.status).toBe(400); expect(apply).not.toHaveBeenCalled();
   });
 });

@@ -3,7 +3,7 @@ import { poolPeerFetch } from './poolPeerFetch.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import type { Router } from 'express';
 import type { RouteContext } from './routes.js';
-import { isNotificationCategory } from '../messaging/notificationCategories.js';
+import { CONVERSATION_CATEGORIES, isNotificationCategory } from '../messaging/notificationCategories.js';
 import { verifiedReplyEnvelope } from '../messaging/NotificationSelectivityGate.js';
 
 /** Uses the existing authenticated router; preference writes additionally require operator proof. */
@@ -74,8 +74,9 @@ export function mountNotificationRoutes(router: Router, ctx: RouteContext, verif
   router.post('/notifications/categories/:id/push', async (req, res) => {
     const gate = ctx.telegram?.selectivity;
     const category = req.params.id;
-    if (!gate || !ctx.liveConfig?.set) { res.status(503).json({ error: 'Notification preferences are unavailable' }); return; }
+    if (!gate || !gate.preferences) { res.status(503).json({ error: 'Notification preferences are unavailable' }); return; }
     if (!isNotificationCategory(category) || typeof req.body?.enabled !== 'boolean') { res.status(400).json({ error: 'Choose a registered category and whether it should push' }); return; }
+    if (CONVERSATION_CATEGORIES.has(category)) { res.status(400).json({ error: 'Conversation replies and delivery notices are protected automatically; choose an automated report category' }); return; }
     const surface = req.body.confirmedBy;
     const topicId = Number(req.body.topicId), messageId = String(req.body.confirmingMessageId ?? '');
     const pin = surface === 'dashboard-pin' && ctx.verifyDashboardOperatorSession?.(req.headers['x-instar-operator-session'] as string | undefined) === true;
@@ -85,7 +86,7 @@ export function mountNotificationRoutes(router: Router, ctx: RouteContext, verif
       if (!gate.preferences) throw new Error('Preference writer unavailable');
       await gate.preferences.set(category, req.body.enabled, surface);
       void gate.preferences.drain();
-      if (ctx.liveConfig.get(`notifications.selectivity.push.categories.${category}`, !req.body.enabled) !== req.body.enabled) throw new Error('Preference write did not persist');
+      if (ctx.liveConfig && ctx.liveConfig.get(`notifications.selectivity.push.categories.${category}`, !req.body.enabled) !== req.body.enabled) throw new Error('Preference write did not persist');
       if (conversational) await ctx.telegram!.sendToTopic(topicId, `Done — ${category.replaceAll('-', ' ')} ${req.body.enabled ? 'will now be pushed' : 'will stay in the notification feed'}.`, { envelope: verifiedReplyEnvelope('notification-preference-confirm') });
       res.json({ ok: true, category, enabled: req.body.enabled });
     } catch { res.status(503).json({ error: 'Could not save the preference. Please retry.' }); }

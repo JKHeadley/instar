@@ -42,7 +42,7 @@ export async function renderNotifications(main, ctx, view) {
     if (status.preferences?.pending) notices.append(note(`Your preference is saved here. ${status.preferences.pending} update(s) are waiting for other machines.`));
     const preferences = el('section', {}, el('h2', { text: 'Choose what reaches you' }));
     root.append(preferences);
-    for (const category of status.categories) {
+    for (const category of status.categories.filter(category => category.configurable !== false)) {
       const input = el('input', { type: 'checkbox', 'aria-label': `Push ${category.description.toLowerCase()}`, style: 'width:22px;height:22px' });
       input.checked = category.push;
       const row = el('label', { style: 'display:flex;align-items:center;gap:12px;min-height:48px' }, input,

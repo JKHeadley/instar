@@ -307,7 +307,7 @@ export class NotificationSelectivityGate {
       preferences: this.preferences?.status(),
       soakEvidence: { ...this.evidence, healthy: this.evidenceHealthy, scope: 'this-machine', resetAfterUncleanShutdown: true, cleanDays: this.evidence.observingSince ? Math.max(0, (this.now() - Date.parse(this.evidence.observingSince)) / 86400000) : 0, operatorFlipRequired: true },
       counters: { ...this.metrics, ...this.store.counters() }, store: { ...this.store.health },
-      categories: notificationCategories.map(([id, description]) => ({ id, description, counters: this.categoryCounters.get(id) ?? { delivered: 0, pushed: 0, recorded: 0 }, push: this.config().push?.categories?.[id] === true || this.config().legacy?.[id] === true })) };
+      categories: notificationCategories.map(([id, description]) => ({ id, description, configurable: !CONVERSATION_CATEGORIES.has(id), counters: this.categoryCounters.get(id) ?? { delivered: 0, pushed: 0, recorded: 0 }, push: this.config().push?.categories?.[id] === true || this.config().legacy?.[id] === true })) };
   }
   async bootContextPool(topicId: number): Promise<string> {
     await this.store.ready;
