@@ -315,14 +315,18 @@ export class RealTarget {
     await page.fill('#lockedPasswordInput', c.wrongPassword ? `${this.password}x` : this.password);
     await page.press('#lockedPasswordInput', 'Enter');
     const until = this.now() + 60_000;
+    // What the page said while we waited, in order. When nothing is recognised as an answer,
+    // this is the only record of what the person would have seen.
+    const said = [];
     while (this.now() < until) {
       if (await page.isVisible('#leaveUnlockedButton')) return { sent: true };
-      const text = (await page.textContent('#status').catch(() => '')) ?? '';
+      const text = ((await page.textContent('#status').catch(() => '')) ?? '').trim();
+      if (text && said[said.length - 1] !== text) said.push(text);
       const refused = refusalFromStatus(text);
       if (refused) return { refused };
       await this.sleep(200);
     }
-    return { sent: false, refused: 'no-result-within-60s' };
+    return { sent: false, refused: 'no-result-within-60s', pageSaid: said.slice(-6) };
   }
 
   /** The proof user's listening process on the port, and only that user's (lsof -a ANDs the filters). */

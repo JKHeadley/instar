@@ -431,6 +431,14 @@ describe('locked-proof launchd kill', () => {
     expect(c.timeoutMs).toBeGreaterThan(600_000 + 120_000);
   });
 
+  it('when the page gives no recognised answer, the result keeps what the page said', async () => {
+    // Case 15.4 typed 2 s before the ceiling and got no answer; nothing recorded what the page showed.
+    let clock = 0; const texts = ['Remote desktop is live.', 'Remote desktop is live.', 'Desktop access ended. Open it again when needed.'];
+    const page = { waitForSelector: async () => {}, fill: async () => {}, press: async () => {}, isVisible: async () => false, textContent: async () => texts[Math.min(texts.length - 1, Math.floor(clock / 20_000))] };
+    const target = realTarget({ main: { page }, password: 'abc', now: () => clock, sleep: async (ms: number) => { clock += ms; } });
+    expect(await target.typePassword({ inject: [] })).toEqual({ sent: false, refused: 'no-result-within-60s', pageSaid: ['Remote desktop is live.', 'Desktop access ended. Open it again when needed.'] });
+  });
+
   it('a revoke with nothing to revoke fails the case', async () => {
     const target = realTarget({ priorMarkers: {}, readStore: () => ({ markers: {} }) });
     await expect(target.act('revoke')).rejects.toThrow(/no open request/);

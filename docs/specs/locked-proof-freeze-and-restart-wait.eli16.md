@@ -28,6 +28,8 @@ Instar can show and control a Mac's screen remotely, even while that Mac is lock
 
 **Three timing mistakes.** One test waits for a ten-minute limit but gave up watching after four and a half minutes. Another is meant to have that limit arrive while the password is being typed, but aimed so late that typing would only have started after the limit, when the password box is already gone. And the check that the owner gets a security alert after a failed relock looked once, immediately, although the alert is sent by a routine that runs every ten seconds; the alert arrived nine seconds later and was missed. All three now use the right times.
 
+**One gap in the notes.** When a typed password got no clear answer, the driver wrote down only that nothing happened. It now also writes down what the page said on screen while it waited, so a later reader can tell why.
+
 ## What stays the same
 
 The product is unchanged: the web page, the server and the safety guard all behaved correctly. Once the freeze test was fixed, it passed: the guard noticed the frozen server and relocked the Mac. Nothing here reaches any running agent; it only affects the proof tool run by hand on the test Mac.
