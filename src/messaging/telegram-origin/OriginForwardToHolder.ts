@@ -390,8 +390,11 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     if (answer.state === 'unreachable' || answer.state === 'owned-by-holder') {
       await retain({}); audit({ outcome: answer.state === 'unreachable' ? 'retained-outcome-unknown' : 'retained-owned-by-holder', machineId: detail.machineId }); return 'retained';
     }
-    // Definitely not accepted there: safe to forward again.
+    // Definitely not accepted there. Clear the uncertainty and let the next
+    // recovery tick review current conversation before another dispatch.
+    await retain({ lastAttempt: 'refused' });
     audit({ outcome: 'outcome-unknown-cleared', machineId: detail.machineId });
+    return 'retained';
   }
   const route = classifyLeaseRoute(deps.lease);
   if (route.kind === 'settling') { await retain({ reason: `lease-settling-${route.reason}` }); audit({ outcome: 'retained-settling', reason: route.reason }); return 'retained'; }

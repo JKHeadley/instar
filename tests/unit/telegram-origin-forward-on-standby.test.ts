@@ -308,12 +308,13 @@ describe('recoverForwardedHold — re-forward the SAME operation, supersede on a
     expect(h.submit).not.toHaveBeenCalled(); expect(h.resolve).not.toHaveBeenCalled();
     expect(h.rehold).toHaveBeenCalledWith('op-1', expect.objectContaining({ lastAttempt: 'outcome-unknown', ladder: { attempts: 1, nextAt: 20_005 } }));
   });
-  it('outcome-unknown at the OLD holder after a lease move: the receipt is asked there first; not-accepted → supersede → lands once via the new holder', async () => {
+  it('outcome-unknown at the old holder: a definite nonacceptance stops for a fresh chronology review', async () => {
     const h = rdeps({ lease: lease({ leaseHolder: () => 'holder-2' }) }); h.receipt.mockResolvedValue({ state: 'not-accepted' } as never);
-    expect(await recoverForwardedHold(h.d, row({ lastAttempt: 'outcome-unknown' }), fakeOperation('holder', 'op-1'))).toBe('sent');
+    expect(await recoverForwardedHold(h.d, row({ lastAttempt: 'outcome-unknown' }), fakeOperation('holder', 'op-1'))).toBe('retained');
     expect(h.receipt).toHaveBeenCalledWith('holder', 'op-1');
-    expect(h.submit).toHaveBeenCalledTimes(1); expect(h.submit.mock.calls[0][0]).toBe('holder-2');
-    expect(h.supersede.mock.calls[0][0]).toBe('op-1');
+    expect(h.rehold).toHaveBeenCalledWith('op-1', expect.objectContaining({ lastAttempt: 'refused' }));
+    expect(h.submit).not.toHaveBeenCalled();
+    expect(h.supersede).not.toHaveBeenCalled();
   });
   it('the lease now held HERE → marks local-sent BEFORE sending, delivers locally from the stored detail and resolves', async () => {
     const calls: string[] = [];
@@ -664,12 +665,12 @@ describe('TelegramAdapter — the send decision with a lease policy', () => {
     expect(await a.resolveTopicName(42)).toBeNull();
     expect(mockFetch).not.toHaveBeenCalled();
   });
-  it('a machine that sends locally still probes for the topic name', async () => {
+  it('a machine that sends locally also leaves unknown topic names alone', async () => {
     const a = make(() => 'local'); a.outboundRelay = vi.fn();
     const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, result: { message_id: 3, reply_to_message: { forum_topic_created: { name: 'pp chat' } } } }) });
     vi.stubGlobal('fetch', mockFetch);
-    expect(await a.resolveTopicName(42)).toBe('pp chat');
-    expect(mockFetch).toHaveBeenCalled();
+    expect(await a.resolveTopicName(42)).toBeNull();
+    expect(mockFetch).not.toHaveBeenCalled();
   });
   it('with the policy answering local, a real token sends directly (today\'s behaviour)', async () => {
     const a = make(() => 'local');
