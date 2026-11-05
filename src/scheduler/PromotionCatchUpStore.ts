@@ -14,7 +14,7 @@ export class PromotionCatchUpStore {
     return value.entries.slice(-2000);
   }
   isHealthy(): boolean {
-    try { this.read(); return true; } catch { return false; }
+    try { this.read(); return true; } catch { /* @silent-fallback-ok — false blocks catch-up on an unreadable journal */ return false; }
   }
   latestUnresolved(slug: string): PromotionCatchUpEntry | undefined {
     return this.read().filter(row => row.slug === slug && ['ask', 'requested', 'triggered', 'uncertain'].includes(row.status))

@@ -131,7 +131,7 @@ export class JobCoverageStore {
       if (raw.length > MAX_STORE_BYTES) return {};
       const parsed = JSON.parse(raw) as { version?: number; peers?: Record<string, JobCoverageObservation> };
       return parsed.version === 1 && parsed.peers && typeof parsed.peers === 'object' ? parsed.peers : {};
-    } catch { return {}; }
+    } catch { /* @silent-fallback-ok — unreadable peer snapshots become unknown coverage and trigger a gap */ return {}; }
   }
   record(payload: JobCoveragePayload, now = new Date()): void {
     const peers = this.read();

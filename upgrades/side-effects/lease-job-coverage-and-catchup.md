@@ -42,3 +42,7 @@ Source rollback leaves metadata snapshots and catch-up journals inert. The separ
 ## Class-Closure Declaration
 
 `defectClass: unbounded-self-action`, `closure: guard`, `enforcementType: ratchet`, `citation: tests/unit/self-action-convergence.test.ts`. The coverage alert retry has a durable one-hour failed-send floor. The registered controller model runs under permanent send failure and asserts the rate floor across reconstruction. The catch-up notice uses the same durable retry floor.
+
+## Verification follow-up (2026-11-05)
+
+The full-suite silent-fallback ratchet found five new fallback shapes in the coverage implementation. They are now explicitly marked with their safe behavior: unreadable peer snapshots become unknown coverage, tick and audit errors are logged and retried on the bounded cadence, absence of a prior episode is normal, and an unreadable catch-up journal refuses catch-up. This adds no new write or execution authority. Targeted ratchet and coverage tests pass. The first commit attempt was rejected by the fresh-trace gate; this artifact and the new trace record the follow-up review.
