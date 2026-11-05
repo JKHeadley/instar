@@ -262,6 +262,9 @@ export class TunnelManager extends EventEmitter {
     // Route lifecycle transitions through the notifier.
     this.lifecycle.on('transition', (e: TransitionEvent) => {
       if (this.notifier) void this.notifier.onTransition(e);
+      // Consumers that depend on the tier (the locked-screen password box)
+      // re-read it here instead of polling.
+      this.emit('lifecycle', e);
     });
 
     // Restore persisted snapshot (rotation-pending flag + consent cooldown).

@@ -8,6 +8,7 @@
  * WebSocket connections for real-time terminal streaming.
  */
 
+import { holdAllSetups } from '../recommended/setupState.js';
 import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import express, { type Express, type Request, type Response } from 'express';
@@ -361,6 +362,7 @@ import {
 import { readAcceptedFallbacks, scopeAcceptedFallbacks } from '../monitoring/guardAcceptedFallbacks.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { DEV_GATED_FEATURES } from '../core/devGatedFeatures.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 export function readMentorConfigFromDisk(
   stateDir: string | undefined,
@@ -529,6 +531,8 @@ export class AgentServer {
   }
 
   private desktopLockedOsMajor: number | undefined;
+  /** Removes the tunnel lifecycle listener that refreshes open desktop viewers. */
+  private desktopTunnelListenerOff: (() => void) | null = null;
   private desktopHelperNotice: DesktopHelperPermissionNotice | null = null;
   private macDesktopHost: MacDesktopHost | null = null;
   private desktopMeshBroker: DesktopMeshBroker | null = null;
@@ -899,7 +903,13 @@ export class AgentServer {
     };
     return {
       machineId,
-      status: async () => controller.status(await osMajor()),
+      status: async () => {
+        // The newest probe if recent, else one shared fresh probe; a failed
+        // probe leaves readiness as "helper-unprobed", never ready.
+        const probe = await access.readinessProbe();
+        if (probe?.osMajor !== undefined) this.desktopLockedOsMajor ??= probe.osMajor;
+        return controller.status(await osMajor(), probe);
+      },
       settings: async patch => {
         if (patch.enabled === true) {
           const refusal = controller.enableRefusal(await osMajor());
@@ -983,6 +993,7 @@ export class AgentServer {
     quotaPoller?: import('../core/QuotaPoller.js').QuotaPoller;
     quotaAwareScheduler?: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler;
     proactiveSwapMonitor?: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor;
+    usageWallRescue?: import('../core/UsageWallRescue.js').UsageWallRescue;
     inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
     enrollmentWizard?: import('../core/EnrollmentWizard.js').EnrollmentWizard;
     accountFollowMeRevocation?: import('../core/AccountFollowMeRevocation.js').AccountFollowMeRevocation;
@@ -1338,6 +1349,7 @@ export class AgentServer {
     memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacy;
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
     a2aDeliveryTracker?: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker;
+    requiredAck?: import('../threadline/requiredAckService.js').RequiredAckService;
     /** Honest-delivery verdict counters (spec §1) for the authed branch of /health. */
     relayVerdictCounters?: () => Record<string, number>;
     /** A2A inbound message-id ledger controller, shared with the relay consumer (server.ts). */
@@ -1517,6 +1529,8 @@ export class AgentServer {
     this.app.use('/mobile/pairing-codes/redeem', express.json({ limit: '4kb', verify: keepRawBody }));
     // Media chunks (mobile-native-chat-media §4.10): the signature covers the raw chunk bytes.
     this.app.use('/mobile/media/uploads', express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }));
+    // A setup session's key: plain text, so a JSON slip can't put part of it in a parse-error log.
+    this.app.post(/^\/recommended-services\/[a-z][a-z0-9-]{0,63}\/key$/, express.text({ type: 'text/plain', limit: '8kb' }));
     this.app.use(express.json({ limit: '12mb', verify: keepRawBody }));
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
@@ -3031,6 +3045,10 @@ export class AgentServer {
               const lifecycle = options.tunnel?.lifecycleState;
               return lifecycle?.lastState === 'active' && String(lifecycle.activeProvider).startsWith('cloudflare');
             },
+            tunnelActive: () => {
+              const state = options.tunnel?.lifecycleState?.lastState;
+              return state === 'active' || state === 'relay-active';
+            },
             raiseSecurity: item => this.raiseLockedSecurityItem(item),
           }) : null;
           if (macHost && this.desktopLockedController) macHost.setLockedRoot(this.desktopLockedController.root);
@@ -3073,6 +3091,15 @@ export class AgentServer {
           this.desktopLockedController,
         );
         void this.desktopLockedController?.sweep(true).catch(() => { console.warn('[instar] locked-screen boot sweep failed'); });
+        // The browser box needs the first-tier tunnel; tell open viewers when it changes.
+        if (this.desktopLockedController) {
+          if (typeof options.tunnel?.on === 'function') {
+            const tunnel = options.tunnel;
+            const refresh = () => this.directDesktopAccess?.refreshLockedState();
+            tunnel.on('lifecycle', refresh);
+            this.desktopTunnelListenerOff = () => tunnel.off('lifecycle', refresh);
+          }
+        }
         this.desktopStreamManager = new DesktopStreamManager(request => this.directDesktopAccess!.admit(request));
         if (helperRetention) {
           const access = this.directDesktopAccess;
@@ -5349,6 +5376,7 @@ export class AgentServer {
       quotaPoller: options.quotaPoller ?? null,
       quotaAwareScheduler: options.quotaAwareScheduler ?? null,
       proactiveSwapMonitor: options.proactiveSwapMonitor,
+      usageWallRescue: options.usageWallRescue,
       inUseAccountResolver: options.inUseAccountResolver,
       enrollmentWizard: options.enrollmentWizard ?? null,
       accountFollowMeRevocation: options.accountFollowMeRevocation ?? null,
@@ -5386,6 +5414,7 @@ export class AgentServer {
       hookEventReceiver: options.hookEventReceiver ?? null,
       nativeHookIngest: this.nativeHookIngest,
       mobileOwnNames: this.mobilePairing?.ownNames ?? null,
+      mobilePairingService: this.mobilePairing,
       worktreeMonitor: options.worktreeMonitor ?? null,
       subagentTracker: options.subagentTracker ?? null,
       instructionsVerifier: options.instructionsVerifier ?? null,
@@ -5406,6 +5435,7 @@ export class AgentServer {
       a2aRelayForward: options.a2aRelayForward ?? null,
       listenerManager: options.listenerManager ?? null,
       a2aDeliveryTracker: options.a2aDeliveryTracker ?? this.a2aDeliveryTracker,
+      requiredAck: options.requiredAck ?? null,
       relayVerdictCounters: this.relayVerdictCounters,
       inboundIdLedger: this.inboundIdLedger,
       inboundIdLedgerDaemonDeferred: options.inboundIdLedgerDaemonDeferred ?? null,
@@ -6385,6 +6415,7 @@ export class AgentServer {
         registry: routeCtx.conversationRegistry,
         dispatch: () => options.slackInboundDispatch?.() ?? null,
         killAllSessions: () => {
+          try { holdAllSetups(options.config.stateDir); } catch { /* @silent-fallback-ok — the stop itself must never fail over this */ }
           let any = false;
           for (const sess of options.sessionManager.listRunningSessions()) { try { options.sessionManager.killSession(sess.id); any = true; } catch { /* @silent-fallback-ok — already gone */ } }
           return any;
@@ -6468,7 +6499,7 @@ export class AgentServer {
             durationMs: info.durationMs, width: info.width, height: info.height,
           });
           if (!r.recorded && r.reason !== 'duplicate') {
-            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (topic ${info.topicId}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. The session still received it.`);
+            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (${topicRef(info.topicId)}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. The session still received it.`);
           }
         });
       }
@@ -8358,6 +8389,8 @@ export class AgentServer {
     if (this.directDesktopAccess) this.telegramAdapter?.setDesktopApprovalHandler?.(null);
     this.desktopStreamManager?.closeAll();
     this.desktopHelperNotice?.stop();
+    this.desktopTunnelListenerOff?.();
+    this.desktopTunnelListenerOff = null;
     try { this.routeContext?.subscriptionRelogin?.close?.(); }
     catch (error) { console.warn('[subscription-relogin] clean stop failed:', error); }
     try { this.agentIdentityRuntime?.coherence.stop(); } catch { /* best-effort teardown */ }

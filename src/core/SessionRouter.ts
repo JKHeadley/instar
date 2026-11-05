@@ -18,7 +18,7 @@
  * timeout (it throws on timeout) — the router owns the retry/backoff/fallback loop.
  */
 
-import type { PlacementExecutor, TopicPlacement } from './PlacementExecutor.js';
+import type { PlacementDecision, PlacementExecutor, TopicPlacement } from './PlacementExecutor.js';
 import type { MachineCapacity } from './types.js';
 
 export interface OwnershipView {
@@ -197,6 +197,12 @@ export interface SessionRouterDeps {
    * falls back to durable custody / the un-acked local fall-through.
    */
   reclaimPlacement?: (sessionKey: string, placedOn: string) => boolean;
+  /**
+   * Is a session for this key already running on THIS machine? Placement for an unowned
+   * key honours it, so turning the pool on never hops a conversation that is mid-flight.
+   * Absent means no live-session knowledge, so placement decides as before.
+   */
+  liveLocalSession?: (sessionKey: string) => boolean;
   /**
    * Confirm a just-placed REMOTE session as the owner (status placing→active) once
    * the spawn has been dispatched to it. Without this the ownership stays 'placing'
@@ -383,8 +389,36 @@ export class SessionRouter {
     return this.placeAndClaim(msg, 'failover', true);
   }
 
+  /**
+   * An unowned key with a live session here stays here, so turning the pool on never hops a
+   * running conversation. Placement still runs, with this machine as the only candidate, so
+   * every mandatory check holds (online, workspace reachable, not refusing work); only cost
+   * stops counting. Any escalation, such as a blocked quota, means normal placement decides.
+   * A pin or preferred machine wins: that is an explicit request to be elsewhere.
+   */
+  private liveLocalPlacement(msg: InboundMessage, reason: 'new' | 'failover'): PlacementDecision | null {
+    if (reason !== 'new' || msg.topicMetadata?.preferredMachine) return null;
+    try {
+      if (this.deps.liveLocalSession?.(msg.sessionKey) !== true) return null;
+      const self = this.deps.selfMachineId;
+      const decision = this.deps.placement.decide({
+        sessionKey: msg.sessionKey,
+        topicMetadata: msg.topicMetadata ?? {},
+        machineRegistry: this.deps.machineRegistry().filter((m) => m.machineId === self),
+        currentOwner: undefined,
+        reason,
+        ...(msg.channel ? { channel: msg.channel } : {}),
+      });
+      return decision.outcome === 'placed' && decision.chosenMachine === self && !decision.escalationReason ? decision : null;
+    } catch (err) {
+      this.deps.log?.(`liveLocalSession for ${msg.sessionKey} failed: ${String((err as Error)?.message ?? err)}`);
+      return null;
+    }
+  }
+
   private async placeAndClaim(msg: InboundMessage, reason: 'new' | 'failover', fromDead: boolean): Promise<RouteOutcome> {
-    const decision = this.deps.placement.decide({
+    const kept = this.liveLocalPlacement(msg, reason);
+    const decision = kept ?? this.deps.placement.decide({
       sessionKey: msg.sessionKey,
       topicMetadata: msg.topicMetadata ?? {},
       machineRegistry: this.deps.machineRegistry(),
@@ -427,6 +461,16 @@ export class SessionRouter {
     // CAS won → spawn on the winner (or handle locally if that's us).
     const action: RouteAction = fromDead ? 'owner-dead-replaced' : 'spawned';
     if (decision.chosenMachine === this.deps.selfMachineId) {
+      // A kept session is already running, so nothing is left for `placing` to wait on. Confirm
+      // here: only the Telegram path confirms after delivery, and a row left `placing` would
+      // queue every later Slack or drained message for this key.
+      if (kept) {
+        try {
+          this.deps.confirmClaim?.(msg.sessionKey, decision.chosenMachine);
+        } catch (err) {
+          this.deps.log?.(`confirmClaim for kept ${msg.sessionKey} failed: ${String((err as Error)?.message ?? err)}`);
+        }
+      }
       await this.deps.handleLocally(msg);
       return { action: fromDead ? 'owner-dead-replaced' : 'handled-locally', owner: decision.chosenMachine, detail: 'placed-self', acked: true };
     }

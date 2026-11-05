@@ -125,6 +125,8 @@ describe('Feature Delivery Completeness', () => {
     const featureSections = [
       '### Who can answer my Telegram buttons', // ACT-115: owner checks fail closed
       '**Memory privacy**', // memory-privacy spec: audience by place
+      'An update never turns it on', // memory-privacy spec: opt-in for existing agents
+      'one-time repair link', // memory-privacy spec: owner recovery
       '### Feature switches apply their setting', // feature-transition-applies-action (Echo Bugs 10000000857): POST /features/:id/transition applies the enableAction/disableAction + returns `apply` and the honest `effective` state — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key = the heading), framework-shadowed (a Codex/Gemini agent must read `effective.status` before telling the user a feature is on).
       '### Hand-started Codex: `instar codex connect <agent>`', // codex-connect-explicit: the explicit shared-Codex-config writer card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key = the heading), framework-shadowed (the audience IS a Codex operator).
       '### Normal-Chrome browser (account-bound web tasks, macOS + Windows)', // normal-chrome-builtin-skill + normal-chrome-cross-platform: awareness card for the /normal-chrome-browser skill + .instar/scripts/browser/ helpers — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key = the heading), framework-shadowed (the scripts are framework-neutral).
@@ -133,6 +135,7 @@ describe('Feature Delivery Completeness', () => {
       'Telegram internal routes need the lifeline secret', // telegram-internal-route-lifeline-secret: full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key), framework-shadow marker
       'Threadline MCP over local HTTP', // threadline-mcp-local-http: the transport card (flag, health field, outcome-unknown) — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key), framework-shadowed.
       'A2A new thread with a peer', // threadline-new-thread-honoured (Echo Bugs 10000000781): the newThread/fork send card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key `A2A new thread with a peer`), framework-shadowed.
+      'A2A required acknowledgment', // a2a-required-acknowledgment: the receipts and threadline_ack card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key `A2A required acknowledgment`), framework-agnostic.
       'A2A ack waits for a live session', // ACT-091 follow-up: the ack-waits-for-delivery card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key `A2A ack waits for a live session`), framework-shadowed.
       'A2A reply into a reaped topic session', // ACT-091: the reaped-topic-session respawn card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key `A2A reply into a reaped topic session`), framework-shadowed.
       'A2A relay forward', // a2a-cross-machine-route: the standby-forward card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key `A2A relay forward`), framework-shadowed.

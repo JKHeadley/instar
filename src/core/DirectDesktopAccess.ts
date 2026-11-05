@@ -2,6 +2,7 @@
  * All requests, grants and tickets are memory-only: a restart revokes access.
  * A PIN session may authorize access directly; the legacy Telegram challenge
  * remains available only when explicitly selected by the caller. */
+import { topicRef } from '../messaging/shared/topicRef.js';
 import crypto from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { validDisplayId, type DesktopDisplay, type DesktopHost, type DesktopInput, type DesktopPlatform, type DesktopProbe, type DesktopSealedSecret } from './DesktopHost.js';
@@ -12,7 +13,7 @@ import type { DesktopStreamSession } from '../server/DesktopStreamManager.js';
 import { DesktopAead, deriveDesktopKey } from './DesktopAead.js';
 import { desktopVideoContract } from './DesktopVideo.js';
 import { encodeDesktopH264 } from './DesktopVideo.js';
-import type { DesktopAccessAudit } from './DesktopAccessAudit.js';
+import { auditReason, type DesktopAccessAudit } from './DesktopAccessAudit.js';
 import { isLoopbackPeer } from './desktopTransport.js';
 
 const CHALLENGE_MS = 2 * 60_000;
@@ -71,6 +72,8 @@ interface DirectRequest {
   lockedBegan?: boolean;
   lastPositive?: DesktopLockState;
   lastState?: DesktopLockState;
+  /** The last state record sent to this viewer, so an unchanged one is not re-sent. */
+  lastStateRecord?: string;
   outsideUnlockSeen?: boolean;
   lastEnterAt?: number;
   respawnsThisChange?: number;
@@ -122,6 +125,10 @@ export class DirectDesktopAccess {
   private activeGrantId: string | null = null;
   private disabled = false;
   private sealKey: string | null = null;
+  /** The newest host probe, for the password readiness a viewer and status read. */
+  private lastHostProbe: DesktopProbe | null = null;
+  private lastHostProbeAt = -Infinity;
+  private readinessProbeInFlight: Promise<DesktopProbe | null> | null = null;
 
   constructor(
     private readonly machineId: string,
@@ -171,10 +178,10 @@ export class DirectDesktopAccess {
   private async trackLock(row: DirectRequest, state: DesktopLockState): Promise<boolean> {
     const previous = row.lastState;
     row.lastState = state;
-    if (previous !== state) {
-      if (state !== 'unknown') row.respawnsThisChange = 0;
-      row.emitControl?.({ type: 'state', state, box: row.client !== 'browser' || !!this.locked?.browserBoxShown() });
-    }
+    if (previous !== state && state !== 'unknown') row.respawnsThisChange = 0;
+    // Sent when the state or the box's readiness changed (a helper grant can
+    // change readiness while the lock state stays the same).
+    this.emitState(row, state, false);
     if (state === 'login-window-switched' || state === 'other-user-on-console') return false;
     if (state === 'unknown') { row.lastPositive ??= 'locked-in-session'; return true; }
     if (state === 'unlocked' && previous !== 'unlocked') await this.locked?.noteUnlocked().catch(() => {}); // @silent-fallback-ok — a stale dirty flag only blocks Enter at a later shield.
@@ -186,6 +193,57 @@ export class DirectDesktopAccess {
     }
     row.lastPositive = state;
     return true;
+  }
+
+  /**
+   * The viewer's lock-state record. `box` keeps its meaning (a browser may draw
+   * the box); `boxRefusal` names why a password cannot be typed from this
+   * client even once locked, so the page can say so instead of hiding the box.
+   */
+  private stateMessage(row: DirectRequest, state: DesktopLockState): Record<string, unknown> {
+    const client = row.client ?? 'browser';
+    const readiness = this.locked?.passwordReadiness(this.lastHostProbe);
+    return { type: 'state', state, box: client !== 'browser' || !!this.locked?.browserBoxShown(),
+      boxRefusal: readiness ? readiness[client] : null };
+  }
+
+  /** Sends the state record when it differs from the last one sent, or always when forced. */
+  private emitState(row: DirectRequest, state: DesktopLockState, force: boolean): void {
+    if (!row.emitControl) return;
+    const record = this.stateMessage(row, state);
+    const key = JSON.stringify(record);
+    if (!force && key === row.lastStateRecord) return;
+    row.lastStateRecord = key;
+    row.emitControl(record);
+  }
+
+  /**
+   * Re-sends the lock state to every open viewer whose record changed. Called
+   * when something the box depends on changes outside a probe, such as the
+   * tunnel coming up, so an open viewer gets the box without reconnecting.
+   */
+  refreshLockedState(): void {
+    for (const row of this.requests.values()) {
+      if (row.lastState) this.emitState(row, row.lastState, false);
+    }
+  }
+
+  /**
+   * The host probe for readiness reads: the newest one when under maxAgeMs
+   * old, else one fresh probe shared by concurrent callers. A status read
+   * therefore never starts more than one helper at a time. Null when the
+   * probe fails, which readiness reports as helper-unprobed.
+   */
+  async readinessProbe(maxAgeMs = 30_000): Promise<DesktopProbe | null> {
+    if (this.disabled) return null;
+    if (this.lastHostProbe && performance.now() - this.lastHostProbeAt < maxAgeMs) return this.lastHostProbe;
+    // The host's own probe: a status read must not apply modes or end grants.
+    this.readinessProbeInFlight ??= this.host.probe().then(probe => {
+      this.lastHostProbe = probe;
+      this.lastHostProbeAt = performance.now();
+      return probe;
+    }, () => null).finally(() => { this.readinessProbeInFlight = null; });
+    return this.readinessProbeInFlight;
   }
 
   requiresTelegramStepUp(): boolean { return this.approvalMode === 'telegram'; }
@@ -240,6 +298,8 @@ export class DirectDesktopAccess {
   async probe(): Promise<DesktopProbe & { ready: boolean }> {
     if (this.disabled) return { ready: false, screenPermission: false, inputPermission: false, displayCount: 0, sessionActive: false };
     const state = await this.host.probe();
+    this.lastHostProbe = state;
+    this.lastHostProbeAt = performance.now();
     const ready = state.screenPermission && state.inputPermission && state.displayCount > 0 && state.sessionActive;
     if (!this.locked) return { ...state, ready };
     this.locked.applyMode(state.osMajor);
@@ -259,7 +319,7 @@ export class DirectDesktopAccess {
 
   /** Status for the viewer and the card; decides nothing. */
   lockedStatus(): Promise<Record<string, unknown>> | null {
-    return this.locked ? this.locked.status(undefined) : null;
+    return this.locked ? this.locked.status(undefined, this.lastHostProbe) : null;
   }
 
   /** Asks macOS to show its own permission prompts on this Mac. */
@@ -343,7 +403,7 @@ export class DirectDesktopAccess {
       // before normal Telegram message history.
       if (!this.isVerifiedOperator(input.topicId, input.operatorUid)) throw new Error('operator binding changed');
       await this.sendChallenge(input.topicId,
-        `Remote desktop request for ${this.machineLabel}. This grants full human control of the logged-in desktop for up to 10 minutes. Target key fingerprint: ${crypto.createHash('sha256').update(this.targetIdentity.publicKey).digest('hex').slice(0, 32)}. In your verified Instar Telegram topic ${input.topicId}, reply exactly:\n/desktop ${id} ${code}\nExpires in 2 minutes. Do not share this code.`);
+        `Remote desktop request for ${this.machineLabel}. This grants full human control of the logged-in desktop for up to 10 minutes. Target key fingerprint: ${crypto.createHash('sha256').update(this.targetIdentity.publicKey).digest('hex').slice(0, 32)}. In your verified Instar Telegram ${topicRef(input.topicId)}, reply exactly:\n/desktop ${id} ${code}\nExpires in 2 minutes. Do not share this code.`);
     } catch (error) { this.requests.delete(id); throw error; }
     return { requestId: id };
   }
@@ -765,11 +825,20 @@ export class DirectDesktopAccess {
       attachControl: (send: (record: Buffer) => void) => {
         if (!row.controlRecords) return;
         row.emitControl = value => { if (row.grantId === admittedGrantId) send(admittedAead.encryptControl(value)); };
-        if (row.lastState) row.emitControl({ type: 'state', state: row.lastState, box: row.client !== 'browser' || !!this.locked?.browserBoxShown() });
+        if (row.lastState) this.emitState(row, row.lastState, true);
         if (this.sealKey && row.lockedActive) row.emitControl({ type: 'seal', key: this.sealKey });
       },
       secret: async (secret: DesktopSealedSecret) => {
-        const refused = (reason: string) => row.emitControl?.({ type: 'secret-result', refused: reason });
+        const refused = (reason: string) => {
+          // The reason was only ever shown to the viewer; keep it here too, so a
+          // refused password can be explained from the logs (a word, never the secret).
+          console.warn(`[desktop] password refused on ${row.machineId}: ${auditReason(reason)}`);
+          try {
+            this.audit?.record({ kind: 'secret-refused', grantId: admittedGrantId, machineId: row.machineId,
+              operatorUid: row.operatorUid, authMethod: this.approvalMode, reason });
+          } catch { /* @silent-fallback-ok — the viewer is still told; an audit write failure must not hide the refusal */ }
+          row.emitControl?.({ type: 'secret-result', refused: reason });
+        };
         if (!row.lockedActive) throw new Error('desktop command invalid');
         await assertActive();
         if (row.grantId !== admittedGrantId || !this.validGrant(row) || !this.locked || !this.host.secretType) { refused('not-available'); return; }

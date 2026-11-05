@@ -2204,6 +2204,21 @@
       }
     },
     {
+      "category": "recommended-service-setup",
+      "description": "Per machine: whether a recommended service passed its setup check here, and the session and promise working on it. A login or install lives on one disk, so this is never replicated.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": ["state/recommended-service-setup/setup.json"],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One replace-in-place file with one entry per service."
+      }
+    },
+    {
       "category": "ecosystem-ideas",
       "description": "The ecosystem idea pipeline (docs/specs/ecosystem-idea-pipeline.md): an append-only event ledger that replicates as the ecosystemIdeas store, a per-machine framework admission record and notice dedupe. Source mirrors and index.db in the same directory are a rebuildable cache.",
       "scope": "must-be-coherent",

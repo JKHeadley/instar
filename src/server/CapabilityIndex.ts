@@ -66,7 +66,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     key: 'memoryPrivacy',
     prefixes: ['/memory-privacy'],
     description: 'Whether memory is kept per person and per place on this agent, who the owner is, and whether the sandbox runs here.',
-    build: () => ({ configured: true, endpoints: ['GET /memory-privacy'] }),
+    build: () => ({ configured: true, endpoints: ['GET /memory-privacy', 'GET /memory-privacy/fix/:token', 'POST /memory-privacy/fix/:token'] }),
   },
   {
     key: 'capabilityRegistry',
@@ -83,7 +83,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'subscriptionPool',
     prefixes: ['/subscription-pool'],
-    description: 'Subscription & Auth Standard — a multi-account subscription pool (N logins of the same provider) with live per-account quota (5h + weekly utilization + reset dates, measured burn), reset-date-optimal account selection, a hard session-continuity guarantee (a session that hits its account quota resumes on another account via --resume, never dies), proactive PRE-LIMIT swap (move a session off an account before it walls, at a lag-aware threshold — covers untagged sessions on the default login), and a mobile-first enrollment wizard (start a login, surface the public code/URL, auto-reissue an expired code). The registry stores login LOCATION (config home), never tokens. Backs the dashboard Subscriptions tab. Single-account pools are a no-op; auto-swap of live sessions is opt-in (subscriptionPool.autoSwapOnRateLimit reactive; subscriptionPool.proactiveSwap pre-limit).',
+    description: 'Subscription & Auth Standard — a multi-account subscription pool (N logins of the same provider) with live per-account quota (5h + weekly utilization + reset dates, measured burn), reset-date-optimal account selection, a hard session-continuity guarantee (a session that hits its account quota resumes on another account via --resume, never dies), proactive PRE-LIMIT swap (move a session off an account before it walls, at a lag-aware threshold — tagged sessions only; untagged ones are reached by the default-slot repoint and the usage-wall rescue), and a mobile-first enrollment wizard (start a login, surface the public code/URL, auto-reissue an expired code). The registry stores login LOCATION (config home), never tokens. Backs the dashboard Subscriptions tab. Single-account pools are a no-op. Usage-wall rescue is ON by default with 2+ usable accounts (subscriptionPool.wallRescue.enabled): a session at its account usage wall, tagged or untagged, moves to an account with room, and new sessions are tagged with a pool account; swapping on a server throttle stays opt-in (subscriptionPool.autoSwapOnRateLimit) and the pre-limit swap is opt-in (subscriptionPool.proactiveSwap).',
     build: ({ ctx }) => ({
       configured: !!ctx.subscriptionPool,
       accounts: ctx.subscriptionPool ? ctx.subscriptionPool.size() : 0,
@@ -163,7 +163,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'remoteDesktop',
     prefixes: ['/desktop'],
-    description: 'Native operator remote desktop on the registered machine pool. The operator opens the designated front at /dashboard/desktop.html, enters the existing dashboard PIN, chooses a ready target, and can Stop immediately. A target may be online even when its screen helper lacks a GUI session, display, or permission. The PIN proves dashboard credential possession, not independent human identity. Locked-screen access is off everywhere until a macOS version has recorded crash and Stop proofs: GET /desktop/locked/status reads it (?scope=pool for every machine), POST /desktop/locked/settings is the PIN route, and POST /desktop/locked/disable stops it. Registry First: GET /desktop/diagnostics reports this machine’s own probe signals with Bearer auth, including whether a Mac permission belongs to the helper itself (screenGrant/inputGrant: own) or only to what started the process tree (inherited); POST /desktop/request-permission shows macOS’s prompts to a person at that Mac and grants nothing itself; GET /desktop/availability reports the designated front’s local admission, and the PIN-scoped front /desktop/targets lists the pool.',
+    description: 'Native operator remote desktop on the registered machine pool. The operator opens the designated front at /dashboard/desktop.html, enters the existing dashboard PIN, chooses a ready target, and can Stop immediately. A target may be online even when its screen helper lacks a GUI session, display, or permission. The PIN proves dashboard credential possession, not independent human identity. Locked-screen access is off everywhere until a macOS version has recorded crash and Stop proofs: GET /desktop/locked/status reads it (?scope=pool for every machine; passwordReadiness names, per client, why a password could not be typed once locked, null meaning ready), POST /desktop/locked/settings is the PIN route, and POST /desktop/locked/disable stops it. Registry First: GET /desktop/diagnostics reports this machine’s own probe signals with Bearer auth, including whether a Mac permission belongs to the helper itself (screenGrant/inputGrant: own) or only to what started the process tree (inherited); POST /desktop/request-permission shows macOS’s prompts to a person at that Mac and grants nothing itself; GET /desktop/availability reports the designated front’s local admission, and the PIN-scoped front /desktop/targets lists the pool.',
     build: ({ ctx }) => ({
       configured: !!ctx.directDesktopAccess,
       endpoints: ['GET /desktop/setup', 'GET /desktop/setup/:machineId', 'POST /desktop/setup/:machineId',
@@ -278,7 +278,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     description: 'Recommended outside services (docs/specs/recommended-services.md) — the catalog (benefit, what leaves the machine, cost, account, backup and its status, whether it is available) and the saved yes or no for each service, replicated across machines where machine sync is on (the route reports `replicating`). Offers are not live yet, and the route reports what they wait for (`migrationComplete`, `firstResult`). A no needs the dashboard PIN.',
     build: () => ({
       configured: true,
-      endpoints: ['GET /recommended-services', 'POST /recommended-services/:id/no', 'GET /recommended-services/:id/confirm', 'POST /recommended-services/:id/confirm'],
+      endpoints: ['GET /recommended-services', 'POST /recommended-services/:id/no', 'GET /recommended-services/:id/confirm', 'POST /recommended-services/:id/confirm', 'POST /recommended-services/:id/verify'],
     }),
   },
   {
@@ -445,6 +445,36 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({
       configured: true,
       endpoints: ['GET /mobile/messages', 'GET /mobile/insights'],
+    }),
+  },
+  {
+    key: 'mobileSecretsScreen',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Native Passwords & keys screen for the Instar iPhone app (docs/specs/mobile-native-secrets.md): GET /mobile/secrets (what\'s waiting on each machine that answers, this machine\'s key names, vault and sync state; names only, never a value, length, token or Secret Drop link; owner phone or bearer).',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/secrets'],
+    }),
+  },
+  {
+    key: 'mobilePermissionsScreens',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Native Permission slips and What I\'m allowed to do screens for the Instar iPhone app (docs/specs/mobile-native-permissions.md): GET /mobile/permissions/slips (waiting authorization requests and active slips, across the machines that answer) and GET /mobile/permissions/features (feature switches, this machine\'s plus other machines read-only) for an owner phone or the bearer token. The owner phone alone may approve or decline a waiting request held on this machine and switch a feature, each with a fresh presence-key (Face ID / passcode) signature over a single-use challenge bound to the exact action: POST /mobile/permissions/challenge, /mobile/permissions/requests/:id/approve, /mobile/permissions/requests/:id/decline, /mobile/permissions/features/:id. The bearer is refused on every write. Writes are dev-gated (mobilePairing.permissionActions.enabled).',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/permissions/slips', 'GET /mobile/permissions/features', 'POST /mobile/permissions/challenge', 'POST /mobile/permissions/requests/:id/approve', 'POST /mobile/permissions/requests/:id/decline', 'POST /mobile/permissions/features/:id'],
+    }),
+  },
+  {
+    key: 'mobileProposalsInsideScreens',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Native Proposals and How I\'m doing inside screens for the Instar iPhone app (docs/specs/mobile-native-proposals-inside.md): GET /mobile/proposals (proposed fixes waiting, across the machines that answer; dismissing stays in the console) and GET /mobile/inside (recent records, repeating problems, checks on my own claims and correction reviews, for each machine that answers). Read-only; an owner phone or the bearer token.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/proposals', 'GET /mobile/inside'],
     }),
   },
   {
@@ -1621,8 +1651,8 @@ const FEATURE_GUIDE_TRIGGERS: ReadonlyArray<{ context: string; action: string }>
   { context: 'Agent learns a lesson, discovers a pattern, or user teaches something worth remembering', action: 'Add it to the Playbook manifest (instar playbook add). Context items persist across sessions and get assembled based on triggers. This is more structured than MEMORY.md — items have triggers, scores, and lifecycle management.' },
   { context: 'Session context feels stale or irrelevant', action: 'Run instar playbook evaluate to score items, decay stale ones, and deduplicate. Then check instar playbook status.' },
   { context: 'Another agent wants to share context', action: 'Use instar playbook mount to import their manifest with integrity verification. Only global-scoped items are accepted.' },
-  { context: 'User mentions other AI agents, wants to collaborate with other agents, or asks about multi-agent communication', action: 'Check if Threadline relay is enabled (GET /threadline/status). If not enabled, explain: you have the ability to connect to a secure agent network where you can discover and message other AI agents in real time. Offer to enable it conversationally. If enabled, use threadline_discover and threadline_send.' },
-  { context: 'User asks what you can do, your features, or capabilities you have not used yet', action: 'Include Threadline relay in your capability overview if not yet enabled. Explain it lets you join a network of agents for real-time secure communication — available but waiting for their go-ahead.' },
+  { context: 'User mentions other AI agents, wants to collaborate with other agents, or asks about multi-agent communication', action: 'Read GET /threadline/status and lead with agent.state and agent.throughMachine. A standby may have its local relay intentionally off while the agent is reachable through a holder. If state is unknown, say unknown; do not infer the agent is off from local config. Use threadline_discover and threadline_send when the agent is reachable.' },
+  { context: 'User asks what you can do, your features, or capabilities you have not used yet', action: 'Read GET /capabilities and /threadline/status. Describe Threadline from agent.state; a standby local setting does not determine the agent capability.' },
 ];
 
 // ── Internal-only prefixes (intentionally NOT surfaced in /capabilities) ──

@@ -1,5 +1,8 @@
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
 import { registerRecommendedServiceRoutes } from './recommendedServiceRoutes.js';
+import { catalogWithProving } from '../recommended/recipes.js';
+import { classifyLocation, readThrowawayRecord } from '../core/ThrowawayAgentGuard.js';
+import { holdSetupForSession } from '../recommended/setupState.js';
 import { GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS } from '../core/PinAttemptStore.js';
 import { isRetiredLegacyOffer } from '../recommended/legacyDeclines.js';
 import { recordDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
@@ -15,6 +18,10 @@ import { stripViewSignatures } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
+import { mountMobilePermissionsRoutes } from './mobilePermissionsRoutes.js';
+import { mountMobileSecretsRoutes, resolveKeys as resolveMobileKeys } from './mobileSecretsRoutes.js';
+import { mountMobileProposalsInsideRoutes, ACTIVITY_WINDOW, CLAIMS_WINDOW } from './mobileProposalsInsideRoutes.js';
+import { loadAllProposals } from './routes/remediation-proposals.js';
 import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
 import type { AutoExpiryHold } from '../core/types.js';
@@ -55,6 +62,7 @@ import { deterministicAutomationAuthor } from '../messaging/telegram-origin/Orig
 import { cadenceReportProducerPayload, type WindowRunCadenceExecutor, type WindowCadenceReportReceipt } from '../core/WindowRunCadenceExecutor.js';
 import { verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
 import { IdentityManager as ThreadlineIdentityManager } from '../threadline/client/IdentityManager.js';
+import { resolveAgentRelayStatus } from '../threadline/agentRelayStatus.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
 import { emergencyStopUserMessage } from '../messaging/shared/emergencyStopUserMessage.js';
 import { isVerifiedChannelName, verifiedEntityName } from '../messaging/shared/channelIdentity.js';
@@ -226,7 +234,7 @@ import { mountMobileOpsRoutes } from './mobileOpsRoutes.js';
 import { joinTelegramHistory, withTelegramMediaForDevice } from './mobileConversationRoutes.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
 import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
-import { PROPOSABLE_FLOOR_ACTIONS, renderAuthorizationCard } from '../core/AuthorizationRequestStore.js';
+import { PROPOSABLE_FLOOR_ACTIONS, renderAuthorizationCard, hashProposal } from '../core/AuthorizationRequestStore.js';
 import type { AuthorizationRequestStore, AuthorizationRequest } from '../core/AuthorizationRequestStore.js';
 import { planTransferByNickname } from '../core/TransferByNickname.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
@@ -592,10 +600,11 @@ import type { QuotaManager } from '../monitoring/QuotaManager.js';
 import type { ThreadlineRouter } from '../threadline/ThreadlineRouter.js';
 import { evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
 import { isAutoAckBody, autoAckBodyRecognition, looksLikeAutoAckText } from '../threadline/autoAck.js';
+import { parseKindedAck } from '../threadline/requiredAck.js';
 import { wireTypeOf } from '../threadline/PeerUserMeantJudge.js';
 import type { HandshakeManager } from '../threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
-import { resolveChannels } from '../core/channelRegistry.js';
+import { mergeAgentChannel, resolveChannels, type ChannelReport } from '../core/channelRegistry.js';
 import { buildChannelDefinitions } from '../core/instarChannels.js';
 import { buildUserChannelDefinitions } from '../core/userChannels.js';
 import { evaluateSendGate, negotiatorLogDir } from '../threadline/NegotiatorGate.js';
@@ -721,6 +730,7 @@ import Database from 'better-sqlite3';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import { refuseUnsupportedFields } from './refuseUnsupportedFields.js';
 import { INITIATIVE_UPDATE_FIELDS } from '../core/InitiativeTracker.js';
+import { telegramTopicRef, topicRef } from '../messaging/shared/topicRef.js';
 
 /**
  * Build the /whoami request handler.
@@ -1236,6 +1246,9 @@ export interface RouteContext {
   /** ProactiveSwapMonitor (P1.3, pre-limit half) — moves a session off an account
    *  BEFORE it walls. Optional; the routes report enabled:false when absent. */
   proactiveSwapMonitor?: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor;
+  /** UsageWallRescue (usage-wall-rescue) — moves a session at its account's usage
+   *  wall to an account with room. Optional; the route reports enabled:false. */
+  usageWallRescue?: import('../core/UsageWallRescue.js').UsageWallRescue;
   /** InUseAccountResolver — which pool account the agent is currently running on
    *  (for the dashboard "in use" badge). Optional; the route lazily constructs a
    *  default when absent so it never 503s. */
@@ -1391,6 +1404,8 @@ export interface RouteContext {
   nativeHookIngest?: NativeHookEventIngest | null;
   /** Multi-route own names (docs/specs/mobile-multi-route.md); null when the flag is off. */
   mobileOwnNames?: import('../core/MobileOwnNames.js').MobileOwnNames | null;
+  /** The phone pairing service (docs/specs/mobile-native-permissions.md: the owner phone's Face ID-confirmed writes). */
+  mobilePairingService?: import('./mobilePairingRoutes.js').MobilePairingService | null;
   worktreeMonitor: WorktreeMonitor | null;
   subagentTracker: SubagentTracker | null;
   instructionsVerifier: InstructionsVerifier | null;
@@ -1439,12 +1454,16 @@ export interface RouteContext {
     secret: string;
     relaySuppressedByStandby: boolean;
     forward: ((command: RelayForwardCommand) => Promise<ForwardOutcome>) | null;
+    /** a2a-required-acknowledgment D4: one kinded ack through my relay-holding machine. */
+    forwardAck?: ((payload: import('../threadline/requiredAckService.js').ForwardAckPayload) => Promise<'sent' | 'refused'>) | null;
     counters: RelayForwardCounters;
   } | null;
   listenerManager: import('../threadline/ListenerSessionManager.js').ListenerSessionManager | null;
   /** Durable A2A delivery lifecycle + peer-health (A2A-DURABLE-DELIVERY-SPEC.md).
    *  Recording-only — never gates a send. Null only if SQLite open failed. */
   a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null;
+  /** A sender is never left guessing (docs/specs/a2a-required-acknowledgment.md). Null when the tracker failed. */
+  requiredAck?: import('../threadline/requiredAckService.js').RequiredAckService | null;
   /** Honest-delivery verdict counters (spec §1); read in the AUTHED branch of /health. Null when no relay client. */
   relayVerdictCounters?: (() => Record<string, number>) | null;
   /**
@@ -5610,6 +5629,10 @@ export function createRoutes(ctx: RouteContext): Router {
       if (ctx.a2aRelayForward) {
         base.threadline = { ...(base.threadline as object ?? {}), relayForward: { ...ctx.a2aRelayForward.counters } };
       }
+      // a2a-required-acknowledgment: this process's receipt counters (rollout evidence).
+      if (ctx.requiredAck) {
+        base.threadline = { ...(base.threadline as object ?? {}), requiredAck: { ...ctx.requiredAck.counters } };
+      }
       // Lifeline ingress secret: mode, arming, the observe exit rule and the
       // PERSISTED counters (they survive a restart). AUTHED only; no secret.
       try {
@@ -7938,7 +7961,7 @@ export function createRoutes(ctx: RouteContext): Router {
       ? ` The session DELETED ${deleted.length} accreted deliverable(s): ${clampPathList(deleted, 20)}.`
       : '';
     const text =
-      `⚠️ Autonomous run on topic ${rec.topicId} ended (${surface}) with ${paths.length} unbuilt accreted ` +
+      `⚠️ Autonomous run on ${topicRef(rec.topicId)} ended (${surface}) with ${paths.length} unbuilt accreted ` +
       `artifact(s) that were neither built, corroborated, nor ratified: ${clampPathList(paths)}.${deletedNote}` +
       (extra ? ` ${extra}` : '');
     const topicNum = Number(rec.topicId);
@@ -8137,7 +8160,7 @@ export function createRoutes(ctx: RouteContext): Router {
       void ctx.telegram
         ?.createAttentionItem({
           id: `scope-accretion-reregister-${topicId}`,
-          title: `Autonomous re-registration refused for topic ${topicId}`,
+          title: `Autonomous re-registration refused for ${topicRef(topicId)}`,
           summary: `A re-register arrived while run ${result.existingRunId} is still active and unexpired.`,
           priority: 'LOW',
           sourceContext: 'scope-accretion',
@@ -8341,7 +8364,7 @@ export function createRoutes(ctx: RouteContext): Router {
     autonomousRunStore.update(rec.topicId, rec.runId, (r) => {
       r.scopeAccretionOverride = { enabled, reason: String(body.reason).slice(0, 300), at: new Date().toISOString() };
     });
-    console.log(`[scope-accretion] operator PIN override for topic ${topic}: enabled=${enabled} (${String(body.reason).slice(0, 120)})`);
+    console.log(`[scope-accretion] operator PIN override for ${topicRef(topic)}: enabled=${enabled} (${String(body.reason).slice(0, 120)})`);
     scopeAccretionMetric('fired', `override-${enabled ? 'enable' : 'disable'}`);
     res.json({ ok: true, topic, enabled, runId: rec.runId });
   });
@@ -8738,7 +8761,7 @@ export function createRoutes(ctx: RouteContext): Router {
           scopeAccretionMetric('fired', 'run-identity-mismatch');
           res.json({
             met: false,
-            reason: `run-identity-mismatch: topic ${resolvedTopic} is registered to a different runId — the presented pair does not match the server's registration record`,
+            reason: `run-identity-mismatch: ${topicRef(resolvedTopic)} is registered to a different runId — the presented pair does not match the server's registration record`,
           });
           return;
         }
@@ -8746,7 +8769,7 @@ export function createRoutes(ctx: RouteContext): Router {
           armedRecord = byTopic;
           if (bodySessionId) autonomousRunStore.mapSession(bodySessionId, byTopic.topicId, byTopic.runId);
         } else if (!byTopic) {
-          console.log(`[scope-accretion] evaluate-completion for UNREGISTERED topic ${resolvedTopic} — accretion gate inert (honest degradation)`);
+          console.log(`[scope-accretion] evaluate-completion for UNREGISTERED ${topicRef(resolvedTopic)} — accretion gate inert (honest degradation)`);
         }
       }
 
@@ -8762,11 +8785,11 @@ export function createRoutes(ctx: RouteContext): Router {
             autonomousRunStore.update(armedRecord.topicId, armedRecord.runId, (r) => {
               r.conditionDivergenceFlagged = true;
             });
-            console.warn(`[scope-accretion] condition divergence for topic ${armedRecord.topicId}: body condition differs from the registered text — judging the REGISTERED condition (R36)`);
+            console.warn(`[scope-accretion] condition divergence for ${topicRef(armedRecord.topicId)}: body condition differs from the registered text — judging the REGISTERED condition (R36)`);
             void ctx.telegram
               ?.createAttentionItem({
                 id: `scope-accretion-condition-divergence-${armedRecord.topicId}-${armedRecord.runId}`,
-                title: `Autonomous run condition diverged mid-run (topic ${armedRecord.topicId})`,
+                title: `Autonomous run condition diverged mid-run (${topicRef(armedRecord.topicId)})`,
                 summary: 'The done-claim carried a condition text different from the one registered at setup. The server judges the REGISTERED condition; mid-run edits are ignored for accretion purposes.',
                 priority: 'NORMAL',
                 sourceContext: 'scope-accretion',
@@ -8849,7 +8872,7 @@ export function createRoutes(ctx: RouteContext): Router {
                   await ctx.telegram
                     .createAttentionItem({
                       id: `scope-accretion-breaker-${armedRecord.topicId}-${armedRecord.runId}`,
-                      title: `Scope-accretion breaker tripped (topic ${armedRecord.topicId})`,
+                      title: `Scope-accretion breaker tripped (${topicRef(armedRecord.topicId)})`,
                       summary: tripText,
                       priority: 'HIGH',
                       sourceContext: 'scope-accretion',
@@ -9046,7 +9069,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     const tmux = resolveTopicSession(String(topicId));
-    if (!tmux) { res.status(404).json({ error: `no session for topic ${topicId}` }); return; }
+    if (!tmux) { res.status(404).json({ error: `no session for ${topicRef(topicId)}` }); return; }
     const ok = ctx.sessionManager.sendInput(tmux, `/goal ${condition}`);
     if (ok) setGoalMode(String(topicId), 'native');
     res.status(ok ? 200 : 502).json({ ok, topicId, mode: ok ? 'native' : 'unchanged' });
@@ -9056,13 +9079,13 @@ export function createRoutes(ctx: RouteContext): Router {
     const { topicId } = req.body ?? {};
     if (!topicId) { res.status(400).json({ error: '"topicId" required' }); return; }
     const tmux = resolveTopicSession(String(topicId));
-    if (!tmux) { res.status(404).json({ error: `no session for topic ${topicId}` }); return; }
+    if (!tmux) { res.status(404).json({ error: `no session for ${topicRef(topicId)}` }); return; }
     const ok = ctx.sessionManager.sendInput(tmux, '/goal clear');
     if (ok) setGoalMode(String(topicId), '');
     res.status(ok ? 200 : 502).json({ ok, topicId });
   });
 
-  router.get('/capabilities', (_req, res) => {
+  router.get('/capabilities', async (_req, res) => {
     // /capabilities used to be a 440-line hand-curated object literal — the
     // documented self-discovery primitive, but the only structural enforcement
     // of "what should be in here" lived as policy in a unit-test allowlist.
@@ -9102,6 +9125,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const setupIntegrity = ProcessIntegrity.getInstance();
     const capabilityBlocks = buildAllCapabilityBlocks({ ctx, scripts, secretDrop });
     res.json({
+      threadline: { agent: await agentThreadlineStatus(), localRelayConnected: ctx.threadlineRelayClient?.connectionState === 'connected' },
       project: ctx.config.projectName,
       version: setupIntegrity?.runningVersion || ctx.config.version || '0.0.0',
       port: ctx.config.port,
@@ -11800,7 +11824,7 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       return;
     }
-    const session = ctx.state.listSessions().find((x) => x.tmuxSession === req.params.name);
+    const session = ctx.state.findSessionByTmux(req.params.name);
     if (!session) { res.status(404).json({ error: `Session "${req.params.name}" is not recorded on this machine` }); return; }
     const filePath = findSessionTranscript(session, ctx);
     if (!filePath) { res.status(404).json({ error: 'This session has no conversation record yet', reason: 'no-transcript' }); return; }
@@ -12245,6 +12269,38 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.sessionManager.memoryPrivacyStatus());
   });
 
+  // The owner's one-time repair (spec: "Owner recovery"). The token is the auth, the
+  // same posture as Secret Drop. GET changes nothing, because apps fetch links to build
+  // previews; only the page's POST spends the token. The body is ignored on purpose.
+  const memoryFixEsc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
+  const memoryFixPage = (title: string, body: string): string => {
+    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${memoryFixEsc(title)}</title></head><body style="font-family:system-ui;max-width:32rem;margin:2rem auto;padding:0 1rem"><h1 style="font-size:1.3rem">${memoryFixEsc(title)}</h1>${body}</body></html>`;
+  };
+  router.get('/memory-privacy/fix/:token', (req, res) => {
+    const recovery = ctx.sessionManager.memoryPrivacyRecovery();
+    res.set('Cache-Control', 'no-store').set('Referrer-Policy', 'no-referrer');
+    if (!recovery?.linkIsLive(req.params.token)) {
+      res.status(410).send(memoryFixPage('This link has expired', '<p>Ask the agent again in a private chat for a new one.</p>'));
+      return;
+    }
+    const cause = `<p>${memoryFixEsc(recovery.describe(req.params.token))}</p>`;
+    res.send(recovery.canRepair(req.params.token)
+      ? memoryFixPage('Fix private memory', `${cause}<p>This points the agent at that working Claude Code. Memory stays private. Sessions already running are not touched.</p><form method="post"><button type="submit" style="font-size:1rem;padding:.6rem 1rem">Fix it</button></form>`)
+      : memoryFixPage('How to fix private memory', cause));
+  });
+  router.post('/memory-privacy/fix/:token', async (req, res) => {
+    const recovery = ctx.sessionManager.memoryPrivacyRecovery();
+    res.set('Cache-Control', 'no-store').set('Referrer-Policy', 'no-referrer');
+    const outcome = recovery ? await recovery.redeem(req.params.token) : 'expired';
+    if (outcome === 'fixed') {
+      res.send(memoryFixPage('Fixed', '<p>Private memory is working. Send your message again and the agent will answer.</p>'));
+    } else if (outcome === 'not-fixed') {
+      res.status(500).send(memoryFixPage('Not fixed', `<p>${memoryFixEsc(recovery?.describe() ?? '')}</p>`));
+    } else {
+      res.status(410).send(memoryFixPage('This link has expired', '<p>Ask the agent again in a private chat for a new one.</p>'));
+    }
+  });
+
   router.post('/sessions/spawn', spawnLimiter, async (req, res) => {
     const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole } = req.body;
 
@@ -12399,17 +12455,17 @@ export function createRoutes(ctx: RouteContext): Router {
           // @silent-fallback-ok: reported in the response as `ownership:"error"`;
           // the spawn already succeeded and the duplicate reconciler still converges.
           topicOwnership = 'error';
-          console.warn(`[sessions/spawn] ownership claim failed for topic ${parsedTopicId}: ${err instanceof Error ? err.message : String(err)}`);
+          console.warn(`[sessions/spawn] ownership claim failed for ${topicRef(parsedTopicId)}: ${err instanceof Error ? err.message : String(err)}`);
         }
         if (topicOwnership === 'owned-elsewhere') {
-          console.warn(`[sessions/spawn] topic ${parsedTopicId} is owned by another machine; spawned here without claiming (possible duplicate copy)`);
+          console.warn(`[sessions/spawn] ${topicRef(parsedTopicId)} is owned by another machine; spawned here without claiming (possible duplicate copy)`);
         }
         try {
           ctx.topicProfile?.spawnBriefs?.record(parsedTopicId, session.tmuxSession, prompt);
         } catch (err) {
           // @silent-fallback-ok: the brief only feeds a later profile respawn's
           // continuation; the spawn itself already succeeded.
-          console.warn(`[sessions/spawn] could not record spawn brief for topic ${parsedTopicId}: ${err instanceof Error ? err.message : String(err)}`);
+          console.warn(`[sessions/spawn] could not record spawn brief for ${topicRef(parsedTopicId)}: ${err instanceof Error ? err.message : String(err)}`);
         }
         if (topicSpawnProfile.applied) {
           try {
@@ -12420,7 +12476,7 @@ export function createRoutes(ctx: RouteContext): Router {
           } catch (err) {
             // @silent-fallback-ok: without the record the boot sweep leaves the
             // session alone (unknown launch profile is not divergence).
-            console.warn(`[sessions/spawn] could not record launched profile for topic ${parsedTopicId}: ${err instanceof Error ? err.message : String(err)}`);
+            console.warn(`[sessions/spawn] could not record launched profile for ${topicRef(parsedTopicId)}: ${err instanceof Error ? err.message : String(err)}`);
           }
         }
       }
@@ -12631,7 +12687,7 @@ export function createRoutes(ctx: RouteContext): Router {
             if (!result.ok) {
               console.warn(`[sessions/restart-all] refused sessionName=${sessionName} code=${result.code} message="${result.message}"`);
             } else {
-              console.log(`[sessions/restart-all] refreshed sessionName=${sessionName} -> ${result.newSessionName} (topic ${result.topicId})`);
+              console.log(`[sessions/restart-all] refreshed sessionName=${sessionName} -> ${result.newSessionName} (${topicRef(result.topicId)})`);
             }
           })
           .catch(err => {
@@ -12695,6 +12751,8 @@ export function createRoutes(ctx: RouteContext): Router {
       // agent-origin ('self') and rides the normal governor ceilings once the
       // kill sink enforces.
       recordPrincipalKillProvenance(req, req.params.id);
+      // Before the kill, so a regular check in the gap can't restart it.
+      try { holdSetupForSession(ctx.config.stateDir, target.tmuxSession, ctx.telegram?.getTopicForSession(target.tmuxSession)); } catch { /* @silent-fallback-ok — the stop itself must never fail over this */ }
       const result = await ctx.terminateSessionAuthority(target.id, 'operator-kill', {
         origin: 'operator',
         finalStatus: 'killed',
@@ -13604,7 +13662,7 @@ export function createRoutes(ctx: RouteContext): Router {
     try { local = { machineId: ctx.desktopLocked.machineId, ...await ctx.desktopLocked.status() }; }
     catch (error) {
       // @silent-fallback-ok — the helper's state could not be read; answer 503 with the reason instead of hanging the request.
-      const code = error instanceof Error && /^mac-desktop-host-[a-z-]+$/.test(error.message) ? error.message : 'locked-state-unreadable';
+      const code = error instanceof Error && /^mac-desktop-host-[a-z0-9-]+$/.test(error.message) ? error.message : 'locked-state-unreadable';
       res.status(503).json({ error: 'Locked-screen state could not be read on this machine', code });
       return;
     }
@@ -13680,7 +13738,7 @@ export function createRoutes(ctx: RouteContext): Router {
       .filter(([id, binding]) => /^\d+$/.test(id) && binding.platform === 'telegram')
       .map(([id]) => {
         const name = ctx.telegram?.getTopicName(Number(id))?.trim();
-        return { topicId: Number(id), label: name || `Telegram topic ${id}` };
+        return { topicId: Number(id), label: name || telegramTopicRef(id) };
       });
     const trustedMachines = [...machines, ...peerMachines].map(machine => {
       const key = ctx.desktopTargetSigningKey?.(machine.machineId);
@@ -15177,6 +15235,9 @@ export function createRoutes(ctx: RouteContext): Router {
   // approve its own request). The operator-facing card is SERVER-authored from the
   // structured proposal + the registry name — never agent free-text (deceptive-summary
   // defense). Spec: docs/specs/OPERATOR-AUTHORIZATION-REQUEST-SPEC.md.
+  const authReqUnavailableResult = (): { status: number; body: unknown } | null =>
+    (!ctx.authorizationRequests || !ctx.authorizationRequests.enabled)
+      ? { status: 503, body: { error: 'authorization-requests feature not enabled' } } : null;
   const authReqUnavailable = (res: import('express').Response): boolean => {
     if (!ctx.authorizationRequests || !ctx.authorizationRequests.enabled) {
       res.status(503).json({ error: 'authorization-requests feature not enabled' });
@@ -15253,16 +15314,19 @@ export function createRoutes(ctx: RouteContext): Router {
 
   // Operator APPROVES — PIN-GATED. The single authority-conferring step. The PIN covers
   // the whole execution incl. the carrier-mandate auto-issue (no second prompt).
-  router.post('/authorization-requests/:id/approve', (req, res) => {
-    if (authReqUnavailable(res)) return;
-    if (!ctx.coordination) { res.status(503).json({ error: 'coordination mandate engine unavailable' }); return; }
-    if (!checkMandatePin(req, res)) {
-      featureEvidence.record('monitoring.authorizationRequests', { kind: 'held', reason: 'approve refused: PIN gate', context: { requestId: req.params.id } });
-      return;
-    }
+  // The body after the PIN check is shared with the owner phone's Face ID-confirmed approve
+  // (docs/specs/mobile-native-permissions.md §3.4): `by` names which proof stood in for the
+  // operator. Synchronous end to end (store read → execute → write), no await in between.
+  type AuthReqActor = { kind: 'pin' } | { kind: 'owner-phone'; deviceId: string; proposalHash?: string };
+  const approveAuthorizationRequest = (id: string, by: AuthReqActor): { status: number; body: unknown } => {
+    if (authReqUnavailableResult()) return authReqUnavailableResult()!;
+    if (!ctx.coordination) return { status: 503, body: { error: 'coordination mandate engine unavailable' } };
+    const via: Record<string, string> = by.kind === 'owner-phone' ? { via: 'owner-phone', deviceId: by.deviceId } : {};
     const ar = ctx.authorizationRequests!;
-    const result = ar.store.approve(req.params.id, {
+    const result = ar.store.approve(id, {
       execute: (proposal) => {
+        // The owner phone signed the exact proposal it showed (docs/specs/mobile-native-permissions.md §3.3).
+        if (by.kind === 'owner-phone' && hashProposal(proposal) !== by.proposalHash) throw new Error('request-changed');
         // Re-check the allowlist (defends against a config change while pending).
         if (!PROPOSABLE_FLOOR_ACTIONS.includes(proposal.floorAction)) throw new Error('action-no-longer-proposable');
         // FRESH-resolve the grantee against the registry (rejects phantom / reflects a rename).
@@ -15290,19 +15354,44 @@ export function createRoutes(ctx: RouteContext): Router {
           agentFp: proposal.grantedToSlackUserId,
           action: `grant-floor:${proposal.floorAction}`,
           decision: 'allow',
-          reason: `approved via authorization-request, authorizedBy ${ar.ownerDisplay} until ${expiresAt}`,
+          reason: by.kind === 'owner-phone'
+            ? `approved via authorization-request, authorizedBy ${ar.ownerDisplay} until ${expiresAt}, from the owner's phone (device ${by.deviceId}) with a Face ID / passcode proof`
+            : `approved via authorization-request, authorizedBy ${ar.ownerDisplay} until ${expiresAt}`,
         });
         return mandate.id;
       },
     });
     if (!result.ok) {
-      featureEvidence.record('monitoring.authorizationRequests', { kind: result.status === 409 ? 'error' : 'held', reason: `approve refused: ${result.error}`, context: { requestId: req.params.id, status: result.status } });
-      res.status(result.status).json({ error: result.error }); return;
+      featureEvidence.record('monitoring.authorizationRequests', { kind: result.status === 409 ? 'error' : 'held', reason: `approve refused: ${result.error}`, context: { requestId: id, status: result.status, ...via } });
+      return { status: result.status, body: { error: result.error } };
     }
-    featureEvidence.record('monitoring.authorizationRequests', { kind: 'fired', reason: result.alreadyApproved ? 'already approved' : 'approved', context: { requestId: result.request.id, floorAction: result.request.proposal.floorAction, durationMs: result.request.proposal.durationMs, alreadyApproved: result.alreadyApproved ?? false } });
-    res.status(result.alreadyApproved ? 200 : 201).json({
-      approved: true, alreadyApproved: result.alreadyApproved ?? false, request: decorateAuthReq(result.request),
-    });
+    featureEvidence.record('monitoring.authorizationRequests', { kind: 'fired', reason: result.alreadyApproved ? 'already approved' : 'approved', context: { requestId: result.request.id, floorAction: result.request.proposal.floorAction, durationMs: result.request.proposal.durationMs, alreadyApproved: result.alreadyApproved ?? false, ...via } });
+    return {
+      status: result.alreadyApproved ? 200 : 201,
+      body: { approved: true, alreadyApproved: result.alreadyApproved ?? false, request: decorateAuthReq(result.request) },
+    };
+  };
+  const denyAuthorizationRequest = (id: string, reason: string, by: AuthReqActor): { status: number; body: unknown } => {
+    if (authReqUnavailableResult()) return authReqUnavailableResult()!;
+    const via: Record<string, string> = by.kind === 'owner-phone' ? { via: 'owner-phone', deviceId: by.deviceId } : {};
+    const result = ctx.authorizationRequests!.store.deny(id, reason);
+    if (!result.ok) {
+      featureEvidence.record('monitoring.authorizationRequests', { kind: 'held', reason: `deny refused: ${result.error}`, context: { requestId: id, status: result.status, ...via } });
+      return { status: result.status, body: { error: result.error } };
+    }
+    featureEvidence.record('monitoring.authorizationRequests', { kind: 'fired', reason: 'denied', context: { requestId: result.request.id, floorAction: result.request.proposal.floorAction, ...via } });
+    return { status: 200, body: { denied: true, request: decorateAuthReq(result.request) } };
+  };
+
+  router.post('/authorization-requests/:id/approve', (req, res) => {
+    if (authReqUnavailable(res)) return;
+    if (!ctx.coordination) { res.status(503).json({ error: 'coordination mandate engine unavailable' }); return; }
+    if (!checkMandatePin(req, res)) {
+      featureEvidence.record('monitoring.authorizationRequests', { kind: 'held', reason: 'approve refused: PIN gate', context: { requestId: req.params.id } });
+      return;
+    }
+    const r = approveAuthorizationRequest(req.params.id, { kind: 'pin' });
+    res.status(r.status).json(r.body);
   });
 
   // Operator DECLINES — PIN-GATED. denyReason REQUIRED.
@@ -15310,13 +15399,8 @@ export function createRoutes(ctx: RouteContext): Router {
     if (authReqUnavailable(res)) return;
     if (!checkMandatePin(req, res)) return;
     const reason = typeof (req.body ?? {}).denyReason === 'string' ? req.body.denyReason : '';
-    const result = ctx.authorizationRequests!.store.deny(req.params.id, reason);
-    if (!result.ok) {
-      featureEvidence.record('monitoring.authorizationRequests', { kind: 'held', reason: `deny refused: ${result.error}`, context: { requestId: req.params.id, status: result.status } });
-      res.status(result.status).json({ error: result.error }); return;
-    }
-    featureEvidence.record('monitoring.authorizationRequests', { kind: 'fired', reason: 'denied', context: { requestId: result.request.id, floorAction: result.request.proposal.floorAction } });
-    res.json({ denied: true, request: decorateAuthReq(result.request) });
+    const r = denyAuthorizationRequest(req.params.id, reason, { kind: 'pin' });
+    res.status(r.status).json(r.body);
   });
 
   // Proposing agent WITHDRAWS its own still-pending request (Bearer).
@@ -15576,7 +15660,7 @@ export function createRoutes(ctx: RouteContext): Router {
     res.type('html').send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Approve MCP change</title>
 <style>body{font-family:system-ui,sans-serif;max-width:30rem;margin:2rem auto;padding:0 1rem}button{font-size:1.1rem;padding:.6rem 1.2rem;width:100%}input{font-size:1.1rem;padding:.5rem;width:100%;box-sizing:border-box}</style></head>
 <body><h2>Approve a tool change?</h2>
-<p>The agent wants to <b>${mcpHtmlEscape(verb)}</b> the <b>${mcpHtmlEscape(view.server)}</b> tool for this conversation (topic ${view.topicId}).</p>
+<p>The agent wants to <b>${mcpHtmlEscape(verb)}</b> the <b>${mcpHtmlEscape(view.server)}</b> tool for this conversation (${topicRef(view.topicId)}).</p>
 <p>Enter your dashboard PIN to approve. The agent cannot approve this itself.</p>
 <form id="mcpForm">
 <p><input id="mcpPin" type="password" inputmode="numeric" autocomplete="off" placeholder="Dashboard PIN" required></p>
@@ -16087,8 +16171,62 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   registerRecommendedServiceRoutes(router, {
     ledger: () => ctx.recommendedServicesLedger ?? null,
     stateDir: ctx.config.stateDir,
-    catalog: ctx.recommendedServicesCatalog,
+    catalog: ctx.recommendedServicesCatalog ?? catalogWithProving(
+      ctx.config.recommendedServices?.provingRecipes,
+      () => !!ctx.config.developmentAgent || classifyLocation({ projectDir: ctx.config.projectDir, record: readThrowawayRecord(ctx.config.projectDir) }).throwaway,
+    ),
     pinEntryRefused: (req) => ctx.pinEntryRefusedHere?.(req) ?? false,
+    port: ctx.config.port,
+    readSecret: (name) => { const v = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).get(name); return typeof v === 'string' && v ? v : null; },
+    writeSecret: (name, value) => { new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).set(name, value); },
+    // Its own conversation, because setup needs the person: for a credential, a decision, and to say it works.
+    startSetup: async (service, name, brief, existingTopic) => {
+      if (!ctx.telegram) throw new Error('setup needs a Telegram conversation to reach the person');
+      const topicName = `Set up ${name}`;
+      const topicId = existingTopic ?? (await ctx.telegram.findOrCreateForumTopic(topicName, undefined, { origin: 'system', label: 'recommended-service-setup' })).topicId;
+      // Setup runs with the owner's reach, so it can't serve a place whose readers may not see owner memory.
+      if (['place', 'person', 'none'].includes(ctx.sessionManager.memoryAudienceKind?.({ telegramTopicId: topicId }) ?? '')) {
+        throw new Error('this conversation serves people who may not see owner memory');
+      }
+      const sessionName = await ctx.sessionManager.spawnInteractiveSession(brief, `setup-${service}`, { telegramTopicId: topicId, awaitInitialInjection: true });
+      ctx.telegram.registerTopicSession(topicId, sessionName, topicName);
+      // Without this a peer's router could place the person's reply on itself and start a second copy.
+      ctx.claimTopicOwnershipOnSpawn?.(topicId);
+      return { sessionName, topicId };
+    },
+    stopSetup: (sessionName) => {
+      const session = ctx.sessionManager.listRunningSessions().find((s) => s.tmuxSession === sessionName);
+      return !session || ctx.sessionManager.killSession(session.id);
+    },
+    sessionForTopic: (topicId) => ctx.telegram?.getSessionForTopic(topicId) ?? null,
+    isSetupRunning: (sessionName) => ctx.sessionManager.listRunningSessions().some((s) => s.tmuxSession === sessionName),
+    notifyStuck: async (service, name) => {
+      if (!ctx.telegram) return false;
+      const words = `I tried to set up ${name} and it stopped each time, so I've stopped trying. Your yes still stands. Nothing is wrong with the rest of your agent, and I'll pick this up when you message me about it.`;
+      try {
+        await ctx.telegram.createAttentionItem({
+          id: `recommended-service-setup:${service}`, conditionKey: `recommended-service-setup:${service}`,
+          title: `Setting up ${name} has stopped`, summary: words, description: words,
+          priority: 'NORMAL', category: 'recommended-services', sourceContext: 'agent',
+        } as import('../messaging/TelegramAdapter.js').AttentionObservation);
+        return true;
+      } catch (err) {
+        DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: `Send the stopped notice for ${service}`, fallback: 'The next check tries again.', reason: err instanceof Error ? err.message : String(err), impact: 'The person has not been told that setup stopped.' });
+        return false;
+      }
+    },
+    clearStuck: (service) => { void ctx.telegram?.updateAttentionStatus(`recommended-service-setup:${service}`, 'DONE', { silent: true }).catch((err) => { DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: `Close the stopped notice for ${service}`, fallback: 'The notice stays open.', reason: err instanceof Error ? err.message : String(err), impact: 'An old notice may still show.' }); }); },
+    tellOwner: (text) => {
+      const topicId = ctx.telegram?.getLifelineTopicId?.();
+      if (topicId !== undefined) void ctx.telegram?.sendToTopic(topicId, text).catch((err) => { DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: 'Tell the owner a service was already working', fallback: 'The dashboard row still shows it.', reason: err instanceof Error ? err.message : String(err), impact: 'The person was not told.' }); });
+    },
+    finishCommitment: (id) => { ctx.commitmentTracker?.deliver(id); },
+    withdrawCommitment: (id, reason) => { ctx.commitmentTracker?.withdraw(id, reason); },
+    onReady: (reconcile) => {
+      const run = (): void => { void reconcile().catch((err) => { DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: 'Run the regular setup check', fallback: 'The next check tries again.', reason: err instanceof Error ? err.message : String(err), impact: 'A no from another machine or a dead session waits for the next check.' }); }); };
+      setImmediate(run);
+      setInterval(run, 5 * 60_000).unref();
+    },
     checkPin: (req, res) => checkMandatePin(req, res),
     // Reachable with no bearer token, so it holds the unlock route's limits too: the same refusal on
     // an insecure connection, and the same cap across every source address.
@@ -16114,9 +16252,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     },
     openCommitment: (name, service) => {
       if (!ctx.commitmentTracker) throw new Error('commitment tracker unavailable');
-      // The beacon only follows a commitment that has a topic to report to.
-      const topicId = ctx.telegram?.getLifelineTopicId?.();
-      ctx.commitmentTracker.record({ type: 'one-time-action', source: 'agent', topicId, beaconEnabled: topicId !== undefined, cadenceMs: 86_400_000, userRequest: `Set up ${name}, after the owner said yes`, agentResponse: `I own setup of ${service} until it passes verification or the owner says no. The person only approves decisions or supplies credentials.` });
+      // A record, not a beacon: the setup check notices a stalled session, and routine recovery stays quiet.
+      return ctx.commitmentTracker.record({ type: 'one-time-action', source: 'agent', userRequest: `Set up ${name}, after the owner said yes`, agentResponse: `I own setup of ${service} until it passes verification or the owner says no. The person only approves decisions or supplies credentials.` }).id;
     },
   });
   registerEcosystemIdeaRoutes(router, { ecosystem: () => ctx.ecosystemIdeas?.() ?? null, checkPin: (req, res) => checkMandatePin(req, res) });
@@ -19626,7 +19763,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       const sessionName = resolveTopicSession(String(topicId));
       const topicSession = sessionName
-        ? ctx.state.listSessions().find((s) => s.tmuxSession === sessionName)
+        ? ctx.state.findSessionByTmux(sessionName)
         : undefined;
       const topicJobSlug = topicSession?.jobSlug;
       if (topicJobSlug && messageKind === undefined) {
@@ -19641,7 +19778,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           ctx.pendingRelayLookup?.(deliveryId) === true;
         if (!isValidRedrive) {
           console.log(
-            `[telegram/reply] breadcrumb: kindless send to topic ${topicId} mapping to job session (slug ${topicJobSlug}) — possible preflight bypass (observability only)`,
+            `[telegram/reply] breadcrumb: kindless send to ${topicRef(topicId)} mapping to job session (slug ${topicJobSlug}) — possible preflight bypass (observability only)`,
           );
         }
       }
@@ -19652,7 +19789,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // ORIGINATING machine (the index is process-local by construction).
         if (!outboundAdvisoryAudit.hasRecentPreflight(metadataJobSlug || topicJobSlug, topicId)) {
           console.log(
-            `[telegram/reply] breadcrumb: automated send to topic ${topicId} (slug ${metadataJobSlug || topicJobSlug}) with no recent preflight row — possible class-spoof (observability only)`,
+            `[telegram/reply] breadcrumb: automated send to ${topicRef(topicId)} (slug ${metadataJobSlug || topicJobSlug}) with no recent preflight row — possible class-spoof (observability only)`,
           );
         }
       }
@@ -19681,7 +19818,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // a successful send (below), so a failed send's retry isn't lost.
     const originOwnsContent = ctx.telegramOrigin?.service.hasProducerContext() === true;
     if (!originOwnsContent && !allowDuplicate && outboundContentDedup.isDuplicate(topicId, text)) {
-      console.log(`[telegram/reply] suppressed duplicate content for topic ${topicId} (identical text within window)`);
+      console.log(`[telegram/reply] suppressed duplicate content for ${topicRef(topicId)} (identical text within window)`);
       res.json({ ok: true, topicId, suppressedDuplicate: true });
       return;
     }
@@ -19735,7 +19872,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // reserves → no leak); resolved by record() on success or releaseReservation()
     // in the catch on failure. allowDuplicate bypasses it (no reserve, no block).
     if (!originOwnsContent && !allowDuplicate && !outboundContentDedup.tryReserve(topicId, text)) {
-      console.log(`[telegram/reply] suppressed in-flight duplicate for topic ${topicId} (identical text already sending/sent)`);
+      console.log(`[telegram/reply] suppressed in-flight duplicate for ${topicRef(topicId)} (identical text already sending/sent)`);
       res.json({ ok: true, topicId, suppressedDuplicate: true });
       return;
     }
@@ -19813,7 +19950,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (!isProxy && !isSystemTemplate) {
         const credited = creditUsherOnOutbound(ctx.usherSignalStore, topicId, text);
         if (credited.length) {
-          console.log(`[Usher] ${credited.length} signal(s) marked acted (use) on topic ${topicId}`);
+          console.log(`[Usher] ${credited.length} signal(s) marked acted (use) on ${topicRef(topicId)}`);
         }
       }
       // ── Exactly-once ingress: commit reply_committed (spec §8 G3a) ──
@@ -24851,7 +24988,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // (autonomousRunSuspended:false) — the transfer still proceeds (the
         // pin is the user's explicit, confirmed intent), and the run's own
         // stop hook keeps it honest on the old machine.
-        console.warn(`[pool/transfer] autonomous-run suspend failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
+        console.warn(`[pool/transfer] autonomous-run suspend failed for ${topicRef(topicId)}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     // ── WS5.3 (escalation-rides-topic) SOURCE capture ───────────────────────
@@ -27671,7 +27808,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         `Discover field names with: node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} --names. ` +
         `Default is non-destructive (safe to retry); append --consume after successful handoff. ` +
         `DO NOT use raw curl against /secrets/retrieve — that pattern leaks the value into the Bash tool transcript. ` +
-        `Then acknowledge receipt to the user conversationally via Telegram topic ${topicId}.`;
+        `Then acknowledge receipt to the user conversationally via ${telegramTopicRef(topicId)}.`;
 
       const sdRegistryPath = path.join(ctx.config.stateDir, 'topic-session-registry.json');
       let targetSession: string | null = null;
@@ -27779,14 +27916,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                 const session = sessions.find(s => s.tmuxSession === newSessionName);
                 if (session?.claudeSessionId) {
                   ctx.topicResumeMap!.save(topicId, session.claudeSessionId, newSessionName);
-                  console.log(`[secret-drop] Proactive UUID save: ${session.claudeSessionId} for topic ${topicId} (source: hook)`);
+                  console.log(`[secret-drop] Proactive UUID save: ${session.claudeSessionId} for ${topicRef(topicId)} (source: hook)`);
                 }
               } catch (err) {
                 console.error(`[secret-drop] Proactive UUID save failed:`, err);
               }
             }, 8000);
           }
-          console.log(`[secret-drop] Spawned "${newSessionName}" for secret receipt on topic ${topicId}`);
+          console.log(`[secret-drop] Spawned "${newSessionName}" for secret receipt on ${topicRef(topicId)}`);
         }).catch((err) => {
           console.error(`[secret-drop] Session spawn failed:`, err);
         });
@@ -28275,11 +28412,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               // Clear this topic's autonomous job so it doesn't zombie-resume.
               try { stopAutonomousTopic(ctx.config.stateDir, String(topicId), ctx.state.getCoherenceJournal()); } catch { /* best-effort */ }
               if (killOutcome) {
-                console.log(`[telegram-forward] sentinel emergency-stop: killed session "${sessionName}" for topic ${topicId}`);
+                console.log(`[telegram-forward] sentinel emergency-stop: killed session "${sessionName}" for ${topicRef(topicId)}`);
               } else {
                 console.error(
                   `[telegram-forward] sentinel emergency-stop: KILL FAILED for session "${sessionName}" ` +
-                  `(topic ${topicId}) — the session was NOT killed. The stop record is still preserved.`,
+                  `(${topicRef(topicId)}) — the session was NOT killed. The stop record is still preserved.`,
                 );
               }
             }
@@ -28308,7 +28445,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // pause
           if (sessionName && ctx.telegram?.onSentinelPauseSession) {
             ctx.telegram.onSentinelPauseSession(sessionName);
-            console.log(`[telegram-forward] sentinel pause: paused session "${sessionName}" for topic ${topicId}`);
+            console.log(`[telegram-forward] sentinel pause: paused session "${sessionName}" for ${topicRef(topicId)}`);
           }
           ctx.telegram?.sendToTopic(Number(topicId), sessionName
             ? 'Session paused.\n\nSend a message to resume.'
@@ -28382,7 +28519,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const currentOwner = ctx.sessionOwnershipRegistry.ownerOf(String(topicId));
         if (currentOwner && currentOwner !== ctx.meshSelfId) {
           shouldClaimInbound = false;
-          console.log(`[telegram-forward] exactly-once: skipped non-owner claim for topic ${topicId}; owner=${currentOwner} self=${ctx.meshSelfId}`);
+          console.log(`[telegram-forward] exactly-once: skipped non-owner claim for ${topicRef(topicId)}; owner=${currentOwner} self=${ctx.meshSelfId}`);
         }
       } catch (err) {
         console.error(`[telegram-forward] ownership read error (fail-open, claiming/routing normally): ${err instanceof Error ? err.message : err}`);
@@ -28477,7 +28614,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       typeof messageId === 'number' ? messageId : Number(messageId) || null,
     );
     if (lifelineSignedByAgent) {
-      console.log(`[telegram-forward] topic ${topicId} message ${messageId ?? '?'} is agent-signed by "${lifelineSignedByAgent}" — operator auto-bind skipped`);
+      console.log(`[telegram-forward] ${topicRef(topicId)} message ${messageId ?? '?'} is agent-signed by "${lifelineSignedByAgent}" — operator auto-bind skipped`);
     }
     // Lifeline-secret gate: belt and braces. The identity was already removed
     // above for an untrusted request; this bind also checks the flag itself.
@@ -28588,7 +28725,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           fs.mkdirSync(failDir, { recursive: true });
           const failFile = path.join(failDir, `failed-${topicId}-${Date.now()}.txt`);
           fs.writeFileSync(failFile, text);
-          console.error(`[telegram→session] Injection FAILED for topic ${topicId} into ${targetSession}. Message saved to ${failFile}`);
+          console.error(`[telegram→session] Injection FAILED for ${topicRef(topicId)} into ${targetSession}. Message saved to ${failFile}`);
           res.json({ ok: false, error: 'injection-failed', failFile, session: targetSession });
         } else {
           // Truncation detection — check if this message looks truncated and inject a hint
@@ -28644,7 +28781,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           } catch { /* fall through to default */ }
         }
         topicName = await resolveTopicNameAcrossPool(topicId) ?? (verifiedTopicName(topicId, topicName) ? topicName : `topic-${topicId}`);
-        console.log(`[telegram-forward] No live session for topic ${topicId}, spawning "${topicName}"...`);
+        console.log(`[telegram-forward] No live session for ${topicRef(topicId)}, spawning "${topicName}"...`);
 
         // Fetch thread history so auto-spawned sessions have full conversational context
         const historyLines: string[] = [];
@@ -28667,7 +28804,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               historyLines.push(`--- End Thread History ---`);
             }
           } catch (err) {
-            console.error(`[telegram-forward] Failed to fetch thread history for topic ${topicId}:`, err);
+            console.error(`[telegram-forward] Failed to fetch thread history for ${topicRef(topicId)}:`, err);
           }
         }
 
@@ -28679,7 +28816,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const contextLines = [
           ...historyLines,
           ``,
-          `This session was auto-created for Telegram topic ${topicId}.`,
+          `This session was auto-created for ${telegramTopicRef(topicId)}.`,
         ];
         const tmpDir = getTelegramInboundDir(ctx.config.projectDir);
         fs.mkdirSync(tmpDir, { recursive: true });
@@ -28694,7 +28831,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // TopicResumeMap is authoritative — skip LLM validation for this source.
         let resumeSessionId = ctx.topicResumeMap?.get(topicId) ?? undefined;
         if (resumeSessionId) {
-          console.log(`[telegram-forward] Found resume UUID for topic ${topicId}: ${resumeSessionId} (source: TopicResumeMap — trusted)`);
+          console.log(`[telegram-forward] Found resume UUID for ${topicRef(topicId)}: ${resumeSessionId} (source: TopicResumeMap — trusted)`);
         }
 
         // G3 — record the lease-gated-spawn decision for this SECONDARY spawn
@@ -28717,7 +28854,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           });
           sharedG3SoakLedger.record(g3, new Date().toISOString());
           if (g3.action !== 'spawn') {
-            console.log(`[g3-spawn-gate] (telegram-forward) topic ${topicId}: action=${g3.action} reason=${g3.reason} (record-only — local re-entry, no forward seam)`);
+            console.log(`[g3-spawn-gate] (telegram-forward) ${topicRef(topicId)}: action=${g3.action} reason=${g3.reason} (record-only — local re-entry, no forward seam)`);
           }
         } catch (err) {
           // @silent-fallback-ok — the soak record is observability only; a record
@@ -28753,14 +28890,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                 const session = sessions.find(s => s.tmuxSession === newSessionName);
                 if (session?.claudeSessionId) {
                   ctx.topicResumeMap!.save(topicId, session.claudeSessionId, newSessionName);
-                  console.log(`[telegram-forward] Proactive UUID save: ${session.claudeSessionId} for topic ${topicId} (source: hook)`);
+                  console.log(`[telegram-forward] Proactive UUID save: ${session.claudeSessionId} for ${topicRef(topicId)} (source: hook)`);
                 }
               } catch (err) {
                 console.error(`[telegram-forward] Proactive UUID save failed:`, err);
               }
             }, 8000);
           }
-          console.log(`[telegram-forward] Spawned "${newSessionName}" for topic ${topicId}`);
+          console.log(`[telegram-forward] Spawned "${newSessionName}" for ${topicRef(topicId)}`);
         }).catch((err) => {
           console.error(`[telegram-forward] Spawn failed:`, err);
         });
@@ -28967,7 +29104,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
 
       await ctx.telegram.relayPrompt(topicId, prompt);
-      console.log(`[PlanRelay] Relayed plan prompt ${promptId} to topic ${topicId} for session ${sessionName}`);
+      console.log(`[PlanRelay] Relayed plan prompt ${promptId} to ${topicRef(topicId)} for session ${sessionName}`);
       res.json({ ok: true, topicId, promptId });
     } catch (err) {
       console.error(`[PlanRelay] Failed:`, err instanceof Error ? err.message : err);
@@ -32103,7 +32240,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const boundObservationTopicId = observationBind?.ok ? topicId : undefined;
     const boundSessionName = observationBind?.ok && observationBind.boundBy?.startsWith('session:')
       ? observationBind.boundBy.slice('session:'.length) : undefined;
-    const boundSession = boundSessionName ? ctx.state.listSessions().find((session) => session.tmuxSession === boundSessionName) : undefined;
+    const boundSession = boundSessionName ? ctx.state.findSessionByTmux(boundSessionName) : undefined;
     const observationNow = new Date();
     const sessionSnapshot = boundSession ? {
       state: String(boundSession.status),
@@ -36496,7 +36633,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const topicId = typeof c.topicId === 'number' ? c.topicId : null;
     if (topicId !== null && ctx.telegram) {
       try { await ctx.telegram.sendToTopic(topicId, headline, { provenance: 'automation' }); told = true; }
-      catch (err) { console.warn(`[commitments/decide] could not post the decision in topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`); }
+      catch (err) { console.warn(`[commitments/decide] could not post the decision in ${topicRef(topicId)}: ${err instanceof Error ? err.message : String(err)}`); }
       // Hand the decision to the conversation's session so the agent acts on it.
       // It carries no sender identity: it is a record of a dashboard tap, never
       // an operator binding or command authority.
@@ -36511,7 +36648,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           receivedAt: new Date().toISOString(),
           metadata: { messageThreadId: topicId, senderUnverified: true, viaDashboardDecision: true, telegramMessageId: '' },
         } as never);
-      } catch (err) { console.warn(`[commitments/decide] could not hand the decision to topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`); }
+      } catch (err) { console.warn(`[commitments/decide] could not hand the decision to ${topicRef(topicId)}: ${err instanceof Error ? err.message : String(err)}`); }
     }
     res.json({ ok: true, id: c.id, decision, postedInConversation: told });
   });
@@ -37669,6 +37806,134 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
       bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     });
+    // Native Passwords & keys (docs/specs/mobile-native-secrets.md): names and state only, owner phone or
+    // bearer; waiting requests proxied-on-read across peers, key names this machine's. No value, length,
+    // token or Secret Drop link leaves this route.
+    mountMobileSecretsRoutes(router, {
+      pending: () => secretDrop.listPending(),
+      keys: async () => {
+        const configPath = path.join(ctx.config.projectDir, '.instar', 'config.json');
+        return resolveMobileKeys({
+          inventoryOn: resolveDevAgentGate(readSelfKnowledgeFlags(configPath).enabled, ctx.config),
+          inventory: async () => {
+            const { BootSelfKnowledge, DEFAULT_MAX_BYTES } = await import('../core/BootSelfKnowledge.js');
+            return new BootSelfKnowledge({ stateDir: ctx.config.stateDir, configPath }).sessionContext(DEFAULT_MAX_BYTES, { full: true });
+          },
+          sync: ctx.secretSync,
+        });
+      },
+      vaultBroken: () => !!ctx.secretSync?.enabled && ctx.secretSync.vaultStatus?.().status === 'decrypt-failed',
+      sync: () => {
+        const ss = ctx.secretSync;
+        if (!ss?.enabled) return { state: 'off' };
+        return { state: 'on', pushEnabled: !!ss.pushEnabled, peers: ss.syncTargets() };
+      },
+      peers: () => peerSummaries('/mobile/secrets?scope=local'),
+      offlineMachineIds: () => {
+        if (!ctx.meshSelfId) return [];
+        const online = new Set([...onlinePeers().map((p) => p.machineId), ctx.meshSelfId]);
+        return (ctx.machinePoolRegistry?.getCapacities() ?? []).map((m) => m.machineId).filter((id) => !online.has(id));
+      },
+      nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+      topicName: (id) => ctx.telegram?.getTopicName(id),
+      bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    });
+    // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): trimmed
+    // read-only summaries, owner phone or bearer, proxied-on-read across peers.
+    mountMobileProposalsInsideRoutes(router, {
+      proposals: () => ({ state: 'ok', data: loadAllProposals(ctx.config.stateDir) }),
+      peerProposals: () => peerSummaries('/mobile/proposals?scope=local'),
+      activity: async () => {
+        const on = ctx.config.integratedBeing?.enabled !== false;
+        return on && ctx.sharedStateLedger ? { state: 'ok', data: { entries: await ctx.sharedStateLedger.recent({ limit: ACTIVITY_WINDOW }) } } : { state: 'off' };
+      },
+      insights: () => (ctx.failureLedger ? { state: 'ok', data: { insights: ctx.failureLedger.listInsights({ limit: 1000 }) } } : { state: 'off' }),
+      week: () => (ctx.failureLedger ? { state: 'ok', data: ctx.failureLedger.analyze({ sinceMs: Date.now() - 7 * 86400_000 }) } : { state: 'off' }),
+      claims: () => (ctx.completionClaimVerifier ? { state: 'ok', data: ctx.completionClaimVerifier.readAudit(CLAIMS_WINDOW) } : { state: 'off' }),
+      reviews: () => (ctx.classReviewStore ? { state: 'ok', data: { records: ctx.classReviewStore.list({ limit: 20 }), open: ctx.classReviewStore.countOpen() } } : { state: 'off' }),
+      peerInside: () => peerSummaries('/mobile/inside?scope=local'),
+      offlineMachineIds: () => {
+        if (!ctx.meshSelfId) return [];
+        const online = new Set([...onlinePeers().map((p) => p.machineId), ctx.meshSelfId]);
+        return (ctx.machinePoolRegistry?.getCapacities() ?? []).map((m) => m.machineId).filter((id) => !online.has(id));
+      },
+      nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+      bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    });
+    // Native Permission slips and What I'm allowed to do (docs/specs/mobile-native-permissions.md):
+    // trimmed reads (owner phone or bearer; approvals and slips proxied-on-read across peers) and the
+    // owner phone's Face ID-confirmed approve, decline and switch, which run the console's own paths.
+    mountMobilePermissionsRoutes(router, {
+      pairing: () => ctx.mobilePairingService ?? null,
+      config: () => ctx.config,
+      stateDir: ctx.config.stateDir,
+      bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+      localSlips: () => {
+        const ar = ctx.authorizationRequests;
+        const approvals = !ar || !ar.enabled || !ctx.coordination
+          ? { state: 'off' as const, rows: [] }
+          : {
+            state: 'ok' as const,
+            rows: ar.store.list('pending').map((r) => {
+              const principal = ar.resolvePrincipal(r.proposal.grantedToSlackUserId);
+              return {
+                id: r.id, createdByAgent: r.createdByAgent, createdAt: r.createdAt, requestExpiresAt: r.requestExpiresAt,
+                // The phone's headline never falls back to a raw Slack user id; a row whose person is not a
+                // registered name carries no approve hash (approve would refuse it as unknown-user anyway).
+                headline: renderAuthorizationCard(r, principal?.name ?? 'a person').headline,
+                reason: r.reason, heldOnThisMachine: r.createdOnMachine === ar.machineId,
+                proposalHash: hashProposal(r.proposal),
+                recipientKnown: !!principal?.registered && !!principal.name && principal.name !== r.proposal.grantedToSlackUserId,
+              };
+            }),
+          };
+        const co = ctx.coordination;
+        const mandates = co ? co.store.list() : [];
+        const slips = co
+          ? { state: 'ok' as const, mandates: mandates as unknown as Record<string, unknown>[], invalidIds: mandates.filter((m) => !co.store.verifyAuthorship(m)).map((m) => m.id) }
+          : { state: 'off' as const, mandates: [], invalidIds: [] };
+        return { approvals, slips };
+      },
+      personName: (uid) => ctx.authorizationRequests?.resolvePrincipal(uid)?.name ?? null,
+      peerSlips: () => peerSummaries('/mobile/permissions/slips?scope=local'),
+      peerFeatures: () => peerSummaries('/mobile/permissions/features?scope=local'),
+      offlineMachineIds: () => {
+        if (!ctx.meshSelfId) return [];
+        const online = new Set([...onlinePeers().map((p) => p.machineId), ctx.meshSelfId]);
+        return (ctx.machinePoolRegistry?.getCapacities() ?? []).map((m) => m.machineId).filter((id) => !online.has(id));
+      },
+      nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+      features: () => (ctx.featureRegistry
+        ? { state: 'ok', list: withEffective(ctx.featureRegistry.getAllFeatures('default')) as unknown as Record<string, unknown>[] }
+        : { state: 'off', list: [] }),
+      approve: (id, proposalHash, deviceId) => {
+        // As the console: no buttons (here, a refusal) for a request asked on another machine.
+        const ar = ctx.authorizationRequests;
+        const r = ar?.enabled ? ar.store.get(id) : null;
+        if (r && ar && r.createdOnMachine !== ar.machineId) return { status: 409, body: { error: 'asked-elsewhere' } };
+        // The phone signed the proposal it showed; approveAuthorizationRequest re-checks that hash on the
+        // very proposal it executes, so a request changed since the phone read it is refused (409 request-changed).
+        return approveAuthorizationRequest(id, { kind: 'owner-phone', deviceId, proposalHash });
+      },
+      deny: (id, reason, deviceId) => {
+        const ar = ctx.authorizationRequests;
+        const r = ar?.enabled ? ar.store.get(id) : null;
+        if (r && ar && r.createdOnMachine !== ar.machineId) return { status: 409, body: { error: 'asked-elsewhere' } };
+        return denyAuthorizationRequest(id, reason, { kind: 'owner-phone', deviceId });
+      },
+      featureDefinition: (id) => (ctx.featureRegistry?.getDefinition(id) as unknown as Record<string, unknown> | undefined) ?? null,
+      setFeature: async (req, id, to, deviceId, stillAuthorized) => {
+        if (!ctx.featureRegistry) return { status: 501, body: { error: 'FeatureRegistry not initialized' } };
+        const def = ctx.featureRegistry.getDefinition(id);
+        if (!def) return { status: 404, body: { error: { code: 'FEATURE_NOT_FOUND', message: 'That feature is not in the registry.' } } };
+        if (def.switchable === false) return { status: 409, body: { error: { code: 'FEATURE_NOT_SWITCHABLE', message: def.honestyNote ?? 'This switch is read-only in this version.' } } };
+        const outcome = await operatorSwitchFeature(req, id, 'default', to, `${to === 'enabled' ? 'Turned on' : 'Turned off'} from the Instar app (owner phone, device ${deviceId}, Face ID / passcode proof)`, stillAuthorized);
+        const code = outcome.result.success ? null : outcome.result.error?.code;
+        if (code === 'permission-actions-off' || code === 'console-pin-not-set') return { status: 503, body: { error: code } };
+        if (code === 'owner-phone-required') return { status: 403, body: { error: code } };
+        return featureTransitionAnswer(outcome, id, 'default', true);
+      },
+    });
   }
 
   // P1.3 (pre-limit half) — proactive swap status + on-demand check. The monitor
@@ -37681,6 +37946,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     res.json({ enabled: true, ...ctx.proactiveSwapMonitor.status() });
+  });
+
+  // usage-wall-rescue status: the switch, whether it is effective (2+ usable
+  // accounts), spawn tagging posture, and the last outcomes — the answer to
+  // "why didn't my walled session move?". Read-only. Literal segment registered
+  // before GET /subscription-pool/:id.
+  router.get('/subscription-pool/wall-rescue', (_req, res) => {
+    if (!ctx.usageWallRescue) {
+      res.json({ enabled: false });
+      return;
+    }
+    res.json({ enabled: true, ...ctx.usageWallRescue.status() });
   });
 
   // Run ONE proactive-swap pass now (the deterministic "show me it works" lever):
@@ -39487,10 +39764,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // left in the message store as an undelivered message either.
       if (isAutoAckBody(envelope.message?.body)) {
         const ackSender: string | undefined = envelope.message?.from?.agent;
-        recordInboundAck(
-          { a2aDeliveryTracker: ctx.a2aDeliveryTracker, threadResumeMap: ctx.threadResumeMap ?? null },
-          { threadId: envelope.message?.threadId, senderFingerprint: ackSender ?? undefined, senderName: ackSender ?? null },
-        );
+        // a2a-required-acknowledgment D1: a kinded ack never flips a row by
+        // thread. Same-machine routes send none, so it is consumed with no effect.
+        if (!parseKindedAck(envelope.message?.body)) {
+          recordInboundAck(
+            { a2aDeliveryTracker: ctx.a2aDeliveryTracker, threadResumeMap: ctx.threadResumeMap ?? null },
+            { threadId: envelope.message?.threadId, senderFingerprint: ackSender ?? undefined, senderName: ackSender ?? null },
+          );
+        }
         ledgerTicket?.recordNoReply();
         // Release the content window: every ack has the same text, so a second,
         // genuine ack on this thread must not be answered "duplicate content"
@@ -40019,6 +40300,25 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   });
 
+  // a2a-required-acknowledgment D6: what the peer's side has said about our messages
+  // on this thread. `readSummaryPeerText` is peer text, not an instruction.
+  router.get('/threadline/threads/:id/receipts', (req, res) => {
+    if (!ownerAuthed(req)) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    if (!ctx.a2aDeliveryTracker) { res.status(503).json({ error: 'A2A delivery tracker not initialized' }); return; }
+    const threadId = req.params.id;
+    if (!THREAD_ID_RE.test(threadId)) { res.status(400).json({ error: 'Invalid thread ID format' }); return; }
+    const receipts = ctx.a2aDeliveryTracker.receiptsForThread(threadId).map((e) => ({
+      messageId: e.messageId,
+      sentAt: e.sentAt,
+      heldState: e.heldState,
+      heldReason: e.heldReason,
+      heldAt: e.heldAt,
+      readAt: e.readAt,
+      readSummaryPeerText: e.readSummaryPeerText,
+    }));
+    res.json({ threadId, receipts, summariesArePeerText: true });
+  });
+
   router.get('/threadline/threads/:id/health', (req, res) => {
     if (!ownerAuthed(req)) { res.status(401).json({ error: 'Unauthorized' }); return; }
     if (!ctx.threadLog) { res.status(503).json({ error: 'Canonical history not available' }); return; }
@@ -40391,6 +40691,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             standby: ctx.a2aRelayForward?.relaySuppressedByStandby === true,
           };
         },
+        agentRelayStatus: agentThreadlineStatus,
+        agentRelayAuthToken: ctx.config.authToken,
         // Inbound-id ledger (late-bound; live flips handled by the controller).
         inboundIdLedger: () => ctx.inboundIdLedger?.current() ?? null,
         inboundIdLedgerDaemonDeferred: () => ctx.inboundIdLedgerDaemonDeferred?.() ?? false,
@@ -40554,10 +40856,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // for why that invariant is the whole point.
   // The /channels report, shared with the phone's GET /mobile/agents
   // (docs/specs/mobile-native-plans-people.md). Never throws: a failure is the registry's own verdict.
-  async function channelRegistryReport(): Promise<Record<string, unknown>> {
+  async function channelRegistryReport(localOnly = false): Promise<Record<string, unknown>> {
     try {
       const relayClient = ctx.threadlineRelayClient;
       const defs = buildChannelDefinitions({
+        agentRelayStatus: localOnly ? undefined : agentThreadlineStatus,
         relayStatus: () => {
           if (!relayClient) return null;
           const connected = relayClient.connectionState === 'connected';
@@ -40612,7 +40915,35 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             : null,
       });
       const report = await resolveChannels([...defs, ...userDefs]);
-      return { advisory: true, ...report };
+      if (localOnly) return { advisory: true, scope: 'local', ...report };
+      // Slack runs on one connected machine. A standby's absent adapter cannot
+      // answer whether the agent's Slack channel works. Ask every known peer's
+      // LOCAL channel view; any dark peer keeps a negative verdict unknown.
+      const allUrls = ctx.resolvePeerUrls?.() ?? [];
+      const urls = allUrls.slice(0, 8);
+      const roster = (ctx.listPoolMachines?.() ?? []).filter(p => p.machineId !== ctx.meshSelfId);
+      const missingPeers = roster.filter(p => !urls.some(u => u.machineId === p.machineId)).length
+        + allUrls.slice(8).filter(p => !roster.some(r => r.machineId === p.machineId)).length;
+      const peerSlack = await Promise.all(urls.map(async peer => {
+        let channel: ChannelReport | null = null;
+        try {
+          const response = await fetch(`${peer.url.replace(/\/+$/, '')}/channels?scope=local`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken ?? ''}` }, signal: AbortSignal.timeout(2500),
+          });
+          if (response.ok) {
+            const body = await response.json() as { channels?: ChannelReport[] };
+            channel = body.channels?.find(c => c.id === 'user-slack') ?? null;
+          }
+        } catch { /* named missing peer below keeps the answer unknown */ }
+        const name = verifiedEntityName(peer.machineId, roster.find(p => p.machineId === peer.machineId)?.nickname) ?? peer.machineId;
+        return { machine: name, report: channel };
+      }));
+      report.channels = report.channels.map(channel => channel.id === 'user-slack'
+        ? mergeAgentChannel(channel, peerSlack, missingPeers) : channel);
+      report.summary.working = report.channels.filter(c => c.state === 'working').length;
+      report.summary.unknown = report.channels.filter(c => c.state === 'unknown').length;
+      report.summary.unusable = report.channels.filter(c => ['broken', 'half-built', 'reachable-no-credential'].includes(c.state)).length;
+      return { advisory: true, scope: 'agent', ...report };
     } catch (error) {
       // A registry that 500s teaches nothing. Report the failure as the registry's own verdict.
       return {
@@ -40625,8 +40956,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   }
 
-  router.get('/channels', async (_req, res) => {
-    res.status(200).json(await channelRegistryReport());
+  router.get('/channels', async (req, res) => {
+    if (req.query.scope !== undefined && req.query.scope !== 'local') return res.status(400).json({ error: 'invalid-channel-scope' });
+    res.status(200).json(await channelRegistryReport(req.query.scope === 'local'));
   });
 
   // ── Agent identity (a2a-single-agent-identity §1.2 / §Multi-machine posture) ──
@@ -40694,13 +41026,41 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   // ── Threadline Status (auth-gated) ──────────────────────────────────
-  router.get('/threadline/status', (_req, res) => {
+  async function agentThreadlineStatus() {
+    const selfId = ctx.meshSelfId ?? null;
+    const roster = ctx.listPoolMachines?.() ?? [];
+    const urls = new Map((ctx.resolvePeerUrls?.() ?? []).map(p => [p.machineId, p.url]));
+    const peers = roster.filter(p => p.machineId !== selfId).map(p => ({
+      machineId: p.machineId,
+      nickname: verifiedEntityName(p.machineId, p.nickname) ?? undefined,
+      url: urls.get(p.machineId) ?? null,
+    }));
+    // A peer may be known by the URL resolver before the roster catches up.
+    for (const [machineId, url] of urls) {
+      if (machineId !== selfId && !peers.some(p => p.machineId === machineId)) {
+        peers.push({ machineId, nickname: undefined, url });
+      }
+    }
+    return resolveAgentRelayStatus({
+      localConnected: ctx.threadlineRelayClient?.connectionState === 'connected',
+      localUnknown: !ctx.threadlineRelayClient && !!ctx.listenerManager,
+      localMachineId: selfId,
+      fingerprint: new ThreadlineIdentityManager(ctx.config.stateDir).get()?.fingerprint ?? null,
+      peers,
+      expectPeers: ctx.a2aRelayForward?.relaySuppressedByStandby === true,
+    });
+  }
+
+  router.get('/threadline/status', async (_req, res) => {
     const relayClient = ctx.threadlineRelayClient;
     const connected = relayClient?.connectionState === 'connected';
+    const agent = await agentThreadlineStatus();
     const listenerState = ctx.listenerManager?.getState() ?? { active: false, readerLive: false, lastReaderHeartbeatAt: null, state: 'not-configured', messagesHandled: 0, queueDepth: 0, rotationId: '', rotationStartedAt: '' };
 
     res.json({
-      ready: connected,
+      agent,
+      ready: agent.state === 'unknown' ? null : agent.state === 'reachable',
+      localMachine: { relayConnected: connected, relaySuppressedByStandby: ctx.a2aRelayForward?.relaySuppressedByStandby === true },
       relay: {
         connected,
         fingerprint: relayClient?.fingerprint ?? null,
@@ -41593,6 +41953,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                     // break the send (the message was already admitted/submitted above). Logged.
                     console.warn(`[relay-send] A2A delivery record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
                   }
+                  // a2a-required-acknowledgment D5: only an accepted send closes a watch.
+                  if (accepted) ctx.requiredAck?.onSessionSendAccepted(resolvePeerFingerprint(localTarget) || localTarget.name, effectiveThreadId);
                   if (waitForReply) {
                     const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds, cancelReplyWaitOnClose);
                     res.json({
@@ -41739,6 +42101,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             } else {
               ctx.listenerManager.releaseReplyClaim(inReplyTo, replyClaimOwner);
             }
+          }
+          // a2a-required-acknowledgment D5: a forwarded send closes on the machine
+          // that originated it, where the session and its watch row are.
+          if (answer.status < 400 && answer.body.accepted === true) {
+            const closePeer = typeof answer.body.resolvedAgent === 'string' && answer.body.resolvedAgent ? answer.body.resolvedAgent : nicknameResolvedFp;
+            const closeThread = typeof answer.body.threadId === 'string' && answer.body.threadId ? answer.body.threadId : forwardThreadId;
+            ctx.requiredAck?.onSessionSendAccepted(closePeer, closeThread);
           }
           // A >=400 answer (502 refusal, a holder 4xx) settles nothing; the
           // finish handler releases the reply claim so a retry is allowed.
@@ -41898,6 +42267,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // the send (the message was already submitted above). Logged.
         console.warn(`[relay-send] A2A delivery record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
       }
+      // a2a-required-acknowledgment D3: a same-id resend resets that id's receipts.
+      if (relayLegResend) {
+        try { ctx.a2aDeliveryTracker?.resetHeldForResend(relayMsgId); } catch { /* @silent-fallback-ok — recording-only */ }
+      }
       // Robustness Phase 2 (D-B): append the relay-submitted outbound leg to the
       // canonical log through the funnel. The wire createdAt is stamped inside the
       // relay client, so this end's createdAt is best-effort (symmetry on the relay
@@ -41995,6 +42368,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }).catch(() => { /* swallow — bridge is relay-only */ });
       }
       if (ctx.listenerManager && typeof inReplyTo === 'string') ctx.listenerManager.releaseReplyClaim(inReplyTo, replyClaimOwner);
+      // a2a-required-acknowledgment D5: where both transports arrive, so a session's
+      // reply closes the watch. Only an accepted send closes, and a forwarded one
+      // closes on the machine that originated it. The server's own auto-ack and the
+      // collaboration re-drive do not come through this route.
+      if (!forwardedRequest && (relayStatus === 'delivered' || relayStatus === 'queued')) {
+        ctx.requiredAck?.onSessionSendAccepted(resolvedId, effectiveRelayThreadId);
+      }
 
       let deliveryOutcome = relayStatus === 'delivered'
         ? "handed to the peer's relay connection; not yet confirmed read"
@@ -42050,6 +42430,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
       if (waitForReply) {
         const reply = await replyPromise;
+        // a2a-required-acknowledgment D6: on a timeout, say what the peer's side has
+        // told us. Neither receipt kind resolves the reply wait.
+        let receipt: Record<string, unknown> | undefined;
+        if (reply === null) {
+          try {
+            const row = ctx.a2aDeliveryTracker?.get(relayMsgId);
+            if (row?.heldState) {
+              receipt = { heldState: row.heldState, heldReason: row.heldReason, heldAt: row.heldAt, readAt: row.readAt, readSummaryPeerText: row.readSummaryPeerText };
+            }
+          } catch { /* @silent-fallback-ok — the send's own answer stands */ }
+        }
         res.json({
           success: true,
           accepted: reply !== null || relayStatus === 'delivered' || relayStatus === 'queued',
@@ -42060,6 +42451,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           deliveryPath: 'relay',
           deliveryOutcome: reply !== null ? 'reply received' : deliveryOutcome,
           ...honest,
+          ...(receipt ? { receipt } : {}),
           reply,
           topicLinkageStamped: resolvedOriginTopicId !== undefined,
         });
@@ -42082,6 +42474,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         success: false,
         error: err instanceof Error ? err.message : 'Send failed',
       });
+    }
+  });
+
+  // ── a2a-required-acknowledgment D4: the session's acknowledgment ─────────
+  // Under the global Bearer. `threadline_ack` calls this on both transports, because
+  // a stdio tool runs in a subprocess with no tracker. Success means the `read` is
+  // durably accepted as a pending row, written before the watch closes.
+  router.post('/threadline/ack', async (req, res) => {
+    if (!ctx.requiredAck) {
+      res.status(503).json({ sent: false, error: 'Acknowledgments are not available on this agent right now.' });
+      return;
+    }
+    try {
+      const answer = await ctx.requiredAck.acceptSessionAck({
+        threadId: req.body?.threadId,
+        ackRefs: req.body?.ackRefs,
+        summary: req.body?.summary,
+      });
+      res.status(answer.status).json(answer.body);
+    } catch (err) {
+      console.warn(`[required-ack] acknowledgment not accepted: ${err instanceof Error ? err.message : String(err)}`);
+      res.status(503).json({ sent: false, error: 'The acknowledgment could not be recorded. Try again, or reply on the thread.' });
     }
   });
 
@@ -42128,15 +42542,30 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // as /threadline/relay-send above).
   router.post('/threadline/relay-discover', async (req, res) => {
     const relayClient = ctx.threadlineRelayClient;
+    const filter = (req.body && typeof req.body === 'object') ? req.body.filter : undefined;
     if (!relayClient || relayClient.connectionState !== 'connected') {
+      if (req.query.scope !== 'local') {
+        const agent = await agentThreadlineStatus();
+        const holderUrl = (ctx.resolvePeerUrls?.() ?? []).find(p => p.machineId === agent.throughMachineId)?.url;
+        if (agent.state === 'reachable' && holderUrl) {
+          try {
+            const response = await fetch(`${holderUrl.replace(/\/+$/, '')}/threadline/relay-discover?scope=local`, {
+              method: 'POST', headers: { Authorization: `Bearer ${ctx.config.authToken ?? ''}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ filter }), signal: AbortSignal.timeout(5000),
+            });
+            const body = await response.json();
+            return res.status(response.status).json(body);
+          } catch { /* the holder went away; report uncertainty below */ }
+        }
+        return res.status(503).json({ success: false, error: 'Agent relay holder could not be reached', agentState: 'unknown' });
+      }
       res.status(503).json({
         success: false,
-        error: 'Relay not connected',
+        error: 'Local relay not connected',
         connectionState: relayClient?.connectionState ?? 'absent',
       });
       return;
     }
-    const filter = (req.body && typeof req.body === 'object') ? req.body.filter : undefined;
     try {
       const agents = await relayClient.discover(filter);
       res.json({
@@ -42786,6 +43215,44 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     return result;
   };
 
+  /**
+   * The operator's switch (a fresh PIN-unlocked dashboard session, or the owner phone's Face
+   * ID-confirmed action — docs/specs/mobile-native-permissions.md §3.4): `operatorSet`, then the
+   * setting follows it, one switch at a time per feature (the same chain as every transition).
+   */
+  const operatorSwitchFeature = (req: import('express').Request, featureId: string, userId: string, to: 'enabled' | 'disabled', context: string | undefined,
+    stillAuthorized?: () => string | null) =>
+    serializeFeatureSwitch(featureId, async () => {
+      // A switch that waited behind another one re-checks its authority right before it runs
+      // (the owner phone's: still an active owner phone, the feature still on).
+      const refusal = stillAuthorized?.() ?? null;
+      if (refusal) return { result: { success: false, featureId, error: { code: refusal, message: 'This change is no longer authorized.' } } as import('../core/FeatureRegistry.js').TransitionResult, apply: null };
+      const result = ctx.featureRegistry!.operatorSet(featureId, userId, to, { context });
+      if (!result.success) return { result, apply: null };
+      // The transition landed; now make the setting follow it. The recorded choice
+      // stays even if the setting change is refused — `apply` and `effective` say so.
+      const apply = await applyFeatureSetting(req, featureId, userId, result.newState ?? '');
+      return { result, apply };
+    });
+  /** The transition route's answer for an outcome (shared with the owner phone's switch). */
+  const featureTransitionAnswer = (
+    outcome: { result: import('../core/FeatureRegistry.js').TransitionResult; apply: unknown },
+    featureId: string, userId: string, operatorSwitch: boolean,
+  ): { status: number; body: unknown } => {
+    if (!outcome.result.success) {
+      const code = outcome.result.error?.code;
+      const status = code === 'FEATURE_NOT_FOUND' ? 404
+        : code === 'INVALID_TRANSITION' ? 422
+        : code === 'CONSENT_REQUIRED' ? 422
+        : 400;
+      return { status, body: { error: outcome.result.error } };
+    }
+    return {
+      status: 200,
+      body: { ...outcome.result, viaOperatorSwitch: operatorSwitch, apply: outcome.apply, effective: featureEffective(featureId, userId) },
+    };
+  };
+
   router.get('/features', (req, res) => {
     if (!ctx.featureRegistry) {
       res.status(501).json({ error: 'FeatureRegistry not initialized' });
@@ -42951,36 +43418,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(401).json({ error: { code: 'OPERATOR_PROOF_INVALID', message: 'Your dashboard unlock has expired or is not valid here. Unlock with your PIN again and retry.' } });
       return;
     }
-    const outcome = await serializeFeatureSwitch(req.params.id, async () => {
-      const result = operatorSwitch
-        ? ctx.featureRegistry!.operatorSet(req.params.id, userId, to, { context })
-        : ctx.featureRegistry!.transition(req.params.id, userId, to, {
-            trigger,
-            consentRecord,
-            context,
-            activationChallenge,
-          });
-      if (!result.success) return { result, apply: null };
-      // The transition landed; now make the setting follow it. The recorded choice
-      // stays even if the setting change is refused — `apply` and `effective` say so.
-      const apply = await applyFeatureSetting(req, req.params.id, userId, result.newState ?? '');
-      return { result, apply };
-    });
-    if (!outcome.result.success) {
-      const code = outcome.result.error?.code;
-      const status = code === 'FEATURE_NOT_FOUND' ? 404
-        : code === 'INVALID_TRANSITION' ? 422
-        : code === 'CONSENT_REQUIRED' ? 422
-        : 400;
-      res.status(status).json({ error: outcome.result.error });
-      return;
-    }
-    res.json({
-      ...outcome.result,
-      viaOperatorSwitch: operatorSwitch,
-      apply: outcome.apply,
-      effective: featureEffective(req.params.id, userId),
-    });
+    const outcome = operatorSwitch
+      ? await operatorSwitchFeature(req, req.params.id, userId, to, context)
+      : await serializeFeatureSwitch(req.params.id, async () => {
+        const result = ctx.featureRegistry!.transition(req.params.id, userId, to, {
+          trigger,
+          consentRecord,
+          context,
+          activationChallenge,
+        });
+        if (!result.success) return { result, apply: null };
+        // The transition landed; now make the setting follow it. The recorded choice
+        // stays even if the setting change is refused — `apply` and `effective` say so.
+        const apply = await applyFeatureSetting(req, req.params.id, userId, result.newState ?? '');
+        return { result, apply };
+      });
+    const r = featureTransitionAnswer(outcome, req.params.id, userId, operatorSwitch);
+    res.status(r.status).json(r.body);
   });
 
   router.delete('/features/discovery-data', (req, res) => {

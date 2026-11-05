@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 export interface DesktopAuditEvent {
-  kind: 'start' | 'stop' | 'leave-unlocked';
+  kind: 'start' | 'stop' | 'leave-unlocked' | 'secret-refused';
   grantId: string;
   machineId: string;
   operatorUid: string;
@@ -13,6 +13,13 @@ export interface DesktopAuditEvent {
   inputBucket?: 'none' | '1-9' | '10-99' | '100+';
   /** leave-unlocked only: true when the tap beat the relock guard. */
   acknowledged?: boolean;
+  /** secret-refused only: the refusal word (never the password or its length). */
+  reason?: string;
+}
+
+/** A refusal word as the helper and the target name them; anything else is recorded as "other". */
+export function auditReason(reason: string): string {
+  return /^[a-z][a-z0-9-]{0,47}$/.test(reason) ? reason : 'other';
 }
 
 export class DesktopAccessAudit {
@@ -33,6 +40,7 @@ export class DesktopAccessAudit {
       ...(event.authMethod ? { authMethod: event.authMethod } : {}),
       ...(event.inputBucket ? { inputBucket: event.inputBucket } : {}),
       ...(event.acknowledged !== undefined ? { acknowledged: event.acknowledged } : {}),
+      ...(event.reason !== undefined ? { reason: auditReason(event.reason) } : {}),
     };
     fs.appendFileSync(file, JSON.stringify(entry) + '\n', { mode: 0o600 });
   }

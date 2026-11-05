@@ -54,6 +54,7 @@ import { AspAuthorshipJoin, type MessageAuthorship } from '../core/AspAuthorship
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
 import { normalizeInboundThread, inboundTopicId, toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from './telegramTopicSpace.js';
 import { admitItemToHub, attentionPriorityRank, recordHeldHubPost, resolveHubFilterMode, type AttentionHubFilterMode } from './attentionHubPolicy.js';
+import { topicRef } from './shared/topicRef.js';
 import {
   attentionConditionKeyOf, classifyAttentionLifecycle, decideAttentionExpiry, isOpenAttentionStatus, mayReopenInPlace,
   planAttentionSupersessions, resolveAttentionLifecycleConfig,
@@ -383,13 +384,10 @@ export interface AttentionItem {
   /** How the item was closed, as given on the status change (PATCH /attention/:id `resolution`). */
   resolution?: string;
   /**
-   * Routing lane. When `'agent-health'`, this is a routine SELF-HEALTH /
-   * housekeeping notice about the agent's OWN internal state (a stale-looking
-   * session, a peer it can't reach, etc.) rather than something the USER must act
-   * on. Such items are routed into ONE calm, persistently-named "🩺 Agent Health"
-   * topic from the very first item — they never spawn their own per-item topic
-   * (even under budget, even if mis-tagged HIGH), and same-entity re-escalations
-   * are suppression-deduped so the lane stays quiet. Absent ⇒ today's behavior.
+   * Routing lane. Agent Health describes the agent's own internal state.
+   * Routine observations stay in the attention record; only an explicit
+   * `needsUser` decision permits a Telegram post to the shared Agent Health
+   * topic. No per-item topic is created. Absent ⇒ ordinary routing.
    */
   lane?: 'agent-health';
   /**
@@ -856,7 +854,7 @@ export class TelegramAdapter implements MessagingAdapter {
    * invariant that avoids the 409-poller-conflict incident). Returns the sent
    * message's SendResult, or null if the relay could not deliver.
    */
-  public outboundRelay: ((topicId: number, text: string, options?: { silent?: boolean; kindMetadata?: Record<string, unknown>; provenance?: Exclude<MessageProvenance, 'user'> }) => Promise<SendResult | null>) | null = null;
+  public outboundRelay: ((topicId: number, text: string, options?: { silent?: boolean; formatMode?: 'html'; kindMetadata?: Record<string, unknown>; provenance?: Exclude<MessageProvenance, 'user'> }) => Promise<SendResult | null>) | null = null;
 
   /**
    * True when a `sendToTopic` will RELAY through the lease holder rather than
@@ -1285,7 +1283,7 @@ export class TelegramAdapter implements MessagingAdapter {
         const claimed = linkedTopic !== null;
         if (filterUnclaimed && claimed) continue;
         const status = s.alive ? '\u2705' : '\u274c';
-        const claimTag = claimed ? ` (topic ${linkedTopic})` : ' \u{1f7e1} unclaimed';
+        const claimTag = claimed ? ` (${topicRef(linkedTopic)})` : ' \u{1f7e1} unclaimed';
         lines.push(`${status} ${s.name}${claimTag}`);
       }
       if (lines.length === 0) {
@@ -1677,6 +1675,18 @@ export class TelegramAdapter implements MessagingAdapter {
     } catch { /* history is best-effort here; the send outcome is already decided */ }
   }
 
+  /** A held standby reply was later confirmed by the lease holder. Record the
+   * Telegram receipt in the topic owner's history; no new send occurs here. */
+  recordRecoveredOutbound(topicId: number, text: string, messageId: number, provenance: Exclude<MessageProvenance, 'user'> = 'automation'): void {
+    if (!Number.isSafeInteger(topicId) || topicId < 1 || !Number.isSafeInteger(messageId) || messageId < 1) return;
+    this.appendToLog({
+      messageId, topicId, text, fromUser: false, forwarded: false,
+      timestamp: new Date().toISOString(),
+      sessionName: this.topicToSession.get(topicId) ?? null,
+      provenance,
+    });
+  }
+
   /**
    * Send files into a topic (docs/specs/mobile-native-chat-media.md §4.9: the mirror of a photo or
    * file the operator sent from the Instar app). One file goes up as sendPhoto / sendVideo /
@@ -1755,8 +1765,8 @@ export class TelegramAdapter implements MessagingAdapter {
        *  attention-hub post) — the send carries `parse_mode: 'HTML'` +
        *  `_formatMode: 'html'` so applyTelegramFormatter's markdown converter
        *  does not re-escape the tags into literal `<b>`/`<i>` text (the
-       *  2026-07-11 attention-hub rendering bug). Direct sends only; a relayed
-       *  (tokenless-standby) send keeps today's default formatting. */
+       *  2026-07-11 attention-hub rendering bug). Relays carry this mode to
+       *  the holder too. */
       formatMode?: 'html';
       /** mobile-operator-chat mirror: the operator's own app message copied into the
        *  topic. Writes no outbound history row (the inbound row already exists) and
@@ -1834,6 +1844,7 @@ export class TelegramAdapter implements MessagingAdapter {
       try {
         relayed = await this.outboundRelay(topicId, text, {
           silent: options?.silent,
+          formatMode: options?.formatMode,
           kindMetadata: options?.kindMetadata,
           provenance: options?.provenance ?? 'automation',
         });
@@ -3108,102 +3119,20 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
-  /**
-   * Actively resolve a topic's name from Telegram by sending a temporary probe message
-   * that replies to the topic's service message (whose message_id = topic_id).
-   * The API response includes reply_to_message.forum_topic_created.name.
-   * The probe message is deleted immediately after.
-   */
+  /** Return a captured topic name. Sending a temporary message to discover a
+   * missing name can leave a visible dot when deletion or routing is delayed. */
   async resolveTopicName(topicId: number): Promise<string | null> {
-    if (this.notAForum) return null;
-    await this.awaitHolderForwardWiring();
-    // The probe is a real message. A machine that would not send locally (it
-    // forwards to the lease holder) cannot probe: a direct send is held and its
-    // "." replayed into the topic later. Fall back to the stored/default name.
-    if (typeof this.config.token === 'string' && this.config.token.length > 0 && this.outboundRelay
-      && (this.holderForwardPolicy?.decide() ?? 'local') !== 'local') return null;
-    try {
-      // Send a temp message replying to the topic creation service message
-      const result = await this.apiCall('sendMessage', {
-        chat_id: this.config.chatId,
-        text: '.', // minimal probe message — deleted immediately after
-        message_thread_id: topicId,
-        reply_to_message_id: topicId,
-      }) as { message_id: number; chat?: { id: number }; reply_to_message?: { forum_topic_created?: { name: string } } };
-
-      // Extract topic name from the reply target
-      const name = result.reply_to_message?.forum_topic_created?.name;
-
-      // Delete the probe message immediately (in the chat it landed in — the issues
-      // group for an issues topic)
-      try {
-        await this.apiCall('deleteMessage', {
-          chat_id: result.chat?.id ?? this.config.chatId,
-          message_id: result.message_id,
-        });
-      } catch {
-        // @silent-fallback-ok — best-effort cleanup
-      }
-
-      if (name) {
-        this.topicToName.set(topicId, name);
-        this.saveRegistry();
-        console.log(`[telegram] Resolved topic name: ${topicId} → "${name}"`);
-        return name;
-      }
-    } catch (err) {
-      const errStr = String(err);
-      console.log(`[telegram] Could not resolve topic name for ${topicId}: ${err}`);
-      // A definite refusal by Telegram (HTTP 400), not a transient failure.
-      if (/telegram-400|Bad Request|message thread not found|TOPIC_DELETED/i.test(errStr)) this.lastProbeRefused = topicId;
-      // If the topic was deleted, mark it so we don't retry resolution on every startup
-      if (errStr.includes('message thread not found') || errStr.includes('TOPIC_DELETED')) {
-        this.topicToName.set(topicId, `[deleted] topic-${topicId}`);
-        this.saveRegistry();
-      }
-    }
-    return null;
+    return this.getTopicName(topicId);
   }
 
   /**
    * Resolve all topic names that are still using the fallback "topic-NNNN" pattern.
    * Called on startup to backfill names for topics created before name tracking.
    */
-  private static readonly PROBE_REFUSAL_BACKOFF_MS = 7 * 24 * 60 * 60 * 1000;
-  private lastProbeRefused: number | null = null;
-  private probeRefusalsPath(): string { return path.join(this.stateDir, 'topic-name-probe-refusals.json'); }
-  private readProbeRefusals(): Record<number, number> {
-    try {
-      const raw = JSON.parse(fs.readFileSync(this.probeRefusalsPath(), 'utf-8')) as Record<string, unknown>;
-      const out: Record<number, number> = {};
-      for (const [k, v] of Object.entries(raw)) if (Number.isSafeInteger(Number(k)) && typeof v === 'number') out[Number(k)] = v;
-      return out;
-    } catch { return {}; } // @silent-fallback-ok: no record yet means every topic may be probed
-  }
-  private writeProbeRefusals(r: Record<number, number>): void {
-    try { fs.writeFileSync(this.probeRefusalsPath(), JSON.stringify(r)); } catch { /* @silent-fallback-ok: worst case the topic is probed again next start */ }
-  }
-
+  /** Unknown names keep their fallback label until a real Telegram service
+   * update supplies the name. No user-visible network probe is permitted. */
   async resolveUnknownTopicNames(): Promise<void> {
-    const unknowns: number[] = [];
-    for (const topicId of this.topicToSession.keys()) {
-      if (!this.getTopicName(topicId)) unknowns.push(topicId);
-    }
-    // General (1) has no creation message to reply to, and a topic Telegram
-    // refused recently (deleted, or not in this chat) is not asked again every
-    // start: each refused probe is a real refused send (2026-11-02: ~190 a week).
-    const refused = this.readProbeRefusals();
-    const now = Date.now();
-    const toProbe = unknowns.filter((id) => id > 1 && !(now - (refused[id] ?? 0) < TelegramAdapter.PROBE_REFUSAL_BACKOFF_MS));
-    if (toProbe.length === 0) return;
-    console.log(`[telegram] Resolving ${toProbe.length} unknown topic names...`);
-    for (const topicId of toProbe) {
-      this.lastProbeRefused = null;
-      const ok = await this.resolveTopicName(topicId);
-      if (ok === null && this.lastProbeRefused === topicId) { refused[topicId] = Date.now(); this.writeProbeRefusals(refused); }
-      // Small delay to avoid hitting rate limits
-      await new Promise(r => setTimeout(r, 200));
-    }
+    return;
   }
 
   // ── Topic Purpose Management ─────────────────────────────────
@@ -3952,7 +3881,7 @@ export class TelegramAdapter implements MessagingAdapter {
         if (filterUnclaimed && claimed) continue;
 
         const status = s.alive ? '\u2705' : '\u274c';
-        const claimTag = claimed ? ` (topic ${linkedTopic})` : ' \u{1f7e1} unclaimed';
+        const claimTag = claimed ? ` (${topicRef(linkedTopic)})` : ' \u{1f7e1} unclaimed';
         lines.push(`${status} ${s.name}${claimTag}`);
       }
 
@@ -4638,8 +4567,23 @@ export class TelegramAdapter implements MessagingAdapter {
     // routing below.
     const admitted = this.admitAttentionObservation(item);
     if (admitted.kind === 'existing') {
-      if (admitted.repost && (routing?.hubOnly || this.attentionRoutingMode === 'single-topic')) {
-        const hubTopicId = await this.routeToAttentionHub(admitted.item);
+      const healthLane = item.lane === 'agent-health' || admitted.item.lane === 'agent-health';
+      if (healthLane) {
+        admitted.item.lane = 'agent-health';
+        admitted.item.needsUser = item.needsUser === true;
+        this.saveAttentionItems();
+      }
+      if (healthLane && item.needsUser !== true) {
+        this.holdRoutineAgentHealth(admitted.item);
+        return admitted.item;
+      }
+      const actionableTransition = healthLane && admitted.item.hubHeld === true
+        && isOpenAttentionStatus(admitted.item.status);
+      if ((admitted.repost || actionableTransition)
+        && (routing?.hubOnly || this.attentionRoutingMode === 'single-topic' || healthLane)) {
+        const hubTopicId = healthLane && this.agentHealthLaneCfg.enabled
+          ? await this.routeToAgentHealthLane(admitted.item)
+          : await this.routeToAttentionHub(admitted.item);
         admitted.item.coalesced = true;
         if (hubTopicId !== null) admitted.item.topicId = hubTopicId;
       }
@@ -4653,14 +4597,18 @@ export class TelegramAdapter implements MessagingAdapter {
     this.attentionItems.set(item.id, attention);
     this.saveAttentionItems();
 
-    // ── Agent-Health lane (calm self-health notices) ─────────────────────
-    // A routine self-health/housekeeping notice routes into ONE named "🩺 Agent
-    // Health" topic from the very first item — it never spawns its own topic
-    // (even under budget, even if mis-tagged HIGH) and same-entity re-escalations
-    // are suppression-deduped. This runs BEFORE the flood guard and bypasses it
-    // entirely, so a stale-session/peer-unreachable feature can never flood
-    // topic-after-topic. Only items that explicitly opt in are affected.
-    if (!routing?.hubOnly && this.agentHealthLaneCfg.enabled && item.lane === 'agent-health') {
+    // Agent Health is a record of the agent's own housekeeping. A priority
+    // label is not evidence that the operator can act. Only an explicit
+    // needsUser decision at the producer may turn it into a Telegram push.
+    // Keep this ahead of both lane routing and the hub-only upsert path.
+    if (item.lane === 'agent-health' && item.needsUser !== true) {
+      this.holdRoutineAgentHealth(attention);
+      return attention;
+    }
+
+    // An Agent Health item that truly needs the user keeps the established
+    // lane destination. Routine observations returned above, without egress.
+    if (this.agentHealthLaneCfg.enabled && item.lane === 'agent-health') {
       const laneTopicId = await this.routeToAgentHealthLane(attention);
       attention.coalesced = true;
       if (laneTopicId !== null) attention.topicId = laneTopicId;
@@ -4783,6 +4731,16 @@ export class TelegramAdapter implements MessagingAdapter {
     return attention;
   }
 
+  private holdRoutineAgentHealth(item: AttentionItem): void {
+    item.hubHeld = true;
+    item.coalesced = true;
+    this.saveAttentionItems();
+    recordHeldHubPost(path.join(this.botStateDir, 'logs'), {
+      kind: 'item', reason: 'agent-health-routine', id: item.id,
+      category: item.category, priority: item.priority, title: item.title,
+    });
+  }
+
   /**
    * Create an attention item, or REFRESH + REOPEN the same durable id when it already exists
    * (updated body/title, status back to OPEN, re-posted to the Attention hub). `createAttentionItem`
@@ -4800,8 +4758,9 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
-   * Create the first Agent-Health item for an entity, or refresh and visibly
-   * reopen the same durable item when the condition returns after recovery.
+   * Create the first Agent-Health item for an entity, or refresh and reopen
+   * the same durable item when the condition returns after recovery. Routine
+   * recurrences remain in the record without a Telegram post.
    *
    * `createAttentionItem` intentionally dedupes on id and returns the existing
    * row unchanged. That is right for retries inside one episode but would hide
@@ -4821,6 +4780,7 @@ export class TelegramAdapter implements MessagingAdapter {
 
     const wasClosed = !isOpenAttentionStatus(existing.status);
     Object.assign(existing, item, {
+      needsUser: item.needsUser === true,
       status: 'OPEN' as const,
       updatedAt: new Date().toISOString(),
       lastSeenAt: new Date().toISOString(),
@@ -4828,6 +4788,12 @@ export class TelegramAdapter implements MessagingAdapter {
       ...(wasClosed ? { episode: (existing.episode ?? 1) + 1, closedBy: undefined, resolution: undefined } : {}),
     });
     this.saveAttentionItems();
+
+    if (item.needsUser !== true) {
+      this.holdRoutineAgentHealth(existing);
+      return existing;
+    }
+    if (existing.hubHeld) { existing.hubHeld = false; this.saveAttentionItems(); }
 
     const topicId = await this.ensureAgentHealthLaneTopic();
     if (topicId === null) {
@@ -4892,6 +4858,7 @@ export class TelegramAdapter implements MessagingAdapter {
    * null if Telegram is unavailable (the item is still recorded in the store).
    */
   private async routeToAgentHealthLane(item: AttentionItem): Promise<number | null> {
+    if (item.hubHeld) { item.hubHeld = false; this.saveAttentionItems(); }
     const key = this.healthKeyFor(item);
     const now = Date.now();
     const last = this.agentHealthKeyRing.get(key);
@@ -4923,9 +4890,10 @@ export class TelegramAdapter implements MessagingAdapter {
     }
     if (topicId === null) return null;
 
+    const summary = String(item.summary ?? '').trim();
     const line = [
-      `<b>${this.escapeHtml(item.title)}</b>`,
-      this.escapeHtml(String(item.summary ?? '').slice(0, 400)),
+      `<b>${this.escapeHtml(item.title.slice(0, 160))}</b>`,
+      summary === item.title.trim() ? '' : this.escapeHtml(summary.slice(0, 240)),
     ].filter(Boolean).join('\n');
     // `line` is caller-authored, already-escaped Telegram HTML (<b> title +
     // escaped summary). It MUST be sent with formatMode:'html' so the markdown
@@ -5199,6 +5167,7 @@ export class TelegramAdapter implements MessagingAdapter {
   attentionHubAdmits(itemId: string): boolean {
     const item = this.attentionItems.get(itemId);
     if (!item) return true;
+    if (item.lane === 'agent-health' && item.needsUser !== true) return false;
     return admitItemToHub(item, this.attentionHubFilterMode).admit;
   }
 

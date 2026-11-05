@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "memory-privacy-ladder-off-by-default",
+  "sessionId": "3a99cf1c-d003-481f-92ab-ed8dcec0da8f",
+  "timestamp": "2026-11-05T01:28:57.769Z",
+  "artifactPath": "upgrades/side-effects/memory-privacy-ladder-off-by-default.md",
+  "artifactSha256": "86881384f13d87a1939161a535dcaaa951ff05d388e749b6618087d50fd0ffda",
+  "coveredFiles": [
+    "docs/specs/memory-privacy.eli16.md",
+    "docs/specs/memory-privacy.md",
+    "src/data/feature-ladders.json",
+    "upgrades/next/memory-privacy-ladder-off-by-default.md",
+    "upgrades/side-effects/memory-privacy-ladder-off-by-default.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Spec text and board data only; makes them match the shipped off-by-default; no runtime change",
+  "eli16Path": "docs/specs/memory-privacy.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/memory-privacy-ladder-off-by-default.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

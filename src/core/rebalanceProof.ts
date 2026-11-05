@@ -22,6 +22,27 @@
 import type { MoveOutcome } from './OverloadShedPlanner.js';
 import type { SessionPoolE2EResultStore, StageE2EOutcome } from './SessionPoolE2EResultStore.js';
 
+/**
+ * The router's 'handled-locally' is only a verdict: the caller owns local delivery. The
+ * live and drain paths deliver; a proof probe has no such tail, so a target that is also
+ * the lease holder never got the probe and the proof read no-reply. A failed delivery
+ * reads as its own action, so the proof says probe-undelivered, not no-reply.
+ */
+export async function deliverProbeLocally(
+  action: string,
+  deliver: () => Promise<void>,
+  log?: (line: string) => void,
+): Promise<string> {
+  if (action !== 'handled-locally') return action;
+  try {
+    await deliver();
+    return action;
+  } catch (err) {
+    log?.(`rebalance-proof: local probe delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+    return 'undelivered';
+  }
+}
+
 export const PROOF_REPLY_TIMEOUT_MS = 180_000;
 export const PROOF_OWNERSHIP_TIMEOUT_MS = 60_000;
 export const PROOF_SPAWN_TIMEOUT_MS = 120_000;
@@ -29,6 +50,35 @@ export const PROOF_DUPLICATE_SETTLE_MS = 30_000;
 /** Longest wait on any one step that could otherwise never settle. */
 export const PROOF_MOVE_TIMEOUT_MS = 120_000;
 export const PROOF_IO_TIMEOUT_MS = 30_000;
+/** A session is settled after this many idle reads in a row, this far apart. */
+export const PROOF_SETTLED_READS = 6;
+export const PROOF_SETTLED_INTERVAL_MS = 5_000;
+
+/**
+ * A session still starting reads as idle: no working footer, no child process, and its
+ * opening brief not yet delivered. One idle read then lets the move start on a session
+ * about to go active, and the drain aborts it. Found live on 2026-11-04, Mama PC. So idle
+ * has to hold across several reads; any other read starts the count again.
+ */
+export async function waitForSettledIdle(
+  /** The idle session's identity, or null when it is not idle. A replacement starts the count again. */
+  idleSession: () => Promise<string | null>,
+  timeoutMs: number,
+  clock: { now: () => number; sleep: (ms: number) => Promise<void> },
+): Promise<boolean> {
+  const deadline = clock.now() + timeoutMs;
+  let inARow = 0;
+  let counted: string | null = null;
+  while (clock.now() < deadline) {
+    const session = await idleSession();
+    if (clock.now() >= deadline) return false;
+    inARow = session === null ? 0 : session === counted ? inARow + 1 : 1;
+    counted = session;
+    if (inARow >= PROOF_SETTLED_READS) return true;
+    await clock.sleep(PROOF_SETTLED_INTERVAL_MS);
+  }
+  return false;
+}
 const POLL_MS = 3_000;
 const MAX_KEPT_RUNS = 20;
 
@@ -41,7 +91,20 @@ export interface ProofRecord {
 export interface ProofHistoryRow {
   text?: string;
   fromUser?: boolean;
+  /** The machine that logged the row, which for a relayed reply is the lease holder. */
   machine?: string;
+  /** The signed record of who wrote it; `machine.value` is a display name. */
+  origin?: { machine?: { value?: string | null; status?: string } };
+}
+
+/**
+ * A machine without the lease sends through the holder, so the row sits on the holder.
+ * The origin record names the author; `machine` only decides when no author was observed.
+ */
+export function rowIsFromMachine(row: ProofHistoryRow, machineId: string, machineName: string | null): boolean {
+  const seen = row.origin?.machine;
+  if (seen?.status === 'observed' && seen.value && machineName) return seen.value === machineName;
+  return row.machine === machineId;
 }
 
 export type ProofRefusal = 'not-a-proof-topic' | 'not-owner' | 'stage-too-low' | 'proof-running' | 'no-session' | string;
@@ -65,6 +128,8 @@ export interface RebalanceProofDeps {
   probeViaHolder?: (topic: number, nonce: string) => Promise<{ action: string; holder: string | null } | null>;
   /** Send the probe through routing. Resolves with the route's action. */
   sendProbe: (topic: number, text: string, messageId: string) => Promise<string>;
+  /** A machine's display name, to match the origin record. Null when not known. */
+  machineName?: (machineId: string) => string | null;
   /** Pool-wide topic history; `failed` lists machines that could not be read. */
   readHistory: (topic: number) => Promise<{ rows: ProofHistoryRow[]; failed: string[] }>;
   record: (result: StageE2EOutcome, evidenceRef: string) => void;
@@ -174,7 +239,7 @@ export class RebalanceProofRunner {
     let moveStarted = false;
 
     try {
-      steps.sessionReady = await this.d.ensureIdleSession(run.topic, PROOF_SPAWN_TIMEOUT_MS);
+      steps.sessionReady = await within(this.d.ensureIdleSession(run.topic, PROOF_SPAWN_TIMEOUT_MS), PROOF_SPAWN_TIMEOUT_MS + PROOF_IO_TIMEOUT_MS, 'idle wait');
       if (steps.sessionReady !== true) return this.finish(run, null, 'no-idle-session', steps, self);
 
       const started = this.d.move(run.topic, run.to);
@@ -189,8 +254,11 @@ export class RebalanceProofRunner {
       if (!moved) reason = `move-${outcome.status}`;
 
       if (!reason && !(await this.ownershipLanded(run, startEpoch))) reason = 'ownership-not-landed';
-      if (!reason && this.d.hasLocalSession(run.topic)) reason = 'source-session-left-running';
-      steps.sourceSessionGone = !reason || reason !== 'source-session-left-running';
+      // Always a real read: a move that failed leaves the session running, and the evidence says so.
+      let sessionLeft: boolean | null = null;
+      try { sessionLeft = this.d.hasLocalSession(run.topic); } catch (err) { if (!reason) throw err; /* @silent-fallback-ok: not silent. The evidence says unknown and the move's failure stays the reason. */ }
+      if (!reason && sessionLeft) reason = 'source-session-left-running';
+      steps.sourceSessionGone = sessionLeft === null ? 'unknown' : !sessionLeft;
 
       if (!reason) {
         const nonce = this.d.newNonce();
@@ -245,7 +313,7 @@ export class RebalanceProofRunner {
         // A read that could not reach the target says nothing about its reply, so it never
         // replaces what an earlier read saw.
         if (h.failed.includes(run.to)) last = { ...last, targetUnreadable: true };
-        else last = { total: agentRows.length, fromTarget: agentRows.filter((m) => m.machine === run.to).length, targetUnreadable: false };
+        else last = { total: agentRows.length, fromTarget: agentRows.filter((m) => rowIsFromMachine(m, run.to, this.d.machineName?.(run.to) ?? null)).length, targetUnreadable: false };
       } catch (err) {
         this.d.log?.(`rebalance-proof: history read failed: ${err instanceof Error ? err.message : String(err)}`);
         last = { ...last, targetUnreadable: true };

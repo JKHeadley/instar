@@ -6,7 +6,7 @@
  * not referenced in that topic (or referenced in another topic) answers 404; a bearer read keeps the
  * raw row; media off ⇒ the download route answers 503.
  */
-import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -24,13 +24,19 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { recordPlatformMedia } from '../../src/core/appPlatformMedia.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { AppMediaStore } from '../../src/core/AppMediaStore.js';
 
 const HOST = 'echo.example.dev';
 const TOPIC = 42;
 const dirs: string[] = [];
 const cleanups: Array<() => void> = [];
-beforeAll(() => { ProcessIntegrity.reset(); ProcessIntegrity.initialize('1.2.36', null); });
+beforeAll(() => {
+  ProcessIntegrity.reset(); ProcessIntegrity.initialize('1.2.36', null);
+  // These tests cover media references, not the host's disk-capacity guard.
+  vi.spyOn(AppMediaStore.prototype, 'diskSpace').mockReturnValue({ free: 50 * 1024 ** 3, total: 100 * 1024 ** 3 });
+});
 afterAll(() => {
+  vi.restoreAllMocks();
   ProcessIntegrity.reset();
   for (const c of cleanups) c();
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/telegram-platform-media.test.ts' });

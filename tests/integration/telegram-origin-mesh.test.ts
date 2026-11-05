@@ -119,7 +119,7 @@ describe('Telegram origin signed mesh HTTP pipeline', () => {
     expect(query).toHaveBeenCalledOnce(); expect(h.botNetwork).toHaveBeenCalledOnce();
     const receipt = await h.send({ type: 'telegram-origin', protocol: ORIGIN_MESH_PROTOCOL, action: 'receipt', operationId: heldOperation });
     expect(receipt.result).toEqual({ ok: true, operationId: heldOperation, originId: source!.record.originId,
-      envelopeDigest: source!.record.envelopeDigest, executionOwnerMachineId: 'owner', state: 'accepted', originReceiptConfirmed: true });
+      envelopeDigest: source!.record.envelopeDigest, executionOwnerMachineId: 'owner', state: 'accepted', originReceiptConfirmed: true, messageIds: ['321'] });
     const intruder = await h.sendOther({ type: 'telegram-origin', protocol: ORIGIN_MESH_PROTOCOL, action: 'receipt', operationId: heldOperation });
     expect(intruder.result).toEqual({ ok: false, reason: 'origin-receipt-unavailable' });
     const lookup = h.owner.store.getOperation.bind(h.owner.store);

@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { PROOF_MOVE_TIMEOUT_MS, RebalanceProofRunner, proofProbeText, type ProofHistoryRow, type ProofRecord, type RebalanceProofDeps } from '../../src/core/rebalanceProof.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { deliverProbeLocally, rowIsFromMachine, PROOF_MOVE_TIMEOUT_MS, PROOF_SETTLED_INTERVAL_MS, PROOF_SETTLED_READS, PROOF_SPAWN_TIMEOUT_MS, RebalanceProofRunner, waitForSettledIdle, proofProbeText, type ProofHistoryRow, type ProofRecord, type RebalanceProofDeps } from '../../src/core/rebalanceProof.js';
 
 const SELF = 'm_a'; const TARGET = 'm_b'; const TOPIC = 700; const NONCE = 'nonce-1';
 
@@ -234,5 +236,116 @@ describe('RebalanceProofRunner: nothing recorded unless a move started', () => {
         vi.useRealTimers();
       }
     });
+  });
+});
+
+describe('waitForSettledIdle: one idle read of a starting session is not enough', () => {
+  const clock = () => { let t = 0; return { now: () => t, sleep: async (ms: number) => { t += ms; } }; };
+  const reads = (seq: Array<string | null>, then: string | null) => { let i = 0; return async () => (i < seq.length ? seq[i++] : then); };
+
+  it('a session idle throughout is settled after the full count', async () => {
+    const c = clock();
+    expect(await waitForSettledIdle(reads([], 's'), PROOF_SPAWN_TIMEOUT_MS, c)).toBe(true);
+    expect(c.now()).toBe((PROOF_SETTLED_READS - 1) * PROOF_SETTLED_INTERVAL_MS);
+  });
+
+  it('the live case: idle while starting, working on its brief, then idle restarts the count', async () => {
+    const c = clock();
+    const seq = ['s', 's', null, null];
+    expect(await waitForSettledIdle(reads(seq, 's'), PROOF_SPAWN_TIMEOUT_MS, c)).toBe(true);
+    expect(c.now()).toBe((seq.length + PROOF_SETTLED_READS - 1) * PROOF_SETTLED_INTERVAL_MS);
+  });
+
+  it('a session that never holds idle times out', async () => {
+    let n = 0;
+    expect(await waitForSettledIdle(async () => (n++ % 2 === 0 ? 's' : null), PROOF_SPAWN_TIMEOUT_MS, clock())).toBe(false);
+  });
+
+  it('a replacement session starts the count again', async () => {
+    const c = clock();
+    const seq = ['a', 'a', 'a', 'a', 'a'];
+    expect(await waitForSettledIdle(reads(seq, 'b'), PROOF_SPAWN_TIMEOUT_MS, c)).toBe(true);
+    expect(c.now()).toBe((seq.length + PROOF_SETTLED_READS - 1) * PROOF_SETTLED_INTERVAL_MS);
+  });
+
+  it('a read that returns past the deadline does not count', async () => {
+    const c = clock();
+    let n = 0;
+    const slowLast = async () => { if (++n === PROOF_SETTLED_READS) await c.sleep(PROOF_SPAWN_TIMEOUT_MS); return 's'; };
+    expect(await waitForSettledIdle(slowLast, PROOF_SPAWN_TIMEOUT_MS, c)).toBe(false);
+  });
+});
+
+describe('evidence reads the source session even when the move failed', () => {
+  it.each([[true, false], [false, true]])('session left %s: sourceSessionGone is %s', async (localAfter, gone) => {
+    const r = rig({ moved: false, localAfter });
+    expect((await run(r)).state).toBe('red');
+    expect((r.evidence[0].steps as Record<string, unknown>).sourceSessionGone).toBe(gone);
+  });
+
+  it('a session read that throws leaves the move failure as the reason', async () => {
+    const r = rig({ moved: false, hasLocalSession: () => { throw new Error('ps failed'); } });
+    const done = await run(r);
+    expect(done.state).toBe('red');
+    expect(done.reason).toMatch(/^move-/);
+    expect((r.evidence[0].steps as Record<string, unknown>).sourceSessionGone).toBe('unknown');
+  });
+});
+
+describe('a probe the router leaves to this machine', () => {
+  it('is delivered here, and keeps the verdict', async () => {
+    const deliver = vi.fn(async () => {});
+    expect(await deliverProbeLocally('handled-locally', deliver)).toBe('handled-locally');
+    expect(deliver).toHaveBeenCalledOnce();
+  });
+
+  it('reads as undelivered when delivery fails, never as a clean verdict', async () => {
+    const lines: string[] = [];
+    const out = await deliverProbeLocally('handled-locally', async () => { throw new Error('spawn refused'); }, (l) => lines.push(l));
+    expect(out).toBe('undelivered');
+    expect(lines.join()).toContain('spawn refused');
+  });
+
+  it('leaves a forwarded probe to the machine it went to', async () => {
+    const deliver = vi.fn(async () => {});
+    expect(await deliverProbeLocally('forwarded', deliver)).toBe('forwarded');
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it('is wired into the production sendProbe', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf-8');
+    const at = src.indexOf('sendProbe: async (t, text, messageId)');
+    expect(at).toBeGreaterThan(0);
+    expect(src.slice(at, at + 1200)).toContain('deliverProbeLocally(o.action');
+  });
+});
+
+describe('who wrote a reply', () => {
+  const HOLDER = 'm_holder';
+  const relayed = { text: NONCE, machine: HOLDER, origin: { machine: { value: 'Target Box', status: 'observed' } } };
+
+  it('a reply relayed through the holder counts for the machine that wrote it', async () => {
+    const r = rig({ rows: [relayed], machineName: () => 'Target Box' });
+    expect((await run(r)).state).toBe('green');
+  });
+
+  it('a reply the holder wrote itself does not count for the target, whatever logged it', async () => {
+    const row = { text: NONCE, machine: TARGET, origin: { machine: { value: 'Other Box', status: 'observed' } } };
+    const r = rig({ rows: [row], machineName: () => 'Target Box' });
+    expect(await run(r)).toMatchObject({ state: 'red', reason: 'reply-from-wrong-machine' });
+  });
+
+  it('falls back to the row when no author was observed or the name is unknown', () => {
+    expect(rowIsFromMachine({ machine: TARGET, origin: { machine: { value: null, status: 'unknown' } } }, TARGET, 'Target Box')).toBe(true);
+    expect(rowIsFromMachine({ machine: HOLDER, origin: { machine: { value: null, status: 'unknown' } } }, TARGET, 'Target Box')).toBe(false);
+    expect(rowIsFromMachine(relayed, TARGET, null)).toBe(false);
+  });
+
+  it('production asks for origin records and names machines', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf-8');
+    const at = src.indexOf('setActiveRebalanceProof(new RebalanceProofRunner({');
+    const block = src.slice(at, at + 6000);
+    expect(block).toContain('scope=pool&includeOrigin=1');
+    expect(block).toContain('machineName: (id) =>');
   });
 });

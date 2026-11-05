@@ -20,6 +20,7 @@
  * spawns (D6), so turning it off never cuts off a session already wired to HTTP.
  */
 
+import { pickSessionByTmux } from '../core/pickSessionByTmux.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -34,6 +35,8 @@ import type { ThreadResumeMap } from './ThreadResumeMap.js';
 import {
   sendMessageViaHttp,
   getThreadHistoryViaHttp,
+  acknowledgeViaHttp,
+  getThreadReceiptsViaHttp,
   requestSecretViaHttp,
   startPairingViaHttp,
   createPairingInviteViaHttp,
@@ -445,6 +448,9 @@ export class ThreadlineMcpHttpService implements ThreadlineMcpSpawnWiring {
           }));
         },
         getThreadHistory: (threadId, limit, before) => track(getThreadHistoryViaHttp(threadId, limit, port, token(), before)),
+        // a2a-required-acknowledgment D4/D6: the same route the stdio helper calls.
+        acknowledge: (params) => track(acknowledgeViaHttp(params, port, token())),
+        getThreadReceipts: (threadId) => track(getThreadReceiptsViaHttp(threadId, port, token())),
         requestSecret: (params) => track(requestSecretViaHttp(params, port)),
         startPairing: (peerFp) => track(startPairingViaHttp(peerFp, port, token())),
         createInvite: (o) => track(createPairingInviteViaHttp(o, port, token())),
@@ -454,6 +460,13 @@ export class ThreadlineMcpHttpService implements ThreadlineMcpSpawnWiring {
         registry: null,
         relayClient: createHttpRelayDiscoverer(port, token),
         stateDir: this.opts.stateDir,
+        agentRelayStatus: async () => {
+          const response = await fetch(`http://127.0.0.1:${port}/threadline/status`, {
+            headers: { Authorization: `Bearer ${token()}` }, signal: AbortSignal.timeout(4000),
+          });
+          if (!response.ok) throw new Error(`status-${response.status}`);
+          return ((await response.json()) as { agent?: unknown }).agent;
+        },
         toolCallTracker: (_name, run) => track(run()),
       },
     );
@@ -477,7 +490,7 @@ export class ThreadlineMcpHttpService implements ThreadlineMcpSpawnWiring {
 
   private noteCallFailure(sessionName: string | null | undefined, reason: string): void {
     if (!sessionName || sessionName === READINESS_PROBE_SESSION) return;
-    const record = this.sessionRecords()?.find((s) => s.tmuxSession === sessionName);
+    const record = pickSessionByTmux(this.sessionRecords() ?? [], sessionName);
     if (!record || record.threadlineMcpTransport !== 'http') return; // only a wired session
     const framework = record.framework ?? 'unknown';
     const last = this.lastCallFailureReport.get(framework) ?? -Infinity;

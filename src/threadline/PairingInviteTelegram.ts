@@ -15,6 +15,7 @@
  * pairing through here. The boundary is cooperative (spec §6.1 "Honest boundary").
  */
 
+import { topicRef } from '../messaging/shared/topicRef.js';
 import crypto from 'node:crypto';
 import type { EventEmitter } from 'node:events';
 import { findInviteToken, decodeInvite } from './PairingInvite.js';
@@ -359,7 +360,7 @@ export class PairingInviteTelegram {
       await this.deps.send(topic, text, buttons);
       return true;
     } catch (err) {
-      this.reportUndelivered(what, `sending to topic ${topic} failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.reportUndelivered(what, `sending to ${topicRef(topic)} failed: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }

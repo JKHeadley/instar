@@ -32,6 +32,27 @@ describe('claude key wiring', () => {
     expect(source).toMatch(/configureClaudeChildAuth\(\(\) =>/);
   });
 
+  it('recovery is wired to answer held messages and to reach a person (2026-11-04 drill)', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'src/commands/server.ts'), 'utf-8');
+    const start = source.indexOf('new ClaudeKeyHealth({');
+    const block = source.slice(start, source.indexOf('setActiveClaudeKeyHealth(claudeKeyHealth)', start));
+    // Each restarted conversation gets its held messages and reply command, and is checked for a real answer.
+    expect(block).toMatch(/recoveryPrompt: async \(sessionName\) => \{[\s\S]*const held = heldMessages\(convo\.lines, keyNoticeTexts\);\s*return \{ prompt: buildKeyRecoveryPrompt\(convo\.channel, held\), held: held\.length \};/);
+    expect(block).toMatch(/answeredSince: async \(sessionName, sinceMs\) => \{[\s\S]*answeredSince\(convo\.lines, sinceMs/);
+    // The operator notice counts only when a person can read it.
+    expect(block).toMatch(/notifyOperator: \(text\) => \{[\s\S]*deliverOperatorNotice\(/);
+    expect(block).toMatch(/readersOf: async \(channelId\) => \{[\s\S]*slack\.authorizedMembersOf\(channelId\)/);
+    expect(block).toContain('people: () => keyOperators(slack)');
+    // Server posts (standby notes) are told apart from session replies by the origin ledger.
+    expect(source).toContain('isServerPost: (ts) => slack.isServerAutomationPost(channelId, ts)');
+    expect(block).toContain('directMessage: async (userId, t) => { await slack.sendDirectMessage(userId, t); }');
+  });
+
+  it('the shipped Slack reply script drops a channel id in a bound session', () => {
+    const script = fs.readFileSync(path.join(ROOT, 'src/templates/scripts/slack-reply.sh'), 'utf-8');
+    expect(script).toContain('slack-reply-feature: session-drops-channel-arg');
+  });
+
   it('a restored key reaches the copy SessionManager launches from', () => {
     const { sm, config } = manager();
     sm.setAnthropicKey(KEY);
@@ -59,16 +80,18 @@ describe('claude key wiring', () => {
     await expect(sink({})).resolves.toBeUndefined();
   });
 
-  it('the CLI writes a piped key, refuses a wrong shape, and prints neither', () => {
+  it('the CLI writes a piped key without Claude installed, refuses a wrong shape, and prints neither', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-key-cli-'));
+    const emptyPath = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-key-no-cli-'));
+    const env = { ...process.env, PATH: emptyPath, INSTAR_FRAMEWORK: 'claude-code' };
     fs.mkdirSync(path.join(dir, '.instar'));
     const file = path.join(dir, '.instar', 'config.json');
     fs.writeFileSync(file, JSON.stringify({ projectName: 't', port: 4999 }));
     const cli = path.join(ROOT, 'dist/cli.js');
-    const out = execFileSync('node', [cli, 'set-claude-key', '--dir', dir], { input: `${KEY}\n`, encoding: 'utf-8' });
+    const out = execFileSync(process.execPath, [cli, 'set-claude-key', '--dir', dir], { input: `${KEY}\n`, encoding: 'utf-8', env });
     expect(out).not.toContain(KEY);
     expect(JSON.parse(fs.readFileSync(file, 'utf-8')).sessions.credentials.anthropic.value).toBe(KEY);
-    expect(() => execFileSync('node', [cli, 'set-claude-key', '--dir', dir], { input: 'nonsense\n', encoding: 'utf-8', stdio: 'pipe' })).toThrow();
+    expect(() => execFileSync(process.execPath, [cli, 'set-claude-key', '--dir', dir], { input: 'nonsense\n', encoding: 'utf-8', stdio: 'pipe', env })).toThrow();
     expect(JSON.parse(fs.readFileSync(file, 'utf-8')).sessions.credentials.anthropic.value).toBe(KEY);
   });
 });

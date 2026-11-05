@@ -35,6 +35,24 @@ describe('relay handler (src/commands/server.ts)', () => {
     expect(handler.split('looksLikeAutoAckText(').length - 1).toBe(1);
   });
 
+  it('a2a-required-acknowledgment: capability, handle and settle sit in the real handler, in order', () => {
+    const stage = handler.indexOf('runRelayAckStage(');
+    const caps = handler.indexOf('_requiredAckService?.notePeerMessage(');
+    const prepare = handler.indexOf('_requiredAckService?.prepare(');
+    const router = handler.indexOf('threadlineRouter.handleInboundMessage(');
+    const settle = handler.indexOf('_requiredAckService?.settleRouterResult(requiredAckHandle, result)');
+    expect(handler).toContain('kindedAck: parseKindedAck(msg.content)');
+    expect(handler).toContain('_requiredAckService?.consumeInboundAck(');
+    expect(stage).toBeGreaterThan(-1);
+    expect(caps).toBeGreaterThan(stage);
+    expect(prepare).toBeGreaterThan(caps);
+    expect(router).toBeGreaterThan(prepare);
+    expect(settle).toBeGreaterThan(router);
+    // The pipe and listener hand-offs both return before a handle is taken.
+    expect(handler.indexOf("relayAck.settle('pipe-spawned')")).toBeLessThan(prepare);
+    expect(handler.indexOf('listenerManager.writeToInbox(')).toBeLessThan(prepare);
+  });
+
   it('runs the ack stage before every side effect and every router', () => {
     const stage = handler.indexOf('runRelayAckStage(');
     expect(stage).toBeGreaterThan(-1);
@@ -221,6 +239,21 @@ describe('POST /threadline/messages/receive (src/threadline/ThreadlineEndpoints.
 describe('the unknown-sender decode and the client share one wire format', () => {
   it('ThreadlineBootstrap decodes with decodePlaintextPayload; the client encodes with encodePlaintextPayload', () => {
     expect(read('src/threadline/ThreadlineBootstrap.ts')).toContain('decodePlaintextPayload(envelope.payload)');
-    expect(read('src/threadline/client/ThreadlineClient.ts')).toContain('encodePlaintextPayload(content, type, resend)');
+    expect(read('src/threadline/client/ThreadlineClient.ts')).toContain('encodePlaintextPayload(content, type, resend, {');
+  });
+});
+
+describe('an undecodable relay message is not routed', () => {
+  it('the unknown-sender handler returns before building a message from a body it cannot decode', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/threadline/ThreadlineBootstrap.ts'), 'utf-8');
+    const start = src.indexOf("relayClient.on('unknown-sender'");
+    const decode = src.indexOf('decodePlaintextPayload(envelope.payload)', start);
+    const drop = src.indexOf('undecryptableDropped++', decode);
+    const route = src.indexOf('handleRelayUnknownSender(', decode);
+    expect(start).toBeGreaterThan(-1);
+    expect(drop).toBeGreaterThan(decode);
+    expect(drop).toBeLessThan(route);
+    expect(src.slice(drop, route)).toContain('return;');
+    expect(src).not.toContain('[undecryptable relay message');
   });
 });

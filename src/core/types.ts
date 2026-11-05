@@ -3613,6 +3613,8 @@ export interface ExternalServicePermissions {
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface InstarConfig {
+  /** Memory privacy (docs/specs/memory-privacy.md). On only when `enabled` is true. */
+  memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacyConfig;
   /**
    * message-origin-all-platforms §5: the agent-wide origin display bits for an agent with no
    * enabled Telegram entry (with one, the Telegram entry's messageOrigin.display is the setting),
@@ -4003,6 +4005,11 @@ export interface InstarConfig {
      */
     consoleTicket?: { enabled?: boolean };
     /**
+     * Face ID-confirmed permission writes from the owner's phone (docs/specs/mobile-native-permissions.md).
+     * `enabled` omitted ⇒ live on a development agent, dark on the fleet (DEV_GATED_FEATURES). Read live.
+     */
+    permissionActions?: { enabled?: boolean };
+    /**
      * The operator's Slack user id (`U…`), the sender a message typed in the Instar app speaks as
      * in a Slack conversation (mobile-native-conversations §4.9). Never inferred: the agent
      * proposes it from the Slack channel's verified operator and sets it after the operator says
@@ -4158,6 +4165,8 @@ export interface InstarConfig {
      * conversation-key scheme (numeric topic id, or `slack:<channel>[:<thread>]`).
      */
     defaults?: Record<string, { model?: string; thinkingMode?: string; effort?: string }>;
+    /** Config-owned defaults for the Telegram issues group; operator pins still win. */
+    groupDefaults?: { issues?: { framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build'; model?: string } };
   };
   /**
    * Playwright Profile Registry (docs/specs/playwright-profile-registry.md).
@@ -4846,6 +4855,8 @@ export interface InstarConfig {
   /** Dispatch (intelligence broadcast) config */
   dispatches?: DispatchConfig;
   /** Git backup config (opt-in for standalone agents) */
+  /** docs/specs/recommended-services.md: setup recipes this agent is proving. Only a test agent or the development agent sets it. */
+  recommendedServices?: { provingRecipes?: string[] };
   gitBackup?: {
     /** Whether git backup is enabled. Defaults to true if .git/ exists, false otherwise. */
     enabled: boolean;
@@ -4949,6 +4960,23 @@ export interface InstarConfig {
      *  auto-swap functional (a session must carry which account it's on for the
      *  swap engine to move it). Unset → spawns use the default config (no-op). */
     pinSessionsToPool?: boolean;
+    /**
+     * Usage-wall rescue (docs/specs/usage-wall-rescue.md) — ON by default
+     * (operator-approved 2026-11-04). The one switch for: a session that sits
+     * at its account's usage wall is moved to an account with room and
+     * continues (tagged OR untagged sessions); new claude-code spawns are
+     * tagged with a pool account so no session rides the default login
+     * untagged; a spawn never lands on a default login the pool knows is
+     * walled. EFFECTIVE only while the pool holds 2+ usable accounts of the
+     * session's framework — with 0 or 1 nothing changes. An explicit
+     * `autoSwapOnRateLimit: false` turns the wall swap off; an explicit
+     * `pinSessionsToPool: false` limits spawn tagging to the walled-default
+     * guard. Read live.
+     */
+    wallRescue?: {
+      /** Default true. `false` turns the whole rescue off. */
+      enabled?: boolean;
+    };
     /**
      * DARK by default: the PRE-LIMIT swap. When enabled, the ProactiveSwapMonitor
      * moves a session OFF an account that crosses `thresholdPct` on its binding
@@ -5879,6 +5907,20 @@ export interface ThreadlineListenerConfig {
 export interface ThreadlineConfig {
   /** Whether cloud relay is enabled (default: false, opt-in) */
   relayEnabled: boolean;
+  /**
+   * A sender is never left guessing (docs/specs/a2a-required-acknowledgment.md).
+   * On unless `enabled: false`, which turns off sending, watching and the instruction;
+   * inbound kinded acks are always consumed safely.
+   */
+  requiredAck?: {
+    enabled?: boolean;
+    /** Reminder to an interactive session. Default 5 minutes. */
+    reminderMs?: number;
+    /** Tell the sender `unacknowledged`. Default 15 minutes. */
+    attentionMs?: number;
+    /** Reminders per peer per day. Default 20. */
+    reminderDailyCap?: number;
+  };
   /** Cloud relay URL (default: 'wss://threadline-relay.fly.dev/v1/connect') */
   relayUrl?: string;
   /** Agent visibility on the relay network: 'public' (discoverable), 'unlisted' (direct only), 'private' (no relay) */

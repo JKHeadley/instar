@@ -28,6 +28,13 @@ SESSION_MODE=false
 CHANNEL_ID=""
 if [ -n "${INSTAR_CONVERSATION_ID:-}" ] && [ "${INSTAR_CONVERSATION_ID#-}" != "${INSTAR_CONVERSATION_ID}" ]; then
   SESSION_MODE=true
+  # The session binding picks the destination. A channel id (and thread id) passed out of habit
+  # (`slack-reply.sh C0123ABCD`) is dropped, so it is never sent as the message itself.
+  # slack-reply-feature: session-drops-channel-arg
+  if [ $# -gt 0 ] && [[ "$1" =~ ^[CDG][A-Z0-9]{8,11}$ ]] && [[ "$1" =~ [0-9] ]]; then
+    shift
+    if [ $# -gt 0 ] && [[ "$1" =~ ^[0-9]+\.[0-9]+$ ]]; then shift; fi
+  fi
 else
   CHANNEL_ID="${1:-}"
   [ -n "$CHANNEL_ID" ] || { echo "Error: channel id required outside a spawned Slack session" >&2; exit 1; }

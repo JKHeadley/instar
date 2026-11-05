@@ -82,6 +82,10 @@ describe('recommended services: production wiring', () => {
     const yes = await request(app).post('/recommended-services/jev/confirm').set('X-Instar-Request', '1').send({ token: 'forged', pin: PIN, answer: 'yes' });
     expect(yes.status).toBe(409);
     expect(makeLedger().effective('jev').choice).toBe('no');
+    // Verifying needs a recipe, and this agent is proving none.
+    const verify = await request(app).post('/recommended-services/jev/verify').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
+    expect(verify.status).toBe(409);
+    expect(verify.body.error).toBe('no-recipe');
     const pageFile = await request(app).get('/dashboard/service-yes');
     expect(pageFile.status).toBe(200);
     expect(pageFile.headers['content-security-policy']).toContain("default-src 'none'");
@@ -91,6 +95,22 @@ describe('recommended services: production wiring', () => {
     const { server } = boot(false);
     const res = await request(server.getApp()).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
     expect(res.status).toBe(503);
+  });
+
+  it('the key route refuses on an agent that is not proving a recipe, so a fleet agent stores nothing', async () => {
+    const { server } = boot(true);
+    const res = await request(server.getApp()).post('/recommended-services/jev/key')
+      .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').type('text/plain').send('a-key');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('no-recipe');
+  });
+
+  it('the hold route refuses on an agent that is not proving a recipe', async () => {
+    const { server } = boot(true);
+    const res = await request(server.getApp()).post('/recommended-services/jev/hold')
+      .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('no-recipe');
   });
 
   it('refuses to surface a retired offer', async () => {

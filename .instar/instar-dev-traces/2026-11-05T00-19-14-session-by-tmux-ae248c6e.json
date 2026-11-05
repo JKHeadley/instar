@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "session-by-tmux",
+  "sessionId": "f3f374fe-1740-4fac-8bbf-c32c8b60e738",
+  "timestamp": "2026-11-05T00:19:14.671426Z",
+  "artifactPath": "upgrades/side-effects/session-by-tmux.md",
+  "artifactSha256": "dc2b00bc35183501cb50f9f7fc677008a51890a688c8d5b7e24fb9ee0c2a4505",
+  "specPath": "docs/specs/session-pool-rebalancing-finish.md",
+  "coveredFiles": [
+    "docs/specs/session-pool-rebalancing-finish.eli16.md",
+    "docs/specs/session-pool-rebalancing-finish.md",
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "src/core/StateManager.ts",
+    "src/core/pickSessionByTmux.ts",
+    "src/server/routes.ts",
+    "src/threadline/ThreadlineMcpHttpService.ts",
+    "tests/unit/ResumeHeartbeat.test.ts",
+    "tests/unit/session-by-tmux.test.ts",
+    "tests/unit/session-injection-verify-incarnation.test.ts",
+    "upgrades/next/session-by-tmux.md",
+    "upgrades/side-effects/session-by-tmux.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

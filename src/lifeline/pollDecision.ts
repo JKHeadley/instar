@@ -70,3 +70,31 @@ export function decidePollAction(i: PollDecisionInputs): PollAction {
   if (i.peerPresumedGone || i.startDebounceElapsed) return 'start';
   return 'hold';
 }
+
+/** How long a held boot waits for the lease's opinion before polling as it always did. */
+export const BOOT_POLL_HOLD_MAX_MS = 180_000;
+
+/**
+ * Does this boot wait for the lease before polling? An absent `telegramPolling` defers to
+ * the lease, but the boot path polled before the lease had a say, so a standby took the
+ * slot on every start. Only when poll-follows-lease is live (`enabled` already resolved by
+ * the caller, `dryRun:false`); `telegramPolling:false` is the force-mute and never polls.
+ */
+export function holdPollAtBoot(i: { followsLeaseEnabled: boolean; dryRun: boolean | undefined; telegramPolling: boolean | undefined; pollOverride: string | undefined }): boolean {
+  if (!i.followsLeaseEnabled || i.dryRun !== false) return false;
+  if (i.telegramPolling === false || i.pollOverride === 'force-mute' || i.pollOverride === 'force-poll') return false;
+  return true;
+}
+
+/**
+ * What a held boot does on one reconcile. With an opinion the normal decision runs; the
+ * caller ends the hold only once a poll has started or the lease says standby, so an
+ * opinion that vanishes still reaches the bound. No opinion past the bound starts the
+ * poll: a single machine or a
+ * server that never came up writes no intent, and holding forever would be silence. That
+ * is the same blind start every boot made before the hold, only later.
+ */
+export function bootHoldStep(i: { heldSinceMs: number; nowMs: number; intentShouldPoll: boolean | null }): 'wait' | 'release' | 'expired' {
+  if (i.intentShouldPoll !== null) return 'release';
+  return i.nowMs - i.heldSinceMs >= BOOT_POLL_HOLD_MAX_MS ? 'expired' : 'wait';
+}

@@ -1,0 +1,45 @@
+{
+  "version": 2,
+  "slug": "recommended-services-runner",
+  "sessionId": "58f67d35-e862-45fd-a8db-06c862c54056",
+  "timestamp": "2026-11-04T15:33:54.880Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-runner.md",
+  "artifactSha256": "02c8bda96b3dbddff10ec4e10c10d7686647d5cd13c57b8bdb6ba77227df945c",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "dashboard/console/services-model.js",
+    "src/core/BackupManager.ts",
+    "src/core/types.ts",
+    "src/data/state-coherence-registry.json",
+    "src/recommended/recipes.ts",
+    "src/recommended/setupRestart.ts",
+    "src/recommended/setupState.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/recommendedServiceRoutes.ts",
+    "src/server/routes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/recommended-services-alive.test.ts",
+    "tests/integration/recommended-services-confirm-wiring.test.ts",
+    "tests/integration/recommended-services-confirm.test.ts",
+    "tests/integration/recommended-services-routes.test.ts",
+    "tests/integration/recommended-services-setup.test.ts",
+    "tests/unit/recommended-services-catalog.test.ts",
+    "upgrades/next/recommended-services-runner.md",
+    "upgrades/side-effects/recommended-services-runner.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Starts sessions with owner reach from a confirmed yes and stores a secret, dark unless a throwaway or development agent proves a recipe. Driven by the approved spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Registered as recommended-service-setup-restart: durable start count, growing waits, one notice, then a durable stop, proven under sustained pressure."
+    }
+  }
+}

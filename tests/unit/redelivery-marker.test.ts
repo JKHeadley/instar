@@ -36,12 +36,12 @@ describe('W21 — buildInjectionTag: a re-delivered message IS marked', () => {
 
   it('marks the sender-only tag', () => {
     expect(buildInjectionTag(42, undefined, 'Justin', 12345, true))
-      .toBe(`[telegram:42 from Justin (uid:12345) — ${RE_DELIVERY_MARKER}]`);
+      .toBe(`[telegram:42 (name unresolved) from Justin (uid:12345) — ${RE_DELIVERY_MARKER}]`);
   });
 
   it('marks the bare tag', () => {
     expect(buildInjectionTag(42, undefined, undefined, undefined, true))
-      .toBe(`[telegram:42 — ${RE_DELIVERY_MARKER}]`);
+      .toBe(`[telegram:42 (name unresolved) — ${RE_DELIVERY_MARKER}]`);
   });
 
   it('keeps the marker INSIDE the tag and AFTER the topic id, so every existing parser still matches', () => {
@@ -68,8 +68,8 @@ describe('W21 — buildInjectionTag: a first delivery is NOT marked', () => {
   const variants: Array<[string, string]> = [
     [buildInjectionTag(42, 'Agent Updates', 'Justin', 12345), '[telegram:42 "Agent Updates" from Justin (uid:12345)]'],
     [buildInjectionTag(42, 'Agent Updates'), '[telegram:42 "Agent Updates"]'],
-    [buildInjectionTag(42, undefined, 'Justin', 12345), '[telegram:42 from Justin (uid:12345)]'],
-    [buildInjectionTag(42), '[telegram:42]'],
+    [buildInjectionTag(42, undefined, 'Justin', 12345), '[telegram:42 (name unresolved) from Justin (uid:12345)]'],
+    [buildInjectionTag(42), '[telegram:42 (name unresolved)]'],
   ];
 
   it('emits bytes identical to the pre-marker output when the flag is omitted', () => {
@@ -82,7 +82,7 @@ describe('W21 — buildInjectionTag: a first delivery is NOT marked', () => {
   it('emits bytes identical to the pre-marker output when the flag is explicitly false', () => {
     expect(buildInjectionTag(42, 'Agent Updates', 'Justin', 12345, false))
       .toBe('[telegram:42 "Agent Updates" from Justin (uid:12345)]');
-    expect(buildInjectionTag(42, undefined, undefined, undefined, false)).toBe('[telegram:42]');
+    expect(buildInjectionTag(42, undefined, undefined, undefined, false)).toBe('[telegram:42 (name unresolved)]');
   });
 
   it('treats every non-`true` value as NOT re-delivered (strict === true)', () => {
@@ -104,7 +104,7 @@ describe('W21 — forgery: content can never mint the marker', () => {
 
   it('does not treat a sender name containing the marker text as a re-delivery', () => {
     const tag = buildInjectionTag(42, undefined, RE_DELIVERY_MARKER, 12345);
-    expect(tag).toBe(`[telegram:42 from ${RE_DELIVERY_MARKER} (uid:12345)]`);
+    expect(tag).toBe(`[telegram:42 (name unresolved) from ${RE_DELIVERY_MARKER} (uid:12345)]`);
     expect(tag).not.toContain(`(uid:12345) — ${RE_DELIVERY_MARKER}]`);
   });
 

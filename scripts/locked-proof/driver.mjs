@@ -7,6 +7,10 @@
  *   node scripts/locked-proof/driver.mjs calibrate --execute [opts]    # one normal unlock: measures the typing pace
  *   node scripts/locked-proof/driver.mjs run --execute [--cases 12.1,P15] [opts]
  *
+ * Before any run: stage-proof-agents.sh --tgz, then --start, then --finalize (all three, in
+ * that order). The driver refuses to start while a proof agent lacks its dashboard PIN or is
+ * not yet its own desktop front, and names the --finalize step.
+ *
  * Options:
  *   --agent-home DIR     the operator-side agent home holding the vault (secret-get.mjs)  [required for calibrate/run]
  *   --proof-dir DIR      proof agent A's project directory (default /Users/instarproof/.instar/agents/locked-proof)
@@ -30,6 +34,8 @@ import { fileURLToPath } from 'node:url';
 import { BLOCKING, PROOF_USER, TERMINAL, VAULT_KEY, assertProofTarget, renderExpected, runCase, selectCases } from './lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+/** The viewer is ready when it offers a request or has already opened the stream. */
+export const VIEWER_READY = '#requestButton:not([disabled]), #control:not([hidden])';
 const LOCK_PY = 'import ctypes; ctypes.CDLL("/System/Library/PrivateFrameworks/login.framework/Versions/Current/login").SACLockScreenImmediate()';
 
 function opt(name, fallback) {
@@ -44,8 +50,41 @@ function sh(cmd, args, { allowFail = false, input } = {}) {
   return r.stdout ?? '';
 }
 const sudo = (args, o) => sh('sudo', ['-n', ...args], o);
+/**
+ * What setup still owes before a run, one line each. A proof agent needs a
+ * dashboard PIN (configure-proof-agent.mjs --pin-stdin, from the vault) and to
+ * be its own desktop front, which only `stage-proof-agents.sh --finalize
+ * --execute` records (it needs the machine id from the first server start).
+ */
+export function setupGaps(agents) {
+  const gaps = [];
+  for (const [dir, config] of agents) {
+    if (typeof config.dashboardPin !== 'string' || !config.dashboardPin) {
+      gaps.push(`${dir}: no dashboard PIN. Run stage-proof-agents.sh --finalize --agent-home DIR --execute (the PIN comes from the vault).`);
+    }
+    if (!config.remoteDesktop?.frontMachineId) {
+      gaps.push(`${dir}: not its own desktop front yet. Run stage-proof-agents.sh --finalize --agent-home DIR --execute after --start.`);
+    }
+  }
+  return gaps;
+}
+
 /** The login name owning a pid, or '' when it is gone. */
 export function ownerOf(pid) { return sh('ps', ['-o', 'user=', '-p', String(pid)], { allowFail: true }).trim(); }
+
+/**
+ * Sends one person step and writes down whether it went. A refused send used to
+ * vanish, so a person was never told and the case simply timed out; now the
+ * refusal is in person-steps.jsonl and on stderr for whoever is watching the run.
+ */
+export function recordPersonStep(o, text, send) {
+  const result = o.notifyTopic ? send() : null;
+  const sent = result ? result.status === 0 : false;
+  const row = { at: new Date().toISOString(), text, topic: o.notifyTopic ?? null, sent };
+  fs.appendFileSync(path.join(o.out, 'person-steps.jsonl'), `${JSON.stringify(row)}\n`);
+  if (o.notifyTopic && !sent) process.stderr.write(`[locked-proof] person step NOT delivered to topic ${o.notifyTopic}: ${text}\n`);
+  return row;
+}
 
 /** The proof Mac, the proof user, its two agents and the real viewer page. */
 export class RealTarget {
@@ -67,8 +106,12 @@ export class RealTarget {
   agentConfig(dir) { return JSON.parse(sudo(['cat', path.join(dir, '.instar', 'config.json')])); }
 
   async init() {
-    this.a = { port: this.o.port, dir: this.o.proofDir, ...this.pick(this.agentConfig(this.o.proofDir)) };
-    this.b = { port: this.o.portB, dir: this.o.proofDirB, ...this.pick(this.agentConfig(this.o.proofDirB)) };
+    const configA = this.agentConfig(this.o.proofDir);
+    const configB = this.agentConfig(this.o.proofDirB);
+    const missing = setupGaps([[this.o.proofDir, configA], [this.o.proofDirB, configB]]);
+    if (missing.length) throw new Error(missing.join('\n'));
+    this.a = { port: this.o.port, dir: this.o.proofDir, ...this.pick(configA) };
+    this.b = { port: this.o.portB, dir: this.o.proofDirB, ...this.pick(configB) };
     for (const agent of [this.a, this.b]) {
       const health = await this.api(agent, 'GET', '/health');
       // The real owner of the process answering on this port, not a constant.
@@ -182,15 +225,24 @@ export class RealTarget {
     await page.goto(`http://127.0.0.1:${agent.port}/dashboard/desktop.html`);
     await page.fill('#pin', agent.pin);
     await page.click('#unlockButton');
-    await page.waitForSelector('#requestButton:not([disabled])', { timeout: 20_000 });
+    // desktop.js opens the stream by itself when exactly one machine is ready,
+    // keeping #request hidden; either outcome means the page is ready.
+    await page.waitForSelector(VIEWER_READY, { timeout: 20_000 });
     const v = { agent, context, page };
     this.viewers.push(v);
     return v;
   }
 
+  /** Asks for a grant only when the page has not already opened one itself. */
+  async requestGrant(v) {
+    if (await v.page.isVisible('#control').catch(() => false)) return { clicked: false };
+    await v.page.click('#requestButton');
+    return { clicked: true };
+  }
+
   async openGrant(c) {
     const v = await this.viewer(this.a);
-    await v.page.click('#requestButton');
+    await this.requestGrant(v);
     await v.page.waitForSelector('#control:not([hidden])', { timeout: 30_000 });
     this.main = v;
     this.mainOpenedAt = this.now();
@@ -302,7 +354,7 @@ export class RealTarget {
       case 'type-letter': await this.main.page.focus('#surface'); await this.main.page.keyboard.press('a'); return { pressed: 'a' };
       case 'grant-other-agent': {
         const v = await this.viewer(this.b);
-        await v.page.click('#requestButton');
+        await this.requestGrant(v);
         await this.sleep(5_000);
         const text = (await v.page.textContent('#status').catch(() => '')) ?? '';
         const opened = await v.page.isVisible('#control');
@@ -312,7 +364,7 @@ export class RealTarget {
       case 'open-next-grant': {
         await this.main.page.click('#stopButton').catch(() => {});
         const v = await this.viewer(this.a);
-        await v.page.click('#requestButton');
+        await this.requestGrant(v);
         await v.page.waitForSelector('#control:not([hidden])', { timeout: 30_000 }).catch(() => {});
         this.events.add('next-grant-open');
         return { opened: await v.page.isVisible('#control') };
@@ -325,10 +377,9 @@ export class RealTarget {
 
   async askPerson(text) {
     process.stdout.write(`\n>>> PERSON STEP: ${text}\n\n`);
-    if (this.o.notifyTopic) {
-      sh('bash', [path.join(this.o.agentHome, '.instar/scripts/telegram-reply.sh'), String(this.o.notifyTopic)],
-        { input: `Locked-Mac proof: ${text}`, allowFail: true });
-    }
+    recordPersonStep(this.o, text, () => spawnSync('bash',
+      [path.join(this.o.agentHome, '.instar/scripts/telegram-reply.sh'), String(this.o.notifyTopic)],
+      { encoding: 'utf8', input: `Locked-Mac proof: ${text}`, timeout: 30_000 }));
   }
 
   async extraEvidence(c, ev) {
@@ -389,6 +440,7 @@ const STATUS_REASONS = [
   ['finishing a relock', 'relock-pending'], ['Too many tries in this session', 'attempts-per-request'],
   ['Too many tries today', 'attempts-per-day'], ['connection changed', 'seal-stale'],
   ['Stopped before the password finished', 'aborted'], ['Clearing the password field', 'field-dirty'],
+  ['secure tunnel is up', 'tunnel-not-active'], ['kept desktop helper', 'retained-helper-required'],
   ['Password entry from a browser is off', 'browser-box-off'], ['backup connection', 'tunnel-not-first-tier'],
   ['did not accept that', 'refused-other'],
 ];

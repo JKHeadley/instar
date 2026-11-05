@@ -55,6 +55,8 @@ export interface TelegramOriginRuntimeOptions {
   authorizeOrigin?: OriginServiceOptions['authorizeOrigin'];
   resolveOriginKey?: (machineId: string, epoch?: number) => OriginVerificationKey | null;
   reviewLegacyRecovery?: OriginServiceOptions['reviewLegacyRecovery'];
+  /** Retire an unsent recovery reply when newer conversation has overtaken it. */
+  reviewQueuedReply?: (input: { operationId: string; chatId: string | null; topicId: number; preparedAt: number }) => Promise<import('./QueuedReplySupersession.js').QueuedReplyReview>;
   peerEvidence?: OriginServiceOptions['peerEvidence'];
   diagnoseUnknown: NonNullable<OriginServiceOptions['diagnoseUnknown']>;
   diagnosticMode?: OriginServiceOptions['diagnosticMode'];
@@ -79,8 +81,8 @@ export interface TelegramOriginRuntimeOptions {
    * detail) was observed for the first time: the server sends the notice/item. */
   onLeaseHoldObserved?: (row: import('./StoreTypes.js').HeldOperationRow) => Promise<void> | void;
   /** Mirror a recovered, receipt-confirmed Bot API message into topic history. */
-  onRecoveredMessage?: (input: { operationId: string; chatId: string; threadId: number | null; messageId: number; text: string; acceptedAt: number; producerKind: string }) => void;
-  onSessionDeliveryHeld?: (input: { operationId: string; reason: string; chatId: string | null; threadId: number | null }) => void;
+  onRecoveredMessage?: (input: { operationId: string; chatId: string; threadId: number | null; messageId: number; text: string; acceptedAt: number; preparedAt: number; producerKind: string }) => Promise<void> | void;
+  onSessionDeliveryHeld?: (input: { operationId: string; reason: string; chatId: string | null; threadId: number | null; state?: string; uncertain?: boolean; preparedAt?: number; acceptedAt?: number | null; outOfOrder?: boolean }) => Promise<void> | void;
   /** Synchronous diagnostics, independent of worker/transport authority. */
   readDetectorHealth?: () => Record<string, unknown>;
 }
@@ -160,11 +162,13 @@ export class TelegramOriginRuntime {
       reviewLegacyRecovery: options.reviewLegacyRecovery,
       peerEvidence: options.peerEvidence, diagnoseUnknown: options.diagnoseUnknown,
       diagnosticMode: options.diagnosticMode,
-      onHold: ({ operationId, reason, producerKind, destination }) => {
-        if (producerKind === 'session' && reason === 'telegram-connect-failed') {
-          console.warn(`[telegram-origin] session reply held before network: ${operationId}, chat ${destination.chatId}, thread ${destination.topicId}`);
-          options.onSessionDeliveryHeld?.({ operationId, reason, chatId: destination.chatId,
-            threadId: destination.topicId === null ? null : Number(destination.topicId) });
+      onHold: ({ operationId, reason, producerKind, operationKind, destination }) => {
+        if (producerKind === 'session' && operationKind === 'sendMessage' && reason !== 'lease-not-held' && reason !== 'destination-not-authorized' && reason !== 'original-operation-unresolved') {
+          const uncertain = reason === 'transport-acceptance-unknown' || reason === 'response-without-correlated-receipt' || reason === 'partial-platform-receipt';
+          Promise.resolve(options.onSessionDeliveryHeld?.({ operationId, reason, chatId: destination.chatId,
+            threadId: destination.topicId === null ? null : Number(destination.topicId), state: uncertain ? 'outcome-unknown' : 'held', uncertain }))
+            .catch(error => console.warn('[telegram-origin] session delivery notice unavailable',
+              error instanceof Error ? error.name : 'unknown-error'));
         }
         if (!['all-durable-recording-sinks-unavailable', 'execution-admission-unavailable',
           'origin-execution-state-unavailable', 'held-payload-capacity-unavailable'].includes(reason)) return;
@@ -336,6 +340,8 @@ export class TelegramOriginRuntime {
   #heldForward: { count: number; sessionReplies: number; automaticMessages: number; otherMessages: number; topics: string[]; oldestSince: number | null; observedAt: number | null; expiredUnreported: number } =
     { count: 0, sessionReplies: 0, automaticMessages: 0, otherMessages: 0, topics: [], oldestSince: null, observedAt: null, expiredUnreported: 0 };
   #heldForwardRefreshedAt = 0;
+  #sessionExceptionCursor: { afterPreparedAt: number; afterOperationId: string } | null = null;
+  #reportingSessionExceptions = false;
   /** Direct-path lease holds already reported (bounded: pruned to the live held set). */
   #observedLeaseHolds = new Set<string>();
   /** `/health → telegramOrigin.heldForward` — a synchronous read of the last
@@ -397,6 +403,7 @@ export class TelegramOriginRuntime {
         if (!operation.record.executionOwnerMachineId || operation.record.executionOwnerMachineId === this.options.identity.originMachineId) continue;
         try {
           processed++;
+          if (!await this.allowQueuedRecovery(operation, row)) continue;
           const outcome = await this.options.forwardRecovery(operation, row);
           if (outcome === 'sent' || outcome === 'resolved') recovered++;
         } catch (error) {
@@ -545,9 +552,10 @@ export class TelegramOriginRuntime {
               state: audit.operation.state === 'expired' ? 'expired' : 'held', holdReason: audit.operation.holdReason ?? null, holdDetail: audit.operation.holdDetail ?? null,
               preparedAt: audit.operation.preparedAt, deadlineAt: audit.operation.deadlineAt, executionOwnerMachineId: operation.record.executionOwnerMachineId,
               destination: { accountId: operation.record.destination.accountId, chatId: operation.record.destination.chatId, topicId: operation.record.destination.topicId },
-              recovery: audit.recovery ?? null, expiryReportedAt: null };
+              recovery: audit.recovery ?? null, expiryReportedAt: null, producerKind: operation.record.producerKind };
             if (!await this.store.reserveRecoveryAttempt({ operationId: operation.record.operationId })) continue;
             processed++;
+            if (!await this.allowQueuedRecovery(operation, row, audit)) continue;
             const outcome = await this.options.forwardRecovery(operation, row);
             if (outcome === 'sent' || outcome === 'resolved') recovered++;
           } catch (error) {
@@ -580,6 +588,7 @@ export class TelegramOriginRuntime {
         if (!await this.store.reserveRecoveryAttempt({ operationId: operation.record.operationId })) continue;
         processed++;
         const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson);
+        if (!await this.allowQueuedRecovery(operation)) continue;
         const response = await telegramFetch(`https://api.telegram.org/bot${owners[0].token}/${request.method}`,
           { method: 'POST', headers: { 'Content-Type': request.contentType }, body: request.body,
             networkTimeoutMs: 10_000 }, undefined, operation);
@@ -588,11 +597,11 @@ export class TelegramOriginRuntime {
             const receipt = await response.json() as { ok?: boolean; result?: { message_id?: number; date?: number } };
             const body = JSON.parse(request.body) as { chat_id?: string | number; message_thread_id?: number; text?: string };
             if (receipt.ok && Number.isSafeInteger(receipt.result?.message_id) && typeof body.text === 'string' && body.chat_id != null) {
-              this.options.onRecoveredMessage({ operationId: operation.record.operationId,
+              await this.options.onRecoveredMessage({ operationId: operation.record.operationId,
                 chatId: String(body.chat_id), threadId: body.message_thread_id ?? null,
                 messageId: receipt.result!.message_id!, text: body.text,
                 acceptedAt: Number.isSafeInteger(receipt.result?.date) ? receipt.result!.date! * 1000 : Date.now(),
-                producerKind: operation.record.producerKind });
+                preparedAt: operation.admission.preparedAt, producerKind: operation.record.producerKind });
             }
           } catch (error) {
             console.warn('[telegram-origin] recovered message history unavailable', operation.record.operationId,
@@ -608,9 +617,64 @@ export class TelegramOriginRuntime {
         }
       }
       await this.refreshHeldForward({ force: true });
+      // Notice I/O cannot hold up the outbox drain. The scan is repeatable and
+      // uses a cursor so an old or busy topic cannot permanently hide a loss.
+      void this.reportSessionDeliveryExceptions();
       return { processed, recovered };
     } finally { this.recovering = false; }
   }
+  /** Shared gate for direct recovery and both forward retry schedulers. */
+  private async allowQueuedRecovery(operation: OriginPreparedBotOperation,
+    row?: import('./StoreTypes.js').HeldOperationRow,
+    knownAudit?: import('./StoreTypes.js').OriginAuditRecord): Promise<boolean> {
+    const originalKind = typeof row?.holdDetail?.authoredProducerKind === 'string'
+      ? row.holdDetail.authoredProducerKind : operation.record.producerKind;
+    const originalPreparedAt = typeof row?.holdDetail?.authoredPreparedAt === 'number' && Number.isFinite(row.holdDetail.authoredPreparedAt)
+      ? row.holdDetail.authoredPreparedAt : operation.admission.preparedAt;
+    if (!this.options.reviewQueuedReply || operation.record.destination.topicId === null ||
+      (originalKind !== 'session' && originalKind !== 'imported-legacy')) return true;
+    const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson);
+    if (request.method !== 'sendMessage') return true;
+    const audit = knownAudit ?? await this.store.getOperation(operation.record.operationId);
+    if (!audit?.operation) return false;
+    // Visible or uncertain children must be reconciled through their original
+    // receipt path. Suppression is allowed only for definite non-delivery.
+    if (audit.children.some(child => child.state === 'accepted' || child.state === 'outcome-unknown')) return true;
+    // Forward attempts can retain historical uncertainty after the holder's
+    // receipt has proven nonacceptance. The current marker is authoritative.
+    if (!row && audit.attempts.some(attempt => attempt.outcome === 'outcome-unknown')) return true;
+    const lastAttempt = row?.holdDetail?.lastAttempt;
+    if (lastAttempt === 'outcome-unknown' || lastAttempt === 'local-sent') return true;
+    const review = await this.options.reviewQueuedReply({ operationId: operation.record.operationId,
+      chatId: operation.record.destination.chatId,
+      topicId: Number(operation.record.destination.topicId), preparedAt: originalPreparedAt });
+    if (review === 'hold') return false;
+    if (review === 'retire') {
+      if (await this.store.recordOperationState({ operationId: operation.record.operationId, state: 'suppressed' })) {
+        console.info('[telegram-origin] retired overtaken queued reply', operation.record.operationId);
+      }
+      return false;
+    }
+    return true;
+  }
+  private async reportSessionDeliveryExceptions(): Promise<void> {
+    if (this.#reportingSessionExceptions || !this.options.onSessionDeliveryHeld || this.closed) return;
+    this.#reportingSessionExceptions = true;
+    try {
+      const rows = await this.store.listSessionDeliveryExceptions({ ...this.#sessionExceptionCursor ?? {}, limit: 100 });
+      this.#sessionExceptionCursor = rows.length === 100
+        ? { afterPreparedAt: rows[99].preparedAt, afterOperationId: rows[99].operationId } : null;
+      for (const row of rows) {
+        if (this.closed) break;
+        try { await this.options.onSessionDeliveryHeld(row); }
+        catch (error) { console.warn('[telegram-origin] session delivery notice retry retained',
+          error instanceof Error ? error.name : 'unknown-error'); }
+      }
+    } catch (error) { console.warn('[telegram-origin] session delivery exception scan unavailable',
+      error instanceof Error ? error.name : 'unknown-error'); }
+    finally { this.#reportingSessionExceptions = false; }
+  }
+
   async importLegacyQueue(): Promise<number> {
     if (this.closed || this.importingLegacy || !this.options.bot.token || !this.options.bot.chatId) return 0;
     this.importingLegacy = true;

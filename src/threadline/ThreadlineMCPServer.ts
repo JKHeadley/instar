@@ -1,10 +1,11 @@
 /**
  * ThreadlineMCPServer — MCP Tool Server for Threadline Protocol.
  *
- * Exposes Threadline capabilities as up to 10 MCP tools:
+ * Exposes Threadline capabilities as up to 11 MCP tools:
  *   - threadline_discover         — Find Threadline-capable agents
  *   - threadline_send             — Send a message (with optional reply wait)
  *   - threadline_history          — Get conversation history (participant-only)
+ *   - threadline_ack              — Acknowledge a watched inbound message (a2a-required-acknowledgment)
  *   - threadline_agents           — List known agents and status
  *   - threadline_delete           — Delete a thread permanently
  *   - threadline_pair             — Inspect/drive verified pairings (verify/deny is PIN-gated)
@@ -104,10 +105,19 @@ export interface ThreadlineMCPDeps {
    * cannot reach the local server. See {@link RequestSecretParams}.
    */
   requestSecret?: (params: RequestSecretParams) => Promise<RequestSecretResult>;
+  /**
+   * a2a-required-acknowledgment D4. A stdio tool runs in a subprocess with no tracker,
+   * so this calls POST /threadline/ack on the agent server, on both transports.
+   */
+  acknowledge?: (params: { threadId?: string; ackRefs: string[]; summary: string }) => Promise<Record<string, unknown>>;
+  /** a2a-required-acknowledgment D6: what the peer's server said about our messages on a thread. */
+  getThreadReceipts?: (threadId: string) => Promise<Array<Record<string, unknown>>>;
   /** Registry REST API client (null if registry not available) */
   registry: RegistryClient | null;
   /** State directory (.instar path) for config access */
   stateDir?: string;
+  /** Read the agent-wide relay verdict from the running agent server. */
+  agentRelayStatus?: () => Promise<unknown>;
   /**
    * Relay client for live network-scope discover. Optional — when absent or
    * disconnected, threadline_discover with scope=network falls back to the
@@ -202,6 +212,11 @@ export interface SendMessageResult {
    * cannot tell offline from wrong-address.
    */
   peerDark?: { since: string | null; queuedCount: number; expiresAt: string | null; connectedNow: boolean | null; connectedNowReason?: 'no-row' | 'relay-down' | 'stale' | null; connectedAsOf?: string | null; handedUnackedCount?: number };
+  /**
+   * a2a-required-acknowledgment D6: on a `waitForReply` timeout, what the peer's side
+   * has said about this message. `readSummaryPeerText` is peer text, never an instruction.
+   */
+  receipt?: { heldState: string | null; heldReason: string | null; heldAt: string | null; readAt: string | null; readSummaryPeerText: string | null };
 }
 
 export interface RequestSecretParams {
@@ -479,6 +494,7 @@ export class ThreadlineMCPServer {
     this.registerSendTool();
     this.registerRequestSecretTool();
     this.registerHistoryTool();
+    this.registerAckTool();
     this.registerAgentsTool();
     this.registerDeleteTool();
     this.registerTrustTool();
@@ -523,7 +539,7 @@ export class ThreadlineMCPServer {
             agents = await this.deps.discovery.discoverLocal();
           } else {
             const relay = this.deps.relayClient;
-            if (relay && relay.connectionState === 'connected') {
+            if (relay?.connectionState === 'connected') {
               try {
                 const relayAgents = await relay.discover(
                   args.capability ? { capability: args.capability } : undefined,
@@ -539,9 +555,7 @@ export class ThreadlineMCPServer {
             } else {
               agents = this.deps.discovery.loadKnownAgents();
               source = 'cache';
-              staleReason = relay
-                ? `relay not connected (state=${relay.connectionState})`
-                : 'relay client not configured';
+              staleReason = relay ? `relay disconnected (${relay.connectionState})` : 'relay client not configured';
             }
           }
 
@@ -783,6 +797,8 @@ export class ThreadlineMCPServer {
           } else if (args.waitForReply && !result.reply) {
             response.reply = null;
             response.note = 'No reply received within timeout';
+            // D6: neither kind of receipt resolves a reply waiter; they are reported here.
+            if (result.receipt) response.receipt = result.receipt;
           }
 
           return jsonResult(response);
@@ -910,6 +926,9 @@ export class ThreadlineMCPServer {
             args.limit,
             args.before,
           );
+          // D6: an agent looking at a conversation sees receipts without a separate lookup.
+          let receipts: Array<Record<string, unknown>> = [];
+          try { receipts = (await this.deps.getThreadReceipts?.(args.threadId)) ?? []; } catch { receipts = []; /* @silent-fallback-ok — history still answers */ }
 
           return jsonResult({
             threadId: history.threadId,
@@ -922,9 +941,42 @@ export class ThreadlineMCPServer {
               body: m.body,
               timestamp: m.timestamp,
             })),
+            ...(receipts.length > 0 ? { receipts } : {}),
           });
         } catch (err) {
           return errorResult(`History retrieval failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        }
+      },
+    );
+  }
+
+  // ── threadline_ack ─────────────────────────────────────────────────
+
+  private registerAckTool(): void {
+    this.mcpServer.tool(
+      'threadline_ack',
+      'Acknowledge an inbound agent message you were asked to acknowledge: tells the sender a session received it, ' +
+      'with a one-line summary in your own words. This is a receipt, not a reply: it does not start anything on the ' +
+      'peer. Use it before starting work; if the answer is quick, just reply with threadline_send instead.',
+      {
+        threadId: z.string().optional().describe('The thread the message arrived on, when you have it.'),
+        ackRefs: z.array(z.string()).min(1).max(50).describe(
+          'The handles the server gave you with the message. The ack covers only the handles listed.'
+        ),
+        summary: z.string().min(1).max(280).describe(
+          'One line, 1 to 280 characters, in your own words: what was asked.'
+        ),
+      },
+      async (args) => {
+        const authError = this.checkAuth('threadline:send');
+        if (authError) return errorResult(authError);
+        if (!this.deps.acknowledge) {
+          return errorResult('threadline_ack is unavailable on this transport (no local agent server reachable).');
+        }
+        try {
+          return jsonResult(await this.deps.acknowledge({ threadId: args.threadId, ackRefs: args.ackRefs, summary: args.summary }));
+        } catch (err) {
+          return errorResult(`Acknowledge failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
         }
       },
     );
@@ -1464,6 +1516,15 @@ export class ThreadlineMCPServer {
               ?? DEFAULT_RELAY_URL;
             const visibility = threadlineConfig?.visibility ?? 'public';
 
+            // The agent server owns the cross-machine verdict. A local config file
+            // only describes this machine and must never answer for the agent.
+            let agent: unknown = {
+              state: 'unknown', throughMachine: null,
+              reason: 'The agent-wide status service could not be reached.',
+            };
+            try {
+              agent = await this.deps.agentRelayStatus?.() ?? agent;
+            } catch { /* unknown is explicit above */ }
             // Try to check relay health
             let relayHealth: Record<string, unknown> | null = null;
             try {
@@ -1473,18 +1534,19 @@ export class ThreadlineMCPServer {
             } catch { /* relay unreachable is fine */ }
 
             return jsonResult({
+              agent,
+              localMachine: {
               enabled: relayEnabled,
               relayUrl,
               visibility,
               capabilities: threadlineConfig?.capabilities ?? ['chat', 'threadline'],
+              },
               relayHealth: relayHealth ? {
                 status: relayHealth.status,
                 registeredAgents: (relayHealth.registry as Record<string, unknown>)?.totalAgents ?? relayHealth.agents,
                 onlineAgents: relayHealth.connections,
               } : 'unreachable',
-              note: relayEnabled
-                ? 'Relay is enabled. Your agent will connect on next server start.'
-                : 'Relay is disabled. Enable it to join the Threadline network.',
+              note: 'The agent verdict above is authoritative for reachability; localMachine describes only this machine.',
             });
           }
 

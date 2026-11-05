@@ -22,6 +22,8 @@
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { PENDING_MAX_BACKOFF_MS, PENDING_TICK_MS, PENDING_TTL_MS } from '../threadline/requiredAckService.js';
+import { decideSetupRestart, MAX_SETUP_STARTS } from '../recommended/setupRestart.js';
 import { MAX_GUARD_REPLACEMENTS, RESPAWNS_PER_REQUEST, decideGuardReplacement, decideLockedRespawn } from '../core/DesktopLockedController.js';
 import { OverloadShedPlanner, DEFAULT_OVERLOAD_SHED } from '../core/OverloadShedPlanner.js';
 import { PlacementExecutor } from '../core/PlacementExecutor.js';
@@ -47,6 +49,7 @@ import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
 import { decideKeyRefresh, REFRESH_MAX_ATTEMPTS } from '../core/ClaudeKeyHealth.js';
 import { raiseDue } from '../monitoring/MaturationLadder.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
+import { decideRescueGate, WALL_RESCUE_LIMITS } from '../core/UsageWallRescue.js';
 import { nextBreakerState, RECONCILE_LIMITS } from '../core/ReplicatedStoreReconciler.js';
 import { findStuckPreparingRuns, PREPARING_NOTICE_MAX_ATTEMPTS } from '../core/AutonomousStartAdmission.js';
 import type { AutonomousRunRecord } from '../core/AutonomousRunStore.js';
@@ -3188,6 +3191,46 @@ const claudeKeySessionRefresh: SelfActionController = {
  * session, then it stays put. Moves are also serialised one per 30 s per machine (not modelled:
  * a stricter bound on the burst, not on the total).
  */
+/**
+ * usage-wall-rescue — UsageWallRescue's real gate (decideRescueGate, the only
+ * time gate the class uses; docs/specs/usage-wall-rescue.md) under the worst
+ * case: the watchdog reports the same session at its usage wall on every
+ * 5-minute tick, forever; an account with room always exists; and every move
+ * is refused (targetAlwaysRejects). Brakes: a 10-minute base interval,
+ * doubling back-off per failed move, a breaker after 5 failed moves holding 24
+ * hours, 12 moves/hour per machine. Over the horizon (and twice it) the count
+ * settles at 5 for the one session.
+ */
+const usageWallRescueMove: SelfActionController = {
+  id: 'usage-wall-rescue',
+  actionVerb: 'account-swap',
+  models: 'src/core/UsageWallRescue.ts (decideRescueGate: base interval, doubling back-off per failed move, 5-failure breaker for 24h, 12/hour per machine)',
+  modelsPath: 'src/core/UsageWallRescue.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The back-off and breaker are in memory; a server restart (never caused by this controller) starts a fresh budget, still capped at 5 failed moves per session and 12 per hour.' },
+  boundK: WALL_RESCUE_LIMITS.breakerThreshold,
+  perTargetBoundK: WALL_RESCUE_LIMITS.breakerThreshold,
+  ticks: 100,
+  tickMs: 5 * 60_000,
+  makeUnderPressure(f, sink) {
+    const TARGET = 'walled-session';
+    let failedMoves = 0;
+    let lastFailedAtMs: number | undefined;
+    let lastCheckAtMs: number | undefined;
+    const moveTimesMs: number[] = [];
+    return {
+      tick() {
+        sink.considered += 1;
+        const nowMs = f.clock.nowMs();
+        if (decideRescueGate({ failedMoves, lastFailedAtMs, lastCheckAtMs, moveTimesMs, nowMs, limits: WALL_RESCUE_LIMITS }) !== null) return;
+        lastCheckAtMs = nowMs;
+        moveTimesMs.push(nowMs);
+        sink.emit({ verb: 'account-swap', target: TARGET });
+        if (f.targetAlwaysRejects()) { failedMoves += 1; lastFailedAtMs = nowMs; } else { failedMoves = 0; lastFailedAtMs = undefined; }
+      },
+    };
+  },
+};
+
 const deviceLimitSessionMove: SelfActionController = {
   id: 'device-limit-session-move',
   actionVerb: 'account-swap',
@@ -3660,6 +3703,44 @@ function preparingRunWatchdogModel(f: PressureFixture, sink: ActionSink): { tick
 }
 
 /**
+ * recommended-service-setup-restart — the check that restarts a dead setup session
+ * (docs/specs/recommended-services.md; recommendedServiceRoutes reconcile). The pressure: a session
+ * that dies at once, every time, forever. Convergence shape: durable starts count through
+ * decideSetupRestart, capped at MAX_SETUP_STARTS with growing waits, then one notice and a durable
+ * stop. A fresh yes needs the operator's PIN, so it can't re-arm this on its own.
+ */
+const recommendedServiceSetupRestart: SelfActionController = {
+  id: 'recommended-service-setup-restart',
+  actionVerb: 'spawn',
+  models: 'src/recommended/setupRestart.ts (decideSetupRestart — durable start count, growing waits, one notice, durable stop)',
+  modelsPath: 'src/recommended/setupRestart.ts',
+  boundK: MAX_SETUP_STARTS + 1, perTargetBoundK: MAX_SETUP_STARTS + 1, ticks: 288, tickMs: 5 * 60_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => recommendedServiceSetupRestartModel(f, sink) },
+  makeUnderPressure: (f, sink) => recommendedServiceSetupRestartModel(f, sink),
+};
+
+function recommendedServiceSetupRestartModel(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered++;
+    if (f.durableState.get('setup-exhausted')) return;
+    const nowMs = f.clock.nowMs();
+    const decision = decideSetupRestart({
+      starts: (f.durableState.get('setup-starts') as number | undefined) ?? 0,
+      lastStartMs: (f.durableState.get('setup-last-start') as number | undefined) ?? null,
+      nowMs,
+    });
+    if (decision === 'restart') {
+      f.durableState.set('setup-starts', ((f.durableState.get('setup-starts') as number | undefined) ?? 0) + 1);
+      f.durableState.set('setup-last-start', nowMs);
+      sink.emit({ verb: 'spawn', target: 'jev' });
+    } else if (decision === 'give-up') {
+      f.durableState.set('setup-exhausted', true);
+      sink.emit({ verb: 'notify', target: 'jev' });
+    }
+  } };
+}
+
+/**
  * machine-wedge-notice — the wedge dry-run operator notice (machine-self-maintenance
  * Part E rung 7; WedgeMonitor + MachineWedgeNotice). Off by default (its own flag);
  * modelled here with the flag ON, the worst case. The pressure: two evidence families
@@ -3716,6 +3797,48 @@ function makeMachineWedgeNotice(f: PressureFixture, sink: ActionSink): { tick():
       if (sent.length > 0) return;
       sink.emit({ verb: 'wedge-notify', target: 'machine:self' });
       f.durableState.set('machine-wedge:notices', [...sent, now]);
+    },
+  };
+}
+
+/**
+ * a2a-required-acknowledgment D1: a receipt the sender must hear is a pending row,
+ * retried with doubling backoff to a ceiling, and expired after an hour. Under a
+ * send that always fails, the row must stop by itself. Its state is durable, so a
+ * restart neither resets the backoff nor extends the expiry.
+ */
+const requiredAckPendingRetry: SelfActionController = {
+  id: 'required-ack-pending-retry',
+  actionVerb: 'receipt-retry',
+  models: 'src/threadline/requiredAckService.ts (tick: pending rows with doubling backoff and a one-hour expiry)',
+  modelsPath: 'src/threadline/requiredAckService.ts',
+  boundK: 12,
+  perTargetBoundK: 12,
+  ticks: 480,
+  tickMs: PENDING_TICK_MS,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeRequiredAckPendingRetry(f, sink),
+  },
+  makeUnderPressure(f, sink) {
+    return makeRequiredAckPendingRetry(f, sink);
+  },
+};
+
+function makeRequiredAckPendingRetry(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const row = (f.durableState.get('required-ack:pending') as { expiresAt: number; attempts: number; nextAt: number } | undefined)
+        ?? { expiresAt: now + PENDING_TTL_MS, attempts: 0, nextAt: now };
+      if (now >= row.expiresAt) { f.durableState.set('required-ack:pending', row); return; }
+      if (now < row.nextAt) { f.durableState.set('required-ack:pending', row); return; }
+      sink.emit({ verb: 'receipt-retry', target: 'peer:one' });
+      // The pressure: the send never succeeds.
+      const attempts = row.attempts + 1;
+      const wait = Math.min(PENDING_TICK_MS * 2 ** Math.max(0, attempts - 1), PENDING_MAX_BACKOFF_MS);
+      f.durableState.set('required-ack:pending', { ...row, attempts, nextAt: now + wait });
     },
   };
 }
@@ -3800,7 +3923,10 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   threadlineConnectEnableRestart,
   interactiveLoginExpiredSwap,
   deviceLimitSessionMove,
+  usageWallRescueMove,
   replicatedStoreReconcilerRetry,
   preparingRunWatchdog,
   machineWedgeNotice,
+  requiredAckPendingRetry,
+  recommendedServiceSetupRestart,
 ];

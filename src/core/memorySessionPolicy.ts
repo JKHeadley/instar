@@ -76,6 +76,26 @@ export function buildMemorySessionSettings(p: MemorySessionPaths): Record<string
   };
 }
 
+/**
+ * Linux only: let the session's curl reach the agent server. bubblewrap gives the
+ * session its own network namespace, so localhost inside it is not the agent's
+ * server, and the sandbox's NO_PROXY sends localhost past the proxy that could
+ * carry it. Every reply script uses plain curl, so a curl config that clears
+ * NO_PROXY sends localhost through the sandbox proxy, which allows it (it is in
+ * allowedDomains). Reach is the same as on macOS, where the session shares the
+ * host's loopback. Measured with Claude Code 2.1.318 on Ubuntu 24.04: without
+ * this, curl exit 7; with it, HTTP 200 from the server and outside hosts unchanged.
+ * Returns the folder to pass as CURL_HOME, or null where nothing is needed.
+ */
+export function prepareSessionCurlHome(scopeDir: string, platform: NodeJS.Platform = process.platform): string | null {
+  if (platform !== 'linux') return null;
+  const curlHome = path.join(scopeDir, '.curl');
+  fs.mkdirSync(curlHome, { recursive: true, mode: 0o700 });
+  // Rewritten at every spawn: the folder is the session's own, so it may have changed it.
+  fs.writeFileSync(path.join(curlHome, '.curlrc'), 'noproxy = ""\n', { mode: 0o600 });
+  return curlHome;
+}
+
 /** `--allowedTools` entries: the plain tools, and file tools on the scope folder only. */
 export function memorySessionAllowedTools(scopeDir: string): string[] {
   return [

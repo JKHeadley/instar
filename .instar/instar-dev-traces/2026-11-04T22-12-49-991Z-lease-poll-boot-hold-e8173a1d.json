@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "lease-poll-boot-hold",
+  "sessionId": "f3f374fe-1740-4fac-8bbf-c32c8b60e738",
+  "timestamp": "2026-11-04T22:12:49.991Z",
+  "artifactPath": "upgrades/side-effects/lease-poll-boot-hold.md",
+  "artifactSha256": "ba904d40534bdb364738b7750e0c32032125d5420cb1d547e0b7c7e41268eb13",
+  "specPath": "docs/specs/lease-poll-boot-hold.md",
+  "coveredFiles": [
+    "docs/specs/lease-poll-boot-hold.eli16.md",
+    "docs/specs/lease-poll-boot-hold.md",
+    "docs/specs/reports/lease-poll-boot-hold-convergence.md",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/lifeline/pollDecision.ts",
+    "tests/e2e/poll-boot-hold-wiring.test.ts",
+    "tests/unit/lifeline-poll-start.test.ts",
+    "tests/unit/pollDecision.test.ts",
+    "upgrades/next/lease-poll-boot-hold.md",
+    "upgrades/side-effects/lease-poll-boot-hold.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
