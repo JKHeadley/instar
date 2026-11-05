@@ -10,3 +10,4 @@ Change: `GET /mobile/media/:sha256` takes an optional `machine` query. A named n
 6. External surfaces: new 403 `owner-only`, 409 `wrong-machine`, 416 `range-unsupported` and 502/503/504 holder codes on this route when `machine` names another machine. No change without `machine`. Slack rows in the new app download whole, local ones too.
 7. Multi-machine posture: proxied-on-read through resolvePeerUrls; no new kind of state, though a missing blob may be hydrated into the existing media store (item 5).
 8. Rollback: revert the commit; a remote file then fails as it does today.
+9. Release note: the fragment gained What Changed and Evidence so the upgrade guide validator accepts it. No behavior change.
