@@ -20,3 +20,5 @@ Six read-only GET routes for the owner's phone, built from the console's own rou
 **Independent read of the artifact: concur**
 
 Each round's design findings were fixed: pace and development summaries that could read as healthy when a part was unmeasured or unread, counts taken after caps, attention rows behind a cap, lost truncation flags. Round 5 said MINOR ISSUES; its two design points are fixed and have not been re-read. No same-family subagent review ran, because this worker cannot spawn one.
+
+**Fallback note (2026-11-05):** the failed read, unreadable body and unresolved path are each marked as deliberate fallbacks; each is reported or refused, not silent.

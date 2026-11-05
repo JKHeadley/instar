@@ -382,7 +382,12 @@ export function mountMobileConsolePagesRoutes(router: Router, deps: MobileConsol
   const cached = singleFlight<Rec>(POOL_READ_CACHE_MS, now);
   /** A read that fails is reported and answers status 0, which every page turns into "can't read this". */
   const read = async (path: string): Promise<SelfRead> => {
-    try { return await deps.read(path); } catch (err) { report(`read ${path.split('?')[0]}`, err); return { status: 0, body: null }; }
+    try {
+      return await deps.read(path);
+    } catch (err) { // @silent-fallback-ok — not silent: reported here, and every page says it could not read this
+      report(`read ${path.split('?')[0]}`, err);
+      return { status: 0, body: null };
+    }
   };
   const guard = (req: Request, res: Response): boolean => {
     res.set('Cache-Control', 'no-store');

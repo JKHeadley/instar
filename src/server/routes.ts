@@ -37886,6 +37886,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-Request': '1' },
           signal: AbortSignal.timeout(12_000),
         });
+        // @silent-fallback-ok — an unreadable body has no usable shape, and each page shows that as "can't read this".
         return { status: r.status, body: await r.json().catch(() => null) };
       },
       resolve: async (relative) => {
@@ -37894,7 +37895,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           const real = await fs.promises.realpath(path.resolve(root, relative));
           const inside = path.relative(root, real);
           return inside === '' || (!inside.startsWith('..') && !path.isAbsolute(inside)) ? inside : null;
-        } catch { return null; } // @silent-fallback-ok — a path that can't be resolved is refused, the safe side
+        } catch { // @silent-fallback-ok — a path that can't be resolved is refused, the safe side
+          return null;
+        }
       },
       bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     });
