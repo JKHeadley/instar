@@ -37,7 +37,7 @@ describe('claude key wiring', () => {
     const start = source.indexOf('new ClaudeKeyHealth({');
     const block = source.slice(start, source.indexOf('setActiveClaudeKeyHealth(claudeKeyHealth)', start));
     // Each restarted conversation gets its held messages and reply command, and is checked for a real answer.
-    expect(block).toMatch(/recoveryPrompt: async \(sessionName\) => \{[\s\S]*buildKeyRecoveryPrompt\(convo\.channel, heldMessages\(/);
+    expect(block).toMatch(/recoveryPrompt: async \(sessionName\) => \{[\s\S]*const held = heldMessages\(convo\.lines, keyNoticeTexts\);\s*return \{ prompt: buildKeyRecoveryPrompt\(convo\.channel, held\), held: held\.length \};/);
     expect(block).toMatch(/answeredSince: async \(sessionName, sinceMs\) => \{[\s\S]*answeredSince\(convo\.lines, sinceMs/);
     // The operator notice counts only when a person can read it.
     expect(block).toMatch(/notifyOperator: \(text\) => \{[\s\S]*deliverOperatorNotice\(/);
