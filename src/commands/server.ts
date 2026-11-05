@@ -289,6 +289,7 @@ import { StaleProcessGuard } from '../core/StaleProcessGuard.js';
 import { cleanupGlobalInstalls } from '../core/GlobalInstallCleanup.js';
 import { ForegroundRestartWatcher } from '../core/ForegroundRestartWatcher.js';
 import { NotificationBatcher } from '../messaging/NotificationBatcher.js';
+import { EvolutionArchiveSync } from '../core/EvolutionArchiveSync.js';
 import { admitNoticeToHub, recordHeldHubPost, resolveHubFilterMode } from '../messaging/attentionHubPolicy.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 import type { NotificationTier, BatcherQuietHours } from '../messaging/NotificationBatcher.js';
@@ -13941,7 +13942,32 @@ export async function startServer(options: StartOptions): Promise<void> {
     const evolution = new EvolutionManager({
       stateDir: config.stateDir,
       ...(config.evolution || {}),
+      archiveOrigin: cjOwnMachineId ?? undefined,
       autoExpiry: config.evolutionActions?.autoExpiry,
+    });
+    const evolutionArchiveSync = new EvolutionArchiveSync(evolution.archive, {
+      fetchPage: async (_peerId, url, offset, signal) => {
+        const extra = (config.multiMachine as {peerUrlAllowlist?: string[]} | undefined)?.peerUrlAllowlist;
+        if (!isPeerUrlAllowedForCredentials({url, kind: 'last-known-url'}, extra).ok) throw new Error('archive peer URL rejected');
+        const response = await fetch(`${url}/evolution/archive?offset=${offset}&limit=50`, {
+          headers: {Authorization: `Bearer ${config.authToken}`}, signal, redirect: 'error',
+        });
+        if (!response.ok) throw new Error(`archive peer HTTP ${response.status}`);
+        // Bound bytes while streaming, before parsing; Content-Length alone is not evidence.
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error('archive peer missing body');
+        const chunks: Uint8Array[] = []; let size = 0;
+        try {
+          for (;;) {
+            const next = await reader.read(); if (next.done) break;
+            size += next.value.byteLength;
+            if (size > 1024 * 1024) throw new Error('archive peer response oversized');
+            chunks.push(next.value);
+          }
+        } finally { await reader.cancel().catch(() => {}); }
+        return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      },
+      log: (event: string, detail: unknown) => console.warn(`[EvolutionManager] ${event} ${JSON.stringify(detail)}`),
     });
     console.log(pc.green('  Evolution system enabled'));
 
@@ -13987,7 +14013,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // WS2 SEND-SIDE: attach the journal-backed emitter to the EvolutionManager's
     // learning hooks. The call sites already fire emitPut/emitDelete on every
-    // saveLearnings (prune→emitDelete, survivor→emitPut); the adapter maps the
+    // saveLearnings (final puts including eviction, no retention tombstones); the adapter maps the
     // manager's emit signature to the store's build*RecordData. The emitter owns the
     // dark gate, HLC tick, `observed` witness, and journal append. Attached only when
     // the emitter exists (journal live); when dark the hooks stay no-ops (byte-
@@ -14224,7 +14250,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       tierOf: evolutionActionTierOf,
       loadOriginRecords: (store, recordKey) => {
         if (store !== EVOLUTION_ACTION_STORE_KEY || _meshSelfId === null) return [];
-        for (const a of evolution.listActions()) {
+        for (const a of evolution.listActionsForReplication()) {
           if (deriveEvolutionActionRecordKey(a.title, a.commitTo, a.createdAt) === recordKey) {
             const o = evolutionActionToOriginRecord(a, _meshSelfId);
             return o ? [o] : [];
@@ -14235,7 +14261,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       listRecordKeys: (store) => {
         if (store !== EVOLUTION_ACTION_STORE_KEY) return [];
         const keys: string[] = [];
-        for (const a of evolution.listActions()) {
+        for (const a of evolution.listActionsForReplication()) {
           const k = deriveEvolutionActionRecordKey(a.title, a.commitTo, a.createdAt);
           if (k !== null) keys.push(k);
         }
@@ -14249,8 +14275,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // WS2.5 SEND-SIDE: attach the journal-backed emitter to the EvolutionManager's
     // action-queue hooks. saveActions already fires emitPut on every surviving action
     // (so a STATUS CHANGE re-emits — a peer SEES completed/in_progress and won't redo it)
-    // and emitDelete on every action actually pruned out of the queue (a RETAINED terminal
-    // action is never tombstoned — only a real queue-removal is). The adapter maps the
+    // including final puts for archived terminal records. Hot eviction never emits
+    // deletion authority; archive custody and repair preserve memory. The adapter maps the
     // manager's emit signature to the action build*RecordData projection; the generic emitter
     // owns the dark gate, HLC tick, `observed` witness, journal append, and ALL the safety
     // guards (null recordKey ⇒ skip, null projection ⇒ skip, over-cap throw ⇒ counted no-op).
@@ -29437,6 +29463,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           // intact): working-set pending-pull drain (§3.4) + queued
           // commitment-mutate re-fire (P1.5b §3.4). Both no-op while dark.
           const onPeerBack = (machineId: string): void => {
+            const archivePeer = (_resolvePeerUrls?.() ?? []).find(peer => peer.machineId === machineId);
+            if (archivePeer) void evolutionArchiveSync.onPeerRecorded(machineId, archivePeer.url).catch(error => {
+              console.warn(`[EvolutionManager] archive-sync-failed ${String(error)}`);
+            });
             workingSetPullCoordinator?.onPeerRecorded(machineId);
             void _commitmentReFire?.(machineId).catch(() => {});
             // §5.3(e): a returning peer drains any pending topic-profile pulls
@@ -32865,6 +32895,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     let _shuttingDown = false;
     let shutdownStep = 'start';
     const shutdown = async () => {
+      evolutionArchiveSync.stop();
       // Re-entrancy guard: SIGINT+SIGTERM (or a restartDetected racing a signal)
       // must not run the teardown twice. closeAllSqlite() is itself idempotent,
       // but the resume-UUID save + sidecar flush should run once.

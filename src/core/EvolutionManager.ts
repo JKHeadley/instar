@@ -33,6 +33,9 @@ import type {
 import type { TrustElevationTracker } from './TrustElevationTracker.js';
 import type { AutonomousEvolution, ReviewResult } from './AutonomousEvolution.js';
 import type { AutonomyProfileManager } from './AutonomyProfileManager.js';
+import { EvolutionArchive, type EvolutionArchiveKind } from './EvolutionArchive.js';
+import { deriveLearningRecordKey } from './LearningsReplicatedStore.js';
+import { deriveEvolutionActionRecordKey } from './EvolutionActionsReplicatedStore.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { AutoExpiryLedger, type AutoExpiryLedgerItem } from './AutoExpiryLedger.js';
 import type { TaskFlowRegistry } from '../tasks/TaskFlowRegistry.js';
@@ -50,7 +53,7 @@ import type { MemoryEvidence } from './types.js';
  * a learning write — a replication failure must never break a local write (the emitter
  * swallows + counts internally), so the manager calls it best-effort.
  *
- * CRITICAL: emitDelete MUST fire for every learning PRUNED over maxLearnings (the
+ * Historical deletion seam: retention now preserves full memory and never calls emitDelete (the
  * saveLearnings prune path) — else a peer re-replicates the locally-pruned learning
  * forever (resurrection). The emitter keys the tombstone on the SAME content-fingerprint
  * recordKey the put used, so the delete reaches the same lesson on every machine even
@@ -78,7 +81,7 @@ export interface LearningReplicationEmitter {
  * re-emits every surviving action on every saveActions, so addAction AND updateAction both
  * re-emit.
  *
- * CRITICAL: emitDelete MUST fire for every action actually REMOVED from the queue (the
+ * Historical deletion seam: retention now preserves full memory and never calls emitDelete (the
  * prune-over-maxActions path) — else a peer re-replicates the locally-removed action forever
  * (resurrection). A `completed`/`cancelled` action is a TERMINAL state, NOT a delete — its
  * record is retained (history); only an actual queue-removal tombstones. The emitter keys the
@@ -155,9 +158,18 @@ function ownerKeyForProposal(proposalId: string): string {
   return `evolution:cluster:${proposalId}`;
 }
 
+export interface EvolutionRetentionStats {
+  total: number;
+  active: number;
+  terminalRetained: number;
+  target: number | null;
+  terminalAllowance: number | null;
+  overflow: number | null;
+}
+
 interface EvolutionState {
   proposals: EvolutionProposal[];
-  stats: {
+  stats: EvolutionRetentionStats & {
     totalProposals: number;
     byStatus: Record<string, number>;
     byType: Record<string, number>;
@@ -167,7 +179,7 @@ interface EvolutionState {
 
 interface LearningState {
   learnings: LearningEntry[];
-  stats: {
+  stats: EvolutionRetentionStats & {
     totalLearnings: number;
     applied: number;
     pending: number;
@@ -178,7 +190,7 @@ interface LearningState {
 
 interface GapState {
   gaps: CapabilityGap[];
-  stats: {
+  stats: EvolutionRetentionStats & {
     totalGaps: number;
     bySeverity: Record<string, number>;
     byCategory: Record<string, number>;
@@ -189,7 +201,7 @@ interface GapState {
 
 interface ActionState {
   actions: ActionItem[];
-  stats: {
+  stats: EvolutionRetentionStats & {
     totalActions: number;
     pending: number;
     completed: number;
@@ -201,6 +213,8 @@ interface ActionState {
 export class EvolutionManager {
   private stateDir: string;
   private config: EvolutionManagerConfig;
+  readonly archive: EvolutionArchive;
+  private retentionWarnings = new Map<string, string>();
   private trustElevationTracker: TrustElevationTracker | null = null;
   private autonomousEvolution: AutonomousEvolution | null = null;
   private autonomyManager: AutonomyProfileManager | null = null;
@@ -277,6 +291,7 @@ export class EvolutionManager {
   constructor(config: EvolutionManagerConfig) {
     this.config = config;
     this.stateDir = config.stateDir;
+    this.archive = new EvolutionArchive(config.stateDir, config.archiveOrigin);
     this.actionAutoExpiryLedger = new AutoExpiryLedger({ stateDir: config.stateDir, feature: 'evolution-actions' });
     if (config.autoExpiry?.enabled === true) {
       const intervalMs = Math.max(60_000, config.autoExpiry.sweepIntervalMs ?? 21_600_000);
@@ -823,12 +838,25 @@ export class EvolutionManager {
   private readFile<T>(name: string, defaultValue: T): T {
     const fp = this.filePath(name);
     if (!fs.existsSync(fp)) return defaultValue;
-    try {
-      return JSON.parse(fs.readFileSync(fp, 'utf-8'));
-    } catch {
-      console.warn(`[EvolutionManager] Corrupted file: ${fp}`);
-      return defaultValue;
+    const parsed = JSON.parse(fs.readFileSync(fp, 'utf-8'));
+    const names: Record<string, EvolutionArchiveKind> = { 'evolution-queue': 'proposals', 'learning-registry': 'learnings',
+      'capability-gaps': 'gaps', 'action-queue': 'actions' };
+    const kind = names[name];
+    const rows = parsed?.[kind];
+    const statuses: Record<string, string[]> = {
+      proposals: ['proposed', 'approved', 'in_progress', 'implemented', 'rejected', 'deferred'],
+      actions: ['pending', 'in_progress', 'completed', 'cancelled'],
+      gaps: ['identified', 'addressed', 'wont_fix'],
+    };
+    const prefix = {proposals: 'EVO', learnings: 'LRN', gaps: 'GAP', actions: 'ACT'}[kind];
+    if (!Array.isArray(rows) || rows.some((r: any) => !r || typeof r.id !== 'string'
+      || !new RegExp(`^${prefix}-[0-9]+$`).test(r.id)
+      || typeof r.title !== 'string' || (kind === 'learnings' ? typeof r.applied !== 'boolean'
+        : !statuses[kind]?.includes(r.status)))) {
+      throw new Error(`Invalid evolution store: ${fp}`);
     }
+    if (new Set(rows.map((row: {id: string}) => row.id)).size !== rows.length) throw new Error(`Duplicate evolution IDs: ${fp}`);
+    return parsed as T;
   }
 
   private writeFile<T>(name: string, data: T): void {
@@ -849,16 +877,99 @@ export class EvolutionManager {
     return new Date().toISOString();
   }
 
+  private target(kind: EvolutionArchiveKind): number | null {
+    const aliases = { proposals: 'maxProposals', learnings: 'maxLearnings', gaps: 'maxGaps', actions: 'maxActions' } as const;
+    const defaults = { proposals: 200, learnings: 500, gaps: 200, actions: 300 };
+    const supplied = this.config.retentionTargets?.[kind];
+    const legacy = this.config[aliases[kind]];
+    const value = supplied !== undefined ? supplied : legacy !== undefined ? legacy : defaults[kind];
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+
+  private terminal(kind: EvolutionArchiveKind, row: any): boolean {
+    switch (kind) {
+      case 'proposals': return ['implemented', 'rejected'].includes(row.status);
+      case 'learnings': return row.applied === true;
+      case 'gaps': return row.status !== 'identified';
+      case 'actions': return !row.autoExpiryHold && ['completed', 'cancelled'].includes(row.status);
+    }
+  }
+
+  private retentionStats(kind: EvolutionArchiveKind, rows: readonly unknown[]): EvolutionRetentionStats {
+    const active = rows.filter(row => !this.terminal(kind, row)).length;
+    const target = this.target(kind);
+    return { total: rows.length, active, terminalRetained: rows.length - active, target,
+      terminalAllowance: target === null ? null : Math.max(0, target - active),
+      overflow: target === null ? null : Math.max(0, rows.length - target) };
+  }
+
+  private warnRetention(kind: EvolutionArchiveKind, detail: unknown): void {
+    const signature = JSON.stringify(detail);
+    if (this.retentionWarnings.get(kind) === signature) return;
+    this.retentionWarnings.set(kind, signature);
+    console.warn(`[EvolutionManager] retention-pressure ${JSON.stringify({store: kind, ...detail as object})}`);
+  }
+
+  private retain<T extends { id: string }>(kind: EvolutionArchiveKind, rows: T[]): T[] {
+    const target = this.target(kind);
+    let retained = rows;
+    let preservationError: string | undefined;
+    if (target !== null && rows.length > target) {
+      const active = rows.filter(row => !this.terminal(kind, row));
+      const terminal = rows.filter(row => this.terminal(kind, row));
+      const allowance = Math.max(0, target - active.length);
+      const keep = allowance > 0 ? terminal.slice(-allowance) : [];
+      const removed = terminal.slice(0, terminal.length - keep.length);
+      if (removed.length) {
+        try {
+          this.archive.preserve(kind, removed as any);
+          retained = [...active, ...keep];
+        } catch (error) {
+          // @silent-fallback-ok: preservation failed; every source record remains hot and pressure is observable.
+          preservationError = String(error);
+        }
+      }
+    }
+    const stats = this.retentionStats(kind, retained);
+    if (preservationError) this.warnRetention(kind, {...stats, reason: 'archive-unavailable', error: preservationError});
+    else if (target === null || (stats.overflow ?? 0) > 0) this.warnRetention(kind, stats);
+    else this.retentionWarnings.delete(kind);
+    return retained;
+  }
+
+  getArchivePage(options: Parameters<EvolutionArchive['page']>[0] = {}) {
+    return this.archive.page(options);
+  }
+
+  getRetentionReport(): Record<EvolutionArchiveKind, EvolutionRetentionStats & {status: 'known'} | {status: 'unknown'; error: string}> {
+    const loaders = { proposals: () => this.loadEvolution().proposals, learnings: () => this.loadLearnings().learnings,
+      gaps: () => this.loadGaps().gaps, actions: () => this.loadActions().actions };
+    return Object.fromEntries(Object.entries(loaders).map(([kind, load]) => {
+      try { return [kind, {status: 'known', ...this.retentionStats(kind as EvolutionArchiveKind, load())}]; }
+      catch (error) { return [kind, {status: 'unknown', error: String(error)}]; }
+    })) as ReturnType<EvolutionManager['getRetentionReport']>;
+  }
+
+  private nextRetainedId(kind: EvolutionArchiveKind, prefix: string, live: {id: string}[]): string {
+    const records = [...live, ...this.archive.localEntries(kind)];
+    const max = records.reduce((n, record) => {
+      const suffix = record.id.startsWith(prefix + '-') ? Number(record.id.slice(prefix.length + 1)) : NaN;
+      return Number.isSafeInteger(suffix) && suffix > n ? suffix : n;
+    }, 0);
+    if (!Number.isSafeInteger(max + 1)) throw new Error(`Evolution ${kind} IDs exhausted`);
+    return `${prefix}-${String(max + 1).padStart(3, '0')}`;
+  }
+
   // ── Evolution Queue ─────────────────────────────────────────────
 
   private loadEvolution(): EvolutionState {
     return this.readFile<EvolutionState>('evolution-queue', {
       proposals: [],
-      stats: { totalProposals: 0, byStatus: {}, byType: {}, lastUpdated: this.now() },
+      stats: { ...this.retentionStats('proposals', []), totalProposals: 0, byStatus: {}, byType: {}, lastUpdated: this.now() },
     });
   }
 
-  private saveEvolution(state: EvolutionState): void {
+  private computeEvolutionStateStats(state: EvolutionState): EvolutionState['stats'] {
     // Recompute stats
     const statusCounts: Record<string, number> = {};
     const typeCounts: Record<string, number> = {};
@@ -866,31 +977,24 @@ export class EvolutionManager {
       statusCounts[p.status] = (statusCounts[p.status] || 0) + 1;
       typeCounts[p.type] = (typeCounts[p.type] || 0) + 1;
     }
-    state.stats = {
+    return {
+      ...this.retentionStats('proposals', state.proposals),
       totalProposals: state.proposals.length,
       byStatus: statusCounts,
       byType: typeCounts,
       lastUpdated: this.now(),
     };
+  }
 
-    // Archive old implemented/rejected proposals if over limit
-    const max = this.config.maxProposals || 200;
-    if (state.proposals.length > max) {
-      const active = state.proposals.filter(p => !['implemented', 'rejected'].includes(p.status));
-      const archived = state.proposals.filter(p => ['implemented', 'rejected'].includes(p.status));
-      // Keep most recent archived
-      const keep = archived.slice(-Math.max(0, max - active.length));
-      state.proposals = [...active, ...keep];
-    }
+  private saveEvolution(state: EvolutionState): void {
+    state.proposals = this.retain('proposals', state.proposals);
+    state.stats = this.computeEvolutionStateStats(state);
 
     this.writeFile('evolution-queue', state);
   }
 
   private nextProposalId(state: EvolutionState): string {
-    const existing = new Set(state.proposals.map(p => p.id));
-    let num = 1;
-    while (existing.has(`EVO-${String(num).padStart(3, '0')}`)) num++;
-    return `EVO-${String(num).padStart(3, '0')}`;
+    return this.nextRetainedId('proposals', 'EVO', state.proposals);
   }
 
   addProposal(opts: {
@@ -1009,7 +1113,7 @@ export class EvolutionManager {
   }
 
   getEvolutionStats(): EvolutionState['stats'] {
-    return this.loadEvolution().stats;
+    return this.computeEvolutionStateStats(this.loadEvolution());
   }
 
   // ── Learning Registry ───────────────────────────────────────────
@@ -1017,69 +1121,50 @@ export class EvolutionManager {
   private loadLearnings(): LearningState {
     return this.readFile<LearningState>('learning-registry', {
       learnings: [],
-      stats: { totalLearnings: 0, applied: 0, pending: 0, byCategory: {}, lastUpdated: this.now() },
+      stats: { ...this.retentionStats('learnings', []), totalLearnings: 0, applied: 0, pending: 0, byCategory: {}, lastUpdated: this.now() },
     });
   }
 
-  private saveLearnings(state: LearningState): void {
+  private computeLearningStateStats(state: LearningState): LearningState['stats'] {
     const categoryCounts: Record<string, number> = {};
     let applied = 0;
     for (const l of state.learnings) {
       categoryCounts[l.category] = (categoryCounts[l.category] || 0) + 1;
       if (l.applied) applied++;
     }
-    state.stats = {
+    return {
+      ...this.retentionStats('learnings', state.learnings),
       totalLearnings: state.learnings.length,
       applied,
       pending: state.learnings.length - applied,
       byCategory: categoryCounts,
       lastUpdated: this.now(),
     };
+  }
 
-    const max = this.config.maxLearnings || 500;
+  private saveLearnings(state: LearningState): void {
     const beforePrune = state.learnings;
-    if (state.learnings.length > max) {
-      const unapplied = state.learnings.filter(l => !l.applied);
-      const appliedEntries = state.learnings.filter(l => l.applied);
-      const keep = appliedEntries.slice(-Math.max(0, max - unapplied.length));
-      state.learnings = [...unapplied, ...keep];
-    }
+    state.learnings = this.retain('learnings', state.learnings);
+    state.stats = this.computeLearningStateStats(state);
 
     this.writeFile('learning-registry', state);
 
-    // WS2.2 — best-effort replication emission (dark by default; the emitter is only
-    // injected when multiMachine.stateSync.learnings.enabled is true). The emitter
-    // swallows its own errors, but we wrap defensively so a replication fault can NEVER
-    // break a local learning write. CRITICAL (tombstone resurrection guard): a learning
-    // that was PRUNED over maxLearnings emits an op:delete tombstone, else a peer
-    // re-replicates the locally-pruned learning forever.
+    // Preserve the final full-content put for evicted records. The archive-inclusive
+    // reconciler retries failures; operational eviction is never a memory deletion.
     const emitter = this.learningReplication;
     if (emitter) {
-      const survivors = new Set(state.learnings.map(l => l.id));
-      const deletedAt = this.now();
-      for (const pruned of beforePrune) {
-        if (survivors.has(pruned.id)) continue;
-        try {
-          emitter.emitDelete(pruned.title, pruned.category, pruned.source, deletedAt);
-        } catch {
-          // @silent-fallback-ok: a replication emit fault must never break or roll back
-          // a local learning write — the durable on-disk state is already persisted
-          // above. The emitter counts its own failures internally; this guard only
-          // ensures a throw from the seam cannot propagate into the local write path.
-        }
-        this.lastEmittedLearningFp.delete(pruned.id);
-      }
+      // Hot-list eviction preserves memory; it never emits deletion authority.
       // Standby-write-wedge fix (see saveActions): re-emit ONLY changed learnings. The old
       // "re-emit every survivor" made each write O(records × journalBytes) synchronous
       // journal scans; a status/applied change alters the fingerprint so it still re-emits.
-      for (const l of state.learnings) {
+      for (const l of beforePrune) {
         const fp = this.emitFingerprint(l);
         if (this.lastEmittedLearningFp.get(l.id) === fp) continue; // unchanged ⇒ skip re-emit
         try {
           emitter.emitPut(l);
           this.lastEmittedLearningFp.set(l.id, fp);
         } catch {
-          // @silent-fallback-ok: see the emitDelete guard above — replication is
+          // @silent-fallback-ok: replication remains best-effort — replication is
           // best-effort and must never break the local write. The fingerprint is NOT
           // recorded on a throw so the next save retries this record.
         }
@@ -1088,10 +1173,7 @@ export class EvolutionManager {
   }
 
   private nextLearningId(state: LearningState): string {
-    const existing = new Set(state.learnings.map(l => l.id));
-    let num = 1;
-    while (existing.has(`LRN-${String(num).padStart(3, '0')}`)) num++;
-    return `LRN-${String(num).padStart(3, '0')}`;
+    return this.nextRetainedId('learnings', 'LRN', state.learnings);
   }
 
   addLearning(opts: {
@@ -1137,8 +1219,38 @@ export class EvolutionManager {
     return learnings;
   }
 
+  /** Archive-inclusive current projection for puts-only repair. Live records win by replication identity. */
+  listLearningsForReplication(): LearningEntry[] {
+    const records = new Map<string, LearningEntry>();
+    for (const row of this.archive.localEntries('learnings') as LearningEntry[]) {
+      const key = deriveLearningRecordKey(row.title, row.category, row.source);
+      if (key) records.set(key, row);
+    }
+    for (const row of this.listLearnings()) {
+      const key = deriveLearningRecordKey(row.title, row.category, row.source);
+      if (key) records.set(key, row);
+    }
+    return [...records.values()];
+  }
+
+  listActionsForReplication(): ActionItem[] {
+    const records = new Map<string, ActionItem>();
+    for (const entry of this.loadActionArchive()) {
+      const row: ActionItem = entry.class === 'retention' || entry.restoredAt ? entry.action : {
+        ...entry.action, status: 'cancelled', resolution: 'auto-archived after long inactivity; restorable',
+      };
+      const key = deriveEvolutionActionRecordKey(row.title, row.commitTo, row.createdAt);
+      if (key) records.set(key, row);
+    }
+    for (const row of this.listActions()) {
+      const key = deriveEvolutionActionRecordKey(row.title, row.commitTo, row.createdAt);
+      if (key) records.set(key, row);
+    }
+    return [...records.values()];
+  }
+
   getLearningStats(): LearningState['stats'] {
-    return this.loadLearnings().stats;
+    return this.computeLearningStateStats(this.loadLearnings());
   }
 
   // ── Capability Gap Tracker ──────────────────────────────────────
@@ -1146,11 +1258,11 @@ export class EvolutionManager {
   private loadGaps(): GapState {
     return this.readFile<GapState>('capability-gaps', {
       gaps: [],
-      stats: { totalGaps: 0, bySeverity: {}, byCategory: {}, addressed: 0, lastUpdated: this.now() },
+      stats: { ...this.retentionStats('gaps', []), totalGaps: 0, bySeverity: {}, byCategory: {}, addressed: 0, lastUpdated: this.now() },
     });
   }
 
-  private saveGaps(state: GapState): void {
+  private computeGapStateStats(state: GapState): GapState['stats'] {
     const severityCounts: Record<string, number> = {};
     const categoryCounts: Record<string, number> = {};
     let addressed = 0;
@@ -1159,30 +1271,25 @@ export class EvolutionManager {
       categoryCounts[g.category] = (categoryCounts[g.category] || 0) + 1;
       if (g.status === 'addressed') addressed++;
     }
-    state.stats = {
+    return {
+      ...this.retentionStats('gaps', state.gaps),
       totalGaps: state.gaps.length,
       bySeverity: severityCounts,
       byCategory: categoryCounts,
       addressed,
       lastUpdated: this.now(),
     };
+  }
 
-    const max = this.config.maxGaps || 200;
-    if (state.gaps.length > max) {
-      const open = state.gaps.filter(g => g.status === 'identified');
-      const closed = state.gaps.filter(g => g.status !== 'identified');
-      const keep = closed.slice(-Math.max(0, max - open.length));
-      state.gaps = [...open, ...keep];
-    }
+  private saveGaps(state: GapState): void {
+    state.gaps = this.retain('gaps', state.gaps);
+    state.stats = this.computeGapStateStats(state);
 
     this.writeFile('capability-gaps', state);
   }
 
   private nextGapId(state: GapState): string {
-    const existing = new Set(state.gaps.map(g => g.id));
-    let num = 1;
-    while (existing.has(`GAP-${String(num).padStart(3, '0')}`)) num++;
-    return `GAP-${String(num).padStart(3, '0')}`;
+    return this.nextRetainedId('gaps', 'GAP', state.gaps);
   }
 
   addGap(opts: {
@@ -1240,7 +1347,7 @@ export class EvolutionManager {
   }
 
   getGapStats(): GapState['stats'] {
-    return this.loadGaps().stats;
+    return this.computeGapStateStats(this.loadGaps());
   }
 
   // ── Action Queue ────────────────────────────────────────────────
@@ -1248,7 +1355,7 @@ export class EvolutionManager {
   private loadActions(): ActionState {
     return this.readFile<ActionState>('action-queue', {
       actions: [],
-      stats: { totalActions: 0, pending: 0, completed: 0, overdue: 0, lastUpdated: this.now() },
+      stats: { ...this.retentionStats('actions', []), totalActions: 0, pending: 0, completed: 0, overdue: 0, lastUpdated: this.now() },
     });
   }
 
@@ -1325,11 +1432,7 @@ export class EvolutionManager {
    * `readFile` would hand back an empty archive and the next write would erase it.
    */
   private loadActionArchive(): ActionArchiveEntry[] {
-    const fp = this.filePath('action-archive');
-    if (!fs.existsSync(fp)) return [];
-    const parsed = JSON.parse(fs.readFileSync(fp, 'utf-8')) as { entries?: ActionArchiveEntry[] };
-    if (!Array.isArray(parsed.entries)) throw new Error(`no entries array in ${fp}`);
-    return parsed.entries;
+    return this.archive.read().entries;
   }
 
   /** Returns false, having changed nothing, when the archive cannot be written. */
@@ -1337,10 +1440,10 @@ export class EvolutionManager {
     try {
       const archivedAt = this.now();
       const byId = new Map(items.map((item) => [item.id, item]));
-      const ids = new Set(actions.map((action) => action.id));
-      // An unrestored entry for the same id means a crash between archive and queue save.
-      const entries = this.loadActionArchive().filter((entry) => entry.restoredAt || !ids.has(entry.action.id));
+      // Preserve every version; identical retry snapshots are idempotent.
+      const entries = this.loadActionArchive();
       for (const action of actions) {
+        if (entries.some(entry => !entry.restoredAt && this.emitFingerprint(entry.action) === this.emitFingerprint(action))) continue;
         const item = byId.get(action.id);
         entries.push({
           action,
@@ -1350,7 +1453,7 @@ export class EvolutionManager {
           ...(item?.reason ? { reason: item.reason } : {}),
         });
       }
-      this.writeFile('action-archive', { entries });
+      this.archive.write({ ...this.archive.read(), entries });
       return true;
     } catch (err) {
       // @silent-fallback-ok: refusing is the safe outcome; the rows stay queued and the next sweep retries.
@@ -1382,7 +1485,7 @@ export class EvolutionManager {
    */
   restoreArchivedAction(id: string): ActionItem | 'not-archived' | 'id-in-use' {
     const entries = this.loadActionArchive();
-    const entry = entries.find((candidate) => candidate.action.id === id && !candidate.restoredAt);
+    const entry = [...entries].reverse().find((candidate) => candidate.action.id === id && !candidate.restoredAt);
     if (!entry) return 'not-archived';
     const state = this.loadActions();
     if (state.actions.some((action) => action.id === id)) return 'id-in-use';
@@ -1390,12 +1493,18 @@ export class EvolutionManager {
     const action: ActionItem = { ...entry.action, autoExpiryHold: { reason: 'restored from the auto-expiry archive', setAt: restoredAt } };
     state.actions.push(action);
     this.saveActions(state);
-    entry.restoredAt = restoredAt;
-    this.writeFile('action-archive', { entries });
+    // Retention may have archived another terminal action while saving the restored
+    // row. Merge the marker into the fresh document; never replace its new history.
+    const latest = this.archive.read();
+    const restoredEntry = [...latest.entries].reverse().find(candidate =>
+      candidate.archivedAt === entry.archivedAt && this.emitFingerprint(candidate.action) === this.emitFingerprint(entry.action));
+    if (!restoredEntry) throw new Error('restored archive snapshot unavailable');
+    restoredEntry.restoredAt = restoredAt;
+    this.archive.write(latest);
     return action;
   }
 
-  private saveActions(state: ActionState): void {
+  private computeActionStateStats(state: ActionState): ActionState['stats'] {
     let pending = 0, completed = 0, overdue = 0;
     const now = new Date();
     for (const a of state.actions) {
@@ -1405,65 +1514,41 @@ export class EvolutionManager {
         if (a.dueBy && new Date(a.dueBy) < now) overdue++;
       }
     }
-    state.stats = {
+    return {
+      ...this.retentionStats('actions', state.actions),
       totalActions: state.actions.length,
       pending,
       completed,
       overdue,
       lastUpdated: this.now(),
     };
+  }
 
-    const max = this.config.maxActions || 300;
+  private saveActions(state: ActionState): void {
     const beforePrune = state.actions;
-    if (state.actions.length > max) {
-      const active = state.actions.filter(a => !['completed', 'cancelled'].includes(a.status));
-      const done = state.actions.filter(a => ['completed', 'cancelled'].includes(a.status));
-      const keep = done.slice(-Math.max(0, max - active.length));
-      state.actions = [...active, ...keep];
-    }
+    state.actions = this.retain('actions', state.actions);
+    state.stats = this.computeActionStateStats(state);
 
     this.writeFile('action-queue', state);
 
-    // WS2.5 — best-effort replication emission (dark by default; the emitter is only
-    // injected when multiMachine.stateSync.evolutionActions.enabled is true). The emitter
-    // swallows its own errors, but we wrap defensively so a replication fault can NEVER
-    // break a local action write. CRITICAL (fork #2): a STATUS CHANGE must re-emit — both
-    // addAction and updateAction route through saveActions, so re-emitting every survivor on
-    // every save makes a peer SEE an action's latest status (completed/in_progress) so it does
-    // not redo it. CRITICAL (resurrection guard): an action that was actually REMOVED from the
-    // queue (prune-over-maxActions) emits an op:delete tombstone — a terminal completed/
-    // cancelled action that is RETAINED is NOT tombstoned, only an actual queue-removal is.
+    // Preserve the final put (including status changes) without deletion tombstones.
+    // Full-content custody and puts-only repair remain available from the archive.
     const emitter = this.actionReplication;
     if (emitter) {
-      const survivors = new Set(state.actions.map(a => a.id));
-      const deletedAt = this.now();
-      for (const pruned of beforePrune) {
-        if (survivors.has(pruned.id)) continue;
-        try {
-          emitter.emitDelete(pruned.title, pruned.commitTo, pruned.createdAt, deletedAt);
-        } catch {
-          // @silent-fallback-ok: a replication emit fault must never break or roll back a
-          // local action write — the durable on-disk state is already persisted above. The
-          // emitter counts its own failures internally; this guard only ensures a throw from
-          // the seam cannot propagate into the local write path.
-        }
-        // A pruned id is gone from the queue; forget its fingerprint so the map does not
-        // grow unbounded and a future id-reuse re-emits.
-        this.lastEmittedActionFp.delete(pruned.id);
-      }
+      // Hot-list eviction preserves memory; it never emits deletion authority.
       // Standby-write-wedge fix: re-emit ONLY records whose content changed since their last
       // emit. Re-emitting every unchanged survivor (the old behavior) turned each write into
       // O(records × journalBytes) synchronous journal scans (loadWitness materializes the
       // whole store per emit) — the event-loop wedge. A status change alters the fingerprint,
       // so the load-bearing "a peer sees the latest status" property is preserved.
-      for (const a of state.actions) {
+      for (const a of beforePrune) {
         const fp = this.emitFingerprint(a);
         if (this.lastEmittedActionFp.get(a.id) === fp) continue; // unchanged ⇒ skip re-emit
         try {
           emitter.emitPut(a);
           this.lastEmittedActionFp.set(a.id, fp); // record only after a successful emit
         } catch {
-          // @silent-fallback-ok: see the emitDelete guard above — replication is best-effort
+          // @silent-fallback-ok: replication remains best-effort — replication is best-effort
           // and must never break the local write. The fingerprint is NOT recorded on a throw
           // so the next save retries this record.
         }
@@ -1472,19 +1557,7 @@ export class EvolutionManager {
   }
 
   private nextActionId(state: ActionState): string {
-    // An archived id stays reserved so a restore does not collide with new work. A
-    // damaged archive must not stop new actions: restore refuses a colliding id anyway.
-    let archivedIds: string[] = [];
-    try {
-      archivedIds = this.loadActionArchive().map(e => e.action.id);
-    } catch (err) {
-      // @silent-fallback-ok: the sweep refuses on the same damage; id reservation is a courtesy to restore.
-      console.warn(`[EvolutionManager] Action archive unreadable, ids not reserved: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    const existing = new Set([...state.actions.map(a => a.id), ...archivedIds]);
-    let num = 1;
-    while (existing.has(`ACT-${String(num).padStart(3, '0')}`)) num++;
-    return `ACT-${String(num).padStart(3, '0')}`;
+    return this.nextRetainedId('actions', 'ACT', state.actions);
   }
 
   addAction(opts: {
@@ -1555,7 +1628,7 @@ export class EvolutionManager {
   }
 
   getActionStats(): ActionState['stats'] {
-    return this.loadActions().stats;
+    return this.computeActionStateStats(this.loadActions());
   }
 
   // ── Cross-System Queries ────────────────────────────────────────

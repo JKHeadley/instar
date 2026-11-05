@@ -29302,6 +29302,33 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ enabled: true, ...ctx.evolution.getDashboard() });
   });
 
+  // EVO-022: pressure is operational, archive content is durable local memory.
+  router.get('/evolution/retention', async (req, res) => {
+    if (!ctx.evolution) { res.status(503).json({error: 'Evolution system not configured'}); return; }
+    const local = { machineId: ctx.meshSelfId ?? null, stores: ctx.evolution.getRetentionReport() };
+    if (req.query.scope === 'local') { res.json(local); return; }
+    const {peers, failed, peersQueried} = await readReaperPoolPeers('/evolution/retention?scope=local', body =>
+      !!body.stores && typeof body.stores === 'object');
+    res.json({local, peers, failed, peersQueried, complete: failed.length === 0});
+  });
+
+  router.get('/evolution/archive', (req, res) => {
+    if (!ctx.evolution) { res.status(503).json({error: 'Evolution system not configured'}); return; }
+    const kinds = ['proposals', 'learnings', 'gaps', 'actions'] as const;
+    const kind = req.query.kind;
+    const offset = req.query.offset === undefined ? 0 : Number(req.query.offset);
+    const limit = req.query.limit === undefined ? 50 : Number(req.query.limit);
+    if ((kind !== undefined && !kinds.includes(kind as typeof kinds[number]))
+      || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 50
+      || (req.query.id !== undefined && typeof req.query.id !== 'string')) {
+      res.status(400).json({error: 'Invalid archive kind, id, offset or limit'}); return;
+    }
+    try {
+      res.json(ctx.evolution.getArchivePage({kind: kind as typeof kinds[number] | undefined,
+        id: req.query.id as string | undefined, offset, limit}));
+    } catch (error) { res.status(503).json({error: String(error), status: 'unknown'}); }
+  });
+
   // Evolution proposals
   router.get('/evolution/proposals', (req, res) => {
     if (!ctx.evolution) { res.json({ proposals: [] }); return; }

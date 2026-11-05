@@ -833,10 +833,11 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'evolution',
     prefixes: ['/evolution'],
-    description: 'Evolution proposals + learnings + gaps + actions',
+    description: 'Evolution proposals, learnings, gaps and actions. Soft total retention targets preserve open work; finished memory remains in the full-content archive. Read /evolution/retention for pressure/coverage and /evolution/archive for paginated local memory including peer copies.',
     build: ({ ctx }) => ({
       enabled: !!ctx.evolution,
       subsystems: ['proposals', 'learnings', 'gaps', 'actions'],
+      endpoints: ['GET /evolution/retention', 'GET /evolution/archive'],
     }),
   },
   {

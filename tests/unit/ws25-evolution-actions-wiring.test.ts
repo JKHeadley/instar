@@ -85,9 +85,12 @@ describe('WS2.5 EvolutionManager emit seam (source touchpoints)', () => {
     expect(evoSrc).toContain('EvolutionActionReplicationEmitter');
     expect(evoSrc).toContain('setEvolutionActionReplicationEmitter');
   });
-  it('the saveActions funnel emits a put + a queue-removal emits a tombstone (resurrection guard)', () => {
+  it('the saveActions funnel preserves puts and archive custody without eviction tombstones', () => {
     expect(evoSrc).toContain('this.actionReplication');
-    expect(evoSrc).toContain('emitDelete(pruned.title, pruned.commitTo, pruned.createdAt');
+    expect(evoSrc).toContain('emitter.emitPut(a)');
+    expect(evoSrc).toContain('this.archive.preserve(kind, removed');
+    expect(evoSrc).toContain('listActionsForReplication');
+    expect(evoSrc).not.toContain('emitDelete(pruned.title, pruned.commitTo, pruned.createdAt');
   });
 });
 
