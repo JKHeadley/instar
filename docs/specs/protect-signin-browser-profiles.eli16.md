@@ -1,0 +1,9 @@
+# Keep test browsers away from saved sign-in profiles
+
+A Google browser profile is part of the machinery that keeps an agent signed into its subscriptions. It contains a saved login, not just a convenient test window. Opening that same folder with Playwright or Chrome debugging can change how Chrome reads its stored credentials. A test must therefore use its own disposable profile.
+
+This repair makes the existing rule executable. A profile registered with a Google account cannot be activated for Playwright. Generic browser tool calls and Instar's debugging-protocol browser refuse that profile. Before a session starts, its inherited MCP configuration is checked too: a persistent browser can start before the first tool call. The same check applies when an MCP server is loaded or registered later. Directory aliases are checked, and the Windows directory recorded for a profile is included. Normal Chrome sign-in repair stays available.
+
+The installed tool hook is refreshed on updates for Claude and Codex, including existing agents. This is a cooperative automation boundary, not a replacement for the operating system sandbox: arbitrary hostile shell programs can construct paths at runtime. The checks cover the supported browser activation, launch, load and ordinary script invocation paths.
+
+The incident record does not prove that automation signed Dawn out. It proves a Playwright launch on the saved profile followed by a signed-out Slack page, without a successful observation immediately before. The later repair accepted the password but rejected one backup code and stopped. That is a failed repair, not a recovered login. No test should destroy another saved login to investigate this one, and no one should claim a repair succeeded without a live account check.

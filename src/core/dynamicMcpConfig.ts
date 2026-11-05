@@ -1,3 +1,4 @@
+import { isSigninProfile } from './SigninProfileGuard.js';
 /**
  * Dynamic MCP config — the pure core of the on-demand MCP-server lifecycle.
  *
@@ -31,7 +32,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-/** Existing installs have no ownership rows. Corrupt ownership is a hard error, never permission. */
+const DEFAULT_SIGNIN_PROFILE = '<signin-default-profile>';
+
+/** Protected browser directories (legacy Telegram-named API). Includes registered Google
+ * sign-in profiles so startup/load/registration cannot hand them to an MCP process. */
 export function readManagedTelegramUserDataDirs(projectDir: string): string[] {
   const file = path.join(projectDir, '.instar', 'state', 'playwright-profiles.json');
   let raw: string;
@@ -41,7 +45,10 @@ export function readManagedTelegramUserDataDirs(projectDir: string): string[] {
   if (!registry || !Array.isArray(registry.profiles)) throw new Error('managed-telegram-registry-unreadable');
   return registry.profiles.flatMap(value => {
     if (!value || typeof value !== 'object') throw new Error('managed-telegram-registry-unreadable');
-    const profile = value as { executionOwner?: unknown; userDataDir?: unknown };
+    const profile = value as { executionOwner?: unknown; userDataDir?: unknown; windowsUserDataDir?: string; accounts?: Array<{ service: string }> };
+    if (isSigninProfile(profile)) return profile.userDataDir === null
+      ? [DEFAULT_SIGNIN_PROFILE]
+      : [profile.userDataDir, profile.windowsUserDataDir].filter((dir): dir is string => typeof dir === 'string');
     if (profile.executionOwner !== 'telegram-origin-broker') return [];
     if (typeof profile.userDataDir !== 'string' || !path.isAbsolute(profile.userDataDir)) throw new Error('managed-telegram-registry-unreadable');
     return [profile.userDataDir];
@@ -55,7 +62,11 @@ export function assertMcpDoesNotExposeManagedTelegram(definition: unknown, manag
     const resolved = path.resolve(value);
     return fs.existsSync(resolved) ? fs.realpathSync(resolved) : resolved;
   };
-  const managed = managedUserDataDirs.map(dir => ({ original: path.resolve(dir), real: canonical(dir) }));
+  if (managedUserDataDirs.includes(DEFAULT_SIGNIN_PROFILE)) {
+    const serialized = JSON.stringify(definition);
+    if (/playwright|puppeteer|selenium|chromium/i.test(serialized) && !/--user-data-dir(?:=|["\s,])/.test(serialized)) throw new Error('managed-telegram-profile-private');
+  }
+  const managed = managedUserDataDirs.filter(dir => dir !== DEFAULT_SIGNIN_PROFILE).map(dir => ({ original: path.resolve(dir), real: canonical(dir) }));
   if (!managed.length) return;
   const inspect = (value: unknown): void => {
     if (typeof value === 'string') {
