@@ -868,6 +868,39 @@ const appMediaReplication: SelfActionController = {
   },
 };
 
+/** Full-content archive retry: the actual runtime helper parks the durable peer after six failures. */
+const evolutionArchiveSyncRetry: SelfActionController = {
+  id: 'evolution-archive-sync',
+  actionVerb: 'archive-sync-retry',
+  models: 'src/core/EvolutionArchiveSync.ts (onPeerRecorded uses evolutionArchiveSyncAttemptDue + advanceEvolutionArchiveFailure; durable park after six rejected requests)',
+  modelsPath: 'src/core/EvolutionArchiveSync.ts',
+  boundK: EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES,
+  perTargetBoundK: EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES,
+  ticks: 120,
+  tickMs: 30_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return makeEvolutionArchiveSyncPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) { return makeEvolutionArchiveSyncPressure(f, sink); },
+};
+
+function makeEvolutionArchiveSyncPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const key = 'evolution-archive-sync:peer';
+  return { tick() {
+    sink.considered++;
+    const peer = (f.durableState.get(key) as EvolutionArchiveSyncPeer | undefined) ?? {
+      url: 'https://archive-peer.example', offset: 0, failures: 0, nextAttemptAt: 0, parked: false,
+    };
+    if (!evolutionArchiveSyncAttemptDue(peer, f.clock.nowMs())) return;
+    // Match the runtime's durable reservation-before-network ordering.
+    f.durableState.set(key, advanceEvolutionArchiveFailure(peer, f.clock.nowMs()));
+    sink.emit({ verb: 'archive-sync-retry', target: 'archive-peer' });
+    sink.emitTimesMs.push(f.clock.nowMs());
+    if (!f.targetAlwaysRejects()) f.durableState.set(key, { ...peer, failures: 0, nextAttemptAt: 0, parked: false });
+  } };
+}
+
 const evolutionActionExpirySweep: SelfActionController = {
   id: 'evolution-action-expiry-sweep',
   actionVerb: 'reap-expired-actions',
@@ -3907,39 +3940,6 @@ const jobSilenceAlert: SelfActionController = {
   },
 };
 
-/** Full-content archive retry: the actual runtime helper parks the durable peer after six failures. */
-const evolutionArchiveSyncRetry: SelfActionController = {
-  id: 'evolution-archive-sync',
-  actionVerb: 'archive-sync-retry',
-  models: 'src/core/EvolutionArchiveSync.ts (onPeerRecorded uses evolutionArchiveSyncAttemptDue + advanceEvolutionArchiveFailure; durable park after six rejected requests)',
-  modelsPath: 'src/core/EvolutionArchiveSync.ts',
-  boundK: EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES,
-  perTargetBoundK: EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES,
-  ticks: 120,
-  tickMs: 30_000,
-  restartPosture: {
-    pressureSurvives: true,
-    restartUnderPressure(f, sink) { return makeEvolutionArchiveSyncPressure(f, sink); },
-  },
-  makeUnderPressure(f, sink) { return makeEvolutionArchiveSyncPressure(f, sink); },
-};
-
-function makeEvolutionArchiveSyncPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
-  const key = 'evolution-archive-sync:peer';
-  return { tick() {
-    sink.considered++;
-    const peer = (f.durableState.get(key) as EvolutionArchiveSyncPeer | undefined) ?? {
-      url: 'https://archive-peer.example', offset: 0, failures: 0, nextAttemptAt: 0, parked: false,
-    };
-    if (!evolutionArchiveSyncAttemptDue(peer, f.clock.nowMs())) return;
-    // Match the runtime's durable reservation-before-network ordering.
-    f.durableState.set(key, advanceEvolutionArchiveFailure(peer, f.clock.nowMs()));
-    sink.emit({ verb: 'archive-sync-retry', target: 'archive-peer' });
-    sink.emitTimesMs.push(f.clock.nowMs());
-    if (!f.targetAlwaysRejects()) f.durableState.set(key, { ...peer, failures: 0, nextAttemptAt: 0, parked: false });
-  } };
-}
-
 /** A retained Codex 429 pane is transitioned from running to failed before
  * the exit notice is emitted. The persisted status is the settling brake: a
  * monitor tick or server restart cannot emit a second notice for that run. */
@@ -3967,7 +3967,6 @@ const codex429ExitNotice: SelfActionController = {
 };
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
-  evolutionArchiveSyncRetry,
   linuxBrowserInstallRetry,
   codex429ExitNotice,
   claudeKeySessionRefresh,
@@ -4016,6 +4015,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   subscriptionReloginRedrive,
   standDownMaintenance,
   evolutionActionExpirySweep,
+  evolutionArchiveSyncRetry,
   appMediaCapacityNotice,
   appMediaReplication,
   spendReconSweep,

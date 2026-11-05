@@ -149,3 +149,24 @@ The archive sync retry edge is the self-action: under unchanged permanent peer f
 a maximum of six failed pulls occurs, durable parked state survives restart, and no later
 presence tick can rearm it without new transport evidence or explicit reset. The existing
 ratchet and real worker tests exercise the settling brake. No new defect-class semantics.
+
+
+## Current-main registry reconciliation
+
+The complete Local Verify run of86a334361 passed all lanes (58,638 unit,5,847 integration,
+3,805 e2e, zero failures). Safe-merge admitted its local floor, then GitHub refused a new
+shared-registry insertion conflict with current main. Merged e460a9be3, retaining both
+unchanged controller blocks and registrations; independent actual-merge review concurred.
+The reconciled merge passes627 focused tests, types, build and all51 lint checks.
+
+This was the second conflict at the registry's generic append location. Move only the
+unchanged EVO archive-controller block/helper and its single array entry beside the
+existing evolution expiry controller. This groups the related mechanisms and removes the
+EVO addition from generic shared definition and array insertion points, reducing recurrence. Controller contents, imports and membership stay identical; registry iteration
+order changes only. The convergence ratchet covers every registered controller in isolation.
+The final pushed head still requires its own complete Local Verify before safe-merge.
+
+After this relocation, the full registered-controller convergence ratchet passes540/540.
+Independent actual-delta review concurs: block/helper byte-identical, all89 members unchanged,
+EVO exactly once, other controllers retain relative order, and runtime dispatch does not
+consume this test/lint registry order. No material concern.
