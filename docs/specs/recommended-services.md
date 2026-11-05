@@ -126,7 +126,7 @@ That button also covers a person asking for an address service after a no. Every
 
 **The agent owns setup, fully (operator direction, 2026-11-03).** "The only thing a user should ever do is approve decisions or supply credentials." After a yes, everything else is the agent's job until `verify` passes: researching how the service works today, creating the account, getting the key, configuring it, diagnosing failures, retrying and repairing. The yes opens a tracked commitment that stays open until the service works, or the person says no.
 
-The person is asked for two things only. **Decisions,** such as a payment. **Credentials,** through Secret Drop, including a code sent to their phone. The person never opens a browser, fetches a key, visits a provider's site, runs a command, edits a file or follows steps.
+The person is asked for two things only. **Decisions,** such as a payment, or accepting a provider's terms, agreement or contract. **Credentials,** through Secret Drop, including a code sent to their phone. The person never opens a browser, fetches a key, visits a provider's site, runs a command, edits a file or follows steps.
 
 **Whose account (operator direction, 2026-11-03).** The agent is like an executive assistant who manages the accounts, and the person is like a CEO who directs and approves. The agent can fully manage the person's own accounts, can use accounts of its own, or both. That is the person's choice. The agent makes clear that full account management is available, presents both as good options, and never recommends against either. Credentials still go through Secret Drop into secure storage.
 

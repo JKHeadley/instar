@@ -29,7 +29,8 @@ export interface SetupRecipe {
   verify: (deps: RecipeDeps) => Promise<VerifyResult>;
 }
 
-const RULES = (service: string, port: number): string => `
+/** Exported so tests can check every recipe carries the shared rules. */
+export const RULES = (service: string, port: number): string => `
 Rules that apply whatever you find:
 - This job is entirely yours until the check below passes. The person only approves decisions, such as a payment, or supplies a credential. They never open a browser, fetch a key, visit a provider's site, run a command, edit a file or follow steps.
 - If a provider's flow has changed from what this says, research it and adapt. Routine failures are yours to diagnose, retry and repair, quietly.
@@ -40,6 +41,7 @@ Rules that apply whatever you find:
 - Close any browser window you opened as soon as you're done with it. A no can end this session without warning, and whatever is still open stays open.
 - Talk to the person in this conversation's topic, $INSTAR_TELEGRAM_TOPIC. It is yours for this job, and replies there reach you.
 - No spending and no permission grants without their yes. Nothing checks your browser clicks, so this is on you: stop and ask before any page that charges or grants.
+- Their yes to this service is not a yes to the provider's terms. Before you tick, click or sign anything that accepts terms of service, an agreement or a contract, stop and ask them in this topic. Say in plain words what it is and what stands out in it, such as binding arbitration, giving up class actions, auto-renewal, a minimum term or charges after a trial, and ask for a yes or no. Only their yes in this conversation lets you accept. If they say not now, hold as below. A banner that only sets cookie preferences is not an agreement.
 - Your calls to this server need the header "Authorization: Bearer $INSTAR_AUTH_TOKEN".
 - Just before you activate or store anything, read GET http://localhost:${port}/recommended-services and find this service. If grantedHere is false, the person has said no or this machine isn't authorized: stop, change nothing more, and end.
 - When you think it works, call POST http://localhost:${port}/recommended-services/${service}/verify with the header "X-Instar-Request: 1". Only result "pass" means done. Then tell the person, in one plain message, that it works and what it means for them.
