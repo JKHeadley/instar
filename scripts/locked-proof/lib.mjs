@@ -142,7 +142,7 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
   const evidence = { id: c.id, gate: c.gate, startedAt: target.now(), samples: [], fired: [], person: null, notes: [] };
   const sample = async () => {
     const snap = await target.snapshot();
-    evidence.samples.push({ t: snap.now, lockState: snap.lockState, markers: snap.markers, dirty: snap.dirty, guard: snap.guardPid ?? null, typist: snap.typistRunning === true });
+    evidence.samples.push({ t: snap.now, lockState: snap.lockState, serverLockState: snap.serverLockState, markers: snap.markers, dirty: snap.dirty, guard: snap.guardPid ?? null, typist: snap.typistRunning === true });
     return snap;
   };
   const pending = [...c.inject];
