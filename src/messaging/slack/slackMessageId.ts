@@ -44,6 +44,15 @@
  * which is the harder bug to see. If message ids ever do need minting rather
  * than deriving, that belongs in the governed module, not here.
  *
+ * ── CONTRACT-EVIDENCE: EXEMPT — no API-contract surface ──
+ *
+ * This module makes no network call and touches no Slack API request or
+ * response shape. It is a pure function from a string this process already
+ * holds to a number, with no I/O of any kind, so live-API contract tests have
+ * nothing here to exercise. The gate matches on the `src/messaging/slack/`
+ * path, not on behaviour. Remove this marker the moment anything in this file
+ * reads or writes an API payload.
+ *
  * `conversationIdentity.SLACK_THREAD_TS_RE` (`/^\d{10}\.\d{6}$/`) is the
  * governed shape for a Slack *thread* ts and is intentionally not reused below:
  * it requires exactly 10 + 6 digits, and this module must also accept a ts with

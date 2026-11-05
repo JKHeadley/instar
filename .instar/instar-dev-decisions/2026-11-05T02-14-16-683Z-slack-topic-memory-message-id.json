@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-05T02:14:16.683Z",
+  "slug": "slack-topic-memory-message-id",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 9,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/slack/slackMessageId.ts"
+    ],
+    "addedLines": 9,
+    "deletedLines": 0
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Same branch: adds the pre-push gates two documented requirements (CONTRACT-EVIDENCE exemption marker for a pure no-IO module, and the release-note fragment without which publish.yml silently skips the release) and records both in the review artifacts."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

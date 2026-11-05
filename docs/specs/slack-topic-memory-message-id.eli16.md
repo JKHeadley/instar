@@ -94,6 +94,24 @@ still ignored.
   and so on). All 7 were caught by a failing test.
 - All 51 lint steps and the full TypeScript check pass.
 
+## Two process notes a reviewer will see in the diff
+
+**A contract-test exemption marker.** instar asks for live Slack API tests
+whenever a file under `src/messaging/slack/` changes. That rule matches on the
+folder, not on what the code does, and this module never talks to Slack — it
+converts a string this process already holds into a number. So the file carries
+the documented `CONTRACT-EVIDENCE: EXEMPT` marker with that reason written next
+to it, and a note to remove the marker the moment the file touches an API
+payload. The one Slack-API assumption the fix genuinely rests on — that a `ts`
+is unique within a channel and ordered by send time — is Slack's documented
+behaviour, and the tests exercise it on real `ts` values rather than mocking it.
+
+**A release-note fragment.** Without `upgrades/next/<slug>.md`, instar's publish
+workflow silently skips the release: the change would merge and never reach a
+running agent. For a data-retention fix that is the worst failure shape — users
+would keep losing Slack history while believing it was fixed — so the fragment
+ships with the change and says plainly what is recoverable and what is gone.
+
 ## What this does NOT fix
 
 **Slack history already on disk is still not replayed.** `slack-messages.jsonl`

@@ -190,6 +190,24 @@ bound, or it does not), and the fallback order is declared in the module.
   oldest row.
 - **Timing / runtime conditions:** None. The derivation is synchronous, pure,
   and O(length of the ts string).
+- **Live-API contract evidence — EXEMPT, and why.** The pre-push gate flags any
+  change under `src/messaging/slack/` and asks for `npm run test:contract`
+  evidence against the real Slack API. It matches on the path, not on
+  behaviour, and this module makes no network call and touches no Slack request
+  or response shape — it is a pure string-to-number function with no I/O, so
+  live-API tests have nothing in it to exercise. The file therefore carries the
+  gate's documented in-diff marker, `CONTRACT-EVIDENCE: EXEMPT`, with that
+  reason stated next to the code it covers and an instruction to remove it the
+  moment anything in the file reads or writes an API payload. Recorded here
+  rather than left as a flag a reviewer has to interpret. The genuinely
+  Slack-API-shaped assumption this change *does* rest on — that `ts` is unique
+  per channel and ordered by send time — is Slack's documented contract and is
+  asserted on real ts values in the unit tests, not mocked away.
+- **Release visibility:** `upgrades/next/slack-topic-memory-message-id.md` ships
+  with the change. Without a fragment, `publish.yml` silently skips the release,
+  so the fix would merge and never reach an installed agent — which for a
+  data-retention fix means users keep losing Slack history while believing it
+  was fixed. The fragment states plainly what is recoverable and what is gone.
 - **Operator surface (Mobile-Complete Operator Actions):** No operator-facing
   actions added or touched — this change adds no route, form, approval or
   notice.
