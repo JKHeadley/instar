@@ -12,6 +12,7 @@ import { buildRequests } from './secrets-model.js';
 import { spendingNeed } from './costs-model.js';
 import { healthNeedRows } from './health-model.js';
 
+// warning-path: inline
 const row = (key, main, sub, href, refs = []) => ({ key: `need:${key}`, main, sub: sub || '', tone: 'attn', refs, action: { kind: 'href', href } });
 
 /** A 200 that does not have the expected shape: it told us nothing, so never read it as "nothing waiting". */

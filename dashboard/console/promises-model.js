@@ -123,6 +123,7 @@ export function buildPromisesPage(res, now = Date.now(), { expectedPeers = null,
   let headline;
   if (n.waiting) headline = `${plural(n.waiting, 'promise is', 'promises are')} waiting on you.`;
   else headline = 'Nothing is waiting on you.';
+  // warning-path: pageHead
   return { ok: true, sections, counts, coverage, headline, sub: '', tone: n.waiting ? 'attn' : coverage ? 'muted' : 'ok' };
 }
 

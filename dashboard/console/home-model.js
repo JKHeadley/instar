@@ -96,7 +96,9 @@ export function buildReach(res, now = Date.now()) {
   if (now - observedAt > FRESH_MS) {
     return { state: 'stale', value: count === 0 && expired === 0 ? 'Nothing held' : plural(count + expired, 'message', 'messages'), line: `Last checked ${age}; this may be out of date.`, rows, age };
   }
+  // warning-exempt: buildReach is not shown on any page; Home has no reach card today
   if (expired > 0) return { state: 'bad', value: `${expired} expired`, line: 'Some messages expired without confirmed delivery.', rows, age };
+  // warning-exempt: buildReach is not shown on any page; Home has no reach card today
   if (count > 0) return { state: 'attn', value: `${count} held`, line: 'I need to restore or verify delivery.', rows, age };
   return { state: 'ok', value: 'No messages held', line: 'No messages are held on this machine.', rows, age };
 }
@@ -171,6 +173,7 @@ export function buildNeeds(res, now = Date.now(), names = {}) {
       sub: [g.items.length > 1 ? `${g.items.length} copies` : null,
         [...g.machines].filter((m) => !String(top.title || top.summary || '').startsWith(`${m}:`)).join(', ') || null].filter(Boolean).join(' · '),
       end: (ago(g.last, now) || '').replace(' ago', '') ? `${ago(g.last, now)}` : '',
+      // warning-path: row
       tone: stale ? 'unknown' : (top.priority === 'URGENT' ? 'bad' : 'attn'),
       detail: top.description || top.body || '',
       expandable: true,
@@ -191,6 +194,7 @@ export function buildNeeds(res, now = Date.now(), names = {}) {
     return { state: partial ? 'partial' : 'ok', count: 0, coverage: partial ? 'partial view' : null, value: partial ? 'Nothing here' : 'Nothing needs you', line: [partialLine, tail].filter(Boolean).join(' ') || 'The queue is clear.', rows, all };
   }
   return {
+    // warning-path: row
     state: partial ? 'partial' : 'attn', count: current.length,
     coverage: partial ? 'partial view' : null,
     value: plural(current.length, 'thing', 'things'), valueTone: 'attn',
@@ -362,13 +366,16 @@ export function machineState(m, now = Date.now()) {
   const heard = Date.parse(m.routerReceivedAt || m.selfReportedLastSeen || m.lastSeen);
   const age = Number.isFinite(heard) ? ago(heard, now) : null;
   const rope = m.ropeCondition;
+  // warning-path: #/capacity/machines
   if (rope === 'peer-offline') return { state: 'bad', label: 'unreachable', age };
   if (!Number.isFinite(heard)) return { state: 'unknown', label: 'no reading', age: null };
   const since = now - heard;
+  // warning-path: #/capacity/machines
   if (since > STALE_MS) return { state: 'bad', label: 'not answering', age };
   if (since > LIVE_MS) return { state: 'stale', label: 'quiet', age };
   const cores = m.hardware && Number(m.hardware.cpuCores);
   const perCore = cores > 0 && Number.isFinite(Number(m.loadAvg)) ? Number(m.loadAvg) / cores : null;
+  // warning-path: #/capacity/machines
   if (rope === 'degraded' || rope === 'urgent' || (perCore !== null && perCore > 2)) return { state: 'attn', label: 'struggling', age, perCore };
   if (m.online === false) return { state: 'unknown', label: 'no reading', age };
   return { state: 'ok', label: 'live', age, perCore };
@@ -427,7 +434,9 @@ export function buildAllowed(guardsRes, mandateRes, now = Date.now()) {
     mandates = list.filter((m) => m && !m.revoked && (!m.expiresAt || Date.parse(m.expiresAt) > now)).length;
   }
   const rows = [];
+  // warning-path: #/settings/allowed
   if (offWrong) rows.push({ main: `${plural(offWrong, 'safety check')} off that should be on`, tone: 'attn' });
+  // warning-path: #/settings/allowed
   if (gaps) rows.push({ main: `${plural(gaps, 'critical path')} without its guard`, tone: 'attn' });
   rows.push({ main: mandates === null ? "Can't tell which permission slips are active" : `${plural(mandates, 'permission slip')} active`, tone: mandates === null ? 'unknown' : undefined });
   const guards = Array.isArray(guardsRes.data.guards) ? guardsRes.data.guards : [];
@@ -438,11 +447,14 @@ export function buildAllowed(guardsRes, mandateRes, now = Date.now()) {
   const all = notOn.map((g) => ({
     main: g.criticalPath || g.key || 'A safety check',
     sub: g.criticalPath ? g.key : '',
+    // warning-path: #/settings/allowed
     end: byDesign(g) ? 'off by design' : (GUARD_WORD[g.effective] || String(g.effective).replace(/-/g, ' ')),
+    // warning-path: #/settings/allowed
     tone: byDesign(g) || g.effective === 'on-dry-run' ? undefined : 'attn',
     mono: true,
   }));
   return {
+    // warning-path: #/settings/allowed
     state: offWrong || gaps ? 'attn' : (mandates === null ? 'partial' : 'ok'),
     coverage: mandates === null ? 'partial view' : null,
     value: `${on} of ${total} on`, all,
@@ -508,6 +520,7 @@ export function combineNeeds(needs, promised, surfaced) {
     note: count ? null : needs.note,
     statusNote: count ? [needs.statusNote, notes, queueLine].filter(Boolean).join(' ') : needs.statusNote,
     coverage: partial ? 'partial view' : needs.coverage,
+    // warning-path: row
     state: count > 0 ? (partial ? 'partial' : 'attn') : (partial ? 'partial' : 'ok'),
     value: count > 0 ? plural(count, 'thing', 'things') : (partial ? 'Nothing here' : 'Nothing needs you'),
     valueTone: count > 0 ? 'attn' : needs.valueTone,
@@ -551,6 +564,7 @@ export function headline(allCards) {
     const withContext = action && /^(.*?)\s*\(([^)]+)\)$/.exec(action);
     const title = withContext ? withContext[1] : action;
     const context = withContext ? `${withContext[2].replace(/,\s*/g, ' · ')}.` : null;
+    // warning-path: inline
     return { text: title || 'Open what needs your attention', tone: 'attn',
       sub: [context, first?.action ? 'Tap to review and respond.' : null,
         count > 1 ? `${count - 1 === 1 ? 'One more thing needs' : `${count - 1} more things need`} you.` : null].filter(Boolean).join(' '),
@@ -576,6 +590,7 @@ export function headline(allCards) {
       : BAD_HEADLINE[id] || `${AREA_NAME[id] || 'An area'} is failing.`;
     const action = id === 'promised' ? model.rows?.find((r) => r.tone === 'bad' && r.action)?.action : null;
     const due = missed && firstMiss ? model.rows?.find((r) => r.tone === 'bad' && r.action)?.sub?.match(/\bdue ([^·]+)/)?.[1]?.trim() : null;
+    // warning-path: inline
     return { text, tone: 'bad', sub: due ? `Due ${due}.` : '',
     action, href: action ? null : BAD_DESTINATION[id] || null,
     linkLabel: id === 'promised' ? missed ? 'Open a missed promise' : 'Open a promise needing an update' : id === 'running' ? 'Inspect the machine' : 'Inspect the issue' };
@@ -589,6 +604,7 @@ export function headline(allCards) {
     const area = AREA_NAME[id] || id;
     if (model.retrying) return { text: `Still checking ${area}.`, tone: 'muted',
       sub: 'The answer is delayed. Checking again automatically.', href: CHECK_DESTINATION[id] || null, linkLabel: `Open ${area}` };
+    // warning-path: inline
     return { text: model.state === 'stale' ? `Couldn't refresh ${area}.` : `Couldn't check ${area}.`, tone: 'attn',
       sub: model.state === 'stale' ? 'Showing the last successful result.' : 'The result is unknown.',
       href: CHECK_DESTINATION[id] || null, linkLabel: `Open ${area}` };

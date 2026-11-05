@@ -16,6 +16,7 @@ export function frameworkName(f) { return FRAMEWORK_WORDS[f] || f || 'Other'; }
 /** A cell's state in words, from the pool row (and its repair episode, when any). */
 export function cellState(row, episode) {
   if (episode && ['approved', 'starting', 'running', 'in-progress', 'navigating', 'awaiting-code'].includes(episode.state)) return { state: 'working', label: 'signing in' };
+  // warning-path: row
   if (NEEDS_SIGN_IN.has(row.status)) return { state: 'attn', label: 'needs sign-in' };
   if (row.status === 'active' && row.loginCheck === 'ok') return { state: 'ok', label: 'signed in' };
   if (row.status === 'active') return { state: 'ok', label: 'signed in (not re-checked)' };
@@ -84,6 +85,7 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], inUse 
       line: !t ? (g.framework === 'grok-build' ? "Usage isn't readable for this kind of account." : 'No reading yet.')
         : `${Math.round(t.pct)}% of ${t.label}${resetWords(t.resetsAt, now) ? ' · ' + resetWords(t.resetsAt, now) : ''}`,
       second: t && t.second ? `${t.second.label} ${Math.round(t.second.pct)}%` : null,
+      // warning-path: row
       tone: t && t.pct >= 90 ? 'bad' : t && t.pct >= 75 ? 'attn' : null,
     };
   }).sort((a, b) => (frameworkName(a.framework)).localeCompare(frameworkName(b.framework)) || (b.tight ? b.tight.pct : -1) - (a.tight ? a.tight.pct : -1));
@@ -121,13 +123,16 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], inUse 
   }
   const usable = accounts.filter((a) => a.cells.some((c) => c.state === 'ok')).length;
   const busiest = accounts.filter((a) => a.tight).sort((a, b) => b.tight.pct - a.tight.pct)[0];
+  // warning-path: row
   const near = accounts.filter((a) => a.tight && a.tight.pct >= 90 && a.cells.some((c) => c.state === 'ok'));
   let headline;
   if (needs.length) headline = needs.length === 1 ? '1 sign-in needs you.' : `${needs.length} sign-ins need you.`;
   else if (near.length && near.length === accounts.filter((a) => a.tight).length) headline = 'Every account is nearly out.';
+  // warning-path: row
   else if (busiest) headline = busiest.tight.pct >= 90 ? `${busiest.name} is nearly out; others have room.` : `Plenty left: the busiest account is at ${Math.round(busiest.tight.pct)}%.`;
   else headline = 'No usage readings yet.';
   const facts = [
+    // warning-path: inline
     needs.length ? { n: needs.length, label: 'need you', tone: 'attn', href: '#/capacity/accounts?s=needs' } : null,
     busiest ? { n: `${Math.round(busiest.tight.pct)}%`, label: `most used · ${busiest.name}` , tone: busiest.tone } : null,
     { n: `${usable}/${accounts.length}`, label: 'accounts usable' },
@@ -137,5 +142,6 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], inUse 
   for (const r of rows) if (r && r.machineId && r.machineNickname) machineNames[r.machineId] = verifiedDisplayName(r.machineNickname, r.machineId) || machineNames[r.machineId];
   for (const [k, v] of Object.entries(extraNames || {})) if (!machineNames[k]) machineNames[k] = verifiedDisplayName(v, k);
   const partial = failed.length ? `No answer from ${failed.map((f) => verifiedDisplayName(f.nickname, f.machineId) || verifiedDisplayName(f.machineNickname, f.machineId) || machineNames[f.machineId] || 'a machine with no name yet').join(', ')}; its accounts may be out of date.` : null;
+  // warning-path: pageHead
   return { ok: true, needs, accounts, headline, sub: near.length ? `${near.map((a) => a.name).join(', ')} ${near.length === 1 ? 'is' : 'are'} at 90% or more of a limit.` : '', facts, partial, tone: needs.length ? 'attn' : 'ok' };
 }

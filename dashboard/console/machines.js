@@ -3,7 +3,7 @@
 // the legacy tab until their PIN sheet is rebuilt (the plan's first cut).
 
 import { buildMachinesPage, ropesFor, healthOf, usageOf, machineCarePool } from './machines-model.js';
-import { el, setKids, pageHead, sheet, closeSheet, story, note, cantTell, firstPaint } from './ui.js';
+import { el, setKids, pageHead, sheet, closeSheet, story, note, cantTell, firstPaint, askLink } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const STATE_DOT = { ok: 'dot live', attn: 'dot attn', bad: 'dot bad', stale: 'dot unknown', unknown: 'dot unknown' };
@@ -74,7 +74,7 @@ async function openMachine(m, { get, health, guards, names }) {
   const body = [block('How it’s doing', story(lines))];
   if (!m.isSelf) {
     const ropes = ropesFor(m.id, health);
-    body.push(block('Connections', ropes === null ? note('Can’t tell: this machine’s connection checks did not answer.') : ropes.length ? rowsList(ropes.map((r) => ({ main: r.kind, sub: r.label, tone: r.state === 'ok' ? null : r.state }))) : note('No connection checks recorded to this machine yet.')));
+    body.push(block('Connections', ropes && ropes.some((r) => r.state === 'bad') ? askLink(`The connections to ${m.name} are failing`) : null, ropes === null ? note('Can’t tell: this machine’s connection checks did not answer.') : ropes.length ? rowsList(ropes.map((r) => ({ main: r.kind, sub: r.label, tone: r.state === 'ok' ? null : r.state }))) : note('No connection checks recorded to this machine yet.')));
     body.push(note('Its parts and what is using it are read on that machine; open its own console to see them.'));
   }
   const panel = sheet({ title: m.name }, ...body);
@@ -87,9 +87,10 @@ async function openMachine(m, { get, health, guards, names }) {
     const isOn = (e) => e === 'on-confirmed' || e === 'on-unverified' || e === 'on-stale' || e === 'on-blind';
     const wrong = g ? g.filter((x) => x.effective && !isOn(x.effective) && !(x.effective === 'off' && x.offClass === 'dark-default') && x.effective !== 'on-dry-run') : null;
     const after = sb.querySelector('.raw');
-    sb.insertBefore(block('My parts here', h.ok ? el('p', { class: 'card-line', text: h.summary }) : note(`Can’t tell: ${h.reason}.`), h.ok ? rowsList(h.rows.slice(0, 12)) : null), after);
+    sb.insertBefore(block('My parts here', h.ok ? el('p', { class: 'card-line', text: h.summary }) : note(`Can’t tell: ${h.reason}.`), h.ok && h.rows.some((r) => r.tone === 'attn') ? askLink(`My parts on ${m.name}: ${h.summary}`) : null, h.ok ? rowsList(h.rows.slice(0, 12)) : null), after);
     sb.insertBefore(block('What’s using it', u.ok ? el('p', { class: 'card-line', text: u.summary }) : note(`Can’t tell: ${u.reason}.`), u.ok ? rowsList(u.rows) : null), after);
-    sb.insertBefore(block('Safety checks', wrong === null ? note('Can’t tell: the safety checks did not answer.') : wrong.length ? rowsList(wrong.map((x) => ({ main: x.criticalPath || x.key, sub: x.criticalPath ? x.key : '', end: 'off', tone: 'attn' }))) : el('p', { class: 'card-line', text: 'Every safety check that should be on is on.' })), after);
+    // warning-path: #/settings/allowed
+    sb.insertBefore(block('Safety checks', wrong === null ? note('Can’t tell: the safety checks did not answer.') : wrong.length ? rowsList(wrong.map((x) => ({ main: x.criticalPath || x.key, sub: x.criticalPath ? x.key : '', end: 'off', tone: 'attn' }))) : el('p', { class: 'card-line', text: 'Every safety check that should be on is on.' }), wrong && wrong.length ? el('a', { href: '#/settings/allowed', text: 'Open what I’m allowed to do' }) : null), after);
     if (desktop.ok && desktop.data?.ready === true
       && (desktop.data.machineId === m.id || m.id === 'self')) {
       sb.insertBefore(block('Remote desktop',
