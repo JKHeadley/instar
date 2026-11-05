@@ -54,6 +54,7 @@
 
 import * as fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
 const token = args[0];
@@ -203,7 +204,7 @@ async function consumeSubmission() {
 }
 
 if (browserMode) {
-  const here = new URL('.', import.meta.url).pathname;
+  const here = fileURLToPath(new URL('.', import.meta.url));
   const child = spawnSync(`${here}browser/xdrive.sh`, ['typesecret', browserHost], {
     input: v,
     stdio: ['pipe', 'inherit', 'inherit'],

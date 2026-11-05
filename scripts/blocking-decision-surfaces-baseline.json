@@ -182,7 +182,7 @@
     },
     {
       "path": "src/templates/scripts/secret-drop-retrieve.mjs",
-      "sha256": "fb014939451d8c20df243e136fb0bdef61a61cbb444dbc98d9dc58725714b9f3",
+      "sha256": "ef56b003da3f252ea526e0f88e99d7066059e476fc9a42d90c5215e555430178",
       "reason": "Re-declared 2026-11-04 (normal-chrome-linux: for a browser password it refuses stdout, --run and --consume, which is a refusal of its own operation on a value the person marked for one site; it gates no message or session). boundary case: secret-handoff error/consume semantics, not an enforcement block"
     },
     {

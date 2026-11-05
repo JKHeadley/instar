@@ -65,6 +65,8 @@ Revert the release; the scripts stay on disk and still work. `autoInstall: false
 
 ## Evidence pointers
 
+The pre-push gate caught the Secret Drop helper resolving its own folder with `URL.pathname`, which breaks on a path with a space; it now uses `fileURLToPath`.
+
 `tests/unit/normal-chrome-linux-rules.test.ts`, `normal-chrome-linux-wrapper.test.ts`, `linux-browser-provision.test.ts`, `PostUpdateMigrator-normalChromeBrowser.test.ts`; `tests/integration/linux-browser-routes.test.ts`; `tests/e2e/linux-browser-boot-lifecycle.test.ts`. Live gate results go in the spec.
 
 ## Second-pass review
