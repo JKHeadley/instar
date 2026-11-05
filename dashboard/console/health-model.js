@@ -31,8 +31,7 @@ export function buildHealthPage(res) {
   const problems = of('user-affecting');
   const unsorted = of('unclassified');
   const quiet = of('internal');
-  const sub = d.verdict === 'attention' ? (problems.length === 1 ? problems[0].detail : '')
-    : d.verdict === 'unsure' ? 'It may not affect you. Each one has a way to ask me.'
+  const sub = d.verdict === 'unsure' ? 'It may not affect you. Each one has a way to ask me.'
       : d.verdict === 'running' ? 'Nothing here affects you.' : '';
   return {
     ok: true, verdict: d.verdict, tone: TONE[d.verdict], headline: d.headline, sub, uptime: d.uptime || null,

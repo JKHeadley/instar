@@ -78,7 +78,7 @@ export function buildMachinesPage(poolRes, healthRes, now = Date.now(), extras =
     { n: `${answering}/${total}`, label: 'answering', tone: answering < total ? 'attn' : null },
     busiest ? { n: busiest.name, label: `busiest · ${busiest.verdict}`, tone: busiest.verdict === 'overloaded' ? 'attn' : null } : null,
     leader ? { n: leader.name, label: 'leading' } : null,
-    extras.needsLook ? { n: extras.needsLook, label: 'need a look', tone: 'attn' } : null,
+    extras.needsLook ? { n: extras.needsLook, label: 'need a look', tone: 'attn', href: '#/settings/allowed' } : null,
   ].filter(Boolean);
   return { ok: true, single, machines: rows, headline, sub: subParts.join(' '), facts, tone: dark.length ? 'bad' : struggling.length || unclear.length ? 'attn' : 'ok' };
 }
