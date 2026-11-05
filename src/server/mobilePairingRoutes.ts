@@ -1540,6 +1540,10 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     // summaries, owner phones only, with one shared bucket of their own (they read peers).
     { method: 'GET', re: /^\/mobile\/messages$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'phones-messages-reads' },
     { method: 'GET', re: /^\/mobile\/insights$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'phones-messages-reads' },
+    // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): read-only
+    // trimmed summaries, owner phones only, with one shared bucket of their own (they read peers).
+    { method: 'GET', re: /^\/mobile\/proposals$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'proposals-inside-reads' },
+    { method: 'GET', re: /^\/mobile\/inside$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'proposals-inside-reads' },
     // Native Permission slips and What I'm allowed to do (docs/specs/mobile-native-permissions.md): two
     // read-only trimmed lists, and the owner phone's Face ID-confirmed writes (each route re-checks the
     // feature switch, local TLS, an active owner phone, a configured PIN, the presence key, a single-use

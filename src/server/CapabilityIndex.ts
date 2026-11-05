@@ -458,6 +458,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobileProposalsInsideScreens',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Native Proposals and How I\'m doing inside screens for the Instar iPhone app (docs/specs/mobile-native-proposals-inside.md): GET /mobile/proposals (proposed fixes waiting, across the machines that answer; dismissing stays in the console) and GET /mobile/inside (recent records, repeating problems, checks on my own claims and correction reviews, for each machine that answers). Read-only; an owner phone or the bearer token.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/proposals', 'GET /mobile/inside'],
+    }),
+  },
+  {
     key: 'releaseReadiness',
     prefixes: ['/release-readiness'],
     description: 'Release-readiness watchdog (instar-dev / maintainer environments). Surfaces a stalled release as one deduped, age-escalating Attention item. Null on installs with no analyzable instar repo.',
