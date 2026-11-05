@@ -46,7 +46,7 @@ function writeShippedConfig(dir: string, extra: (c: any) => void = () => {}) {
 const readConfig = (dir: string) => JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf-8'));
 const restartFlag = (dir: string) => path.join(dir, 'state', 'restart-requested.json');
 
-function makeInviter(dir: string, telegram: { botToken: string; chatId: string } | null) {
+function makeInviter(dir: string, telegram: ({ botToken: string; chatId: string; authorizedUserIds?: number[]; ownerUserId?: number }) | null) {
   const identityManager = new MachineIdentityManager(dir);
   const { identity: awake } = makeIdentity('first-machine');
   fs.mkdirSync(path.join(dir, 'machine'), { recursive: true });
@@ -108,7 +108,7 @@ describe('sharing turns on at the first pairing', () => {
     expect(fs.existsSync(restartFlag(inviterDir))).toBe(true);
     expect(JSON.parse(fs.readFileSync(restartFlag(inviterDir), 'utf-8')).requestedBy).toBe('session-pool-activation');
 
-    expect(joinerApply(res.body, 'CODE-ONE', identity, encryptionPrivateKeyPem)).toEqual({ activated: true, telegram: 'written' });
+    expect(joinerApply(res.body, 'CODE-ONE', identity, encryptionPrivateKeyPem)).toMatchObject({ activated: true, telegram: 'written' });
     const joinerRaw = fs.readFileSync(path.join(joinerDir, 'config.json'), 'utf-8');
     expect(joinerRaw).not.toContain(BOT_TOKEN);
     const joiner = JSON.parse(joinerRaw);
@@ -139,6 +139,54 @@ describe('sharing turns on at the first pairing', () => {
     expect(fs.existsSync(restartFlag(inviterDir))).toBe(false); // nothing new on the inviter
     expect(joinerApply(again.body, 'CODE-TWO', identity, encryptionPrivateKeyPem).telegram).toBe('written');
     expect(readConfig(joinerDir).multiMachine.sessionPool.enabled).toBe(false);
+  });
+
+  it('the joined machine answers only the people the first machine answers', async () => {
+    writeShippedConfig(inviterDir);
+    writeShippedConfig(joinerDir);
+    const { pair } = makeInviter(inviterDir, { botToken: BOT_TOKEN, chatId: '-100123', authorizedUserIds: [111, 222], ownerUserId: 111 });
+    const { identity, encryptionPrivateKeyPem } = makeIdentity('second-machine');
+    const res = await pair('CODE-ONE', identity);
+    expect(joinerApply(res.body, 'CODE-ONE', identity, encryptionPrivateKeyPem).telegram).toBe('written');
+    const entry = readConfig(joinerDir).messaging.find((m: { type: string }) => m.type === 'telegram');
+    expect(entry.config.authorizedUserIds).toEqual([111, 222]);
+    expect(entry.config.ownerUserId).toBe(111);
+  });
+
+  it('pairing again gives a machine its missing list and leaves one it already has', async () => {
+    writeShippedConfig(inviterDir);
+    writeShippedConfig(joinerDir);
+    const { pair } = makeInviter(inviterDir, { botToken: BOT_TOKEN, chatId: '-100123', authorizedUserIds: [111], ownerUserId: 111 });
+    const { identity, encryptionPrivateKeyPem } = makeIdentity('second-machine');
+    const withEntry = (config: Record<string, unknown>) => {
+      const joinerConfig = readConfig(joinerDir);
+      joinerConfig.messaging = [{ type: 'telegram', enabled: true, config: { token: 'kept', chatId: '-100123', ...config } }];
+      fs.writeFileSync(path.join(joinerDir, 'config.json'), JSON.stringify(joinerConfig));
+    };
+    const entry = () => readConfig(joinerDir).messaging[0].config;
+
+    withEntry({});
+    const filled = joinerApply((await pair('CODE-ONE', identity)).body, 'CODE-ONE', identity, encryptionPrivateKeyPem);
+    expect(filled).toMatchObject({ telegram: 'kept-existing', peopleFilled: true, peopleUnchecked: false });
+    expect(entry()).toMatchObject({ token: 'kept', authorizedUserIds: [111], ownerUserId: 111 });
+
+    withEntry({ authorizedUserIds: [999], ownerUserId: 999 });
+    SafeFsExecutor.safeRmSync(restartFlag(inviterDir), { force: true, operation: 'tests/integration/session-pool-pair-activation.test.ts:clear-restart' });
+    const kept = joinerApply((await pair('CODE-TWO', identity)).body, 'CODE-TWO', identity, encryptionPrivateKeyPem);
+    expect(kept).toMatchObject({ telegram: 'kept-existing', peopleFilled: false, peopleUnchecked: false });
+    expect(entry()).toMatchObject({ authorizedUserIds: [999], ownerUserId: 999 });
+
+    withEntry({ authorizedUserIds: [999], promptGate: { ownerId: 999 } });
+    SafeFsExecutor.safeRmSync(restartFlag(inviterDir), { force: true, operation: 'tests/integration/session-pool-pair-activation.test.ts:clear-restart' });
+    const ownOwner = joinerApply((await pair('CODE-OWNER', identity)).body, 'CODE-OWNER', identity, encryptionPrivateKeyPem);
+    expect(ownOwner.peopleFilled).toBe(false);
+    expect(entry().ownerUserId).toBeUndefined();
+
+    withEntry({});
+    SafeFsExecutor.safeRmSync(restartFlag(inviterDir), { force: true, operation: 'tests/integration/session-pool-pair-activation.test.ts:clear-restart' });
+    const unchecked = joinerApply((await pair('CODE-THREE', identity)).body, 'CODE-THREE', identity, null);
+    expect(unchecked).toMatchObject({ telegram: 'kept-existing', peopleFilled: false, peopleUnchecked: true });
+    expect(entry().authorizedUserIds).toBeUndefined();
   });
 
   it('a third machine pairs normally and activates nothing', async () => {

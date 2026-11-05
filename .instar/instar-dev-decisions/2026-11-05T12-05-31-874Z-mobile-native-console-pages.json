@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-05T12:05:31.874Z",
+  "slug": "mobile-native-console-pages",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 175,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PolicyEnforcementLayer.ts",
+      "src/core/credentialShapes.ts",
+      "src/server/mobileConsolePagesRoutes.ts"
+    ],
+    "addedLines": 119,
+    "deletedLines": 56
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Read path only; adds no loop or action."
+  },
+  "verdict": "blocked"
+}

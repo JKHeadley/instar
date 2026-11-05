@@ -48,6 +48,8 @@ async function send(method, path, body, extraHeaders = {}) {
 }
 
 const wantKey = () => new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
+/** A question brought from another page (Health's "Ask the agent about this"): it waits in the next message box opened. */
+const wantAsk = () => new URLSearchParams((location.hash.split('?')[1] || '')).get('ask');
 const listHref = '#/work/sessions';
 const openHref = (key) => `#/work/sessions?s=${encodeURIComponent(key)}`;
 
@@ -61,6 +63,7 @@ const st = {
 
 export async function renderSessions(main, ctx) {
   st.main = main; st.ctx = ctx;
+  st.ask = wantAsk() || st.ask || null;
   // A refresh never rebuilds an open session: only the list half repaints.
   if (!main.querySelector('.sessions-page')) {
     leaveView();
@@ -114,6 +117,7 @@ function paintList(box, m, openKey) {
   const h = sessionsHeadline(m);
   const parts = [pageHead({ eyebrow: 'Work · Sessions', headline: h.text, tone: h.tone, facts: sessionsFacts(m) })];
   parts.push(el('div', { class: 'page-primary sess-new' }, el('button', { class: 'btn-primary btn-inline', type: 'button', text: '+ New session', 'data-new': '1', onclick: () => newSessionSheet() })));
+  if (st.ask) parts.push(note('Your question is ready. Open a session and it will be waiting in the message box.'));
   if (!st.wsUp) parts.push(el('p', { class: 'stale-banner', role: 'status', text: 'Live updates paused, reconnecting.' }));
   if (m.ok && st.lastFailReason) {
     parts.push(cantTell(`Couldn’t refresh the list: ${st.lastFailReason}.`), note(`Showing the list from ${Math.max(1, Math.round((Date.now() - st.lastGoodAt) / 60000))} min ago.`));
@@ -241,6 +245,7 @@ function openView(box, row) {
   const resume = el('button', { class: 'btn-primary btn-inline sess-resume', type: 'button', text: '▼ Back to live', hidden: true });
   const more = el('button', { class: 'btn-quiet sess-more', type: 'button', 'aria-label': 'More', text: '⋯', 'data-more': '1' });
   const input = el('textarea', { class: 'reason-input sess-input', rows: '1', placeholder: 'Message…', 'aria-label': 'Message to the session' });
+  if (st.ask) { input.value = st.ask; input.rows = composerRows(st.ask); st.ask = null; }
   const sendBtn = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Send', 'data-send': '1' });
   const keysBtn = el('button', { class: 'btn-quiet', type: 'button', text: 'Keys', 'aria-expanded': 'false', 'data-keys': '1' });
   // Attach: a screenshot or file, picked, pasted or dropped. Saved on this machine, so a

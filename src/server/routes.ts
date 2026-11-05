@@ -1,3 +1,4 @@
+import { JobPortableSync } from '../core/JobPortableSync.js';
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
 import { registerRecommendedServiceRoutes } from './recommendedServiceRoutes.js';
 import { catalogWithProving } from '../recommended/recipes.js';
@@ -21,6 +22,7 @@ import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } fr
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
 import { mountMobileConsolePagesRoutes, type SelfRead } from './mobileConsolePagesRoutes.js';
+import { mountMobileHealthRoutes } from './mobileHealthRoutes.js';
 import { mountMobileSecretsRoutes, resolveKeys as resolveMobileKeys, askForSecret, cancelSecretByKey } from './mobileSecretsRoutes.js';
 import { mountMobileProposalsInsideRoutes, ACTIVITY_WINDOW, CLAIMS_WINDOW } from './mobileProposalsInsideRoutes.js';
 import { loadAllProposals } from './routes/remediation-proposals.js';
@@ -56,6 +58,8 @@ import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDe
  */
 
 import { Router } from 'express';
+import { loadJobsDetailed } from '../scheduler/JobLoader.js';
+import { JobCoverageMonitor } from '../core/JobCoverageMonitor.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
@@ -1097,6 +1101,8 @@ export interface MobileInboundTrust {
 }
 
 export interface RouteContext {
+  /** Stops the lease coverage peer poller when AgentServer shuts down. */
+  jobCoverageStop?: (() => void) | null;
   /** Installed by createRoutes: feeds a device-authenticated app message through
    * the same inbound core the lifeline forward uses (mobile-operator-chat spec). */
   mobileInbound?: { ingest: (req: any, res: any, trust: MobileInboundTrust) => Promise<void> } | null;
@@ -18139,6 +18145,141 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     return out;
   }
 
+  // The monitor is created on scheduler-less standby too: the job catalog lives
+  // on disk independently of the awake-only scheduler.
+  const coverageIdentityManager = ctx.coordinator?.managers?.identityManager;
+  const jobCoverageAuthToken = ctx.config.authToken;
+  const jobPortableSync = ctx.config.multiMachine?.jobDefinitionSync?.enabled
+    && coverageIdentityManager && ctx.meshSelfId && jobCoverageAuthToken
+    ? new JobPortableSync({
+        stateDir: ctx.config.stateDir,
+        projectDir: ctx.config.projectDir,
+        identityManager: coverageIdentityManager,
+        authToken: jobCoverageAuthToken,
+        readOnly: ctx.config.multiMachine?.jobDefinitionSync?.dryRun !== false,
+        recordRopeResult: ctx.recordRopeResult ?? undefined,
+        withAdmissionFence: action => {
+          const scheduler = ctx.scheduler;
+          const wasPaused = scheduler?.getStatus().paused ?? true;
+          scheduler?.pause();
+          try { return action(); }
+          finally {
+            try { scheduler?.refreshJobs(); }
+            finally { if (!wasPaused) scheduler?.resume(); }
+          }
+        },
+      }) : null;
+  const jobCoverage = coverageIdentityManager && ctx.meshSelfId && jobCoverageAuthToken
+    ? new JobCoverageMonitor({
+        stateDir: ctx.config.stateDir,
+        jobsFile: ctx.config.scheduler?.jobsFile ?? path.join(ctx.config.stateDir, 'jobs.json'),
+        projectDir: ctx.config.projectDir,
+        port: ctx.config.port,
+        onCatalogRepair: () => { ctx.scheduler?.refreshJobs(); },
+        authToken: jobCoverageAuthToken,
+        identityManager: coverageIdentityManager,
+        isAwake: () => ctx.coordinator?.isAwake === true,
+        peerUrls: () => ctx.resolvePeerUrls?.() ?? [],
+        recordRopeResult: ctx.recordRopeResult ?? undefined,
+        onPortableCandidate: jobPortableSync ? async (peer, job, generation) => { await jobPortableSync.pollPeer(peer, job, generation); } : undefined,
+        portableGaps: jobPortableSync ? () => jobPortableSync.gaps() : undefined,
+        clearAlert: conditionKey => { ctx.telegram?.clearAttentionCondition({ conditionKey }, 'Job coverage restored'); },
+        alert: async (conditionKey, title, summary) => {
+          if (!ctx.telegram) throw new Error('attention-destination-unavailable');
+          await ctx.telegram.createAttentionItemConfirmed({
+            id: conditionKey, conditionKey, title, summary,
+            description: summary, category: 'job', priority: 'HIGH',
+            sourceContext: 'lease-job-coverage',
+          });
+        },
+      }) : null;
+  if (jobCoverage) {
+    jobCoverage.start();
+    const onCoverageRoleChange = (_from: string, to: string) => {
+      if (to === 'awake') void jobCoverage.checkPromotionCoverage();
+    };
+    ctx.coordinator?.on?.('roleChange', onCoverageRoleChange);
+    ctx.jobCoverageStop = () => {
+      jobCoverage.stop();
+      ctx.coordinator?.off?.('roleChange', onCoverageRoleChange);
+    };
+  }
+
+  router.post('/jobs/portable-bundle', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    try { res.json(jobPortableSync.serve(req.body)); }
+    catch (error) {
+      const reason = error instanceof Error ? error.message : '';
+      res.status(reason === 'rate-limited' ? 429 : 403).json({ error: 'portable-bundle-refused' });
+    }
+  });
+  router.get('/jobs/portable/export/:slug', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    try { res.json(jobPortableSync.previewExport(req.params.slug)); }
+    catch { res.status(409).json({ error: 'portable-export-unavailable' }); }
+  });
+  router.post('/jobs/portable/export/:slug/approve', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    if (!checkMandatePin(req, res)) return;
+    try {
+      const root = req.body?.root;
+      if (typeof root !== 'string') { res.status(400).json({ error: 'root-required' }); return; }
+      const bundle = jobPortableSync.approveExport(req.params.slug, root);
+      res.json({ ok: true, slug: bundle.slug, root: bundle.root });
+    } catch { res.status(409).json({ error: 'portable-export-approval-refused' }); }
+  });
+  router.post('/jobs/portable/export/:slug/revoke', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    if (!checkMandatePin(req, res)) return;
+    try { jobPortableSync.revokeExport(req.params.slug); res.json({ ok: true, slug: req.params.slug }); }
+    catch { res.status(409).json({ error: 'portable-export-revoke-refused' }); }
+  });
+  router.get('/jobs/portable/import/:source/:slug', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    try { res.json(jobPortableSync.previewImport(req.params.source, req.params.slug)); }
+    catch { res.status(404).json({ error: 'portable-import-unavailable' }); }
+  });
+  router.post('/jobs/portable/import/:source/:slug/approve', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    if (ctx.config.multiMachine?.jobDefinitionSync?.dryRun !== false) { res.status(409).json({ error: 'portable-sync-preview-only' }); return; }
+    if (!checkMandatePin(req, res)) return;
+    try {
+      const root = req.body?.root;
+      if (typeof root !== 'string') { res.status(400).json({ error: 'root-required' }); return; }
+      jobPortableSync.approveImport(req.params.source, req.params.slug, root);
+      res.json({ ok: true, slug: req.params.slug, root });
+    } catch { res.status(409).json({ error: 'portable-import-approval-refused' }); }
+  });
+
+  router.post('/jobs/portable/import/:slug/revoke', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    if (!checkMandatePin(req, res)) return;
+    try { jobPortableSync.revokeImport(req.params.slug); res.json({ ok: true, slug: req.params.slug }); }
+    catch { res.status(409).json({ error: 'portable-import-revoke-refused' }); }
+  });
+  router.post('/jobs/portable/rollback', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    if (!checkMandatePin(req, res)) return;
+    try { res.json({ ok: true, quarantined: jobPortableSync.rollbackAll() }); }
+    catch { res.status(409).json({ error: 'portable-rollback-incomplete' }); }
+  });
+
+  router.post('/jobs/portable/rearm', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    if (!checkMandatePin(req, res)) return;
+    try { jobPortableSync.rearm(); res.json({ ok: true }); }
+    catch { res.status(409).json({ error: 'portable-rearm-refused' }); }
+  });
+  router.get('/jobs/coverage-snapshot', (req, res) => {
+    const nonce = req.query.nonce;
+    if (!jobCoverage) { res.status(503).json({ error: 'job-coverage-unavailable' }); return; }
+    if (typeof nonce !== 'string' || !/^[a-f0-9]{64}$/.test(nonce)) {
+      res.status(400).json({ error: 'invalid-nonce' }); return;
+    }
+    try { res.json(jobCoverage.localSnapshot(nonce)); }
+    catch { res.status(503).json({ error: 'catalog-unavailable' }); }
+  });
+
   async function jobsPoolMerge(localJobs: Array<Record<string, unknown>>): Promise<Record<string, unknown>> {
     const cacheKey = 'jobs';
     const cached = jobsPoolCache.get(cacheKey);
@@ -18230,6 +18371,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         peersOk: peers.length - failed.length,
         failed,
         divergences: detectJobDivergences(perMachine),
+        ...(jobCoverage ? { coverage: jobCoverage.view() } : {}),
         // WS4.4(f): honestly labeled when the shared pool-cache served any peer
         // body from its last-cached value under CPU load-shed (load-shed, never
         // silent stale). Absent/false ⇒ every peer body in this merge is fresh.
@@ -29352,6 +29494,33 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ enabled: true, ...ctx.evolution.getDashboard() });
   });
 
+  // EVO-022: pressure is operational, archive content is durable local memory.
+  router.get('/evolution/retention', async (req, res) => {
+    if (!ctx.evolution) { res.status(503).json({error: 'Evolution system not configured'}); return; }
+    const local = { machineId: ctx.meshSelfId ?? null, stores: ctx.evolution.getRetentionReport() };
+    if (req.query.scope === 'local') { res.json(local); return; }
+    const {peers, failed, peersQueried} = await readReaperPoolPeers('/evolution/retention?scope=local', body =>
+      !!body.stores && typeof body.stores === 'object');
+    res.json({local, peers, failed, peersQueried, complete: failed.length === 0});
+  });
+
+  router.get('/evolution/archive', (req, res) => {
+    if (!ctx.evolution) { res.status(503).json({error: 'Evolution system not configured'}); return; }
+    const kinds = ['proposals', 'learnings', 'gaps', 'actions'] as const;
+    const kind = req.query.kind;
+    const offset = req.query.offset === undefined ? 0 : Number(req.query.offset);
+    const limit = req.query.limit === undefined ? 50 : Number(req.query.limit);
+    if ((kind !== undefined && !kinds.includes(kind as typeof kinds[number]))
+      || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 50
+      || (req.query.id !== undefined && typeof req.query.id !== 'string')) {
+      res.status(400).json({error: 'Invalid archive kind, id, offset or limit'}); return;
+    }
+    try {
+      res.json(ctx.evolution.getArchivePage({kind: kind as typeof kinds[number] | undefined,
+        id: req.query.id as string | undefined, offset, limit}));
+    } catch (error) { res.status(503).json({error: String(error), status: 'unknown'}); }
+  });
+
   // Evolution proposals
   router.get('/evolution/proposals', (req, res) => {
     if (!ctx.evolution) { res.json({ proposals: [] }); return; }
@@ -37947,6 +38116,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         } catch { // @silent-fallback-ok — a path that can't be resolved is refused, the safe side
           return null;
         }
+      },
+      bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    });
+    // What /health means for the person (docs/specs/mobile-health-issues.md): /health stays as it is and is
+    // read over loopback with this server's token, so the sorted answer cannot disagree with it.
+    mountMobileHealthRoutes(router, {
+      readHealth: async () => {
+        const r = await fetch(`http://127.0.0.1:${ctx.config.port}/health`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-Request': '1' },
+          signal: AbortSignal.timeout(12_000),
+        });
+        return { status: r.status, body: await r.json().catch(() => null) }; // @silent-fallback-ok — an unreadable body has no status, so the summary says it can't name the problem
+      },
+      current: () => {
+        if (!ctx.config.messaging?.some((m) => m.type === 'imessage' && m.enabled)) return { iMessage: 'off' };
+        return { iMessage: ctx.imessage?.getConnectionInfo().state === 'connected' ? 'up' : 'down' };
       },
       bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     });

@@ -552,6 +552,7 @@ export class AgentServer {
     senderBotId: string;
   }) => Promise<{ ok: boolean; agentMessage?: boolean; reason?: string }>;
   private routeContext: {
+    jobCoverageStop?: (() => void) | null;
     telegramOrigin?: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime | null;
     wsManager: import('./WebSocketManager.js').WebSocketManager | null;
     directDesktopAccess?: DirectDesktopAccess | null;
@@ -1961,9 +1962,12 @@ export class AgentServer {
         identityReannounce: options.identityReannounce,
         getTelegramHandoverSource: () => {
           const entry = options.config.messaging?.find((m) => m.type === 'telegram' && m.enabled !== false);
-          const { token, chatId } = (entry?.config ?? {}) as { token?: unknown; chatId?: unknown };
+          const { token, chatId, authorizedUserIds, ownerUserId, promptGate } = (entry?.config ?? {}) as {
+            token?: unknown; chatId?: unknown; authorizedUserIds?: Array<number | string>; ownerUserId?: number | string;
+            promptGate?: { ownerId?: number | string };
+          };
           return typeof token === 'string' && token && chatId !== undefined && chatId !== null
-            ? { botToken: token, chatId: String(chatId) }
+            ? { botToken: token, chatId: String(chatId), authorizedUserIds, ownerUserId: ownerUserId ?? promptGate?.ownerId }
             : null;
         },
         getIdentityRecoveryBearerToken: () => resolveDevAgentGate(options.config.multiMachine?.identityReannounce?.enabled, options.config)
@@ -8409,6 +8413,7 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    this.routeContext?.jobCoverageStop?.();
     this.mobilePairing?.push?.stop();
     this.mobilePairing?.stop();
     this.appConversations?.stop();

@@ -73,7 +73,7 @@ export interface ReconcilerSeamDeps {
   relationshipsDir?: string;
   testIdentityKey?: string;
   /** The server's EvolutionManager (its list methods re-read disk on every call). */
-  evolution: { listLearnings(): LearningEntry[]; listActions(): ActionItem[] };
+  evolution: { listLearnings(): LearningEntry[]; listActions(): ActionItem[]; listLearningsForReplication?(): LearningEntry[]; listActionsForReplication?(): ActionItem[] };
 }
 
 export function buildReconcilerSeams(deps: ReconcilerSeamDeps): ReconcileStoreSeam[] {
@@ -177,10 +177,10 @@ export function buildReconcilerSeams(deps: ReconcilerSeamDeps): ReconcileStoreSe
   // learnings — puts-only.
   seams.push({
     store: LEARNING_STORE_KEY,
-    paths: [path.join(stateDir, 'state', 'evolution', 'learning-registry.json')],
+    paths: [path.join(stateDir, 'state', 'evolution', 'learning-registry.json'), path.join(stateDir, 'state', 'evolution', 'action-archive.json')],
     snapshot: () => {
       const rows: ReconcileRow[] = [];
-      for (const record of deps.evolution.listLearnings()) {
+      for (const record of (deps.evolution.listLearningsForReplication?.() ?? deps.evolution.listLearnings())) {
         const key = deriveLearningRecordKey(record.title, record.category, record.source);
         if (key === null) continue;
         rows.push({
@@ -196,10 +196,10 @@ export function buildReconcilerSeams(deps: ReconcilerSeamDeps): ReconcileStoreSe
   // evolutionActions — puts-only.
   seams.push({
     store: EVOLUTION_ACTION_STORE_KEY,
-    paths: [path.join(stateDir, 'state', 'evolution', 'action-queue.json')],
+    paths: [path.join(stateDir, 'state', 'evolution', 'action-queue.json'), path.join(stateDir, 'state', 'evolution', 'action-archive.json')],
     snapshot: () => {
       const rows: ReconcileRow[] = [];
-      for (const record of deps.evolution.listActions()) {
+      for (const record of (deps.evolution.listActionsForReplication?.() ?? deps.evolution.listActions())) {
         const key = deriveEvolutionActionRecordKey(record.title, record.commitTo, record.createdAt);
         if (key === null) continue;
         rows.push({

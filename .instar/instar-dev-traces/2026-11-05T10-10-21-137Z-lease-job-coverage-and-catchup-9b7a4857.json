@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "lease-job-coverage-and-catchup",
+  "sessionId": "6e60beaa-e310-4179-aa75-c7985b17f28f",
+  "timestamp": "2026-11-05T10:10:21.137Z",
+  "artifactPath": "upgrades/side-effects/lease-job-coverage-and-catchup.md",
+  "artifactSha256": "50bd6062cf45cd3a91e0da2c33286b6025a504104cb89af31068e2da80a99395",
+  "specPath": "docs/specs/lease-job-coverage-and-catchup.md",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "tests/integration/lease-job-coverage-routes.test.ts",
+    "upgrades/side-effects/lease-job-coverage-and-catchup.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Completes optional coordinator dependency compatibility at listener registration and shutdown after full integration findings.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

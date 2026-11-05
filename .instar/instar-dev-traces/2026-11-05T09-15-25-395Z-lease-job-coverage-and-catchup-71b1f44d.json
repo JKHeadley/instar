@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "lease-job-coverage-and-catchup",
+  "sessionId": "6e60beaa-e310-4179-aa75-c7985b17f28f",
+  "timestamp": "2026-11-05T09:15:25.395Z",
+  "artifactPath": "upgrades/side-effects/lease-job-coverage-and-catchup.md",
+  "artifactSha256": "4bf15e42082d3e49dde7ccb7c855f5a67cea15b8ea0fe7ae27877871c30064c3",
+  "specPath": "docs/specs/lease-job-coverage-and-catchup.md",
+  "coveredFiles": [
+    "tests/integration/lease-job-coverage-routes.test.ts",
+    "upgrades/side-effects/lease-job-coverage-and-catchup.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Makes new integration proof exercise production authentication middleware.",
+  "secondPass": "not-required",
+  "reviewerConcurred": false
+}

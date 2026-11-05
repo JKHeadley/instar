@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "evolution-retention-cap-saturation",
+  "sessionId": "2d37bcf7-8081-47bb-a9c1-db617693c32a",
+  "timestamp": "2026-11-05T10:22:07.780Z",
+  "artifactPath": "upgrades/side-effects/evolution-retention-cap-saturation.md",
+  "artifactSha256": "d0da7606fc621df95d128cbf559dcaa3eef861b1a71f58fa0df9d4c437cfe885",
+  "specPath": "docs/specs/evolution-retention-cap-saturation.md",
+  "coveredFiles": [
+    "docs/specs/carriers/evolution-retention-cap-saturation.json"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Correct the carrier citation to the exact current owner commitment response; existing approved spec and reviewed implementation unchanged.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

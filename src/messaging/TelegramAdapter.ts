@@ -4731,6 +4731,26 @@ export class TelegramAdapter implements MessagingAdapter {
     return attention;
   }
 
+  /** Persist an attention item and confirm that its notice reached Telegram.
+   * Existing items may be reminded; a failed hub post is retried through the
+   * ordinary send path instead of being mistaken for delivery. */
+  async createAttentionItemConfirmed(item: AttentionObservation): Promise<AttentionItem> {
+    const before = this.attentionHubLastPost.get(item.id);
+    const row = await this.createAttentionItem(item, { hubOnly: true });
+    if (this.attentionHubLastPost.get(row.id) !== before) return row;
+    if (!this.attentionHubAdmits(row.id)) throw new Error('attention-hub-filter-held');
+    const topicId = row.topicId ?? await this.ensureAttentionHubTopic();
+    if (topicId === null) throw new Error('attention-hub-unavailable');
+    const message = `${row.title}\n\n${row.summary ?? row.description ?? ''}`;
+    try {
+      await this.sendToTopic(topicId, message);
+    } catch (error) {
+      if (!(error instanceof TelegramOriginHoldError && error.reason === 'duplicate-content')) throw error;
+    }
+    this.attentionHubLastPost.set(row.id, { at: Date.now(), priority: row.priority });
+    return row;
+  }
+
   private holdRoutineAgentHealth(item: AttentionItem): void {
     item.hubHeld = true;
     item.coalesced = true;

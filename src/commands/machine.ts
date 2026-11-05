@@ -21,7 +21,7 @@ import { installAgentIdentityFromPairing } from '../core/AgentIdentityHandover.j
 import path from 'node:path';
 import pc from 'picocolors';
 import { loadConfig } from '../core/Config.js';
-import { applyJoinerPairActivation, type InviterPairResponse } from '../core/sessionPoolPairActivation.js';
+import { applyJoinerPairActivation, requestPairActivationRestart, type InviterPairResponse } from '../core/sessionPoolPairActivation.js';
 import { redactUrl, redactUrlsInText } from '../core/redactUrl.js';
 import { resolveJoinDir } from '../utils/joinDir.js';
 import { gitLeaseHasNoRemote, selectLeaseMedium } from '../core/leaseMediumSelection.js';
@@ -714,6 +714,26 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         });
         if (joined.activated) {
           config = loadConfig(projectDir);
+          if (joined.telegram === 'written') {
+            try {
+              const { installTelegramRelayForJoinedMachine } = await import('./init.js');
+              installTelegramRelayForJoinedMachine(config.projectDir, config.stateDir, config.port);
+            } catch (err) {
+              console.log(pc.red(`  Sessions on this machine cannot answer on Telegram until its next update: the reply script did not install (${err instanceof Error ? err.message : String(err)}).`));
+            }
+          }
+          if (joined.peopleFilled) {
+            // A server already running here keeps its old list, and starting the unit does nothing to it.
+            console.log(pc.green('  This machine now answers only the people the first machine answers.'));
+            try {
+              requestPairActivationRestart(config.stateDir, new Date());
+            } catch (err) {
+              console.log(pc.yellow(`  Its running server keeps the old list until it next restarts (${err instanceof Error ? err.message : String(err)}).`));
+            }
+          }
+          if (joined.peopleUnchecked) {
+            console.log(pc.yellow('  This machine could not check who it should answer on Telegram. Pair it again to retry.'));
+          }
           console.log(pc.green('  Sharing is on: new conversations can start on either machine once the pair looks healthy.'));
           if (!['written', 'not-offered', 'kept-existing'].includes(joined.telegram)) {
             console.log(pc.red(`  The Telegram token did not arrive (${joined.telegram}). This machine cannot answer on Telegram.`) +

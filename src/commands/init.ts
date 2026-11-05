@@ -4188,6 +4188,17 @@ function installTelegramRelay(projectDir: string, port: number): void {
 }
 
 /**
+ * A machine that joined got Telegram after its install step, so it has no reply script and
+ * no session on it can answer. Both locations, as PostUpdateMigrator.migrateScripts keeps them.
+ */
+export function installTelegramRelayForJoinedMachine(projectDir: string, stateDir: string, port: number): void {
+  installTelegramRelay(projectDir, port);
+  const neutralDir = path.join(stateDir, 'scripts');
+  fs.mkdirSync(neutralDir, { recursive: true });
+  fs.writeFileSync(path.join(neutralDir, 'telegram-reply.sh'), loadRelayTemplate('telegram-reply.sh', port), { mode: 0o755 });
+}
+
+/**
  * Install the WhatsApp relay script that Claude uses to send responses
  * back to WhatsApp JIDs via the instar server API.
  */
@@ -4449,8 +4460,8 @@ if echo "\$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
 fi
 
 # Risky commands — behavior depends on safety level
-for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd"; do
-  if echo "\$INPUT" | grep -qi "\$pattern"; then
+for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "git +([^|;&]* +)?reset +([^|;&]* +)?--hard" "git +([^|;&]* +)?clean +([^|;&]* +)?(-[a-zA-Z]*f|--force)" "git +([^|;&]* +)?push +([^|;&]* +)?(--force|-f)([^a-zA-Z0-9-]|$)"; do
+  if echo "\$INPUT" | grep -qiE "\$pattern"; then
     if [ "\$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "\$pattern" | grep -qiE 'git push (--force|-f)'; then
       continue
     fi

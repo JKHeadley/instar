@@ -1116,10 +1116,11 @@ export class LeaseCoordinator {
     if (this.soloCaptainHoldEligible(view.epoch)) {
       this.selfIssued = renewed;
       this.markRenewOk(); // hold the SAME epoch — no re-acquire, no inflation
-      this.log(this.d.survivorMayHold?.()
-        ? 'solo-captain hold: unnamed pool, no higher epoch — held lease without medium confirm'
-        : 'solo-captain hold: preferred + all peers presumed-gone + no higher epoch — held lease without medium confirm');
       if (this.soloHoldEvidenceEpoch !== view.epoch) {
+        // Once per hold, not once per 30-second renewal: a machine can hold for days.
+        this.log(this.d.survivorMayHold?.()
+          ? 'solo-captain hold: unnamed pool, no higher epoch — held lease without medium confirm'
+          : 'solo-captain hold: preferred + all peers presumed-gone + no higher epoch — held lease without medium confirm');
         this.soloHoldEvidenceEpoch = view.epoch;
         featureEvidence.record('multiMachine.leaseSelfHeal.soloCaptainHold', {
           kind: 'fired',

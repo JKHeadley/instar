@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "slug": "evolution-retention-cap-saturation",
+  "sessionId": "2d37bcf7-8081-47bb-a9c1-db617693c32a",
+  "timestamp": "2026-11-05T11:39:04.229Z",
+  "artifactPath": "upgrades/side-effects/evolution-retention-cap-saturation.md",
+  "artifactSha256": "da60864adc1e2a45da533d481e78a275f7330af85448940a9efc689e4a8d573e",
+  "specPath": "docs/specs/evolution-retention-cap-saturation.md",
+  "coveredFiles": [
+    "docs/specs/evolution-retention-cap-saturation.eli16.md",
+    "docs/specs/evolution-retention-cap-saturation.md",
+    "src/core/EvolutionArchive.ts",
+    "src/core/EvolutionManager.ts",
+    "tests/unit/evolution-retention-cap.test.ts",
+    "upgrades/side-effects/evolution-retention-cap-saturation.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Compatibility correction within approved EVO-022 preservation contract; historical IDs must remain readable and archivable.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-compatibility-review",
+        "outcome": "concurred",
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/evolution-retention-cap-saturation-convergence.md",
+      "iterations": 5,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Archive sync durably reserves each attempt and parks after six unchanged failures; runtime ratchet checks N/2N and reconstruction."
+    },
+    "component": "EvolutionArchiveSync"
+  }
+}

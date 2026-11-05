@@ -1,3 +1,4 @@
+import ts from 'typescript';
 /**
  * Feature Delivery Completeness — ensures no gaps between init and migrate.
  *
@@ -216,6 +217,7 @@ describe('Feature Delivery Completeness', () => {
       'One Memory (replicated stores)', // multi-machine-replicated-store-foundation §7: the no-clobber union-reader + operator-resolved conflicts (/state/conflicts, /state/resolve-conflict) + origin-tagged rollback-unmerge (/state/quarantine). Full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd + migrateFrameworkShadowCapabilities markers[] (both `**`-bold and `### ` heading variants). Ships DARK (multiMachine.stateSync.<store>); a single-machine agent is a no-op.
       'Evolution action auto-expiry:', // conservative queue retention: template + existing-agent migrator + Codex/Gemini shadow parity; dry-run by default, protected actions retained, archived rows restorable.
       'Auto-expiry review ledgers:', // CMT-1118: the durable would-expire id ledgers for both auto-expiry sweeps + the tightened rules. Full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd + migrateFrameworkShadowCapabilities markers[].
+      'Evolution retention targets:', // EVO-022: full archive memory and pressure discovery, all framework shadows.
       'Auto-expiry holds and archive:', // CMT-1132: holds, the behavioral/non-pending exclusions and the restorable action archive. Full parity as above.
       'Feedback-Inbox Receiving End', // feedback-factory-migration Q2b (Option-B receiving end): the operated-instance drain-status read surface (GET /feedback-inbox/status) — "are fleet feedback reports flowing / stuck?". Full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd + migrateFrameworkShadowCapabilities markers[]. Ships DARK (feedbackFactory.receiverPersistence.enabled, operated host only, Blob token from env or vault); the route 503s when dark.
       'Feedback-Factory Processing (operated feedback factory)', // feedback-factory-migration §191: the operated-instance clustering side — GET /feedback-factory/stats (read-only counts) + POST /feedback-factory/process (one clustering pass) + the cadenced feedback-factory-process built-in job (tier-1 supervised, off by default). Full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd + migrateFrameworkShadowCapabilities markers[]. Ships DARK — dev-gated (feedbackFactory.processing): LIVE on a development agent, both routes 503 on the fleet.
@@ -544,4 +546,39 @@ describe('Feature Delivery Completeness', () => {
       expect(versionedGuides.length).toBeGreaterThan(0);
     });
   });
+});
+
+
+describe('Fleet autonomous reporting awareness parity', () => {
+  it('teaches new and existing agents the same live reporting contract', () => {
+    const heading = '## Autonomous-run silence backstop (AutonomousProgressHeartbeat)';
+    const section = renderedTemplate.split(heading)[1]?.split('\n## ')[0];
+    expect(section).toContain('Autonomous-run reporting is live on every machine');
+    expect(section).toContain('30 minutes');
+    expect(section).toContain('owner machine');
+    expect(section).not.toContain('Ships dark');
+    expect(section).not.toContain('hard cap');
+    expect(migratorSource).toContain('Autonomous-run reporting is live on every machine');
+  });
+});
+
+
+it('starts autonomous reporting independently of the intelligence provider and PromiseBeacon', () => {
+  const source = fs.readFileSync(path.join(srcDir, 'commands/server.ts'), 'utf8');
+  const file = ts.createSourceFile('server.ts', source, ts.ScriptTarget.Latest, true);
+  const initializers: ts.NewExpression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isNewExpression(node) && node.expression.getText(file) === 'AutonomousProgressHeartbeat') initializers.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  expect(initializers).toHaveLength(1);
+  let checkedBootstrap = false;
+  for (let parent: ts.Node | undefined = initializers[0].parent; parent; parent = parent.parent) {
+    if (ts.isIfStatement(parent)) expect(parent.expression.getText(file)).not.toContain('sharedIntelligence');
+    if (ts.isTryStatement(parent) && !checkedBootstrap) {
+      expect(parent.tryBlock.getText(file)).not.toContain('new PromiseBeacon');
+      checkedBootstrap = true;
+    }
+  }
 });

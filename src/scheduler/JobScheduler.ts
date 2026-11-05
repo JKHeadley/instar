@@ -1,3 +1,4 @@
+import { verifyImportedPortableJob, recordImportedPortableIntegrityFailure } from '../core/JobPortableIntegrity.js';
 /**
  * Job Scheduler — cron-based job execution engine.
  *
@@ -26,6 +27,8 @@ import { ExecutionJournal } from '../core/ExecutionJournal.js';
 import { IntegrationGate } from './IntegrationGate.js';
 import { JobReflector } from '../core/JobReflector.js';
 import { formatLoadProblem, loadJobsDetailed } from './JobLoader.js';
+import { readRecentPromotion, markPromotionSweepComplete } from '../core/roleFollowRestart.js';
+import { PromotionCatchUpStore } from './PromotionCatchUpStore.js';
 import { readAgentMdBody, rehydrateAgentMdJobFromLastValidatedBody, verifyScriptHash } from './AgentMdJobLoader.js';
 import { parseScriptOutput, capScriptOutput, type ParsedScriptRun } from './jobScriptProtocol.js';
 import { notifyScriptRunObservers, type ScriptRunObserver } from './scriptRunObservers.js';
@@ -184,6 +187,10 @@ export class JobScheduler {
   private cronTasks: Map<string, Cron> = new Map();
   private queue: QueuedJob[] = [];
   private running = false;
+  private promotionCatchUpPending = false;
+  private blockedCronDuringPromotion = new Set<string>();
+  private promotionCatchUpStore: PromotionCatchUpStore;
+  private promotionLeaseProvider: (() => { leaseEpoch: number; machineId: string; holdsLease: boolean; runOnceWitness?: boolean }) | null = null;
   private paused = false;
 
   /** Last on-disk drift fingerprint warned for each agentmd job. */
@@ -226,6 +233,8 @@ export class JobScheduler {
   /** Retry state for skipped jobs: slug → { retries, lastAttempt, timer } */
   private retryState: Map<string, { retries: number; timer: ReturnType<typeof setTimeout> }> = new Map();
   private missedJobStartupTimer: ReturnType<typeof setTimeout> | null = null;
+  private catchUpNoticeTimer: ReturnType<typeof setInterval> | null = null;
+  private catchUpAlertsInFlight = new Set<string>();
   private silenceCheckTimer: ReturnType<typeof setInterval> | null = null;
   private silenceAlertsInFlight = new Set<string>();
   private silenceAlertEpoch = new Map<string, number>();
@@ -347,6 +356,10 @@ export class JobScheduler {
   /** Cached machine-local pin evidence. Absent means no pin can activate. */
   private jobRouteEvidence: ((job: JobDefinition) => JobRouteEvidence) | null = null;
 
+  setPromotionLeaseProvider(provider: (() => { leaseEpoch: number; machineId: string; holdsLease: boolean; runOnceWitness?: boolean }) | null): void {
+    this.promotionLeaseProvider = provider;
+  }
+
   setJobRouteEvidenceProvider(provider: ((job: JobDefinition) => JobRouteEvidence) | null): void {
     this.jobRouteEvidence = provider;
   }
@@ -377,6 +390,7 @@ export class JobScheduler {
     this.skipLedger = new SkipLedger(stateDir);
     this.skipLedger.onSkip = (event) => this.observeContinuitySkip(event.slug, event.reason);
     this.runHistory = new JobRunHistory(stateDir);
+    this.promotionCatchUpStore = new PromotionCatchUpStore(stateDir);
   }
 
   /**
@@ -416,6 +430,10 @@ export class JobScheduler {
     for (const job of scopedJobs) {
       try {
         const task = new Cron(job.schedule, async () => {
+          if (this.promotionCatchUpPending) {
+            this.blockedCronDuringPromotion.add(job.slug);
+            return; // the promotion sweep owns admission until it finishes
+          }
           // New cron window — reset retry state so we get fresh attempts
           this.clearRetryState(job.slug);
           try {
@@ -780,6 +798,7 @@ export class JobScheduler {
     if (this.running) return;
 
     this.refreshJobs();
+    this.promotionCatchUpPending = readRecentPromotion(this.stateDir, Date.now(), this.promotionLeaseProvider?.()) !== null;
     this.running = true;
     this.silenceCheckTimer = setInterval(() => this.checkSilentJobs(), 5 * 60_000);
     this.silenceCheckTimer.unref?.();
@@ -815,6 +834,11 @@ export class JobScheduler {
         console.error(`[scheduler] Missed-job startup evaluation failed: ${err}`);
       });
     }
+
+    // A missed-work prompt remains durable even if messaging is unavailable at boot.
+    this.catchUpNoticeTimer = setInterval(() => this.retryUnresolvedCatchUpNotices(), 5 * 60_000);
+    this.catchUpNoticeTimer.unref?.();
+    this.retryUnresolvedCatchUpNotices();
 
     // Ensure every job has a Telegram topic (job-topic coupling)
     if (this.telegram) {
@@ -853,6 +877,8 @@ export class JobScheduler {
       this.missedJobStartupTimer = null;
     }
     this.queue = [];
+    if (this.catchUpNoticeTimer) clearInterval(this.catchUpNoticeTimer);
+    this.catchUpNoticeTimer = null;
     if (this.capacityPoll) clearInterval(this.capacityPoll);
     this.capacityPoll = null;
     // Clear all retry timers
@@ -910,6 +936,17 @@ export class JobScheduler {
         summary: `Job "${slug}" refused — disabled in the live job set`,
         timestamp: new Date().toISOString(),
         metadata: { slug, reason, gateReason: 'disabled' },
+      });
+      return 'skipped';
+    }
+
+    if (!verifyImportedPortableJob(this.stateDir, path.dirname(this.stateDir), slug)) {
+      recordImportedPortableIntegrityFailure(this.stateDir, slug);
+      this.skipLedger.recordSkip(slug, 'disabled');
+      this.state.appendEvent({ type: 'job_skipped',
+        summary: `Job "${slug}" refused — imported files no longer match local approval`,
+        timestamp: new Date().toISOString(),
+        metadata: { slug, reason, gateReason: 'portable-integrity' },
       });
       return 'skipped';
     }
@@ -1121,6 +1158,21 @@ export class JobScheduler {
       }
       if (!gatePassed) {
         this.scheduleRetry(slug, 'gate');
+        return 'skipped';
+      }
+    }
+
+    if (job.gate) {
+      try { this.refreshJobs(); } catch { return 'skipped'; }
+      const live = this.jobs.find(candidate => candidate.slug === slug);
+      if (!live || !live.enabled || this.paused || JSON.stringify(live) !== JSON.stringify(job)
+        || !verifyImportedPortableJob(this.stateDir, path.dirname(this.stateDir), slug)) {
+        recordImportedPortableIntegrityFailure(this.stateDir, slug);
+        this.skipLedger.recordSkip(slug, 'disabled');
+        this.state.appendEvent({ type: 'job_skipped',
+          summary: `Job "${slug}" refused — definition or approval changed during its gate`,
+          timestamp: new Date().toISOString(), metadata: { slug, reason, gateReason: 'post-gate-definition-changed' },
+        });
         return 'skipped';
       }
     }
@@ -3097,7 +3149,7 @@ export class JobScheduler {
     const failed = session.status === 'failed' || session.status === 'killed' || declaredFailure !== null;
     const failureError = !failed ? undefined
       : session.status === 'failed' || session.status === 'killed'
-        ? `Session ${session.status} (${session.name})${declaredFailure ? ` — declared failure: ${declaredFailure}` : ''}`
+        ? `Session ${session.status} (${session.name})${session.endedReason === 'codex-rate-limited' ? ' — Codex 429 Too Many Requests' : ''}${declaredFailure ? ` — declared failure: ${declaredFailure}` : ''}`
         : `Declared failure: ${declaredFailure}`;
 
     // Capture session output FIRST — needed for both history and notifications
@@ -3868,6 +3920,61 @@ export class JobScheduler {
     });
   }
 
+  private noticeMissedPromotionJob(slug: string, promotionId: string): void {
+    if (this.state.readOnly || this.paused) return;
+    const job = this.jobs.find(row => row.slug === slug);
+    if (!job) return;
+    const key = `promotion-catch-up-alert-${slug}`;
+    const prior = this.state.get<{ promotionId: string; attemptAt: number; deliveredAt?: number }>(key);
+    const now = Date.now();
+    if (prior?.promotionId === promotionId && now - prior.attemptAt < (prior.deliveredAt ? 24 * 60 * 60_000 : 60 * 60_000)) return;
+    if (this.catchUpAlertsInFlight.has(key)) return;
+    const summary = `Job ${slug} has a missed or uncertain occurrence after a lease takeover. Review it before choosing a manual run.`;
+    const send = this.telegram
+      ? () => this.telegram!.createAttentionItemConfirmed({ id: `promotion-catch-up-${promotionId}-${slug}`,
+          conditionKey: `promotion-catch-up-${promotionId}-${slug}`, title: `Review missed job: ${slug}`,
+          summary, description: summary, category: 'job', priority: 'HIGH', sourceContext: 'promotion-catch-up' })
+      : !this.telegram && this.messenger
+        ? () => this.messenger!.send({ userId: 'system', content: summary })
+        : null;
+    if (!send) return; // the durable catch-up journal makes the next tick retry
+    this.state.set(key, { promotionId, attemptAt: now });
+    this.catchUpAlertsInFlight.add(key);
+    void Promise.resolve().then(async () => {
+      if (this.state.readOnly || this.paused) return false;
+      await send();
+      return true;
+    }).then(delivered => {
+      if (!delivered || this.state.readOnly || this.paused) return;
+      const current = this.state.get<{ promotionId: string; attemptAt: number }>(key);
+      const jobState = this.state.getJobState(slug);
+      if (current?.promotionId === promotionId && this.promotionCatchUpStore.hasUnresolved(slug,
+        jobState?.lastResult === 'success' ? jobState.lastRun ?? undefined : undefined)) {
+        this.state.set(key, { ...current, deliveredAt: Date.now() });
+      }
+    }).catch(error => console.warn(`[scheduler] Catch-up attention failed for ${slug}:`, error))
+      .finally(() => this.catchUpAlertsInFlight.delete(key));
+  }
+
+  private retryUnresolvedCatchUpNotices(): void {
+    if (!this.running || this.paused || this.state.readOnly) return;
+    try {
+      for (const job of this.jobs) {
+        const row = this.promotionCatchUpStore.latestUnresolved(job.slug);
+        if (!row) continue;
+        const jobState = this.state.getJobState(job.slug);
+        if (this.promotionCatchUpStore.hasUnresolved(job.slug,
+          jobState?.lastResult === 'success' ? jobState.lastRun ?? undefined : undefined)) {
+          this.noticeMissedPromotionJob(job.slug, row.promotionId);
+        } else {
+          this.state.delete(`promotion-catch-up-alert-${job.slug}`);
+          this.telegram?.clearAttentionCondition({ conditionKey: `promotion-catch-up-${row.promotionId}-${job.slug}` },
+            'Job completed successfully');
+        }
+      }
+    } catch (error) { console.warn('[scheduler] Could not retry promotion catch-up notices:', error); }
+  }
+
   private async checkMissedJobs(enabledJobs: JobDefinition[]): Promise<void> {
     const now = Date.now();
 
@@ -3929,15 +4036,61 @@ export class JobScheduler {
       return b.overdueRatio - a.overdueRatio;
     });
 
-    for (const { job } of missedJobs) {
-      try {
-        await this.triggerJob(job.slug, 'missed');
-      } catch (err) {
-        // A demotion can occur after triggerJob's entry check but before a gate
-        // or spawn path records shared bookkeeping. The StateManager refusal is
-        // authoritative; contain it per job so one raced trigger cannot abort
-        // evaluation of the rest or escape the startup callback.
-        console.error(`[scheduler] Missed trigger failed for "${job.slug}": ${err}`);
+    const promotion = readRecentPromotion(this.stateDir, now, this.promotionLeaseProvider?.());
+    let sweepComplete = false;
+    try {
+      for (const { job } of missedJobs) {
+        if (!promotion && this.promotionCatchUpStore.hasUnresolved(job.slug,
+          this.state.getJobState(job.slug)?.lastResult === 'success'
+            ? this.state.getJobState(job.slug)?.lastRun ?? undefined : undefined)) {
+          const prior = this.promotionCatchUpStore.latestBlocked(job.slug);
+          if (prior && prior.status !== 'skip') this.noticeMissedPromotionJob(job.slug, prior.promotionId);
+          continue;
+        }
+        if (promotion) {
+          if (!this.promotionCatchUpStore.isHealthy()) {
+            this.noticeMissedPromotionJob(job.slug, promotion.id);
+            continue; // corrupt journal is unknown, never a fresh automatic request
+          }
+          if (this.promotionCatchUpStore.get(promotion.id, job.slug)) continue;
+          const policy = promotion.verified && (job.catchUpPolicy !== 'run-once' || this.promotionLeaseProvider?.().runOnceWitness === true)
+            ? job.catchUpPolicy ?? 'ask' : 'ask';
+          if (policy === 'skip' || policy === 'ask') {
+            this.promotionCatchUpStore.record(promotion.id, job.slug, policy);
+            if (policy === 'ask') this.noticeMissedPromotionJob(job.slug, promotion.id);
+            continue;
+          }
+          if (!this.promotionCatchUpStore.record(promotion.id, job.slug, 'requested')) continue;
+        }
+        try {
+          const result = await this.triggerJob(job.slug, promotion ? 'promotion-catch-up' : 'missed');
+          if (promotion) {
+            this.promotionCatchUpStore.record(promotion.id, job.slug, result === 'triggered' ? 'triggered' : 'uncertain');
+            if (result !== 'triggered') this.noticeMissedPromotionJob(job.slug, promotion.id);
+          }
+        } catch (err) {
+          if (promotion) {
+            this.promotionCatchUpStore.record(promotion.id, job.slug, 'uncertain');
+            this.noticeMissedPromotionJob(job.slug, promotion.id);
+          }
+          console.error(`[scheduler] Missed trigger failed for "${job.slug}": ${err}`);
+        }
+      }
+      sweepComplete = true;
+    } finally {
+      this.promotionCatchUpPending = false;
+      for (const slug of this.blockedCronDuringPromotion) {
+        if (promotion && !this.promotionCatchUpStore.isHealthy()) {
+          this.noticeMissedPromotionJob(slug, promotion.id);
+        } else if (promotion && !this.promotionCatchUpStore.get(promotion.id, slug)) {
+          this.promotionCatchUpStore.record(promotion.id, slug, 'ask');
+          this.noticeMissedPromotionJob(slug, promotion.id);
+        }
+      }
+      this.blockedCronDuringPromotion.clear();
+      if (promotion && sweepComplete && this.promotionCatchUpStore.isHealthy()) {
+        try { markPromotionSweepComplete(this.stateDir, promotion.id, now); }
+        catch (error) { console.warn('[scheduler] Could not consume promotion sweep:', error); }
       }
     }
   }

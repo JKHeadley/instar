@@ -118,6 +118,10 @@ describe('native console pages — production wiring', () => {
     }
     const file = await phone.send('GET', '/mobile/files/read?path=notes.md');
     expect(file.body).toMatchObject({ state: 'ok', text: 'Hello from the disk\n', cut: false });
+    fs.writeFileSync(path.join(dir, 'data.json'), '{"value":"stays-on-the-machine"}');
+    const data = await phone.send('GET', '/mobile/files/read?path=data.json');
+    expect(data.body).toMatchObject({ state: 'console-only', line: 'Open this one in the console.' });
+    expect(JSON.stringify(data.body)).not.toContain('stays-on-the-machine');
     expect((await phone.send('GET', '/mobile/files/read?path=keys%2Fa.txt')).body.state).toBe('refused');
     expect((await phone.send('GET', '/mobile/files/read?path=.env')).body.state).not.toBe('ok');
     expect((await phone.send('GET', '/mobile/files/read?path=..%2F..%2Fetc%2Fpasswd')).body.state).toBe('refused');

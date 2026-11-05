@@ -66,6 +66,7 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/mobile/messages'],
       ['GET', '/mobile/insights'],
       ['GET', '/mobile/secrets'],
+      ['GET', '/mobile/health-issues'],
       ['GET', '/mobile/ideas'],
       ['GET', '/mobile/pace'],
       ['GET', '/mobile/development'],

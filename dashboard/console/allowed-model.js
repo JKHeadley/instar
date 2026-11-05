@@ -147,6 +147,7 @@ function guardRow(g, machine, local) {
     main: g.criticalPath ? `${g.criticalPath}` : humanKey(g.key),
     sub: [guardWord(g), machine.name].filter(Boolean).join(' · '),
     end: '',
+    // warning-path: row
     tone: look ? 'attn' : g.loadBearingAccepted ? 'unknown' : undefined,
     local, machine: machine.name, where: machine.name || machine.here || 'this machine', needsLook: look, record: g, actions: guardActions(g, local),
   };
@@ -403,6 +404,7 @@ export function canUndoOff(f) { return !needsConsent(f.tier); }
 export function facts({ profile, guards, features, suggestions }) {
   const out = [];
   if (profile && profile.ok) out.push({ n: PROFILE_LABEL[profile.profile], label: 'profile' });
+  // warning-path: inline
   if (guards && guards.ok && guards.counts.look) out.push({ n: guards.counts.look, label: guards.counts.look === 1 ? 'check needs a look' : 'checks need a look', tone: 'attn', href: '#/settings/allowed?s=guards' });
   if (features && features.ok) out.push({ n: `${features.on} of ${features.total}`, label: 'features on', href: '#/settings/allowed?s=features' });
   if (suggestions && suggestions.ok && suggestions.items.length) out.push({ n: suggestions.items.length, label: suggestions.items.length === 1 ? 'suggestion' : 'suggestions' });

@@ -132,6 +132,18 @@ describe('owner phone', () => {
     expect(asked).toEqual(['/api/files/read?path=CLAUDE.md']);
   });
 
+  it('a config or data file is named but not read, whatever it resolves to', async () => {
+    const c = setup({ resolve: async (p) => (p === 'link.md' ? 'data.json' : p) });
+    asked.length = 0;
+    for (const p of ['data.json', 'app.yml', 'Dockerfile', 'link.md']) {
+      const r = await signedGet(c, `/mobile/files/read?path=${p}`);
+      expect(r.body.state, p).toBe('console-only');
+      expect(r.body.line).toBe('Open this one in the console.');
+      expect(r.body.text, p).toBeUndefined();
+    }
+    expect(asked).toEqual([]);
+  });
+
   it('a path that is not one string is refused, and read needs a path', async () => {
     const c = setup();
     expect((await signedGet(c, '/mobile/files?path=a&path=b')).status).toBe(400);
