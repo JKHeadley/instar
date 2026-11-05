@@ -66,7 +66,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     key: 'memoryPrivacy',
     prefixes: ['/memory-privacy'],
     description: 'Whether memory is kept per person and per place on this agent, who the owner is, and whether the sandbox runs here.',
-    build: () => ({ configured: true, endpoints: ['GET /memory-privacy'] }),
+    build: () => ({ configured: true, endpoints: ['GET /memory-privacy', 'GET /memory-privacy/fix/:token', 'POST /memory-privacy/fix/:token'] }),
   },
   {
     key: 'capabilityRegistry',
@@ -163,7 +163,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'remoteDesktop',
     prefixes: ['/desktop'],
-    description: 'Native operator remote desktop on the registered machine pool. The operator opens the designated front at /dashboard/desktop.html, enters the existing dashboard PIN, chooses a ready target, and can Stop immediately. A target may be online even when its screen helper lacks a GUI session, display, or permission. The PIN proves dashboard credential possession, not independent human identity. Locked-screen access is off everywhere until a macOS version has recorded crash and Stop proofs: GET /desktop/locked/status reads it (?scope=pool for every machine), POST /desktop/locked/settings is the PIN route, and POST /desktop/locked/disable stops it. Registry First: GET /desktop/diagnostics reports this machine’s own probe signals with Bearer auth, including whether a Mac permission belongs to the helper itself (screenGrant/inputGrant: own) or only to what started the process tree (inherited); POST /desktop/request-permission shows macOS’s prompts to a person at that Mac and grants nothing itself; GET /desktop/availability reports the designated front’s local admission, and the PIN-scoped front /desktop/targets lists the pool.',
+    description: 'Native operator remote desktop on the registered machine pool. The operator opens the designated front at /dashboard/desktop.html, enters the existing dashboard PIN, chooses a ready target, and can Stop immediately. A target may be online even when its screen helper lacks a GUI session, display, or permission. The PIN proves dashboard credential possession, not independent human identity. Locked-screen access is off everywhere until a macOS version has recorded crash and Stop proofs: GET /desktop/locked/status reads it (?scope=pool for every machine; passwordReadiness names, per client, why a password could not be typed once locked, null meaning ready), POST /desktop/locked/settings is the PIN route, and POST /desktop/locked/disable stops it. Registry First: GET /desktop/diagnostics reports this machine’s own probe signals with Bearer auth, including whether a Mac permission belongs to the helper itself (screenGrant/inputGrant: own) or only to what started the process tree (inherited); POST /desktop/request-permission shows macOS’s prompts to a person at that Mac and grants nothing itself; GET /desktop/availability reports the designated front’s local admission, and the PIN-scoped front /desktop/targets lists the pool.',
     build: ({ ctx }) => ({
       configured: !!ctx.directDesktopAccess,
       endpoints: ['GET /desktop/setup', 'GET /desktop/setup/:machineId', 'POST /desktop/setup/:machineId',

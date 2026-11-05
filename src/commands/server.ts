@@ -5,8 +5,8 @@
  */
 import { configureClaudeChildAuth, sweepClaudeAuthEnvFiles } from '../core/claudeChildAuth.js';
 import { SlackPrincipalResolver } from '../permissions/SlackPrincipalResolver.js';
-import { MEMORY_PRIVACY_UNAVAILABLE_REPLY } from '../users/MemoryInboundTracker.js';
-import { whatsappPersonKey } from '../users/MemoryAudience.js';
+import type { InboundFacts } from '../users/MemoryInboundTracker.js';
+import { whatsappPersonKey, whatsappSpeakerJid } from '../users/MemoryAudience.js';
 import { slackHistoryLabel } from '../messaging/slack/threadHistoryLabel.js';
 import { readPairingOwnerName } from '../threadline/pairingOwnerName.js';
 import { buildThrowawayJobGuard, checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
@@ -60,6 +60,7 @@ import { setAspClassifierRef, getAspClassifierRef } from '../core/aspClassifierR
 import { resolveInboundTelegramMessageId, resolveSignedByAgent, operatorAutoBindPermitted } from '../messaging/shared/signedInbound.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { StandDownRegistry } from '../core/StandDownRegistry.js';
+import { ensureDashboardPin, persistDashboardPin, pickDashboardPin } from '../core/dashboardPin.js';
 import { getActiveOverloadShedPlanner, getMoveAftercare } from '../core/OverloadShedPlanner.js';
 import { QuietTopicScanner, type RunningTopicSession } from '../core/quietTopicScanner.js';
 import { RebalanceProofRunner, getActiveRebalanceProof, waitForSettledIdle, proofSpawnBrief, setActiveRebalanceProof, setActiveRebalanceProofStore, type ProofHistoryRow } from '../core/rebalanceProof.js';
@@ -490,9 +491,11 @@ async function handleFixCommand(topicId: number, text: string, deps: FixCommandD
   }
 
   if (cmd === 'fix dashboard') {
-    const existing = deps.liveConfig.get<string>('dashboardPin', '');
-    if (existing) {
-      await send(`Your dashboard already has a PIN: ${existing}`);
+    // A vault-backed config holds {secret:true}; resolve it rather than print an object.
+    const stored = deps.liveConfig.get<unknown>('dashboardPin', '');
+    if (stored) {
+      const existing = pickDashboardPin(stored, deps.config.stateDir);
+      await send(existing ? `Your dashboard already has a PIN: ${existing}` : 'Your dashboard already has a PIN, kept in its secret store.');
       return true;
     }
     const pin = String(randomInt(100000, 1000000));
@@ -731,6 +734,8 @@ let _topicProfileCtxRef: {
 let _inboundQueue: import('../core/QueueDrainLoop.js').QueueDrainLoop | null = null;
 /** Memory privacy (docs/specs/memory-privacy.md): set in startServer, read at every inbound. */
 let _memoryInbound: import('../users/MemoryInboundTracker.js').MemoryInboundTracker | null = null;
+/** The tunnel's address for a path, once a tunnel exists. The tunnel starts after memory privacy. */
+let _memoryLinkFor: ((urlPath: string) => string | null) | null = null;
 function telegramConfiguredForMemory(config: { messaging?: Array<{ type: string }> }): boolean {
   return (config.messaging ?? []).some((m) => m.type === 'telegram');
 }
@@ -2647,16 +2652,21 @@ export function wireTelegramRouting(
 
     // Memory privacy: record who spoke and re-check the group's readers BEFORE routing.
     if (_memoryInbound) {
-      const verdict = await _memoryInbound.onInbound({
+      const memoryFacts: InboundFacts = {
         placeKey: telegram.memoryPlaceKey,
         placeKind: 'shared',
         senderKey: resolvedUser ? `user:${resolvedUser.id}` : telegramUserId ? `telegram:${telegramUserId}` : null,
         personId: resolvedUser?.id ?? null,
         readerCount: () => telegram.groupReaderCount(),
         liveSession: () => telegram.getSessionForTopic(topicId),
-      });
+      };
+      const verdict = await _memoryInbound.onInbound(memoryFacts);
       if (verdict === 'unavailable') {
-        await telegram.sendToTopic(topicId, MEMORY_PRIVACY_UNAVAILABLE_REPLY);
+        await telegram.sendToTopic(topicId, await _memoryInbound.refuse(memoryFacts, async (text) => {
+          // This DM has one fixed recipient, so it goes only when that is who asked.
+          if (!telegramUserId || telegram.getOwnerUserId() !== telegramUserId) return false;
+          return (await telegram.sendToOwnerDM(text)) !== null;
+        }));
         return;
       }
     }
@@ -3553,16 +3563,22 @@ async function whatsappMemoryCheck(
   metadata: Record<string, unknown> | undefined,
 ): Promise<boolean> {
   if (!_memoryInbound) return true;
-  const profile = _memoryUserResolver?.channel('whatsapp', jid) ?? null;
-  const verdict = await _memoryInbound.onInbound({
+  const senderJid = whatsappSpeakerJid(metadata, jid);
+  const profile = _memoryUserResolver?.channel('whatsapp', senderJid) ?? null;
+  const memoryFacts: InboundFacts = {
     placeKey: `whatsapp:${jid}`,
     placeKind: jid.endsWith('@g.us') ? 'shared' : 'private',
-    senderKey: profile ? `user:${profile.id}` : whatsappPersonKey((metadata?.senderJid as string | undefined) ?? jid),
+    senderKey: profile ? `user:${profile.id}` : whatsappPersonKey(senderJid),
     personId: profile?.id ?? null,
     liveSession: () => whatsapp.getSessionForChannel(jid),
-  });
+  };
+  const verdict = await _memoryInbound.onInbound(memoryFacts);
   if (verdict === 'deliver') return true;
-  await whatsapp.send({ userId: jid, content: MEMORY_PRIVACY_UNAVAILABLE_REPLY, channel: { type: 'whatsapp', identifier: jid } });
+  const content = await _memoryInbound.refuse(memoryFacts, async (text) => {
+    await whatsapp.send({ userId: senderJid, content: text, channel: { type: 'whatsapp', identifier: senderJid } });
+    return true;
+  });
+  await whatsapp.send({ userId: jid, content, channel: { type: 'whatsapp', identifier: jid } });
   return false;
 }
 
@@ -3770,16 +3786,17 @@ function wireIMessageRouting(
     // with imsg, which the sandbox cannot give, so a scoped session is refused here.
     if (_memoryInbound) {
       const imProfile = _memoryUserResolver?.channel('imessage', sender) ?? null;
-      const verdict = await _memoryInbound.onInbound({
+      const memoryFacts: InboundFacts = {
         placeKey: `imessage:${senderNorm}`,
         placeKind: 'private',
         senderKey: imProfile ? `user:${imProfile.id}` : `imessage:${sender}`,
         personId: imProfile?.id ?? null,
         scopedUnsupported: true,
         liveSession: () => imessage.getSessionForSender(sender),
-      });
+      };
+      const verdict = await _memoryInbound.onInbound(memoryFacts);
       if (verdict === 'unavailable') {
-        await imessage.send({ userId: sender, content: MEMORY_PRIVACY_UNAVAILABLE_REPLY, channel: { type: 'imessage', identifier: sender } });
+        await imessage.send({ userId: sender, content: await _memoryInbound.refuse(memoryFacts), channel: { type: 'imessage', identifier: sender } });
         return;
       }
     }
@@ -6924,6 +6941,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       projectName: config.projectName,
       framework: () => sessionManagerConfig.framework ?? 'claude-code',
       claudePath: sessionManagerConfig.frameworkBinaryPaths?.['claude-code'] ?? sessionManagerConfig.claudePath,
+      linkFor: (urlPath) => _memoryLinkFor?.(urlPath) ?? null,
       memoryPrivacy: () => (config as { memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacyConfig }).memoryPrivacy,
       messaging: () => (config.messaging ?? []) as Array<{ type: string; config?: Record<string, unknown> }>,
       initialUsers: config.users,
@@ -10189,16 +10207,21 @@ export async function startServer(options: StartOptions): Promise<void> {
           // a channel or thread is shared, and a thread's audience is its channel's.
           if (_memoryInbound) {
             const slackProfile = slackUserId ? _memoryUserResolver?.slack(slackUserId) ?? null : null;
-            const verdict = await _memoryInbound.onInbound({
+            const memoryFacts: InboundFacts = {
               placeKey: `slack:${channelId}`,
               placeKind: channelId.startsWith('D') ? 'private' : 'shared',
               senderKey: slackProfile ? `user:${slackProfile.id}` : slackUserId ? `slack:${slackUserId}` : null,
               personId: slackProfile?.id ?? null,
               readerCount: () => slackAdapter!.channelReaderCount(channelId),
               liveSession: () => slackAdapter!.getSessionForChannel(routingKey),
-            });
+            };
+            const verdict = await _memoryInbound.onInbound(memoryFacts);
             if (verdict === 'unavailable') {
-              await slackAdapter!.sendToChannel(channelId, MEMORY_PRIVACY_UNAVAILABLE_REPLY, replyThreadTs ? { thread_ts: replyThreadTs } : undefined);
+              // Posting to a user id opens the app's direct message with them.
+              const reply = await _memoryInbound.refuse(memoryFacts, slackUserId
+                ? async (text) => { await slackAdapter!.sendToChannel(slackUserId, text); return true; }
+                : undefined);
+              await slackAdapter!.sendToChannel(channelId, reply, replyThreadTs ? { thread_ts: replyThreadTs } : undefined);
               return 'refused';
             }
           }
@@ -13780,6 +13803,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (!config.tunnel) {
         liveConfig.set('tunnel', { enabled: true, type: 'quick' });
       }
+      _memoryLinkFor = (urlPath) => tunnel?.getExternalUrl(urlPath) ?? null;
       tunnel = new TunnelManager({
         enabled: true,
         type: config.tunnel?.type || 'quick',
@@ -32291,6 +32315,17 @@ export async function startServer(options: StartOptions): Promise<void> {
       );
     }
 
+    // Every agent gets a dashboard PIN, with or without Telegram: the PIN
+    // gates every dashboard operator route, and an agent must work without
+    // Telegram. An existing PIN (or an unresolved vault reference) is kept.
+    // Runs before the Telegram dashboard broadcast below, which reads config.dashboardPin.
+    const pinStore: { at: 'vault' | 'config' } = { at: 'config' };
+    if (ensureDashboardPin(config, pin => {
+      pinStore.at = persistDashboardPin(config.stateDir, pin, value => liveConfig.set('dashboardPin', value));
+    }).generated) {
+      console.log(pc.green(`  Auto-generated a dashboard PIN (stored in this agent's ${pinStore.at === 'vault' ? 'secret store' : 'config'})`));
+    }
+
     // ── Dashboard Topic: always-available link ──────────────────────────
     // Retroactive: creates the topic on first run for existing agents.
     // Posts tunnel URL + PIN and pins the message for instant access.
@@ -32299,17 +32334,6 @@ export async function startServer(options: StartOptions): Promise<void> {
         const dashTopicId = await telegram.ensureDashboardTopic();
         if (dashTopicId) {
           console.log(pc.green(`  Dashboard topic: ${dashTopicId}`));
-
-          // Auto-generate dashboardPin if missing — do this on every startup,
-          // not just during upgrades. The PIN should always exist.
-          if (!config.dashboardPin) {
-            const { randomInt } = await import('node:crypto');
-            const pin = String(randomInt(100000, 1000000)); // 6-digit
-            config.dashboardPin = pin;
-            // Persist via LiveConfig so it survives restart
-            liveConfig.set('dashboardPin', pin);
-            console.log(pc.green(`  Auto-generated dashboard PIN: ${pin}`));
-          }
 
           // Wire the tunnel's two-channel notifier to telegram now that
           // both telegram + Dashboard topic exist. Per
@@ -32320,8 +32344,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           // at compose time so the notifier never holds stale credentials.
           if (tunnel) {
             tunnel.attachTelegram(telegram, () => {
-              const live = liveConfig.get<string>('dashboardPin', '');
-              return live || config.dashboardPin;
+              // A vault-backed config holds {secret:true}; resolve it to the real PIN.
+              return pickDashboardPin(liveConfig.get<unknown>('dashboardPin', ''), config.stateDir)
+                ?? pickDashboardPin(config.dashboardPin, config.stateDir) ?? '';
             });
           }
 

@@ -85,7 +85,8 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       if (state.commitmentId) deps.withdrawCommitment(state.commitmentId, 'The owner said no.');
       updateSetupState(deps.stateDir, service, {
         sessionName: stopped ? undefined : state.sessionName, commitmentId: undefined, verified: undefined,
-        alreadyHeld: undefined, attempts: undefined, lastAttemptAt: undefined, exhausted: undefined, dormant: undefined, keyStoredBySetup: undefined,
+        // keyStoredBySetup stays: the key itself stays after a no, so a later yes can still replace one that has died.
+        alreadyHeld: undefined, attempts: undefined, lastAttemptAt: undefined, exhausted: undefined, dormant: undefined,
       });
       deps.clearStuck(service);
     } catch (err) {
