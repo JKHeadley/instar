@@ -5,7 +5,8 @@
  *                         on this machine, the key NAMES the agent holds, whether its vault opens and
  *                         whether keys sync. `?scope=local` is this machine only (how a peer is read).
  *
- * Read-only. A paired OWNER phone (device-signed; DEVICE_ALLOWLIST lists exactly this path, `ownerOnly`)
+ * This route is read-only (the phone's ask and cancel are in mobilePermissionsRoutes.ts, behind Face ID,
+ * and run `askForSecret` / `cancelSecretByKey` below). A paired OWNER phone (device-signed; DEVICE_ALLOWLIST lists exactly this path, `ownerOnly`)
  * or the agent's bearer token may read it; anything else gets 403 `owner-phone-required`.
  *
  * Built from an explicit field allowlist. Never in the answer: a value, a value's length, a Secret Drop
@@ -35,7 +36,7 @@ const iso = (t: number): string | null => (dated(t) ? new Date(t).toISOString() 
 const plural = (n: number, one: string, many?: string): string => `${n} ${n === 1 ? one : (many ?? `${one}s`)}`;
 
 /** Anything shaped like a token (a hex run, a UUID, a long opaque run) is withheld and only counted. */
-const TOKEN_RUN = /[0-9a-fA-F]{16,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-|[A-Za-z0-9+/_-]{32,}/;
+export const TOKEN_RUN = /[0-9a-fA-F]{16,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-|[A-Za-z0-9+/_-]{32,}/;
 /** Free text for the phone: cleaned, and with anything token-shaped replaced by words. */
 function plain(v: unknown, max: number): string | null {
   const s = cleanText(v, max * 2);
@@ -229,7 +230,47 @@ export interface MobileSecretsDeps {
   nicknameOf: (id: string) => string | null;
   topicName: (id: number) => string | null | undefined;
   bearerOk: (req: Request) => boolean;
+  /** What this caller could do here, shown before any button (the permission reads' `actionsState`). */
+  actions?: (req: Request) => unknown;
   now?: () => number;
+}
+
+// ── the phone's writes (docs/specs/mobile-native-secrets-writes.md) ─────────
+
+/** How long a request made from the phone stays open: the longest the console offers, as the link is collected separately. */
+export const PHONE_REQUEST_TTL_MS = 3_600_000;
+
+/** The part of SecretDrop the writes use. */
+export interface SecretDropWrites {
+  create: (o: { label: string; description?: string; topicId?: number; ttlMs: number }) => { token: string };
+  cancel: (token: string) => boolean;
+  listPending: () => Array<{ token: string; label: string; expiresAt: number; expired: boolean }>;
+}
+
+export interface SecretWriteResult { status: number; body: unknown }
+
+/** Make one request. The token stays here: the answer names it only by its one-way key. */
+export function askForSecret(drop: SecretDropWrites, label: string, note: string, topicId: number | null, now: number): SecretWriteResult {
+  const same = label.trim().toLowerCase();
+  if (drop.listPending().some((p) => p.expired !== true && p.expiresAt > now && p.label.trim().toLowerCase() === same)) {
+    return { status: 409, body: { error: 'already-waiting', detail: 'A request with this name is already waiting. Its link is in the console. To start again, cancel it first.' } };
+  }
+  let token: string;
+  try {
+    ({ token } = drop.create({ label, ...(note ? { description: note } : {}), ...(topicId !== null ? { topicId } : {}), ttlMs: PHONE_REQUEST_TTL_MS }));
+  } catch (err) {
+    // Anything but the pending cap goes up to the route's reported failure.
+    if (!(err instanceof Error) || !err.message.startsWith('Too many pending')) throw err;
+    return { status: 429, body: { error: 'too-many-requests', detail: 'Too many requests are waiting. Cancel one first.' } };
+  }
+  return { status: 201, body: { ok: true, key: rowKey('secret-request', token), expiresAt: new Date(now + PHONE_REQUEST_TTL_MS).toISOString() } };
+}
+
+/** Cancel the request behind a one-way key, on this machine only. */
+export function cancelSecretByKey(drop: SecretDropWrites, key: string): SecretWriteResult {
+  const row = drop.listPending().find((p) => rowKey('secret-request', p.token) === key);
+  if (!row || !drop.cancel(row.token)) return { status: 404, body: { error: 'request-gone', detail: 'That request is already gone.' } };
+  return { status: 200, body: { ok: true } };
 }
 
 function reportReadFailure(route: string, err: unknown): void {
@@ -288,7 +329,7 @@ export function mountMobileSecretsRoutes(router: Router, deps: MobileSecretsDeps
       let offline: string[] = [];
       let peersRead = true;
       try { peers = await deps.peers(); offline = deps.offlineMachineIds(); } catch (err) { peersRead = false; reportReadFailure('other machines', err); }
-      res.json({ ...head, ...mergeSecrets(self, peers, { nicknameOf: deps.nicknameOf, offlineMachineIds: offline, peersRead }) });
+      res.json({ ...head, ...(deps.actions ? { actions: deps.actions(req) } : {}), ...mergeSecrets(self, peers, { nicknameOf: deps.nicknameOf, offlineMachineIds: offline, peersRead }) });
     } catch (err) {
       reportReadFailure('GET /mobile/secrets', err);
       res.status(500).json({ error: 'secrets-unavailable' });

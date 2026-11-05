@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "mobile-native-console-pages",
+  "sessionId": "501849a3-8fc5-483e-b8f2-b09fce0f4d96",
+  "timestamp": "2026-11-05T09:28:28.170Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-console-pages.md",
+  "artifactSha256": "f3c660aeca273cb96bcad1cb147ca69691c3f4307d8e82967b0cfc46cfe6537a",
+  "specPath": "docs/specs/mobile-native-console-pages.md",
+  "coveredFiles": [
+    "src/server/mobileConsolePagesRoutes.ts",
+    "src/server/routes.ts",
+    "upgrades/side-effects/mobile-native-console-pages.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Annotation only, on the reviewed routes.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Comments and formatting only."
+  }
+}

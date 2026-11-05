@@ -728,7 +728,7 @@ export class SlackAdapter implements MessagingAdapter {
   async sendToChannel(
     channelId: string,
     text: string,
-    options?: { thread_ts?: string; formatMode?: SlackFormatMode; originFooter?: string },
+    options?: { thread_ts?: string; formatMode?: SlackFormatMode; nativeReferences?: string[]; originFooter?: string },
   ): Promise<string> {
     const parsed = this.parseRoutingKey(channelId);
     const params: Record<string, unknown> = { channel: parsed.channelId, text };
@@ -737,6 +737,7 @@ export class SlackAdapter implements MessagingAdapter {
     // Per-call formatter opt-out for callers that already author mrkdwn
     // (stripped from params inside the formatting funnel, never sent to Slack).
     if (options?.formatMode) params._formatMode = options.formatMode;
+    if (options?.nativeReferences?.length) params._nativeReferences = options.nativeReferences;
     if (options?.originFooter) params._originFooter = options.originFooter;
     const result = await this.formattedApiCall('chat.postMessage', params);
     return result.ts as string;
@@ -1680,6 +1681,7 @@ export class SlackAdapter implements MessagingAdapter {
         threadTs: threadTs,
         channelId,
         isDM,
+        inboundFilePaths: filePaths,
       },
     };
 
@@ -1794,6 +1796,7 @@ export class SlackAdapter implements MessagingAdapter {
     // Download and process the file
     const ts = `file-${fileId}-${Date.now()}`;
     let cleanText = '';
+    let inboundFilePath: string | null = null;
 
     try {
       const isImage = mimetype.startsWith('image/');
@@ -1801,6 +1804,7 @@ export class SlackAdapter implements MessagingAdapter {
       const destName = `${isImage ? 'photo' : isAudio ? 'voice' : 'file'}-${Date.now()}-${fileId}.${filename.split('.').pop() ?? 'bin'}`;
       const destPath = path.join(this.fileHandler.downloadDir, destName);
       const savedPath = await this.fileHandler.downloadFile(url, destPath);
+      inboundFilePath = savedPath;
       let keptAs: SlackInboundMedia['declaredKind'] = 'file';
 
       if (isImage) {
@@ -1877,6 +1881,7 @@ export class SlackAdapter implements MessagingAdapter {
         ts,
         channelId,
         isDM,
+        inboundFilePaths: inboundFilePath ? [inboundFilePath] : [],
       },
     };
 
@@ -2777,4 +2782,3 @@ export function reportBotOnlyAuthorization(authorizedUserIds: readonly string[],
   });
   return true;
 }
-

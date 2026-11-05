@@ -176,9 +176,6 @@ describe('RebalanceProofRunner: nothing recorded unless a move started', () => {
       expect(await run(rig({ ...viaHolder('forwarded'), sendProbe }))).toMatchObject({ state: 'green' });
       expect(sendProbe).not.toHaveBeenCalled();
     });
-    it('a holder that queues the probe is still red', async () => {
-      expect(await run(rig(viaHolder('queued')))).toMatchObject({ state: 'red', reason: 'probe-queued' });
-    });
     it('a holder that refuses is red, named', async () => {
       expect(await run(rig(viaHolder('not-the-lease-holder', null)))).toMatchObject({ state: 'red', reason: 'probe-not-the-lease-holder' });
     });
@@ -347,5 +344,21 @@ describe('who wrote a reply', () => {
     const block = src.slice(at, at + 6000);
     expect(block).toContain('scope=pool&includeOrigin=1');
     expect(block).toContain('machineName: (id) =>');
+  });
+});
+
+describe('a probe the holder queued', () => {
+  it('counts as reached through the holder: the reply decides', async () => {
+    expect(await run(rig({ probeViaHolder: async () => ({ action: 'queued', holder: 'm_holder' }) }))).toMatchObject({ state: 'green' });
+  });
+
+  it('with no reply it is red as no-reply, not a pass', async () => {
+    const r = rig({ probeViaHolder: async () => ({ action: 'queued', holder: 'm_holder' }), rows: [] });
+    expect(await run(r)).toMatchObject({ state: 'red', reason: 'no-reply' });
+  });
+
+  it('queued on this machine, with no holder route, stays red', async () => {
+    const r = rig({ probeViaHolder: async () => null, sendProbe: async () => 'queued' });
+    expect(await run(r)).toMatchObject({ state: 'red', reason: 'probe-queued' });
   });
 });

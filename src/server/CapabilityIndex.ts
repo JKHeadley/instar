@@ -28,6 +28,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { browserCapability } from '../core/linuxBrowserProvision.js';
 import { activeAutonomousJobs, DEFAULT_MAX_CONCURRENT_AUTONOMOUS } from '../core/AutonomousSessions.js';
 import type { SecretDrop } from './SecretDrop.js';
 import type { RouteContext } from './routes.js';
@@ -458,6 +459,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobileSecretsWrites',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Ask for a password or key and cancel a request from the Instar iPhone app (docs/specs/mobile-native-secrets-writes.md): POST /mobile/secrets/requests and POST /mobile/secrets/requests/<key>/cancel. Owner phone only, each confirmed with Face ID over a single-use challenge, behind mobilePairing.permissionActions. The phone never receives the token or the Secret Drop link; the link is collected in the console.',
+    build: () => ({
+      configured: true,
+      endpoints: ['POST /mobile/secrets/requests', 'POST /mobile/secrets/requests/:key/cancel'],
+    }),
+  },
+  {
     key: 'mobilePermissionsScreens',
     // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
     prefixes: [],
@@ -475,6 +486,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({
       configured: true,
       endpoints: ['GET /mobile/proposals', 'GET /mobile/inside'],
+    }),
+  },
+  {
+    key: 'mobileConsolePagesScreens',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Native Ideas, Pace, Development, Maturation and Files screens for the Instar iPhone app (docs/specs/mobile-native-console-pages.md): read-only, owner phone or bearer, each built from the console route it mirrors.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/ideas', 'GET /mobile/pace', 'GET /mobile/development', 'GET /mobile/maturation', 'GET /mobile/files', 'GET /mobile/files/read'],
     }),
   },
   {
@@ -773,6 +794,18 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     },
   },
   {
+    key: 'browser',
+    prefixes: ['/browser'],
+    description: 'The browser this agent always has: ready, installing, not-built or broken, each with a next step',
+    build: ({ ctx }) => ({
+      ...browserCapability(ctx.config.stateDir),
+      endpoints: [
+        'GET /browser/state — this machine\'s browser state and next step; check it before saying a browser task cannot be done',
+        'POST /browser/linux/install — after the operator says yes, install the driver\'s packages on this machine',
+      ],
+    }),
+  },
+  {
     key: 'secrets',
     prefixes: ['/secrets'],
     description:
@@ -790,7 +823,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'DELETE /secrets/pending/:token — cancel a pending request',
       ],
       retrievalHint:
-        'ALWAYS retrieve via `node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name` (use `--names` to discover fields). It streams the value to stdout and NEVER prints the response body. Raw curl against /secrets/retrieve dumps the secret into the Bash tool transcript — do not use it.',
+        'A website password for the agent\'s Linux Chrome: request it with `browserHost` (shown on the form), then, with the password box focused, `XD_PROFILE=<id> node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name --browser`; it goes straight into the box, is not stored, and nothing else can read it. Otherwise ALWAYS retrieve via `node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name` (use `--names` to discover fields). It streams the value to stdout and NEVER prints the response body. Raw curl against /secrets/retrieve dumps the secret into the Bash tool transcript — do not use it.',
     }),
   },
   {

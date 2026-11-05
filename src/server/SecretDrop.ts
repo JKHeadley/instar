@@ -38,6 +38,12 @@ export interface SecretField {
 }
 
 export interface SecretRequest {
+  /**
+   * The only site this value may be typed into, shown on the form so the person sees it. A submission
+   * carrying it leaves only through the helper's --browser mode and is never persisted
+   * (docs/specs/normal-chrome-linux.md, "Passwords through Secret Drop").
+   */
+  browserHost?: string;
   /** Unique token for the URL */
   token: string;
   /** CSRF token embedded in the form */
@@ -83,6 +89,12 @@ export interface SecretSubmission {
   label: string;
   /** The topic to notify */
   topicId?: number;
+  /**
+   * The only site this value may be typed into, shown on the form so the person sees it. A submission
+   * carrying it leaves only through the helper's --browser mode and is never persisted
+   * (docs/specs/normal-chrome-linux.md, "Passwords through Secret Drop").
+   */
+  browserHost?: string;
 }
 
 export interface CreateSecretRequestOptions {
@@ -94,6 +106,12 @@ export interface CreateSecretRequestOptions {
   fields?: SecretField[];
   /** Telegram topic to notify on receipt */
   topicId?: number;
+  /**
+   * The only site this value may be typed into, shown on the form so the person sees it. A submission
+   * carrying it leaves only through the helper's --browser mode and is never persisted
+   * (docs/specs/normal-chrome-linux.md, "Passwords through Secret Drop").
+   */
+  browserHost?: string;
   /** TTL in milliseconds (default: 15 minutes) */
   ttlMs?: number;
   /** Callback when secret is received */
@@ -181,6 +199,7 @@ export function buildSignedSubmission(
 export interface StuckConsumerEvent {
   token: string;
   label: string;
+  browserHost?: string;
   topicId?: number;
   receivedAt: string;
   minutesUntilCleanup: number;
@@ -253,6 +272,7 @@ export class SecretDrop {
       onReceive: options.onReceive,
       agentName: this.agentName,
       senderVerification: options.senderVerification,
+      browserHost: options.browserHost,
     };
 
     this.pending.set(token, request);
@@ -336,6 +356,7 @@ export class SecretDrop {
       receivedAt: new Date().toISOString(),
       label: request.label,
       topicId: request.topicId,
+      browserHost: request.browserHost,
     };
 
     // Store submission for retrieval behind a SLIDING idle window.
@@ -371,6 +392,7 @@ export class SecretDrop {
       const event: StuckConsumerEvent = {
         token,
         label: stillPresent.label,
+        browserHost: stillPresent.browserHost,
         topicId: stillPresent.topicId,
         receivedAt: stillPresent.receivedAt,
         minutesUntilCleanup: Math.max(0, Math.ceil((cleanupAt - Date.now()) / 60_000)),
@@ -691,6 +713,7 @@ export class SecretDrop {
       <div class="agent-badge"><span class="dot"></span> ${escapeHtml(request.agentName)}</div>
       <h1>${escapeHtml(request.label)}</h1>
       ${request.description ? `<p class="description">${escapeHtml(request.description)}</p>` : ''}
+      ${request.browserHost ? `<p class="description"><strong>This will be typed into ${escapeHtml(request.browserHost)}.</strong> It goes nowhere else.</p>` : ''}
       <p class="expiry">This link expires in ${minutesLeft} minute${minutesLeft !== 1 ? 's' : ''} and can only be used once.</p>
       <div class="error-banner" id="error-banner"></div>
       <form id="secret-form">
