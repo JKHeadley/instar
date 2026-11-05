@@ -50,3 +50,5 @@ The full-suite silent-fallback ratchet found five new fallback shapes in the cov
 ## HTTP and lifecycle proof completion (2026-11-05)
 
 Added real route integration coverage for authentication, invalid nonces, nonce-bound signatures, and a scheduler-less standby. Added an AgentServer lifecycle test proving production route construction installs a real signing monitor rather than leaving the endpoint at 503. The fixture uses a real identity manager, coordinator, state store, and on-disk catalog. Tests are queued behind normal host capacity; completion is required before merge. No runtime behavior changed in this proof-only commit.
+
+Fixture review confirmed auth lives in AgentServer middleware, so the integration fixture now mounts that real middleware before createRoutes. It therefore exercises the actual authenticated pipeline rather than asserting against an unauthenticated router.

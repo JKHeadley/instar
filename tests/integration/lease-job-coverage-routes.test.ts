@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
+import { authMiddleware } from '../../src/server/middleware.js';
 import { acceptJobCoverage } from '../../src/core/JobCoverage.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { leaseJobHttpFixture } from '../helpers/lease-job-http.js';
@@ -24,6 +25,7 @@ describe('lease coverage real HTTP routes', () => {
     } as unknown as RouteContext;
     const app = express();
     app.use(express.json());
+    app.use(authMiddleware(fixture.config.authToken!));
     app.use(createRoutes(ctx));
     expect((await request(app).get('/jobs/coverage-snapshot?nonce=' + 'a'.repeat(64))).status).toBe(401);
     expect((await request(app).get('/jobs/coverage-snapshot?nonce=bad')
