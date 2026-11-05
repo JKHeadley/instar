@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-10-26T18:24:09.000Z",
-      "auditRef": "docs/audits/standards-single-provider-floor-and-cadence-well-2026-10-26.json",
-      "auditSha256": "d71b646fc0e257fa49e4e502b6e1ce30a62d82ac5f12609494fd4265dc2fc677",
-      "areaSha256": "f1e19aebd9bb8a1470a25c247528fe696b661e958d95de806e932b8b14d23328",
+      "lastAuditedAt": "2026-11-05T22:20:00.000Z",
+      "auditRef": "docs/audits/no-purchased-service-building-family-2026-11-05.json",
+      "auditSha256": "97692accfc4f04eb28eaf52a77e17f3bbdd2c6d8a908dcf6d1446861d022dcc6",
+      "areaSha256": "e3e3c3820054c78e0113b3f3cd2d34db1d188e729b704d49ab1193d2ef9e3c32",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40

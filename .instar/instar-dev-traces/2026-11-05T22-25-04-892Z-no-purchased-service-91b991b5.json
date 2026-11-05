@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "no-purchased-service",
+  "sessionId": "83ff0005-03a1-47ac-9794-fc5f5dbd69b5",
+  "timestamp": "2026-11-05T22:25:04.892Z",
+  "artifactPath": "upgrades/side-effects/no-purchased-service.md",
+  "artifactSha256": "4e484f08da701cc41ca5afe7e4a0e5ec341c1b3d0dd95e6e23ca2adf11b99dab",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/no-purchased-service-building-family-2026-11-05.json",
+    "docs/constitution-alignment-map.md",
+    "docs/specs/no-purchased-service.eli16.md",
+    "docs/specs/reports/no-purchased-service-constitution-review-2026-11-05.md",
+    "docs/standards-registry-area-audits.json",
+    "tests/unit/standards-coverage-ratchet.test.ts",
+    "upgrades/side-effects/no-purchased-service.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Constitution text only; no runtime code; a revert fully undoes it.",
+  "eli16Path": "docs/specs/no-purchased-service.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/no-purchased-service.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
