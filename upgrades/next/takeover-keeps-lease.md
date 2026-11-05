@@ -1,0 +1,15 @@
+<!-- bump: patch -->
+
+## What Changed
+
+A machine with the takeover switch on now keeps renewing a lease it took over. Before, a spare with no Telegram or phone app renewed only on the 2-minute heartbeat against a 60-second lease, so it held the lease half the time and its epoch climbed every tick. The hold log line also prints once per hold instead of every 30 seconds.
+
+## What to Tell Your User
+
+Nothing to tell them. The takeover switch is off by default, so this changes nothing for a running agent.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|---|---|
+| A machine that takes over keeps the lease at one epoch | automatic when `multiMachine.leaseSelfHeal.soloCaptainHold.enabled` is true |
