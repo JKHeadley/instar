@@ -126,6 +126,7 @@ import { resolveFrameworkBinaryPath, computeGrokInteractiveOptIn } from '../core
 import type { TopicProfileStore } from '../core/TopicProfileStore.js';
 import type { TopicResumeMap } from '../core/TopicResumeMap.js';
 import { runResumeHeartbeatTick } from '../core/ResumeHeartbeat.js';
+import { activatedAtPairing, readPairDecision } from '../core/sessionPoolPairActivation.js';
 import type { IdleReading } from '../core/classifyProfileChange.js';
 import { closeAllSqlite } from '../core/SqliteRegistry.js';
 import { DP_SUBSCRIPTION_RELOGIN_ACTION, DP_TELEGRAM_ORIGIN_RECOVERY } from '../data/provenanceCoverage.js';
@@ -693,6 +694,9 @@ let _clearContextExhaustionFreshRequired: ((topicId: number) => void) | null = n
 // is byte-identical to today's always-local dispatch. Set once in startServer().
 let _sessionRouter: import('../core/SessionRouter.js').SessionRouter | null = null;
 let _sessionPoolStage: () => string = () => 'dark';
+/** A pool started at pairing, stepped down to dark, with this conversation on a peer: the
+ *  next message still goes there (session-pool-activation-at-pairing, Change 7). */
+let _routesToPeerAtDark: (sessionKey: string) => boolean = () => false;
 // Self-placement deliberately falls through from SessionRouter into this file's
 // established local inject/spawn tail. Confirming inside SessionRouter would be
 // premature because handleLocally is only that fall-through marker. This callback
@@ -2957,7 +2961,8 @@ export function wireTelegramRouting(
     // CONSUMES it instead of re-resolving — the admission decision and the
     // routing decision cannot disagree mid-dispatch.
     let _admissionVerdict: { messageId: string; action: string; acked: boolean } | undefined;
-    if (_sessionRouter && _sessionPoolStage() !== 'dark') {
+    const _routingOnly = _routesToPeerAtDark(String(topicId));
+    if (_sessionRouter && (_sessionPoolStage() !== 'dark' || _routingOnly)) {
       // Ordering gate (Durable Inbound Message Queue §2.3): a live message for
       // a session with queued custody enqueues BEHIND the existing entries —
       // injecting it now would deliver out of order. Gated on a live engine.
@@ -2985,6 +2990,7 @@ export function wireTelegramRouting(
           sessionKey: String(topicId),
           messageId: String(msg.id),
           payload: text,
+          ...(_routingOnly ? { routingOnly: true } : {}),
           topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)), // U4.1 §2D: local pin ⊕ fold winner by HLC
           // §2.2: sender identity captured at ingress, persisted with custody.
           senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName, ...mobileEnvelope(msg) },
@@ -3403,7 +3409,8 @@ export function wireTelegramRouting(
     // enabled, but cross-machine routing is the failover machinery a red E2E
     // demoted. At dark the drain delivers on THIS machine only, exactly like the
     // live path, which skips the router at dark.
-    const poolDark = _sessionPoolStage() === 'dark';
+    const drainRoutingOnly = _routesToPeerAtDark(dmsg.sessionKey);
+    const poolDark = _sessionPoolStage() === 'dark' && !drainRoutingOnly;
     if (!poolDark && !_sessionRouter) return { kind: 'un-routable', reason: 'router-not-constructed' };
 
     // Routing first — ownership may have moved while the entry waited.
@@ -3411,6 +3418,7 @@ export function wireTelegramRouting(
       sessionKey: dmsg.sessionKey,
       messageId: dmsg.messageId,
       payload: dmsg.payload,
+      ...(drainRoutingOnly ? { routingOnly: true } : {}),
       topicMetadata: (dmsg.topicMetadata as import('../core/PlacementExecutor.js').TopicPlacement | undefined)
         ?? (_pinPlacementMetadata ? _pinPlacementMetadata(dmsg.sessionKey) : _topicPinStore?.asTopicMetadata(dmsg.sessionKey)), // U4.1 §2D
       senderEnvelope: dmsg.senderEnvelope,
@@ -10632,12 +10640,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           // SpawnAdmission TOCTOU guard (ownership-gated-spawn §3.1 item 2):
           // stash the router verdict so the dispatch's seam consumes it.
           let _slackAdmissionVerdict: { messageId: string; action: string; acked: boolean } | undefined;
-          if (_sessionRouter && _sessionPoolStage() !== 'dark') {
+          const _slackRoutingOnly = _routesToPeerAtDark(routingKey);
+          if (_sessionRouter && (_sessionPoolStage() !== 'dark' || _slackRoutingOnly)) {
             try {
               const outcome = await _sessionRouter.route({
                 sessionKey: routingKey,
                 messageId: String(message.id),
                 payload: message.content,
+                ...(_slackRoutingOnly ? { routingOnly: true } : {}),
                 topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(routingKey) : _topicPinStore?.asTopicMetadata(routingKey), // U4.1 §2D: local pin ⊕ fold winner by HLC
                 senderEnvelope: {
                   userId: (message.metadata?.slackUserId as string) || undefined,
@@ -24667,6 +24677,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               .map(([id]) => id),
             capacity: (id) => machinePoolRegistry!.getCapacityForReport(id),
             ownChannels: () => selfServesChannels(),
+            pairingDeclined: () => {
+              const decision = readPairDecision(config.stateDir);
+              return decision && !decision.activate ? decision.reason : null;
+            },
             durableOwnership: () => durableOwnershipMod.shouldActivateDurableOwnership(config, resolveDevAgentGate),
             duplicateCheck: () => _duplicateReconciler?.status() ?? null,
             takeover: () => _takeoverReadiness,
@@ -29804,6 +29818,15 @@ export async function startServer(options: StartOptions): Promise<void> {
               return _resolveSessionPoolStage(live);
             } catch { return 'dark'; }
           };
+          _routesToPeerAtDark = (sessionKey) => {
+            try {
+              const live = liveConfig.get('multiMachine.sessionPool', config.multiMachine?.sessionPool ?? {}) as { enabled?: boolean };
+              if (live.enabled !== true || _sessionPoolStage() !== 'dark') return false;
+              if (!activatedAtPairing({ multiMachine: { sessionPool: live } })) return false;
+              const own = _ownershipReadForDrain?.(sessionKey);
+              return !!own && own.status === 'active' && own.ownerMachineId !== _meshSelfId;
+            } catch { return false; } // @silent-fallback-ok — an unreadable record falls back to local delivery, as at any dark stage
+          };
           console.log(pc.green('  SessionRouter wired (L4) — inert until rollout stage advances past dark'));
 
           // bug #7: tokenless-standby outbound Telegram relay. TelegramAdapter.sendToTopic
@@ -30206,6 +30229,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           'multiMachine.sessionPool.stage',
           'dark',
         ) as import('../core/StageAdvancer.js').SessionPoolStage;
+      // A pool started at pairing has its own green and expiry. Every other pool keeps today's rules.
+      const pairStartedPool = activatedAtPairing(config);
+      const pairGreenMod = await import('../core/sessionPoolPairGreen.js');
+      const pairPeerExists = (): boolean => (coordinator?.managers.identityManager.getActiveMachines() ?? [])
+        .some((m) => m.machineId !== _meshSelfId);
+      let pairGreenProducer: import('../core/sessionPoolPairGreen.js').PairGreenProducer | null = null;
       // StageAdvancer: the sole stage writer. Held for the rollout job/route to drive;
       // constructed here so the write path (liveConfig + token) is wired in one place.
       const stageAdvancer = new stageMod.StageAdvancer({
@@ -30214,6 +30243,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         readStage: readSessionPoolStage,
         writeStageConfig: (s) => liveConfig.set(guardMod.STAGE_CONFIG_PATH, s, { stageWriteToken: guardMod.STAGE_WRITE_TOKEN }),
         rebalanceProof: () => stageMod.rebalanceProofState(_rebalanceProofStore!, Date.now()),
+        ...(pairStartedPool ? {
+          shadowProof: () => pairGreenMod.pairShadowProofState(sessionPoolE2EResultStore!, Date.now(), pairPeerExists()),
+        } : {}),
         audit: (event, detail) => console.log(pc.dim(`  [stage-advancer] ${event} ${JSON.stringify(detail)}`)),
       });
       // ── Promotion activation ────────────────────────────────────────────────
@@ -30241,6 +30273,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         if (promotionCfg.model === 'auto-climb') {
           const promotionTimer = setInterval(() => {
             try {
+              pairGreenProducer?.tick();
               _sessionPoolPromotionActivation?.autoTick();
             } catch (err) {
               console.warn(
@@ -30265,6 +30298,19 @@ export async function startServer(options: StartOptions): Promise<void> {
         config.multiMachine?.sessionPool?.failoverRunner,
         (explicit) => resolveDevAgentGate(explicit, config),
       );
+      // One stage-0 producer only: where the failover runner runs, it decides.
+      if (pairStartedPool && !failoverRunnerCfg.enabled) {
+        const readinessMod = await import('../core/poolReadiness.js');
+        pairGreenProducer = new pairGreenMod.PairGreenProducer({
+          store: sessionPoolE2EResultStore,
+          commitSha: currentSessionPoolBuildIdentity,
+          ready: () => {
+            const deps = readinessMod.getActivePoolReadiness();
+            return !!deps && readinessMod.computePoolReadiness(deps).ready === true;
+          },
+          now: () => Date.now(),
+        });
+      }
       if (failoverRunnerCfg.enabled) {
         // The dry-run SIDE store: a separate signed file the promotion path
         // (StageAdvancer/driver) NEVER reads, so a would-record green captured

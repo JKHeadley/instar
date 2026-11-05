@@ -61,6 +61,9 @@ export interface InboundMessage {
   payload: unknown;
   topicMetadata?: TopicPlacement;
   senderEnvelope?: InboundSenderEnvelope | null;
+  /** A pool stepped down to dark: reach a peer that owns this conversation, never place one.
+   *  Anything that would place stays on this machine instead. */
+  routingOnly?: boolean;
   /** The channel scope this message arrived on — threaded into placement so a Slack channel
    *  is never placed on a machine not connected to its workspace (spec:
    *  placement-platform-workspace-aware). Populated at the inbound from the platform event
@@ -417,6 +420,21 @@ export class SessionRouter {
   }
 
   private async placeAndClaim(msg: InboundMessage, reason: 'new' | 'failover', fromDead: boolean): Promise<RouteOutcome> {
+    if (msg.routingOnly) {
+      // The record must change hands too: the queue refuses local delivery while it names
+      // the peer, and nothing else re-places at dark, so the message would run out of tries.
+      const held = this.deps.resolveOwnership(msg.sessionKey);
+      if (held.owner && held.owner !== this.deps.selfMachineId) {
+        const cas = this.deps.casClaimOwnership(msg.sessionKey, this.deps.selfMachineId, held.epoch);
+        if (!cas.ok) {
+          const q = this.deps.queueMessage(msg, 'routing-only-claim-lost');
+          return { action: 'queued', detail: 'routing-only-claim-lost', acked: q === 'queued' || q === 'already-queued' };
+        }
+        this.deps.confirmClaim?.(msg.sessionKey, this.deps.selfMachineId);
+      }
+      await this.deps.handleLocally(msg);
+      return { action: 'handled-locally', owner: this.deps.selfMachineId, detail: 'routing-only', acked: true };
+    }
     const kept = this.liveLocalPlacement(msg, reason);
     const decision = kept ?? this.deps.placement.decide({
       sessionKey: msg.sessionKey,

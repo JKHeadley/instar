@@ -505,3 +505,53 @@ describe('SessionRouter — remote placement reads the spawn ACK', () => {
     expect(reclaimPlacement).not.toHaveBeenCalled();
   });
 });
+
+describe('routingOnly: a pool stepped down to dark never places', () => {
+  const msg = (over: Partial<InboundMessage> = {}): InboundMessage => ({ sessionKey: '7', messageId: 'm1', payload: 'hi', routingOnly: true, ...over });
+  const owned: OwnershipView = { status: 'active', owner: 'm_remote', epoch: 3 };
+
+  it('reaches a live owner', async () => {
+    const deliverMessage = vi.fn(async (): Promise<DeliverAck> => ({ messageId: 'm1', accepted: 'queued' }));
+    const { router } = makeRouter({ resolveOwnership: () => owned, deliverMessage, isMachineAlive: () => true });
+    expect((await router.route(msg())).action).toBe('forwarded');
+    expect(deliverMessage).toHaveBeenCalledOnce();
+  });
+  it.each([
+    ['a dead owner', { resolveOwnership: () => owned, isMachineAlive: () => false }],
+    ['an unowned conversation', {}],
+    ['an owner that stops answering', {
+      resolveOwnership: () => owned, isMachineAlive: () => true,
+      deliverMessage: async (): Promise<DeliverAck> => { throw new Error('down'); },
+    }],
+  ])('%s stays on this machine', async (_name, over) => {
+    const { router, deps } = makeRouter(over as Partial<SessionRouterDeps>);
+    const decide = vi.spyOn(deps.placement, 'decide');
+    const out = await router.route(msg());
+    expect(out.action).toBe('handled-locally');
+    expect(out.detail).toBe('routing-only');
+    expect(deps.handleLocally).toHaveBeenCalledOnce();
+    expect(decide).not.toHaveBeenCalled();
+    expect(deps.spawnOnMachine).not.toHaveBeenCalled();
+  });
+  it('takes the record for itself when the owner is gone, or the queue would refuse local delivery', async () => {
+    const confirmClaim = vi.fn();
+    const { router, deps } = makeRouter({ resolveOwnership: () => owned, isMachineAlive: () => false, confirmClaim });
+    await router.route(msg());
+    expect(deps.casClaimOwnership).toHaveBeenCalledWith('7', SELF, 3);
+    expect(confirmClaim).toHaveBeenCalledWith('7', SELF);
+  });
+  it('an unowned conversation claims nothing', async () => {
+    const { router, deps } = makeRouter();
+    await router.route(msg());
+    expect(deps.casClaimOwnership).not.toHaveBeenCalled();
+  });
+  it('a lost claim keeps the message in custody, never delivered here', async () => {
+    const { router, deps } = makeRouter({
+      resolveOwnership: () => owned, isMachineAlive: () => false,
+      casClaimOwnership: vi.fn(() => ({ ok: false, epoch: 4 })),
+      queueMessage: vi.fn(() => 'queued' as const),
+    });
+    expect(await router.route(msg())).toMatchObject({ action: 'queued', acked: true });
+    expect(deps.handleLocally).not.toHaveBeenCalled();
+  });
+});

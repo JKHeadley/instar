@@ -3253,6 +3253,10 @@ export interface SessionPoolConfig {
    * a direct write is rejected. Default 'dark'.
    */
   stage?: 'dark' | 'shadow' | 'live-transfer' | 'rebalance';
+  /** When sharing was turned on at a first pairing. Absent on every other pool. */
+  activatedAtPairing?: string;
+  /** `false` keeps a first pairing from turning sharing on. */
+  autoActivate?: boolean;
   /**
    * When true, the placement engine LOGS the decision it would make but always
    * places locally (Stage-0 behavior). Default true.

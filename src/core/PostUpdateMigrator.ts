@@ -290,6 +290,24 @@ A Telegram, Slack or app topic is the user's conversation. It is never a channel
 `;
 }
 
+/**
+ * Sharing at the first pairing (docs/specs/session-pool-activation-at-pairing.md). SHARED by
+ * `generateClaudeMd` and `migrateClaudeMd`. Content-sniff marker: the heading.
+ */
+export const PAIR_SHARING_CLAUDEMD_MARKER = '### Sharing between my machines starts at the first pairing';
+export function PAIR_SHARING_CLAUDEMD_SECTION(port: number): string {
+  return `
+${PAIR_SHARING_CLAUDEMD_MARKER}
+
+When I pair a second machine for the first time, sharing turns on by itself: both machines get the same settings, the first restarts once, and the bot token reaches the new machine sealed inside the pairing. After the pair has looked healthy for ten minutes, a new conversation can start on either machine. Nothing already running moves.
+- It stays off if the owner has already set anything about sharing, set \`multiMachine.sessionPool.autoActivate\` to false, or uses paid routing. The pairing still works.
+- If the new machine did not receive the token, pair that same machine again.
+- Why it is or is not on: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/session-pool/readiness\`
+- To turn it off: set \`multiMachine.sessionPool.enabled\` to false. It takes effect at once.
+- **When to use** (PROACTIVE): the user asks "why is my second machine idle?", "is sharing on?" or is about to pair a machine.
+`;
+}
+
 export const JOB_RESULT_SUPERVISION_CLAUDEMD_MARKER = '### Script result supervision records';
 export function JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION(port: number): string {
   return `
@@ -8903,6 +8921,11 @@ setTimeout(() => process.exit(0), 2000);
       content += SESSION_HANDOFF_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Talking to my other sessions section');
+    }
+    if (!content.includes(PAIR_SHARING_CLAUDEMD_MARKER)) {
+      content += PAIR_SHARING_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added sharing at the first pairing');
     }
 
     if (!content.includes(JOB_RESULT_SUPERVISION_CLAUDEMD_MARKER)) {
