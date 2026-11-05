@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-05T18:03:02.378Z",
+  "slug": "mobile-health-issues",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 3,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Read-only route and display; no self-action, no loop, no retry."
+  },
+  "verdict": "pass"
+}

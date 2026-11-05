@@ -1,0 +1,173 @@
+/**
+ * What a degraded /health means for the person (docs/specs/mobile-health-issues.md): the declared table, the
+ * safe default, and the summary, on both sides of each rule.
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { describe, it, expect } from 'vitest';
+import { HEALTH_RULES, HEALTH_APP_SCREENS, ruleFor, signalsFromHealth, summarizeHealth, isDeclaredAction, MAX_HEALTH_ISSUES } from '../../src/monitoring/healthIssues.js';
+
+const ok = { status: 'ok', uptimeHuman: '2h' };
+const degraded = { status: 'degraded', uptimeHuman: '2h' };
+const ev = (feature: string, over: Record<string, unknown> = {}) => ({ feature, timestamp: '2026-11-05T10:00:00.000Z', narrative: `${feature} used a backup.`, ...over });
+
+describe('the declared table', () => {
+  it('every row names an impact, plain words, and declares its action or says there is none', () => {
+    expect(HEALTH_RULES.length).toBeGreaterThanOrEqual(12);
+    for (const r of HEALTH_RULES) {
+      expect(['user-affecting', 'internal'], r.key).toContain(r.impact);
+      expect(r.title.length, r.key).toBeGreaterThan(5);
+      expect(r.detail.length, r.key).toBeGreaterThan(10);
+      expect(r, r.key).toHaveProperty('action');
+      expect(isDeclaredAction(r.action), r.key).toBe(true);
+    }
+  });
+
+  it('no two rows claim one key', () => {
+    const keys = HEALTH_RULES.map((r) => r.key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it('an id that also means something the person must act on is not declared internal', () => {
+    // Conflict and failure reports: left to the safe default, or declared as affecting the person.
+    for (const id of ['GitSync.pull', 'GitSync.resolveLLMConflicts', 'GitSync.buildConflictFile', 'GitSync.lockfileRegeneration', 'Threadline.refuseDowngrade', 'Threadline.identity', 'Threadline.encryptToPinned', 'HandoffManager.pushAll', 'QuotaCollector.collect.oauth', 'QuotaTracker.remoteCheck']) expect(ruleFor(id), id).toBeNull();
+    expect(ruleFor('SessionManager.verifyInjection.unsubmitted')?.impact).toBe('user-affecting');
+    expect(ruleFor('SessionManager.verifyInjection')?.impact).toBe('internal');
+    const src = fs.readFileSync(path.resolve(__dirname, '../../src/core/SessionManager.ts'), 'utf8');
+    expect(src.split("feature: 'SessionManager.verifyInjection.unsubmitted'").length - 1).toBe(2);
+    expect(src.split("feature: 'SessionManager.verifyInjection',").length - 1).toBe(1);
+  });
+
+  it('every console page a row names is a registered console route', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '../../dashboard/console/console.js'), 'utf8');
+    for (const r of HEALTH_RULES) if (r.action) expect(src, r.key).toContain(`'${r.action.console.slice(2)}'`);
+  });
+
+  it('every app screen name is one the app declares', () => {
+    expect([...HEALTH_APP_SCREENS].sort()).toEqual(['accounts', 'agents', 'machines', 'schedule', 'sessions']);
+  });
+
+  it('an exact id beats a family, and a family covers its members only', () => {
+    expect(ruleFor('TelegramLifeline.restartStorm')?.impact).toBe('user-affecting');
+    expect(ruleFor('unjustifiedStopGate.route')?.key).toBe('unjustifiedStopGate.*');
+    expect(ruleFor('unjustifiedStopGateOther')).toBeNull();
+    expect(ruleFor('health:llm:jev-load-assessment')?.impact).toBe('internal');
+    expect(ruleFor('health:llm:outbound-review')).toBeNull();
+    expect(ruleFor('health:llm:jev-memory-picker')).toBeNull();
+  });
+});
+
+describe('signalsFromHealth reads every other reason /health degrades', () => {
+  it('finds each, and only past its threshold', () => {
+    const ids = (h: unknown) => signalsFromHealth(h).map((s) => s.id);
+    expect(ids({ sessions: { current: 25, max: 25 } })).toEqual(['health:sessions-full']);
+    expect(ids({ sessions: { current: 24, max: 25 } })).toEqual([]);
+    expect(ids({ consecutiveJobFailures: 5 })).toEqual(['health:job-failures']);
+    expect(ids({ consecutiveJobFailures: 4 })).toEqual([]);
+    expect(ids({ claudeKey: { status: 'dead' } })).toEqual(['health:claude-key']);
+    expect(ids({ claudeKey: { status: 'ok' } })).toEqual([]);
+    expect(ids({ whatsapp: { state: 'disconnected' } })).toEqual(['health:whatsapp']);
+    expect(ids({ whatsapp: { state: 'connected' } })).toEqual([]);
+    expect(ids({ systemReview: { lastReview: { status: 'critical', failed: 3 } } })).toEqual(['health:system-review']);
+    expect(ids({ systemReview: { lastReview: { status: 'degraded', failed: 1 } } })).toEqual([]);
+    expect(ids({ llmReliability: { status: 'unavailable', components: [] } })).toEqual(['health:llm-unavailable']);
+    expect(ids({ llmReliability: { status: 'ok', components: [] } })).toEqual([]);
+    expect(ids({ llmReliability: { status: 'degraded', components: [{ feature: 'jev-load-assessment', errors: 28, realCalls: 97 }] } })).toEqual(['health:llm:jev-load-assessment']);
+  });
+
+  it('reads /health\'s real field names: every reason in the handler is accounted for', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '../../src/server/routes.ts'), 'utf8');
+    const start = src.indexOf("router.get('/health', (req, res)");
+    const handler = src.slice(start, src.indexOf("router.get('/health/degradations'", start));
+    // A new reason means a new row here and in signalsFromHealth. The route still shows it as unnamed until then.
+    expect(handler.match(/isDegraded = true/g)?.length).toBe(2);
+    const first = /let isDegraded =([\s\S]*?);/.exec(handler)?.[1].replace(/\s+/g, ' ').trim();
+    expect(first).toBe("sessionExhausted || totalFailures >= 5 || degradations.length > 0 || (llmReliability !== null && llmReliability.status !== 'ok') || activeClaudeKeyHealth()?.status()?.status === 'dead'");
+  });
+});
+
+describe('summarizeHealth', () => {
+  it('nothing wrong is healthy', () => {
+    const s = summarizeHealth(ok, []);
+    expect(s).toMatchObject({ verdict: 'healthy', headline: 'Healthy.', uptime: '2h', issues: [], truncated: false });
+  });
+
+  it('internal only reads as running normally, with the rows kept for the details', () => {
+    const s = summarizeHealth(degraded, [ev('SessionManager.verifyInjection'), ev('SessionManager.verifyInjection'), ev('GitSync.gitHygiene')]);
+    expect(s.verdict).toBe('running');
+    expect(s.headline).toBe('Running normally.');
+    expect(s.counts).toEqual({ userAffecting: 0, internal: 2, unclassified: 0 });
+    expect(s.issues.find((i) => i.id === 'SessionManager.verifyInjection')?.count).toBe(2);
+  });
+
+  it('a user-affecting item is attention, leads the list and names itself', () => {
+    const s = summarizeHealth(degraded, [ev('GitSync.gitHygiene'), ev('iMessage')]);
+    expect(s.verdict).toBe('attention');
+    expect(s.headline).toBe('iMessage isn’t connected.');
+    expect(s.issues[0].id).toBe('iMessage');
+  });
+
+  it('an unknown id shows in the details and never reads as healthy or as running normally', () => {
+    const s = summarizeHealth(degraded, [ev('SomethingNew.happened'), ev('GitSync.gitHygiene')]);
+    expect(s.verdict).toBe('unsure');
+    expect(s.headline).not.toMatch(/healthy|normally/i);
+    expect(s.issues[0]).toMatchObject({ id: 'SomethingNew.happened', impact: 'unclassified', action: null });
+    expect(s.issues[0].evidence).toContain('SomethingNew.happened used a backup.');
+  });
+
+  it('a reporter\'s internalOnly mark quietens an unnamed id, but never a declared row', () => {
+    expect(summarizeHealth(degraded, [ev('SomethingNew.happened', { internalOnly: true })]).verdict).toBe('running');
+    expect(summarizeHealth(degraded, [ev('iMessage', { internalOnly: true })]).verdict).toBe('attention');
+  });
+
+  it('degraded with nothing to explain it says so', () => {
+    const s = summarizeHealth(degraded, []);
+    expect(s.verdict).toBe('unsure');
+    expect(s.issues[0].id).toBe('health:unnamed');
+    expect(summarizeHealth(null, []).verdict).toBe('unsure');
+  });
+
+  it('an LLM component outside the table is unclassified, with its numbers and no component name in the words', () => {
+    const s = summarizeHealth({ ...degraded, llmReliability: { status: 'degraded', components: [{ feature: 'outbound-review', errors: 9, realCalls: 30 }] } }, []);
+    expect(s.verdict).toBe('unsure');
+    expect(s.issues[0].detail).toBe('9 of its last 30 calls failed in the past day.');
+    expect(s.issues[0].title).not.toContain('outbound-review');
+    expect(s.issues[0].ask).toContain('health:llm:outbound-review');
+  });
+
+  it('the Ask message names the problem and its reference', () => {
+    const [i] = summarizeHealth(degraded, [ev('rope-health')]).issues;
+    expect(i.ask).toContain('Coordination between machines hit a snag');
+    expect(i.ask).toContain('rope-health');
+    expect(i.action?.app).toBe('machines');
+  });
+
+  it('keeps the latest words of a repeated item', () => {
+    const [i] = summarizeHealth(degraded, [ev('GitSync.gitHygiene', { narrative: 'old', timestamp: '2026-11-05T09:00:00.000Z' }), ev('GitSync.gitHygiene', { narrative: 'new', timestamp: '2026-11-05T11:00:00.000Z' })]).issues;
+    expect(i.evidence).toBe('new');
+    expect(i.lastAt).toBe('2026-11-05T11:00:00.000Z');
+  });
+
+  it('scrubs a secret out of the evidence and caps its length', () => {
+    const [i] = summarizeHealth(degraded, [ev('X.y', { narrative: `token ghp_${'a'.repeat(36)} ${'z'.repeat(5000)}` })]).issues;
+    expect(i.evidence).not.toContain('ghp_aaaa');
+    expect(i.evidence!.length).toBeLessThanOrEqual(300);
+  });
+
+  it('never shows a local path', () => {
+    const [i] = summarizeHealth(degraded, [ev('X.y', { narrative: 'Could not save /Users/x/.instar/identity.key.bak now' })]).issues;
+    expect(i.evidence).toBe('Could not save a file on this machine now');
+  });
+
+  it('caps the list and says so', () => {
+    const s = summarizeHealth(degraded, Array.from({ length: MAX_HEALTH_ISSUES + 3 }, (_, n) => ev(`New.thing${n}`)));
+    expect(s.issues).toHaveLength(MAX_HEALTH_ISSUES);
+    expect(s.truncated).toBe(true);
+    expect(s.counts.unclassified).toBe(MAX_HEALTH_ISSUES + 3);
+  });
+
+  it('an event with no feature is still shown', () => {
+    const s = summarizeHealth(degraded, [{ narrative: 'x' }]);
+    expect(s.issues[0].impact).toBe('unclassified');
+  });
+});
