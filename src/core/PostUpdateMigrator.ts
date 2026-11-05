@@ -1063,6 +1063,14 @@ export function MOBILE_SECRETS_LINE(port: number): string {
 }
 export const MOBILE_SECRETS_MARKER = 'GET /mobile/secrets';
 /**
+ * Asking for a key and cancelling a request from the phone (docs/specs/mobile-native-secrets-writes.md),
+ * one bullet after the Passwords & keys bullet. Sniff: `POST /mobile/secrets/requests/<key>/cancel`.
+ */
+export function MOBILE_SECRETS_WRITES_LINE(port: number): string {
+  return `- The owner's phone can ask for a password or key (\`POST /mobile/secrets/requests\`) and cancel a waiting request (\`POST /mobile/secrets/requests/<key>/cancel\`) on http://localhost:${port}, each confirmed with Face ID over a single-use challenge, behind \`mobilePairing.permissionActions\`. The phone never gets the token or link: the owner collects the link in the console.`;
+}
+export const MOBILE_SECRETS_WRITES_MARKER = 'POST /mobile/secrets/requests/<key>/cancel';
+/**
  * The native Proposals / How I'm doing inside screens (docs/specs/mobile-native-proposals-inside.md),
  * one bullet in the Mobile app routes block after the permissions bullet. Sniff: `GET /mobile/proposals`.
  */
@@ -1197,6 +1205,7 @@ ${MOBILE_PHONES_MESSAGES_LINE(port)}
 ${MOBILE_PERMISSIONS_LINE(port)}
 ${MOBILE_PROPOSALS_INSIDE_LINE(port)}
 ${MOBILE_SECRETS_LINE(port)}
+${MOBILE_SECRETS_WRITES_LINE(port)}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }
@@ -9747,6 +9756,22 @@ setTimeout(() => process.exit(0), 2000);
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added the native Passwords & keys line');
+    }
+
+    // Phone asks and cancels (docs/specs/mobile-native-secrets-writes.md): one bullet after the Passwords &
+    // keys bullet of an existing Mobile app routes block (a block added below already has it).
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_SECRETS_WRITES_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_SECRETS_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_SECRETS_WRITES_LINE(port));
+        content = lines.join('\n');
+      } else {
+        // A block without the Passwords & keys bullet: append the line rather than skip it.
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_SECRETS_WRITES_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the phone ask and cancel line');
     }
 
     // Native Proposals / How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): one bullet
