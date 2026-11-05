@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "lease-job-coverage-and-catchup",
+  "sessionId": "6e60beaa-e310-4179-aa75-c7985b17f28f",
+  "timestamp": "2026-11-05T13:57:46.252Z",
+  "artifactPath": "upgrades/side-effects/lease-job-coverage-and-catchup.md",
+  "artifactSha256": "71f09f23521dbdb9fb517ce239801755f72deaef44108d081a6678b1b8bec56e",
+  "specPath": "docs/specs/lease-job-coverage-and-catchup.md",
+  "coveredFiles": [
+    "src/core/JobDependency.ts",
+    "src/localVerify/FailedFileDiagnosisPeerService.ts",
+    "tests/unit/localVerify/FailedFileDiagnosisPeerService.test.ts",
+    "upgrades/side-effects/lease-job-coverage-and-catchup.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Back-propagates the tested dependency refusal annotation to the standalone coverage branch and retains named review coverage of the unchanged harness repair.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

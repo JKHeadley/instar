@@ -84,3 +84,7 @@ Concur with the side-effects assessment of the incremental repairs and this arti
 ## Current verification evidence — 2026-11-05
 
 The combined runtime source at 4009a9d28cbcf15086d1021d79513111f0f9e427 passed the full unit lane (58,591 tests) and full integration lane (5,841 tests), with zero failures. The new real subprocess buffer boundaries also passed both cases. The earlier pending-test paragraphs describe their point in the chronological repair history. Full E2E and required exact-head verification remain pending. This review-name/trace correction changes no runtime source or tests and does not replace either remaining gate.
+
+## Standalone coverage reporting annotation parity
+
+The required coverage verifier exposed a branch-specific omission: both the standalone coverage tree and its tested merge counted 495 fallback windows, while the combined transfer tree counted 494. A set comparison isolated exactly one difference: the already reviewed JobDependency refusal annotation was present only on transfer. Copying that same annotation back to coverage documents that missing or unreadable paths return false and refuse readiness; no runtime statement or baseline changes. This is not caused solely by newer main. It adds no authority, rejection, replicated data or external surface. Rollback removes one comment. Independent reviewer /root/review_transfer_resume concurred. Fresh exact-head coverage verification remains required; the running full combined-source suite is preserved.
