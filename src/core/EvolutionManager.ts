@@ -33,7 +33,7 @@ import type {
 import type { TrustElevationTracker } from './TrustElevationTracker.js';
 import type { AutonomousEvolution, ReviewResult } from './AutonomousEvolution.js';
 import type { AutonomyProfileManager } from './AutonomyProfileManager.js';
-import { EvolutionArchive, type EvolutionArchiveKind } from './EvolutionArchive.js';
+import { EvolutionArchive, isEvolutionRecordId, type EvolutionArchiveKind } from './EvolutionArchive.js';
 import { deriveLearningRecordKey } from './LearningsReplicatedStore.js';
 import { deriveEvolutionActionRecordKey } from './EvolutionActionsReplicatedStore.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
@@ -848,9 +848,7 @@ export class EvolutionManager {
       actions: ['pending', 'in_progress', 'completed', 'cancelled'],
       gaps: ['identified', 'addressed', 'wont_fix'],
     };
-    const prefix = {proposals: 'EVO', learnings: 'LRN', gaps: 'GAP', actions: 'ACT'}[kind];
-    if (!Array.isArray(rows) || rows.some((r: any) => !r || typeof r.id !== 'string'
-      || !new RegExp(`^${prefix}-[0-9]+$`).test(r.id)
+    if (!Array.isArray(rows) || rows.some((r: any) => !r || !isEvolutionRecordId(r.id)
       || typeof r.title !== 'string' || (kind === 'learnings' ? typeof r.applied !== 'boolean'
         : !statuses[kind]?.includes(r.status)))) {
       throw new Error(`Invalid evolution store: ${fp}`);
@@ -953,8 +951,11 @@ export class EvolutionManager {
   private nextRetainedId(kind: EvolutionArchiveKind, prefix: string, live: {id: string}[]): string {
     const records = [...live, ...this.archive.localEntries(kind)];
     const max = records.reduce((n, record) => {
-      const suffix = record.id.startsWith(prefix + '-') ? Number(record.id.slice(prefix.length + 1)) : NaN;
-      return Number.isSafeInteger(suffix) && suffix > n ? suffix : n;
+      const suffix = record.id.startsWith(prefix + '-') ? record.id.slice(prefix.length + 1) : '';
+      if (!/^[0-9]+$/.test(suffix)) return n;
+      const value = Number(suffix);
+      if (!Number.isSafeInteger(value)) throw new Error(`Evolution ${kind} IDs exhausted`);
+      return Math.max(n, value);
     }, 0);
     if (!Number.isSafeInteger(max + 1)) throw new Error(`Evolution ${kind} IDs exhausted`);
     return `${prefix}-${String(max + 1).padStart(3, '0')}`;

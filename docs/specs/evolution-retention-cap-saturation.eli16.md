@@ -19,6 +19,8 @@ existing replication repair system can still see archived lessons and actions. T
 existing archive, without trimming text. Archived memory remains readable after peers go
 offline. Operational retention reports look across the pool and name unreachable machines. They do not pretend an unavailable peer is empty or that repeated records are
 unique. Old record numbers stay reserved so an old reference cannot name new work.
+Older records with names instead of numbers remain readable and can enter the archive;
+new records still receive increasing numbers.
 
 When open work exceeds the target, Instar raises a structured warning in its operational log
 after trying to archive finished surplus. That warning does not cancel commitments or turn

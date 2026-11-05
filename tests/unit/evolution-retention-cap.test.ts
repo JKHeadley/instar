@@ -91,3 +91,18 @@ it('can restore again after a restored terminal action is released and re-archiv
  expect(m.restoreArchivedAction(a.id)).toMatchObject({id:a.id,autoExpiryHold:expect.any(Object)});
  expect(m.getArchivePage({kind:'actions',id:a.id}).entries).toHaveLength(1);
 });
+
+it.each(stores)('keeps legacy opaque $kind IDs readable, archived and reserved across reload',s=>{
+ const d=directory(),legacy={...record(s,1,false),id:`${s.prefix}-LEGACY`};seed(d,s,[legacy]);
+ const m=new EvolutionManager({stateDir:d,retentionTargets:{[s.kind]:0}});
+ expect((m as any)[s.list]()).toEqual([legacy]);save(m,s,[legacy]);
+ const reloaded=new EvolutionManager({stateDir:d});
+ expect(reloaded.getArchivePage({kind:s.kind,id:legacy.id}).entries[0].record).toEqual(legacy);
+ const next=(reloaded as any).nextRetainedId(s.kind,s.prefix,[]);expect(next).toBe(`${s.prefix}-001`);expect(next).not.toBe(legacy.id);
+});
+
+it.each(stores)('never treats opaque exponent-like $kind suffixes as numeric allocations',s=>{
+ const d=directory(),m=new EvolutionManager({stateDir:d});
+ const legacy={...record(s,1,false),id:`${s.prefix}-1e3`};m.archive.preserve(s.kind,[legacy as any]);
+ expect((m as any).nextRetainedId(s.kind,s.prefix,[record(s,2,true)])).toBe(`${s.prefix}-003`);
+});

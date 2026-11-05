@@ -90,7 +90,10 @@ fall back to empty. Summary reads catch these errors and return unknown for that
 existing migration path so agents inspect archives before claiming memory is gone.
 
 5. Allocate monotonic local IDs using the highest observed suffix across live + archive records,
-not first unused. Reserve all archived versions, even restored entries. Fail allocation on
+not first unused. Historical IDs remain opaque nonempty labels and are preserved verbatim;
+only anchored digits-only suffixes of the expected prefix participate in numeric allocation.
+Reject empty, NUL-bearing or oversized IDs and duplicate live labels. Reserve all archived
+versions, even restored entries. Fail allocation on
 unreadable archives instead of reusing a stale ID. This prevents new reuse after adoption;
 previous reuse cannot be undone. PATCH on an archived ID remains 404; it never targets new work.
 Action restore preserves status, returns held, and keeps restored terminal actions hot (hold

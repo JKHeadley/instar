@@ -46,11 +46,15 @@ const kinds = new Set(['proposals', 'learnings', 'gaps', 'actions']);
 const object = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x);
 const integer = (x: unknown): x is number => Number.isSafeInteger(x) && (x as number) >= 0;
 
+/** Historical IDs are opaque labels. New allocation syntax must not invalidate old references. */
+export function isEvolutionRecordId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 100 && !value.includes(String.fromCharCode(0));
+}
+
 /** Structural custody validation only. Received content never becomes a local work item. */
 export function validateEvolutionArchiveRecord(kind: EvolutionArchiveKind, record: unknown): asserts record is EvolutionArchiveRecord {
   if (!object(record) || typeof record.id !== 'string' || typeof record.title !== 'string' || typeof record.description !== 'string') throw new Error('invalid evolution archive record');
-  const prefix = { proposals: 'EVO', learnings: 'LRN', gaps: 'GAP', actions: 'ACT' }[kind];
-  if (record.id.length > 100 || !new RegExp(`^${prefix}-[0-9]+$`).test(record.id)) throw new Error('invalid evolution archive id');
+  if (!isEvolutionRecordId(record.id)) throw new Error('invalid evolution archive id');
   if (kind === 'learnings') {
     if (typeof record.applied !== 'boolean') throw new Error('invalid archived learning applied flag');
   } else {
@@ -249,8 +253,7 @@ export class EvolutionArchive {
         || typeof entry.origin !== 'string' || !entry.origin || entry.origin.length > 200
         || !kinds.has(entry.kind as string) || typeof entry.id !== 'string' || entry.id.length > 100
         || entry.reason !== 'oversized') throw new Error('invalid oversized archive metadata');
-      const prefix = { proposals: 'EVO', learnings: 'LRN', gaps: 'GAP', actions: 'ACT' }[entry.kind as EvolutionArchiveKind];
-      if (!new RegExp(`^${prefix}-[0-9]+$`).test(entry.id)) throw new Error('invalid oversized archive id');
+      if (!isEvolutionRecordId(entry.id)) throw new Error('invalid oversized archive id');
     }
     const delivered = page.entries.length + oversized.length;
     if (delivered > 50) throw new Error('evolution archive page exceeds record ceiling');

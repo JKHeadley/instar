@@ -120,6 +120,20 @@ The first local full-suite attempt encountered denied writes to real home-direct
 inside this restricted session, plus source/build changes made while it ran. It is not claimed
 as a green full-suite result. Exact-head Local Verify remains the merge authority.
 
+## Local Verify compatibility correction
+
+The first completed exact-head peer run passed 58598 unit tests and found one failure in
+`evolution-manager-evidence.test.ts`: the new numeric-only read validator rejected the
+pre-existing `EVO-LEGACY` fixture. Reproduced locally, then extended to all four stores:
+5 compatibility tests failed before the correction. Preserve historical opaque ID labels
+verbatim across hot reads, archive and restart; only new allocations use monotonic numeric
+suffixes. Numeric recognition is anchored to digits, so `EVO-1e3` stays an opaque label.
+A shared bounded, nonempty, no-NUL validator keeps the hot and archive contract aligned.
+The independent reviewer concurred: changing the old fixture would hide a real regression.
+After correction, all 619 tests in the evidence, retention, archive and self-action files pass;
+HTTP integration 4/4 and authenticated server/restart 1/1 pass. TypeScript checking passes.
+The corrected exact head still requires a new complete Local Verify result before merge.
+
 ## Evidence pointers
 
 - docs/specs/reports/evolution-retention-cap-saturation-convergence.md
