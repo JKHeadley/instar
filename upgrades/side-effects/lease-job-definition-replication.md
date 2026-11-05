@@ -45,7 +45,11 @@ The live PIN-gated rollback route persists a disarm latch, pauses scheduler admi
 
 ## Second-pass review
 
-Concur with the review. Independent code and integration reviewers found no remaining peer-trust or crash-recovery merge blocker after the final pass. The same-user concurrent leaf replacement race is recorded under Under-block as a local concurrency limitation. Final focused and lint gates remain required before merge.
+**Reviewer:** /root/review_transfer_resume
+
+Current concurrence covers the incremental repairs and this artifact: bounded process scanning, reporting annotations, migration and bootstrap compatibility, and the transfer counter/fixture repairs reviewed during this session. It is not a fresh complete security audit.
+
+Prior recorded review history: Concur with the review. Independent code and integration reviewers found no remaining peer-trust or crash-recovery merge blocker after the final pass. The same-user concurrent leaf replacement race is recorded under Under-block as a local concurrency limitation. Final focused and lint gates remain required before merge.
 
 ## Full-suite ratchet repair (2026-11-05)
 
@@ -84,3 +88,7 @@ Combining current main with transfer produced 495 catch-window matches against t
 The final full run exposed a deterministic diagnosis-restart failure. A direct real ps measurement returned ERR_CHILD_PROCESS_STDIO_MAXBUFFER at 1,038,731 output bytes in 93ms. The default 1 MiB allowance made an otherwise readable table unknown. The existing recovery scan now allows at most 8 MiB and keeps its two-second timeout. Output errors, overflows, ambiguous identities and live unknown children still prevent cleanup and new admission. This fixes the failure at the process-discovery layer without changing its authority or matching rules. No new under-block issue identified; legitimate tables over 8 MiB remain intentionally unknown rather than consuming unbounded memory. On each machine this scan is machine-local by design because process IDs belong to that host. There is no copied credential or replicated-state change. Rollback is a code revert; no data migration is needed.
 
 Real child-executed ps fixtures cover a listing over 1 MiB and an overflow over 8 MiB. The overflow must preserve the durable intent and input file and refuse a distinct new attempt as busy. Independent review concurred and requested those explicit no-cleanup/no-new-admission assertions; they are included. Build passed. The new focused tests are pending normal host capacity, not claimed as passed. The earlier real-host existing lifecycle test failed in both the full suite and an isolated rerun before this repair; both logs remain preserved. A separate standards CLI/library mismatch passed all 38 tests on untouched rerun, with its cause still unknown. Final full-suite and exact-head verification remain required.
+
+## Current verification evidence — 2026-11-05
+
+The combined runtime source at 4009a9d28cbcf15086d1021d79513111f0f9e427 passed the full unit lane (58,591 tests) and full integration lane (5,841 tests), with zero failures. The two real subprocess buffer boundaries passed. Earlier pending-test paragraphs are chronological history. Full E2E and required exact-head verification remain pending. Naming the reviewer and refreshing the artifact-bound trace changes no runtime source or tests and replaces neither gate.
