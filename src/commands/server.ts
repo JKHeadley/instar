@@ -64,7 +64,7 @@ import { StandDownRegistry } from '../core/StandDownRegistry.js';
 import { ensureDashboardPin, persistDashboardPin, pickDashboardPin } from '../core/dashboardPin.js';
 import { getActiveOverloadShedPlanner, getMoveAftercare } from '../core/OverloadShedPlanner.js';
 import { QuietTopicScanner, type RunningTopicSession } from '../core/quietTopicScanner.js';
-import { RebalanceProofRunner, getActiveRebalanceProof, waitForSettledIdle, proofSpawnBrief, setActiveRebalanceProof, setActiveRebalanceProofStore, type ProofHistoryRow } from '../core/rebalanceProof.js';
+import { RebalanceProofRunner, deliverProbeLocally, getActiveRebalanceProof, waitForSettledIdle, proofSpawnBrief, setActiveRebalanceProof, setActiveRebalanceProofStore, type ProofHistoryRow } from '../core/rebalanceProof.js';
 import { rebalanceProofState } from '../core/StageAdvancer.js';
 import { buildHandoffContinuationInstruction, type HandoffCommitment } from '../core/handoffContinuation.js';
 import { BASELINE_PROCESS_PATTERNS } from '../core/baselineProcessPatterns.js';
@@ -26025,10 +26025,21 @@ export async function startServer(options: StartOptions): Promise<void> {
                 sendProbe: async (t, text, messageId) => {
                   if (!_sessionRouter) return 'no-router';
                   const o = await _sessionRouter.route({ sessionKey: String(t), messageId, payload: text, senderEnvelope: null });
-                  return o.action;
+                  return deliverProbeLocally(o.action, async () => {
+                    if (!telegram) throw new Error('no telegram adapter');
+                    const tmux = telegram.getSessionForTopic(t);
+                    if (tmux && sessionManager.isSessionAlive(tmux)) {
+                      const injected = sessionManager.injectTelegramMessage(tmux, t, text, telegram.getTopicName(t) ?? `proof-${t}`, 'Proof', 0);
+                      if (injected === false) throw new Error('inject returned false');
+                      return;
+                    }
+                    const name = await spawnSessionForTopic(sessionManager, telegram, `proof-${t}`, t, text);
+                    telegram.registerTopicSession(t, name, `proof-${t}`);
+                  }, (line) => console.warn(line));
                 },
+                machineName: (id) => _listPoolMachines?.().find((m) => m.machineId === id)?.nickname ?? null,
                 readHistory: async (t) => {
-                  const r = await fetch(`http://127.0.0.1:${config.port}/telegram/topics/${t}/messages?scope=pool&limit=50`, {
+                  const r = await fetch(`http://127.0.0.1:${config.port}/telegram/topics/${t}/messages?scope=pool&includeOrigin=1&limit=50`, {
                     headers: { Authorization: `Bearer ${config.authToken}`, 'X-Instar-AgentId': config.projectName },
                   });
                   if (!r.ok) throw new Error(`history ${r.status}`);
