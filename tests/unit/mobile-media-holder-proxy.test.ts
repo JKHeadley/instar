@@ -8,7 +8,6 @@ import { MOBILE_MEDIA_TIMEOUT_MS, buildRequestTimeoutOverrides, resolveRequestTi
 import { HOLDER_MEDIA_BUSY_RETRY_MS, HOLDER_MEDIA_DEADLINE_MS, HOLDER_MEDIA_HEADER, buildMediaHolderStream, holderBearerOk } from '../../src/server/mobileMediaHolderProxy.js';
 
 class FakeRes extends EventEmitter {
-  writableLength = 0;
   statusCode = 200; headers: Record<string, string> = {}; chunks: Buffer[] = []; body: unknown = null;
   headersSent = false; destroyed = false; writableFinished = false; ended = false;
   status(n: number) { this.statusCode = n; return this; }
@@ -138,17 +137,17 @@ describe('buildMediaHolderStream', () => {
     expect(f).not.toHaveBeenCalled();
   });
 
-  class Stuck extends FakeRes { writableLength = 1_000; write(c: Uint8Array) { super.write(c); return false; } }
+  class Stuck extends FakeRes { write(c: Uint8Array) { super.write(c); return false; } }
   const stuckStream = (over = {}) => {
     const list = [Buffer.from('one'), Buffer.from('two'), Buffer.from('three')];
     const f = (async () => body(parts(list))) as typeof fetch;
-    const stream = buildMediaHolderStream({ peers: () => [{ machineId: 'm_b', url: 'http://127.0.0.1:9', kind: 'lan' }], token: () => 't', selfMachineId: () => 'm_a', fetchImpl: f, recheckMs: 60_000, drainMs: 40, deadlineMs: 400, ...over });
+    const stream = buildMediaHolderStream({ peers: () => [{ machineId: 'm_b', url: 'http://127.0.0.1:9', kind: 'lan' }], token: () => 't', selfMachineId: () => 'm_a', fetchImpl: f, recheckMs: 60_000, waitingOnPhoneMs: 40, deadlineMs: 400, ...over });
     return { stream, q: { sha256: sha(Buffer.concat(list)), ref: 'slack:_:C', machine: 'm_b', isCurrent: () => true } };
   };
   const settle = (ms: number) => new Promise((go) => setTimeout(go, ms));
   afterEach(() => { vi.restoreAllMocks(); });
 
-  it('a suspended phone gives its slot back at the drain limit and is not cut until the deadline', async () => {
+  it('one stream waiting on a phone moves to the quiet slot, the other keeps its slot, neither is cut before the deadline', async () => {
     const { stream, q } = stuckStream();
     const first = [new Stuck(), new Stuck()];
     const running = first.map((r) => stream(q, r as unknown as ExpressResponse));
@@ -162,20 +161,37 @@ describe('buildMediaHolderStream', () => {
     expect(first.every((r) => r.destroyed && !r.ended)).toBe(true);
   });
 
-  it('buffered bytes that keep moving hold the slot, and the file completes when the phone catches up', async () => {
-    const { stream, q } = stuckStream({ deadlineMs: 2_000 });
+  it('a phone that drains in time holds its slot, and the file completes', async () => {
+    const { stream, q } = stuckStream({ deadlineMs: 2_000, waitingOnPhoneMs: 500 });
     const res = new Stuck();
     const running = stream(q, res as unknown as ExpressResponse);
-    for (let i = 0; i < 8; i++) { await settle(20); res.writableLength -= 10; } // 160 ms, past the 40 ms limit
+    await settle(20);
     const a = new Stuck(); const b = new Stuck();
     const others = [stream(q, a as unknown as ExpressResponse), stream(q, b as unknown as ExpressResponse)];
     await settle(10);
-    expect(b.statusCode).toBe(202); // the moving download still counts, so one slot was left
-    for (let n = 0; n < 40 && !res.ended; n++) { res.emit('drain'); a.emit('drain'); await settle(5); }
+    expect(b.statusCode).toBe(202);
+    for (let n = 0; n < 60 && !(res.ended && a.ended); n++) { res.emit('drain'); a.emit('drain'); await settle(5); }
     expect(res.ended).toBe(true);
     expect(Buffer.concat(res.chunks).toString()).toBe('onetwothree');
-    for (let n = 0; n < 40 && !a.ended; n++) { a.emit('drain'); await settle(5); }
     await Promise.all([running, ...others]);
+    expect(stream.counts()).toEqual({ runnable: 0, quiet: 0, open: 0, openByHolder: {} });
+  });
+
+  it('every way a stream ends returns its permit once', async () => {
+    const zero = { runnable: 0, quiet: 0, open: 0, openByHolder: {} };
+    const list = [Buffer.from('one'), Buffer.from('two'), Buffer.from('three')];
+    const whole = sha(Buffer.concat(list));
+    const build = (f: typeof fetch, over = {}) => buildMediaHolderStream({ peers: () => [{ machineId: 'm_b', url: 'http://127.0.0.1:9', kind: 'lan' }], token: () => 't', selfMachineId: () => 'm_a', fetchImpl: f, recheckMs: 10, ...over });
+    const req = (sha256: string, isCurrent = () => true) => ({ sha256, ref: 'slack:_:C', machine: 'm_b', isCurrent });
+    const good = (async () => body(parts(list))) as typeof fetch;
+    const finish = build(good); await finish(req(whole), new FakeRes() as unknown as ExpressResponse); expect(finish.counts()).toEqual(zero);
+    const hashFail = build(good); await hashFail(req('c'.repeat(64)), new FakeRes() as unknown as ExpressResponse); expect(hashFail.counts()).toEqual(zero);
+    for (const quietFirst of [false, true]) {
+      const hold = { waitingOnPhoneMs: quietFirst ? 15 : 60_000 };
+      const closed = build(good, hold); const r1 = new Stuck(); const p1 = closed(req(whole), r1 as unknown as ExpressResponse); await settle(50); r1.emit('close'); await p1; expect(closed.counts()).toEqual(zero);
+      let allowed = true; const revoked = build(good, hold); const p2 = revoked(req(whole, () => allowed), new Stuck() as unknown as ExpressResponse); await settle(50); allowed = false; await p2; expect(revoked.counts()).toEqual(zero);
+      const deadline = build(good, { ...hold, deadlineMs: 60 }); await deadline(req(whole), new Stuck() as unknown as ExpressResponse); expect(deadline.counts()).toEqual(zero);
+    }
   });
 
   it('a phone that never catches up is not reported against the holder', async () => {

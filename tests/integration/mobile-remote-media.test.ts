@@ -13,7 +13,8 @@ import express from 'express';
 import type { AddressInfo } from 'node:net';
 import request from 'supertest';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
-import { authMiddleware, bearerMatches } from '../../src/server/middleware.js';
+import { authMiddleware, bearerMatches, buildRequestTimeoutOverrides, requestTimeout } from '../../src/server/middleware.js';
+import type { RopeResultRecorder } from '../../src/server/poolPeerFetch.js';
 import { MobilePairingService, createMobilePairingRouter, deviceAuthenticator, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
 import { createMobileMediaRouter } from '../../src/server/mobileMediaRoutes.js';
 import { HOLDER_MEDIA_HEADER, buildMediaHolderStream } from '../../src/server/mobileMediaHolderProxy.js';
@@ -42,7 +43,7 @@ type Peer = { machineId: string; url: string; kind: string };
 const jpeg = (n: number) => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), crypto.randomBytes(n)]);
 const sha = (b: Buffer) => crypto.createHash('sha256').update(b).digest('hex');
 
-async function machine(id: string, peers: () => Peer[], over: { maxBytes?: number; firstByteMs?: number; idleMs?: number; drainMs?: number } = {}) {
+async function machine(id: string, peers: () => Peer[], over: { maxBytes?: number; firstByteMs?: number; idleMs?: number; waitingOnPhoneMs?: number; record?: RopeResultRecorder; requestTimeoutMs?: number } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mremotemedia-'));
   dirs.push(dir);
   await new MachineIdentityManager(dir).generateIdentity({ name: id });
@@ -70,14 +71,16 @@ async function machine(id: string, peers: () => Peer[], over: { maxBytes?: numbe
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   app.get('/health', (_q, r) => { r.json({ ok: true }); });
   const hops: string[] = [];
+  if (over.requestTimeoutMs) app.use(requestTimeout(over.requestTimeoutMs, buildRequestTimeoutOverrides({ defaultTimeoutMs: over.requestTimeoutMs })));
   app.use((req, _r, next) => { if (req.path.startsWith('/mobile/media') && req.headers.authorization) hops.push(`${req.method} ${req.url}`); next(); });
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
+  const holder = buildMediaHolderStream({ peers, token: () => 'tok-1', selfMachineId: () => id, firstByteMs: over.firstByteMs ?? 1_500, idleMs: over.idleMs ?? 1_500, waitingOnPhoneMs: over.waitingOnPhoneMs, record: over.record, maxBytes: over.maxBytes, recheckMs: 0 });
   app.use(createMobileMediaRouter({
     pairing, service: svc, mediaEnabled: true, machineId: () => id,
     slackHeld: (key) => slackConversationHeldLocally(registry, key),
     ownerAdmission: (req) => mobileOwnerDeviceAdmission(pairing, req),
     bearerOk: (req) => bearerMatches(req, 'tok-1'),
-    holderMedia: buildMediaHolderStream({ peers, token: () => 'tok-1', selfMachineId: () => id, firstByteMs: over.firstByteMs ?? 1_500, idleMs: over.idleMs ?? 1_500, drainMs: over.drainMs, maxBytes: over.maxBytes, recheckMs: 0 }),
+    holderMedia: holder,
   }));
   app.use(createMobilePairingRouter(pairing, deps, { config } as never));
   const server = http.createServer(app);
@@ -94,7 +97,7 @@ async function machine(id: string, peers: () => Peer[], over: { maxBytes?: numbe
     if (!done.recorded) throw new Error(`file not recorded: ${JSON.stringify(done)}`);
     return key;
   };
-  return { id, app, url, pairing, config, dir, svc, hops, held, registry };
+  return { id, app, url, pairing, config, dir, svc, hops, held, registry, holder };
 }
 type Machine = Awaited<ReturnType<typeof machine>>;
 
@@ -214,7 +217,7 @@ describe('the owner phone opens a Slack file held by another machine', () => {
   });
 
   it('a phone reading slowly on a real socket finishes the file, past the drain limit', async () => {
-    const { a, b } = await pair({ drainMs: 100 });
+    const { a, b } = await pair({ waitingOnPhoneMs: 100 });
     const bytes = jpeg(6 * 1024 * 1024);
     const key = await b.held('C0SLOW111', bytes);
     const p = await phone(a);
@@ -237,7 +240,7 @@ describe('the owner phone opens a Slack file held by another machine', () => {
   }, 30_000);
 
   it('a phone that stops reading on a real socket gives its slot back while staying connected', async () => {
-    const { a, b } = await pair({ drainMs: 100 });
+    const { a, b } = await pair({ waitingOnPhoneMs: 100 });
     const bytes = jpeg(24 * 1024 * 1024);
     const key = await b.held('C0STALL11', bytes);
     const small = jpeg(3_000);
@@ -256,6 +259,159 @@ describe('the owner phone opens a Slack file held by another machine', () => {
     expect(next.status).toBe(200);
     expect(sha(next.body)).toBe(sha(small));
     for (const q of stalled) q.destroy();
+  }, 30_000);
+
+  /** A holder that keeps sending for as long as it is read, and counts its dials. */
+  async function floodHolder(machineId: string) {
+    let dials = 0;
+    const chunk = Buffer.alloc(256 * 1024, 7);
+    const server = http.createServer((_q, r) => {
+      dials++;
+      r.writeHead(200, { 'Content-Type': 'image/jpeg', [HOLDER_MEDIA_HEADER]: '1' });
+      let sent = 0;
+      const pump = () => { while (sent < 40 * 1024 * 1024) { sent += chunk.length; if (!r.write(chunk)) { r.once('drain', pump); return; } } r.end(); };
+      pump();
+    });
+    await new Promise<void>((go) => server.listen(0, '127.0.0.1', () => go()));
+    cleanups.push(() => new Promise<void>((go) => { server.close(() => go()); server.closeAllConnections(); }));
+    return { machineId, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, kind: 'lan', dials: () => dials };
+  }
+  /** A phone that opens the file and then takes no more bytes. */
+  const stalledPhones: http.ClientRequest[] = [];
+  function openPaused(m: Machine, p: Phone, machineId: string) {
+    const r = route(HASH, REF, machineId);
+    const u = new URL(m.url);
+    return new Promise<{ status: number; q: http.ClientRequest }>((resolve, reject) => {
+      const q = http.get({ host: u.hostname, port: u.port, path: r, headers: signedHeaders(p, r) }, (res) => { res.pause(); resolve({ status: res.statusCode ?? 0, q }); });
+      stalledPhones.push(q);
+      q.on('error', () => undefined);
+      setTimeout(() => reject(new Error('no answer')), 8_000).unref();
+    });
+  }
+  const pause = (ms: number) => new Promise((go) => setTimeout(go, ms));
+  async function untilEmpty(m: Machine, within = 3_000) {
+    const end = Date.now() + within;
+    while (m.holder.counts().open > 0 && Date.now() < end) await pause(20);
+    expect(m.holder.counts()).toEqual({ runnable: 0, quiet: 0, open: 0, openByHolder: {} });
+  }
+  const statuses = (all: Array<{ status: number }>, code: number) => all.filter((x) => x.status === code).length;
+
+  it('real sockets, one holder: a race admits 2, then one moves to quiet, one keeps its slot, one more fits, and no fourth', async () => {
+    let list: Peer[] = [];
+    const a = await machine('m_a', () => list, { waitingOnPhoneMs: 100 });
+    const flood = await floodHolder('m_b');
+    list = [flood];
+    const p = await phone(a);
+    const raced = await Promise.all(Array.from({ length: 6 }, () => openPaused(a, p, 'm_b')));
+    expect(statuses(raced, 200)).toBe(2);
+    expect(statuses(raced, 202)).toBe(4);
+    await pause(500);
+    expect(a.holder.counts()).toEqual({ runnable: 1, quiet: 1, open: 2, openByHolder: { m_b: 2 } });
+    const third = await openPaused(a, p, 'm_b');
+    expect(third.status).toBe(200);
+    expect((await openPaused(a, p, 'm_b')).status).toBe(202);
+    await pause(400);
+    expect(a.holder.counts()).toEqual({ runnable: 2, quiet: 1, open: 3, openByHolder: { m_b: 3 } });
+    expect(flood.dials()).toBe(3);
+    for (const q of stalledPhones.splice(0)) q.destroy();
+    await untilEmpty(a);
+  }, 30_000);
+
+  it('real sockets, four holders: never more than 8 open, however many phones ask', async () => {
+    let list: Peer[] = [];
+    const a = await machine('m_a', () => list, { waitingOnPhoneMs: 100 });
+    const floods = await Promise.all(['m_1', 'm_2', 'm_3', 'm_4'].map(floodHolder));
+    list = floods;
+    const [p, other] = [await phone(a), await phone(a)];
+    for (const id of ['m_1', 'm_1', 'm_2', 'm_2', 'm_3', 'm_3']) expect((await openPaused(a, p, id)).status).toBe(200);
+    await pause(500);
+    expect(a.holder.counts()).toMatchObject({ runnable: 4, quiet: 2, open: 6 });
+    expect((await openPaused(a, other, 'm_4')).status).toBe(200);
+    expect((await openPaused(a, other, 'm_4')).status).toBe(200);
+    for (const id of ['m_1', 'm_2', 'm_3', 'm_4']) expect((await openPaused(a, other, id)).status).toBe(202);
+    await pause(400);
+    expect(a.holder.counts()).toMatchObject({ runnable: 6, quiet: 2, open: 8 });
+    expect(floods.reduce((n, f) => n + f.dials(), 0)).toBe(8);
+    for (const q of stalledPhones.splice(0, 1)) q.destroy();
+    await pause(200);
+    expect(a.holder.counts().open).toBe(7);
+    for (const q of stalledPhones.splice(0)) q.destroy();
+    await untilEmpty(a);
+    expect((await openPaused(a, p, 'm_1')).status).toBe(200);
+    for (const q of stalledPhones.splice(0)) q.destroy();
+    await untilEmpty(a);
+  }, 30_000);
+
+  it('real sockets: revoking a phone cuts its quiet and runnable streams and returns both permits', async () => {
+    let list: Peer[] = [];
+    const a = await machine('m_a', () => list, { waitingOnPhoneMs: 100 });
+    const flood = await floodHolder('m_b');
+    list = [flood];
+    const p = await phone(a);
+    const closed: boolean[] = [];
+    for (let i = 0; i < 2; i++) {
+      const opened = await openPaused(a, p, 'm_b');
+      expect(opened.status).toBe(200);
+      opened.q.on('close', () => closed.push(true));
+    }
+    await pause(400);
+    expect(a.holder.counts()).toMatchObject({ runnable: 1, quiet: 1 });
+    a.pairing.devices.revoke(p.deviceId, new Date().toISOString());
+    await untilEmpty(a);
+    const next = await phone(a);
+    expect((await openPaused(a, next, 'm_b')).status).toBe(200);
+    for (const q of stalledPhones.splice(0)) q.destroy();
+    await untilEmpty(a);
+  }, 30_000);
+
+  it('a phone leaving or stalling never marks the road to the holder as failed; a silent holder does', async () => {
+    const results: boolean[] = [];
+    const record: RopeResultRecorder = (_m, _k, ok) => { results.push(ok); };
+    let list: Peer[] = [];
+    const a = await machine('m_a', () => list, { waitingOnPhoneMs: 100, record, firstByteMs: 300 });
+    const flood = await floodHolder('m_b');
+    const silent = await fakeHolder(() => undefined);
+    list = [flood, { ...silent, machineId: 'm_silent' }];
+    const p = await phone(a);
+    const open = await openPaused(a, p, 'm_b');
+    expect(open.status).toBe(200);
+    await pause(300);
+    open.q.destroy();
+    await untilEmpty(a);
+    expect(results).toEqual([true]);
+    const r = route(HASH, REF, 'm_silent');
+    const u = new URL(a.url);
+    const hangUp = http.get({ host: u.hostname, port: u.port, path: r, headers: signedHeaders(p, r) });
+    hangUp.on('error', () => undefined);
+    await pause(100);
+    hangUp.destroy();
+    await untilEmpty(a);
+    expect(results).toEqual([true]);
+    expect((await phoneGet(a, p, r)).status).toBe(504);
+    expect(results).toEqual([true, false]);
+    await untilEmpty(a);
+  }, 30_000);
+
+  it('real sockets: the route timeout does not cut a file from another machine, and uploads keep the configured default', async () => {
+    let list: Peer[] = [];
+    const a = await machine('m_a', () => list, { requestTimeoutMs: 100, firstByteMs: 2_000 });
+    const bytes = jpeg(5_000);
+    const slow = await fakeHolder((_q, r) => { setTimeout(() => { r.writeHead(200, { 'Content-Type': 'image/jpeg', [HOLDER_MEDIA_HEADER]: '1' }); r.end(bytes); }, 400); });
+    list = [slow];
+    const p = await phone(a);
+    const got = await phoneGet(a, p, route(sha(bytes), REF, 'm_b'));
+    expect(got.status).toBe(200);
+    expect(sha(got.body)).toBe(sha(bytes));
+    const app = express();
+    app.use(requestTimeout(100, buildRequestTimeoutOverrides({ defaultTimeoutMs: 100 })));
+    app.use((_q, r) => { setTimeout(() => { if (!r.headersSent) r.status(200).json({ answered: true }); }, 400); });
+    const server = http.createServer(app);
+    await new Promise<void>((go) => server.listen(0, '127.0.0.1', () => go()));
+    cleanups.push(() => new Promise<void>((go) => { server.close(() => go()); server.closeAllConnections(); }));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    expect((await fetch(`${url}/mobile/media/uploads/x/chunks/0`)).status).toBe(408);
+    expect((await fetch(`${url}/mobile/media/purge`)).status).toBe(408);
+    expect((await fetch(`${url}/mobile/media/${HASH}`)).status).toBe(200);
   }, 30_000);
 
   it('naming this machine serves locally with Range still honored and no dial', async () => {

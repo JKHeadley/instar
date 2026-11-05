@@ -24,14 +24,20 @@ export const HOLDER_MEDIA_HEADER = 'x-instar-holder-media';
 export const HOLDER_MEDIA_FIRST_BYTE_MS = 15_000;
 export const HOLDER_MEDIA_IDLE_MS = 20_000;
 /**
- * A download whose buffered bytes have not moved for this long gives its slot back and keeps
- * running, up to the overall deadline. The stream is not cut: bytes sit in kernel buffers that a
- * server cannot read, so a phone still reading slowly and a suspended one can look the same here
- * (measured on macOS loopback at 8 KB/s: nothing visible for 47 s). E2E-PAIRING: EXEMPT — a limit
- * inside an already alive route; a 60 s stall is not E2E-observable and integration drives it on
- * real sockets.
+ * After this long blocked on a phone that is not draining, a stream is classed waiting-on-phone and
+ * moves from a runnable slot to a quiet one, if one is free, and keeps running to the overall
+ * deadline. It is not cut, and this is no proof the phone is idle: bytes sit in kernel buffers a
+ * server cannot read, so a slow phone and a suspended one look the same (measured on macOS loopback
+ * at 8 KB/s: no drain and no change in the write queue for 47 s). E2E-PAIRING: EXEMPT — limits
+ * inside an already alive route; a 60 s wait is not E2E-observable and integration drives them on
+ * real sockets with a short limit.
  */
-export const HOLDER_MEDIA_DRAIN_MS = 60_000;
+export const HOLDER_MEDIA_WAITING_ON_PHONE_MS = 60_000;
+/** Quiet slots, shared by every device. With the runnable ones this is the hard ceiling: 8 open, 3 per holder. */
+export const HOLDER_MEDIA_MAX_QUIET = 2;
+export const HOLDER_MEDIA_MAX_QUIET_PER_HOLDER = 1;
+export const HOLDER_MEDIA_MAX_OPEN = 8;
+export const HOLDER_MEDIA_MAX_OPEN_PER_HOLDER = 3;
 /** How long a phone waits when every slot is taken. Four waiting files stay well under the media bucket. */
 export const HOLDER_MEDIA_BUSY_RETRY_MS = 5_000;
 /** 50 MiB in this time needs about 1.4 Mbit/s end to end; a read cut here restarts, with no Range. */
@@ -50,6 +56,7 @@ export interface HolderMediaRequest {
   isCurrent: () => boolean;
 }
 export type HolderMedia = (request: HolderMediaRequest, res: ExpressResponse) => Promise<void>;
+export interface HolderMediaCounts { runnable: number; quiet: number; open: number; openByHolder: Record<string, number> }
 
 export interface HolderMediaDeps {
   peers: () => PoolPeerTarget[];
@@ -63,7 +70,7 @@ export interface HolderMediaDeps {
   deadlineMs?: number;
   maxBytes?: number;
   recheckMs?: number;
-  drainMs?: number;
+  waitingOnPhoneMs?: number;
 }
 
 function reportFailure(reason: string): void {
@@ -119,13 +126,19 @@ export function holderBearerOk(req: { headers: Record<string, unknown> }, token:
   return !!token && bearerMatches(req, token);
 }
 
-export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
-  let inFlight = 0;
-  const perHolder = new Map<string, number>();
+export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia & { counts(): HolderMediaCounts } {
+  let runnable = 0;
+  let quiet = 0;
+  const runnableByHolder = new Map<string, number>();
+  const quietByHolder = new Map<string, number>();
+  const bump = (m: Map<string, number>, key: string, by: number) => {
+    const next = (m.get(key) ?? 0) + by;
+    if (next > 0) m.set(key, next); else m.delete(key);
+  };
   const maxBytes = deps.maxBytes ?? MAX_FILE_BYTES;
   const recheckMs = deps.recheckMs ?? HOLDER_MEDIA_OWNER_RECHECK_MS;
 
-  return async (q, res) => {
+  const stream: HolderMedia = async (q, res) => {
     // A corrupt registry throws here, and nothing above this handler catches an async rejection.
     let peer: PoolPeerTarget | undefined;
     let token: string | undefined;
@@ -136,19 +149,31 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
       token = deps.token();
     } catch { failed(res, 503, 'holder-unavailable'); return; } // @silent-fallback-ok — reported by failed(); the phone is told to retry
     if (!token) { failed(res, 503, 'holder-unavailable'); return; }
-    const mine = perHolder.get(q.machine) ?? 0;
+    const mine = runnableByHolder.get(q.machine) ?? 0;
+    const openHere = mine + (quietByHolder.get(q.machine) ?? 0);
     // Full is a wait, not a fault: a conversation of photos asks for several at once, and the app
     // already polls this answer.
-    if (inFlight >= HOLDER_MEDIA_MAX_IN_FLIGHT || mine >= HOLDER_MEDIA_MAX_PER_HOLDER) { res.status(202).json({ state: 'fetching', retryAfterMs: HOLDER_MEDIA_BUSY_RETRY_MS }); return; }
-    inFlight++;
-    perHolder.set(q.machine, mine + 1);
-    let slotHeld = true;
-    const releaseSlot = () => {
-      if (!slotHeld) return;
-      slotHeld = false;
-      inFlight--;
-      const left = (perHolder.get(q.machine) ?? 1) - 1;
-      if (left > 0) perHolder.set(q.machine, left); else perHolder.delete(q.machine);
+    if (runnable >= HOLDER_MEDIA_MAX_IN_FLIGHT || mine >= HOLDER_MEDIA_MAX_PER_HOLDER
+      || runnable + quiet >= HOLDER_MEDIA_MAX_OPEN || openHere >= HOLDER_MEDIA_MAX_OPEN_PER_HOLDER) {
+      res.status(202).json({ state: 'fetching', retryAfterMs: HOLDER_MEDIA_BUSY_RETRY_MS });
+      return;
+    }
+    let permit: 'runnable' | 'quiet' | 'returned' = 'runnable';
+    runnable++;
+    bump(runnableByHolder, q.machine, 1);
+    // No await in either of these, so the counts cannot be seen half moved.
+    const moveToQuiet = () => {
+      if (permit !== 'runnable' || quiet >= HOLDER_MEDIA_MAX_QUIET || (quietByHolder.get(q.machine) ?? 0) >= HOLDER_MEDIA_MAX_QUIET_PER_HOLDER) return;
+      quiet++;
+      bump(quietByHolder, q.machine, 1);
+      runnable--;
+      bump(runnableByHolder, q.machine, -1);
+      permit = 'quiet';
+    };
+    const returnPermit = () => {
+      if (permit === 'runnable') { runnable--; bump(runnableByHolder, q.machine, -1); }
+      if (permit === 'quiet') { quiet--; bump(quietByHolder, q.machine, -1); }
+      permit = 'returned';
     };
 
     const abort = new AbortController();
@@ -176,7 +201,7 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
     watch.unref?.();
 
     // Set when a limit ended the stream while it waited on the phone, not on the holder.
-    let phoneWaiting = false;
+    let waitingOnPhone = false;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
       const path = `/mobile/media/${q.sha256}?ref=${encodeURIComponent(q.ref)}&machine=${encodeURIComponent(q.machine)}&holderHop=1`;
@@ -184,7 +209,13 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
         if (!ownerNow()) throw new PoolPeerAdmissionError('owner-phone-required');
         return (deps.fetchImpl ?? fetch)(input, init);
       };
-      const r = await poolPeerFetch(deps.record, peer, path, {
+      // A phone hanging up or being revoked says nothing about the road to the holder.
+      const record: RopeResultRecorder = (...result) => {
+        const callerAbort = abort.signal.aborted && (abort.signal.reason as { name?: string } | undefined)?.name === 'AbortError';
+        if (result[2] === false && callerAbort) return;
+        deps.record?.(...result);
+      };
+      const r = await poolPeerFetch(record, peer, path, {
         headers: { Authorization: `Bearer ${token}` }, redirect: 'manual', signal: abort.signal,
       }, ownerFetch);
       if (r.status >= 300 && r.status < 400) { await r.body?.cancel().catch(() => undefined); failed(res, 502, 'holder-redirected'); return; } // @silent-fallback-ok — releasing a refused body
@@ -230,18 +261,13 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
       // A slow phone is not a stalled holder: the overall deadline bounds this wait.
       const phoneDrain = async () => {
         if (idle) clearTimeout(idle);
-        const drainMs = deps.drainMs ?? HOLDER_MEDIA_DRAIN_MS;
-        let left = res.writableLength;
-        let moved = Date.now();
-        const stall = setInterval(() => {
-          const now = res.writableLength;
-          if (now < left) { left = now; moved = Date.now(); } else if (Date.now() - moved >= drainMs) releaseSlot();
-        }, Math.max(10, Math.min(1_000, drainMs / 4)));
+        // With no quiet slot free it keeps the runnable one rather than being cut, and tries again.
+        const stall = setInterval(moveToQuiet, deps.waitingOnPhoneMs ?? HOLDER_MEDIA_WAITING_ON_PHONE_MS);
         stall.unref?.();
         try {
           await once(res, 'drain', { signal: abort.signal });
         } catch (err) {
-          phoneWaiting = true;
+          waitingOnPhone = true;
           throw err;
         } finally {
           clearInterval(stall);
@@ -277,7 +303,7 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
       if (err instanceof PoolPeerAdmissionError || revoked) { ownerOnly(res); return; }
       if (res.destroyed) return;
       // The phone went quiet: nothing is wrong with the holder, so nothing is reported against it.
-      if (phoneWaiting) { res.destroy(); return; }
+      if (waitingOnPhone) { res.destroy(); return; }
       const name = (err as { name?: string } | null)?.name;
       const reasonName = (abort.signal.reason as { name?: string } | undefined)?.name;
       const timedOut = name === 'TimeoutError' || reasonName === 'TimeoutError';
@@ -288,7 +314,13 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
       if (idle) clearTimeout(idle);
       res.off('close', onClose);
       void reader?.cancel().catch(() => undefined); // @silent-fallback-ok — a finished or aborted read has nothing to release
-      releaseSlot();
+      returnPermit();
     }
   };
+  const counts = (): HolderMediaCounts => {
+    const openByHolder: Record<string, number> = {};
+    for (const m of [runnableByHolder, quietByHolder]) for (const [k, v] of m) openByHolder[k] = (openByHolder[k] ?? 0) + v;
+    return { runnable, quiet, open: runnable + quiet, openByHolder };
+  };
+  return Object.assign(stream, { counts });
 }
