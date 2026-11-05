@@ -1957,6 +1957,13 @@ export class AgentServer {
         peerEndpointRecorder: options.peerEndpointRecorder,
         getSelfMeshEndpoints: options.getSelfMeshEndpoints,
         identityReannounce: options.identityReannounce,
+        getTelegramHandoverSource: () => {
+          const entry = options.config.messaging?.find((m) => m.type === 'telegram' && m.enabled !== false);
+          const { token, chatId } = (entry?.config ?? {}) as { token?: unknown; chatId?: unknown };
+          return typeof token === 'string' && token && chatId !== undefined && chatId !== null
+            ? { botToken: token, chatId: String(chatId) }
+            : null;
+        },
         getIdentityRecoveryBearerToken: () => resolveDevAgentGate(options.config.multiMachine?.identityReannounce?.enabled, options.config)
           ? options.config.multiMachine?.identityReannounce?.sharedBearerToken
           : undefined,

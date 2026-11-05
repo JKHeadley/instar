@@ -32,12 +32,12 @@ describe('Session Pool activation wiring (§L4)', () => {
   });
 
   it('the interception FAILS SAFE — any route error falls back to local dispatch', () => {
-    const idx = src.indexOf("_sessionRouter && _sessionPoolStage() !== 'dark'");
+    const idx = src.indexOf("_sessionRouter && (_sessionPoolStage() !== 'dark' || _routingOnly)");
     // Window 6500 (was 5200): the silent-loss-refusal-conservation `rejected`
     // outcome branch (a first-class refusal short-circuit added before the
     // isRemotelyHandled check) sits inside this block and pushed the
     // fail-safe fallback log line further down.
-    const block = src.slice(idx, idx + 6500);
+    const block = src.slice(idx, idx + 7000);
     expect(block).toContain('try {');
     expect(block).toContain('await _sessionRouter.route(');
     expect(block).toContain('falling back to local dispatch');
