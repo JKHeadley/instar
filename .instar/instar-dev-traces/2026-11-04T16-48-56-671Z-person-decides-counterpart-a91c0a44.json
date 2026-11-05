@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "person-decides-counterpart",
+  "sessionId": "b79e7adf-be36-4819-ae55-55d72c5f8b25",
+  "timestamp": "2026-11-04T16:48:56.671Z",
+  "artifactPath": "upgrades/side-effects/person-decides-counterpart.md",
+  "artifactSha256": "ceedf14b9be1e78342248d4d0834d045043f484a95f37e0ecd90df0c84a381f8",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/person-decides-counterpart-interaction-family-2026-11-04.json",
+    "docs/constitution-alignment-map.md",
+    "docs/specs/person-decides-counterpart.eli16.md",
+    "docs/specs/reports/person-decides-counterpart-constitution-review-2026-11-04.md",
+    "docs/standards-registry-area-audits.json",
+    "tests/unit/standards-coverage-ratchet.test.ts",
+    "upgrades/side-effects/person-decides-counterpart.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Docs-only constitution wording with a stamped audit chain; no runtime effect.",
+  "eli16Path": "docs/specs/person-decides-counterpart.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/person-decides-counterpart.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
