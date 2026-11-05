@@ -327,6 +327,78 @@ describe('SessionRouter — channel-scope threading (placement-platform-workspac
     expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', expect.any(Number));
   });
 
+  describe('an unowned key with a live session on this machine', () => {
+    const cheaperPeer = [cap(SELF, { loadAvg: 9 }), cap('m_remote', { loadAvg: 0 })];
+
+    it('stays here even when a peer is cheaper, and the message is handled here', async () => {
+      const { router, deps } = makeRouter({ liveLocalSession: () => true }, cheaperPeer);
+      const out = await router.route(msg());
+      expect(out).toMatchObject({ action: 'handled-locally', owner: SELF, acked: true });
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', SELF, 0);
+      expect(deps.spawnOnMachine).not.toHaveBeenCalled();
+    });
+    it('confirms the claim at once, so a later Slack or drained message is not queued behind placing', async () => {
+      const confirmClaim = vi.fn();
+      const { router } = makeRouter({ liveLocalSession: () => true, confirmClaim }, cheaperPeer);
+      await router.route(msg());
+      expect(confirmClaim).toHaveBeenCalledWith('s1', SELF);
+    });
+    it('an ordinary self-placement is not confirmed early', async () => {
+      const confirmClaim = vi.fn();
+      const { router } = makeRouter({ liveLocalSession: () => false, confirmClaim }, [cap(SELF, { loadAvg: 0 }), cap('m_remote', { loadAvg: 9 })]);
+      await router.route(msg());
+      expect(confirmClaim).not.toHaveBeenCalled();
+    });
+    it('a machine that lost the workspace does not keep the session: mandatory checks still hold', async () => {
+      const registry = [
+        cap(SELF, { servesChannels: { slack: { workspaceIds: ['W-other'] } }, loadAvg: 0 }),
+        cap('m_remote', { servesChannels: { slack: { workspaceIds: ['W-live'] } }, loadAvg: 5 }),
+      ];
+      const { deps, router } = makeRouter({ liveLocalSession: () => true }, registry);
+      await router.route(msg({ channel: { platform: 'slack', workspaceId: 'W-live', channelId: 'C1' } }));
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+    it('a quota-blocked machine does not keep the session when a peer can take it', async () => {
+      const registry = [cap(SELF, { quotaState: { blocked: true } as MachineCapacity['quotaState'] }), cap('m_remote', { loadAvg: 5 })];
+      const { deps, router } = makeRouter({ liveLocalSession: () => true }, registry);
+      await router.route(msg());
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+    it('with no live session, placement still chooses the cheaper peer', async () => {
+      const { deps, router } = makeRouter({ liveLocalSession: () => false }, cheaperPeer);
+      await router.route(msg());
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+    it('a preferred machine wins over the live session: that is a request to move', async () => {
+      const { deps, router } = makeRouter({ liveLocalSession: () => true }, cheaperPeer);
+      await router.route(msg({ topicMetadata: { preferredMachine: 'm_remote', pinned: true } }));
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+    it('does not apply to a dead-owner re-placement', async () => {
+      const live = vi.fn(() => true);
+      const { deps, router } = makeRouter({ liveLocalSession: live, resolveOwnership: () => ({ owner: 'm_dead', epoch: 3, status: 'active' }), isMachineAlive: (m) => m !== 'm_dead' }, cheaperPeer);
+      await router.route(msg());
+      expect(live).not.toHaveBeenCalled();
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 3);
+    });
+    it('a key that already has an owner is untouched', async () => {
+      const live = vi.fn(() => true);
+      const { router } = makeRouter({ liveLocalSession: live, resolveOwnership: () => ({ owner: 'm_remote', epoch: 1, status: 'active' }) }, cheaperPeer);
+      expect(await router.route(msg())).toMatchObject({ action: 'forwarded', owner: 'm_remote' });
+      expect(live).not.toHaveBeenCalled();
+    });
+    it('a read error leaves the decision to placement', async () => {
+      const { deps, router } = makeRouter({ liveLocalSession: () => { throw new Error('tmux gone'); } }, cheaperPeer);
+      await router.route(msg());
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+    it('without the dep, routing is unchanged', async () => {
+      const { deps, router } = makeRouter({}, cheaperPeer);
+      await router.route(msg());
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+  });
+
   it('no channel (telegram/shared or legacy) → decide() gets no channel → fail-open (unchanged routing)', async () => {
     const decideSpy = vi.fn(() => ({ chosenMachine: SELF, score: 1, reason: 'least-loaded', outcome: 'placed' as const }));
     const { router } = makeRouter({
