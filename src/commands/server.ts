@@ -203,8 +203,9 @@ import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from '../server
 import { formatWatchdogUserMessage, formatWatchdogSessionNotice } from '../monitoring/watchdog-notifications.js';
 import { StallTriageNurse } from '../monitoring/StallTriageNurse.js';
 import { TriageOrchestrator } from '../monitoring/TriageOrchestrator.js';
-import { SessionMonitor } from '../monitoring/SessionMonitor.js';
+import { SessionMonitor, isForeignTopicOwner } from '../monitoring/SessionMonitor.js';
 import { SessionRecovery } from '../monitoring/SessionRecovery.js';
+import { isSystemOrProxyMessage as isSystemOrProxyMessageForMonitor } from '../messaging/shared/isSystemOrProxyMessage.js';
 import { MultiMachineCoordinator } from '../core/MultiMachineCoordinator.js';
 import { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { isRemotelyHandled } from '../core/SessionRouter.js';
@@ -1301,13 +1302,10 @@ let _deliverA2aToMachine:
 // Subscription & Auth Standard P1.3 — quota-aware account-swap scheduler. Null
 // until wired (requires SessionRefresh + the subscription pool).
 let _quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler | null = null;
+let _usageWallRescue: import('../core/UsageWallRescue.js').UsageWallRescue | null = null;
 // Subscription & Auth Standard P1.3 — pre-limit proactive swap monitor. Null
 // until wired (requires the scheduler; gated behind subscriptionPool.proactiveSwap).
 let _proactiveSwapMonitor: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor | null = null;
-// usage-wall-rescue — moves a session off a walled account (tagged or not) and
-// tags spawns. Null until wired next to the scheduler; read late by the
-// PresenceProxy wording hook.
-let _usageWallRescue: import('../core/UsageWallRescue.js').UsageWallRescue | null = null;
 // swap-continuity-antithrash §3/§4 — the anti-thrash spine. The ledger + engine
 // load and hydrate UNCONDITIONALLY at boot (R4-L3: reactive rows append
 // regardless of antiThrash.enabled, so the index is warm at a mid-run flag
@@ -13027,7 +13025,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             // Check if this is a Slack synthetic ID
             const slackChId = slackProxyChannelMap.get(topicId);
             if (slackChId && _slackAdapter) {
-              const msgs = _slackAdapter.getChannelMessages(slackChId, limit);
+              const target = _slackAdapter.parseRoutingKey(slackChId);
+              const all = _slackAdapter.getChannelMessages(target.channelId, target.threadTs ? 200 : limit);
+              const msgs = all.filter(m =>
+                _slackAdapter!.resolveRoutingKey(target.channelId, m.thread_ts, m.ts) === slackChId
+              ).slice(-limit);
               return msgs.map(m => ({ text: m.text, fromUser: _slackAdapter!.isMessageFromUser(m), timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
             }
             if (telegram) {
@@ -13111,7 +13113,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           getTopicHistory: (topicId, limit) => {
             const slackChId = slackProxyChannelMap.get(topicId);
             if (slackChId && _slackAdapter) {
-              const msgs = _slackAdapter.getChannelMessages(slackChId, limit);
+              const target = _slackAdapter.parseRoutingKey(slackChId);
+              const all = _slackAdapter.getChannelMessages(target.channelId, target.threadTs ? 200 : limit);
+              const msgs = all.filter(m =>
+                _slackAdapter!.resolveRoutingKey(target.channelId, m.thread_ts, m.ts) === slackChId
+              ).slice(-limit);
               return msgs.map(m => ({ text: m.text, fromUser: _slackAdapter!.isMessageFromUser(m), timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
             }
             if (telegram) {
@@ -13124,7 +13130,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             const slackChId = slackProxyChannelMap.get(topicId);
             if (slackChId && _slackAdapter) {
               if (_slackAdapter.isSystemChannel(slackChId)) return;
-              await _slackAdapter.sendToChannel(slackChId, text);
+              const target = _slackAdapter.parseRoutingKey(slackChId);
+              await _slackAdapter.sendToChannel(target.channelId, text, target.threadTs ? { thread_ts: target.threadTs } : undefined);
               return;
             }
             if (telegram) await sendTriageNotice(topicId, text, originAuthor);
@@ -13370,12 +13377,12 @@ export async function startServer(options: StartOptions): Promise<void> {
 
               // Build a recovery bootstrap message with thread history (inline, matching Telegram pattern)
               // Use async fallback to fetch from Slack API if ring buffer is empty (race condition on restart)
-              const history = await _slackAdapter.getChannelMessagesWithFallback(slackApiChannel, 30);
+              const history = await _slackAdapter.getConversationMessagesWithFallback(slackChId, 30);
               const botUserId = _slackAdapter.getBotUserId?.() ?? null;
               const lines: string[] = [];
-              lines.push(`CONTINUATION — You are resuming an EXISTING Slack conversation after context exhaustion. Read the context below and pick up where you left off. Do NOT ask what was being discussed.`);
+              lines.push(`CONTINUATION — You are resuming an EXISTING Slack conversation after a session failure. Read the context below and pick up where you left off. Do NOT ask what was being discussed.`);
               lines.push('');
-              lines.push(`[RECOVERY] Previous session hit the context window limit. This is a FRESH restart with thread history.`);
+              lines.push(`[RECOVERY] The previous session could not continue. This is a FRESH restart with conversation history.`);
               if (recoveryPrompt) lines.push(recoveryPrompt);
               lines.push('');
               if (history.length > 0) {
@@ -13579,10 +13586,39 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
           isSessionAlive: (name) => sessionManager.isSessionAlive(name),
+          isSessionStarting: (topicId) => {
+            const slackKey = slackProxyChannelMap.get(topicId);
+            if (slackKey) {
+              const channelId = _slackAdapter?.parseRoutingKey(slackKey).channelId ?? slackKey;
+              return (_slackSpawningChannels.get(channelId) ?? 0) > 0;
+            }
+            return _spawningTopicsRegistryRef?.has(topicId) ?? false;
+          },
+          hasAgentRepliedSince: (topicId, sinceMs) => {
+            const slackKey = slackProxyChannelMap.get(topicId);
+            const logPath = path.join(config.stateDir, slackKey ? 'slack-messages.jsonl' : 'telegram-messages.jsonl');
+            try {
+              return readJsonlTailLastLines(logPath, 100).some(line => {
+                try {
+                  const m = JSON.parse(line);
+                  const key = m.channelId && _slackAdapter
+                    ? _slackAdapter.resolveRoutingKey(String(m.channelId), m.threadTs, String(m.messageId)) : null;
+                  const belongs = slackKey ? key === slackKey : m.topicId === topicId;
+                  return belongs && !m.fromUser && Date.parse(m.timestamp) > sinceMs &&
+                    m.provenance !== 'automation' && m.provenance !== 'user' &&
+                    (m.provenance === 'agent' || !isSystemOrProxyMessageForMonitor(m.text));
+                } catch { return false; }
+              });
+            } catch { return false; }
+          },
           getTopicHistory: (topicId, limit) => {
             const slackChId = slackProxyChannelMap.get(topicId);
             if (slackChId && _slackAdapter) {
-              const msgs = _slackAdapter.getChannelMessages(slackChId, limit);
+              const target = _slackAdapter.parseRoutingKey(slackChId);
+              const all = _slackAdapter.getChannelMessages(target.channelId, target.threadTs ? 200 : limit);
+              const msgs = all.filter(m =>
+                _slackAdapter!.resolveRoutingKey(target.channelId, m.thread_ts, m.ts) === slackChId
+              ).slice(-limit);
               return msgs.map(m => ({ text: m.text, fromUser: _slackAdapter!.isMessageFromUser(m), timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
             }
             if (telegram) {
@@ -13630,13 +13666,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           // reads (assigned further down; a read before assignment throws and the
           // monitor treats it as owned here).
           isTopicOwnedByPeer: (topicId) => {
-            if (_sessionPoolStage() === 'dark') return false;
             const reg = sessionOwnershipRegistry;
             const self = _meshSelfId;
             if (!reg || !self) return false;
-            const rec = reg.read(String(topicId));
-            if (!rec || rec.status !== 'active' || rec.ownerMachineId === self) return false;
-            return isOwnerReachableShared(rec.ownerMachineId);
+            return isForeignTopicOwner(reg.read(String(topicId)), self);
           },
         },
         config.monitoring.sessionMonitor,
@@ -16899,7 +16932,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         // log-reading race guard at PresenceProxy.fireTier didn't share the
         // same classifier. The result was Tier 2 silently cancelling because
         // the ack was on disk. Same isBriefAck export feeds both paths now.
-        const checkLogForAgentResponse = (logPath: string, topicId: number, sinceIso: string): boolean => {
+        const checkLogForAgentResponse = (logPath: string, topicId: number, sinceIso: string, includeBriefAck = false): boolean => {
           try {
             // Bounded TAIL read — never the whole file. This only inspects the
             // last 50 lines, so loading the full multi-MB telegram-messages.jsonl
@@ -16912,7 +16945,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // Slack logs use channelId (string); Telegram logs use topicId (number).
                 // For Slack synthetic IDs (negative), match against channelId via the map.
                 const matchesTopic = msg.topicId === topicId
-                  || (topicId < 0 && msg.channelId && slackChannelToSyntheticId(String(msg.channelId)) === topicId);
+                  || (topicId < 0 && msg.channelId && slackChannelToSyntheticId(
+                    _slackAdapter?.resolveRoutingKey(String(msg.channelId), msg.threadTs, String(msg.messageId)) ?? String(msg.channelId),
+                  ) === topicId);
                 if (matchesTopic && !msg.fromUser && msg.timestamp > sinceIso) {
                   if (msg.provenance === 'automation' || msg.provenance === 'user') continue;
                   // Non-cancelling agent message kinds: system/proxy
@@ -16920,7 +16955,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   // leave tier timers running. A structurally agent-authored
                   // row is never reclassified from its text prefix.
                   const isNonCancelling = (msg.provenance !== 'agent' && isSystemOrProxyMessage(msg.text))
-                    || isBriefAck(msg.text);
+                    || (!includeBriefAck && isBriefAck(msg.text));
                   if (isNonCancelling) continue;
                   return true;
                 }
@@ -16982,6 +17017,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (checkLogForAgentResponse(slackMessagesLogPath, topicId, sinceIso)) return true;
             return false;
           },
+          hasAgentRepliedSince: (topicId, sinceMs) => {
+            const sinceIso = new Date(sinceMs).toISOString();
+            return checkLogForAgentResponse(messagesLogPath, topicId, sinceIso, true)
+              || checkLogForAgentResponse(slackMessagesLogPath, topicId, sinceIso, true);
+          },
           captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
           getSessionForTopic: (topicId) => {
             // Check if this is a Slack synthetic ID
@@ -16995,7 +17035,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           // A spawn in flight for this conversation is not a stopped session.
           isSessionStarting: (topicId) => {
             const slackChId = slackProxyChannelMap.get(topicId);
-            if (slackChId) return (_slackSpawningChannels.get(slackChId) ?? 0) > 0;
+            if (slackChId) {
+              const channelId = _slackAdapter?.parseRoutingKey(slackChId).channelId ?? slackChId;
+              return (_slackSpawningChannels.get(channelId) ?? 0) > 0;
+            }
             return _spawningTopicsRegistryRef?.has(topicId) ?? false;
           },
           sendMessage: async (topicId, text, metadata) => {
@@ -17005,7 +17048,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               // Never send proxy messages to system channels (dashboard, lifeline)
               if (_slackAdapter.isSystemChannel(slackChannelId)) return;
               // Route directly to Slack channel
-              await _slackAdapter.sendToChannel(slackChannelId, text);
+              const target = _slackAdapter.parseRoutingKey(slackChannelId);
+              await _slackAdapter.sendToChannel(target.channelId, text, target.threadTs ? { thread_ts: target.threadTs } : undefined);
               return;
             }
 
@@ -17080,8 +17124,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           hasContextExhaustionLatch: sessionRecovery
             ? (topicId) => sessionRecovery!.hasContextWedgedSeen(topicId)
             : undefined,
-          // usage-wall-rescue: when another account has room, the standby says
-          // the session is being moved — never "paused until reset".
+          // Keep main's usage-wall wording and suppression behavior.
           describeQuotaWall: (sessionName) => _usageWallRescue?.describeWall(sessionName) ?? null,
           // Shared per-topic mutex — coordinates with PromiseBeacon.
           acquireProxyMutex: (topicId, holder) => proxyCoordinator.tryAcquire(topicId, holder),
@@ -18006,7 +18049,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             // Skip system channels (dashboard, lifeline) — they don't have interactive sessions
             if (!entry.channelId) return;
             if (_slackAdapter!.isSystemChannel(String(entry.channelId))) return;
-            const syntheticId = slackChannelToSyntheticId(String(entry.channelId));
+            const routingKey = _slackAdapter!.resolveRoutingKey(String(entry.channelId), entry.threadTs, String(entry.messageId));
+            const syntheticId = slackChannelToSyntheticId(routingKey);
             presenceProxy!.onMessageLogged({
               messageId: typeof entry.messageId === 'number' ? entry.messageId : parseInt(String(entry.messageId), 10) || 0,
               channelId: syntheticId.toString(),
@@ -22463,8 +22507,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         onNoAlternate: telegramRef ? (sessionName, exhaustedAccountId) => {
           void telegramRef.createAttentionItem({
             id: `subpool-no-alternate-${exhaustedAccountId}`,
-            title: 'Every subscription account is at its usage limit',
-            summary: `Session "${sessionName}" reached the usage limit on account "${exhaustedAccountId}", and no other connected account has room. It will carry on by itself when the limit resets. Connecting another account would let it carry on sooner.`,
+            title: 'Subscription pool — no alternate account to swap to',
+            summary: `Session "${sessionName}" hit account "${exhaustedAccountId}"'s quota and there's no other eligible account in the pool. The session falls back to the existing rate-limit back-off; consider enrolling another account.`,
             category: 'subscription-pool',
             priority: 'HIGH',
             sourceContext: 'subscription-pool:no-alternate',
@@ -22550,30 +22594,27 @@ export async function startServer(options: StartOptions): Promise<void> {
         void wallRescue.onThrottleEscalated(sessionName);
       });
 
-      // Session PINNING / tagging. An explicit pinSessionsToPool:true pins
-      // every claude-code spawn (as before). Otherwise the rescue's resolver
-      // tags spawns when the pool has 2+ usable accounts (so no session is
-      // untagged) and, with pinning explicitly off, still refuses to launch on
-      // a default login the pool knows is walled. 0/1 usable accounts → null →
-      // the default login, exactly as before.
-      if (config.subscriptionPool?.pinSessionsToPool === true) {
+      // Subscription-pool session PINNING (Subscription & Auth Standard): when
+      // enabled, new claude-code spawns launch on the scheduler-picked optimal
+      // account (reset-date / headroom score) and carry its id. This is the
+      // prerequisite that makes auto-swap functional — without a session→account
+      // tag, the swap engine has nothing to move. Default off → spawns use the
+      // default config exactly as before (the resolver stays unwired).
+      if (config.subscriptionPool?.pinSessionsToPool) {
         const { selectAccount } = await import('../core/QuotaAwareScheduler.js');
         sessionManager.setSpawnAccountResolver(() => {
           const acct = selectAccount(subscriptionPool.list(), { nowMs: Date.now(), framework: 'claude-code' });
           return acct ? { configHome: acct.configHome, accountId: acct.id } : null;
         });
         console.log(pc.green('  Subscription-pool session pinning enabled'));
-      } else {
-        sessionManager.setSpawnAccountResolver(() => wallRescue.spawnAccount());
       }
 
       // ProactiveSwapMonitor (Subscription & Auth Standard P1.3 — the PRE-LIMIT
       // half). Moves a session OFF an account BEFORE it walls, at a lag-aware
-      // measured threshold. Complements the reactive usage-wall rescue (which
-      // only fires AFTER the wall). It does NOT move untagged sessions (Q3):
-      // those are reached by the default-slot repoint arm, and on a pool with
-      // 2+ usable accounts the wall rescue tags new spawns so few stay
-      // untagged. DARK by default: only runs
+      // measured threshold. Complements the reactive autoSwapOnRateLimit (which
+      // only fires AFTER the wall) and covers UNTAGGED sessions by resolving the
+      // default-config login — so the primary interactive session is swap-visible
+      // instead of wedging (the 2026-06-09 failure). DARK by default: only runs
       // when subscriptionPool.proactiveSwap.enabled is true (moving live sessions
       // is real authority).
       const proactiveCfg = config.subscriptionPool?.proactiveSwap;
