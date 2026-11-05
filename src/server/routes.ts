@@ -20380,6 +20380,47 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   };
 
+  // Maintainer reconciliation for pre-fix forwarded rows. A named, reviewed
+  // owner reply must be present in the pooled history; no inbound is replayed.
+  router.post('/telegram/reconcile-stuck-ledger', async (req, res) => {
+    const addr = req.socket.remoteAddress ?? '';
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(addr)) {
+      return res.status(403).json({ error: 'loopback-only' });
+    }
+    const ledger = ctx.messageLedger;
+    const key = req.body?.dedupeKey;
+    const replyMessageId = req.body?.replyMessageId;
+    const reviewedBy = req.body?.reviewedBy;
+    if (!ledger || typeof key !== 'string' || !/^telegram:[1-9]\d*:[1-9]\d*$/.test(key)
+      || !Number.isSafeInteger(replyMessageId) || replyMessageId <= 0 || reviewedBy !== 'echo') {
+      return res.status(400).json({ error: 'invalid-reconciliation-request' });
+    }
+    const row = ledger.get(key);
+    if (!row || row.state !== 'processing' || !row.topic) return res.status(409).json({ error: 'row-not-processing' });
+    const [, topic, inboundId] = key.split(':');
+    if (row.topic !== topic) return res.status(409).json({ error: 'topic-mismatch' });
+    try {
+      const r = await fetch(`http://127.0.0.1:${ctx.config.port}/telegram/topics/${topic}/messages?limit=100&scope=pool`, {
+        headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(8_000),
+      });
+      if (!r.ok) return res.status(503).json({ error: 'pool-history-unavailable' });
+      const body = await r.json() as { messages?: Array<{ messageId?: number; fromUser?: boolean; authorship?: string; timestamp?: string }> };
+      const history = Array.isArray(body.messages) ? body.messages : [];
+      const inbound = history.find(m => m.fromUser === true && m.messageId === Number(inboundId));
+      const reply = history.find(m => m.fromUser === false && m.messageId === replyMessageId && m.authorship === 'agent-outbound');
+      if (!inbound || !reply || !Number.isFinite(Date.parse(String(inbound.timestamp)))
+        || !Number.isFinite(Date.parse(String(reply.timestamp)))
+        || Date.parse(String(reply.timestamp)) < Date.parse(String(inbound.timestamp))) {
+        return res.status(409).json({ error: 'exact-reply-evidence-unavailable' });
+      }
+      const auditPath = path.join(ctx.config.stateDir, 'logs', 'stuck-ledger-reconciliation.jsonl');
+      fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+      fs.appendFileSync(auditPath, JSON.stringify({ at: new Date().toISOString(), dedupeKey: key, replyMessageId, reviewedBy }) + '\n');
+      commitInboundReply(ledger, key, ctx.coordinator?.getLeaseEpoch() ?? 0);
+      return res.json({ ok: true, dedupeKey: key, replyMessageId, state: ledger.get(key)?.state });
+    } catch { return res.status(503).json({ error: 'pool-history-unavailable' }); }
+  });
+
   router.get('/telegram/topics/:topicId/messages', async (req, res) => {
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
@@ -20480,7 +20521,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       })
       .slice(-limit);
     const joinedPool = joinForDevice(merged);
-    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, pool: { failed } });
+    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, pool: { failed, queried: peers.map(p => p.machineId) } });
   });
 
   // ── Message Log Search ──────────────────────────────────────────

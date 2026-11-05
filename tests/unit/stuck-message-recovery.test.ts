@@ -301,3 +301,43 @@ describe('exactly-once ingress — sender capture wiring', () => {
     expect(block).toMatch(/firstName: fromFirstName/);
   });
 });
+
+describe('cross-machine recovery guard', () => {
+  it('holds a router row on a possible owner answer or incomplete history', () => {
+    const router = MessageProcessingLedger.openMemory();
+    claim(router);
+    const sends: string[] = [];
+    const base = { ledger: router, holdsLease: () => true, epoch: 2, maxProcessingMs: -1,
+      reinject: () => { sends.push('replay'); }, ownerElsewhereReachable: () => false };
+    const uncertain = recoverStuckMessages({ ...base, remoteReplyEvidence: () => 'unknown' });
+    expect(uncertain.skipped).toBe(1);
+    expect(router.get(KEY)?.state).toBe('processing');
+    expect(sends).toEqual([]);
+    const answered = recoverStuckMessages({ ...base, remoteReplyEvidence: () => 'answered' });
+    expect(answered.skipped).toBe(1);
+    expect(router.get(KEY)?.state).toBe('processing');
+    expect(sends).toEqual([]);
+  });
+});
+
+describe('forwarded owner reply marker', () => {
+  it('closes the router row after the owner answers the forwarded original message', () => {
+    const router = MessageProcessingLedger.openMemory();
+    const owner = MessageProcessingLedger.openMemory();
+    claim(router);
+    expect(owner.claimForwardedInbound(KEY, TOPIC, 'do the thing', 2)).toBe(true);
+    commitInboundReply(owner, KEY, 2);
+    const committed = owner.get(KEY)!;
+    expect(committed.state).toBe('cursor_advanced');
+    router.applyRemoteReplyMarker(KEY, {
+      platform: 'telegram', topic: TOPIC, epoch: 2,
+      replyIdempotencyKey: committed.replyIdempotencyKey!,
+    });
+    expect(router.get(KEY)!.state).toBe('reply_committed');
+    expect(owner.claimForwardedInbound(KEY, TOPIC, 'do the thing', 2)).toBe(false);
+    const sends: string[] = [];
+    recoverStuckMessages({ ledger: router, holdsLease: () => true, epoch: 3,
+      maxProcessingMs: -1, reinject: () => sends.push('duplicate') });
+    expect(sends).toEqual([]);
+  });
+});

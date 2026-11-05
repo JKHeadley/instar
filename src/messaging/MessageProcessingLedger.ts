@@ -176,6 +176,16 @@ export class MessageProcessingLedger {
     return { firstSeen: info.changes === 1, state: row.state };
   }
 
+  /**
+   * The owner receives an inbound that the router already claimed locally.
+   * Claim the same key here so the owner's reply can commit and broadcast its
+   * marker back to the router. A duplicate forwarded delivery stays terminal.
+   */
+  claimForwardedInbound(dedupeKey: string, topic: string, input: string, epoch: number): boolean {
+    this.record(dedupeKey, { platform: 'telegram', topic, input });
+    return this.beginProcessing(dedupeKey, epoch);
+  }
+
   /** Has this event already been acted on (reply committed, cursor advanced,
    *  terminally abandoned, or terminally REJECTED)? An 'abandoned' or 'rejected'
    *  entry is terminal — a provider redelivery of the SAME event is dropped (we
