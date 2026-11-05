@@ -257,18 +257,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     missingLoginSession: {
       dryRun: true,
     },
-    // AutonomousProgressHeartbeat — hedged, change-gated, sparse liveness backstop
-    // for an autonomous run gone silent-to-user while its output is still moving.
-    // DEV-GATED: `enabled` is OMITTED so resolveDevAgentGate decides — LIVE on a
-    // developmentAgent (dogfood), DARK on the fleet (GET /autonomous-heartbeat
-    // 503s). NEVER hardcode `enabled: false` here (it would dark dev agents too).
-    // `dryRun: true` holds it to "would emit" logging (same cooldown/budget gates
-    // as live, no per-tick flood) until the dev soak proves it quiet. The
-    // threshold/tick/backoff defaults live in the component; persisting only
-    // dryRun keeps applyDefaults() add-missing-only. Spec:
-    // docs/specs/autonomous-progress-heartbeat.md.
+    // Legacy heartbeat settings retained for existing config compatibility.
+    // server.ts now makes autonomous-run reporting live on every machine and
+    // ignores the old enabled/dryRun/cap switches. The tick and recent-output
+    // window remain tuning inputs; output only changes truthful wording.
     autonomousHeartbeat: {
-      dryRun: true,
+      tickIntervalMs: 60_000,
+      recentOutputChangeWindowMs: 300_000,
     },
     // Periodic Goal Re-Alignment Phase 1 ("see it"). DEV-GATED: enabled is
     // deliberately omitted so it runs on the development agent and stays dark

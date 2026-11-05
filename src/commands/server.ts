@@ -17727,24 +17727,19 @@ export async function startServer(options: StartOptions): Promise<void> {
           (globalThis as Record<string, unknown>).__instarPromiseBeacon = promiseBeacon;
 
           // ── AutonomousProgressHeartbeat ──────────────────────────────────
-          // Hedged, change-gated, sparse liveness BACKSTOP for an autonomous run
-          // gone silent-to-user while its terminal output is STILL changing. NOT
-          // the suppressed PromiseBeacon §B1 filler — much higher bar (long
-          // user-silence gate + corroborated recent output change from
-          // ActiveWorkSilenceSentinel's shared snapshot + per-topic cooldown +
-          // widening per-run backoff + hard cap + the shared one-voice lease).
-          // DEV-GATED dark: enabled via resolveDevAgentGate (LIVE on a dev agent,
-          // DARK on the fleet); dryRun defaults true (would-emit log, no send).
-          // Spec: docs/specs/autonomous-progress-heartbeat.md.
+          // Every machine reports its own registered autonomous runs after a
+          // long user silence. Observation determines honest wording, never
+          // whether a run may go entirely silent. A moved-away run belongs to
+          // the destination; a locally suspended move is reported here.
           try {
-            const ahRawCfg = config.monitoring?.autonomousHeartbeat ?? {};
-            const ahEnabled = resolveDevAgentGate(ahRawCfg.enabled, config);
-            if (ahEnabled && telegram) {
+            // Reporting is an autonomous-run invariant on every machine. The
+            // legacy dev-gated heartbeat settings must not leave fleet owners
+            // silent (or stuck in dry-run) after an update.
+            if (telegram) {
               const { AutonomousProgressHeartbeat } = await import('../monitoring/AutonomousProgressHeartbeat.js');
               const { AutonomousHeartbeatRunStateStore } = await import('../monitoring/AutonomousHeartbeatRunStateStore.js');
               const {
-                activeAutonomousJobs,
-                autonomousRunRemainingForTopic,
+                reportableAutonomousJobs,
                 readAutonomousRunMarkers,
               } = await import('../core/AutonomousSessions.js');
               const { ParallelActivityIndex: AHParallelActivityIndex, runningTopicIds: ahRunningTopicIds } = await import('../core/ParallelActivityIndex.js');
@@ -17777,20 +17772,24 @@ export async function startServer(options: StartOptions): Promise<void> {
                 {
                   listActiveAutonomousRuns: () => {
                     const out: import('../monitoring/AutonomousProgressHeartbeat.js').ActiveAutonomousRun[] = [];
-                    const now = Date.now();
-                    for (const job of activeAutonomousJobs(config.stateDir)) {
-                      if (job.topic == null) continue; // legacy single-file job has no topic
-                      const remaining = autonomousRunRemainingForTopic(config.stateDir, job.topic, now);
-                      if (!remaining) continue;
+                    for (const { job, remainingSeconds } of reportableAutonomousJobs(config.stateDir)) {
+                      if (job.topic == null) continue;
                       const topicId = Number(job.topic);
                       if (!Number.isFinite(topicId)) continue;
                       out.push({
                         topicId,
                         sessionName: localTelegram2.getSessionForTopic(topicId) ?? null,
-                        remainingSeconds: remaining.remainingSeconds,
+                        remainingSeconds,
+                        paused: job.paused,
                       });
                     }
                     return out;
+                  },
+                  isLocalTopicOwner: (topicId) => {
+                    try {
+                      const owner = sessionOwnershipRegistry?.ownerOf(String(topicId));
+                      return owner && _meshSelfId ? owner === _meshSelfId : null;
+                    } catch { return null; }
                   },
                   getRunMarkers: (topicId) => readAutonomousRunMarkers(config.stateDir, topicId),
                   isSessionAlive: (name) => sessionManager.isSessionAlive(name),
@@ -17829,14 +17828,14 @@ export async function startServer(options: StartOptions): Promise<void> {
                     // would re-run binary discovery + secret merge every minute.
                     const disk = JSON.parse(
                       fs.readFileSync(path.join(config.stateDir, 'config.json'), 'utf8'),
-                    ) as { monitoring?: { autonomousHeartbeat?: typeof ahRawCfg } };
+                    ) as { monitoring?: { autonomousHeartbeat?: { tickIntervalMs?: number; recentOutputChangeWindowMs?: number } } };
                     const live = disk.monitoring?.autonomousHeartbeat ?? {};
                     return {
-                      enabled: resolveDevAgentGate(live.enabled, config),
-                      dryRun: live.dryRun !== false,
-                      silenceThresholdMinutes: live.silenceThresholdMinutes,
+                      enabled: true,
+                      dryRun: false,
+                      guaranteedReporting: true,
+                      silenceThresholdMinutes: 30,
                       tickIntervalMs: live.tickIntervalMs,
-                      maxHeartbeatsPerRun: live.maxHeartbeatsPerRun,
                       recentOutputChangeWindowMs: live.recentOutputChangeWindowMs,
                     };
                   },
@@ -17846,12 +17845,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                   },
                 },
                 {
-                  enabled: true, // gate already resolved above
-                  dryRun: ahRawCfg.dryRun !== false,
-                  silenceThresholdMinutes: ahRawCfg.silenceThresholdMinutes,
-                  tickIntervalMs: ahRawCfg.tickIntervalMs,
-                  maxHeartbeatsPerRun: ahRawCfg.maxHeartbeatsPerRun,
-                  recentOutputChangeWindowMs: ahRawCfg.recentOutputChangeWindowMs,
+                  enabled: true,
+                  dryRun: false,
+                  guaranteedReporting: true,
+                  silenceThresholdMinutes: 30,
                 },
               );
               // The focus line is a session's own words: never in a row. Suppressions run every tick, so only a change of reason per topic writes one.
@@ -17880,7 +17877,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               (globalThis as Record<string, unknown>).__instarAutonomousHeartbeat = autonomousHeartbeat;
               guardRegistry.register('monitoring.autonomousHeartbeat.enabled', () => autonomousHeartbeat.guardStatus());
               console.log(pc.green(
-                `  AutonomousProgressHeartbeat enabled (silence backstop — ${(ahRawCfg.dryRun !== false) ? 'dry-run observe-only' : 'LIVE'})`,
+                '  AutonomousProgressHeartbeat enabled (all-machine autonomous-run reporting)',
               ));
             }
           } catch (err) {
