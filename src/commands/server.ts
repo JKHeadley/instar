@@ -21717,14 +21717,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           });
         }
         if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {
-          const { CLASS_REVIEW_STORE_KEY, classReviewFromOriginRecord } = await import('../core/ClassReviewReplicatedStore.js');
-          classReviewStore.setRemoteReader({
-            get: (dedupeKey) => replicatedPeerStreamReader.loadOriginRecords(CLASS_REVIEW_STORE_KEY, dedupeKey)
-              .flatMap((record) => { const parsed = classReviewFromOriginRecord(record); return parsed ? [parsed] : []; }),
-            keys: () => replicatedPeerStreamReader.listRecordKeys(CLASS_REVIEW_STORE_KEY),
-            all: () => new Map([...replicatedPeerStreamReader.loadAllOriginRecords(CLASS_REVIEW_STORE_KEY)].map(([key, records]) => [key,
-              records.flatMap((record) => { const parsed = classReviewFromOriginRecord(record); return parsed ? [parsed] : []; })])),
-          });
+          const { classReviewRemoteReader } = await import('../core/ClassReviewReplicatedStore.js');
+          classReviewStore.setRemoteReader(classReviewRemoteReader(replicatedPeerStreamReader));
         }
         const classReviewAuditPath = path.join(config.stateDir, 'logs', 'correction-class-review.jsonl');
         const classReview = new CorrectionClassReview({
@@ -31989,13 +31983,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
     server.setWorkQueue(workQueue);
     if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {
-      const { CLASS_REVIEW_STORE_KEY, classReviewFromOriginRecord } = await import('../core/ClassReviewReplicatedStore.js');
-      const reader = replicatedPeerStreamReader;
-      server.setClassReviewRemoteReader({
-        get: (dedupeKey) => reader.loadOriginRecords(CLASS_REVIEW_STORE_KEY, dedupeKey)
-          .flatMap((record) => { const parsed = classReviewFromOriginRecord(record); return parsed ? [parsed] : []; }),
-        keys: () => reader.listRecordKeys(CLASS_REVIEW_STORE_KEY),
-      });
+      const { classReviewRemoteReader } = await import('../core/ClassReviewReplicatedStore.js');
+      server.setClassReviewRemoteReader(classReviewRemoteReader(replicatedPeerStreamReader));
     }
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
