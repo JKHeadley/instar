@@ -18982,8 +18982,8 @@ if echo "$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
 fi
 
 # Risky commands — behavior depends on safety level
-for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd"; do
-  if echo "$INPUT" | grep -qi "$pattern"; then
+for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "git +([^|;&]* +)?reset +([^|;&]* +)?--hard" "git +([^|;&]* +)?clean +([^|;&]* +)?(-[a-zA-Z]*f|--force)" "git +([^|;&]* +)?push +([^|;&]* +)?(--force|-f)([^a-zA-Z0-9-]|$)"; do
+  if echo "$INPUT" | grep -qiE "$pattern"; then
     if [ "$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "$pattern" | grep -qiE 'git push (--force|-f)'; then
       continue
     fi
