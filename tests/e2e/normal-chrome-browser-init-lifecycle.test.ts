@@ -46,10 +46,12 @@ describe('fresh init delivers the normal-Chrome browser method', () => {
     expect(md).not.toContain('### Normal-Chrome browser (account-bound web tasks, macOS)\n');
 
     const browserDir = path.join(agentDir, '.instar', 'scripts', 'browser');
-    expect(BROWSER_SCRIPT_NAMES).toHaveLength(5);
+    expect(BROWSER_SCRIPT_NAMES).toHaveLength(7);
+    expect(BROWSER_SCRIPT_NAMES).toEqual(expect.arrayContaining(['xdrive.sh', 'x-drive.py']));
     for (const name of BROWSER_SCRIPT_NAMES) {
       expect(fs.statSync(path.join(browserDir, name)).mode & 0o111, name).not.toBe(0);
     }
+    expect(fs.statSync(path.join(browserDir, 'xdrive-provision.sh')).mode & 0o111).not.toBe(0);
     expect(fs.readFileSync(path.join(browserDir, 'native-drive.ps1'), 'utf-8')).toContain('native-drive.ps1 — Native Browser Drive (Windows)');
 
     // The installed chrome-js.sh resolves a profile id to <agent home>/.instar/state/playwright-profiles/<id>

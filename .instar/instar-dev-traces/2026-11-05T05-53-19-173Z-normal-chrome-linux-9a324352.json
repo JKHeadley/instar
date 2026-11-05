@@ -75,5 +75,14 @@
     ],
     "checkedAt": "2026-11-05T04:32:02.760Z",
     "specSlug": "normal-chrome-linux"
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "linux-browser-install-retry: the hourly check starts the installer through decideProvision, paced 1 h, 6 h, 24 h, with a hard stop after MAX_INSTALL_ATTEMPTS and the count on disk; steady state is zero until an operator says yes"
+    }
   }
 }

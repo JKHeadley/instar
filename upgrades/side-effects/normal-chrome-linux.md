@@ -57,7 +57,7 @@ The person sees two new things. The Secret Drop form says in plain words which s
 
 ## 7. Multi-machine posture (Cross-Machine Coherence)
 
-Machine-local by design: profiles, the cookie, bindings, install results and `autoInstall`. They describe processes and packages on one machine, and copying a profile would copy credentials. `state/xdrive/` and `state/playwright-profiles/` are backup-blocked, so `auto-install.json` cannot start a root install on another machine after a restore. `GET /browser/state` speaks for the machine that answers and says so. Joined machines get no automatic install: they read `not-built` and take the yes/no path.
+Machine-local by design: profiles, the cookie, bindings, install results and `autoInstall`. They describe processes and packages on one machine, and copying a profile would copy credentials. `state/xdrive/` and `state/playwright-profiles/` are backup-blocked and classified never-sync, and `POST /browser/linux/install` is registered as a machine-local write, so `auto-install.json` cannot start a root install on another machine after a restore. `GET /browser/state` speaks for the machine that answers and says so. Joined machines get no automatic install: they read `not-built` and take the yes/no path.
 
 ## 8. Rollback cost
 

@@ -27843,7 +27843,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ? `[secret-drop-received] The password "${submission.label}" for ${submission.browserHost} was just submitted (field: ${fieldNames}). ` +
           `Focus that page's password box, then run XD_PROFILE=<profile> node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} <field-name> --browser. ` +
           `That is the only way it can leave; it goes straight into the box and you never see it. ` +
-          `Then acknowledge receipt to the user conversationally via Telegram topic ${topicId}.`
+          `Then acknowledge receipt to the user conversationally via ${telegramTopicRef(topicId)}.`
         : `[secret-drop-received] Secret "${submission.label}" was just submitted (${fieldCount} field${fieldCount !== 1 ? 's' : ''}: ${fieldNames}). ` +
         `Retrieve with the HARDENED helper (streams field value to stdout, never prints the response body): node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} <field-name>. ` +
         `Discover field names with: node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} --names. ` +
