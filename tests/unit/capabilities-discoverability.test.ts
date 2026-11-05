@@ -46,6 +46,7 @@ const ROUTE_SOURCE_FILES = [
   'src/server/mobilePairingRoutes.ts',
   'src/server/mobileConversationRoutes.ts',
   'src/server/ecosystemIdeaRoutes.ts',
+  'src/server/attributionRoutes.ts',
   'src/server/recommendedServiceRoutes.ts',
 ];
 const routesSource = ROUTE_SOURCE_FILES

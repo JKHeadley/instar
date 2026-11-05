@@ -110,3 +110,7 @@ First reading raised four concerns, all fixed and re-read by the same reviewer:
 4. Report suggestions, Threadline `textRef` and an app message's signed body reached this feature's files unscrubbed. Report text is scrubbed, and pins are now an allow-list of the words plus the fields eligibility reads, with `origin` kept only as a presence flag.
 
 Final ruling: "Concur with the review". Questions on refusal in `record` and on the fleet, brittle authority, note writes: no defect found at any reading.
+
+## After the first Local Verify
+
+Local Verify found census ratchets this change had not met. `AttributionJudge` is now classified on the untrusted-input, judges-claims and injection-exposure axes, its route file is listed for the capability check, two reasoned catches carry their marker, and the default job count moved to 29. No behaviour change.

@@ -215,6 +215,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   ExternalOperationGate: true, // the motivating callsite: credited in-content "user already approved"
   WarrantsReplyGate: true,
   UnjustifiedStopGate: true,
+  AttributionJudge: true, // reads notes, messages and logged rows, all of which may quote untrusted text
   MessagingToneGate: true, // reviews a draft that routinely quotes untrusted user/tool content
   CoherenceReviewer: true,
   LLMSanitizer: true, // definitionally judges untrusted inbound content
@@ -394,6 +395,7 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   WarrantsReplyGate: false, // "should I reply?" — not a completion/health claim
   HubIntentClassifier: false, // classifies a USER's hub bind-intent (open/tie) over a message, not an agent/session claim of completion/health/credit
   CoherenceGate: false, // no own callsite — flows through CoherenceReviewer
+  AttributionJudge: false, // rules on what a person said, not an agent's claim of completion or health
   MessagingToneGate: false, // reviews outbound tone/leaks
   CoherenceReviewer: false, // reviews outbound coherence
   LLMSanitizer: false, // sanitizes untrusted inbound content
@@ -850,6 +852,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   ExternalOperationGate: exposed(EXPOSED_USER_TOOL), // in-content "user already approved" claims
   WarrantsReplyGate: exposed(EXPOSED_USER),
   UnjustifiedStopGate: exposed(EXPOSED_MODEL), // stop justification over session state
+  AttributionJudge: exposed(EXPOSED_ALL), // notes, messages and logged rows
   MessagingToneGate: exposed(EXPOSED_ALL), // reviews an outbound draft quoting user/tool content
   HubIntentClassifier: exposed(EXPOSED_USER), // inbound hub message
   CoherenceReviewer: exposed(EXPOSED_ALL), // reviews outbound coherence (draft + context)

@@ -8427,7 +8427,7 @@ export class AgentServer {
       config: readLive,
       isEnabled: () => resolveDevAgentGate(readLive()?.enabled, config),
       users: () => {
-        try { return users ??= new UserManager(config.stateDir, config.users); } catch { return null; }
+        try { return users ??= new UserManager(config.stateDir, config.users); } catch { /* @silent-fallback-ok — no users file names nobody, which reads identity-unverified */ return null; }
       },
       topicMemory: () => routeCtx.topicMemory ?? null,
       threadLog: () => routeCtx.threadLog ?? null,
@@ -8449,7 +8449,7 @@ export class AgentServer {
       },
       authToken: () => config.authToken,
       recordRope: options.recordRopeResult,
-      holdsLease: () => { try { return options.coordinator?.enabled ? options.coordinator.holdsLease() : true; } catch { return false; } },
+      holdsLease: () => { try { return options.coordinator?.enabled ? options.coordinator.holdsLease() : true; } catch { /* @silent-fallback-ok — unsure of the lease means the audit waits for the next look */ return false; } },
     });
   }
 
