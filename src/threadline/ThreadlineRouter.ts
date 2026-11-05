@@ -17,7 +17,7 @@
 import crypto from 'node:crypto';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
-import type { SpawnRequestManager, SpawnResult } from '../messaging/SpawnRequestManager.js';
+import type { SpawnQueueReceipt, SpawnRequestManager, SpawnResult } from '../messaging/SpawnRequestManager.js';
 import type { MessageStore } from '../messaging/MessageStore.js';
 import type { IMessageDelivery } from '../messaging/types.js';
 import type { MessageEnvelope, AgentMessage } from '../messaging/types.js';
@@ -101,6 +101,12 @@ export interface RelayMessageContext {
    * Absent/false → existing cold-spawn behavior, byte-for-byte.
    */
   preferWarmSession?: boolean;
+  /**
+   * a2a-required-acknowledgment: this message is watched. `instruction` is fixed
+   * text plus the server's handle, placed outside the untrusted framing. Absent ⇒
+   * the prompt and the spawn request are unchanged, byte for byte.
+   */
+  requiredAck?: { instruction: string; receipt: SpawnQueueReceipt };
 }
 
 /** Result of handling an inbound threaded message */
@@ -124,6 +130,13 @@ export interface ThreadlineHandleResult {
   delivered?: boolean;
   /** Whether accepted work is waiting in a retry or approval queue. */
   queued?: boolean;
+  /**
+   * a2a-required-acknowledgment D2: the spawn manager's queue admitted THIS payload.
+   * `queued` alone is also set on the approval path and undelivered topic routes.
+   */
+  spawnQueued?: boolean;
+  /** The message reached a topic session on another machine, so it is not watched. */
+  remoteTopic?: boolean;
   /** The thread ID (existing or newly created) */
   threadId?: string;
   /** Whether a new session was spawned (vs. resumed) */
@@ -175,6 +188,15 @@ type CompleteThreadlineHandleResult = ThreadlineHandleResult & {
 export function withServerNotice(text: string, notice: string | null | undefined): string {
   if (!notice) return text;
   return `[server notice: ${notice}]\n\n${text}`;
+}
+
+/**
+ * a2a-required-acknowledgment D4: the watched message's instruction, OUTSIDE the
+ * untrusted framing (before the grounding header). Fixed text plus a server handle.
+ */
+function withRequiredAckInstruction(text: string, relayContext: RelayMessageContext | undefined): string {
+  const instruction = relayContext?.requiredAck?.instruction;
+  return instruction ? `${instruction}\n\n${text}` : text;
 }
 
 const DEFAULT_MAX_HISTORY = 20;
@@ -772,8 +794,11 @@ export class ThreadlineRouter {
           const topicEnvelope = notice
             ? { ...envelope, message: { ...envelope.message, body: withServerNotice(envelope.message.body, notice) } }
             : envelope;
+          // Peer text stays inside the handler's own untrusted framing; the fixed
+          // instruction is handed over separately so it lands outside it.
           const outcome = await this.topicLinkageHandler.tryRouteReplyToTopic({
             envelope: topicEnvelope,
+            requiredAckInstruction: relayContext?.requiredAck?.instruction,
             threadEntry: {
               remoteAgent: existingEntry.remoteAgent,
               subject: existingEntry.subject,
@@ -795,6 +820,7 @@ export class ThreadlineRouter {
               delivered: false,
               threadId,
               injected: false,
+              ...(outcome.sessionName ? { sessionName: outcome.sessionName } : {}),
               deliveryPending: outcome.settled.then(
                 ({ outcome: o, settlement }) => {
                   const delivered = o.kind === 'routed' && o.deliveryMode === 'live-inject';
@@ -827,6 +853,8 @@ export class ThreadlineRouter {
               injected: outcome.deliveryMode === 'live-inject',
               resumed: outcome.deliveryMode === 'respawn-inject',
               ...(delivered ? { path: 'topic' as const } : {}),
+              ...(outcome.sessionName ? { sessionName: outcome.sessionName } : {}),
+              ...(outcome.remote ? { remoteTopic: true } : {}),
             };
           }
           // 'no-linkage' or 'topic-expired' → fall through to existing path.
@@ -1007,6 +1035,7 @@ export class ThreadlineRouter {
       priority: message.priority === 'critical' ? 'critical' : 'medium',
       pendingMessages: [message.id],
       resumeSessionId: entry.uuid,
+      ...(relayContext?.requiredAck ? { receipt: relayContext.requiredAck.receipt } : {}),
     });
 
     if (!spawnResult.approved) {
@@ -1025,6 +1054,7 @@ export class ThreadlineRouter {
         accepted: spawnResult.queued === true,
         delivered: false,
         queued: spawnResult.queued === true,
+        spawnQueued: spawnResult.queued === true,
         threadId,
         error: `Spawn denied: ${spawnResult.reason}`,
       };
@@ -1099,6 +1129,7 @@ export class ThreadlineRouter {
       priority: message.priority === 'critical' ? 'critical' : 'medium',
       pendingMessages: [message.id],
       sessionId: claudeUuid,
+      ...(relayContext?.requiredAck ? { receipt: relayContext.requiredAck.receipt } : {}),
     });
 
     if (!spawnResult.approved) {
@@ -1117,6 +1148,7 @@ export class ThreadlineRouter {
         accepted: spawnResult.queued === true,
         delivered: false,
         queued: spawnResult.queued === true,
+        spawnQueued: spawnResult.queued === true,
         threadId,
         error: `Spawn denied: ${spawnResult.reason}`,
       };
@@ -1232,6 +1264,7 @@ export class ThreadlineRouter {
         sessionId: claudeUuid,
         // Route the spawn callback to the INTERACTIVE persistent path.
         interactive: true,
+        ...(relayContext.requiredAck ? { receipt: relayContext.requiredAck.receipt } : {}),
       });
     } catch (err) {
       // @silent-fallback-ok — intentional + observable: the warm keep-alive path
@@ -1262,6 +1295,7 @@ export class ThreadlineRouter {
           accepted: true,
           delivered: false,
           queued: true,
+          spawnQueued: true,
           threadId,
           error: `Spawn denied: ${spawnResult.reason}`,
         };
@@ -1431,7 +1465,7 @@ export class ThreadlineRouter {
       originFingerprint: relayContext?.originFingerprint,
       originName: relayContext?.originName,
     });
-    const groundedBody = withServerNotice(`${grounding.header}\n\n${envelope.message.body}\n\n${grounding.footer}`, notice);
+    const groundedBody = withServerNotice(withRequiredAckInstruction(`${grounding.header}\n\n${envelope.message.body}\n\n${grounding.footer}`, relayContext), notice);
     return {
       ...envelope,
       message: {
@@ -1522,7 +1556,7 @@ export class ThreadlineRouter {
         originName: relayContext.originName,
       });
 
-      return withServerNotice(`${grounding.header}\n\n${basePrompt}\n\n${grounding.footer}`, notice);
+      return withServerNotice(withRequiredAckInstruction(`${grounding.header}\n\n${basePrompt}\n\n${grounding.footer}`, relayContext), notice);
     }
 
     return withServerNotice(basePrompt, notice);

@@ -71,6 +71,21 @@ export type MeshCommand =
       purpose?: string;
     }
   | {
+      // a2a-required-acknowledgment D4: a relay STANDBY hands one kinded ack to my
+      // machine holding the relay. A verb of its own, because the chat forward carries
+      // only a chat body: a mixed-version holder would send a summary as a real
+      // message. Registered-peer class; the HANDLER is the gate (feature on, holder
+      // not a standby, capability). A holder without the verb refuses it, and the
+      // standby's pending row stays pending until it expires.
+      type: 'a2a-relay-forward-ack';
+      peerFp: string;
+      ack: { kind: string; state?: string; reason?: string; refMessageIds: string[]; summary?: string };
+      text: string;
+      threadId?: string | null;
+      triggerEncrypted: boolean;
+      ackKinds?: number | null;
+    }
+  | {
       // A2A cross-machine route §5: the relay holder asks the machine that has a
       // topic's live session to type a reply into it. Registered-peer class —
       // the RECEIVER decides from its own live session for the topic, injects
@@ -507,6 +522,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'ssh-proof-publish':
     case 'a2a-inbox-deliver':
     case 'a2a-relay-forward':
+    case 'a2a-relay-forward-ack':
     case 'a2a-topic-reply-inject':
     case 'agent-identity-observe':
     case 'agent-identity-request':

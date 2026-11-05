@@ -22,6 +22,7 @@
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { PENDING_MAX_BACKOFF_MS, PENDING_TICK_MS, PENDING_TTL_MS } from '../threadline/requiredAckService.js';
 import { decideSetupRestart, MAX_SETUP_STARTS } from '../recommended/setupRestart.js';
 import { MAX_GUARD_REPLACEMENTS, RESPAWNS_PER_REQUEST, decideGuardReplacement, decideLockedRespawn } from '../core/DesktopLockedController.js';
 import { OverloadShedPlanner, DEFAULT_OVERLOAD_SHED } from '../core/OverloadShedPlanner.js';
@@ -3800,6 +3801,48 @@ function makeMachineWedgeNotice(f: PressureFixture, sink: ActionSink): { tick():
   };
 }
 
+/**
+ * a2a-required-acknowledgment D1: a receipt the sender must hear is a pending row,
+ * retried with doubling backoff to a ceiling, and expired after an hour. Under a
+ * send that always fails, the row must stop by itself. Its state is durable, so a
+ * restart neither resets the backoff nor extends the expiry.
+ */
+const requiredAckPendingRetry: SelfActionController = {
+  id: 'required-ack-pending-retry',
+  actionVerb: 'receipt-retry',
+  models: 'src/threadline/requiredAckService.ts (tick: pending rows with doubling backoff and a one-hour expiry)',
+  modelsPath: 'src/threadline/requiredAckService.ts',
+  boundK: 12,
+  perTargetBoundK: 12,
+  ticks: 480,
+  tickMs: PENDING_TICK_MS,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeRequiredAckPendingRetry(f, sink),
+  },
+  makeUnderPressure(f, sink) {
+    return makeRequiredAckPendingRetry(f, sink);
+  },
+};
+
+function makeRequiredAckPendingRetry(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const row = (f.durableState.get('required-ack:pending') as { expiresAt: number; attempts: number; nextAt: number } | undefined)
+        ?? { expiresAt: now + PENDING_TTL_MS, attempts: 0, nextAt: now };
+      if (now >= row.expiresAt) { f.durableState.set('required-ack:pending', row); return; }
+      if (now < row.nextAt) { f.durableState.set('required-ack:pending', row); return; }
+      sink.emit({ verb: 'receipt-retry', target: 'peer:one' });
+      // The pressure: the send never succeeds.
+      const attempts = row.attempts + 1;
+      const wait = Math.min(PENDING_TICK_MS * 2 ** Math.max(0, attempts - 1), PENDING_MAX_BACKOFF_MS);
+      f.durableState.set('required-ack:pending', { ...row, attempts, nextAt: now + wait });
+    },
+  };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   claudeKeySessionRefresh,
   desktopRelockGuardReplacement,
@@ -3884,5 +3927,6 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   replicatedStoreReconcilerRetry,
   preparingRunWatchdog,
   machineWedgeNotice,
+  requiredAckPendingRetry,
   recommendedServiceSetupRestart,
 ];

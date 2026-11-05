@@ -44,7 +44,7 @@ describe('ThreadlineClient: encrypt ordinary chat to the pinned key', () => {
     expect(encrypted).toHaveLength(1);
     expect(encrypted[0].pk.equals(peer.key)).toBe(true);
     expect(encrypted[0].xk.equals(edPublicToX25519(peer.key))).toBe(true);
-    expect(encrypted[0].message).toEqual({ content: 'hello', resend: true });
+    expect(encrypted[0].message).toEqual({ content: 'hello', resend: true, ackKinds: 1 });
     expect(client.hasEncryptedSendPath(peer.fp)).toBe(true);
   });
 

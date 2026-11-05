@@ -15,6 +15,7 @@
  * Part of Threadline Protocol Phase 3.
  */
 
+import { parseKindedAck } from './requiredAck.js';
 import { Router } from 'express';
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
@@ -740,6 +741,15 @@ export function createThreadlineRoutes(
         async: true,
         threadId: body.message?.threadId,
       });
+
+      // a2a-required-acknowledgment D1: a kinded ack branches BEFORE any delivery
+      // record, on every route. Same-machine routes send none, so one arriving here
+      // is consumed with no effect: it never flips a row by thread, never routes.
+      if (parseKindedAck(body.message?.body)) {
+        ticket?.recordNoReply();
+        console.log(`[ThreadlineEndpoints] kinded ack (thread: ${body.message?.threadId ?? 'none'}) consumed on the HTTP route — no effect`);
+        return;
+      }
 
       // Robustness Phase 1 (D-E / closes F4): record the implicit delivery ack on
       // the VERIFIED E2E relay inbound path — the path that previously lacked it,

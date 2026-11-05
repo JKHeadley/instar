@@ -1347,6 +1347,7 @@ export class AgentServer {
     memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacy;
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
     a2aDeliveryTracker?: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker;
+    requiredAck?: import('../threadline/requiredAckService.js').RequiredAckService;
     /** Honest-delivery verdict counters (spec §1) for the authed branch of /health. */
     relayVerdictCounters?: () => Record<string, number>;
     /** A2A inbound message-id ledger controller, shared with the relay consumer (server.ts). */
@@ -5432,6 +5433,7 @@ export class AgentServer {
       a2aRelayForward: options.a2aRelayForward ?? null,
       listenerManager: options.listenerManager ?? null,
       a2aDeliveryTracker: options.a2aDeliveryTracker ?? this.a2aDeliveryTracker,
+      requiredAck: options.requiredAck ?? null,
       relayVerdictCounters: this.relayVerdictCounters,
       inboundIdLedger: this.inboundIdLedger,
       inboundIdLedgerDaemonDeferred: options.inboundIdLedgerDaemonDeferred ?? null,

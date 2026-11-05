@@ -22,6 +22,7 @@ import {
 } from './InboundIdLedger.js';
 import type { A2ADeliveryTracker } from './A2ADeliveryTracker.js';
 import { recordInboundAck } from './recordInboundAck.js';
+import { parseKindedAck } from './requiredAck.js';
 
 export type RelayAdmission =
   | { action: 'drop'; reason: 'duplicate' | 'wait-dropped' }
@@ -242,7 +243,9 @@ export async function runRelayInboundWithLedger(
   if (!decision.message) return false;
   let ticket: AdmissionTicket | null = null;
   let notice: string | null = null;
-  if (decision.reason !== 'probe') {
+  // a2a-required-acknowledgment D1: a kinded ack is exempt from ledger admission,
+  // so a duplicate cannot reach recordDuplicateAck and flip a row by thread.
+  if (decision.reason !== 'probe' && !parseKindedAck(decision.message.content)) {
     const msg = decision.message;
     const ingress: InboundIngress = decision.reason === 'relay-authenticated' ? 'relay-unknown-sender' : 'relay';
     const senderKey = ingress === 'relay' ? msg.from : `unverified:${msg.from}`;

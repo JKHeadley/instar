@@ -107,7 +107,22 @@ export interface SpawnRequest {
    * on every existing spawn path → headless behavior is byte-for-byte unchanged.
    */
   interactive?: boolean;
+  /**
+   * a2a-required-acknowledgment D3/D5: who to tell about this payload's fate. Carried
+   * on the queue entry and on the in-flight reservation. No message content.
+   */
+  receipt?: SpawnQueueReceipt;
 }
+
+/** Opaque to this manager: handed back through the delivered and dropped callbacks. */
+export interface SpawnQueueReceipt {
+  watchId: number;
+  peerFp: string;
+  messageId: string;
+  threadId: string | null;
+}
+
+export type SpawnQueueDropCause = 'expired' | 'evicted';
 
 export interface SpawnResult {
   approved: boolean;
@@ -330,6 +345,21 @@ export interface SpawnRequestManagerConfig {
   isDrainRefusalCleared?: (marker: SpawnDrainRefusalSnapshot) => boolean;
   /** Called when a previously latched drain target has genuinely re-armed. */
   onDrainRearm?: (event: SpawnDrainRearmEvent) => void | Promise<void>;
+  /**
+   * a2a-required-acknowledgment D7: an early, live clear for a latched refusal. When
+   * it answers true (a session limit with a slot now free) the latch may re-arm before
+   * the cooldown, under brakes: at most one early re-arm a minute and three per
+   * episode. Admission itself is unchanged: the drain still goes through `evaluate`.
+   */
+  isDrainRefusalLiveCleared?: (marker: SpawnDrainRefusalSnapshot) => boolean;
+  /** a2a-required-acknowledgment D3: a queued payload with a receipt died. Called at all four drop sites. */
+  onQueuedMessageDropped?: (receipt: SpawnQueueReceipt, cause: SpawnQueueDropCause) => void;
+  /**
+   * a2a-required-acknowledgment D5: a payload with a receipt reached a live session.
+   * Fired from `#commitQueueSnapshot`, the one place every delivering path goes
+   * through, including an inline spawn that takes the backlog.
+   */
+  onQueuedMessageDelivered?: (receipt: SpawnQueueReceipt, session: { sessionName: string | null; interactive: boolean }) => void;
   /** §4.2: max queued messages per agent while in degraded admission. Default 1. */
   degradedMaxQueuedPerAgent?: number;
   /**
@@ -356,6 +386,8 @@ interface QueuedSpawnMessage {
   drainAttempts: number;
   /** Monotonic arrival order, including payloads reserved during an in-flight spawn. */
   sequence: number;
+  /** a2a-required-acknowledgment: who to tell about this entry's fate. */
+  receipt?: SpawnQueueReceipt;
 }
 
 declare const TRANSIENT_REFUSAL_PRESERVED: unique symbol;
@@ -425,6 +457,9 @@ const DRR_COST = 1;
 const DRR_AGE_BOOST_MULTIPLIER = 1.5;
 const DEFAULT_DRAIN_GIVE_UP_REARM_COOLDOWN_MS = 8 * 60_000;
 const DRAIN_GIVE_UP_ATTENTION_RETRY_MS = 30_000;
+/** a2a-required-acknowledgment D7: brakes on the early re-arm. */
+const EARLY_REARM_MIN_INTERVAL_MS = 60_000;
+const EARLY_REARMS_PER_EPISODE = 3;
 
 const SPAWN_PROMPT_TEMPLATE = `You were spawned by an inter-agent message request.
 
@@ -512,6 +547,18 @@ export class SpawnRequestManager {
     attentionAttempts: number;
     lastAttentionAttemptAt: number;
     attentionError?: string;
+  }>();
+
+  /**
+   * a2a-required-acknowledgment D7: re-arming deletes the latch, so the brake counts
+   * and the episode's Attention state live here, per target. Cleared on a successful drain.
+   */
+  readonly #earlyRearmEpisodes = new Map<string, {
+    count: number;
+    lastEarlyAt: number;
+    /** The last re-arm was early: a re-latch in this episode must not reopen Attention. */
+    lastWasEarly: boolean;
+    attentionDelivered: boolean;
   }>();
 
   /** §4.2: shared drain-tick timer. null when not started. */
@@ -700,7 +747,7 @@ export class SpawnRequestManager {
     if (reservedPayload) {
       queued = this.#admitQueuedMessage(agent, reservedPayload);
     } else if (request.context) {
-      queued = this.#queueMessage(agent, request.context, request.pendingMessages?.[0]);
+      queued = this.#queueMessage(agent, request.context, request.pendingMessages?.[0], request.receipt);
     }
     return {
       approved: false,
@@ -753,7 +800,6 @@ export class SpawnRequestManager {
 
     const now = this.#nowFn();
     const rearmCooldownMs = this.#drainGiveUpRearmCooldownMs();
-    if (now - latch.lastRefusedAt < rearmCooldownMs) return;
 
     const refusal = this.#drainRefusals.get(agent);
     const snapshot: SpawnDrainRefusalSnapshot = {
@@ -770,8 +816,29 @@ export class SpawnRequestManager {
       lastAttentionAttemptAt: latch.lastAttentionAttemptAt,
       attentionError: latch.attentionError,
     };
+    // D7: the live check moves ahead of the cooldown test. Admission still decides.
+    if (this.#maybeEarlyRearm(agent, targetKey, latch.attentionDelivered, snapshot, now)) {
+      try {
+        await this.#config.onDrainRearm?.({
+          agent,
+          targetKey,
+          refusalSignature: latch.refusalSignature,
+          attentionId: latch.attentionId,
+          latchedAt: latch.latchedAt,
+          lastRefusedAt: latch.lastRefusedAt,
+          rearmedAt: now,
+          rearmCooldownMs: 0,
+        });
+      } catch {
+        // Observability failure must never keep the target latched forever.
+      }
+      return;
+    }
+    if (now - latch.lastRefusedAt < rearmCooldownMs) return;
     if (this.#config.isDrainRefusalCleared && !this.#config.isDrainRefusalCleared(snapshot)) return;
 
+    const episode = this.#earlyRearmEpisodes.get(targetKey);
+    if (episode) episode.lastWasEarly = false;
     this.#refreshHeldQueueForRearm(agent, now);
     this.#drainGiveUpLatches.delete(targetKey);
     this.#clearDrainRefusal(agent);
@@ -789,6 +856,48 @@ export class SpawnRequestManager {
     } catch {
       // Observability failure must never keep the target latched forever.
     }
+  }
+
+  /**
+   * D7: re-arm before the cooldown when the refusal has live-cleared, under the
+   * brakes. Does not refresh queue ages, except entries already past the maximum age,
+   * which would otherwise expire at the next free slot. Does not reopen Attention.
+   */
+  #maybeEarlyRearm(
+    agent: string,
+    targetKey: string,
+    attentionDelivered: boolean,
+    snapshot: SpawnDrainRefusalSnapshot,
+    now: number,
+  ): boolean {
+    const check = this.#config.isDrainRefusalLiveCleared;
+    if (!check) return false;
+    const episode = this.#earlyRearmEpisodes.get(targetKey);
+    if (episode) {
+      if (episode.count >= EARLY_REARMS_PER_EPISODE) return false;
+      if (now - episode.lastEarlyAt < EARLY_REARM_MIN_INTERVAL_MS) return false;
+    }
+    let cleared = false;
+    try { cleared = check(snapshot); } catch { cleared = false; /* @silent-fallback-ok — the normal cooldown applies */ }
+    if (!cleared) return false;
+
+    const queue = this.#pendingMessages.get(agent);
+    for (const entry of queue ?? []) {
+      if (now - entry.receivedAt >= SpawnRequestManager.QUEUE_MAX_AGE_MS) entry.receivedAt = now;
+    }
+    this.#earlyRearmEpisodes.set(targetKey, {
+      count: (episode?.count ?? 0) + 1,
+      lastEarlyAt: now,
+      lastWasEarly: true,
+      attentionDelivered: attentionDelivered || episode?.attentionDelivered === true,
+    });
+    this.#drainGiveUpLatches.delete(targetKey);
+    this.#clearDrainRefusal(agent);
+    return true;
+  }
+
+  #clearEarlyRearmEpisode(agent: string): void {
+    this.#earlyRearmEpisodes.delete(this.#drainTargetKey(agent));
   }
 
   async #forceRearmDrainGiveUp(agent: string): Promise<void> {
@@ -923,6 +1032,10 @@ export class SpawnRequestManager {
       lastAttentionAttemptAt: 0,
       attentionError: undefined,
     };
+    // D7: a re-latch after an early re-arm is the same episode, so it does not
+    // reopen the Attention item the operator already has.
+    const episode = this.#earlyRearmEpisodes.get(targetKey);
+    if (episode?.lastWasEarly && episode.attentionDelivered) latch.attentionDelivered = true;
     this.#drainGiveUpLatches.set(targetKey, latch);
     await this.#deliverDrainGiveUpAttention(latch);
   }
@@ -1037,7 +1150,7 @@ export class SpawnRequestManager {
     // exact reserved object is inserted by sequence, preserving both its
     // original TTL and its position ahead of later concurrent arrivals.
     const currentReservation = request.context
-      ? this.#makeQueuedMessage(request.context, request.pendingMessages?.[0])
+      ? this.#makeQueuedMessage(request.context, request.pendingMessages?.[0], request.receipt)
       : undefined;
     this.#spawnInflightByAgent.add(agent);
 
@@ -1070,17 +1183,24 @@ export class SpawnRequestManager {
       // spawnSession's contract is now delivery-truthful: resolution means the
       // prompt reached a live session. Remove only the entries in this prompt;
       // messages arriving while spawnSession was in flight remain queued.
-      this.#commitQueueSnapshot(agent, queuedSnapshot);
       // Accept both the legacy bare-id return and the {sessionId, tmuxSession}
       // object form. The tmuxSession (when provided) is forwarded so callers
       // (spawnNewThread) persist the REAL tmux name as the resume entry's
       // sessionName — load-bearing for Threadline continuity.
       const sessionId = typeof spawned === 'string' ? spawned : spawned.sessionId;
       const tmuxSession = typeof spawned === 'string' ? undefined : spawned.tmuxSession;
+      // The current payload's reservation went out in this prompt too: it is not in
+      // the queue, but its receipt still has to hear about the hand-off.
+      this.#commitQueueSnapshot(
+        agent,
+        currentReservation ? [...queuedSnapshot, currentReservation] : queuedSnapshot,
+        { sessionName: tmuxSession ?? null, interactive: request.interactive === true },
+      );
 
       // Success — clear penalty state and pending retries.
       this.#clearFailureAttribution(agent);
       await this.#forceRearmDrainGiveUp(agent);
+      this.#clearEarlyRearmEpisode(agent);
       const retryKey = this.#getRetryKey(request);
       this.#pendingRetries.delete(retryKey);
 
@@ -1170,8 +1290,38 @@ export class SpawnRequestManager {
    * Returns true if the message was queued; false if rejected by the
    * global cap. (Per-agent truncation still queues the new entry.)
    */
-  #queueMessage(agent: string, context: string, threadId?: string): boolean {
-    return this.#admitQueuedMessage(agent, this.#makeQueuedMessage(context, threadId));
+  #queueMessage(agent: string, context: string, threadId?: string, receipt?: SpawnQueueReceipt): boolean {
+    return this.#admitQueuedMessage(agent, this.#makeQueuedMessage(context, threadId, receipt));
+  }
+
+  /** D3: report one dead entry. A sink failure never affects the queue. */
+  #reportDropped(entry: QueuedSpawnMessage, cause: SpawnQueueDropCause): void {
+    if (!entry.receipt) return;
+    try { this.#config.onQueuedMessageDropped?.(entry.receipt, cause); } catch { /* @silent-fallback-ok — observability only */ }
+  }
+
+  /**
+   * D3: drop expired entries on a quiet queue, so expiry fires without a later
+   * arrival. Skips a latched queue, which keeps its existing hold, and a queue whose
+   * entries are reserved by an in-flight launch.
+   */
+  #pruneExpiredQueues(): void {
+    const now = this.#nowFn();
+    const maxAge = SpawnRequestManager.QUEUE_MAX_AGE_MS;
+    for (const [agent, queue] of [...this.#pendingMessages]) {
+      if (this.#isDrainGiveUpLatched(agent) || this.#spawnInflightByAgent.has(agent)) continue;
+      const valid = queue.filter((m) => now - m.receivedAt < maxAge);
+      if (valid.length === queue.length) continue;
+      for (const m of queue) {
+        if (now - m.receivedAt >= maxAge) this.#reportDropped(m, 'expired');
+      }
+      if (valid.length === 0) {
+        this.#pendingMessages.delete(agent);
+        this.#truncated.delete(agent);
+      } else {
+        this.#pendingMessages.set(agent, valid);
+      }
+    }
   }
 
   /**
@@ -1179,8 +1329,9 @@ export class SpawnRequestManager {
    * admission. In-flight payloads use this to retain their original TTL and
    * order if the launch fails after later messages have arrived.
    */
-  #makeQueuedMessage(context: string, threadId?: string): QueuedSpawnMessage {
+  #makeQueuedMessage(context: string, threadId?: string, receipt?: SpawnQueueReceipt): QueuedSpawnMessage {
     return {
+      ...(receipt ? { receipt } : {}),
       context,
       threadId,
       receivedAt: this.#nowFn(),
@@ -1225,6 +1376,7 @@ export class SpawnRequestManager {
           }
           this.#truncated.add(newest.agent);
           totalQueued--;
+          this.#reportDropped(newest.entry, 'evicted');
         }
       }
     }
@@ -1249,7 +1401,8 @@ export class SpawnRequestManager {
     queue.sort((a, b) => a.sequence - b.sequence);
     if (!heldByGiveUpLatch) {
       while (queue.length > 0 && now - queue[0].receivedAt > maxAge) {
-        queue.shift();
+        const dead = queue.shift() as QueuedSpawnMessage;
+        this.#reportDropped(dead, 'expired');
       }
     }
 
@@ -1270,7 +1423,8 @@ export class SpawnRequestManager {
     }
     let truncatedAny = false;
     while (queue.length >= cap) {
-      queue.shift();
+      const dead = queue.shift() as QueuedSpawnMessage;
+      this.#reportDropped(dead, 'evicted');
       truncatedAny = true;
     }
     if (truncatedAny) this.#truncated.add(agent);
@@ -1302,6 +1456,9 @@ export class SpawnRequestManager {
     const now = this.#nowFn();
     const maxAge = SpawnRequestManager.QUEUE_MAX_AGE_MS;
     const valid = queue.filter(m => now - m.receivedAt < maxAge);
+    for (const m of queue) {
+      if (now - m.receivedAt >= maxAge) this.#reportDropped(m, 'expired');
+    }
     if (valid.length === 0) {
       this.#pendingMessages.delete(agent);
       this.#truncated.delete(agent);
@@ -1322,8 +1479,15 @@ export class SpawnRequestManager {
   #commitQueueSnapshot(
     agent: string,
     delivered: QueuedSpawnMessage[],
+    session: { sessionName: string | null; interactive: boolean },
   ): void {
     if (delivered.length === 0) return;
+    // D5: every path that delivers queued messages comes through here. The watch
+    // opens and the D2 journal row moves on, before anything else can observe it.
+    for (const entry of delivered) {
+      if (!entry.receipt) continue;
+      try { this.#config.onQueuedMessageDelivered?.(entry.receipt, session); } catch { /* @silent-fallback-ok — observability only */ }
+    }
     const queue = this.#pendingMessages.get(agent);
     if (!queue || queue.length === 0) return;
     const deliveredEntries = new Set(delivered);
@@ -1479,6 +1643,7 @@ export class SpawnRequestManager {
   async runTick(): Promise<number> {
     if (this.#tickInflight) return 0;
     if (this.#pendingMessages.size === 0) return 0;
+    this.#pruneExpiredQueues();
     const onDrainReady = this.#config.onDrainReady;
     if (!onDrainReady) return 0;
 
@@ -1539,6 +1704,7 @@ export class SpawnRequestManager {
           // doesn't apply age-boost or inherit a stale denial streak.
           this.#drainAttempts.delete(agent);
           this.#clearDrainRefusal(agent);
+          this.#clearEarlyRearmEpisode(agent);
           await this.#maybeRearmDrainGiveUp(agent);
         }),
       );
@@ -1657,6 +1823,7 @@ export class SpawnRequestManager {
     this.#drainAttempts.clear();
     this.#drainRefusals.clear();
     this.#drainGiveUpLatches.clear();
+    this.#earlyRearmEpisodes.clear();
     this.#infraFailureWindow.clear();
     this.#truncated.clear();
     this.#spawnInflightByAgent.clear();
