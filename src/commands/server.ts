@@ -22539,8 +22539,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         onNoAlternate: telegramRef ? (sessionName, exhaustedAccountId) => {
           void telegramRef.createAttentionItem({
             id: `subpool-no-alternate-${exhaustedAccountId}`,
-            title: 'Subscription pool — no alternate account to swap to',
-            summary: `Session "${sessionName}" hit account "${exhaustedAccountId}"'s quota and there's no other eligible account in the pool. The session falls back to the existing rate-limit back-off; consider enrolling another account.`,
+            title: 'Every subscription account is at its usage limit',
+            summary: `Session "${sessionName}" reached the usage limit on account "${exhaustedAccountId}", and no other connected account has room. It will carry on by itself when the limit resets. Connecting another account would let it carry on sooner.`,
             category: 'subscription-pool',
             priority: 'HIGH',
             sourceContext: 'subscription-pool:no-alternate',
@@ -22626,27 +22626,30 @@ export async function startServer(options: StartOptions): Promise<void> {
         void wallRescue.onThrottleEscalated(sessionName);
       });
 
-      // Subscription-pool session PINNING (Subscription & Auth Standard): when
-      // enabled, new claude-code spawns launch on the scheduler-picked optimal
-      // account (reset-date / headroom score) and carry its id. This is the
-      // prerequisite that makes auto-swap functional — without a session→account
-      // tag, the swap engine has nothing to move. Default off → spawns use the
-      // default config exactly as before (the resolver stays unwired).
-      if (config.subscriptionPool?.pinSessionsToPool) {
+      // Session PINNING / tagging. An explicit pinSessionsToPool:true pins
+      // every claude-code spawn (as before). Otherwise the rescue's resolver
+      // tags spawns when the pool has 2+ usable accounts (so no session is
+      // untagged) and, with pinning explicitly off, still refuses to launch on
+      // a default login the pool knows is walled. 0/1 usable accounts → null →
+      // the default login, exactly as before.
+      if (config.subscriptionPool?.pinSessionsToPool === true) {
         const { selectAccount } = await import('../core/QuotaAwareScheduler.js');
         sessionManager.setSpawnAccountResolver(() => {
           const acct = selectAccount(subscriptionPool.list(), { nowMs: Date.now(), framework: 'claude-code' });
           return acct ? { configHome: acct.configHome, accountId: acct.id } : null;
         });
         console.log(pc.green('  Subscription-pool session pinning enabled'));
+      } else {
+        sessionManager.setSpawnAccountResolver(() => wallRescue.spawnAccount());
       }
 
       // ProactiveSwapMonitor (Subscription & Auth Standard P1.3 — the PRE-LIMIT
       // half). Moves a session OFF an account BEFORE it walls, at a lag-aware
-      // measured threshold. Complements the reactive autoSwapOnRateLimit (which
-      // only fires AFTER the wall) and covers UNTAGGED sessions by resolving the
-      // default-config login — so the primary interactive session is swap-visible
-      // instead of wedging (the 2026-06-09 failure). DARK by default: only runs
+      // measured threshold. Complements the reactive usage-wall rescue (which
+      // only fires AFTER the wall). It does NOT move untagged sessions (Q3):
+      // those are reached by the default-slot repoint arm, and on a pool with
+      // 2+ usable accounts the wall rescue tags new spawns so few stay
+      // untagged. DARK by default: only runs
       // when subscriptionPool.proactiveSwap.enabled is true (moving live sessions
       // is real authority).
       const proactiveCfg = config.subscriptionPool?.proactiveSwap;

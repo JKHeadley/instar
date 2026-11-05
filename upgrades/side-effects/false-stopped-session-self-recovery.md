@@ -1,5 +1,13 @@
 # Side-Effects Review — False stopped-session notices and self-recovery
 
+## Current-main refresh — 2026-11-05
+
+The main merge includes PR #2798's real Codex 0.166 native canary compatibility fix. Review of the resulting PR diff also found an older account-rescue regression: this branch installed a spawn-account resolver only when explicit pinning was enabled. Restore main's exact resolver block, including `wallRescue.spawnAccount()` when pinning is not explicitly true, and main's plain no-alternate-account notice. This is a narrow restoration of already-shipped behavior, not a new feature or migration. The only source file in the correction is `src/commands/server.ts`; existing account-rescue unit, integration spawn/route, and lifecycle tests plus full verification cover it.
+
+The restored decision is the existing account-rescue authority; no parallel detector or new authority is added (see `docs/signal-vs-authority.md`). Over-block and under-block match main: a known walled default is refused, one usable account preserves the default, and explicit pinning still selects a pool account. The main implementation owns quota checks, identity checks, and brakes. This restoration does not change Slack/Telegram recovery ownership or its single failure notice. No new operator action, URL, or credential is introduced. Account selection is machine-local with the existing pool ownership rules. No schema, installed file, template or config default changes, so no migration or agent-awareness update is needed. Reverting the small correction restores the branch's prior behavior; it changes no data. A dedicated independent reviewer must concur before this correction is committed. Full final-head verification and isolated Telegram parity proof remain required before merge; the latest user instruction authorizes merge only after both pass.
+
+Independent second pass, `/root/review_main_rescue_restore`: **Concur with the review.** The restored resolver and notice exactly match `origin/main`; the false-stopped recovery changes remain untouched. This concurrence is code review only, not final-head verification or channel proof.
+
 **Version / slug:** `false-stopped-session-self-recovery`
 **Date:** 2026-11-04
 **Author:** Echo
