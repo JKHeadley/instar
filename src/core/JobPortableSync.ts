@@ -164,7 +164,7 @@ export class JobPortableSync {
   }
   private async pollPeerVerified(peer: PoolPeerTarget & { kind: PeerEndpointKind }, observed: JobCoverageEntry, generation: string): Promise<{ root: string; staged: boolean }> {
     const slug = observed.slug;
-    if (observed.portable !== true || !/^\d{12}:[a-f0-9]{64}$/.test(generation)) throw new Error('unsigned-observation');
+    if (observed.portable !== true || !/^[a-f0-9]{12}:[a-f0-9]{64}$/.test(generation)) throw new Error('unsigned-observation');
     if (!SLUG.test(slug)) throw new Error('invalid-slug');
     const identity = this.options.identityManager.loadIdentity();
     const entry = this.options.identityManager.loadRegistry().machines[peer.machineId];

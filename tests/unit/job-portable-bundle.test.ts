@@ -71,6 +71,22 @@ describe('private portable job projection', () => {
 });
 
 describe('recipient-bound portable transport and approvals', () => {
+  it('accepts hexadecimal coverage counters while still refusing malformed observations and unknown sources', async () => {
+    const { root, stateDir } = fixture();
+    const { MachineIdentityManager } = await import('../../src/core/MachineIdentity.js');
+    const { JobPortableSync } = await import('../../src/core/JobPortableSync.js');
+    const manager = new MachineIdentityManager(stateDir);
+    await manager.generateIdentity({ name: 'Portable counter boundary' });
+    const sync = new JobPortableSync({ stateDir, projectDir: root, identityManager: manager, authToken: 'test' });
+    const peer = { machineId: `m_${'f'.repeat(32)}`, url: 'http://127.0.0.1:1', kind: 'lan' as const };
+    const observed = { slug: 'data-scout', schedule: '0 9 * * *', enabled: true, portable: true };
+    for (const counter of ['000000000009', '00000000000a', '000000abcdef']) {
+      await expect(sync.pollPeer(peer, observed, `${counter}:${'a'.repeat(64)}`)).rejects.toThrow('unknown-source');
+    }
+    await expect(sync.pollPeer(peer, observed, `00000000000g:${'a'.repeat(64)}`)).rejects.toThrow('unsigned-observation');
+    await expect(sync.pollPeer(peer, { ...observed, portable: false }, `00000000000a:${'a'.repeat(64)}`))
+      .rejects.toThrow('unsigned-observation');
+  });
   it('requires a signed requester and encrypted recipient-bound answer', async () => {
     const { root, stateDir } = fixture();
     const { makePortableBundleRequest, acceptPortableBundleRequest, makePortableBundleWire,

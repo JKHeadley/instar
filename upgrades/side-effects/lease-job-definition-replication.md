@@ -54,3 +54,13 @@ The first peer full-suite run found two inventory failures. Source export approv
 ## Resumed narrow second-pass review (2026-11-05)
 
 Concur with the narrow repair. An independent reviewer checked actual route templates against registry prefixes, verified exclusions cover flat consent/journal files and nested inbox contents, and confirmed annotations preserve fail-closed behavior. No code or security blocker found. Completed current test evidence remains required before merge.
+
+## HTTP, lifecycle, and counter boundary completion (2026-11-05)
+
+Added real HTTP authorization tests for the dark default, auth middleware, exact-root source approval, missing PIN, unsigned peer refusal and preview-only import mode. The AgentServer lifecycle test verifies a live source returns approved bytes with recipient encryption and source signature, rejects the wrong decryption key, and refuses a replayed request. Real identity/coordinator dependencies replace no-op wiring. Coverage route and startup tests are inherited from the coverage branch.
+
+Inspection found the portable receiver accepted decimal-only catalog counters while the canonical producer encodes them in hexadecimal. The receiver now accepts the same lowercase 12-digit hexadecimal counter format, including the 9-to-a boundary; malformed counters and unregistered sources remain refused. This is an over-block repair, not an expansion of peer authority. Full suite and independent second-pass remain gates.
+
+The added roundtrip lifecycle boots real source and destination HTTP listeners. The destination production monitor pulls source coverage and recipient-encrypted bytes at a hex-letter catalog generation, stages outside scheduling, then installs only after a destination PIN approval. A modified imported body fails real run-integrity verification. The polling assertion is bounded to 20 seconds and all listeners and monitor timers are stopped on cleanup.
+
+Second-pass concurrence: the independent reviewer verified the counter producer format, actual auth middleware, real key registration, live monitor construction, encrypted delivery and destination PIN path. No remaining code-review blocker; this does not claim test success.
