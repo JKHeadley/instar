@@ -1593,6 +1593,7 @@ export async function spawnSessionForTopic(
     const bootstrapFilename = `bootstrap-${topicId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.txt`;
     const bootstrapFilepath = path.join(tmpDir, bootstrapFilename);
     fs.writeFileSync(bootstrapFilepath, bootstrapMessage);
+    sessionManager.registerMemoryInboundFile(`telegram:${topicId}`, bootstrapFilepath);
     console.log(`[spawnSessionForTopic] Bootstrap message too large (${bootstrapMessage.length} chars), wrote to ${bootstrapFilepath}`);
     bootstrapMessage = `[IMPORTANT: Read ${bootstrapFilepath} — it contains your full session context, conversation history, and the user's latest message. You MUST read this file before responding.]`;
   }
@@ -2692,6 +2693,9 @@ export function wireTelegramRouting(
         }));
         return;
       }
+    }
+    for (const file of [msg.metadata?.documentPath, msg.metadata?.photoPath]) {
+      if (typeof file === 'string') sessionManager.registerMemoryInboundFile(`telegram:${topicId}`, file);
     }
 
     // Agent-signed inbound (ASP). A message an agent SIGNED and delivered through
@@ -6847,6 +6851,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     const sessionManagerConfig = {
       ...config.sessions,
+      stateDir: config.stateDir,
       // §7: mint the per-session bind token into INSTAR_BIND_TOKEN at spawn.
       mintBindToken: (sessionName: string, bootstrapConversationIds: number[]) =>
         conversationBindAuth.mint(sessionName, bootstrapConversationIds),
@@ -10298,6 +10303,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
           }
           // Sanitize sender name at injection boundary (prevents injection attacks)
+          for (const file of (Array.isArray(message.metadata?.inboundFilePaths) ? message.metadata.inboundFilePaths : [])) {
+            if (typeof file === 'string') sessionManager.registerMemoryInboundFile(`slack:${channelId}`, file);
+          }
           const safeSenderName = senderName
             ? senderName.replace(/[\x00-\x1f\x7f]/g, '').replace(/\s+/g, ' ').replace(/["\[\]]/g, '').trim().slice(0, 64) || 'User'
             : undefined;
@@ -10373,6 +10381,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Also write to file as backup reference
           const ctxPath = path.join(tmpDir, `ctx-${channelId}-${Date.now()}.txt`);
           fs.writeFileSync(ctxPath, contextData);
+          sessionManager.registerMemoryInboundFile(`slack:${channelId}`, ctxPath);
 
           // Transform [image:path] and [document:path] tags into explicit read instructions
           let transformedContent = message.content.replace(
@@ -10405,6 +10414,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const msgFilePath = path.join(tmpDir, `msg-${channelId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.txt`);
             const fullContent = `${fullMessage}\n\n${contextData}`;
             fs.writeFileSync(msgFilePath, fullContent);
+            sessionManager.registerMemoryInboundFile(`slack:${channelId}`, msgFilePath);
             bootstrapMessage = `${prefix} [Long message saved to ${msgFilePath} — read it to see the full message and thread history]`;
           } else {
             bootstrapMessage = fullMessage;
