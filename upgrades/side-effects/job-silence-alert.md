@@ -36,7 +36,7 @@ No static heuristic is added at a competing-signals block/allow decision. The th
 
 ## 5. Interactions
 
-The existing consecutive-failure alert still handles failed runs. A skipped run does not count as a success. Successful script and session paths close a silence episode. The durable one-hour send-attempt floor, 24-hour reminder limit and in-flight guard avoid floods; epoch checks prevent a late alert promise reopening a recovered episode.
+The existing consecutive-failure alert still handles failed runs. While that durable failure episode is active, the silence checker suppresses its parallel notice; the dedicated failure alert and reminder cadence own that case. After recovery, a later missed schedule can open a new silence episode. A skipped run does not count as a success. Successful script and session paths close a silence episode. The durable one-hour send-attempt floor, 24-hour reminder limit and in-flight guard avoid floods; epoch checks prevent a late alert promise reopening a recovered episode.
 
 ## 6. External surfaces
 

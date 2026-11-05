@@ -3752,6 +3752,9 @@ export class JobScheduler {
     const now = Date.now();
     for (const job of this.jobs) {
       if (!job.enabled) continue;
+      // A failure episode already has a durable alert and reminder cadence.
+      // Keep silence alerts focused on jobs that stopped being attempted.
+      if (this.state.get(this.failureAlertStateKey(job.slug))) continue;
       if (!this.isJobScopedToThisMachine(job)) {
         this.raiseContinuityAlert(job, 'this machine holds the scheduler but the job is pinned elsewhere', `job-silence-${job.slug}`);
         continue;
