@@ -20,7 +20,7 @@ def attempt(fn, *a):
         return {'code': r.code, 'message': r.message}
 `;
 function py(body: string): any {
-  const out = execFileSync('python3', ['-c', `${PRELUDE}\nprint(json.dumps(${body}))`], { encoding: 'utf8' });
+  const out = execFileSync('python3', ['-B', '-c', `${PRELUDE}\nprint(json.dumps(${body}))`], { encoding: 'utf8' });
   return JSON.parse(out);
 }
 const dest = (uri: string, host: string) => py(`attempt(xd.check_secret_destination, ${JSON.stringify(uri)}, ${JSON.stringify(host)})`);
@@ -242,6 +242,6 @@ describe('the input backend boundary', () => {
   it('never uses a synthetic input path', () => {
     const source = fs.readFileSync(DRIVER, 'utf8');
     expect(source).not.toMatch(/XSendEvent|generate_keyboard_event|generate_mouse_event|xdotool|remote-debugging/);
-    expect(spawnSync('python3', ['-c', `import ast;ast.parse(open(${JSON.stringify(DRIVER)}).read())`]).status).toBe(0);
+    expect(spawnSync('python3', ['-B', '-c', `import ast;ast.parse(open(${JSON.stringify(DRIVER)}).read())`]).status).toBe(0);
   });
 });
