@@ -288,7 +288,7 @@ describe('locked-proof launchd kill', () => {
   it('a finished duty from an earlier case fires no injection in this one', async () => {
     const events = new Set<string>();
     const target = realTarget({
-      events, store: '/nonexistent', processes: () => [], readLockState: async () => 'locked-in-session', pids: {},
+      events, store: '/nonexistent', consoleOwner: () => 'someone-else', processes: () => [], readLockState: async () => 'locked-in-session', pids: {},
       priorMarkers: { old: 'r1' }, readStore: () => ({ markers: { old: { state: 'relocked', requestId: 'r1', deadlineMs: 1 } } }),
     });
     const snap = await target.snapshot();

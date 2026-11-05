@@ -163,6 +163,8 @@ export class RealTarget {
     return Object.fromEntries(Object.entries(state.markers ?? {}).filter(([key, m]) => !(key in prior && prior[key] === m.requestId)));
   }
 
+  consoleOwner() { return sh('stat', ['-f', '%Su', '/dev/console']).trim(); }
+
   processes() {
     return sudo(['ps', '-U', PROOF_USER, '-o', 'pid=,lstart=,command='], { allowFail: true }).split('\n')
       .map(line => line.match(/^\s*(\d+)\s+(\w{3} \w{3} +\d+ [\d:]+ \d{4})\s+(.*)$/)).filter(Boolean)
@@ -186,7 +188,7 @@ export class RealTarget {
     }
     if (guard) { this.events.add('guard-spawned'); this.pids.firstGuard ??= guard.pid; this.pids.guard = guard.pid; }
     if (typist) this.pids.typist = typist.pid;
-    if (sh('stat', ['-f', '%Su', '/dev/console']).trim() === PROOF_USER) this.events.add('proof-user-console');
+    if (this.consoleOwner() === PROOF_USER) this.events.add('proof-user-console');
     return { now, markers, dirty: state.dirty !== undefined && state.dirty !== null, lockState, typistRunning: !!typist, guardPid: guard?.pid, events: [...this.events],
       processesGone: !Object.values(markers).every(m => TERMINAL.includes(m.state)) ? undefined : !guard && !typist, procs };
   }
@@ -452,7 +454,7 @@ export class RealTarget {
         const out = sudo(['launchctl', 'bootout', `gui/${this.uid}`], { allowFail: true });
         // The event is sticky, and this case waits for the user's return: it must first see them gone.
         const until = this.now() + 30_000;
-        while (this.now() < until && sh('stat', ['-f', '%Su', '/dev/console']).trim() === PROOF_USER) await this.sleep(500);
+        while (this.now() < until && this.consoleOwner() === PROOF_USER) await this.sleep(500);
         this.events.delete('proof-user-console');
         return { out };
       }

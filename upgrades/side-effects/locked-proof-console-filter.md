@@ -65,3 +65,7 @@ Rounds 7 to 9, scoped to the helper diff and false passes: no helper defect foun
 Final scoped round: concur. No realistic false pass in the 30 no-person cases, by code reading only, nothing run on a Mac. One weak spot named: 12.17 does not check that the stray letter reached the helper, listed below.
 
 Known false fails the rig can still produce, which fail visibly and cannot pass a case: 12.11's final state with the boot retry, 12.8's sampling of the security item, 15.10 missing a fast relock between samples, and 12.12 and 12.13's unmeasured lock calls. They need real runs to correct and change only the driver, not the helper. 12.17's weak spot is also a driver-only change. They are tracked in the locked-proof handoff and must be closed before the proof is recorded.
+
+## Follow-up, first verify
+
+The first verify failed on a driver test that ran the Mac-only `stat -f` on Linux CI. The console read is now one stubbed method. No helper change.

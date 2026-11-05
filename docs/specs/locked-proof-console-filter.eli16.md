@@ -5,3 +5,5 @@ The Mac helper asks macOS "is someone typing into a protected password box?" bef
 The second fix is in the test rig. One crash test was meant to have macOS's service manager (launchd) kill the server, but the test machine has no such service, so the kill hit nothing and the test could still pass. Now the test first moves the server under launchd, kills it for real, and fails loudly if nothing died. Afterwards it puts the server back.
 
 We fix both before the proof because a helper change after the proof would need new Mac permissions and a new proof.
+
+The rig runs only on a Mac, but its tests also run on Linux, so a Mac-only command inside the code a test runs is now one small method the test replaces.
