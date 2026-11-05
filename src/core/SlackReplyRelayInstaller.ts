@@ -18,6 +18,8 @@ export const PRIOR_SHIPPED_SLACK_RELAY_SHA256 = new Set([
   // Shipped by message-origin-all-platforms (932e1c851, #2669); missed when
   // memory-privacy changed the template in 0d9bd763d (#2705).
   '166438d58f0246699b6f4b0398983677faa0943feaf2c0c92b30d9d8d89a8fa7',
+  // Before a bound session dropped a habitual channel-id argument (cloud-key recovery drill).
+  'e9489783f4a85e6c0d38a2e46b4b1a2fd5d898c259484a01e6e02e326bc634c3',
 ]);
 
 export interface SlackRelayInstallResult {

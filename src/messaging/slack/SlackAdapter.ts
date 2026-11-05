@@ -846,6 +846,65 @@ export class SlackAdapter implements MessagingAdapter {
     return this.fileHandler.downloadFile(url, destPath);
   }
 
+  /** The people who may talk to this agent (its operators). */
+  getAuthorizedUserIds(): string[] {
+    return [...this.authorizedUsers];
+  }
+
+  /**
+   * Which authorized people are members of a channel. A post to a channel none of them is in
+   * reaches nobody, so a caller that must reach a person checks this first.
+   */
+  async authorizedMembersOf(channelId: string): Promise<string[]> {
+    const members = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const result = await this.apiClient.call('conversations.members', { channel: channelId, limit: 1000, ...(cursor ? { cursor } : {}) });
+      for (const id of (result.members as string[] | undefined) ?? []) members.add(id);
+      cursor = (result.response_metadata as { next_cursor?: string } | undefined)?.next_cursor || undefined;
+      if (!cursor) break;
+    }
+    return [...this.authorizedUsers].filter((id) => members.has(id));
+  }
+
+  /**
+   * The latest messages of one conversation, read from Slack itself rather than the ring buffer.
+   * A `<channel>:<thread_ts>` key reads that thread. A channel key reads the channel's top level
+   * plus the thread its latest inbound message came from, because a channel session replies
+   * into that thread (`inboundThreadFor`). Oldest first.
+   */
+  async recentConversationMessages(routingKey: string, limit = 50): Promise<SlackMessage[]> {
+    const { channelId, threadTs } = this.parseRoutingKey(routingKey);
+    if (threadTs) return this.latestThreadReplies(channelId, threadTs, limit);
+    const top = await this.channelManager.getChannelHistory(channelId, limit);
+    const inbound = this.inboundThreadFor(channelId);
+    const thread = inbound ? await this.latestThreadReplies(channelId, inbound, limit) : [];
+    const byTs = new Map<string, SlackMessage>();
+    for (const m of [...top, ...thread]) byTs.set(m.ts, m);
+    return [...byTs.values()].sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts)).slice(-limit);
+  }
+
+  /** A thread's latest replies. Slack pages them oldest first, so a long thread is walked to its end. */
+  private async latestThreadReplies(channelId: string, threadTs: string, limit: number): Promise<SlackMessage[]> {
+    const all: SlackMessage[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const result = await this.apiClient.call('conversations.replies', { channel: channelId, ts: threadTs, limit: 200, ...(cursor ? { cursor } : {}) });
+      for (const m of (result.messages as SlackMessage[] | undefined) ?? []) all.push({ ...m, channel: channelId });
+      cursor = (result.response_metadata as { next_cursor?: string } | undefined)?.next_cursor || undefined;
+      if (!cursor) break;
+    }
+    return all.slice(-limit);
+  }
+
+  /** Send a direct message to one person. Resolves to the message ts. */
+  async sendDirectMessage(userId: string, text: string): Promise<string> {
+    const opened = await this.apiClient.call('conversations.open', { users: userId });
+    const channelId = (opened.channel as { id?: string } | undefined)?.id;
+    if (!channelId) throw new Error('Slack did not open a direct message channel');
+    return this.sendToChannel(channelId, text);
+  }
+
   /** Get the underlying API client (for routes). */
   get api(): SlackApiClient {
     return this.apiClient;
