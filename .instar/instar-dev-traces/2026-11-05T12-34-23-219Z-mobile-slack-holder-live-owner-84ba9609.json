@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "mobile-slack-holder-live-owner",
+  "sessionId": "215f127d-9ccd-41d1-8c83-8501d1688cdd",
+  "timestamp": "2026-11-05T12:34:23.219Z",
+  "artifactPath": "upgrades/side-effects/mobile-slack-holder-live-owner.md",
+  "artifactSha256": "714f09cc47037d51ecfd0bd05ab77e57f4010c8f335cc807739d7525cbab93d6",
+  "specPath": "docs/specs/mobile-slack-holder-proxy.md",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/scaffold/templates.ts",
+    "src/server/mobileOwnerDeviceAdmission.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobileSlackHolderProxy.ts",
+    "src/server/mobileSlackRoutes.ts",
+    "src/server/poolPeerFetch.ts",
+    "tests/e2e/mobile-slack-holder-proxy-alive.test.ts",
+    "tests/integration/mobile-slack-holder-proxy.test.ts",
+    "tests/unit/mobile-owner-device-admission.test.ts",
+    "tests/unit/mobile-slack-from-app.test.ts",
+    "tests/unit/mobile-slack-holder-proxy.test.ts",
+    "upgrades/mobile-slack-holder-live-owner.eli16.md",
+    "upgrades/next/mobile-slack-holder-live-owner.md",
+    "upgrades/side-effects/mobile-slack-holder-live-owner.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Privacy-sensitive access hardening of the existing owner-phone holder route under its approved current-owner invariant; explicit sole-owner assignment 2026-11-05 04:18 PST.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
