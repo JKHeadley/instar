@@ -22,6 +22,7 @@
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { nextAuditAfterFailure } from '../core/attribution/AttributionAudit.js';
 import { advanceEvolutionArchiveFailure, evolutionArchiveSyncAttemptDue, EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES } from '../core/EvolutionArchiveSync.js';
 import type { EvolutionArchiveSyncPeer } from '../core/EvolutionArchive.js';
 import { PENDING_MAX_BACKOFF_MS, PENDING_TICK_MS, PENDING_TTL_MS } from '../threadline/requiredAckService.js';
@@ -327,6 +328,35 @@ const LINUX_BROWSER_FACTS: MachineFacts = { platform: 'linux', wsl: false, arch:
 
 /** linux-browser-install-retry: every attempt fails and the machine stays up, so the hourly check keeps
  * asking. The real decision paces it at 1 h, 6 h, 24 h, then stops for good until an operator says yes. */
+/** attribution-audit-retry: a daily report whose model stays down. It settles to one try a day, for good. */
+const attributionAuditRetry: SelfActionController = {
+  id: 'attribution-audit-retry',
+  actionVerb: 'retry',
+  models: 'src/core/attribution/AttributionAudit.ts (finishRun — nextAuditAfterFailure, breaker after 3 failed runs)',
+  modelsPath: 'src/core/attribution/AttributionAudit.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The failure count, next run and breaker are on disk in audit-state.json, so a restart resumes the same schedule.' },
+  boundK: 33,
+  perTargetBoundK: 33,
+  ticks: 24 * 30,
+  tickMs: 60 * 60_000,
+  eternalSentinel: { reason: 'A daily report keeps trying once a day with its breaker open, so the report comes back on its own when the model does.', rateFloorMs: 12 * 60 * 60_000 },
+  delegatedGiveUp: 'The audit budget of 40 model calls a run and the 24h breaker',
+  makeUnderPressure(f, sink) {
+    let failures = 0;
+    let nextRunAt = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (now < nextRunAt) return;
+        sink.emit({ verb: 'retry', target: 'attribution-audit' });
+        failures += 1;
+        nextRunAt = nextAuditAfterFailure(failures, now).nextRunAt;
+      },
+    };
+  },
+};
+
 const linuxBrowserInstallRetry: SelfActionController = {
   id: 'linux-browser-install-retry',
   actionVerb: 'retry',
@@ -4022,6 +4052,7 @@ const codex429ExitNotice: SelfActionController = {
 };
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  attributionAuditRetry,
   jobPortableTransferPoll,
   jobCoverageAlertRetry,
   linuxBrowserInstallRetry,

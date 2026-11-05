@@ -44,7 +44,7 @@ import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { registryMirrorPaths } from './standardsRegistryPath.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
-import { ensureInstarBashPreToolUseHooks, ensureInstarWildcardPreToolUseHooks, type SettingsMatcherEntry } from './instarSettingsHooks.js';
+import { ensureInstarBashPreToolUseHooks, ensureInstarWildcardPreToolUseHooks, ensureInstarWritePreToolUseHooks, type SettingsMatcherEntry } from './instarSettingsHooks.js';
 import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotlightExclusion, ensureClaudeTranscriptSpotlightExclusion, ensureAgentDataSpotlightExclusion } from './InstarWorktreeManager.js';
 import { classifyTccProtectedPath, describeTccProtectedPath } from './TccProtectedPathGuard.js';
 import { fileURLToPath } from 'node:url';
@@ -825,6 +825,19 @@ export const TONE_ADVISORY_FLAG_POSITION_CLAUDEMD_SECTION = `- **How to send the
   EOF
   \`\`\`
   Use \`--tone-complied <RULE>\` instead of \`--tone-ack\`/\`--tone-reason\` when you agreed and revised. A flag in the wrong position is now REFUSED (it used to be sent to the user as literal text with its effect silently dropped, which is exactly how a correct check once got graded \`wrong\`). If such a token is genuinely part of your message, pipe the text on stdin — the check only inspects arguments.`;
+
+export const ATTRIBUTION_CLAUDEMD_SECTION = `## Attribution paper trail (who said this, and how did it change?)
+
+Anything I credit to a person, in my memory, notes, rules or messages, either points at the logged message it came from or says plainly that it has no source. A note that said "Justin corrected me" with no pointer can harden over months into "his standing rule" and refuse real work on words he never said; this is what stops that.
+
+- **Sourced:** the person's exact words in quotes, then a marker on the same line: \`Name: "exact words" [source: telegram 102965/123160 2026-10-08]\`. The format is \`[source: <channel> <conversation>/<message> <YYYY-MM-DD>]\`, the date being the record's UTC date; channels are telegram, slack, imessage, whatsapp, app, threadline.
+- **Unsourced:** \`[source unknown]\`, or \`[my inference]\` for my own conclusion. **A label removes the credit; it does not decorate it.** \`Name's standing rule: X [source unknown]\` still credits them and is refused. \`X. An earlier note credited this to Name; source unknown. [source unknown]\` passes.
+- **Who said this?** (Registry First) \`curl -H "Authorization: Bearer $AUTH" "http://localhost:\${port}/attribution/trace?q=<words>"\` (or \`?claim=<id>\`, \`?channel=&conversation=&message=&date=\`) → the origin record, then every wording in order, across my machines, with a \`failed\` list. \`GET /attribution/resolve?marker=<marker>\` checks one citation; \`GET /attribution/find?person=&claim=\` suggests sources and never writes one.
+- **Outcomes stay distinct:** \`found\`, \`pinned-copy\` (no longer in the log), \`not-found\` (not on any live machine, never "false"), \`unverifiable\` (older than a log, or in a declared gap), \`unreachable\` (a machine did not answer), \`removed\` (the person deleted it).
+- **The write gate:** a PreToolUse hook checks changed lines in my memory folder, MEMORY.md, USER.md, AGENT.md, \`.claude/rules\` and my part of CLAUDE.md. A refusal shows the failing lines and the two honest ways through. On any error or timeout it passes, counted.
+- **Status:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:\${port}/attribution/status\` → mode, budgets, hook timeouts, \`unchecked\` counts, judge error rate, and the daily report. Zero refusals with a healthy count means it is working; check the counts before reading silence as success. 503 means the feature is dark on this agent; say so. \`POST /attribution/audit\` runs the report now.
+- **Modes:** \`record\` (the default where it is live) refuses nothing, and its verdicts measure what enforcement would hold. \`enforce\` refuses note writes and turns on the send nudge \`B23_UNSOURCED_ATTRIBUTION\`, which also catches a refusal resting on an unsourced rule whether or not it names anyone ("that's a standing rule, so no"). React to that nudge like any other: revise with \`--tone-complied B23_UNSOURCED_ATTRIBUTION\`, or \`--tone-ack\` with the reason; if the rule is mine, say so.
+- **The daily report writes nothing to any note.** Fixing one is a normal edit that passes the same check. **When to use** (PROACTIVE): before I say "you told me", "your rule" or "we agreed", or refuse work on a rule, I find the source or say it is my own. When someone asks "did I say that?" or "where did that rule come from?", I run the trace and show the chain.`;
 
 export const SURFACE_REFERRAL_CLAUDEMD_SECTION = `**Sending the operator to a page: link, words, and look first.** A message that sends the operator to a dashboard, console or app page carries a direct link and the exact words they will see there in quotes, and I load that link at their screen size (1280x728 and 390x844) and read the first screen before sending. The outbound gate nudges (\`B22_SURFACE_REFERRAL\`) until that holds: after loading the page, resend with \`--tone-complied B22_SURFACE_REFERRAL\` (its flags go before the topic id). If it cannot be loaded from here, override with \`--tone-ack\` and the reason. Anything that needs the operator also belongs on the first screen of its page and in Home's count, through \`dashboard/console/needs-model.js\`.`;
 export const TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION = `**File-path feedback is always a NUDGE, never a wall; most other checks become nudges under the advisory migration.** B2_FILE_PATH is advisory on every agent (operator decision 2026-09-03): file paths are sometimes necessary and acceptable, so the check may suggest clearer wording but must accept an explicit override even when decision-quality recording is unavailable. For the other eligible judgment rules, \`toneGate.advisoryMigration\` remains dev-gated live / fleet-dark. A nudge returns \`422 tone-gate-advisory\` with \`notSent: true\` and a \`decisionRef\` when available — the message is handed back to YOU, not dropped. Two ways forward, and **both are recorded when the evidence seam is available**:
@@ -7396,6 +7409,13 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     }
 
     try {
+      fs.writeFileSync(path.join(instarHooksDir, 'attribution-gate.js'), this.getAttributionGateHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/attribution-gate.js (attribution write gate)');
+    } catch (err) {
+      result.errors.push(`attribution-gate.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'stop-gate-router.js'), this.getStopGateRouterHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/stop-gate-router.js (unjustified Stop gate router)');
     } catch (err) {
@@ -7536,6 +7556,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       'instructions-loaded-tracker.js', 'subagent-start-tracker.js',
       'free-text-guard.sh', 'claim-intercept.js', 'claim-intercept-response.js', 'response-review.js',
       'stop-gate-router.js',
+      'attribution-gate.js',
       'auto-approve-permissions.js',
     ];
 
@@ -9229,6 +9250,13 @@ setTimeout(() => process.exit(0), 2000);
     // Tone-gate advisory migration (operator approval 2026-07-19, topic 33368) —
     // operator-needs-first-screen §6: the B22 nudge needs its reaction flag known, or an agent
     // reads the nudge as a wall. Content-sniffed for idempotency.
+    // Attribution paper trail: Agent Awareness + Migration Parity. Content-sniffed for idempotency.
+    if (!content.includes('## Attribution paper trail')) {
+      content += `\n${ATTRIBUTION_CLAUDEMD_SECTION.replace(/\$\{port\}/g, String(port))}\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the attribution paper trail');
+    }
+
     if (!content.includes('Sending the operator to a page: link, words, and look first')) {
       content += `\n${SURFACE_REFERRAL_CLAUDEMD_SECTION}\n`;
       patched = true;
@@ -16304,6 +16332,17 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       }
     }
 
+    // The attribution write gate (docs/specs/attribution-paper-trail.md). Same shared function init.ts
+    // calls. It restricts nobody by arriving: the route answers 503 while the feature is dark, `record`
+    // refuses nothing, and `enforce` is opt-in.
+    {
+      const added = ensureInstarWritePreToolUseHooks(preToolUse as SettingsMatcherEntry[]);
+      if (added.length > 0) {
+        patched = true;
+        for (const fname of added) result.upgraded.push(`.claude/settings.json: added PreToolUse Write|Edit|MultiEdit ${fname} hook`);
+      }
+    }
+
     // Ensure PreToolUse Bash slopcheck-guard hook exists (cherry-pick 2026-05-23).
     // Existing agents only get new Bash-matcher hooks through an explicit ensure
     // block here — there is no wholesale settings-template refresh on migration.
@@ -18132,7 +18171,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
+  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'attribution-gate' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
     switch (name) {
       case 'signin-profile-guard': return signinProfileGuardHook();
       case 'telegram-origin-guard': return originToolGuardHook();
@@ -18154,6 +18193,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       case 'telegram-topic-context': return this.getTelegramTopicContextHook();
       case 'response-review': return this.getResponseReviewHook();
       case 'stop-gate-router': return this.getStopGateRouterHook();
+      case 'attribution-gate': return this.getAttributionGateHook();
       case 'auto-approve-permissions': return this.getAutoApprovePermissionsHook();
       case 'skill-usage-telemetry': return this.getSkillUsageTelemetryHook();
       case 'build-stop-hook': return this.getBuildStopHook();
@@ -18502,7 +18542,27 @@ except Exception:
 fi
 
 MEM_PORT="\$PORT"; MEM_TOKEN="\$TOKEN"; MEM_EVENT="\$EVENT"
-${this.jevMemoryPickerHookStep()}# AUTO-LEARNED PREFERENCES injection — Correction & Preference Learning Sentinel
+${this.jevMemoryPickerHookStep()}# ATTRIBUTION BACKLOG — the daily report needs a reader. One line, only when the report holds
+# something. Fail-open: route 503 (feature dark) / unreachable / empty → silent skip.
+if [ -n "\$PORT" ] && [ -n "\$TOKEN" ]; then
+  ATTRIBUTION_LINE=\$(curl -sf --max-time 2 -H "Authorization: Bearer \$TOKEN" \\
+    "http://localhost:\${PORT}/attribution/status" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    line = json.load(sys.stdin).get('sessionLine')
+    if line:
+        print(line)
+except Exception:
+    pass
+" 2>/dev/null)
+  if [ -n "\$ATTRIBUTION_LINE" ]; then
+    echo ""
+    echo "\$ATTRIBUTION_LINE"
+    echo ""
+  fi
+fi
+
+# AUTO-LEARNED PREFERENCES injection — Correction & Preference Learning Sentinel
 # (Slice 1a). Fetches /preferences/session-context and injects the structured
 # block of preferences the correction loop has learned about this user, so the
 # agent reasons with them from message one. SIGNAL-ONLY — these are preferences,
@@ -22837,6 +22897,95 @@ if (!reviewEnabled) {
   }
 })();
 
+`;
+  }
+
+  private getAttributionGateHook(): string {
+    const port = this.config.port;
+    return `#!/usr/bin/env node
+// Attribution write gate (docs/specs/attribution-paper-trail.md).
+//
+// Thin client on the stop-gate-router pattern: the decision stays server-side. It exits at once for
+// any other tool or for a file out of scope (matched after realpath, since the memory folder is a
+// link; the server checks the scope again), and otherwise asks POST /attribution/check. In record
+// mode the server answers at once and this does not wait. On any error, timeout or 503 it passes:
+// only a server verdict that says blocked stops a write. Exit 2 is how Claude Code and Codex both
+// read a refusal, and the reason on stderr is what the agent sees.
+//
+// ESM-SAFE: dynamic import inside an async IIFE, so this runs in CJS and ESM host packages alike.
+
+(async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+  let raw = '';
+  for await (const chunk of process.stdin) raw += chunk;
+  const input = JSON.parse(raw);
+  const tool = String(input.tool_name || '').replace(/^functions\\./, '');
+  if (!['Write', 'Edit', 'MultiEdit', 'apply_patch'].includes(tool)) process.exit(0);
+  const toolInput = input.tool_input || {};
+
+  const paths = [];
+  if (typeof toolInput.file_path === 'string') paths.push(toolInput.file_path);
+  const patch = typeof toolInput.input === 'string' ? toolInput.input
+    : typeof toolInput.patch === 'string' ? toolInput.patch
+    : typeof toolInput.command === 'string' ? toolInput.command
+    : Array.isArray(toolInput.command) ? toolInput.command.join('\\n') : '';
+  for (const match of patch.matchAll(/^\\*\\*\\* (?:Add|Update) File: (.+)$/gm)) paths.push(match[1].trim());
+  if (paths.length === 0) process.exit(0);
+
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  let serverPort = ${port};
+  let authToken = process.env.INSTAR_AUTH_TOKEN || '';
+  let extraPaths = [];
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(projectDir, '.instar', 'config.json'), 'utf-8'));
+    serverPort = cfg.port || ${port};
+    if (!authToken && typeof cfg.authToken === 'string') authToken = cfg.authToken;
+    if (cfg.attribution && cfg.attribution.enabled === false) process.exit(0);
+    if (cfg.attribution && Array.isArray(cfg.attribution.paths)) extraPaths = cfg.attribution.paths.filter((p) => typeof p === 'string');
+  } catch {}
+
+  function real(target) {
+    const rest = [];
+    let current = path.resolve(projectDir, target);
+    for (;;) {
+      try { return path.join(fs.realpathSync(current), ...rest); } catch {}
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(projectDir, target);
+      rest.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+  const memorySegment = path.resolve(projectDir).replace(/[/.]/g, '-');
+  const roots = ['.instar/agent-memory', '.claude/rules', ...extraPaths.filter((p) => p.endsWith('/'))].map(real);
+  const files = ['.instar/MEMORY.md', '.instar/USER.md', '.instar/AGENT.md', 'CLAUDE.md', ...extraPaths.filter((p) => !p.endsWith('/'))].map(real);
+  const inScope = paths.some((target) => {
+    const resolved = real(target);
+    if (files.includes(resolved) || roots.some((root) => resolved === root || resolved.startsWith(root + path.sep))) return true;
+    const parts = resolved.split(path.sep);
+    const at = parts.indexOf('projects');
+    return at >= 0 && parts[at + 1] === memorySegment && parts[at + 2] === 'memory';
+  });
+  if (!inScope) process.exit(0);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  const response = await fetch('http://127.0.0.1:' + serverPort + '/attribution/check', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+    body: JSON.stringify({ toolName: tool, toolInput }),
+    signal: controller.signal,
+  });
+  clearTimeout(timer);
+  if (!response.ok) process.exit(0);
+  const answer = await response.json();
+  if (answer && answer.blocked === true) {
+    process.stderr.write(String(answer.reason || 'The attribution check refused this write.') + '\\n');
+    process.exit(2);
+  }
+  process.exit(0);
+})().catch(() => process.exit(0));
 `;
   }
 

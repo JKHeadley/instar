@@ -2164,6 +2164,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     switchNowConfirmTtlMs: 300000,        // §8 'switch now' validity window
     defaults: {},                         // per-topic config-default profiles (§5.2)
   },
+  // Attribution paper trail (docs/specs/attribution-paper-trail.md). `enabled` is deliberately
+  // OMITTED so resolveDevAgentGate decides at runtime: live on a dev agent, dark on the fleet.
+  // Registered in DEV_GATED_FEATURES. `record` refuses nothing and the hook does not wait;
+  // `enforce` stays opt-in, because an update never adds a restriction to an existing agent.
+  attribution: {
+    mode: 'record',
+  },
   // Live credential re-pointing (spec: live-credential-repointing-rebalancer.md).
   // developmentAgent dark-feature gate (operator directive 2026-06-13): `enabled` is
   // OMITTED so resolveDevAgentGate resolves it LIVE on a dev agent + DARK on the fleet

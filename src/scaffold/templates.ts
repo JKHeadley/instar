@@ -22,7 +22,7 @@ import { jobCoverageGuide, jobTransferGuide } from '../core/jobMeshAwareness.js'
 // function call inside generateClaudeMd — no module-init cycle (PostUpdateMigrator
 // never imports templates).
 import { PAIR_SHARING_CLAUDEMD_SECTION, APPRENTICESHIP_STALL_GATE_CLAUDEMD_SECTION, SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION, PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION, MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION, CODEX_CONNECT_CLAUDEMD_SECTION, FEATURE_SWITCH_CLAUDEMD_SECTION, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION, SINGLE_MACHINE_FAILOVER_GAP_CLAUDEMD_SECTION, MISSING_LOGIN_SESSION_CLAUDEMD_SECTION, DYNAMIC_MCP_CLAUDEMD_SECTION, ULTRACODE_SPAWN_CLAUDEMD_SECTION, AGENT_SIGNATURE_PROVENANCE_CLAUDEMD_SECTION, SENDER_REJECTION_CLAUDEMD_SECTION, SCOPE_ACCRETION_CLAUDEMD_SECTION, MESH_SELF_HEALING_CLAUDEMD_SECTION, LEASE_MEDIUM_CLAUDEMD_SECTION, WRITE_ADMISSION_CLAUDEMD_SECTION, DOORWAY_REGISTRY_CLAUDEMD_SECTION, EXTERNAL_HOG_CLAUDEMD_SECTION, ROUTING_SPEND_CLAUDEMD_SECTION, MATURATION_BOARD_CLAUDEMD_SECTION, MATURATION_LADDER_CLAUDEMD_SECTION, QUEUE_PACE_CLAUDEMD_SECTION, ECOSYSTEM_IDEAS_CLAUDEMD_SECTION, MOBILE_PAIRING_CLAUDEMD_SECTION, MOBILE_CHAT_CLAUDEMD_SECTION, APP_CONVERSATIONS_CLAUDEMD_SECTION, MOBILE_ROUTES_CLAUDEMD_SECTION, MOBILE_PUSH_CLAUDEMD_SECTION, MOBILE_PEOPLE_CLAUDEMD_SECTION, DECISION_QUALITY_CLAUDEMD_SECTION, BENCHMARK_DIVERGENCE_CLAUDEMD_SECTION, DUPLICATE_RECONCILER_CLAUDEMD_SECTION, AUDIT_CONVERGENCE_CLAUDEMD_SECTION, TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION, DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE, WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION, SCRIPT_JOBS_CLAUDEMD_SECTION, SESSION_HANDOFF_CLAUDEMD_SECTION, JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION, DEDICATED_PROFILE_REGISTRY_ROW_ANSWER, CODEX_ARM_SWEEPER_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_CLAUDEMD_SECTION, APP_MEDIA_CLAUDEMD_SECTION, MACHINE_BROWSER_CARE_CLAUDEMD_SECTION, PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION, SLACK_FROM_APP_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_POOL_CLAUDEMD_SECTION, MACHINE_WEDGE_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
-import { SURFACE_REFERRAL_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
+import { ATTRIBUTION_CLAUDEMD_SECTION, SURFACE_REFERRAL_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { RECOMMENDED_SERVICES_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { MINIMUM_OPERATOR_EFFORT_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { POOL_MOVE_NUDGE_CLAUDE_MD_LINE, POOL_READINESS_CLAUDE_MD_LINE } from '../core/PostUpdateMigrator.js';
@@ -1323,6 +1323,7 @@ I maintain registries that are the source of truth for specific categories. Thes
 | Question | Check First |
 |----------|-------------|
 | What can I do? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities\` |
+| Who said this? / where did this rule come from? / did I really say that? | \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/attribution/trace?q=WORDS"\` — the logged message, then every later wording. NEVER answer from a note alone |
 | Can I use a browser? / can this be done on a website? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/browser/state\` |
 | Which machine can serve a capability? | **Registry First — capability registry:** \`GET /capability-registry\` distinguishes unavailable, unobserved, stale, and available evidence |
 | Which way of reaching another agent works right now? | **Registry First — channel registry:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/channels\` — every peer channel with purpose / when-preferred / cost / live verdict. A channel that failed to start still gets a row; \`unknown\` means undetermined, NEVER healthy. Read it BEFORE reporting that a peer is unreachable |
@@ -1518,6 +1519,7 @@ The GitHub repository is preserved — they can restore later with \`git clone\`
 **Context-triggered actions:**
 ${jobCoverageGuide(port).proactive}
 ${jobTransferGuide(port).proactive}
+- I am about to **credit someone with a rule or a statement, or refuse work on one** → Find the logged message (\`/attribution/trace\`, \`/attribution/find\`) and quote it with its marker, or say plainly the rule is my own. A note saying "Justin's rule" is a claim, not a source.
 - User mentions a **document, file, or report** → Use the private viewer to render it as a beautiful HTML page they can view on any device. If a tunnel is running, they can access it from their phone. **Always include the link.**
 - User asks to **share something publicly** → Use Telegraph publishing. Warn them it's public. **Always include the link.**
 - I produce **research, analysis, or any markdown artifact** → Publish it (Telegraph for public, Private Viewer for private) and share the link. Research without an accessible link is incomplete delivery.
@@ -1874,6 +1876,9 @@ Your messages to the user pass an always-on LLM gate (the tone gate) before they
 ${TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION}
 
 ${SURFACE_REFERRAL_CLAUDEMD_SECTION}
+
+${ATTRIBUTION_CLAUDEMD_SECTION.replace(/\$\{port\}/g, String(port))}
+
 ### Context-Aware Outbound Review (why was my message flagged / would my reply have been blocked?)
 
 Beyond the tone gate, a response-review pipeline (nine specialist reviewers driven by a Stop hook) evaluates each finished conversational turn. On most installs it is OFF BY CONFIG — \`GET /review/history\` returns 501 there; say so honestly rather than guessing. Where it runs, it is usually in WATCH MODE (\`responseReview.observeOnly: true\`): verdicts are recorded, nothing is blocked. The context-aware layer (⚗️ experimental, dev-gated dark: \`responseReview.conversationalContext\`) feeds the opted-in reviewer a bounded, untrusted-data-enveloped slice of recent conversation so "the operator asked for this technical detail" is an input it can actually judge — a one-way carve-out (it can only move a would-block toward PASS, never license credentials/PII, never touch the deterministic policy layer).

@@ -40,6 +40,7 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   // entirely by the deterministic floor, so this benchmark never gates a kill.
   ExternalHogClassifier: { task: 'zombie-classify' },
   MessagingToneGate: { task: 'tone-gate' },
+  AttributionJudge: { pending: 'wave-3' },
   // CompletionEvaluator has TWO judged surfaces; both benched.
   CompletionEvaluator: { task: 'completion-judge+p13-stop-judge' },
   ExternalOperationGate: { task: 'external-op-gate' },
