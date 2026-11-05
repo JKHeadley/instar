@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "slug": "session-pool-keep-and-recall",
+  "sessionId": "f3f374fe-1740-4fac-8bbf-c32c8b60e738",
+  "timestamp": "2026-11-05T00:57:23.539048Z",
+  "artifactPath": "upgrades/side-effects/session-pool-keep-and-recall.md",
+  "artifactSha256": "13e3fd51bd20dad4221e7d070a5e1a966ada6c52a910a41385d3f6738fe84d7c",
+  "specPath": "docs/specs/session-pool-keep-and-recall.md",
+  "coveredFiles": [
+    "tests/unit/session-pool-activation-wiring.test.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": false
+}

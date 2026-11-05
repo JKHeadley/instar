@@ -71,7 +71,7 @@ describe('Session Pool activation wiring (§L4)', () => {
 
   it('the owner-suspect breaker is wired into BOTH halves (mark + responsive) and the aliveness check', () => {
     const idx = src.indexOf('new routerMod.SessionRouter({');
-    const block = src.slice(idx, idx + 3000);
+    const block = src.slice(idx, idx + 4000);
     expect(block).toContain('markOwnerSuspect: (m) => ownerSuspectBreaker.markSuspect(m)');
     expect(block).toContain('onOwnerResponsive: (m) => ownerSuspectBreaker.recordSuccess(m)');
     expect(block).toContain('!ownerSuspectBreaker.isSuspect(m)');
