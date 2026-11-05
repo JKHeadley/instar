@@ -95,7 +95,7 @@ export function mountPhonesPanel(root, { request, unlock, now = () => Date.now()
           try {
             const r = await request(`/mobile/pairing-approvals/${encodeURIComponent(a.deviceId)}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
             const answer = await r.json().catch(() => ({}));
-            notice.textContent = r.ok ? 'Approved. That phone is paired.' : (typeof answer.detail === 'string' ? answer.detail : 'Could not approve. Refresh and try again.');
+            notice.textContent = r.ok ? `Approved. That phone is paired. If the app still shows a code box, type ${prettyCode(a.code)} to finish.` : (typeof answer.detail === 'string' ? answer.detail : 'Could not approve. Refresh and try again.');
           } catch { notice.textContent = 'Could not reach the agent.'; }
           await refresh();
         };

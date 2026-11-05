@@ -52,7 +52,7 @@ One-use, expiry, and binding all come from this: an approval names one device id
 
 The DM keeps the code and gains an Approve button: `md:a:<nonce>`, next to `md:d:<nonce>`, same nonce and same lifecycle, so both buttons die together. `TelegramAdapter.handleMobileApprove` applies exactly the checks of `handleMobileDecline` (`verified`, owner sender, owner's private chat) and calls `svc.approveByNonce`. The nonce is 96 random bits, memory only. `/internal/telegram-callback` passes `verified: callbackDecision.verified`, so a tap the lifeline did not prove is refused even in the window before the ingress guard is armed. Its existing dedupe applies the same `callbackQueryId` once.
 
-The toast states the outcome in plain words. On `approved` or a decline the message text is replaced (best effort) so the dead code and stale buttons leave the chat. Late or repeated taps answer "This pairing has already ended."
+The toast states the outcome in plain words. On `approved` the buttons are removed (best effort) and the code stays, with a short message saying to type it if the app still shows a code box. On a decline the text is replaced. Late or repeated taps answer "This pairing has already ended."
 
 The message leads with the decision, labels the phone's name as something it chose itself, and shows the key:
 
@@ -101,7 +101,7 @@ expiresAt: string                                                      // ISO, w
 
 `mobilePairing.approve.enabled` (read live): omitted means on wherever pairing is on, like `consoleTicket`; `false` removes the Approve button, the routes (503), the new fields and the two-phones notice, leaving today's code flow; a Decline tap still replaces the message text. No migration of config is needed.
 
-An existing agent loses nothing: the code path is byte-for-byte what it was apart from the message's wording. An older app stays on its code screen. If the owner taps Approve anyway, typing anything into confirm answers `active` (existing behaviour), and reopening the app reads `active`. Typing the real code before tapping works exactly as today.
+An existing agent loses nothing: the code path is unchanged apart from the message's wording. A shipped app (read from source, `apps/instar-ios/InstarApp/Pairing.swift`) reads the new fields as nothing and never polls: its code box submits only a complete-looking code, and confirm then answers `active` for any code. So Approve never hides the code: it stays in the Telegram message, and the dashboard's "Approved" line repeats it. The app needs no change to keep working, only one extra step until it is updated.
 
 ## 4. Security
 

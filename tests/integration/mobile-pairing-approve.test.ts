@@ -483,11 +483,12 @@ describe('the code path is intact', () => {
     expect((await signed(ctx.app, w.dev, w.deviceId, 'POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
     expect(ctx.svc.approveByNonce(ctx.dms[0]!.decline.slice(5))).toBe('ended');
   });
-  it('an older app on its code screen, after Approve: confirm reads active', async () => {
+  it('a shipped app on its code screen, after Approve: typing the code from the message finishes it', async () => {
     const ctx = setup({ telegramOwner: true });
     const w = await waiting(ctx);
     expect(ctx.svc.approveByNonce(ctx.dms[0]!.decline.slice(5))).toBe('approved');
-    expect((await signed(ctx.app, w.dev, w.deviceId, 'POST', '/mobile/device/confirm', { code: '000000' })).body.status).toBe('active');
+    const code = /is (\d{3}) (\d{3})\./.exec(ctx.dms[0]!.text)!.slice(1).join('');
+    expect((await signed(ctx.app, w.dev, w.deviceId, 'POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
   });
   it('a lease move ends a Telegram-path phone: Approve finds nothing, status reads expired', async () => {
     const ctx = setup({ telegramOwner: true });

@@ -177,13 +177,14 @@ describe('the Telegram tap', () => {
   }
   const tap = { callbackQueryId: 'q1', data: `md:a:${NONCE}`, fromUserId: OWNER, chatId: OWNER, messageId: 9, verified: true };
 
-  it('the owner, verified, in their private chat: approves and closes the message', async () => {
+  it('the owner, verified, in their private chat: approves and removes the buttons', async () => {
     const { a, seen } = adapter();
     expect(await a.handleMobileApprove(tap)).toBe('approved');
     expect(seen.handled).toEqual([NONCE]);
-    expect(seen.edits).toHaveLength(1);
-    expect(seen.edits[0]).toMatchObject({ chat_id: OWNER, message_id: 9 });
-    expect(JSON.stringify(seen.edits[0])).not.toMatch(/code/i);
+    // The buttons go and the code stays: a shipped app's code box needs a code to finish.
+    expect(seen.edits[0]).toMatchObject({ chat_id: OWNER, message_id: 9, reply_markup: { inline_keyboard: [] } });
+    expect(seen.edits[0]!.text).toBeUndefined();
+    expect(seen.edits[1]!.text).toContain('type the code above');
   });
   it.each([
     ['an unproven tap', { verified: false }],

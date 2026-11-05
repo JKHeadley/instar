@@ -75,7 +75,7 @@ describe('Approve on the code page (mobile-pairing-approve §3.3)', () => {
     expect(text(h)).toContain('KITE-4172');
   });
 
-  it('a tap posts with the session and draws the phone no more', async () => {
+  it('a tap posts with the session, draws the phone no more, and leaves the code for an older app', async () => {
     const h = boot();
     h.answers['GET /mobile/pairing-approvals'] = approvals(true);
     h.answers['POST /mobile/pairing-approvals/dev-1/approve'] = () => json(200, { status: 'active', deviceId: 'dev-1' });
@@ -85,8 +85,9 @@ describe('Approve on the code page (mobile-pairing-approve §3.3)', () => {
     const call = h.calls.find((c) => c.url === '/mobile/pairing-approvals/dev-1/approve')!;
     expect(call.method).toBe('POST');
     expect(call.headers['X-Instar-Operator-Session']).toBe('ops');
-    expect(text(h)).toContain('Approved. That phone is paired.');
-    expect(text(h)).not.toContain('KITE-4172');
+    // The card is gone; the code stays readable for a shipped app's code box.
+    expect(text(h)).toContain('Approved. That phone is paired. If the app still shows a code box, type KITE-4172 to finish.');
+    expect(h.doc.querySelector('.pair-card')).toBeNull();
   });
 
   it('a refusal shows its own reason and the session stays', async () => {

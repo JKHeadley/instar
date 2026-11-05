@@ -284,7 +284,7 @@ export function mountPairPage(doc, {
         const approve = make('button', { cls: 'pair-button', text: 'Approve this phone', type: 'button' }, card);
         approve.addEventListener('click', () => {
           approve.disabled = true;
-          void act(`/mobile/pairing-approvals/${encodeURIComponent(a.deviceId)}/approve`, 'Approved. That phone is paired.', 'Could not approve. Try again.',
+          void act(`/mobile/pairing-approvals/${encodeURIComponent(a.deviceId)}/approve`, `Approved. That phone is paired. If the app still shows a code box, type ${prettyCode(a.code)} to finish.`, 'Could not approve. Try again.',
             () => { declined.add(a.deviceId); if (lastData && auth) renderWaiting(lastData); });
         });
         make('p', { text: 'If the app asks for a code instead:' }, card);

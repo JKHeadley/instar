@@ -56,7 +56,7 @@ Every check is an exact credential or enumerated-state check, with no pattern ma
 
 ## 6. External surfaces
 
-New fields on the redeem answer and `GET /mobile/device`, which older apps ignore; `canApprove` on each approval row; new device routes; a new `approvedVia` value in the replicated key ledger, which peers store as a string and only display. The Telegram message wording changes, and Approve or Decline now replaces the message text. New owner DMs: "Two phones tried to use the same pairing link" (once per link), and a record when an owner phone approves with Face ID. A `notice` push ("Something needs you", no phone name or key) goes to every push-registered phone on this machine, MSP phones included, when an owner phone there can answer; `notifyHere` has no way to target owners, as with other hub notices.
+New fields on the redeem answer and `GET /mobile/device`, which older apps ignore; `canApprove` on each approval row; new device routes; a new `approvedVia` value in the replicated key ledger, which peers store as a string and only display. The Telegram message wording changes; Approve removes its buttons and sends one short follow-up, and Decline replaces its text. New owner DMs: "Two phones tried to use the same pairing link" (once per link), and a record when an owner phone approves with Face ID. A `notice` push ("Something needs you", no phone name or key) goes to every push-registered phone on this machine, MSP phones included, when an owner phone there can answer; `notifyHere` has no way to target owners, as with other hub notices.
 
 ## 6b. Operator-surface quality
 
@@ -75,7 +75,7 @@ Machine-local by design for the credential (spec §6, marker there): a pending p
 
 ## Older app builds
 
-Checked against the shipped app (apps/instar-ios, `InstarApp/Pairing.swift`): it reads JSON as loose dictionaries, so new fields are ignored and it never reads `approvedVia`. Its code screen already polls `GET /mobile/device` and moves on when `status` leaves `pending`, so an older app follows an Approve tap too. Read from source only; not driven on a phone.
+Checked against the shipped app (`apps/instar-ios/InstarApp/Pairing.swift`, `PairingCode.swift`), source only, not driven on a phone. It reads JSON as loose dictionaries, so new fields are ignored and it never reads `approvedVia`. It does not poll: its Confirm button needs a complete-looking code, and confirm then answers `active` for any code. So Approve keeps the code readable for it: the Telegram message loses only its buttons and a follow-up says to type the code, and the dashboard's "Approved" line repeats it. This corrects the first draft, which erased the code from the chat and would have stranded an older app on its code box.
 
 ## Second-pass review
 

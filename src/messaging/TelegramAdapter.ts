@@ -1067,7 +1067,14 @@ export class TelegramAdapter implements MessagingAdapter {
     const r = this.mobileApproveHandler ? this.mobileApproveHandler(m[1]!) : { outcome: 'ended' as const, text: 'This pairing has already ended.' };
     await this.answerCallback(t.callbackQueryId, r.outcome === 'approved' ? 'Approved. That phone is paired.' : r.text);
     if (r.outcome === 'approved') {
-      await this.closeOwnerPairingMessage(owner, t.messageId, 'Approved. That phone is paired with this agent. You can remove it any time on the Phones page.');
+      // The code stays in the message: a shipped app's code box only submits a complete-looking code,
+      // and once the phone is active any such code finishes it. Only the buttons go.
+      if (typeof t.messageId === 'number') await this.apiCall('editMessageReplyMarkup', { chat_id: owner, message_id: t.messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {
+        // @silent-fallback-ok — tidying only: the old buttons answer "already ended"
+      });
+      await this.apiCall('sendMessage', { chat_id: owner, text: 'Approved. That phone is paired with this agent. If the app still shows a code box, type the code above to finish. You can remove the phone any time on the Phones page.' }).catch(() => {
+        // @silent-fallback-ok — the toast already said so, and the phone is paired
+      });
       return 'approved';
     }
     return r.outcome === 'ended' ? 'unknown' : 'held';
