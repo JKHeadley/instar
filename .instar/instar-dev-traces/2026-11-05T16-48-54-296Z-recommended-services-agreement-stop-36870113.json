@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "recommended-services-agreement-stop",
+  "sessionId": "0a95bf8a-d9ab-40b5-8855-886ee47eda78",
+  "timestamp": "2026-11-05T16:48:54.296Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-agreement-stop.md",
+  "artifactSha256": "920d031f479cb30b373b3a93fd083fd5809429285beb5d174c4154c3e65317c8",
+  "coveredFiles": [
+    "docs/specs/recommended-services-agreement-stop.eli16.md",
+    "docs/specs/recommended-services.md",
+    "src/recommended/recipes.ts",
+    "tests/unit/recommended-services-agreement-rule.test.ts",
+    "upgrades/next/recommended-services-agreement-stop.md",
+    "upgrades/side-effects/recommended-services-agreement-stop.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One line of setup-brief text plus tests and one spec sentence; dark on real agents; a revert fully undoes it.",
+  "eli16Path": "docs/specs/recommended-services-agreement-stop.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/recommended-services-agreement-stop.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

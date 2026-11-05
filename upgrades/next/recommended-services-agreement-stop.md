@@ -1,0 +1,11 @@
+## What Changed
+Recommended-service setup sessions now stop and ask before accepting a provider's terms of service, agreement or contract. The ask says in plain words what the agreement is and what stands out, such as binding arbitration or auto-renewal, and a "not now" uses the existing setup hold. The rule is in the shared rules every recipe gets. Setup stays off on real agents, so nothing changes for them.
+
+## What to Tell Your User
+Nothing yet. Recommended-service setup isn't on for real agents.
+
+## Summary of New Capabilities
+- A setup session asks the person before accepting a provider's terms, and says what stands out in them.
+
+## Evidence
+Live Jev setup test on a throwaway agent, 2026-11-04: the session ticked TypeSafe's agreement, which includes binding arbitration, and told no one. New tests in tests/unit/recommended-services-agreement-rule.test.ts fail (3 of 4 fail with the line removed) without the new rule in src/recommended/recipes.ts.
