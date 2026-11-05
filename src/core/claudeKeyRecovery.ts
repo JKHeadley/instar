@@ -54,6 +54,35 @@ export function answeredSince(lines: readonly ConversationLine[], sinceMs: numbe
   return lines.some((l) => l.at >= sinceMs && isRealAgentReply(l, fixedTexts));
 }
 
+/** A Slack message as the adapter holds it (the fields used here). */
+export interface SlackLineInput { ts: string; user?: string; text?: string; bot_id?: string; subtype?: string; unaddressed?: boolean }
+
+/**
+ * A Slack conversation as lines. Only this agent's bot user is the agent (another bot answering is
+ * not a reply), and of its posts only a session's count: the server's own (standby notes,
+ * notices) come from the same bot user and are nobody answering. Only the agent's authorized
+ * people are waiting. Everything else is left out.
+ */
+export function slackConversationLines(
+  messages: readonly SlackLineInput[],
+  opts: { botUserId: string | null; isPerson: (userId: string) => boolean; isServerPost: (ts: string) => boolean },
+): ConversationLine[] {
+  const lines: ConversationLine[] = [];
+  for (const m of messages) {
+    if (m.unaddressed) continue;
+    if (m.subtype && !['thread_broadcast', 'file_share', 'bot_message'].includes(m.subtype)) continue;
+    const at = Math.round(parseFloat(m.ts) * 1000);
+    if (!Number.isFinite(at)) continue;
+    const fromAgent = opts.botUserId !== null ? m.user === opts.botUserId : Boolean(m.bot_id);
+    if (fromAgent) {
+      if (!opts.isServerPost(m.ts)) lines.push({ at, fromAgent: true, who: 'agent', text: m.text ?? '' });
+      continue;
+    }
+    if (!m.bot_id && m.user && opts.isPerson(m.user)) lines.push({ at, fromAgent: false, who: m.user, text: m.text ?? '' });
+  }
+  return lines;
+}
+
 export type RecoveryChannel =
   | { platform: 'slack'; channelId: string; threadTs?: string }
   | { platform: 'telegram'; topicId: number };

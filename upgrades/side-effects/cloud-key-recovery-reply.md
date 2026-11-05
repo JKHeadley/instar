@@ -17,7 +17,7 @@ Three fixes:
 
 ## Decision-point inventory
 
-- Is a conversation answered — add — a real reply from this agent (its own bot user, not any bot) after the restart time. Read from the conversation: the Slack ring buffer, confirmed against Slack itself before "no" (a channel session's top level plus the thread its latest message came from, long threads walked to the end), or Telegram log rows that are not server automation. Only the agent's authorized people count as waiting.
+- Is a conversation answered — add — a real reply from a session of this agent (its own bot user, not any bot; the Slack origin ledger separates a session's reply from the server's own posts such as the standby note, which come from the same bot user) after the restart time. Read from the conversation: the Slack ring buffer, confirmed against Slack itself before "no" (a channel session's top level plus the thread its latest message came from, long threads walked to the end), or Telegram log rows that are not server automation. Only the agent's authorized people count as waiting.
 - Ask a person to resend — add — once, after 15 minutes without an answer.
 - Is the operator told — modify — now requires a reader, not just a successful post.
 - Slack reply script argument parsing — modify — session mode only.
@@ -90,6 +90,12 @@ A revert restores the previous behaviour. The `awaiting` field in the state file
 ## Conclusion
 
 Closes the two drill faults: held messages go unanswered after recovery, and "My operator has been told" when nobody was told. The "session reported done" fault is closed structurally: a restart is no longer success, an answer is.
+
+---
+
+## Found after the review
+
+Replaying the drill's message order showed that the server's standby note (":telescope: … is actively working on something") comes from the same Slack bot user as a real reply. Counted as a reply, it would have hidden both held messages and made a restart look answered, which is the drill fault again. `slackConversationLines` now drops bot posts that the origin ledger records as `server-automation`. A test replays the drill's exact sequence.
 
 ---
 

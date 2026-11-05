@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { answeredSince, buildKeyRecoveryPrompt, deliverOperatorNotice, heldMessages, operatorSlackIds, type ConversationLine, type OperatorNoticeRoutes } from '../../src/core/claudeKeyRecovery.js';
+import { answeredSince, buildKeyRecoveryPrompt, deliverOperatorNotice, heldMessages, operatorSlackIds, slackConversationLines, type ConversationLine, type OperatorNoticeRoutes } from '../../src/core/claudeKeyRecovery.js';
 import { KEY_NOTICE_TEXTS, PERSON_TEXT, PERSON_TOLD_SUFFIX } from '../../src/core/ClaudeKeyHealth.js';
 
 const person = (at: number, text: string, who = 'U_DAWN'): ConversationLine => ({ at, fromAgent: false, who, text });
@@ -163,5 +163,43 @@ describe('what counts as a bare channel id', () => {
     expect(answeredSince([agent(6, 'C0AQ9NS0E9W')], 5, KEY_NOTICE_TEXTS)).toBe(false);
     expect(answeredSince([agent(6, 'CONFIRMED')], 5, KEY_NOTICE_TEXTS)).toBe(true);
     expect(answeredSince([agent(6, 'DEPLOYED')], 5, KEY_NOTICE_TEXTS)).toBe(true);
+  });
+});
+
+describe('a Slack conversation as lines (the drill sequence, measured 2026-11-04)', () => {
+  const BOT = 'U0CEG7KQA0M';
+  const STANDBY = ':telescope: nimbus is actively working on something. Your message has been delivered to the session.';
+  // Order and texts as Echo's DM showed them in the drill.
+  const drill = [
+    { ts: '1793833948.507989', user: 'U_ECHO', text: 'Drill, Echo, first message: reply with exactly ECHO-ONE.' },
+    { ts: '1793833973.000100', user: BOT, bot_id: 'B1', text: STANDBY },
+    { ts: '1793834040.000100', user: BOT, bot_id: 'B1', text: `${PERSON_TEXT}${PERSON_TOLD_SUFFIX}` },
+    { ts: '1793834203.761389', user: 'U_ECHO', text: 'Drill, Echo, second message while down: reply with exactly ECHO-TWO.' },
+    { ts: '1793834228.000100', user: BOT, bot_id: 'B1', text: STANDBY },
+  ];
+  const serverPosts = new Set(['1793833973.000100', '1793834040.000100', '1793834228.000100']);
+  const opts = { botUserId: BOT, isPerson: (u: string) => u === 'U_ECHO', isServerPost: (ts: string) => serverPosts.has(ts) };
+
+  it('both held messages are found: the standby posts are the server, not an answer', () => {
+    const held = heldMessages(slackConversationLines(drill, opts), KEY_NOTICE_TEXTS);
+    expect(held.map((m) => m.text)).toEqual([drill[0].text, drill[3].text]);
+  });
+
+  it('a standby post after the restart is not an answer; a session reply is', () => {
+    const restart = 1793834300_000;
+    const after = [...drill, { ts: '1793834310.000100', user: BOT, bot_id: 'B1', text: STANDBY }];
+    serverPosts.add('1793834310.000100');
+    expect(answeredSince(slackConversationLines(after, opts), restart, KEY_NOTICE_TEXTS)).toBe(false);
+    const answered = [...after, { ts: '1793834350.000100', user: BOT, bot_id: 'B1', text: 'ECHO-ONE\nECHO-TWO' }];
+    expect(answeredSince(slackConversationLines(answered, opts), restart, KEY_NOTICE_TEXTS)).toBe(true);
+  });
+
+  it('another bot answering is not this agent, and a stranger is not waiting', () => {
+    const lines = slackConversationLines([
+      { ts: '10.0', user: 'U_STRANGER', text: 'hi' },
+      { ts: '11.0', user: 'U_OTHERBOT', bot_id: 'B2', text: 'answer from someone else' },
+      { ts: '12.0', user: 'U_ECHO', text: 'waiting', subtype: 'channel_join' },
+    ], opts);
+    expect(lines).toEqual([]);
   });
 });

@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { SlackAdapter } from '../../src/messaging/slack/SlackAdapter.js';
+import { SlackOriginLedger } from '../../src/messaging/slack/SlackOriginLedger.js';
 
 function adapter(api: (method: string, params: Record<string, unknown>) => Record<string, unknown>) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'slack-reach-'));
@@ -71,5 +72,16 @@ describe('SlackAdapter operator reach', () => {
     expect(calls[0]).toEqual(['conversations.replies', { channel: 'C_ROOM', ts: '1.0', limit: 200 }]);
     const channel = await a.recentConversationMessages('C_ROOM');
     expect(channel.map((m) => m.text)).toEqual(['older', 'newest']);
+  });
+
+  it('tells the server\'s own post from a session reply, by the origin ledger', async () => {
+    let n = 0;
+    const { a } = adapter((m) => (m === 'chat.postMessage' ? { ts: `100.${++n}` } : {}));
+    const standbyTs = await a.sendToChannel('D_ECHO', ':telescope: working on it');
+    const evidence = { v: 1 as const, producerKind: 'session' as const, machineId: null, machine: { status: 'unknown' }, harness: { status: 'unknown' }, harnessName: null, model: { status: 'unknown' }, recordedAt: Date.now() } as never;
+    const replyTs = await SlackOriginLedger.runInScope({ evidence, channel: 'D_ECHO', threadTs: null }, () => a.sendToChannel('D_ECHO', 'ECHO-ONE'));
+    expect(a.isServerAutomationPost('D_ECHO', standbyTs)).toBe(true);
+    expect(a.isServerAutomationPost('D_ECHO', replyTs)).toBe(false);
+    expect(a.isServerAutomationPost('D_ECHO', '999.9')).toBe(false); // no record: not claimed
   });
 });

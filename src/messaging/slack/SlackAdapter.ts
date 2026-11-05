@@ -897,6 +897,15 @@ export class SlackAdapter implements MessagingAdapter {
     return all.slice(-limit);
   }
 
+  /**
+   * True when this agent's server itself posted the message (a standby note, a notice), not a
+   * session answering. From the origin ledger; a message it has no record of is not claimed.
+   */
+  isServerAutomationPost(channelId: string, ts: string): boolean {
+    const hit = this.originLedger.lookup(channelId, ts);
+    return 'evidence' in hit && hit.evidence.producerKind === 'server-automation';
+  }
+
   /** Send a direct message to one person. Resolves to the message ts. */
   async sendDirectMessage(userId: string, text: string): Promise<string> {
     const opened = await this.apiClient.call('conversations.open', { users: userId });

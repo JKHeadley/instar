@@ -21950,7 +21950,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Wired here, outside the subscription pool block, because these agents may have no pool.
     {
       const { ClaudeKeyHealth, claudeKeyFingerprint, setActiveClaudeKeyHealth, KEY_NOTICE_TEXTS } = await import('../core/ClaudeKeyHealth.js');
-      const { heldMessages, answeredSince, buildKeyRecoveryPrompt, deliverOperatorNotice, operatorSlackIds } = await import('../core/claudeKeyRecovery.js');
+      const { heldMessages, answeredSince, buildKeyRecoveryPrompt, deliverOperatorNotice, operatorSlackIds, slackConversationLines } = await import('../core/claudeKeyRecovery.js');
       const { deriveRole: deriveOrgRole } = await import('../permissions/SlackPrincipalResolver.js');
       type KeyConversationLine = import('../core/claudeKeyRecovery.js').ConversationLine;
       const { SESSION_BACK_NOTICE: keyBackNotice } = await import('../messaging/userNotices.js');
@@ -21989,20 +21989,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           threadTs ? (m.thread_ts === threadTs || m.ts === threadTs) : true;
         let messages = authoritative ? [] : slack.getChannelMessages(channelId, 200).filter(inConversation);
         if (messages.length === 0) messages = await slack.recentConversationMessages(routingKey, 50);
-        const botUserId = slack.getBotUserId?.() ?? null;
-        // Only this agent is the agent (another bot answering is not a reply), and only people
-        // allowed to talk to it are waiting; read from Slack itself, both need saying.
-        const lines = messages
-          .filter((m) => !m.unaddressed && (!m.subtype || m.subtype === 'thread_broadcast' || m.subtype === 'file_share' || m.subtype === 'bot_message'))
-          .map((m) => ({
-            at: Math.round(parseFloat(m.ts) * 1000),
-            fromAgent: botUserId !== null ? m.user === botUserId : Boolean(m.bot_id),
-            person: !m.bot_id && slack.isAuthorized(m.user),
-            who: m.user || 'someone',
-            text: m.text ?? '',
-          }))
-          .filter((l) => l.fromAgent || l.person)
-          .map(({ person: _person, ...line }) => line);
+        const lines = slackConversationLines(messages, {
+          botUserId: slack.getBotUserId?.() ?? null,
+          isPerson: (userId) => slack.isAuthorized(userId),
+          isServerPost: (ts) => slack.isServerAutomationPost(channelId, ts),
+        });
         return { lines, channel: { platform: 'slack', channelId, ...(threadTs ? { threadTs } : {}) } };
       };
       // The operator on Slack: authorized people whose profile is an owner or admin (read fresh,

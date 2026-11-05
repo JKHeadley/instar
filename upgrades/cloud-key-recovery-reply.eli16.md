@@ -10,7 +10,7 @@ We broke an agent's key on purpose and then fixed it. The agent noticed, told pe
 
 - The Slack reply script now ignores a channel code typed out of habit, so it can never be sent as the reply.
 - Each restarted conversation gets a copy of the messages that were waiting, plus the exact command to reply.
-- A restart only counts once a real reply shows up. If none shows up within 15 minutes, the person is asked to send again, and the miss is reported.
+- A restart only counts once a real reply shows up (the agent's automatic "still working on it" notes don't count). If none shows up within 15 minutes, the person is asked to send again, and the miss is reported.
 - The operator warning counts only if a person can see it. If the alert channel has none of the agent's people in it, each of them gets a direct message.
 
 ## What stays the same
