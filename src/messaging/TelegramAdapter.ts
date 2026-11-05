@@ -1586,7 +1586,7 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   async send(message: OutgoingMessage): Promise<SendResult | QuietReceipt> {
-    return withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(Number(message.channel?.identifier ?? 1), message.content));
+    return withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(Number(message.channel?.identifier ?? 1), message.content, { parseFailureRetryOnly: true }));
   }
 
   /**
@@ -1771,6 +1771,8 @@ export class TelegramAdapter implements MessagingAdapter {
     text: string,
     options?: {
       envelope?: OutboundEnvelope;
+      /** Preserve MessagingAdapter.send retry semantics: only a rejected parse is safe to retry. */
+      parseFailureRetryOnly?: boolean;
       silent?: boolean;
       skipStallClear?: boolean;
       /** Kind metadata (messageKind/senderClass/advisoryAck…) forwarded to
@@ -1916,7 +1918,8 @@ export class TelegramAdapter implements MessagingAdapter {
         // after Telegram rejects the parse, and this refuses it anyway. The refusal is still right
         // for the case it was built for and wrong for that one; both ride CMT-1260.
         if (err instanceof TelegramOriginHoldError) this.logDeliveredDespiteHold(err, topicId, text, options?.provenance);
-        if (err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
+        if (err instanceof QuietRecordedError || err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
+        if (options?.parseFailureRetryOnly && !(err instanceof Error && err.message.includes('(400)'))) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
     } else {
@@ -1946,7 +1949,8 @@ export class TelegramAdapter implements MessagingAdapter {
         // after Telegram rejects the parse, and this refuses it anyway. The refusal is still right
         // for the case it was built for and wrong for that one; both ride CMT-1260.
         if (err instanceof TelegramOriginHoldError) this.logDeliveredDespiteHold(err, topicId, text, options?.provenance);
-        if (err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
+        if (err instanceof QuietRecordedError || err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
+        if (options?.parseFailureRetryOnly && !(err instanceof Error && err.message.includes('(400)'))) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
     }

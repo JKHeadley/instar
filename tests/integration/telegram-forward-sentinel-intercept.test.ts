@@ -83,7 +83,7 @@ function buildContext(
       getSessionForTopic: (_t: number) => (opts.withSession ? SESSION : null),
       onSentinelKillSession: (name: string) => { spies.killed.push(name); return opts.killOutcome ?? true; },
       onSentinelPauseSession: (name: string) => { spies.paused.push(name); },
-      sendToTopic: async (_t: number, msg: string) => { spies.sent.push(msg); },
+      sendToTopic: async (_t: number, msg: string) => { spies.sent.push(msg);  return { messageId: 1, topicId: Number(_t) }; },
     } as never,
     relationships: null,
     feedback: null,

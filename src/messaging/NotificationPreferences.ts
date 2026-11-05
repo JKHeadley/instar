@@ -104,11 +104,11 @@ export class NotificationPreferences {
         }
         await this.save();
       });
-    } catch (error) { console.warn('[selectivity] preference replication unavailable:', error); }
+    } catch (error) { /* @silent-fallback-ok: logged and durable pending intents remain visible in status */ console.warn('[selectivity] preference replication unavailable:', error); }
     finally { this.draining = false; }
   }
   peerUnavailable(peer: string): void {
-    void this.enqueue(async () => { if (!this.offlinePeers.has(peer) && this.offlinePeers.size < 16) { this.offlinePeers.add(peer); await this.save(); } }).catch(() => {});
+    void this.enqueue(async () => { if (!this.offlinePeers.has(peer) && this.offlinePeers.size < 16) { this.offlinePeers.add(peer); await this.save(); } }).catch(error => { /* @silent-fallback-ok: pending work remains durable; failure is logged */ console.warn('[selectivity] peer presence persistence unavailable:', error); });
   }
   peerReturned(peer: string): void {
     void this.enqueue(async () => {
@@ -116,7 +116,7 @@ export class NotificationPreferences {
       if (!this.offlinePeers.delete(peer)) return;
       for (const row of this.pending) if (row.peer === peer) { row.attempts = 0; row.nextAt = Date.now(); }
       await this.save();
-    }).then(() => this.drain()).catch(() => {});
+    }).then(() => this.drain()).catch(error => { /* @silent-fallback-ok: pending work remains durable; failure is logged */ console.warn('[selectivity] peer presence persistence unavailable:', error); });
   }
   status(): { pending: number; peersPending: string[] } { return { pending: this.pending.length, peersPending: [...new Set(this.pending.map(row => row.peer))] }; }
   async close(): Promise<void> { clearInterval(this.timer); await this.serial; }

@@ -19891,7 +19891,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // route from the late verdict (ACT-091).
           try {
             return liveInjectOutcomeFromObservation(await sessionManager.injectPasteNotificationObserved(sessionName, text));
-          } catch { return false; }
+          } catch { /* @silent-fallback-ok: failed injection returns false so the existing Telegram fallback serves the person */ return false; }
         },
         isSessionAlive: (sessionName: string) => {
           try { return sessionManager.isSessionAlive(sessionName); } catch { return false; }

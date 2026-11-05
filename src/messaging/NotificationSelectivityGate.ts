@@ -271,7 +271,7 @@ export class NotificationSelectivityGate {
       const row = await this.store.record({ category: verdict.category, sourceContext: envelope?.sourceContext ?? 'unstamped', topicId, text });
       if (this.failureSince !== null) { this.ledger({ ts: new Date(this.now()).toISOString(), reason: 'store-recovered', lost: this.activeLost, since: this.failureSince }); this.failureSince = null; this.activeLost = 0; }
       id = row.id; if (row.count > 1) this.metrics.coalesced++;
-    } catch (error) {
+    } catch (error) { // @silent-fallback-ok: fallback/lost health counters and bounded failure escalation expose writer failure
       const fallback = path.join(this.root, 'logs', 'quiet-notifications-fallback.jsonl');
       try {
         await fs.promises.mkdir(path.dirname(fallback), { recursive: true });
@@ -319,7 +319,7 @@ export class NotificationSelectivityGate {
       const result = Promise.race([
         Promise.resolve().then(() => this.readPeers?.(topicId) ?? { items: [], unavailable: [] }),
         new Promise<typeof fallback>(resolve => { timeout = setTimeout(() => resolve(fallback), 2000); timeout.unref(); }),
-      ]).catch(() => fallback).then(peer => ({ ...peer, items: peer.items.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 10).map(row => ({ ...row, text: row.text.split('\n')[0].slice(0, 140) })) })).catch(() => fallback).finally(() => clearTimeout(timeout));
+      ]).catch(() => fallback) /* @silent-fallback-ok: unavailable peers are explicitly rendered in boot context */.then(peer => ({ ...peer, items: peer.items.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 10).map(row => ({ ...row, text: row.text.split('\n')[0].slice(0, 140) })) })).catch(() => fallback).finally(() => clearTimeout(timeout));
       cached = { until: this.now() + 30000, result }; this.peerCache.set(topicId, cached);
       while (this.peerCache.size > 1000) this.peerCache.delete(this.peerCache.keys().next().value!);
     }

@@ -158,7 +158,7 @@ describe('browser origin production outbox lifecycle', () => {
     h.runtime.browsers.set('operator-profile', { executor: h.executor, resolvePeer });
     const app = express(); app.use(express.json());
     app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer agent-test') { res.sendStatus(401); return; } next(); });
-    app.use(createRoutes({ config: { stateDir: h.runtime.options.storage.stateDir, port: 0, projectName: 'echo' },
+    app.use(createRoutes({ state: { getSession: () => undefined }, config: { stateDir: h.runtime.options.storage.stateDir, port: 0, projectName: 'echo' },
       telegramOrigin: h.runtime, sessionManager: {}, } as never));
     const payload = { text: h.input.text, destination: h.input.destination };
     const send = (body = payload, credential = token) => request(app).post('/telegram/browser/operator-profile/send')

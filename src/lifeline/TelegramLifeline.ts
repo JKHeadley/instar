@@ -413,6 +413,7 @@ export class TelegramLifeline {
         );
       });
     } catch (err) {
+      /* @silent-fallback-ok: logged advisory discovery failure; lease still owns message transport */
       console.error(`[Lifeline] Registry heartbeat failed to start (non-critical): ${err instanceof Error ? err.message : err}`);
     }
 
