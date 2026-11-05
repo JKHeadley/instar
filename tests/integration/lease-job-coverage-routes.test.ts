@@ -50,6 +50,23 @@ describe('lease coverage real HTTP routes', () => {
     expect(response.body.error).toBe('job-coverage-unavailable');
   });
 
+  it('serves coverage and shuts down when a coordinator adapter has identity but no role-event methods', async () => {
+    fixture = await leaseJobHttpFixture();
+    ctx = { config: fixture.config, state: fixture.state,
+      coordinator: { managers: fixture.coordinator.managers, isAwake: false },
+      meshSelfId: fixture.identity.machineId, scheduler: null, telegram: null,
+      startTime: new Date(), currentInboundByTopic: new Map(), resolvePeerUrls: () => [],
+    } as unknown as RouteContext;
+    const app = express();
+    app.use(express.json());
+    app.use(authMiddleware(fixture.config.authToken!));
+    app.use(createRoutes(ctx));
+    const response = await request(app).get('/jobs/coverage-snapshot?nonce=' + 'e'.repeat(64))
+      .set('Authorization', `Bearer ${fixture.config.authToken}`);
+    expect(response.status).toBe(200);
+    expect(() => ctx.jobCoverageStop?.()).not.toThrow();
+  });
+
   it('serves a signed nonce-bound catalog on scheduler-less standby and enforces authentication', async () => {
     fixture = await leaseJobHttpFixture();
     ctx = {
