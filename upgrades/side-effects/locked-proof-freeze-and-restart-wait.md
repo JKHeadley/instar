@@ -4,7 +4,7 @@
 
 ## Summary
 
-Nine faults found in the live run on the Mac Mini on 2026-11-05, once the viewer-wait fix let the run start.
+Ten faults found in the live run on the Mac Mini on 2026-11-05, once the viewer-wait fix let the run start.
 
 - **Freezing the server.** Cases 12.1 and 12.6 send SIGSTOP to the proof server. It ran as a tmux pane process, and tmux resumes a stopped pane process at once, so the server never froze. Both cases now run `serve-under-launchd` first and restore tmux in cleanup (`cont-server`, `end-launchd-serve`, `start-server`). `stop-server` now reads the process state half a second after the signal and throws unless it starts with `T`.
 - **Ready after a start.** `start-server` and `serveUnderLaunchd` now call `waitLockStateKnown()` (up to 120 s) before returning, and report `lockStateKnown` in their result.
@@ -15,6 +15,7 @@ Nine faults found in the live run on the Mac Mini on 2026-11-05, once the viewer
 - **What "typing" means.** The `typing` trigger in `lib.mjs` now needs a duty in state owed with Enter not yet pending, as well as the input helper running. The helper alone runs for the whole grant.
 - **Case 12.5a ends its session.** It now stops the viewer at the `takeover` event (the duty's guard pid changes to the replacement). Before, nothing ended the grant, and an owed duty on a live grant is not due.
 - **Revoke as the right operator.** `viewer()` keeps the operator session the page receives from `/dashboard/unlock`; `revoke` sends that session and throws on a 4xx or 5xx answer. The server's refusal of a foreign session is correct and unchanged.
+- **Leftover-process rule needs a duty.** `processesGone` is left undefined when the case has no duty at all, so the input helper of a live grant is not read as a leftover typist. With a closed duty the rule is unchanged.
 
 ## 1. Over-block
 
@@ -32,7 +33,7 @@ Changing 12.5a changes what the proof asks of the product, so it is stated here 
 
 ## 3. Level-of-abstraction fit
 
-Right layer: all nine are the driver's own assumptions about its target. The page behaviour, the server's start-up and tmux are left as they are.
+Right layer: all ten are the driver's own assumptions about its target. The page behaviour, the server's start-up and tmux are left as they are.
 
 ## 4. Signal vs authority compliance
 

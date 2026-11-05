@@ -193,7 +193,9 @@ export class RealTarget {
     if (typist) this.pids.typist = typist.pid;
     if (this.consoleOwner() === PROOF_USER) this.events.add('proof-user-console');
     return { now, markers, dirty: state.dirty !== undefined && state.dirty !== null, lockState, serverLockState, typistRunning: !!typist, guardPid: guard?.pid, events: [...this.events],
-      processesGone: !Object.values(markers).every(m => TERMINAL.includes(m.state)) ? undefined : !guard && !typist, procs };
+      // Judged only once a duty exists and has closed. With no duty at all, the input helper of a
+      // live grant is not a leftover typist.
+      processesGone: !Object.keys(markers).length || !Object.values(markers).every(m => TERMINAL.includes(m.state)) ? undefined : !guard && !typist, procs };
   }
 
   /** Agent A's lock reading; while A is down or suspended, agent B's (same user, same Mac). */

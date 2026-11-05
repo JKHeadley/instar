@@ -397,6 +397,17 @@ describe('locked-proof launchd kill', () => {
     await expect(refused.act('revoke')).rejects.toThrow(/revoke: refused with 403 Desktop revocation unavailable/);
   });
 
+  it('with no duty at all, the input helper of a live grant is not a leftover typist', async () => {
+    // Case 12.17 types one letter and opens no duty; the helper is alive because the grant is.
+    const base = { events: new Set<string>(), store: '/nonexistent', consoleOwner: () => 'someone-else', pids: {}, priorMarkers: {}, consoleLock: () => 'locked', a: { port: 4098 }, b: { port: 4097 }, api: async () => ({ lockState: 'locked-in-session' }) };
+    const helper = [{ pid: 9, command: 'instar-desktop-host input-stream' }];
+    const none = await realTarget({ ...base, processes: () => helper, readStore: () => ({ markers: {} }) }).snapshot();
+    expect(none.processesGone).toBeUndefined();
+    // Once a duty has closed, the same helper still counts as a typist that should be gone.
+    const closed = await realTarget({ ...base, processes: () => helper, readStore: () => ({ markers: { k: { state: 'relocked', requestId: 'r9' } } }) }).snapshot();
+    expect(closed.processesGone).toBe(false);
+  });
+
   it('a revoke with nothing to revoke fails the case', async () => {
     const target = realTarget({ priorMarkers: {}, readStore: () => ({ markers: {} }) });
     await expect(target.act('revoke')).rejects.toThrow(/no open request/);
