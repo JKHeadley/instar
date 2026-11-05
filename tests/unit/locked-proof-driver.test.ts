@@ -198,7 +198,7 @@ describe('locked-proof viewer driving', () => {
   it('opens every grant through requestGrant, never a bare click', () => {
     const source = fs.readFileSync(path.join(DIR, 'driver.mjs'), 'utf8');
     expect(source.match(/page\.click\('#requestButton'\)/g)).toHaveLength(1);
-    expect(source.match(/await this\.requestGrant\(v\)/g)).toHaveLength(3);
+    expect(source.match(/await this\.requestGrant\(v\)/g)).toHaveLength(4); // openGrant, grant-other-agent, open-next-grant, next-helper-clears-field
   });
 
   it('maps the new viewer reasons back to their words', () => {
@@ -439,6 +439,33 @@ describe('locked-proof launchd kill', () => {
     expect(await target.typePassword({ inject: [] })).toEqual({ sent: false, refused: 'no-result-within-60s', pageSaid: ['Remote desktop is live.', 'Desktop access ended. Open it again when needed.'] });
   });
 
+  it('the half-typed-field case checks the clearing where the spec puts it: in the next grant', async () => {
+    // The marker outlives its request; the next input helper clears the field before any password.
+    const c = CASES.find((x: { id: string }) => x.id === '15.9');
+    expect(c.then).toEqual(['next-helper-clears-field']);
+    expect(c.fieldClearedBeforeNextEnter).toBe(true);
+    let clock = 0, reads = 0; const clicks: string[] = [];
+    const page = { waitForSelector: async () => {}, click: async (sel: string) => { clicks.push(sel); }, isVisible: async () => false };
+    const procs = [[{ pid: 5, command: 'instar-desktop-host input-stream' }], []];
+    const target = realTarget({
+      now: () => clock, sleep: async (ms: number) => { clock += ms; }, a: { port: 4098 },
+      readStore: () => (++reads <= 4 ? { dirty: { at: 1 } } : {}), viewer: async () => ({ page }), requestGrant: async () => ({ clicked: true }),
+      processes: () => procs[Math.min(1, clicks.length ? 1 : 0)],
+    });
+    const r = await target.act('next-helper-clears-field');
+    expect(r).toMatchObject({ dirtyBefore: true, cleared: true });
+    expect(clicks).toEqual(['#stopButton']);
+    const stuck = realTarget({ now: () => clock, sleep: async (ms: number) => { clock += ms; }, a: { port: 4098 }, readStore: () => ({ dirty: { at: 1 } }), viewer: async () => ({ page }), requestGrant: async () => ({}), processes: () => [] });
+    expect(await stuck.act('next-helper-clears-field')).toMatchObject({ dirtyBefore: true, cleared: false });
+  });
+
+  it('follow-on steps are kept as evidence', async () => {
+    const c = CASES.find((x: { id: string }) => x.id === '12.2a');
+    const target = new FakeTarget(c);
+    const ev = await runCase(c, target, { pollMs: 50 });
+    expect(ev.fired.filter((f: { at: string }) => f.at === 'then').map((f: { action: string }) => f.action)).toEqual(c.then);
+  });
+
   it('a revoke with nothing to revoke fails the case', async () => {
     const target = realTarget({ priorMarkers: {}, readStore: () => ({ markers: {} }) });
     await expect(target.act('revoke')).rejects.toThrow(/no open request/);
@@ -554,7 +581,7 @@ describe('locked-proof runner and verdict', () => {
     const target = new SlowTyping(c);
     const ev = await runCase(c, target, { pollMs: 50 });
     expect(target.dutyAtKill).toBe(true);
-    expect(ev.fired.map((f: { action: string }) => f.action)).toEqual(['kill-server']);
+    expect(ev.fired.filter((f: { at: string }) => f.at !== 'then').map((f: { action: string }) => f.action)).toEqual(['kill-server']);
     // And once Enter is pending, the password is no longer being typed.
     const late = new SlowTyping(c);
     late.snapshot = async function (this: SlowTyping) {

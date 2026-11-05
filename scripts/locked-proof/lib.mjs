@@ -69,7 +69,7 @@ export const CASES = [
   { id: '15.6', gate: 'P15', title: 'Transport expiry immediately after Enter', password: true, inject: [{ action: 'drop-transport', at: 'after-enter' }], final: 'locked', relockAfterResumeWindow: true, noSubmissionAfterClose: true },
   { id: '15.7', gate: 'P15', title: 'Node kill immediately before Enter', password: true, inject: [{ action: 'kill-server', at: 'before-enter' }], then: ['start-server'], final: 'locked', noSubmissionAfterClose: true },
   { id: '15.8', gate: 'P15', title: 'Node kill immediately after Enter', password: true, inject: [{ action: 'kill-server', at: 'after-enter' }], then: ['start-server'], final: 'locked', noSubmissionAfterClose: true },
-  { id: '15.9', gate: 'P15', title: 'input-stream suspended mid-password', password: true, inject: [{ action: 'stop-typist', at: 'typing' }, { action: 'revoke', at: 'typing', delayMs: 2_000 }], final: 'locked', typistGone: true, fieldClearedBeforeNextEnter: true },
+  { id: '15.9', gate: 'P15', title: 'input-stream suspended mid-password', password: true, inject: [{ action: 'stop-typist', at: 'typing' }, { action: 'revoke', at: 'typing', delayMs: 2_000 }], then: ['next-helper-clears-field'], final: 'locked', typistGone: true, fieldClearedBeforeNextEnter: true },
   { id: '15.10', gate: 'P15', title: 'Delayed completion inside the watch', password: true, wrongPassword: true, inject: [{ action: 'revoke', at: 'after-enter' }], person: { text: 'In about 30 seconds, when I say so, unlock the test account at the test Mac once and leave it.', cueAfterMs: 30_000, until: 'marker:relocked', timeoutMs: 180_000, mustUnlock: true }, final: 'locked', markerEnd: ['relocked'] },
   { id: '15.11', gate: 'P15', title: 'Delayed completion past the watch', password: true, wrongPassword: true, inject: [{ action: 'revoke', at: 'after-enter' }], person: { text: 'In about 2 minutes 10 seconds, when I say so, unlock the test account at the test Mac once and leave it.', cueAfterMs: 130_000, until: 'unlocked', timeoutMs: 300_000, mustUnlock: true }, final: 'unlocked-accepted-risk', markerEnd: ['relocked'], cleanup: ['lock-now'] },
 ];
@@ -190,7 +190,8 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
       if (settled) break;
       await target.sleep(pollMs);
     }
-    for (const step of c.then ?? []) await target.act(step, { case: c });
+    // Kept as evidence like any other step: what a follow-on step found is part of the result.
+    for (const step of c.then ?? []) evidence.fired.push({ action: step, at: 'then', t: target.now(), result: (await target.act(step, { case: c })) ?? null });
     const final = await sample();
     evidence.final = { lockState: final.lockState, markers: final.markers, processesGone: final.processesGone !== false };
     evidence.extra = { ...measured(evidence), ...(await target.extraEvidence(c, evidence)) };

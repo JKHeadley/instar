@@ -523,6 +523,27 @@ export class RealTarget {
         this.events.add('other-grant-tried');
         return { opened, refused: /relock/i.test(text) ? 'relock-pending' : refusalFromStatus(text) ?? null, status: text.slice(0, 200) };
       }
+      case 'next-helper-clears-field': {
+        // The half-typed-field marker outlives its request by design: the NEXT input helper clears
+        // the field before any password can be typed. So open a next grant and watch the marker go.
+        const before = this.readStore().dirty !== undefined && this.readStore().dirty !== null;
+        const v = await this.viewer(this.a);
+        await this.requestGrant(v);
+        await v.page.waitForSelector('#control:not([hidden])', { timeout: 30_000 }).catch(() => {});
+        const t0 = this.now();
+        let dirty = true;
+        while (dirty && this.now() - t0 < 15_000) {
+          const d = this.readStore().dirty;
+          dirty = d !== undefined && d !== null;
+          if (dirty) await this.sleep(250);
+        }
+        const ms = this.now() - t0;
+        // End the extra grant and wait for its helper to go, so the case's own leftover checks see a quiet Mac.
+        await v.page.click('#stopButton').catch(() => {});
+        const until = this.now() + 10_000;
+        while (this.now() < until && this.processes().some(p => p.command.includes('input-stream'))) await this.sleep(250);
+        return { dirtyBefore: before, cleared: !dirty, ms };
+      }
       case 'open-next-grant': {
         await this.main.page.click('#stopButton').catch(() => {});
         const v = await this.viewer(this.a);

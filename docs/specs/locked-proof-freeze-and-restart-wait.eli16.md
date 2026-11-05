@@ -30,6 +30,8 @@ Instar can show and control a Mac's screen remotely, even while that Mac is lock
 
 **One gap in the notes.** When a typed password got no clear answer, the driver wrote down only that nothing happened. It now also writes down what the page said on screen while it waited, so a later reader can tell why.
 
+**One test checked for tidying-up at the wrong moment.** If typing is interrupted half-way, part of a password can be left in the Mac's password box. The design is that the next session clears the box before anything else can be typed, and until then keeps a note that the box is unclean. The test expected the note to be gone at the end of the interrupted session, which the design never promised. It now opens a next session and checks the box is cleared there.
+
 ## What stays the same
 
 The product is unchanged: the web page, the server and the safety guard all behaved correctly. Once the freeze test was fixed, it passed: the guard noticed the frozen server and relocked the Mac. Nothing here reaches any running agent; it only affects the proof tool run by hand on the test Mac.
