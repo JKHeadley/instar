@@ -1,3 +1,4 @@
+import { NotificationSelectivityGate, QuietRecordedError, notificationContext, verifiedReplyEnvelope } from '../../src/messaging/NotificationSelectivityGate.js';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { fixtureOriginContentDedup } from '../helpers/originContentDedup.js';
 import { generateKeyPairSync } from 'node:crypto';
@@ -48,6 +49,18 @@ async function boot() {
   return { runtime, executor, input, invoke, unown: () => { owned = false; }, drift: () => { supported = false; } };
 }
 describe('browser origin production outbox lifecycle', () => {
+  it('records browser automation terminally while preserving an actual reply', async () => {
+    const h = await boot();
+    const gate = new NotificationSelectivityGate(h.runtime.options.storage.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));
+    h.runtime.service.notificationGate = gate;
+    await expect(h.runtime.service.runAsAutomation('telegram-server', () => h.executor.send(h.input))).rejects.toBeInstanceOf(QuietRecordedError);
+    expect(h.invoke).not.toHaveBeenCalled();
+    expect(gate.store.counters().total).toBe(1);
+    expect(await h.runtime.store.recoverableAdmissions()).toEqual([]);
+    await h.runtime.service.runAsAutomation('telegram-server', () => notificationContext.run(verifiedReplyEnvelope('fixture-reply'), () => h.executor.send(h.input)));
+    expect(h.invoke).toHaveBeenCalledOnce();
+  });
+
   it('commits an in-flight browser receipt to the same healthy worker during recovery', async () => {
     const h = await boot(), originalStore = h.runtime.store;
     let entered!: () => void, release!: () => void;

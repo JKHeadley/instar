@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/threadline/CollaborationSurfacer.ts');
 /**
  * CollaborationSurfacer — the single funnel for making Threadline activity
  * visible to the operator WITHOUT spawning a topic per event (CMT-509 §2 +
@@ -115,7 +117,7 @@ export class CollaborationSurfacer {
       const gist = this.readableGist(input.text);
       const peer = this.readablePeer(input.senderName);
       const body = `🧵 ${peer} started a Threadline conversation:\n${gist}\n\n(reply in-thread, or say "open this" to give it its own topic)`;
-      await this.telegram.sendToTopic(topicId, body, { silent: true });
+      await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(topicId, body, { silent: true }));
 
       state.surfaced.push({
         threadId: input.threadId,
@@ -145,7 +147,7 @@ export class CollaborationSurfacer {
       const peer = input.peerName ? this.readablePeer(input.peerName) : undefined;
       const head = peer ? `🧵 ${input.title} — ${peer}` : `🧵 ${input.title}`;
       const body = `${head}\n${this.readableGist(input.body)}`;
-      await this.telegram.sendToTopic(topicId, body, { silent: true });
+      await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(topicId, body, { silent: true }));
       // Persist the hub-topic id if we just created it; status notices are not
       // per-thread-deduped (a status can legitimately recur).
       this.trimAndSave(state);
@@ -188,7 +190,7 @@ export class CollaborationSurfacer {
     try {
       const state = this.load();
       const topicId = await this.ensureHubTopic(state);
-      await this.telegram.sendToTopic(topicId, text, { silent: true });
+      await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(topicId, text, { silent: true }));
       this.trimAndSave(state);
     } catch (err) {
       this.log.warn(`[CollaborationSurfacer] noteInHub failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);

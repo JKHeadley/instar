@@ -15,8 +15,9 @@
  *   - emergency-stop with no live session → acknowledges, does not route
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
+import { NotificationSelectivityGate, notificationContext } from '../../src/messaging/NotificationSelectivityGate.js';
 import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -155,6 +156,25 @@ describe('/internal/telegram-forward — sentinel emergency-stop/pause intercept
     // The thing a person reads: a kill that landed is reported as terminated.
     expect(spies.sent).toHaveLength(1);
     expect(spies.sent[0]).toMatch(/^Session terminated\./);
+  });
+
+  it('keeps the emergency-stop acknowledgment under enforced quiet routing', async () => {
+    const ctx = buildContext(stateDir, async () => ({ disposition: 'kill', category: 'emergency-stop' }), spies);
+    const gate = new NotificationSelectivityGate(stateDir, 'test', () => ({ enabled: true, dryRun: false }));
+    const telegram = ctx.telegram!;
+    telegram.selectivity = gate; telegram.isAuthorizedSender = () => true;
+    telegram.sendToTopic = async (topic, text) => {
+      const result = await gate.route(topic, text, notificationContext.getStore());
+      if (!result.receipt) spies.sent.push(text);
+      return result.receipt ?? { messageId: 123, topicId: topic, delivered: true };
+    };
+    try {
+      const res = await forward(makeApp(ctx), 'stop everything');
+      expect(res.body.sentinel).toBe('emergency-stop');
+      await vi.waitFor(() => expect(spies.sent).toHaveLength(1));
+      expect(spies.sent[0]).toMatch(/^Session terminated/);
+      expect(gate.store.counters().total).toBe(0);
+    } finally { await gate.close(); }
   });
 
   // ── MUST-FAIL ARM 2: a false killed:true ────────────────────────────────

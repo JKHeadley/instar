@@ -1,3 +1,8 @@
+import { categoryForProducer } from '../messaging/notificationCategories.js';
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/server/routes.ts');
+import { mountNotificationRoutes } from './notificationRoutes.js';
+import { verifiedReplyEnvelope, requireTelegramDelivery } from '../messaging/NotificationSelectivityGate.js';
 import { JobPortableSync } from '../core/JobPortableSync.js';
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
 import { registerRecommendedServiceRoutes } from './recommendedServiceRoutes.js';
@@ -2866,6 +2871,7 @@ export function createRoutes(ctx: RouteContext): Router {
   };
 
   const router = Router();
+  mountNotificationRoutes(router, ctx, headers => lifelineIngressGuard.evaluate(headers as import('node:http').IncomingHttpHeaders, 'telegram-forward').verified);
   mountOriginDisplayPreferences(router, ctx);
   mountTelegramOriginRoutes(router, { runtime: () => ctx.telegramOrigin,
     verifyOperator: proof => ctx.verifyDashboardOperatorSession?.(proof) === true,
@@ -2874,7 +2880,8 @@ export function createRoutes(ctx: RouteContext): Router {
       const topicId = configured?.lifelineTopicId;
       if (!ctx.telegram || !Number.isSafeInteger(topicId) || Number(topicId) <= 0) return null;
       return { send: async text => {
-        const receipt = await ctx.telegram!.sendToTopic(topicId!, text);
+        const receipt = await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram!)!.sendToTopic(topicId!, text));
+        if (receipt.recorded) throw new Error('Setup greeting was recorded without a Telegram anchor');
         if (configured?.token && configured.chatId && receipt.messageId > 0) {
           try {
             const pinned = await telegramFetch(`https://api.telegram.org/bot${configured.token}/pinChatMessage`, {
@@ -3350,7 +3357,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     if (expireWindowAtCeiling(ledger)) return;
     const enforcement = loadEnforcementState(); if (enforcement.mode === 'off') return;
-    const stale = sourceFreshnessIssues(ledger); if (stale.length) { ledger.admission = undefined; ledger.state = ledger.state.startsWith('active') ? 'active_mid_blocked' : ['close_due', 'delivered_pending_post_live', 'close_blocked'].includes(ledger.state) ? 'close_blocked' : 'start_blocked'; ledger.surfacedIssues ??= []; const novelStale = stale.filter(issue => !ledger.surfacedIssues!.includes(issue)); ledger.surfacedIssues.push(...novelStale); windowStore.save(ledger); if (novelStale.length && ctx.telegram) void ctx.telegram.sendToTopic(43003, `Window lifecycle source authority changed:\n${novelStale.map(v => `- ${v}`).join('\n')}`, { provenance: 'automation' }).catch(error => { /* @silent-fallback-ok — delivery failure is logged; the durable block remains authoritative */ console.warn('[window-lifecycle] stale-source escalation failed:', error); }); return; }
+    const stale = sourceFreshnessIssues(ledger); if (stale.length) { ledger.admission = undefined; ledger.state = ledger.state.startsWith('active') ? 'active_mid_blocked' : ['close_due', 'delivered_pending_post_live', 'close_blocked'].includes(ledger.state) ? 'close_blocked' : 'start_blocked'; ledger.surfacedIssues ??= []; const novelStale = stale.filter(issue => !ledger.surfacedIssues!.includes(issue)); ledger.surfacedIssues.push(...novelStale); windowStore.save(ledger); if (novelStale.length && ctx.telegram) void withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(43003, `Window lifecycle source authority changed:\n${novelStale.map(v => `- ${v}`).join('\n')}`, { provenance: 'automation' })).catch(error => { /* @silent-fallback-ok — delivery failure is logged; the durable block remains authoritative */ console.warn('[window-lifecycle] stale-source escalation failed:', error); }); return; }
     materializeMachineEvidence(ledger); const result = evaluateLifecycleTick(ledger, runtimeRegistry(ledger), evidenceAuthority(), windowNow());
     result.ledger.surfacedIssues ??= []; const novel = result.issues.filter(issue => !result.ledger.surfacedIssues!.includes(issue)); result.ledger.surfacedIssues.push(...novel); windowStore.save(result.ledger);
     const episodes = readRemediationEpisodes(); const novelRemediations = (enforcement.mode === 'enforced' ? (result.ledger.requiredRemediations ?? []) : []).filter(remediation => { const duty = result.ledger.obligations.find(item => item.id === remediation.obligationId); if (!duty) return false; const digest = remediationEpisodeDigest(duty); return !episodes.some(item => item.episodeDigest === digest); });
@@ -3358,11 +3365,11 @@ export function createRoutes(ctx: RouteContext): Router {
       const duty = result.ledger.obligations.find(item => item.id === remediation.obligationId)!; const episodeDigest = remediationEpisodeDigest(duty); const remediationId = randomUUID(); const marker = `remediation:${remediationId}`; result.ledger.surfacedIssues!.push(marker);
       fs.mkdirSync(path.dirname(remediationPath), { recursive: true, mode: 0o700 });
       fs.appendFileSync(remediationPath, `${JSON.stringify({ remediationId, episodeDigest, obligationId: remediation.obligationId, action: remediation.action, owner: duty.responsibleRole, reason: duty.statement, createdAt: windowNow(), disposition: remediation.debtRequired ? 'registered-debt' : 'awaiting-authoritative-evidence', resolutionRoute: remediation.debtRequired ? undefined : `/window-lifecycle/remediation/${encodeURIComponent(remediation.obligationId)}/resolve` })}\n`, { mode: 0o600 });
-      if (remediation.observerTopicId && ctx.telegram) { const verb = remediation.repostRequired ? 'Visible repost required' : remediation.scopeReviewRequired ? 'Operator scope/timebox review required' : remediation.correctionRequired ? 'Correction required before delivery' : remediation.debtRequired ? 'Debt registered' : 'Lifecycle duty blocked'; void ctx.telegram.sendToTopic(remediation.observerTopicId, `${verb}: ${remediation.obligationId} (${remediation.action}); remediation ${remediationId}`, { provenance: 'automation' }).catch(error => console.warn('[window-lifecycle] remediation delivery failed:', error)); }
+      if (remediation.observerTopicId && ctx.telegram) { const verb = remediation.repostRequired ? 'Visible repost required' : remediation.scopeReviewRequired ? 'Operator scope/timebox review required' : remediation.correctionRequired ? 'Correction required before delivery' : remediation.debtRequired ? 'Debt registered' : 'Lifecycle duty blocked'; void withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(remediation.observerTopicId!, `${verb}: ${remediation.obligationId} (${remediation.action}); remediation ${remediationId}`, { provenance: 'automation' })).catch(error => console.warn('[window-lifecycle] remediation delivery failed:', error)); }
     }
     if (novelRemediations.length) windowStore.save(result.ledger);
     if (enforcement.mode === 'dry-run' && novel.length) auditWouldBlock('lifecycle-tick', novel);
-    if (novel.length && ctx.telegram) void ctx.telegram.sendToTopic(43003, `Window lifecycle ${enforcement.mode === 'dry-run' ? 'shadow would block' : 'enforcement blocked progress'}:\n${novel.slice(0, 12).map(v => `- ${v}`).join('\n')}`, { provenance: 'automation' }).catch(error => console.warn('[window-lifecycle] escalation delivery failed:', error));
+    if (novel.length && ctx.telegram) void withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(43003, `Window lifecycle ${enforcement.mode === 'dry-run' ? 'shadow would block' : 'enforcement blocked progress'}:\n${novel.slice(0, 12).map(v => `- ${v}`).join('\n')}`, { provenance: 'automation' })).catch(error => console.warn('[window-lifecycle] escalation delivery failed:', error));
   } : null;
 
   router.post('/window-lifecycle/compile', (req, res) => {
@@ -3781,7 +3788,7 @@ export function createRoutes(ctx: RouteContext): Router {
           if (await ctx.telegram!.sendPairingPrompt(topicId, text, buttons) !== null) return;
           throw new Error('could not send the pairing prompt');
         }
-        await ctx.telegram!.sendToTopic(topicId, text);
+        await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram!)!.sendToTopic(topicId, text));
       },
       answer: (id, text) => ctx.telegram!.answerCallback(id, text),
       // A configured owner wins (the Telegram block's ownerUserId / promptGate.ownerId, else the
@@ -5054,7 +5061,7 @@ export function createRoutes(ctx: RouteContext): Router {
   async function postToUpdatesTopic(
     text: string,
     opts?: { allowDuplicate?: boolean; allowDebugText?: boolean },
-  ): Promise<{ ok: boolean; reason?: string }> {
+  ): Promise<{ ok: boolean; recorded?: boolean; reason?: string }> {
     if (!ctx.telegram) return { ok: false, reason: 'telegram-not-configured' };
     const updatesTopicId = ctx.state.get<number>('agent-updates-topic');
     if (!updatesTopicId || typeof updatesTopicId !== 'number') {
@@ -5069,8 +5076,8 @@ export function createRoutes(ctx: RouteContext): Router {
     });
     if (!decision.ok) return { ok: false, reason: decision.reason };
     try {
-      await ctx.telegram.sendToTopic(updatesTopicId, text);
-      return { ok: true };
+      const sent = await withNotificationEnvelope({ origin: 'automated', category: 'update-announcement', sourceContext: 'post-update' }, async () => (ctx.telegram)!.sendToTopic(updatesTopicId, text));
+      return { ok: true, ...('recorded' in sent && sent.recorded ? { recorded: true } : {}) };
     } catch (err) { // @silent-fallback-ok — structured failure is returned to the caller
       return { ok: false, reason: err instanceof Error ? err.message : 'send-error' };
     }
@@ -7974,7 +7981,7 @@ export function createRoutes(ctx: RouteContext): Router {
       (extra ? ` ${extra}` : '');
     const topicNum = Number(rec.topicId);
     if (ctx.telegram && Number.isFinite(topicNum)) {
-      await ctx.telegram.sendToTopic(topicNum, text).catch(() => { /* best-effort notice */ });
+      await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(topicNum, text)).catch(() => { /* best-effort notice */ });
       await ctx.telegram
         .createAttentionItem({
           id: `scope-accretion-exit-${rec.topicId}-${rec.runId}`,
@@ -8011,8 +8018,8 @@ export function createRoutes(ctx: RouteContext): Router {
     getOperatorUid: (topicId: number) => ctx.topicOperatorStore?.getOperator(topicId)?.uid ?? null,
     sendToTopic: async (topicId: number, text: string) => {
       if (!ctx.telegram) throw new Error('telegram adapter unavailable');
-      const r = await ctx.telegram.sendToTopic(topicId, text);
-      return { messageId: r.messageId };
+      const r = await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(topicId, text));
+      return { messageId: requireTelegramDelivery(r).messageId };
     },
     dashboardLink: (topicId: string) =>
       `http://localhost:${ctx.config.port}/dashboard?ratify-deferral=${encodeURIComponent(topicId)}`,
@@ -8094,7 +8101,7 @@ export function createRoutes(ctx: RouteContext): Router {
       getOperatorUid: (topicId: number) => ctx.topicOperatorStore?.getOperator(topicId)?.uid ?? null,
       resolveCurrentContentHash: (challenge) => resolveChallengeCurrentHash(challenge),
       ack: async (topicId: number, text: string) => {
-        if (ctx.telegram) await ctx.telegram.sendToTopic(topicId, text);
+        if (ctx.telegram) await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(topicId, text));
       },
     });
   };
@@ -8876,7 +8883,7 @@ export function createRoutes(ctx: RouteContext): Router {
                 scopeAccretionMetric('fired', 'breaker-trip');
                 const topicNum = Number(armedRecord.topicId);
                 if (ctx.telegram && Number.isFinite(topicNum)) {
-                  await ctx.telegram.sendToTopic(topicNum, `⚠️ ${tripText}`).catch(() => { /* best-effort */ });
+                  await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(topicNum, `⚠️ ${tripText}`)).catch(() => { /* best-effort */ });
                   await ctx.telegram
                     .createAttentionItem({
                       id: `scope-accretion-breaker-${armedRecord.topicId}-${armedRecord.runId}`,
@@ -12218,8 +12225,8 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     try {
-      const sent = await ctx.telegram.sendToTopic(Number(gate.key), rendered.echo);
-      ctx.topicProfile.confirmSlots.recordEchoMessageId(gate.key, sent.messageId);
+      const sent = await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(Number(gate.key), rendered.echo));
+      ctx.topicProfile.confirmSlots.recordEchoMessageId(gate.key, requireTelegramDelivery(sent).messageId);
       res.json({ ok: true, echo: rendered.echo, superseded: armed.superseded });
     } catch (err) {
       // Echo undelivered — tear the slot down (an unseen echo must never be
@@ -16226,7 +16233,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     clearStuck: (service) => { void ctx.telegram?.updateAttentionStatus(`recommended-service-setup:${service}`, 'DONE', { silent: true }).catch((err) => { DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: `Close the stopped notice for ${service}`, fallback: 'The notice stays open.', reason: err instanceof Error ? err.message : String(err), impact: 'An old notice may still show.' }); }); },
     tellOwner: (text) => {
       const topicId = ctx.telegram?.getLifelineTopicId?.();
-      if (topicId !== undefined) void ctx.telegram?.sendToTopic(topicId, text).catch((err) => { DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: 'Tell the owner a service was already working', fallback: 'The dashboard row still shows it.', reason: err instanceof Error ? err.message : String(err), impact: 'The person was not told.' }); });
+      if (topicId !== undefined) void withNotificationEnvelope(stampNotification(), async () => ctx.telegram?.sendToTopic(topicId, text)).catch((err) => { DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: 'Tell the owner a service was already working', fallback: 'The dashboard row still shows it.', reason: err instanceof Error ? err.message : String(err), impact: 'The person was not told.' }); });
     },
     finishCommitment: (id) => { ctx.commitmentTracker?.deliver(id); },
     withdrawCommitment: (id, reason) => { ctx.commitmentTracker?.withdraw(id, reason); },
@@ -19603,7 +19610,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // spawned in this topic will see the context in their thread history.
       let messageSent = false;
       if (firstMessage && !topic.reused) {
-        await ctx.telegram.sendToTopic(topic.topicId, firstMessage);
+        await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(topic.topicId, firstMessage));
         messageSent = true;
       }
 
@@ -19902,6 +19909,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           ? 'agent'
           : 'automation';
 
+    let notificationJobSession = false;
     // ── Observability breadcrumbs (§2.1 — visibility on the named dodge
     // classes; sovereignty over the send is accepted, nothing is gated). ──
     try {
@@ -19910,6 +19918,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ? ctx.state.findSessionByTmux(sessionName)
         : undefined;
       const topicJobSlug = topicSession?.jobSlug;
+      notificationJobSession = !!topicJobSlug;
       if (topicJobSlug && messageKind === undefined) {
         // A kindless send whose topic maps to a job session — possible
         // hand-curl / env-unset bypass. EXEMPT: a sentinel redrive carrying
@@ -20026,7 +20035,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // whether the reply actually landed — without it the relay could only
       // ever return a placeholder 0 and so reported "ok" even when nothing was
       // delivered (the false-success-under-load class).
+      const originProducer = ctx.telegramOrigin?.service.hasProducerContext() ? ctx.telegramOrigin.service.currentProducer() : undefined;
+      const conversationNotice = originProducer?.producerKind === 'server-automation' && originProducer.producerId === 'presence-proxy'
+        && typeof metadata?.inboundMessageId === 'string'
+        ? { origin: 'automated' as const, category: 'presence-standby' as const,
+          sourceContext: 'presence-proxy', inboundMessageId: metadata.inboundMessageId }
+        : undefined;
       const sendOptions = {
+        envelope: conversationNotice ?? (originProducer?.producerKind !== 'server-automation' && !(originProducer?.sessionId && ctx.state.getSession(originProducer.sessionId)?.jobSlug) && !isProxy && !isSystemTemplate && !notificationJobSession && !metadataJobSlug && senderClass !== 'script'
+          && (messageKind === undefined || messageKind === 'reply')
+          ? verifiedReplyEnvelope('telegram-reply-route')
+          : { origin: 'automated' as const, category: categoryForProducer(originProducer?.producerId, metadataJobSlug || (notificationJobSession ? 'topic-job' : undefined)), sourceContext: metadataJobSlug || originProducer?.producerId || 'reply-route-automation' }),
         skipStallClear: isProxy,
         provenance,
         // Relay-hop forwarding (§2.5): when this standby relays through the
@@ -20055,7 +20074,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       };
       let sendResult: Awaited<ReturnType<typeof ctx.telegram.sendToTopic>>;
       try {
-        sendResult = await ctx.telegram.sendToTopic(topicId, text, { ...sendOptions, gateSkippedForRelay });
+        sendResult = await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(topicId, text, { ...sendOptions, gateSkippedForRelay }));
       } catch (err) {
         if (!(err instanceof OriginForwardSettledLocallyError) || !gateSkippedForRelay) throw err;
         // The lease settled on THIS machine after the local gate was skipped for
@@ -20064,7 +20083,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           if (!originOwnsContent && !allowDuplicate) outboundContentDedup.releaseReservation(topicId, text);
           return;
         }
-        sendResult = await ctx.telegram.sendToTopic(topicId, text, { ...sendOptions, gateSkippedForRelay: false });
+        sendResult = await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(topicId, text, { ...sendOptions, gateSkippedForRelay: false }));
+      }
+      if (sendResult.recorded) {
+        if (!originOwnsContent && !allowDuplicate) outboundContentDedup.releaseReservation(topicId, text);
+        res.json({ ok: true, topicId, ...sendResult });
+        return;
       }
       // Record the content fingerprint AFTER a successful send so an identical
       // re-send within the window is suppressed — but a FAILED send (which
@@ -20361,7 +20385,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             res.status(503).json({ error: 'Telegram not configured' });
             return;
           }
-          await ctx.telegram.sendToTopic(topicId, text, { skipStallClear: true });
+          await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(topicId, text, { skipStallClear: true }));
           ctx.proxyCoordinator?.recordBuildHeartbeat(topicId);
         } else if (channelId !== null) {
           if (!ctx.slack) {
@@ -20467,11 +20491,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
 
     try {
-      await ctx.telegram.sendToTopic(updatesTopicId, text);
+      const sent = await withNotificationEnvelope({ origin: 'automated', category: 'update-announcement', sourceContext: 'post-update' }, async () => (ctx.telegram)!.sendToTopic(updatesTopicId, text));
       // Note: intentionally do NOT clear the injection tracker for the Updates
       // topic. Update posts are proactive broadcasts, not replies to a stuck
       // session — resetting stall timers here would mask real hangs elsewhere.
-      res.json({ ok: true, topicId: updatesTopicId });
+      res.json({ ok: true, topicId: updatesTopicId, ...('recorded' in sent && sent.recorded ? { delivered: false, recorded: true, quietId: sent.quietId } : { delivered: true }) });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -28016,7 +28040,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (submission.topicId && ctx.telegram) {
       const fieldCount = Object.keys(submission.values).length;
       const confirmMsg = `\u2705 Secret received for "${submission.label}" (${fieldCount} field${fieldCount !== 1 ? 's' : ''}).`;
-      ctx.telegram.sendToTopic(submission.topicId, confirmMsg).catch(() => {
+      withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(submission.topicId!, confirmMsg)).catch(() => {
         // @silent-fallback-ok — Non-fatal — the submission itself succeeded
       });
     }
@@ -28439,6 +28463,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       senderBotId = undefined;
     }
 
+    // These acknowledgments run before the normal forwarded-inbound log seam.
+    // Bind only their explicit sends; unrelated background emitters keep automation provenance.
+    const stampForwardResponse = () => {
+      if (!ingressDecision.senderTrusted || senderIsBot || !Number.isSafeInteger(Number(messageId)) || Number(messageId) <= 0
+        || !fromUserId || !ctx.telegram?.isAuthorizedSender?.(fromUserId)) return stampNotification();
+      ctx.telegram.selectivity?.observeInbound(Number(topicId), Number(messageId), false, Date.parse(req.body.timestamp || new Date().toISOString()));
+      return { origin: 'automated' as const, category: 'command-response' as const, sourceContext: 'forwarded-inbound-ack', inboundMessageId: String(messageId) };
+    };
+
     // Server boot window: if version cache wasn't populated, skip handshake
     // rather than 426-erroneously. Lifeline retries after retryAfterMs.
     if (!_serverVersionParsed) {
@@ -28561,7 +28594,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (pairingInviteTelegram) {
           await pairingInviteTelegram.onForwardedInvite({ text, topicId: Number(topicId), fromUserId, verified: ingressDecision.verified });
         } else {
-          await ctx.telegram?.sendToTopic(Number(topicId), 'I got a pairing invite, but pairing by invite is not turned on for this agent.');
+          await withNotificationEnvelope(stampForwardResponse(), async () => ctx.telegram?.sendToTopic(Number(topicId), 'I got a pairing invite, but pairing by invite is not turned on for this agent.'));
         }
       } catch { /* the invite is still consumed: it must never fall through to a session */ }
       res.json({ ok: true, pairingInvite: true });
@@ -28576,10 +28609,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         text, topicId: Number(topicId), senderUid: String(fromUserId ?? ''),
         trusted: !senderUntrusted, forwarded: req.body.forwarded === true,
       });
-      if (ctx.telegram) await ctx.telegram.sendToTopic(Number(topicId), approval?.approved
+      if (ctx.telegram) await withNotificationEnvelope(stampForwardResponse(), async () => (ctx.telegram)!.sendToTopic(Number(topicId), approval?.approved
         ? 'Remote desktop approved. Return to the dashboard to connect.'
         : 'Remote desktop approval was not accepted. Check the request or ask for a new code.',
-      { provenance: 'automation' }).catch(() => {});
+      { provenance: 'automation' })).catch(() => {});
       res.json({ ok: true, desktopApproval: approval?.approved === true });
       return;
     }
@@ -28664,7 +28697,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             // The text a PERSON reads is keyed on the kill OUTCOME, never on
             // whether a session name resolved — it used to say "Session
             // terminated." for a kill that failed (W26 lane 1 addendum).
-            ctx.telegram?.sendToTopic(Number(topicId), emergencyStopUserMessage(sessionName, killOutcome))
+            withNotificationEnvelope(stampForwardResponse(), async () => ctx.telegram?.sendToTopic(Number(topicId), emergencyStopUserMessage(sessionName, killOutcome)))
               .catch(() => { /* best-effort */ });
             // `killed` is the OUTCOME of the kill, never merely "a session name
             // resolved" — the latter reported success for a kill that never ran.
@@ -28676,9 +28709,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             ctx.telegram.onSentinelPauseSession(sessionName);
             console.log(`[telegram-forward] sentinel pause: paused session "${sessionName}" for ${topicRef(topicId)}`);
           }
-          ctx.telegram?.sendToTopic(Number(topicId), sessionName
+          withNotificationEnvelope(stampForwardResponse(), async () => ctx.telegram?.sendToTopic(Number(topicId), sessionName
             ? 'Session paused.\n\nSend a message to resume.'
-            : 'No active session to pause.').catch(() => { /* best-effort */ });
+            : 'No active session to pause.')).catch(() => { /* best-effort */ });
           res.json({ ok: true, sentinel: 'pause', paused: !!sessionName });
           return;
         }
@@ -33149,8 +33182,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const topicId = typeof req.body?.topicId === 'number' ? req.body.topicId : null;
     if (topicId !== null && ctx.telegram) {
       try {
-        const sent = await ctx.telegram.sendToTopic(topicId, renderedText);
-        posted = { topicId, messageId: sent.messageId };
+        const sent = await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(topicId, renderedText));
+        posted = { topicId, messageId: requireTelegramDelivery(sent).messageId };
         ctx.apprenticeshipMatrixAcceptance.attachMessage(challenge.challengeId, posted);
       } catch {
         // @silent-fallback-ok — a failed Telegram post only loses the
@@ -34798,6 +34831,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Deep-merges the request body into config.json and updates runtime ctx.config.
   router.patch('/config', (req, res) => {
     const patch = req.body;
+    if (patch?.notifications && typeof patch.notifications === 'object' && 'selectivity' in patch.notifications) { res.status(403).json({ error: 'Use the confirmed notification preference surface' }); return; }
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
       res.status(400).json({ error: 'Request body must be a JSON object' });
       return;
@@ -35638,7 +35672,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             return { ok: true, suppressedDuplicate: true } as unknown;
           }
           try {
-            const send = () => telegram.sendToTopic(topicId, text);
+            const send = () => withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, text));
             let r;
             if (ctx.telegramOrigin) {
               const service = ctx.telegramOrigin.service, producerId = 'commitment-checkin-reminder', body = { text };
@@ -36888,7 +36922,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     let told = false;
     const topicId = typeof c.topicId === 'number' ? c.topicId : null;
     if (topicId !== null && ctx.telegram) {
-      try { await ctx.telegram.sendToTopic(topicId, headline, { provenance: 'automation' }); told = true; }
+      try { await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(topicId, headline, { provenance: 'automation' })); told = true; }
       catch (err) { console.warn(`[commitments/decide] could not post the decision in ${topicRef(topicId)}: ${err instanceof Error ? err.message : String(err)}`); }
       // Hand the decision to the conversation's session so the agent acts on it.
       // It carries no sender identity: it is a record of a dashboard tap, never

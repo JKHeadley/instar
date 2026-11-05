@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/server/mobileMediaSend.ts');
 /**
  * The media half of an app send, shared by every send route that accepts files
  * (docs/specs/mobile-native-chat-media.md §4.3, §4.9): a native app conversation
@@ -222,6 +224,6 @@ export async function mirrorMediaToTelegram(
     })));
     await tg.sendMediaToTopic(topicId, files, plan.caption, { silent: true });
   }
-  for (const line of plan.textLines) await tg.sendToTopic(topicId, line, { silent: true, skipStallClear: true, operatorMirror: true });
+  for (const line of plan.textLines) await withNotificationEnvelope(stampNotification(), async () => (tg)!.sendToTopic(topicId, line, { silent: true, skipStallClear: true, operatorMirror: true }));
   return plan;
 }

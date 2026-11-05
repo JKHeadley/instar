@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/server/mobilePairingRoutes.ts');
 /**
  * Mobile pairing links (docs/specs/mobile-pairing-link.md).
  *
@@ -1388,7 +1390,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       if (app && stored.length > 0) {
         await mirrorMediaToTelegram(tg as unknown as TelegramMediaMirrorTarget, topicId, senderName, stored, mirrorText, (sha) => app.media.locateBlob(sha));
       } else {
-        await tg.sendToTopic(topicId, `📱 ${senderName} (from the app): ${mirrorText}`, { silent: true, skipStallClear: true, operatorMirror: true });
+        await withNotificationEnvelope(stampNotification(), async () => (tg)!.sendToTopic(topicId, `📱 ${senderName} (from the app): ${mirrorText}`, { silent: true, skipStallClear: true, operatorMirror: true }));
       }
       mirrored = true;
     } catch (err) {

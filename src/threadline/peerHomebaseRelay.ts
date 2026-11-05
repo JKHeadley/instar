@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/threadline/peerHomebaseRelay.ts');
 /**
  * peerHomebaseRelay — the server posts a peer's user-meant message into the peer's own topic.
  *
@@ -170,7 +172,7 @@ export class PeerHomebaseRelay {
 
     const text = formatRelayPost(senderName, body);
     try {
-      await this.d.sendToTopic(topicId, text);
+      await withNotificationEnvelope(stampNotification(), async () => (this.d)!.sendToTopic(topicId, text));
     } catch (err) {
       this.d.log?.(`[homebase-relay] post to topic ${topicId} failed: ${err instanceof Error ? err.message : String(err)}`);
       const retry = judged ? this.scheduleRetry(threadId, topicId, senderName, body, attempt, peers, SEND_RETRY_MS) : false;

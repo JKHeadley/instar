@@ -3096,6 +3096,7 @@
             <button class="tab active" data-tab="sessions" onclick="switchTab('sessions')">Sessions <span class="tab-count" id="tabSessionCount">0</span></button>
             <button class="tab" data-tab="machines" onclick="switchTab('machines')">Machines</button>
             <button class="tab" data-tab="jobs" onclick="switchTab('jobs')">Jobs <span class="tab-count" id="tabJobCount">0</span></button>
+            <button class="tab" data-tab="notifications" onclick="switchTab('notifications')">Notifications</button>
             <button class="tab" data-tab="origins" onclick="switchTab('origins')">Message origins</button>
             <button class="tab" data-tab="phones" onclick="switchTab('phones')">Phones</button>
             <button class="tab" data-tab="systems" onclick="switchTab('systems')">Health</button>
@@ -4376,6 +4377,7 @@
          subsystem's full description / processes / metrics live one drill down.
          The shared component renders the headline + tiles + drill-down here. -->
     <section class="systems-container" id="phonesTab" style="display:none;flex-direction:column;overflow:auto;padding:20px;gap:12px;min-width:0"><p class="tab-purpose">Pair the Instar iPhone app and see paired phones.</p></section>
+    <section id="notificationsTab" style="display:none"><a href="/dashboard#/people/notifications">Open Notifications</a></section>
     <section class="systems-container" id="originsTab" style="display:none;flex-direction:column;overflow:auto;padding:20px;gap:12px;min-width:0"><p class="tab-purpose">Inspect message authorship and choose which origin details appear.</p></section>
     <div class="systems-container" id="systemsTab" style="display:none">
       <div class="systems-main">
@@ -6206,6 +6208,8 @@
         display: ['flex'],
         onActivate: () => { if (!featuresLoaded) loadFeatures(); },
       },
+      {
+        id: 'notifications', panels: ['notificationsTab'], display: ['flex'], onActivate: () => { location.href = '/dashboard#/people/notifications'; } },
       {
         id: 'origins',
         panels: ['originsTab'], display: ['flex'], onActivate: () => startOrigins(), onDeactivate: () => originPanel?.stop() },

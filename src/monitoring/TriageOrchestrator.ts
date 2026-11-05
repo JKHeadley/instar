@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/monitoring/TriageOrchestrator.ts');
 /**
  * TriageOrchestrator — Intelligent, persistent session monitoring with
  * resumable Claude Code triage sessions and structural follow-through.
@@ -978,8 +980,8 @@ export class TriageOrchestrator extends EventEmitter {
     const prefixedMessage = userMessage.startsWith(TRIAGE_MESSAGE_PREFIX)
       ? userMessage
       : TRIAGE_MESSAGE_PREFIX + userMessage;
-    const send = () => originAuthor ? this.deps.sendToTopic(topicId, prefixedMessage, originAuthor)
-      : this.deps.sendToTopic(topicId, prefixedMessage);
+    const send = () => originAuthor ? withNotificationEnvelope(stampNotification(), async () => (this.deps)!.sendToTopic(topicId, prefixedMessage, { ...(originAuthor) }))
+      : withNotificationEnvelope(stampNotification(), async () => (this.deps)!.sendToTopic(topicId, prefixedMessage));
 
     switch (action) {
       case 'none':

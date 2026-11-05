@@ -1,3 +1,6 @@
+import { notificationContext } from '../NotificationSelectivityGate.js';
+import { notificationStamper, withNotificationEnvelope } from '../notificationStampers.js';
+const stampNotification = notificationStamper('src/messaging/telegram-origin/OriginDeterministicSend.ts');
 import type { TelegramOriginService } from './TelegramOriginService.js';
 import { originBotEgressStatus } from './OriginBotEgress.js';
 import { TelegramOriginHoldError } from './types.js';
@@ -22,7 +25,11 @@ export async function withDeterministicOrigin<T>(service: TelegramOriginService 
 }
 export function sendDeterministicTelegramNotice<T>(transport: { sendToTopic(topicId: number, text: string): Promise<T> },
   producerId: DeterministicOriginProducer, topicId: number, text: string): Promise<T> {
-  return withDeterministicOrigin(transports.get(transport), producerId, () => transport.sendToTopic(topicId, text));
+  const inbound = notificationContext.getStore();
+  const envelope = producerId === 'cold-start-fallback' && inbound?.inboundMessageId
+    ? { origin: 'automated' as const, category: 'cold-start-fallback' as const, sourceContext: producerId, inboundMessageId: inbound.inboundMessageId }
+    : stampNotification();
+  return withDeterministicOrigin(transports.get(transport), producerId, () => withNotificationEnvelope(envelope, async () => transport.sendToTopic(topicId, text)));
 }
 /** These producers include copied prose without a native author observation. */
 export async function withUnknownProducerOrigin<T>(service: TelegramOriginService | undefined,
@@ -36,7 +43,7 @@ export async function withUnknownProducerOrigin<T>(service: TelegramOriginServic
 }
 export function sendUnknownProducerTelegramNotice<T>(transport: { sendToTopic(topicId: number, text: string): Promise<T> },
   producerId: 'auto-dispatcher', topicId: number, text: string): Promise<T> {
-  return withUnknownProducerOrigin(transports.get(transport), producerId, () => transport.sendToTopic(topicId, text));
+  return withUnknownProducerOrigin(transports.get(transport), producerId, () => withNotificationEnvelope(stampNotification(), async () => (transport)!.sendToTopic(topicId, text)));
 }
 
 export function bindUnknownProducerTelegramSender<T>(service: TelegramOriginService | undefined,

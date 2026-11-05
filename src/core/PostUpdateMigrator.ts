@@ -1,3 +1,7 @@
+export const QUIET_NOTIFICATIONS_CLAUDEMD_SECTION = `
+### Quiet by Default notifications
+Automated notices belong in the dashboard Notifications feed and internal records. Conversational replies and notices serving a specific inbound message keep flowing. Check GET /notifications/selectivity and GET /notifications/quiet?scope=pool when the user asks what stayed quiet. Category push is an explicit operator choice: use POST /notifications/categories/:id/push with confirmedBy and a recent operator-bound confirmingMessageId, or the PIN-confirmed dashboard toggle. Never grant yourself push and never label a scheduled report as a reply. Keep overseer findings and repairs in handoffs; a Bugs-hub post must name an unresolved impact and the one action only the operator can provide. Own bounded checks and recovery before escalating. Other agents start dark or in observation mode and enforce only at the operator flip; Echo follows the current directive.
+`;
 import { ORIGIN_LOCAL_GITIGNORE } from '../messaging/telegram-origin/OriginLocalPaths.js';
 
 /** One handoff rule shared by new installs and existing-agent migrations. */
@@ -8590,6 +8594,12 @@ setTimeout(() => process.exit(0), 2000);
   private patchClaudeMdContent(input: string, result: MigrationResult): { content: string; patched: boolean } {
     let content = input;
     let patched = false;
+    if (!content.includes('### Quiet by Default notifications')) {
+      content = content.replace(/^\*\*🩺 Agent Health lane[^\n]*\n/m, '');
+      content += QUIET_NOTIFICATIONS_CLAUDEMD_SECTION;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Quiet by Default notifications');
+    }
     const port = this.config.port;
     const oldThreadlineStatus = 'This capability is **installed and ready** but **not yet enabled**. I will only connect when you say so.';
     if (content.includes(oldThreadlineStatus)) {

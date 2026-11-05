@@ -1,3 +1,4 @@
+import { NotificationSelectivityGate, QuietRecordedError, notificationContext, verifiedReplyEnvelope } from '../../src/messaging/NotificationSelectivityGate.js';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -55,6 +56,18 @@ async function boot() {
   return { runtime, policy, network, send, lifecycle: lifecycle! };
 }
 describe('Telegram origin initialization and outage lifecycle', () => {
+  it('keeps routine origin egress quiet while a verified late reply reaches the real egress boundary', async () => {
+    const h = await boot();
+    const gate = new NotificationSelectivityGate(h.runtime.options.storage.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));
+    h.runtime.service.notificationGate = gate;
+    await expect(h.send()).rejects.toBeInstanceOf(QuietRecordedError);
+    expect(h.network).not.toHaveBeenCalled();
+    expect(gate.store.list()).toHaveLength(1);
+    await notificationContext.run(verifiedReplyEnvelope('fixture-reply-route'), () => h.send());
+    expect(h.network).toHaveBeenCalledOnce();
+    expect(gate.store.counters().unread).toBe(1);
+  });
+
   it('delivers an unbound automation without unknown footer labels while retaining unknown audit evidence', async () => {
     const h = await boot();
     await h.send();

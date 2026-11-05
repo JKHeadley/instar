@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from './notificationStampers.js';
+const stampNotification = notificationStamper('src/messaging/telegramSendSideComposition.ts');
 import { bindOriginAutomationTransport } from './telegram-origin/OriginDeterministicSend.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import type { NotificationBatcher } from '../messaging/NotificationBatcher.js';
@@ -68,8 +70,8 @@ export function wireTelegramSendSide(deps: TelegramSendSideDeps): TelegramSendSi
       const producerId = origin?.producerId ?? 'notification-batcher';
       deps.originService.registerAutomationProducer(producerId);
       const credential = deps.originService.issueAutomationReply(producerId, topicId, body, origin?.author, logicalSendId);
-      await deps.originService.runWithAutomationReply(credential, topicId, body, () => deps.telegram.sendToTopic(topicId, text));
-    } else await deps.telegram.sendToTopic(topicId, text);
+      await deps.originService.runWithAutomationReply(credential, topicId, body, () => withNotificationEnvelope(stampNotification(), async () => (deps.telegram)!.sendToTopic(topicId, text)));
+    } else await withNotificationEnvelope(stampNotification(), async () => (deps.telegram)!.sendToTopic(topicId, text));
     return { messageId: 0 };
   }, { supportsLogicalIds: !!deps.originService });
   deps.notificationBatcher.start();

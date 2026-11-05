@@ -1,3 +1,11 @@
+import { LEGACY_NOTIFICATION_GATES } from '../messaging/notificationCategories.js';
+import { readPeerNotifications } from '../server/notificationPoolRead.js';
+import { NotificationPreferences } from '../messaging/NotificationPreferences.js';
+import { notificationStamper, responseNotificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/commands/server.ts');
+const stampResponse = responseNotificationStamper('src/commands/server.ts');
+import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, notificationContext } from '../messaging/NotificationSelectivityGate.js';
+import type { SelectivityConfig } from '../messaging/NotificationSelectivityGate.js';
 /**
  * Governed by: Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS (docs/STANDARDS-REGISTRY.md) —
  * the boot-time TCC-protected path detection + /guards row (see the
@@ -484,7 +492,7 @@ async function handleFixCommand(topicId: number, text: string, deps: FixCommandD
     return false;
   }
 
-  const send = (msg: string) => deps.telegram.sendToTopic(topicId, msg);
+  const send = (msg: string) => withNotificationEnvelope(stampResponse(), async () => (deps.telegram)!.sendToTopic(topicId, msg));
 
   if (cmd === 'fix auth') {
     const existing = deps.liveConfig.get<string>('authToken', '');
@@ -1201,9 +1209,9 @@ function noteAllMachinesRefusing(telegram: TelegramAdapter, topicId: number): vo
   const last = _allRefusingNoticeAt.get(topicId) ?? 0;
   if (Date.now() - last < ALL_REFUSING_NOTICE_COOLDOWN_MS) return;
   _allRefusingNoticeAt.set(topicId, Date.now());
-  telegram.sendToTopic(topicId,
-    'Your message is saved. All of my machines are overloaded right now and are not taking new work; I will answer as soon as one has room.',
-  ).catch(() => { /* @silent-fallback-ok: the message is already in durable custody; the attention item below also carries it */ });
+  withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId,
+    'Your message is saved. All of my machines are overloaded right now and are not taking new work; I will answer as soon as one has room.'
+  )).catch(() => { /* @silent-fallback-ok: the message is already in durable custody; the attention item below also carries it */ });
   void telegram.createAttentionItem({
     id: `work-admission:all-refusing:${new Date().toISOString().slice(0, 13)}`, // one per UTC hour
     title: 'Every machine is overloaded — new conversations are waiting',
@@ -1521,6 +1529,8 @@ export async function spawnSessionForTopic(
       parts.push(``);
     }
 
+    const quietContext = await telegram.selectivity?.bootContextPool(topicId);
+    if (quietContext) parts.push(quietContext, ``);
     parts.push(inlineContext, ``);
     if (hasLatestMessage) {
       parts.push(
@@ -1555,6 +1565,8 @@ export async function spawnSessionForTopic(
     // No conversation history — new session.
     // Still inject agent + user context if available.
     const newSessionParts: string[] = [];
+    const quietContext = await telegram.selectivity?.bootContextPool(topicId);
+    if (quietContext) newSessionParts.push(quietContext, ``);
     if (agentContextBlock) {
       newSessionParts.push(agentContextBlock);
       newSessionParts.push(``);
@@ -1587,7 +1599,7 @@ export async function spawnSessionForTopic(
   if (resolvedProfile && resolvedProfile.notices.length > 0) {
     for (const notice of resolvedProfile.notices) {
       try {
-        await telegram.sendToTopic(topicId, notice);
+        await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, notice));
       } catch { /* notice delivery is best-effort */ }
     }
   }
@@ -1858,7 +1870,7 @@ async function respawnSessionForTopic(
   if (!options?.silent && !options?.quietAfterRespawn) {
     // The respawn already succeeded. A held or failed notice must not turn it
     // into a reported failure (the caller would respawn again: a duplicate session).
-    try { await telegram.sendToTopic(topicId, SESSION_BACK_NOTICE); }
+    try { await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, SESSION_BACK_NOTICE)); }
     catch (err) { console.warn(`[telegram→session] Respawned for topic ${topicId}, but the back-up notice was not sent: ${err instanceof Error ? err.message : String(err)}`); }
   }
   console.log(`[telegram→session] Respawned "${newSessionName}" for topic ${topicId}`);
@@ -1958,10 +1970,10 @@ function wireTelegramCallbacks(
     telegram.onSwitchAccountRequest = async (target: string, replyTopicId: number): Promise<void> => {
       try {
         const result = await accountSwitcher.switchAccount(target);
-        await telegram.sendToTopic(replyTopicId, result.message);
+        await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(replyTopicId, result.message));
       } catch (err) {
         console.error(`[telegram] Account switch failed:`, err);
-        await telegram.sendToTopic(replyTopicId, 'Account switch didn\'t work. There may be an issue with the target account — try again or check /quota for current status.');
+        await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(replyTopicId, 'Account switch didn\'t work. There may be an issue with the target account — try again or check /quota for current status.'));
       }
     };
   }
@@ -1972,7 +1984,7 @@ function wireTelegramCallbacks(
       try {
         const quotaState = quotaTracker.getState();
         if (!quotaState) {
-          await telegram.sendToTopic(replyTopicId, 'No quota data available.');
+          await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(replyTopicId, 'No quota data available.'));
           return;
         }
         const recommendation = quotaTracker.getRecommendation();
@@ -1997,10 +2009,10 @@ function wireTelegramCallbacks(
           }
         }
 
-        await telegram.sendToTopic(replyTopicId, lines.join('\n'));
+        await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(replyTopicId, lines.join('\n')));
       } catch (err) {
         console.error(`[telegram] Quota check failed:`, err);
-        await telegram.sendToTopic(replyTopicId, 'Couldn\'t check quota right now. The usage tracking service may be temporarily unavailable.');
+        await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(replyTopicId, 'Couldn\'t check quota right now. The usage tracking service may be temporarily unavailable.'));
       }
     };
   }
@@ -2024,10 +2036,15 @@ function wireTelegramCallbacks(
   telegram.onLoginRequest = async (email: string | null, replyTopicId: number): Promise<void> => {
     const tmuxPath = detectTmuxPath();
     if (!tmuxPath) {
-      await telegram.sendToTopic(replyTopicId, 'Login isn\'t available right now — a required system component is missing. This needs to be set up on the server side.');
+      await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(replyTopicId, 'Login isn\'t available right now — a required system component is missing. This needs to be set up on the server side.'));
       return;
     }
 
+    let loginResponse: import('../messaging/TelegramAdapter.js').SendResult | undefined;
+    const finishLogin = async (text: string) => {
+      if (loginResponse) await telegram.editCommandResponse(replyTopicId, loginResponse, text);
+      else await withNotificationEnvelope(stampResponse(), async () => telegram.sendToTopic(replyTopicId, text));
+    };
     const loginSession = 'instar-login-flow';
 
     try {
@@ -2046,7 +2063,6 @@ function wireTelegramCallbacks(
         timeout: 10000,
       });
 
-      await telegram.sendToTopic(replyTopicId, `Login flow started${email ? ` for ${email}` : ''}. Watching for OAuth URL...`);
 
       // Poll for OAuth URL (up to 15 seconds)
       let oauthUrl: string | null = null;
@@ -2066,11 +2082,11 @@ function wireTelegramCallbacks(
       }
 
       if (!oauthUrl) {
-        await telegram.sendToTopic(replyTopicId, 'Could not detect OAuth URL. Check the login session manually.');
+        await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(replyTopicId, 'Could not detect OAuth URL. Check the login session manually.'));
         return;
       }
 
-      await telegram.sendToTopic(replyTopicId, `Open this URL to authenticate:\n\n${oauthUrl}\n\nI'll detect when you're done.`);
+      loginResponse = requireTelegramDelivery(await withNotificationEnvelope(stampResponse(), async () => telegram.sendToTopic(replyTopicId, `Open this URL to authenticate:\n\n${oauthUrl}\n\nI'll detect when you're done.`)));
 
       // Poll for auth completion (up to 5 minutes)
       let authComplete = false;
@@ -2107,9 +2123,9 @@ function wireTelegramCallbacks(
       } catch { /* already ended */ }
 
       if (authComplete) {
-        await telegram.sendToTopic(replyTopicId, 'Authentication successful! New sessions will use this account.');
+        await finishLogin('Authentication successful! New sessions will use this account.');
       } else {
-        await telegram.sendToTopic(replyTopicId, 'Login flow ended, but I couldn\'t confirm it completed successfully. Try sending a message to test if the new account is working.');
+        await finishLogin('Login flow ended, but I couldn\'t confirm it completed successfully. Try sending a message to test if the new account is working.');
       }
     } catch (err) {
       // Clean up on error
@@ -2117,7 +2133,7 @@ function wireTelegramCallbacks(
         execFileSync(tmuxPath, ['kill-session', '-t', `=${loginSession}`], { stdio: 'ignore' });
       } catch { /* ignore */ }
       console.error(`[telegram] Login failed:`, err);
-      await telegram.sendToTopic(replyTopicId, 'Login didn\'t complete successfully. Try again, or if this keeps happening, the authentication service may be down.');
+      await finishLogin('Login didn\'t complete successfully. Try again, or if this keeps happening, the authentication service may be down.');
     }
   };
 
@@ -2145,7 +2161,7 @@ function wireTelegramCallbacks(
   };
   _profileDisclose = async (topicKey: string, text: string): Promise<void> => {
     if (!/^\d+$/.test(topicKey)) return;
-    await telegram.sendToTopic(Number(topicKey), text);
+    await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(Number(topicKey), text));
   };
 
   // /route — get or set the framework for this topic. REWIRED into the Topic
@@ -2434,7 +2450,7 @@ async function handleTopicProfileIngress(
   const topicKey = String(topicId);
   const principal = { kind: 'operator' as const, platform: 'telegram', uid: String(telegramUserId) };
   const send = async (reply: string): Promise<void> => {
-    try { await telegram.sendToTopic(topicId, reply); } catch { /* @silent-fallback-ok: a profile-ingress disclosure send is best-effort — a transient Telegram send fault must not throw out of the ingress handler; the armed slot TTL / next turn re-surfaces it (TOPIC-PROFILE-SPEC §10.1) */ }
+    try { await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, reply)); } catch { /* @silent-fallback-ok: a profile-ingress disclosure send is best-effort — a transient Telegram send fault must not throw out of the ingress handler; the armed slot TTL / next turn re-surfaces it (TOPIC-PROFILE-SPEC §10.1) */ }
   };
 
   switch (trigger.kind) {
@@ -2467,8 +2483,8 @@ async function handleTopicProfileIngress(
         const armed = slots.arm(topicKey, 'reapply-cooldown', {}, result.reply, 'ingress');
         if (armed.ok) {
           try {
-            const sent = await telegram.sendToTopic(topicId, `${result.reply} Reply "yes" to apply it anyway.`);
-            slots.recordEchoMessageId(topicKey, sent.messageId);
+            const sent = await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, `${result.reply} Reply "yes" to apply it anyway.`));
+            if (!sent.recorded) slots.recordEchoMessageId(topicKey, sent.messageId);
           } catch { /* echo undelivered — the confirm refuses toward re-echo */ }
           return true;
         }
@@ -2519,7 +2535,7 @@ async function handleProfileConfirm(
 ): Promise<boolean> {
   const topicKey = String(topicId);
   const send = async (reply: string): Promise<void> => {
-    try { await telegram.sendToTopic(topicId, reply); } catch { /* @silent-fallback-ok: a profile-ingress disclosure send is best-effort — a transient Telegram send fault must not throw out of the ingress handler; the armed slot TTL / next turn re-surfaces it (TOPIC-PROFILE-SPEC §10.1) */ }
+    try { await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, reply)); } catch { /* @silent-fallback-ok: a profile-ingress disclosure send is best-effort — a transient Telegram send fault must not throw out of the ingress handler; the armed slot TTL / next turn re-surfaces it (TOPIC-PROFILE-SPEC §10.1) */ }
   };
   const match = slots.matchConfirm(topicKey, {
     platformMessageId: platformMessageIdFrom(msg.id),
@@ -2536,8 +2552,8 @@ async function handleProfileConfirm(
     const slot = slots.peek(topicKey);
     if (slot) {
       try {
-        const sent = await telegram.sendToTopic(topicId, `Please confirm this version:\n${slot.echoText}`);
-        slots.recordEchoMessageId(topicKey, sent.messageId);
+        const sent = await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, `Please confirm this version:\n${slot.echoText}`));
+        if (!sent.recorded) slots.recordEchoMessageId(topicKey, sent.messageId);
       } catch { /* best-effort */ }
     }
     return true;
@@ -2667,6 +2683,7 @@ export function wireTelegramRouting(
 
   _memoryTelegramOwner = () => telegram.getOwnerUserId();
   telegram.onTopicMessage = async (msg: Message) => {
+    const handler = async (msg: Message) => {
     const topicId = (msg.metadata?.messageThreadId as number) ?? null;
     if (!topicId) return;
 
@@ -2693,11 +2710,11 @@ export function wireTelegramRouting(
       };
       const verdict = await _memoryInbound.onInbound(memoryFacts);
       if (verdict === 'unavailable') {
-        await telegram.sendToTopic(topicId, await _memoryInbound.refuse(memoryFacts, async (text) => {
+        await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, await _memoryInbound!.refuse(memoryFacts, async (text) => {
           // This DM has one fixed recipient, so it goes only when that is who asked.
           if (!telegramUserId || telegram.getOwnerUserId() !== telegramUserId) return false;
           return (await telegram.sendToOwnerDM(text)) !== null;
-        }));
+        })));
         return;
       }
     }
@@ -2803,12 +2820,12 @@ export function wireTelegramRouting(
           const topic = await telegram.findOrCreateForumTopic(topicDisplayName, TOPIC_STYLE.SESSION.color, { origin: 'user' });
           // Don't create a session — findOrCreateForumTopic already stored the topic name.
           // The first message in this topic will trigger auto-spawn with real content.
-          await telegram.sendToTopic(topic.topicId, `Ready — send your first message to start.`);
-          await telegram.sendToTopic(topicId, `Created topic "${topicName}" — head over there.`);
+          await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topic.topicId, `Ready — send your first message to start.`));
+          await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, `Created topic "${topicName}" — head over there.`));
           console.log(`[telegram] Created topic "${topicName}" (${topic.topicId}) — session will spawn on first message`);
         } catch (err) {
           console.error(`[telegram] /new failed:`, err);
-          await telegram.sendToTopic(topicId, 'Couldn\'t create the topic. Try again in a moment.').catch(() => {});
+          await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, 'Couldn\'t create the topic. Try again in a moment.')).catch(() => {});
         }
       })();
       return;
@@ -2904,9 +2921,9 @@ export function wireTelegramRouting(
               if (cmd) {
                 const bindResult = await bindHubConversation(hubDeps, { ...cmd, autoPick: true }); // human "open this" → auto-pick most-recent, never 409
                 if (!bindResult.ok) {
-                  await telegram.sendToTopic(topicId, bindResult.status === 404
+                  await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, bindResult.status === 404
                     ? 'Nothing waiting in the hub to open right now.'
-                    : `Couldn't open that — ${bindResult.error}`).catch(() => { });
+                    : `Couldn't open that — ${bindResult.error}`)).catch(() => { });
                 }
                 // On success bindHubConversation already posted the hub confirmation.
                 return; // structural: never inject the command into a session
@@ -2937,7 +2954,7 @@ export function wireTelegramRouting(
           const handled = await fixCommandHandler(topicId, text);
           if (!handled) {
             // In the attention topic, but not a recognized fix command — show help.
-            await telegram.sendToTopic(topicId,
+            await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId,
               `I didn't recognize that command. Available fix commands:\n` +
               `• "fix auth" — Generate an API security token\n` +
               `• "fix lifeline" — Restart the crash-recovery system\n` +
@@ -2945,13 +2962,13 @@ export function wireTelegramRouting(
               `• "clean processes" — Kill external Claude processes\n` +
               `• "restart" — Restart the server\n` +
               `• "restart sessions" — Restart stuck sessions`
-            );
+            ));
           }
         } catch (err) {
           console.error(`[telegram] Fix command error:`, err);
-          await telegram.sendToTopic(topicId,
+          await withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId,
             `Something went wrong while trying to fix that: ${err instanceof Error ? err.message : String(err)}`
-          ).catch(() => {});
+          )).catch(() => {});
         }
       })();
       return;
@@ -3038,9 +3055,9 @@ export function wireTelegramRouting(
               });
             } else {
               // Noticer not yet wired — the deterministic adapter send is the floor.
-              telegram.sendToTopic(topicId,
-                "I got your message but couldn't confirm you as an approved sender, so it wasn't delivered. I've logged the details so this can be diagnosed.",
-              ).catch(() => {});
+              withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId,
+                "I got your message but couldn't confirm you as an approved sender, so it wasn't delivered. I've logged the details so this can be diagnosed."
+              )).catch(() => {});
             }
           }
           return;
@@ -3179,14 +3196,14 @@ export function wireTelegramRouting(
         );
         if (injected === false) {
           console.error(`[telegram→session] Injection FAILED for topic ${topicId} into ${targetSession}; not sending delivery confirmation`);
-          telegram.sendToTopic(topicId, `❌ Message could not be delivered to the session. Try sending it again in a moment.`).catch(() => {});
+          withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, `❌ Message could not be delivered to the session. Try sending it again in a moment.`)).catch(() => {});
           return;
         }
         if (injected) confirmLocalSessionPoolClaim();
         // Delivery confirmation — only when WE own polling. When lifeline owns
         // polling (--no-telegram / standby), it already sends its own confirmation.
         if (telegram.isPolling) {
-          telegram.sendToTopic(topicId, `✓ Delivered`).catch(() => {});
+          withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, `✓ Delivered`)).catch(() => {});
         }
         // Track for stall detection
         telegram.trackMessageInjection(topicId, targetSession, text);
@@ -3208,10 +3225,10 @@ export function wireTelegramRouting(
             const classification = classifySessionDeath(output, quotaState);
             if (classification.cause === 'quota_exhaustion' && classification.confidence !== 'low') {
               isQuotaDeath = true;
-              telegram.sendToTopic(topicId,
+              withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId,
                 `🔴 Session died — quota limit reached.\n${classification.detail}\n\n` +
                 `Use /switch-account to switch, /login to add an account, or reply again to force restart.`
-              ).catch(() => {});
+              )).catch(() => {});
             } else if (classification.cause === 'context_exhausted') {
               isContextExhausted = true;
               sendDeterministicTelegramNotice(telegram, 'session-lifecycle', topicId,
@@ -3242,7 +3259,7 @@ export function wireTelegramRouting(
             .then(() => confirmLocalSessionPoolClaim())
             .catch(err => {
               console.error(`[telegram→session] Context exhaustion respawn failed:`, err);
-              telegram.sendToTopic(topicId, `❌ Fresh session restart failed. Try sending your message again.`).catch(() => {});
+              withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, `❌ Fresh session restart failed. Try sending your message again.`)).catch(() => {});
             })
             .finally(() => {
               spawningTopics.clear(topicId, _spawnTokA);
@@ -3306,7 +3323,7 @@ export function wireTelegramRouting(
 
       // Guard: skip spawn if one is already in progress for this topic.
       if (spawningTopics.has(topicId)) {
-        telegram.sendToTopic(topicId, `Session is still starting up — please wait a moment.`).catch(() => {});
+        withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, `Session is still starting up — please wait a moment.`)).catch(() => {});
         console.log(`[telegram→session] Spawn already in progress for topic ${topicId} — skipping duplicate`);
         return;
       }
@@ -3423,6 +3440,13 @@ export function wireTelegramRouting(
         spawningTopics.clear(topicId, _spawnTokC);
       });
     }
+  };
+    const inboundId = msg.id.replace(/^tg-/, '');
+    const topicId = Number(msg.channel.identifier);
+    const bound = telegram.selectivity?.latestInbound(topicId) === inboundId;
+    const existing = notificationContext.getStore();
+    if (existing?.inboundMessageId === inboundId) return handler(msg);
+    return bound ? notificationContext.run({ origin: 'automated', category: msg.content.trim().startsWith('/') ? 'command-response' : 'cold-start-fallback', sourceContext: 'trusted-topic-ingress', inboundMessageId: inboundId }, () => handler(msg)) : handler(msg);
   };
 
   // ── Durable Inbound Message Queue: the drain's local-delivery tail ──
@@ -3628,7 +3652,7 @@ async function whatsappMemoryCheck(
   };
   const verdict = await _memoryInbound.onInbound(memoryFacts);
   if (verdict === 'deliver') return true;
-  const content = await _memoryInbound.refuse(memoryFacts, async (text) => {
+  const content = await _memoryInbound!.refuse(memoryFacts, async (text) => {
     await whatsapp.send({ userId: senderJid, content: text, channel: { type: 'whatsapp', identifier: senderJid } });
     return true;
   });
@@ -3850,7 +3874,7 @@ function wireIMessageRouting(
       };
       const verdict = await _memoryInbound.onInbound(memoryFacts);
       if (verdict === 'unavailable') {
-        await imessage.send({ userId: sender, content: await _memoryInbound.refuse(memoryFacts), channel: { type: 'imessage', identifier: sender } });
+        await imessage.send({ userId: sender, content: await _memoryInbound!.refuse(memoryFacts), channel: { type: 'imessage', identifier: sender } });
         return;
       }
     }
@@ -3976,9 +4000,9 @@ async function ensureAgentAttentionTopic(
     );
     state.set('agent-attention-topic', topic.topicId);
     if (!topic.reused) {
-      await telegram.sendToTopic(topic.topicId,
+      await withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topic.topicId,
         `This is your agent's direct line to you — for things that genuinely need your attention.\n\nBlocked tasks, critical errors, memory pressure, quota alerts, and anything where your agent can't proceed without you.`
-      );
+      ));
     }
     console.log(pc.green(`  Created Agent Attention topic: ${topic.topicId}`));
   } catch (err) {
@@ -4064,9 +4088,9 @@ async function ensureAgentUpdatesTopic(
     );
     state.set('agent-updates-topic', topic.topicId);
     if (!topic.reused) {
-      await telegram.sendToTopic(topic.topicId,
+      await withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topic.topicId,
         `This is where I'll post updates about new features, version changes, and improvements.\n\nNothing urgent — just keeping you in the loop about what's new.`
-      );
+      ));
     }
     console.log(pc.green(`  ${topic.reused ? 'Reusing' : 'Created'} Agent Updates topic: ${topic.topicId}`));
   } catch (err) {
@@ -7060,11 +7084,41 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
     const originTelegramConfig = config.messaging.find(m => m.type === 'telegram' && m.enabled);
     const originBotToken = (originTelegramConfig?.config as { token?: unknown } | undefined)?.token;
+    if (config.developmentAgent === true && config.projectName?.toLowerCase() === 'echo'
+      && liveConfig.get<boolean>('notifications.selectivity.echoDirectiveApplied', false) !== true) {
+      liveConfig.set('notifications.selectivity.enabled', true);
+      liveConfig.set('notifications.selectivity.dryRun', false);
+      liveConfig.set('notifications.selectivity.echoDirectiveApplied', true);
+    }
+    const selectivityGate = new NotificationSelectivityGate(config.stateDir, 'local', () => {
+      const declared = liveConfig.get<SelectivityConfig>('notifications.selectivity', {});
+      // Justin authorized Echo enforcement; fleet keeps its explicit operator flip.
+      const dryRun = declared.dryRun !== false;
+      return { ...declared, enabled: resolveDevAgentGate(declared.enabled, config), dryRun, legacy: { 'sentinel-escalation': liveConfig.get<boolean>('monitoring.sentinelTelegramEscalation', false) === true } };
+    });
+    selectivityGate.readPeers = topicId => readPeerNotifications({ config, resolvePeerUrls: () => _resolvePeerUrls?.() ?? [], recordRopeResult: _recordRopeResult }, new URLSearchParams({ topicId: String(topicId), unread: 'true', limit: '10' }));
+    selectivityGate.preferences = new NotificationPreferences({
+      root: config.stateDir, self: () => _meshSelfId ?? 'local',
+      peers: () => (_resolvePeerUrls?.() ?? []).map(peer => peer.machineId),
+      read: category => liveConfig.get<boolean>(`notifications.selectivity.push.categories.${category}`, false),
+      onMassChange: async () => { await telegram?.createAttentionItem({ id: 'notification-preference-churn', title: 'Notification preferences changed for several categories', summary: 'Review the current choices in the dashboard Notifications page.', category: 'system', priority: 'NORMAL', sourceContext: 'selectivity-preference-churn' }); },
+      apply: (category, enabled) => {
+        liveConfig.set(`notifications.selectivity.push.categories.${category}`, enabled);
+        const legacy = LEGACY_NOTIFICATION_GATES[category as keyof typeof LEGACY_NOTIFICATION_GATES];
+        if (legacy) liveConfig.set(legacy, enabled);
+        if (category === 'selectivity-digest') liveConfig.set('notifications.selectivity.digest.enabled', enabled);
+        if (liveConfig.get(`notifications.selectivity.push.categories.${category}`, !enabled) !== enabled) throw new Error('Notification preference was not saved');
+      },
+      send: async (peer, intent) => {
+        const result = await _identityMeshSend?.(peer, { type: 'notification-preference', intent }, 2000);
+        return result?.ok === true && (result.result as { ok?: boolean } | undefined)?.ok === true;
+      },
+    });
     let telegramOriginBoot: Awaited<ReturnType<typeof import('../messaging/telegram-origin/TelegramOriginBoot.js').bootTelegramOrigin>> | undefined;
     if (originTelegramConfig) {
       const { bootTelegramOrigin } = await import('../messaging/telegram-origin/TelegramOriginBoot.js')
         .catch(error => { releaseOriginLeaseRenewal(); throw error; });
-      telegramOriginBoot = await bootTelegramOrigin({ config, token: typeof originBotToken === 'string' && originBotToken ? originBotToken : undefined,
+      telegramOriginBoot = await bootTelegramOrigin({ config, notificationGate: selectivityGate, token: typeof originBotToken === 'string' && originBotToken ? originBotToken : undefined,
         onRecoveredMessage: entry => {
           telegram?.logRecoveredOriginMessage(entry);
           // A late acceptance is reported by the durable exception scan. Only
@@ -8763,6 +8817,25 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         config.stateDir,
       );
+      telegram.selectivity = selectivityGate;
+      selectivityGate.dashboardLink = () => tunnel?.getExternalUrl('/dashboard#/people/notifications') ?? null;
+      selectivityGate.pushDestination = category => {
+        const topicId = state.get<number>(category === 'agent-health' ? SYSTEM_TOPIC_STATE_KEYS.agentHealth : SYSTEM_TOPIC_STATE_KEYS.attention) ?? state.get<number>('agent-attention-topic');
+        const chatId = (telegramConfig?.config as { chatId?: string } | undefined)?.chatId;
+        return topicId && chatId ? { chatId, topicId } : null;
+      };
+      if (telegramOriginBoot) { selectivityGate.machineId = telegramOriginBoot.runtime.options.identity.originMachineId; selectivityGate.store.machineId = selectivityGate.machineId; }
+      selectivityGate.onSummary = selectivityGate.onStoreFailure = async (text, envelope) => {
+        const hub = state.get<number>('agent-attention-topic');
+        if (!hub) throw new Error('Attention topic unavailable for notification-store failure');
+        await telegram!.sendToTopic(hub, text, { envelope });
+      };
+      telegram.selectivityDelegated = !!telegramOriginBoot;
+      if (telegramOriginBoot) {
+        telegramOriginBoot.runtime.service.notificationGate = selectivityGate;
+        telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
+        telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
+      }
       armHolderForwardWait(telegram);
       _hubNoticeAdapter = telegram;
       console.log(pc.green(`  Telegram send-only mode (${isStandbyTelegram ? 'standby' : lifelineOwnsPolling ? 'lifeline owns polling (lease detected)' : 'lifeline owns polling'})`));
@@ -8879,6 +8952,25 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         config.stateDir,
       );
+      telegram.selectivity = selectivityGate;
+      selectivityGate.dashboardLink = () => tunnel?.getExternalUrl('/dashboard#/people/notifications') ?? null;
+      selectivityGate.pushDestination = category => {
+        const topicId = state.get<number>(category === 'agent-health' ? SYSTEM_TOPIC_STATE_KEYS.agentHealth : SYSTEM_TOPIC_STATE_KEYS.attention) ?? state.get<number>('agent-attention-topic');
+        const chatId = (telegramConfig?.config as { chatId?: string } | undefined)?.chatId;
+        return topicId && chatId ? { chatId, topicId } : null;
+      };
+      if (telegramOriginBoot) { selectivityGate.machineId = telegramOriginBoot.runtime.options.identity.originMachineId; selectivityGate.store.machineId = selectivityGate.machineId; }
+      selectivityGate.onSummary = selectivityGate.onStoreFailure = async (text, envelope) => {
+        const hub = state.get<number>('agent-attention-topic');
+        if (!hub) throw new Error('Attention topic unavailable for notification-store failure');
+        await telegram!.sendToTopic(hub, text, { envelope });
+      };
+      telegram.selectivityDelegated = !!telegramOriginBoot;
+      if (telegramOriginBoot) {
+        telegramOriginBoot.runtime.service.notificationGate = selectivityGate;
+        telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
+        telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
+      }
       armHolderForwardWait(telegram);
       _hubNoticeAdapter = telegram;
       telegram.intelligence = sharedIntelligence ?? null;
@@ -9005,11 +9097,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         const lifelineTopicId = telegram!.getLifelineTopicId();
         if (lifelineTopicId) {
           const userLabel = request.username ? `@${request.username}` : request.name;
-          await telegram!.sendToTopic(lifelineTopicId,
+          await withNotificationEnvelope(stampNotification(), async () => (telegram!)!.sendToTopic(lifelineTopicId,
             `\ud83d\udc64 **Join Request** from ${userLabel} (ID: ${request.telegramUserId})\n\n` +
             `To approve: \`/approve ${joinRequest.approvalCode}\`\n` +
-            `To deny: \`/deny ${joinRequest.approvalCode}\``,
-          ).catch(() => {});
+            `To deny: \`/deny ${joinRequest.approvalCode}\``
+          )).catch(() => {});
         }
       };
 
@@ -9018,7 +9110,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
         // Send consent disclosure first
         const consentText = buildCondensedConsentDisclosure(config.projectName);
-        await telegram!.sendToTopic(1, consentText).catch(() => {}); // General topic
+        await withNotificationEnvelope(stampNotification(), async () => (telegram!)!.sendToTopic(1, consentText)).catch(() => {}); // General topic
 
         // Build a basic profile (consent will be confirmed via follow-up reply)
         const profile = buildUserProfile({
@@ -9543,7 +9635,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               whatsappEventBus: whatsappAdapter.getEventBus() ?? undefined,
               telegramEventBus: telegram.getEventBus() ?? undefined,
               sendToTelegram: async (topicId, text) => {
-                await telegram.sendToTopic(topicId, text);
+                await withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, text));
               },
               sendToWhatsApp: async (jid, text) => {
                 await whatsappAdapter!.send({
@@ -10309,7 +10401,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const verdict = await _memoryInbound.onInbound(memoryFacts);
             if (verdict === 'unavailable') {
               // Posting to a user id opens the app's direct message with them.
-              const reply = await _memoryInbound.refuse(memoryFacts, slackUserId
+              const reply = await _memoryInbound!.refuse(memoryFacts, slackUserId
                 ? async (text) => { await slackAdapter!.sendToChannel(slackUserId, text); return true; }
                 : undefined);
               await slackAdapter!.sendToChannel(channelId, reply, replyThreadTs ? { thread_ts: replyThreadTs } : undefined);
@@ -11201,7 +11293,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         store: reapNoticeStore,
         sendToTopic: bindUnknownProducerTelegramSender(telegramOriginBoot?.runtime.service, 'reap-notice-drain', async (topicId, text) => {
           if (!telegram) throw new Error('telegram adapter not available');
-          await telegram.sendToTopic(topicId, text);
+          return withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, text));
         }),
         recordNotify: (e) => reapLog.recordNotify(e),
         emitAttention: async (item) => {
@@ -12164,7 +12256,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           }).catch((err: unknown) => console.warn('[codex-rate-limit-exit] attention delivery failed:', err));
           const topicId = telegram.getTopicForSession(session.tmuxSession);
           if (topicId != null) {
-            void telegram.sendToTopic(topicId, summary)
+            void withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, summary))
               .catch((err: unknown) => console.warn('[codex-rate-limit-exit] topic notice failed:', err));
           }
         }
@@ -12612,12 +12704,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (sessionName === info.tmuxSession) { topicId = tid; break; }
           }
           if (telegram && typeof topicId === 'number' && topicId > 0) {
-            void telegram.sendToTopic(
+            void withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(
               topicId,
               'Your last message never reached me — it ended up sitting unsent in my own input and '
               + 'I could not clear it. Nothing you sent was answered. Please send it again; I am '
-              + 'restarting that conversation on my side so the next one lands.',
-            );
+              + 'restarting that conversation on my side so the next one lands.'
+            ));
           }
         } catch { /* a failed notice must not take the sentinel down */ }
       },
@@ -12728,8 +12820,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         const key = `${notice.conversationId}\0${notice.deliveryId}\0${notice.kind}`;
         if (!telegram || !Number.isSafeInteger(topicId) || inboundNoticeInFlight.has(key)) return;
         inboundNoticeInFlight.add(key);
-        void telegram.sendToTopic(topicId,
-          'An older message remained stuck while a newer message took over. I permanently retired the older draft so it cannot replay out of order.')
+        void withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId,
+          'An older message remained stuck while a newer message took over. I permanently retired the older draft so it cannot replay out of order.'))
           .then(() => { sessionManager.markInboundDeliveryNoticeDelivered(notice); })
           .catch((err) => { console.error(`[codex-lifecycle] Supersession notice delivery failed: ${err instanceof Error ? err.message : String(err)}`); })
           .finally(() => { inboundNoticeInFlight.delete(key); });
@@ -12870,7 +12962,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     sessionManager.on('injectionReplyDetected', (info: { topicId: number; sessionName: string; text: string; injectedAt: number }) => {
       if (!telegram) return;
       console.log(`[injectionReplyDetected] Surfacing Gemini final pane reply from "${info.sessionName}" to topic ${info.topicId}`);
-      telegram.sendToTopic(info.topicId, info.text).catch((err: Error) => {
+      withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(info.topicId, info.text, { envelope: state.findSessionByTmux(info.sessionName)?.jobSlug ? { origin: 'automated', category: 'job-status', sourceContext: 'pane-job-result' } : verifiedReplyEnvelope('observed-pane-reply') })).catch((err: Error) => {
         console.error(`[injectionReplyDetected] Failed to send reply for topic ${info.topicId}:`, err.message);
       });
     });
@@ -13075,7 +13167,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
         if (telegram) {
           const topicId = telegram.getTopicForSession(event.sessionName);
-          if (topicId) telegram.sendToTopic(topicId, userMsg).catch(() => {});
+          if (topicId) withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, userMsg)).catch(() => {});
         }
         if (_slackAdapter) {
           const channelId = _slackAdapter.getChannelForSession(event.sessionName);
@@ -13097,7 +13189,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     let triageNurse: StallTriageNurse | undefined;
     if (config.monitoring.triage?.enabled && (telegram || _slackAdapter)) {
       const sendTriageNotice = triageOriginSender(telegramOriginBoot?.runtime.service, 'stall-triage-nurse',
-        (topicId, text) => telegram!.sendToTopic(topicId, text));
+        (topicId, text) => withNotificationEnvelope(stampNotification(), async () => (telegram!)!.sendToTopic(topicId, text)));
       triageNurse = new StallTriageNurse(
         {
           captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
@@ -13182,7 +13274,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     let triageOrchestrator: TriageOrchestrator | undefined;
     if (config.monitoring.triageOrchestrator?.enabled && (telegram || _slackAdapter)) {
       const sendTriageNotice = triageOriginSender(telegramOriginBoot?.runtime.service, 'triage-orchestrator',
-        (topicId, text) => telegram!.sendToTopic(topicId, text));
+        (topicId, text) => withNotificationEnvelope(stampNotification(), async () => (telegram!)!.sendToTopic(topicId, text)));
       triageOrchestrator = new TriageOrchestrator(
         {
           captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
@@ -13377,7 +13469,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           sendToTopic: async (topicId, message) => {
             const slackChId = slackProxyChannelMap.get(topicId);
             if (slackChId && _slackAdapter) { await _slackAdapter.sendToChannel(slackChId, message); return; }
-            if (telegram) await telegram.sendToTopic(topicId, message);
+            if (telegram) await withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, message));
           },
           captureSessionOutput: (name, lines) => {
             return sessionManager.captureOutput(name, lines);
@@ -13819,7 +13911,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const topicId = state.get<number>('agent-updates-topic') || 0;
         if (note && telegram && topicId) {
           try {
-            await telegram.sendToTopic(topicId, note);
+            await withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, note));
           } catch (err) {
             console.warn(`[restart-handshake] verified notification failed: ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -13836,7 +13928,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const topicId = state.get<number>('agent-updates-topic') || 0;
         if (telegram && topicId) {
           try {
-            await telegram.sendToTopic(topicId, msg);
+            await withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, msg));
           } catch (err) {
             console.warn(`[restart-handshake] failure notification failed: ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -17228,7 +17320,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               } catch { return false; /* @silent-fallback-ok — budget unreadable ⇒ line not sent (extra silence beats a loop) */ }
             },
             sendDeterministic: async (topicId: number, text: string) => {
-              try { await telegram?.sendToTopic(topicId, text); return true; }
+              try { await withNotificationEnvelope(stampNotification(), async () => telegram?.sendToTopic(topicId, text)); return true; }
               catch { return false; }
             },
             claimProxyNotice: (topicId: number) => {
@@ -18434,7 +18526,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               title: `Slow terminal server on "${nick}"`,
               summary:
                 'The shared terminal server has been slow to respond — sessions may feel sluggish. ' +
-                'Refreshing it (your call) usually clears it.',
+                'I am checking responsiveness and recovery options.',
               description:
                 `The shared tmux server on ${nick} has been responding slowly ` +
                 `(~${ep.ewmaMs}ms average over ${ep.consecutiveSlowCycles} corroborating cycles` +
@@ -19130,7 +19222,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         salienceGate: new (await import('../threadline/SalienceGate.js')).SalienceGate(),
         userMeantJudge: peerUserMeantJudge,
         sendToTopic: (topicId, text) => withThreadlineForwardedAuthor(telegramOriginBoot?.runtime.service, 'inbound', topicId, text,
-          () => telegram.sendToTopic(topicId, text)),
+          () => withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, text))),
         log: (m) => console.log(m),
       })
       : undefined;
@@ -19721,7 +19813,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         summarize: (prompt, authorCall) => sharedLlmQueue.enqueue('background', () => intelligence.evaluate(prompt, authorCall.options({ model: 'fast', attribution: { component: 'server:a2a-checkin' } }))),
         surface: async ({ topicId, body, originAuthor }) => {
           if (typeof topicId === 'number') await withThreadlineTelegramAuthor(telegramOriginBoot?.runtime.service,
-            'a2a-checkin', topicId, body, originAuthor, () => tg.sendToTopic(topicId, body));
+            'a2a-checkin', topicId, body, originAuthor, () => withNotificationEnvelope(stampNotification(), async () => (tg)!.sendToTopic(topicId, body)));
         },
         getHistory: async (threadId) => {
           try {
@@ -19798,7 +19890,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           try { return sessionManager.isSessionAlive(sessionName); } catch { return false; }
         },
         sendTelegramToTopic: telegram
-          ? (topicId: number, text: string) => telegram.sendToTopic(topicId, text)
+          ? (topicId: number, text: string) => withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, text))
           : null,
         getSessionForTopic: telegram
           ? (topicId: number) => telegram.getSessionForTopic(topicId)
@@ -21115,7 +21207,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           {
             notifyTopic: (topicId, sessionId, text) => {
               stopLog({ kind: 'escalated', sessionName: sessionId, detail: `${topicRef(topicId)}: ${text}` });
-              localTg.sendToTopic(Number(topicId), text).then(
+              withNotificationEnvelope(stampNotification(), async () => (localTg)!.sendToTopic(Number(topicId), text)).then(
                 () => stopLog({ kind: 'escalation-sent', sessionName: sessionId, detail: topicRef(topicId) }),
                 (err: unknown) => stopLog({ kind: 'notify-error', sessionName: sessionId, detail: `${topicRef(topicId)}: ${err instanceof Error ? err.message : String(err)}` }),
               );
@@ -22307,7 +22399,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           const hubTopicId = state.get<number>('agent-attention-topic') ?? 0;
           const slack = _slackAdapter;
           return deliverOperatorNotice({
-            telegram: telegram && hubTopicId ? async (t) => { await telegram.sendToTopic(hubTopicId, t); } : undefined,
+            telegram: telegram && hubTopicId ? async (t) => { await withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(hubTopicId, t)); } : undefined,
             slack: slack ? {
               attentionChannel: state.get<string>('slack-attention-channel') ?? null,
               readersOf: async (channelId) => {
@@ -22324,7 +22416,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         notifyPerson: async (sessionName, text) => {
           const topicId = topicForSession(sessionName);
-          if (topicId !== null) { await telegram!.sendToTopic(topicId, text); return true; }
+          if (topicId !== null) { await withNotificationEnvelope(stampNotification(), async () => (telegram!)!.sendToTopic(topicId, text)); return true; }
           const routingKey = _slackAdapter?.getChannelForSession(sessionName) ?? null;
           if (routingKey !== null) { await sendToSlackKey(routingKey, text); return true; }
           return false;
@@ -23880,6 +23972,16 @@ export async function startServer(options: StartOptions): Promise<void> {
             };
           },
           raiseAttention: makeAttentionPoster({ port: config.port, authToken: config.authToken ?? '' }),
+          selfHeal: async (session) => {
+            const match = /^topic-(\d+)$/.exec(session.name);
+            if (!match || !triageNurse) return { resolved: false, evidence: 'Liveness and transcript probes completed; diagnosis is waiting for the recovery authority.' };
+            const result = await triageNurse.triage(Number(match[1]), session.tmuxSession,
+              'Infrastructure observation: this session has not shown progress; inspect and recover it within existing safeguards.', Date.now(), 'manual');
+            const evidence = result.resolved ? 'Agent-owned recovery verified progress.'
+              : `Agent-owned diagnosis completed: ${result.actionsTaken.length} bounded treatment(s); ${result.fallbackReason ?? 'condition remains under observation'}.`;
+            featureEvidence.record('monitoring.staleBackstop', { kind: result.resolved ? 'outcome' : 'held', reason: evidence });
+            return { resolved: result.resolved, evidence };
+          },
           setLongIndeterminate: (id, isLong) => sessionManager.markLongIndeterminate(id, isLong),
           resolveTopicName: (session) => {
             // session.name is "topic-<id>"; resolve that topic to its human name
@@ -24047,7 +24149,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       _senderRejectionNoticer = new SenderRejectionNoticer({
         // @silent-fallback-ok: fire-and-forget notice send; the deterministic
         // delivery path + DeliveryFailureSentinel own retry, not this callsite.
-        sendTelegram: (topicId, text) => { telegram?.sendToTopic(topicId, text).catch(() => {}); },
+        sendTelegram: (topicId, text) => { withNotificationEnvelope(stampNotification(), async () => telegram?.sendToTopic(topicId, text)).catch(() => {}); },
         sendSlack: (slackKey, text) => {
           const channelId = slackKey.split(':')[0];
           // @silent-fallback-ok: fire-and-forget notice send (see sendTelegram).
@@ -27028,8 +27130,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               try {
                 targetName = meshIdMgr.getActiveMachines().find((m) => m.machineId === target)?.entry.nickname ?? null;
               } catch { /* @silent-fallback-ok — unresolved name is stated plainly ("another machine"), per Rule 7 */ }
-              void telegram
-                .sendToTopic(topicNum, movedMachinesMidStepNotice(targetName))
+              void withNotificationEnvelope(stampNotification(), async () => (telegram)!
+                .sendToTopic(topicNum, movedMachinesMidStepNotice(targetName)))
                 .catch(() => { /* @silent-fallback-ok — ONE best-effort notice; the audit row is the durable record */ });
             },
             transferDeliveryLedger: createInboundDeliveryTransferStep({
@@ -27420,6 +27522,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             // sinceSeq), incarnation-fenced, `learning`-field credential-redacted.
             // Registered always (lockstep with the union+RBAC edits); answers
             // 'disabled' until the replication gate constructs the layer.
+            'notification-preference': async (cmd, sender) => {
+              if (cmd.type !== 'notification-preference') return { ok: false };
+              return { ok: await selectivityGate.preferences!.receive(cmd.intent, String(sender)) };
+            },
             'preferences-sync': async (cmd) => {
               const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'preferences-sync' };
               if (!preferenceReplicaStore || !_preferencesManagerForSync) return { ok: false, reason: 'preferences-sync disabled' };
@@ -28276,7 +28382,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // topics, so it is not a single conversation's disclosure.
                 notify: (text) => {
                   const sysTopic = telegram?.getLifelineTopicId();
-                  if (sysTopic) void telegram!.sendToTopic(sysTopic, text).catch(() => {});
+                  if (sysTopic) void withNotificationEnvelope(stampNotification(), async () => (telegram!)!.sendToTopic(sysTopic, text)).catch(() => {});
                 },
                 // WS5.3 — a pull landing carried an escalation hint for a topic
                 // this machine now owns. Drive the re-admit through the LOCAL
@@ -28451,6 +28557,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   void telegram?.createAttentionItem({
                     id: `WS-GUARD-${notice.kind}-${notice.machineId}-${Date.now()}`,
                     title: notice.title,
+                    contextTopicIds: notice.contextTopicIds,
                     summary: notice.body,
                     category: 'agent-health',
                     priority: 'NORMAL',
@@ -28508,7 +28615,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                     void telegram?.createAttentionItem({
                       id: `CMT-MUT-EXPIRED-${rec.payload.opKey}`,
                       title: `A queued commitment ${rec.payload.op} was never applied`,
-                      summary: `The ${rec.payload.op} for ${rec.payload.origin}::${rec.payload.id} stayed queued for the full retention window (${rec.attempts} attempts) — its home machine never returned. Re-issue it once that machine is back.`,
+                      summary: `The ${rec.payload.op} for ${rec.payload.origin}::${rec.payload.id} stayed queued for the full retention window (${rec.attempts} attempts) — its home machine never returned. I will reconcile the intended change when that machine returns.`,
                       category: 'agent-health',
                       priority: 'NORMAL',
                       lane: 'agent-health',
@@ -29568,6 +29675,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             void _commitmentReFire?.(machineId).catch(() => {});
             // §5.3(e): a returning peer drains any pending topic-profile pulls
             // that were parked for-protocol or backed-off against it.
+            selectivityGate.preferences?.peerReturned(machineId);
             void _topicProfileCarrier?.onPeerOnline(machineId).catch(() => {});
           };
           const peerPresencePuller = new presenceMod.PeerPresencePuller({
@@ -29598,6 +29706,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 );
                 return presenceMod.narrowSessionStatusToPeerCapacity(res.result, journalAdvert);
               }
+              selectivityGate.preferences?.peerUnavailable(machineId);
               return null;
             },
             // trustworthy-machine-load A1/A4: failure shapes + peer sightings are
@@ -30160,7 +30269,14 @@ export async function startServer(options: StartOptions): Promise<void> {
                 await service.recordIntent(operation);
                 return operation;
               },
-              submit: (holder, operation) => originForwardMod.submitOriginToHolder({ operation, send: sendToHolder(holder), expectedOwner: holder }),
+              submit: async (holder, operation) => {
+                try { return await originForwardMod.submitOriginToHolder({ operation, send: sendToHolder(holder), expectedOwner: holder }); }
+                catch (error) {
+                  if (error instanceof QuietRecordedError) await runtime.store.recordOperationState({ operationId: operation.record.operationId,
+                    state: 'suppressed', holdReason: 'quiet-notification-recorded', holdDetail: { quietId: error.receipt.quietId } });
+                  throw error;
+                }
+              },
               hold: async (operation, detail) => {
                 // Admit locally (the row + sealed payload) then name the reason
                 // through the EXISTING operation-state writer; the recovery tick
@@ -30217,9 +30333,14 @@ export async function startServer(options: StartOptions): Promise<void> {
                 supersede: (operationId, next, detail) => runtime.store.supersedeWithAdmission({ operationId, admission: next.admission,
                   holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> }),
                 sendLocal: async detail => {
-                  const sent = await telegram.sendToTopic(detail.topicId, detail.text, { silent: detail.silent, kindMetadata: detail.kindMetadata,
-                    provenance: originForwardMod.recoveredForwardProvenance(detail, row.producerKind) });
-                  return { messageId: sent.messageId };
+                  const sent = await withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(detail.topicId, detail.text, { silent: detail.silent, kindMetadata: detail.kindMetadata,
+                    provenance: originForwardMod.recoveredForwardProvenance(detail, row.producerKind) }));
+                  if (sent.recorded) {
+                    await runtime.store.recordOperationState({ operationId: row.operationId, state: 'suppressed', holdReason: 'quiet-notification-recorded', holdDetail: { quietId: sent.quietId } });
+                    runtime.service.forgetTerminalHold(row.operationId);
+                    throw new QuietRecordedError(sent);
+                  }
+                  return { messageId: requireTelegramDelivery(sent).messageId };
                 },
               }, row, operation);
                 // §3.3 — a delivered/resolved forward may have emptied the topic's held set.
@@ -30783,6 +30904,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 sourceContext: item.sourceContext,
                 lane: item.lane,
                 healthKey: item.healthKey,
+                contextTopicIds: item.contextTopicIds,
               });
             },
             nicknameOf: _nickById,
@@ -32448,8 +32570,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             // any relayed (cross-machine) hop that DOES consult the window.
             const n = Number(topicKey);
             if (Number.isFinite(n) && telegram) {
-              void telegram
-                .sendToTopic(n, text, { kindMetadata: { allowDuplicate: meta.allowDuplicate } })
+              void withNotificationEnvelope(stampNotification(), async () => (telegram)!
+                .sendToTopic(n, text, { kindMetadata: { allowDuplicate: meta.allowDuplicate } }))
                 .catch(() => {});
             }
           },

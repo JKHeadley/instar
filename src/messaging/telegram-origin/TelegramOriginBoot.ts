@@ -1,3 +1,4 @@
+import { inboundTopicId } from '../telegramTopicSpace.js';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -51,6 +52,7 @@ export function originSnapshotFailureReason(error: unknown): string {
  */
 export async function bootTelegramOrigin(options: {
   config: InstarConfig;
+  notificationGate?: import('./TelegramOriginService.js').TelegramOriginService['notificationGate'];
   /** Compiled worker seam for production-factory lifecycle tests. */
   workerUrl?: URL;
   configWorkerUrl?: URL;
@@ -234,6 +236,9 @@ export async function bootTelegramOrigin(options: {
     holdsLease: options.holdsLease,
     noticeProcess: { role: options.noticeOwner ? 'owner' : 'client', socketPath: path.join(config.stateDir, 'origin-notice.sock') },
   }).catch(error => { noticePolicyObserver?.close(); configReader.close(); throw error; });
+  runtime.service.notificationGate = options.notificationGate ?? null;
+  runtime.service.notificationTopicId = (chatId, topicId) => inboundTopicId(conversationChatId(chatId), topicId === null ? 1 : Number(topicId), { mainChatId: snapshot?.chatId, issuesChatId: snapshot?.issuesChatId });
+
   const close = async () => { closed = true; if (timer) clearTimeout(timer); if (configTimer) clearTimeout(configTimer);
     noticePolicyObserver?.close(); configReader.close();
     await Promise.all([detectorCanary.close(), nativeCanary.close()]); await runtime.close(); };

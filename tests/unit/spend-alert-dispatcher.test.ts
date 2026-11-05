@@ -265,3 +265,13 @@ describe('SpendAlertResolver — rung 2 pool half (FD-6)', () => {
     expect(persisted).toBe(500);
   });
 });
+
+
+describe('quiet spend receipt', () => {
+  it('returns recorded separately and does not invoke a lifeline fallback', async () => {
+    let calls = 0;
+    const { channel } = mkChannel({ sendToTopic: async () => { calls++; return { delivered: false, recorded: true, quietId: 'quiet-id' }; } });
+    expect(await channel.deliver('routine spend report', false)).toBe('quiet-recorded');
+    expect(calls).toBe(1);
+  });
+});

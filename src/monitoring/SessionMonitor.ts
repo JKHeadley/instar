@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/monitoring/SessionMonitor.ts');
 /**
  * SessionMonitor — Proactive session health monitoring.
  *
@@ -432,9 +434,9 @@ export class SessionMonitor extends EventEmitter {
             return;
           }
           snap.status = 'dead';
-          await this.deps.sendToTopic(topicId,
+          await withNotificationEnvelope(stampNotification(), async () => (this.deps)!.sendToTopic(topicId,
             `Session hit "conversation too long" and can't continue. Send a new message to start a fresh session with your recent history.`
-          ).catch(() => {});
+          )).catch(() => {});
           this.emit('monitor:user-notified', { topicId, message: 'context_exhausted' });
           this.ctxNotifiedSessions.set(topicId, { sessionName, at: now });
           this.persistCtxNotified();
@@ -528,9 +530,9 @@ export class SessionMonitor extends EventEmitter {
         // If triage didn't resolve or isn't available, notify user
         if (userExpectsResponse) {
           let delivered = true;
-          await this.deps.sendToTopic(topicId,
+          await withNotificationEnvelope(stampNotification(), async () => (this.deps)!.sendToTopic(topicId,
             `The session has stopped. Send a new message to start a fresh session with full conversation context.`
-          ).catch(() => { delivered = false; });
+          )).catch(() => { delivered = false; });
           this.emit('monitor:user-notified', { topicId, message: 'session_dead' });
           // Record only a notice that went out: a failed send must stay
           // retryable (after the cooldown or a restart), never marked as told.
@@ -567,7 +569,7 @@ export class SessionMonitor extends EventEmitter {
         // For idle sessions, only notify if user is actively waiting
         if (userExpectsResponse) {
           const msg = `Session has been idle for ${idleMinutes} minutes. Checking if it needs attention...`;
-          await this.deps.sendToTopic(topicId, msg).catch(() => {});
+          await withNotificationEnvelope(stampNotification(), async () => (this.deps)!.sendToTopic(topicId, msg)).catch(() => {});
           this.emit('monitor:user-notified', { topicId, message: 'session_idle' });
 
           if (this.deps.triggerTriage) {

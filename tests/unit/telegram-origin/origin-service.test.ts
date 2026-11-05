@@ -1,3 +1,4 @@
+import { NotificationSelectivityGate, QuietRecordedError } from '../../../src/messaging/NotificationSelectivityGate.js';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHash, generateKeyPairSync } from 'node:crypto';
 import { OriginStore } from '../../../src/messaging/telegram-origin/OriginStore.js';
@@ -37,6 +38,35 @@ async function harness(hidden = false) {
   return { stateDir, store, service, input, network, send, authorize, onHold, spoolEvidence };
 }
 describe('origin service durable delivery', () => {
+  it('terminally records quiet automation and replays its receipt after worker restart', async () => {
+    const h = await harness();
+    const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));
+    h.service.notificationGate = gate;
+    const prepared = vi.spyOn(h.service, 'prepareBot');
+    const send = (service: TelegramOriginService) => {
+      const token = service.issueAutomationReply('telegram-server', 42, { text: h.input.params.text }, undefined, 'quiet:one');
+      return service.runWithAutomationReply(token, 42, { text: h.input.params.text }, () => service.sendBot(h.input, h.network));
+    };
+    let quietId: string | undefined;
+    try { await send(h.service); throw new Error('Expected a quiet receipt'); }
+    catch (error) { expect(error).toBeInstanceOf(QuietRecordedError); quietId = (error as QuietRecordedError).receipt.quietId; }
+    expect(h.network).not.toHaveBeenCalled();
+    const rows = (await h.store.listOrigins()).records;
+    const row = await h.store.getOrigin(rows[0].record.originId);
+    expect(row?.operation).toMatchObject({ state: 'suppressed', holdReason: 'quiet-notification-recorded', holdDetail: { quietId } });
+    expect(await h.store.recoverableAdmissions()).toEqual([]);
+    const route = vi.spyOn(gate, 'route').mockRejectedValueOnce(new Error('Must not reclassify terminal quiet receipt'));
+    await expect(h.service.executePreparedBot(prepared.mock.results[0].value, h.network)).rejects.toBeInstanceOf(QuietRecordedError);
+    expect(route).not.toHaveBeenCalled(); route.mockRestore();
+    await h.store.close();
+    const store = await OriginStore.open({ stateDir: h.stateDir, agentId: 'echo' }, worker); stores.push(store);
+    const restarted = new TelegramOriginService({ ...h.service.options, store, ownerBootId: 'boot-2' });
+    restarted.notificationGate = gate;
+    await expect(send(restarted)).rejects.toMatchObject({ receipt: { recorded: true, quietId } });
+    expect(h.network).not.toHaveBeenCalled();
+    await gate.close();
+  });
+
   it('replays an accepted logical automation send after worker restart without preparing new delivery custody', async () => {
     const h = await harness();
     const send = (service: TelegramOriginService, logicalId: string, input = h.input) => {

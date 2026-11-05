@@ -1,3 +1,4 @@
+import { QuietRecordedError } from '../messaging/NotificationSelectivityGate.js';
 import type { Router, Request, Response } from 'express';
 import type { TelegramOriginRuntime } from '../messaging/telegram-origin/TelegramOriginRuntime.js';
 import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
@@ -93,6 +94,7 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
       }));
       res.json(result);
     } catch (error) {
+      if (error instanceof QuietRecordedError) { res.json({ ok: true, ...error.receipt }); return; }
       if (error instanceof TelegramOriginHoldError) sendOriginHoldResponse(res, error);
       else res.status(409).json({ error: 'telegram-browser-held', reason: 'browser-preparation-or-recording-unavailable', retryable: false });
     }

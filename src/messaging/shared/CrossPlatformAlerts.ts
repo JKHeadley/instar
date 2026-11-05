@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../notificationStampers.js';
+const stampNotification = notificationStamper('src/messaging/shared/CrossPlatformAlerts.ts');
 /**
  * CrossPlatformAlerts — Bridges messaging adapters for disconnect alerts
  * and cross-platform attention routing.
@@ -81,7 +83,7 @@ export class CrossPlatformAlerts {
     if (!topicId) return;
 
     try {
-      await this.config.telegram.sendToTopic(topicId, `[WhatsApp] ${message}`);
+      await withNotificationEnvelope(stampNotification(), async () => (this.config.telegram)!.sendToTopic(topicId, `[WhatsApp] ${message}`));
       this.recordAlert('telegram', message);
     } catch (err) {
       console.error(`[cross-platform] Failed to alert on Telegram: ${err}`);

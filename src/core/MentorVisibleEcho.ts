@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/core/MentorVisibleEcho.ts');
 export const TELEGRAM_TEXT_LIMIT = 4096;
 export const MENTOR_ECHO_MAX_CHUNKS = 3;
 export const MENTOR_ECHO_SHORTENED = '…shortened for chat; full prompt was delivered';
@@ -82,7 +84,7 @@ export async function sendMentorVisibleEcho(body: string, opts: MentorVisibleEch
   let landed = 0;
   for (let i = 0; i < plan.messages.length; i += 1) {
     try {
-      await opts.bot.sendToTopic(opts.topicId, plan.messages[i]);
+      await withNotificationEnvelope(stampNotification(), async () => (opts.bot)!.sendToTopic(opts.topicId!, plan.messages[i]));
       landed += 1;
     } catch (err) {
       const reason = `chunk ${i + 1}/${plan.messages.length} failed after ${landed} landed: ${err instanceof Error ? err.message : String(err)}`;

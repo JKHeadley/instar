@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/core/SpendAlertResolver.ts');
 /**
  * SpendAlertResolver — the MINIMAL topic-resolver foundation + the two
  * Increment-B alert kinds (stale-price / observed-drift) of the Routing Control
@@ -156,7 +158,7 @@ export class SpendAlertResolver {
     const topicId = await this.resolveTopicId();
     if (topicId !== undefined) {
       try {
-        if (await this.d.sendToTopic(topicId, alert.text)) {
+        if (await withNotificationEnvelope(stampNotification(), async () => (this.d)!.sendToTopic(topicId, alert.text))) {
           this.latched.set(alert.dedupeKey, this.now());
           this.d.audit?.({ decision: 'sent', topicId, kind: alert.kind, dedupeKey: alert.dedupeKey });
           return 'sent';
@@ -170,7 +172,7 @@ export class SpendAlertResolver {
     const lifeline = this.d.lifelineTopicId();
     if (lifeline !== undefined) {
       try {
-        if (await this.d.sendToTopic(lifeline, alert.text)) {
+        if (await withNotificationEnvelope(stampNotification(), async () => (this.d)!.sendToTopic(lifeline, alert.text))) {
           this.latched.set(alert.dedupeKey, this.now());
           this.d.audit?.({ decision: 'sent-lifeline', kind: alert.kind, dedupeKey: alert.dedupeKey });
           return 'sent-lifeline';

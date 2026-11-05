@@ -1,3 +1,10 @@
+import { isNotificationCategory } from '../messaging/notificationCategories.js';
+import { QuietRecordedError, notificationContext, isVerifiedReplyEnvelope } from '../messaging/NotificationSelectivityGate.js';
+import { LiveConfig } from '../config/LiveConfig.js';
+import type { SelectivityConfig } from '../messaging/NotificationSelectivityGate.js';
+import { notificationStamper, responseNotificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/lifeline/TelegramLifeline.ts');
+const stampResponse = responseNotificationStamper('src/lifeline/TelegramLifeline.ts');
 import { withDeterministicOrigin } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 import { checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
 import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
@@ -97,7 +104,7 @@ import type { FormatMode } from '../messaging/TelegramMarkdownFormatter.js';
 import { recordFormatFallbackPlainRetry } from '../messaging/telegramFormatMetrics.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from '../messaging/invisible-payload.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
-import { normalizeInboundThread, toWireParams } from '../messaging/telegramTopicSpace.js';
+import { inboundTopicId, normalizeInboundThread, toWireParams } from '../messaging/telegramTopicSpace.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
 
@@ -291,17 +298,17 @@ export class TelegramLifeline {
     });
 
     this.supervisor.on('debugRestartRequested', (request: { fixDescription: string; requestedBy: string }) => {
-      this.sendToTopic(this.lifelineTopicId ?? 1,
+      withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(this.lifelineTopicId ?? 1,
         `🔧 Doctor session applied fix: "${request.fixDescription}"\n` +
         `(Note: fix description is self-reported by the diagnostic session)\n` +
         `Restarting server...`
-      ).catch(() => {});
+      )).catch(() => {});
     });
 
     this.supervisor.on('debugRestartSkipped', (info: { fixDescription: string; reason: string }) => {
-      this.sendToTopic(this.lifelineTopicId ?? 1,
+      withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(this.lifelineTopicId ?? 1,
         `Server already recovered. Doctor session fix noted: "${info.fixDescription}"`
-      ).catch(() => {});
+      )).catch(() => {});
     });
 
     this.loadOffset();
@@ -410,7 +417,37 @@ export class TelegramLifeline {
     }
 
     const { bootTelegramOrigin } = await import('../messaging/telegram-origin/TelegramOriginBoot.js');
-    this.telegramOriginBoot = await bootTelegramOrigin({ config: this.projectConfig, token: this.config.token,
+    const notificationLiveConfig = new LiveConfig(this.projectConfig.stateDir);
+    const lifelineNotificationGate: NonNullable<import('../messaging/telegram-origin/TelegramOriginService.js').TelegramOriginService['notificationGate']> = {
+      markAnswered: () => {},
+      route: async (topicId, _text, envelope, operationId) => {
+        if (isVerifiedReplyEnvelope(envelope)) return { verdict: { decision: 'deliver', reason: 'verified-reply-floor', category: envelope!.category, dryRun: false } };
+        const declared = notificationLiveConfig.get<SelectivityConfig>('notifications.selectivity', {});
+        if (!resolveDevAgentGate(declared.enabled, this.projectConfig) || declared.dryRun !== false) return {
+          verdict: { decision: 'deliver', reason: 'lifeline-observation', category: envelope?.category ?? 'uncategorized', dryRun: true },
+        };
+        const inbound = envelope?.inboundMessageId;
+        if (inbound && Date.now() - (this.notificationInbound.get(topicId)?.get(inbound) ?? 0) <= 900000
+          && ['command-response', 'cold-start-fallback', 'message-loss-notice'].includes(envelope?.category ?? '')) return {
+          verdict: { decision: 'deliver', reason: 'lifeline-inbound-floor', category: envelope!.category, dryRun: false },
+        };
+        const secret = this.ingressSecret.get();
+        if (!operationId || !secret) throw new TelegramOriginHoldError('notification-server-unavailable');
+        try {
+          const response = await fetch(`http://127.0.0.1:${this.projectConfig.port}/notifications/internal/classify`, {
+            method: 'POST', headers: { Authorization: `Bearer ${this.projectConfig.authToken}`, 'Content-Type': 'application/json', [LIFELINE_SECRET_HEADER]: secret },
+            body: JSON.stringify({ operationId }), signal: AbortSignal.timeout(2000),
+          });
+          if (!response.ok) throw new Error('Notification authority unavailable');
+          const result = await response.json() as Awaited<ReturnType<import('../messaging/NotificationSelectivityGate.js').NotificationSelectivityGate['route']>>;
+          if (!result?.verdict || !['deliver', 'deliver-push', 'record'].includes(result.verdict.decision) || !isNotificationCategory(result.verdict.category) || typeof result.verdict.dryRun !== 'boolean'
+            || result.verdict.decision === 'record' && !result.verdict.dryRun && (result.receipt?.recorded !== true || result.receipt.delivered !== false || typeof result.receipt.quietId !== 'string' || !result.receipt.quietId)) throw new Error('Invalid notification verdict');
+          return result;
+        } catch { throw new TelegramOriginHoldError('notification-server-unavailable', operationId); }
+      },
+    };
+
+    this.telegramOriginBoot = await bootTelegramOrigin({ config: this.projectConfig, notificationGate: lifelineNotificationGate, token: this.config.token,
       noticeOwner: true,
       skipRetention: true,
       diagnosticMode: 'delegate',
@@ -1228,7 +1265,22 @@ export class TelegramLifeline {
     this.pollTimeout = setTimeout(() => this.poll(loopId), this.pollBackoffMs);
   }
 
+  private notificationInbound = new Map<number, Map<string, number>>();
   private async processUpdate(update: TelegramUpdate): Promise<void> {
+    const msg = update.message;
+    const configured = this.projectConfig.messaging?.find(item => item.type === 'telegram')?.config;
+    const authorized = configured?.authorizedUserIds as number[] | undefined;
+    if (msg?.from && (!authorized?.length || authorized.includes(msg.from.id))) {
+      const topic = inboundTopicId(String(msg.chat.id), msg.message_thread_id ?? 1, { mainChatId: this.config.chatId, issuesChatId: this.config.issuesChatId });
+      const inbound = this.notificationInbound.get(topic) ?? new Map<string, number>();
+      inbound.set(String(msg.message_id), Number.isFinite(msg.date) ? Math.min(Date.now(), msg.date * 1000) : 0); while (inbound.size > 20) inbound.delete(inbound.keys().next().value!);
+      this.notificationInbound.set(topic, inbound);
+      while (this.notificationInbound.size > 1000) this.notificationInbound.delete(this.notificationInbound.keys().next().value!);
+      return notificationContext.run({ origin: 'automated', category: 'message-loss-notice', sourceContext: 'lifeline-inbound', inboundMessageId: String(msg.message_id) }, () => this.processUpdateAdmitted(update));
+    }
+    return this.processUpdateAdmitted(update);
+  }
+  private async processUpdateAdmitted(update: TelegramUpdate): Promise<void> {
     // Agent hard-sleep wake trigger. ANY inbound update is user activity — so write
     // the wake-request FIRST, before the supervisor.healthy gate below. A slept
     // server is NOT healthy, so without this the message would take the "server
@@ -1657,11 +1709,11 @@ export class TelegramLifeline {
         // "Sent" is recorded only once the send succeeded; a failure leaves it
         // unset, so the next refusal (the backoff cadence) tries again.
         this.secretRefusalNoticeInFlight = true;
-        this.sendToTopic(topic,
+        withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topic,
           'Heads up: your Telegram messages are reaching my lifeline but my server is not accepting them, ' +
           'because the two no longer agree on their shared key. Your messages are NOT lost — they are saved ' +
-          'and will be delivered as soon as this is fixed. Sending /lifeline restart usually resolves it.',
-        ).then(() => {
+          'and will be delivered as soon as this is fixed. Sending /lifeline restart usually resolves it.'
+        )).then(() => {
           this.secretRefusalNoticeSent = true;
         }).finally(() => {
           this.secretRefusalNoticeInFlight = false;
@@ -2022,7 +2074,7 @@ export class TelegramLifeline {
       const alertTopicId = this.resolveUpdatesAlertTopic();
       if (alertTopicId !== null) {
         // Best-effort fire-and-forget — never block the forward path.
-        this.sendToTopic(alertTopicId, alertBody).catch((sendErr) => {
+        withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(alertTopicId, alertBody)).catch((sendErr) => {
           console.warn(
             `[Lifeline] failed to send version-skew alert to topic ${alertTopicId} ` +
             `(inbound was ${inboundTopicId}): ` +
@@ -2145,7 +2197,7 @@ export class TelegramLifeline {
           lines.push(`  Last crash: ${status.lastCrashOutput.split('\n').pop()?.slice(0, 100) ?? 'unknown'}`);
         }
       }
-      await this.sendToTopic(topicId, lines.join('\n'));
+      await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, lines.join('\n')));
       return;
     }
 
@@ -2178,7 +2230,7 @@ export class TelegramLifeline {
       const lines = messages.map((m, i) =>
         `${i + 1}. [${m.fromFirstName}] ${m.text.slice(0, 60)}${m.text.length > 60 ? '...' : ''}`
       );
-      await this.sendToTopic(topicId, `Queued messages (${messages.length}):\n${lines.join('\n')}`);
+      await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, `Queued messages (${messages.length}):\n${lines.join('\n')}`));
       return;
     }
 
@@ -2305,7 +2357,7 @@ export class TelegramLifeline {
             text: msg.text,
             retryCount: decision.poisonFailures + decision.transientFailures,
             reason: decision.dropReason ?? 'Message could not be delivered',
-            sendToTopic: (topicId, body) => this.sendToTopic(topicId, body),
+            sendToTopic: (topicId, body) => withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, body)),
           });
         } catch (err) {
           // notifyMessageDropped only throws on true disk failure after the notice/report paths
@@ -2464,7 +2516,7 @@ export class TelegramLifeline {
     this.suppressedServerDownCount = 0;
     this.saveRateLimitState();
 
-    await this.sendToTopic(topicId, message).catch(() => {});
+    await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, message)).catch(() => {});
   }
 
   private async notifyCircuitBroken(totalFailures: number, lastCrashOutput: string): Promise<void> {
@@ -2483,7 +2535,7 @@ export class TelegramLifeline {
       `  stderr: ${stateDir}/logs/server-stderr.log\n` +
       `  stdout: ${stateDir}/logs/server-stdout.log`;
 
-    await this.sendToTopic(topicId,
+    await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId,
       `⚠️ CIRCUIT BREAKER TRIPPED\n\n` +
       `Server failed ${totalFailures} times in the last hour. ` +
       `Auto-restart has been disabled to prevent resource waste.` +
@@ -2492,7 +2544,7 @@ export class TelegramLifeline {
       debugCommand +
       `\n\nTo retry: /lifeline reset (resets circuit breaker and restarts)\n` +
       `You'll be notified when the server recovers.`
-    ).catch(() => {});
+    )).catch(() => {});
   }
 
   /**
@@ -2556,12 +2608,12 @@ export class TelegramLifeline {
       );
     } catch (err) {
       const stateDir = this.projectConfig.stateDir;
-      await this.sendToTopic(topicId,
+      await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId,
         `Failed to start diagnostic session: ${err}\n\n` +
         `You can diagnose manually:\n` +
         `  cd ${this.projectConfig.projectDir}\n` +
         `  claude "Read the crash logs at ${stateDir}/logs/ and diagnose the server failure"`
-      );
+      ));
     }
   }
 
@@ -3173,7 +3225,7 @@ export class TelegramLifeline {
    * retain the ordinary unknown-source contract. */
   private sendFixedNotice(topicId: number, text: string): Promise<void> {
     return withDeterministicOrigin(this.telegramOriginBoot?.runtime.service, 'telegram-lifeline',
-      () => this.sendToTopic(topicId, text));
+      () => withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, text)));
   }
 
   private async sendToTopic(topicId: number, text: string): Promise<void> {
@@ -3188,6 +3240,7 @@ export class TelegramLifeline {
     try {
       await this.apiCall('sendMessage', { ...params, parse_mode: 'Markdown' });
     } catch (firstErr) {
+      if (firstErr instanceof QuietRecordedError) return;
       if (firstErr instanceof TelegramOriginHoldError) {
         console.warn(`[Lifeline] origin held topic ${topicId}: ${firstErr.reason}`);
         return;

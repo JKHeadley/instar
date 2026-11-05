@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/core/ScopeAccretionRatifier.ts');
 /**
  * ScopeAccretionRatifier — the conversational ratification path
  * (proposal → server-authored enumeration → confirmation), consumed ONLY at
@@ -208,10 +210,10 @@ export class ScopeAccretionRatifier {
           });
         });
         this.deps.recordMetric?.('fired');
-        await this.deps.sendToTopic(
+        await withNotificationEnvelope(stampNotification(), async () => (this.deps)!.sendToTopic(
           evt.topicId,
-          `Deferral ratified for ${enumRec.artifacts.length} artifact${enumRec.artifacts.length === 1 ? '' : 's'} — the completion gate no longer holds on them.`,
-        ).catch(() => { /* best-effort ack */ });
+          `Deferral ratified for ${enumRec.artifacts.length} artifact${enumRec.artifacts.length === 1 ? '' : 's'} — the completion gate no longer holds on them.`
+        )).catch(() => { /* best-effort ack */ });
         return;
       }
     }
@@ -261,7 +263,7 @@ export class ScopeAccretionRatifier {
       'Reply to THIS message with yes/approve, or use the dashboard.',
       ...(link ? [link] : []),
     ];
-    const sent = await this.deps.sendToTopic(evt.topicId, lines.join('\n'));
+    const sent = await withNotificationEnvelope(stampNotification(), async () => (this.deps)!.sendToTopic(evt.topicId, lines.join('\n')));
     this.deps.store.update(topicId, rec.runId, (r) => {
       r.enumerations.push({ setHash, messageId: sent.messageId, at: new Date().toISOString(), artifacts: paths });
       if (r.enumerations.length > 20) r.enumerations = r.enumerations.slice(-20);

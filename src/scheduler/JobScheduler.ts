@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/scheduler/JobScheduler.ts');
 import { verifyImportedPortableJob, recordImportedPortableIntegrityFailure } from '../core/JobPortableIntegrity.js';
 /**
  * Job Scheduler — cron-based job execution engine.
@@ -1812,7 +1814,7 @@ export class JobScheduler {
       const names = waiting.sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]).map(j => j.name);
       const notice = jobCapacityNotice(names, ageMs);
       const hub = this.state.get<number>('agent-attention-topic');
-      if (this.telegram && hub) await this.telegram.sendToTopic(hub, notice);
+      if (this.telegram && hub) await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(hub, notice));
       else if (!this.telegram && this.messenger) await this.messenger.send({ userId: 'system', content: notice });
       else return;
       const current = this.state.get<JobCapacityEpisode>('job-capacity-episode');
@@ -3385,7 +3387,7 @@ export class JobScheduler {
     // Send to the job's dedicated topic if available, otherwise fall back to generic messenger
     if (this.telegram && job.topicId) {
       try {
-        await this.telegram.sendToTopic(job.topicId, summary);
+        await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(job.topicId!, summary));
       } catch (err) {
         console.error(`[scheduler] Failed to send to job topic ${job.topicId}: ${err}`);
         // The original outbox retains custody, including uncertain acceptance.
@@ -3400,7 +3402,7 @@ export class JobScheduler {
           );
           job.topicId = newTopic.topicId;
           this.saveJobTopicMapping(job.slug, newTopic.topicId);
-          await this.telegram.sendToTopic(newTopic.topicId, summary);
+          await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(newTopic.topicId, summary));
         } catch (recreateErr) {
           console.error(`[scheduler] Failed to recreate topic for ${job.slug}: ${recreateErr}`);
         }
@@ -3481,9 +3483,9 @@ export class JobScheduler {
         job.topicId = topic.topicId;
         mappings[job.slug] = topic.topicId;
 
-        await this.telegram.sendToTopic(topic.topicId,
+        await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(topic.topicId,
           `*${job.name}*\n${job.description}\n\nSchedule: \`${job.schedule}\`\nPriority: ${job.priority}\n\nThis topic is the home for this job. Reports, status updates, and errors will appear here.`
-        );
+        ));
       } catch (err) {
         console.error(`[scheduler] Failed to create topic for job ${job.slug}: ${err}`);
       }
@@ -3702,7 +3704,7 @@ export class JobScheduler {
 
       const noticeTopic = job.topicId ?? this.state.get<number>('agent-attention-topic');
       const send = this.telegram && noticeTopic
-        ? () => this.telegram!.sendToTopic(noticeTopic, alertText).then(() => undefined)
+        ? () => withNotificationEnvelope(stampNotification(), async () => (this.telegram!)!.sendToTopic(noticeTopic, alertText)).then(() => undefined)
         : !this.telegram && this.messenger
           ? () => this.messenger!.send({ userId: 'system', content: alertText }).then(() => undefined)
           : null;
@@ -3781,7 +3783,7 @@ export class JobScheduler {
     const topicId = job.topicId ?? this.state.get<number>('agent-attention-topic');
     const message = `Scheduled job ${job.name} is not running as expected: ${detail}. Check its gate, machine scope and last successful run.`;
     const send = this.telegram && topicId
-      ? () => this.telegram!.sendToTopic(topicId, message)
+      ? () => withNotificationEnvelope(stampNotification(), async () => (this.telegram!)!.sendToTopic(topicId!, message))
       : !this.telegram && this.messenger
         ? () => this.messenger!.send({ userId: 'system', content: message })
         : null;
@@ -3925,9 +3927,9 @@ export class JobScheduler {
     const job = this.jobs.find(row => row.slug === slug);
     if (!job) return;
     const key = `promotion-catch-up-alert-${slug}`;
-    const prior = this.state.get<{ promotionId: string; attemptAt: number; deliveredAt?: number }>(key);
+    const prior = this.state.get<{ promotionId: string; attemptAt: number; deliveredAt?: number; recordedAt?: number }>(key);
     const now = Date.now();
-    if (prior?.promotionId === promotionId && now - prior.attemptAt < (prior.deliveredAt ? 24 * 60 * 60_000 : 60 * 60_000)) return;
+    if (prior?.promotionId === promotionId && now - prior.attemptAt < (prior.deliveredAt || prior.recordedAt ? 24 * 60 * 60_000 : 60 * 60_000)) return;
     if (this.catchUpAlertsInFlight.has(key)) return;
     const summary = `Job ${slug} has a missed or uncertain occurrence after a lease takeover. Review it before choosing a manual run.`;
     const send = this.telegram
@@ -3942,15 +3944,15 @@ export class JobScheduler {
     this.catchUpAlertsInFlight.add(key);
     void Promise.resolve().then(async () => {
       if (this.state.readOnly || this.paused) return false;
-      await send();
-      return true;
+      const outcome = await send();
+      return outcome && typeof outcome === 'object' && 'hubHeld' in outcome && outcome.hubHeld === true ? 'recorded' : 'delivered';
     }).then(delivered => {
       if (!delivered || this.state.readOnly || this.paused) return;
       const current = this.state.get<{ promotionId: string; attemptAt: number }>(key);
       const jobState = this.state.getJobState(slug);
       if (current?.promotionId === promotionId && this.promotionCatchUpStore.hasUnresolved(slug,
         jobState?.lastResult === 'success' ? jobState.lastRun ?? undefined : undefined)) {
-        this.state.set(key, { ...current, deliveredAt: Date.now() });
+        this.state.set(key, { ...current, ...(delivered === 'recorded' ? { recordedAt: Date.now() } : { deliveredAt: Date.now() }) });
       }
     }).catch(error => console.warn(`[scheduler] Catch-up attention failed for ${slug}:`, error))
       .finally(() => this.catchUpAlertsInFlight.delete(key));
@@ -4144,7 +4146,7 @@ export class JobScheduler {
     if (this.telegram && topicId) {
       const formatted = reflector.formatInsight(insight);
       try {
-        await this.telegram.sendToTopic(topicId, formatted);
+        await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(topicId!, formatted));
       } catch {
         // Topic may not exist — not critical
       }

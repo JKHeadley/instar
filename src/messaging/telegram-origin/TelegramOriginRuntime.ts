@@ -1,3 +1,4 @@
+import { QuietRecordedError } from '../NotificationSelectivityGate.js';
 import { randomUUID } from 'node:crypto';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
 import { OriginStore } from './OriginStore.js';
@@ -535,6 +536,7 @@ export class TelegramOriginRuntime {
             processed++;
             await candidates[0].executor.execute(operation); recovered++;
           } catch (error) {
+            if (error instanceof QuietRecordedError) { this.service.forgetTerminalHold(operation.record.operationId); continue; }
             console.warn('[telegram-origin] browser recovery retained operation', operation.record.operationId,
               error instanceof Error ? error.name : 'unknown-error');
           }
@@ -559,6 +561,7 @@ export class TelegramOriginRuntime {
             const outcome = await this.options.forwardRecovery(operation, row);
             if (outcome === 'sent' || outcome === 'resolved') recovered++;
           } catch (error) {
+            if (error instanceof QuietRecordedError) { this.service.forgetTerminalHold(operation.record.operationId); continue; }
             console.warn('[telegram-origin] forward recovery retained operation', operation.record.operationId,
               error instanceof Error ? error.name : 'unknown-error');
           }
@@ -610,6 +613,7 @@ export class TelegramOriginRuntime {
         }
         recovered++;
         } catch (error) {
+          if (error instanceof QuietRecordedError) { this.service.forgetTerminalHold(operation.record.operationId); continue; }
           // One held operation must not starve unrelated queued destinations.
           // The service/store retains the authoritative fence and outcome.
           console.warn('[telegram-origin] recovery retained operation', operation.record.operationId,
@@ -696,6 +700,7 @@ export class TelegramOriginRuntime {
     } finally { this.importingLegacy = false; }
   }
   async close(): Promise<void> {
+    await this.service.notificationGate?.close?.();
     if (this.closed) return;
     this.closed = true; this.observer.stop(); this.notifier.close(); this.unregister();
     this.capacityOwner?.close();

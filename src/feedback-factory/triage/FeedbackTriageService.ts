@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/feedback-factory/triage/FeedbackTriageService.ts');
 /**
  * Feedback triage (docs/specs/feedback-triage-and-execution.md, Phase 1: §1–§3, §5–§7).
  *
@@ -1084,7 +1086,7 @@ export class FeedbackTriageService {
     const epoch = this.opts.ownerEpoch();
     /* @self-action-controller: feedback-triage-action-list */
     if (cfg.actionTopicId !== undefined && this.opts.sendToTopic) {
-      await this.opts.sendToTopic(cfg.actionTopicId, composed.text);
+      await withNotificationEnvelope(stampNotification(), async () => (this.opts)!.sendToTopic!(cfg.actionTopicId!, composed.text));
     } else {
       await this.opts.raiseAttention({
         id: `feedback-triage:action-list:${day}`, title: 'Feedback triage: things that need you',
