@@ -4,6 +4,7 @@
  * TccProtectedPathGuard block beside the worktree detector).
  */
 import { configureClaudeChildAuth, sweepClaudeAuthEnvFiles } from '../core/claudeChildAuth.js';
+import { holdAllSetups, holdSetupForSession } from '../recommended/setupState.js';
 import { SlackPrincipalResolver } from '../permissions/SlackPrincipalResolver.js';
 import type { InboundFacts } from '../users/MemoryInboundTracker.js';
 import { whatsappPersonKey, whatsappSpeakerJid } from '../users/MemoryAudience.js';
@@ -10560,6 +10561,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               const classification = await sentinel.classify(message.content);
               if (classification.category === 'emergency-stop') {
                 // Kill all sessions
+                try { holdAllSetups(config.stateDir); } catch { /* @silent-fallback-ok — the stop itself must never fail over this */ }
                 const sessions = sessionManager.listRunningSessions();
                 for (const s of sessions) {
                   try { sessionManager.killSession(s.id); } catch { /* ok */ }
@@ -18785,6 +18787,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         try { _inboundQueueStop?.(String(topicId)); } catch { /* best-effort */ }
       };
       telegram.onSentinelKillSession = (sessionName: string) => {
+        try { holdSetupForSession(config.stateDir, sessionName, telegram.getTopicForSession(sessionName)); } catch { /* @silent-fallback-ok — the stop itself must never fail over this */ }
         // Save resume UUID before killing so respawn can --resume
         if (_topicResumeMap) {
           try {

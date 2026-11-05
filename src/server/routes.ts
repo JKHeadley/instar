@@ -2,6 +2,7 @@ import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
 import { registerRecommendedServiceRoutes } from './recommendedServiceRoutes.js';
 import { catalogWithProving } from '../recommended/recipes.js';
 import { classifyLocation, readThrowawayRecord } from '../core/ThrowawayAgentGuard.js';
+import { holdSetupForSession } from '../recommended/setupState.js';
 import { GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS } from '../core/PinAttemptStore.js';
 import { isRetiredLegacyOffer } from '../recommended/legacyDeclines.js';
 import { recordDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
@@ -12737,6 +12738,8 @@ export function createRoutes(ctx: RouteContext): Router {
       // agent-origin ('self') and rides the normal governor ceilings once the
       // kill sink enforces.
       recordPrincipalKillProvenance(req, req.params.id);
+      // Before the kill, so a regular check in the gap can't restart it.
+      try { holdSetupForSession(ctx.config.stateDir, target.tmuxSession, ctx.telegram?.getTopicForSession(target.tmuxSession)); } catch { /* @silent-fallback-ok — the stop itself must never fail over this */ }
       const result = await ctx.terminateSessionAuthority(target.id, 'operator-kill', {
         origin: 'operator',
         finalStatus: 'killed',
@@ -16182,6 +16185,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const session = ctx.sessionManager.listRunningSessions().find((s) => s.tmuxSession === sessionName);
       return !session || ctx.sessionManager.killSession(session.id);
     },
+    sessionForTopic: (topicId) => ctx.telegram?.getSessionForTopic(topicId) ?? null,
     isSetupRunning: (sessionName) => ctx.sessionManager.listRunningSessions().some((s) => s.tmuxSession === sessionName),
     notifyStuck: async (service, name) => {
       if (!ctx.telegram) return false;
