@@ -10126,6 +10126,19 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: corrected autonomous-heartbeat live-config status');
     }
+    // The fleet reporting contract supersedes the original dev-gated,
+    // output-only description. Replace that whole section once for existing
+    // agents as well as the newly generated section above.
+    const runReportingHeading = '## Autonomous-run silence backstop (AutonomousProgressHeartbeat)';
+    const reportingStart = content.indexOf(runReportingHeading);
+    if (reportingStart >= 0 && !content.includes('Autonomous-run reporting is live on every machine')) {
+      const nextHeading = content.indexOf('\n## ', reportingStart + runReportingHeading.length);
+      const reportingEnd = nextHeading < 0 ? content.length : nextHeading;
+      const newSection = `${runReportingHeading}\n\nAutonomous-run reporting is live on every machine. After 30 minutes without a message, the owner machine posts a brief status. Recent session output is described as observed activity, not task progress. A paused run, suspended move, missing session, or missing output is reported plainly rather than going silent. Messages use a durable per-run cooldown and the shared one-voice lease; a normal outbound message resets the silence clock. The legacy monitoring.autonomousHeartbeat enabled, dryRun, silenceThresholdMinutes, and maxHeartbeatsPerRun settings no longer suppress these reports. See GET /autonomous-heartbeat for the local reporter status.\n`;
+      content = content.slice(0, reportingStart) + newSection + content.slice(reportingEnd);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated autonomous-run reporting contract');
+    }
     // Auth read after secret externalization (ACT-1303, 2026-10-05): once
     // `instar pair` moves authToken into the secret store, config.json holds
     // only `{ "secret": true }`, and the old one-liner turned that into a bogus

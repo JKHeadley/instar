@@ -1,3 +1,4 @@
+import ts from 'typescript';
 /**
  * Feature Delivery Completeness — ensures no gaps between init and migrate.
  *
@@ -545,4 +546,39 @@ describe('Feature Delivery Completeness', () => {
       expect(versionedGuides.length).toBeGreaterThan(0);
     });
   });
+});
+
+
+describe('Fleet autonomous reporting awareness parity', () => {
+  it('teaches new and existing agents the same live reporting contract', () => {
+    const heading = '## Autonomous-run silence backstop (AutonomousProgressHeartbeat)';
+    const section = renderedTemplate.split(heading)[1]?.split('\n## ')[0];
+    expect(section).toContain('Autonomous-run reporting is live on every machine');
+    expect(section).toContain('30 minutes');
+    expect(section).toContain('owner machine');
+    expect(section).not.toContain('Ships dark');
+    expect(section).not.toContain('hard cap');
+    expect(migratorSource).toContain('Autonomous-run reporting is live on every machine');
+  });
+});
+
+
+it('starts autonomous reporting independently of the intelligence provider and PromiseBeacon', () => {
+  const source = fs.readFileSync(path.join(srcDir, 'commands/server.ts'), 'utf8');
+  const file = ts.createSourceFile('server.ts', source, ts.ScriptTarget.Latest, true);
+  const initializers: ts.NewExpression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isNewExpression(node) && node.expression.getText(file) === 'AutonomousProgressHeartbeat') initializers.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  expect(initializers).toHaveLength(1);
+  let checkedBootstrap = false;
+  for (let parent: ts.Node | undefined = initializers[0].parent; parent; parent = parent.parent) {
+    if (ts.isIfStatement(parent)) expect(parent.expression.getText(file)).not.toContain('sharedIntelligence');
+    if (ts.isTryStatement(parent) && !checkedBootstrap) {
+      expect(parent.tryBlock.getText(file)).not.toContain('new PromiseBeacon');
+      checkedBootstrap = true;
+    }
+  }
 });
