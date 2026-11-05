@@ -36,7 +36,8 @@ function fixture(ownerUid: number | undefined) {
   const spawnInteractiveSession = vi.fn(async () => { running = [{ id: 'sess-1', tmuxSession: 'tm-setup' }]; return 'tm-setup'; });
   let running: { id: string; tmuxSession: string }[] = [];
   const findOrCreateForumTopic = vi.fn(async () => ({ topicId: 321, name: 'x' }));
-  const registerTopicSession = vi.fn();
+  const topicSessions = new Map<number, string>();
+  const registerTopicSession = vi.fn((topicId: number, name: string) => { topicSessions.set(topicId, name); });
   const claimOwnership = vi.fn();
   const killSession = vi.fn();
   const record = vi.fn(() => ({ id: 'CMT-9' }));
@@ -47,7 +48,7 @@ function fixture(ownerUid: number | undefined) {
     config: { projectName: 'test', projectDir: dir, stateDir: dir, port: 0, users: [], sessions: {}, scheduler: {}, messaging: [], dashboardPin: '654321' },
     sessionManager: { listRunningSessions: () => running, clearInjectionTracker: () => undefined, spawnInteractiveSession, killSession: (id: string) => { killSession(id); running = []; return true; } },
     state: { getJobState: () => null, getSession: () => null },
-    telegram: { findOrCreateForumTopic, registerTopicSession, getOwnerUserId: () => ownerUid, setCallbackApproverResolver: () => undefined, getTopicHistory: () => [] },
+    telegram: { findOrCreateForumTopic, registerTopicSession, getSessionForTopic: (topicId: number) => topicSessions.get(topicId) ?? null, updateAttentionStatus: () => undefined, getOwnerUserId: () => ownerUid, setCallbackApproverResolver: () => undefined, getTopicHistory: () => [] },
     recommendedServicesLedger: ledger,
     claimTopicOwnershipOnSpawn: claimOwnership,
     recommendedServicesCatalog: RECOMMENDED_SERVICE_CATALOG.map((r) => (r.id === 'jev' ? { ...r, setupRecipe: 'jev-v1' } : r)),
