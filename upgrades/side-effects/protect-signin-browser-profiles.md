@@ -37,7 +37,7 @@ No new static heuristic at a competing-signals decision point. Registry ownershi
 
 ## 5. Interactions
 
-Shadowing: startup checks run outside optional MCP trimming and its fail-open catch. Existing Telegram profile protection remains; its legacy internal error names also cover Google ownership at that shared funnel. Double-fire: a startup refusal prevents later tool use; no duplicated external action. Races: activation rechecks ownership at write time and the runtime/hook reread current registry. A hostile concurrent filesystem mutation is outside the cooperative boundary. No control loop or repeated repair is added.
+Shadowing: startup checks run outside optional MCP trimming and its fail-open catch. Existing Telegram profile protection remains; its legacy internal error names also cover Google ownership at that shared funnel. Double-fire: a startup refusal prevents later tool use; no duplicated external action. Races: activation rechecks ownership at write time and the runtime/hook reread current registry. A hostile concurrent filesystem mutation is outside the cooperative boundary. No control loop or repeated repair is added. The Stage-B closure census also reaches the new stateless helper through shared registry dependencies; an explicit, reviewed exclusion records that it does not implement the certified Codex delivery protocol. The existing certified-set fingerprint and approved evidence remain unchanged.
 
 ## 6. External surfaces
 
@@ -61,7 +61,7 @@ The review caught full-path repair over-blocking and pre-tool MCP startup exposu
 
 ## Second-pass review
 
-**Reviewer:** browser_guard_review. **Independent read: concur.** Confirmed normal Chrome allow boundaries, all three startup lanes, mixed safe/unsafe MCP definitions, canonical aliases and Windows paths. Concur with the review; no remaining material design concern within the stated cooperative boundary.
+**Reviewer:** browser_guard_review. **Independent read: concur.** Confirmed normal Chrome allow boundaries, all three startup lanes, mixed safe/unsafe MCP definitions, canonical aliases and Windows paths. Concur with the review; no remaining material design concern within the stated cooperative boundary. A further independent read concurred with the permission-error fix and the narrow Stage-B exclusion, and independently verified the unchanged certified fingerprint/evidence.
 
 ## Class-Closure Declaration
 

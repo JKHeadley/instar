@@ -7,3 +7,5 @@ This repair makes the existing rule executable. A profile registered with a Goog
 The installed tool hook is refreshed on updates for Claude and Codex, including existing agents. This is a cooperative automation boundary, not a replacement for the operating system sandbox: arbitrary hostile shell programs can construct paths at runtime. The checks cover the supported browser activation, launch, load and ordinary script invocation paths.
 
 The incident record does not prove that automation signed Dawn out. It proves a Playwright launch on the saved profile followed by a signed-out Slack page, without a successful observation immediately before. The later repair accepted the password but rejected one backup code and stopped. That is a failed repair, not a recovered login. No test should destroy another saved login to investigate this one, and no one should claim a repair succeeded without a live account check.
+
+The release records this helper separately from the Codex message-delivery certificate: browser ownership has its own tests, and the delivery code and approved certificate are unchanged.
