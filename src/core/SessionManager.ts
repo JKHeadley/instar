@@ -9,7 +9,7 @@
 import type { MemoryPrivacyRecovery } from '../users/MemoryPrivacyRecovery.js';
 import { isCredentialEnvName, CLAUDE_CONFINED_PERMISSION_ARGS } from './credentialEnvNames.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
-import { applyMemorySessionLaunch, buildMemorySessionSettings, moveInboundFilesIntoScope } from './memorySessionPolicy.js';
+import { applyMemorySessionLaunch, buildMemorySessionSettings, moveInboundFilesIntoScope, prepareSessionCurlHome } from './memorySessionPolicy.js';
 import { audienceKey, type MemoryPrivacy, type SessionPlaceInput } from '../users/MemoryPrivacy.js';
 import { isScopedAudience, memoryScopeEnvValue, type MemoryAudience, type MemoryPlace } from '../users/MemoryAudience.js';
 import { execFileSync, execFile } from 'node:child_process';
@@ -7764,6 +7764,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ? this.memoryPrivacyWiring!.privacy.issueSessionToken(interactiveSessionId, memoryPlan!.audience, memoryPlan!.placeKey)
       : null;
     const memoryScopeEnv = memoryPlan ? memoryScopeEnvValue(memoryPlan.audience) : null;
+    // Linux: the sandboxed shell reaches the agent server only through the sandbox proxy.
+    const memoryCurlHome = memoryScoped ? prepareSessionCurlHome(memoryPlan!.scopeDir!) : null;
 
     // Spawn the framework CLI in tmux — no bash -c shell intermediary.
     // Uses tmux -e flags to set/unset env vars directly, matching spawnSession pattern.
@@ -7795,6 +7797,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           '-e', `CLAUDE_CODE_TMPDIR=${path.join(memoryPlan!.scopeDir!, 'tmp')}`,
           '-e', `TMPDIR=${path.join(memoryPlan!.scopeDir!, 'tmp')}`,
         ] : []),
+        ...(memoryCurlHome ? ['-e', `CURL_HOME=${memoryCurlHome}`] : []),
         ...(memoryScoped ? [] : interactiveThreadline.secretEnvFlags), // threadline-mcp-local-http D2 (flag on only)
         ...(framework === 'claude-code' ? CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS : []), // long waits
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,

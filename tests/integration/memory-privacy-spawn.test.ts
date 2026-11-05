@@ -109,6 +109,34 @@ describe('Memory privacy — real spawn path (integration)', () => {
     expect(settings.sandbox.failIfUnavailable).toBe(true);
   });
 
+  it('on Linux, points the session curl at the sandbox proxy so replies reach the server', async () => {
+    await wire();
+    const real = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    try {
+      await manager.spawnInteractiveSession(undefined, 'chan-curl', { slackChannelId: 'C9' });
+    } finally {
+      Object.defineProperty(process, 'platform', real);
+    }
+    const args = lastLaunch();
+    const curlHome = envOf(args, 'CURL_HOME');
+    const settings = JSON.parse(fs.readFileSync(args[args.indexOf('--settings') + 1], 'utf8'));
+    expect(curlHome).toBe(path.join(settings.autoMemoryDirectory, '.curl'));
+    expect(fs.readFileSync(path.join(curlHome!, '.curlrc'), 'utf8')).toBe('noproxy = ""\n');
+  });
+
+  it('on macOS, leaves curl alone: the session shares the host loopback', async () => {
+    await wire();
+    const real = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    try {
+      await manager.spawnInteractiveSession(undefined, 'chan-curl-mac', { slackChannelId: 'C8' });
+    } finally {
+      Object.defineProperty(process, 'platform', real);
+    }
+    expect(envOf(lastLaunch(), 'CURL_HOME')).toBeUndefined();
+  });
+
   it('gives two people two folders', async () => {
     const { privacy } = await wire();
     privacy.recordPlace('slack:D1', 'private', 'pat');
