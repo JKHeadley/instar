@@ -57,6 +57,12 @@ describe('wiring', () => {
     expect(server).toMatch(/\.\.\.\(pairStartedPool \? \{\s*shadowProof:/);
     expect(server).toMatch(/if \(pairStartedPool && !failoverRunnerCfg\.enabled\) \{/);
   });
+  it('the duplicate check asks peers over the signed verb, and both sides are wired', () => {
+    expect(server).toContain("'session-live-probe': async (cmd) =>");
+    expect(server).toMatch(/_signedLiveCopyProbe = \(machineId, url, platform, platformId\) =>/);
+    expect(server).toMatch(/_serveLiveCopyProbe = async \(platform, platformId\) =>/);
+    expect(server).toMatch(/probeLiveCopy: async[\s\S]{0,900}probeLiveCopyOnPeer\(\{/);
+  });
   it('every path that skips the router at dark asks about a peer first', () => {
     expect(server.match(/_routesToPeerAtDark\(/g)?.length).toBe(3);
     expect(server).not.toMatch(/if \(_sessionRouter && _sessionPoolStage\(\) !== 'dark'\)/);

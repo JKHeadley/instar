@@ -40,7 +40,7 @@ The inviter restarts once, using the existing flag. Paid routing would self-fenc
 
 ## 6. External surfaces
 
-`/api/pair` gains two optional response fields. Older joiners ignore them; older inviters omit them. The bot token is sealed to the joiner's key and never appears in clear in the response or in the joiner's config.
+A new signed read verb, `session-live-probe`, answers only whether a machine holds a live session for one conversation; the bearer call stays for older peers. `/api/pair` gains two optional response fields. Older joiners ignore them; older inviters omit them. The bot token is sealed to the joiner's key and never appears in clear in the response or in the joiner's config.
 
 ## 7. Multi-machine posture
 

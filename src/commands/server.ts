@@ -127,6 +127,7 @@ import type { TopicProfileStore } from '../core/TopicProfileStore.js';
 import type { TopicResumeMap } from '../core/TopicResumeMap.js';
 import { runResumeHeartbeatTick } from '../core/ResumeHeartbeat.js';
 import { activatedAtPairing, readPairDecision } from '../core/sessionPoolPairActivation.js';
+import { liveCopyInList, probeLiveCopyOnPeer } from '../core/sessionLiveProbe.js';
 import type { IdleReading } from '../core/classifyProfileChange.js';
 import { closeAllSqlite } from '../core/SqliteRegistry.js';
 import { DP_SUBSCRIPTION_RELOGIN_ACTION, DP_TELEGRAM_ORIGIN_RECOVERY } from '../data/provenanceCoverage.js';
@@ -696,6 +697,9 @@ let _sessionRouter: import('../core/SessionRouter.js').SessionRouter | null = nu
 let _sessionPoolStage: () => string = () => 'dark';
 /** A pool started at pairing, stepped down to dark, with this conversation on a peer: the
  *  next message still goes there (session-pool-activation-at-pairing, Change 7). */
+/** The signed duplicate probe, both sides (set where the mesh client and the check are built). */
+let _signedLiveCopyProbe: ((machineId: string, url: string, platform: string, platformId: string) => Promise<{ ok: boolean; result?: unknown } | null>) | null = null;
+let _serveLiveCopyProbe: ((platform: string, platformId: string) => Promise<import('../core/sessionLiveProbe.js').LiveCopyProbeResponse>) | null = null;
 let _routesToPeerAtDark: (sessionKey: string) => boolean = () => false;
 // Self-placement deliberately falls through from SessionRouter into this file's
 // established local inject/spawn tail. Confirming inside SessionRouter would be
@@ -27180,6 +27184,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             'topic-history-pull': (cmd) => createTopicHistoryPullHandler({
               readHistory: telegram ? (topic, limit) => telegram!.getTopicHistory(topic, limit) : null,
             })(cmd as { topic?: unknown; limit?: unknown }),
+            'session-live-probe': async (cmd) => {
+              const { platform, platformId } = cmd as { platform?: unknown; platformId?: unknown };
+              if (typeof platform !== 'string' || typeof platformId !== 'string') return { ok: false, reason: 'malformed' };
+              return _serveLiveCopyProbe ? _serveLiveCopyProbe(platform, platformId) : { ok: false, reason: 'no-duplicate-check' };
+            },
             'topic-profile-pull': (cmd) => {
               if (!_topicProfileStore) return { ok: false, reason: 'topic-profile disabled' };
               return createTopicProfilePullHandler({
@@ -27766,6 +27775,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             const h = coordinator.getSyncStatus().leaseHolder;
             return h && h !== meshSelfId ? peerUrl(h) : null;
           };
+          _signedLiveCopyProbe = (machineId, url, platform, platformId) =>
+            meshClient.send({ machineId, url }, { type: 'session-live-probe', platform, platformId }, 0, { timeoutMs: 5_000 });
           _pullRouterHistory = async (topic) => {
             const h = coordinator.getSyncStatus().leaseHolder;
             const url = h && h !== meshSelfId ? peerUrl(h) : null;
@@ -29095,6 +29106,13 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (!r.ok) throw new Error(`HTTP ${r.status}`);
               return r.json();
             };
+            _serveLiveCopyProbe = async (platform, platformId) => {
+              try {
+                return { ok: true, live: liveCopyInList(await fetchJson(`${selfBase}/sessions`, 5_000), platform, platformId) };
+              } catch (err) {
+                return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+              }
+            };
             const dupCfgResolved = {
               enabled: resolveDevAgentGate(dupCfgRaw.enabled, config),
               dryRun: dupCfgRaw.dryRun !== false,
@@ -29154,16 +29172,14 @@ export async function startServer(options: StartOptions): Promise<void> {
                   const sep = key.indexOf(':');
                   const platform = key.slice(0, sep);
                   const pid = key.slice(sep + 1);
-                  const base =
-                    machineId === _meshSelfId
-                      ? selfBase
-                      : (_resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId)?.url;
+                  const onSelf = machineId === _meshSelfId;
+                  const base = onSelf ? selfBase : (_resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId)?.url;
                   if (!base) return { ok: false, live: false };
-                  const list = (await fetchJson(`${base}/sessions`, 5_000)) as Array<Record<string, unknown>>;
-                  const live = (Array.isArray(list) ? list : []).some(
-                    (s) => String(s.platform) === platform && String(s.platformId) === pid,
-                  );
-                  return { ok: true, live };
+                  const bearer = async () => liveCopyInList(await fetchJson(`${base}/sessions`, 5_000), platform, pid);
+                  return await probeLiveCopyOnPeer({
+                    signed: async () => (onSelf || !_signedLiveCopyProbe ? null : _signedLiveCopyProbe(machineId, base, platform, pid)),
+                    bearer,
+                  });
                 } catch {
                   // @silent-fallback-ok: ok:false is the DEFERRAL signal — the
                   // reconciler journals probe-failed-deferred and burns an
