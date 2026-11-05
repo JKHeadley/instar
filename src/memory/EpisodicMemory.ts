@@ -76,6 +76,31 @@ export interface SentinelState {
   }>;
 }
 
+/**
+ * Structured identity of the activity stretch a pending (failed-LLM) entry
+ * stands for. Carrying this alongside the raw prompt is what lets a
+ * successful retry be persisted as a real ActivityDigest under the same
+ * idempotency key the live path would have used, and lets the queue drop
+ * entries for stretches that already have a digest.
+ */
+export interface PendingDigestMeta {
+  sessionName: string;
+  startedAt: string;
+  endedAt: string;
+  boundarySignal: BoundarySignal;
+  telegramTopicId?: number;
+}
+
+export interface PendingDigest {
+  id: string;
+  sessionId: string;
+  content: string;
+  createdAt: string;
+  retryCount: number;
+  /** Absent on entries written before stretch metadata was recorded. */
+  meta?: PendingDigestMeta;
+}
+
 export interface EpisodicMemoryConfig {
   stateDir: string;  // Root state directory (episodes stored under state/episodes/)
 }
@@ -135,6 +160,14 @@ export class EpisodicMemory {
     );
 
     return id;
+  }
+
+  /**
+   * Find the digest covering an exact activity stretch, if one is stored.
+   * Same idempotency key as saveDigest(): hash(sessionId + startedAt + endedAt).
+   */
+  findDigest(sessionId: string, startedAt: string, endedAt: string): ActivityDigest | null {
+    return this.findDigestByKey(sessionId, this.digestKey(sessionId, startedAt, endedAt));
   }
 
   /**
@@ -306,23 +339,39 @@ export class EpisodicMemory {
   /**
    * Save raw activity content when LLM digestion fails.
    * Stored for retry by the sentinel.
+   *
+   * When `meta` identifies the stretch, the queue is idempotent on it: a
+   * second failure for a stretch that is already queued returns the existing
+   * entry's id instead of adding a duplicate that would be retried (and
+   * billed) separately.
    */
-  savePending(sessionId: string, content: string): string {
+  savePending(sessionId: string, content: string, meta?: PendingDigestMeta): string {
+    if (meta) {
+      const key = this.digestKey(sessionId, meta.startedAt, meta.endedAt);
+      const existing = this.getPending(sessionId).find(
+        p => p.meta && this.digestKey(sessionId, p.meta.startedAt, p.meta.endedAt) === key,
+      );
+      if (existing) return existing.id;
+    }
+
     const id = crypto.randomUUID();
     const sessionPending = path.join(this.pendingDir, sessionId);
     if (!fs.existsSync(sessionPending)) {
       fs.mkdirSync(sessionPending, { recursive: true });
     }
 
+    const entry: PendingDigest = {
+      id,
+      sessionId,
+      content,
+      createdAt: new Date().toISOString(),
+      retryCount: 0,
+    };
+    if (meta) entry.meta = meta;
+
     fs.writeFileSync(
       path.join(sessionPending, `${id}.json`),
-      JSON.stringify({
-        id,
-        sessionId,
-        content,
-        createdAt: new Date().toISOString(),
-        retryCount: 0,
-      }, null, 2)
+      JSON.stringify(entry, null, 2)
     );
 
     return id;
@@ -331,13 +380,13 @@ export class EpisodicMemory {
   /**
    * Get all pending items for a session.
    */
-  getPending(sessionId: string): Array<{ id: string; sessionId: string; content: string; createdAt: string; retryCount: number }> {
+  getPending(sessionId: string): PendingDigest[] {
     const sessionPending = path.join(this.pendingDir, sessionId);
     if (!fs.existsSync(sessionPending)) return [];
 
     return fs.readdirSync(sessionPending)
       .filter(f => f.endsWith('.json'))
-      .map(f => JSON.parse(fs.readFileSync(path.join(sessionPending, f), 'utf-8')));
+      .map(f => JSON.parse(fs.readFileSync(path.join(sessionPending, f), 'utf-8')) as PendingDigest);
   }
 
   /**

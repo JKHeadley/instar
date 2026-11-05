@@ -17,7 +17,10 @@
  *   - Minimum activity threshold prevents noisy digests
  *
  * LLM failure handling:
- *   - Failed digests saved to pending queue
+ *   - Failed digests saved to pending queue, keyed by their activity stretch
+ *     (one queue entry per stretch; a stretch that already has a digest is
+ *     never queued or retried)
+ *   - A successful retry persists its digest first, then dequeues
  *   - Exponential backoff: 1min, 5min, 15min
  *   - After 3 retries, raw content archived
  *
@@ -28,7 +31,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Session } from '../core/types.js';
 import type { IntelligenceProvider } from '../core/types.js';
-import { EpisodicMemory, type ActivityDigest, type SessionSynthesis, type SentinelState } from '../memory/EpisodicMemory.js';
+import {
+  EpisodicMemory,
+  type ActivityDigest,
+  type BoundarySignal,
+  type PendingDigest,
+  type PendingDigestMeta,
+  type SessionSynthesis,
+  type SentinelState,
+} from '../memory/EpisodicMemory.js';
 import { ActivityPartitioner, type TelegramLogEntry, type ActivityUnit } from '../memory/ActivityPartitioner.js';
 import { DegradationReporter } from './DegradationReporter.js';
 import type { SemanticMemory } from '../memory/SemanticMemory.js';
@@ -66,6 +77,20 @@ interface ExtractedEntity {
   content: string;
   relationships: Array<{ to: string; relation: RelationType }>;
 }
+
+/** Normalized digest LLM response, ready to persist. */
+interface ParsedDigest {
+  summary: string;
+  actions: string[];
+  learnings: string[];
+  significance: number;
+  themes: string[];
+  entities: ExtractedEntity[];
+}
+
+const VALID_BOUNDARY_SIGNALS: readonly BoundarySignal[] = [
+  'topic_shift', 'task_complete', 'long_pause', 'explicit_switch', 'time_threshold', 'session_end',
+];
 
 /** Valid entity types (must match EntityType in src/core/types.ts). */
 /**
@@ -237,15 +262,28 @@ export class SessionActivitySentinel {
     const topicId = this.config.getTopicForSession?.(session.tmuxSession) ?? undefined;
 
     for (const unit of units) {
+      // A stretch that already has a stored digest is finished work; don't
+      // spend another LLM call on it (the partitioner can re-emit it when
+      // sentinel state was not advanced, e.g. after an all-failed scan).
+      const existing = this.episodicMemory.findDigest(session.id, unit.startedAt, unit.endedAt);
+      if (existing) continue;
+
       try {
         const digest = await this.digestUnit(session, unit, topicId);
         if (digest) {
           digests.push(digest);
         }
       } catch (err: any) {
-        // Save to pending queue for retry
+        // Save to pending queue for retry, keyed by the stretch so the retry
+        // can persist a real digest and duplicates collapse into one entry.
         const rawContent = this.formatUnitForPending(session, unit);
-        this.episodicMemory.savePending(session.id, rawContent);
+        this.episodicMemory.savePending(session.id, rawContent, {
+          sessionName: session.name,
+          startedAt: unit.startedAt,
+          endedAt: unit.endedAt,
+          boundarySignal: unit.boundarySignal,
+          telegramTopicId: topicId,
+        });
       }
     }
 
@@ -319,6 +357,25 @@ export class SessionActivitySentinel {
     const parsed = this.parseDigestResponse(response);
     if (!parsed) return null;
 
+    return this.persistDigest(session.id, {
+      sessionName: session.name,
+      startedAt: unit.startedAt,
+      endedAt: unit.endedAt,
+      boundarySignal: unit.boundarySignal,
+      telegramTopicId,
+    }, parsed);
+  }
+
+  /**
+   * Write a parsed LLM digest to durable storage (and the entity graph when
+   * wired). Shared by the live path and the pending-retry path so a retried
+   * digest lands exactly where a first-try digest would have.
+   */
+  private persistDigest(
+    sessionId: string,
+    meta: PendingDigestMeta,
+    parsed: ParsedDigest,
+  ): ActivityDigest {
     // Materialize extracted entities into SemanticMemory when wired.
     // Failures here MUST NOT block digest persistence — the digest is still
     // useful as a summary record even if the entity graph can't be populated
@@ -327,13 +384,13 @@ export class SessionActivitySentinel {
     let entityIds: string[] = [];
     if (this.config.semanticMemory && parsed.entities.length > 0) {
       try {
-        entityIds = this.materializeEntities(session.id, parsed.entities);
+        entityIds = this.materializeEntities(sessionId, parsed.entities);
       } catch (err) {
         // @silent-fallback-ok — entity extraction is best-effort; the
         // digest is the canonical record. Log and continue so future scans
         // get another chance to extract entities from related content.
         console.warn(
-          `[ActivitySentinel] entity materialization failed for session ${session.id}: ${
+          `[ActivitySentinel] entity materialization failed for session ${sessionId}: ${
             err instanceof Error ? err.message : String(err)
           }`
         );
@@ -341,21 +398,21 @@ export class SessionActivitySentinel {
     }
 
     const digestId = this.episodicMemory.saveDigest({
-      sessionId: session.id,
-      sessionName: session.name,
-      startedAt: unit.startedAt,
-      endedAt: unit.endedAt,
-      telegramTopicId,
+      sessionId,
+      sessionName: meta.sessionName,
+      startedAt: meta.startedAt,
+      endedAt: meta.endedAt,
+      telegramTopicId: meta.telegramTopicId,
       summary: parsed.summary,
       actions: parsed.actions,
       entities: entityIds,
       learnings: parsed.learnings,
       significance: parsed.significance,
       themes: parsed.themes,
-      boundarySignal: unit.boundarySignal,
+      boundarySignal: meta.boundarySignal,
     });
 
-    return this.episodicMemory.getDigest(session.id, digestId)!;
+    return this.episodicMemory.getDigest(sessionId, digestId)!;
   }
 
   /**
@@ -503,14 +560,7 @@ export class SessionActivitySentinel {
     return lines.join('\n');
   }
 
-  private parseDigestResponse(response: string): {
-    summary: string;
-    actions: string[];
-    learnings: string[];
-    significance: number;
-    themes: string[];
-    entities: ExtractedEntity[];
-  } | null {
+  private parseDigestResponse(response: string): ParsedDigest | null {
     try {
       // Extract JSON from response (may have surrounding text)
       const jsonMatch = response.match(/\{[\s\S]*\}/);
@@ -664,19 +714,45 @@ export class SessionActivitySentinel {
 
     for (const sessionId of fs.readdirSync(pendingDir)) {
       const items = this.episodicMemory.getPending(sessionId);
+      // Stretches already handled in this pass (persisted, found stored, or
+      // retried and still failing). A second entry for the same stretch is a
+      // duplicate: it must not cost another LLM call.
+      const handledStretches = new Set<string>();
+
       for (const item of items) {
+        const meta = this.resolvePendingMeta(item);
+        const stretchKey = `${meta.startedAt}|${meta.endedAt}`;
+
+        // Finished work: a digest for this stretch is already stored.
+        if (this.episodicMemory.findDigest(sessionId, meta.startedAt, meta.endedAt)) {
+          this.episodicMemory.removePending(sessionId, item.id);
+          continue;
+        }
+
+        if (handledStretches.has(stretchKey)) {
+          this.episodicMemory.removePending(sessionId, item.id);
+          continue;
+        }
+
         if (item.retryCount >= this.maxRetries) {
           // Archive and remove — exceeded max retries
           this.episodicMemory.removePending(sessionId, item.id);
+          handledStretches.add(stretchKey);
           continue;
         }
 
         // Exponential backoff: 1min, 5min, 15min
         const backoffMs = [60_000, 300_000, 900_000][item.retryCount] ?? 900_000;
         const lastAttempt = new Date(item.createdAt).getTime() + (backoffMs * item.retryCount);
-        if (Date.now() < lastAttempt) continue;
+        if (Date.now() < lastAttempt) {
+          handledStretches.add(stretchKey);
+          continue;
+        }
 
-        // Retry the digestion
+        handledStretches.add(stretchKey);
+
+        // Retry the digestion. Persist FIRST, dequeue second: if the write
+        // fails the entry stays queued and is retried, never silently lost.
         try {
           const response = await this.config.intelligence.evaluate(item.content, {
             model: 'fast',
@@ -687,16 +763,57 @@ export class SessionActivitySentinel {
           });
 
           const parsed = this.parseDigestResponse(response);
-          if (parsed) {
-            this.episodicMemory.removePending(sessionId, item.id);
-          } else {
+          if (!parsed) {
             this.episodicMemory.incrementPendingRetry(sessionId, item.id);
+            continue;
           }
+
+          this.persistDigest(sessionId, meta, parsed);
+          this.episodicMemory.removePending(sessionId, item.id);
+
+          const sessionState = state.sessions[sessionId];
+          if (sessionState) sessionState.digestCount += 1;
         } catch {
           this.episodicMemory.incrementPendingRetry(sessionId, item.id);
         }
       }
     }
+  }
+
+  /**
+   * Identify the activity stretch a pending entry stands for.
+   *
+   * New entries carry it as structured `meta`. Entries written before that
+   * field existed only have the digest prompt, whose header names the same
+   * stretch (`Session:` / `Activity period: A to B` / `Boundary signal:`), so
+   * parse it back out. If even that is missing, fall back to the entry's own
+   * timestamp as a zero-length stretch: a persisted digest with an imprecise
+   * window beats a successful retry that is thrown away.
+   */
+  private resolvePendingMeta(item: PendingDigest): PendingDigestMeta {
+    if (item.meta?.startedAt && item.meta?.endedAt) return item.meta;
+
+    const fromPrompt = this.parsePendingMetaFromPrompt(item.content);
+    if (fromPrompt) return fromPrompt;
+
+    return {
+      sessionName: item.sessionId,
+      startedAt: item.createdAt,
+      endedAt: item.createdAt,
+      boundarySignal: 'time_threshold',
+    };
+  }
+
+  private parsePendingMetaFromPrompt(content: string): PendingDigestMeta | null {
+    const period = /^Activity period: (\S+) to (\S+)\s*$/m.exec(content);
+    if (!period) return null;
+
+    const sessionName = /^Session: (.*)$/m.exec(content)?.[1]?.trim() || 'unknown-session';
+    const rawSignal = /^Boundary signal: (\S+)\s*$/m.exec(content)?.[1] as BoundarySignal | undefined;
+    const boundarySignal: BoundarySignal =
+      rawSignal && VALID_BOUNDARY_SIGNALS.includes(rawSignal) ? rawSignal : 'time_threshold';
+
+    return { sessionName, startedAt: period[1], endedAt: period[2], boundarySignal };
   }
 
   // ─── Helpers ────────────────────────────────────────────────────
