@@ -41,7 +41,10 @@ describe('claude key wiring', () => {
     expect(block).toMatch(/answeredSince: async \(sessionName, sinceMs\) => \{[\s\S]*answeredSince\(convo\.lines, sinceMs/);
     // The operator notice counts only when a person can read it.
     expect(block).toMatch(/notifyOperator: \(text\) => \{[\s\S]*deliverOperatorNotice\(/);
-    expect(block).toContain('readersOf: (channelId) => slack.authorizedMembersOf(channelId)');
+    expect(block).toMatch(/readersOf: async \(channelId\) => \{[\s\S]*slack\.authorizedMembersOf\(channelId\)/);
+    expect(block).toContain('people: () => keyOperators(slack)');
+    // Server posts (standby notes) are told apart from session replies by the origin ledger.
+    expect(source).toContain('isServerPost: (ts) => slack.isServerAutomationPost(channelId, ts)');
     expect(block).toContain('directMessage: async (userId, t) => { await slack.sendDirectMessage(userId, t); }');
   });
 

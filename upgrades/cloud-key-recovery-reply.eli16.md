@@ -16,3 +16,4 @@ We broke an agent's key on purpose and then fixed it. The agent noticed, told pe
 ## What stays the same
 
 How a dead key is detected, the backoff, and the restart itself are unchanged. Nothing is blocked or killed by the new checks.
+

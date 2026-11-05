@@ -119,7 +119,7 @@ Replaying the drill's message order showed that the server's standby note (":tel
 - `tests/unit/claudeKeyRecovery.test.ts`: held messages, answer check, prompt, operator delivery.
 - `tests/unit/ClaudeKeyHealth.test.ts`: "a restarted conversation must really answer".
 - `tests/unit/slack-adapter-operator-reach.test.ts`: new SlackAdapter methods.
-- `tests/e2e/claude-key-alive.test.ts`: production wiring.
+- `tests/e2e/claude-key-alive.test.ts`: production wiring, including the operator-only reader filter and the server-post check. First local verify of 476c91ba2 failed here only (the test still expected the pre-review `readersOf`); unit 58000/0 and integration 5753/0 were green.
 - Live: drill rerun on a test agent (see the PR).
 
 ---
