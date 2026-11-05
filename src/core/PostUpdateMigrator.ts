@@ -1121,6 +1121,16 @@ export function MOBILE_HEALTH_ISSUES_LINE(port: number): string {
   return `- The app's Fleet and Machines and health screens and the console read \`GET /mobile/health-issues\` (\`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/health-issues\`): why \`/health\` says degraded, each reason sorted into \`user-affecting\`, \`internal\` or \`unclassified\` from the declared table in \`src/monitoring/healthIssues.ts\`, with plain words, details, a next step and the message "Ask the agent about this" starts from. Owner phone or bearer, read-only. Verdicts: \`attention\`, \`unsure\`, \`running\`, \`healthy\`. An id the table doesn't name is \`unclassified\`: it shows in the details and never reads as healthy. **When to use** (PROACTIVE): "why does it say degraded?" → read this before answering, and answer in its words. When the person asks about a \`reference:\` id from this page, look at \`/health/degradations\` for that feature and say what happened and what to do.`;
 }
 export const MOBILE_HEALTH_ISSUES_MARKER = 'GET /mobile/health-issues';
+
+/**
+ * The person's quick actions on a health problem (docs/specs/health-quick-actions.md), one bullet after the
+ * health reading bullet. Sniff: `POST /mobile/health-issues/choices`.
+ */
+export function MOBILE_HEALTH_CHOICES_LINE(port: number): string {
+  return `- On each problem the person can Hide for a while (1 hour, 1 day or 1 week), Hide from me (they stop seeing it, I keep tracking it) or Ignore completely (I stop tracking it): \`POST /mobile/health-issues/choices\` with \`{"id":"<issue id>","choice":"snooze","hours":24}\`, and \`POST /mobile/health-issues/choices/undo\` with \`{"key":"<hidden key>"}\`; what's hidden is the \`hidden\` list in \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/health-issues\`. Hidden items never raise a count. Security and data-loss items only get Hide for a while, and a live reading can't be ignored because other parts of me depend on it. **When to use** (PROACTIVE): the person says "stop showing me that" or "ignore this" → it's their tap in the app or the console, or do it for them when they ask. These choices are theirs: never hide or ignore a problem on my own, because that silences what they rely on me to show them. The Hidden list says who did it.`;
+}
+
+export const MOBILE_HEALTH_CHOICES_MARKER = 'POST /mobile/health-issues/choices';
 export const MOBILE_ROUTES_PROBE_LINE_PREFIX = '- A probe that fails 8 times in a row pauses for that name';
 
 /** The increment-1 wording of the verdict bullet's tail, replaced in place on update. */
@@ -1251,6 +1261,7 @@ ${MOBILE_SECRETS_LINE(port)}
 ${MOBILE_SECRETS_WRITES_LINE(port)}
 ${MOBILE_CONSOLE_PAGES_LINE(port)}
 ${MOBILE_HEALTH_ISSUES_LINE(port)}
+${MOBILE_HEALTH_CHOICES_LINE(port)}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }
@@ -9901,6 +9912,20 @@ setTimeout(() => process.exit(0), 2000);
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added the owner health reading line');
+    }
+
+    // The quick actions on a health problem (docs/specs/health-quick-actions.md): one bullet after the reading.
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_HEALTH_CHOICES_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_HEALTH_ISSUES_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_HEALTH_CHOICES_LINE(port));
+        content = lines.join('\n');
+      } else {
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_HEALTH_CHOICES_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the health quick actions line');
     }
 
     // Mobile app routes (docs/specs/mobile-multi-route.md) — Agent Awareness + Migration Parity.

@@ -1554,6 +1554,10 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     // What /health means for the person (docs/specs/mobile-health-issues.md): a read-only trimmed summary,
     // owner phones only. The Fleet screen reads it every 30 s, so it has its own bucket.
     { method: 'GET', re: /^\/mobile\/health-issues$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'health-issues-reads' },
+    // The person's quick actions on a problem (docs/specs/health-quick-actions.md): undoable, so the device signature
+    // is enough. Exactly these two paths: the routes machines use with each other are bearer-only.
+    { method: 'POST', re: /^\/mobile\/health-issues\/choices$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'health-choices' },
+    { method: 'POST', re: /^\/mobile\/health-issues\/choices\/undo$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'health-choices' },
     // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): read-only
     // trimmed summaries, owner phones only, with one shared bucket of their own (they read peers).
     { method: 'GET', re: /^\/mobile\/proposals$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'proposals-inside-reads' },
