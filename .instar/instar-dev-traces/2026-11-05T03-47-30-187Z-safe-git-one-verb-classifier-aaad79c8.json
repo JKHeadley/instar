@@ -1,0 +1,34 @@
+{
+  "version": 3,
+  "slug": "safe-git-one-verb-classifier",
+  "sessionId": "fd3a7191-268f-413b-b5be-a490ee33ed77",
+  "timestamp": "2026-11-05T03:47:30.187Z",
+  "artifactPath": "upgrades/side-effects/safe-git-one-verb-classifier.md",
+  "artifactSha256": "6060091c6d17893455782f23da24b682e06c197a246ffa09deb25cc76b092117",
+  "coveredFiles": [
+    "docs/specs/carriers/safe-git-one-verb-classifier.json",
+    "docs/specs/reports/safe-git-one-verb-classifier-convergence.md",
+    "docs/specs/safe-git-one-verb-classifier.eli16.md",
+    "docs/specs/safe-git-one-verb-classifier.md",
+    "src/core/SafeGitExecutor.ts",
+    "tests/unit/SafeGitExecutor-sourceTreeReadOk.test.ts",
+    "tests/unit/SafeGitExecutor-verb-classifier.test.ts",
+    "tests/unit/SafeGitExecutor.test.ts",
+    "upgrades/next/safe-git-one-verb-classifier.md",
+    "upgrades/side-effects/safe-git-one-verb-classifier.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A revert fully undoes it, no stored state, and it adds no new authority; full chain run anyway because this is the safety funnel",
+  "eli16Path": "docs/specs/safe-git-one-verb-classifier.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/safe-git-one-verb-classifier.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/safe-git-one-verb-classifier-convergence.md",
+      "iterations": 3,
+      "verified": true
+    }
+  }
+}
