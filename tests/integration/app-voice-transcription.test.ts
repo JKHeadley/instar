@@ -7,7 +7,7 @@
  * audio/mp4; a failing provider still delivers the path with an honest "transcription
  * unavailable" note, and the send is still `delivered`.
  */
-import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterAll, afterEach, beforeAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -28,7 +28,12 @@ const HOST = 'echo-media-e2e.example.dev';
 const servers: AgentServer[] = [];
 const dirs: string[] = [];
 
+beforeAll(() => {
+  // Voice delivery is under test; disk-capacity refusal has separate coverage.
+  vi.spyOn(AppMediaStore.prototype, 'diskSpace').mockReturnValue({ free: 50 * 1024 ** 3, total: 100 * 1024 ** 3 });
+});
 afterAll(async () => {
+  vi.restoreAllMocks();
   for (const s of servers) await s.stop();
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/app-voice-transcription.test.ts' });
 });

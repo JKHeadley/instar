@@ -142,3 +142,11 @@ framework binary. GitHub's runner has no Claude CLI. Main independently fixed th
 production defect in PR #2719 while this PR was running. The merge retains main's stronger
 test, which runs the CLI with no framework binary on PATH and verifies the key path directly.
 This PR's temporary test stub was dropped during conflict resolution.
+
+The later CI run found one memory-recovery test timing out at the default ten-second
+limit under a loaded Node 20 shard. The same file passed locally in 2.3 seconds; that
+test now allows thirty seconds for the real subprocess checks. The local full integration
+run found this host below the media store's five-percent free-disk floor, so three
+unrelated media-flow fixtures refused uploads. Those fixtures now supply a healthy disk
+reading for their media store instances. Production disk refusal remains unchanged and
+retains its separate tests.
