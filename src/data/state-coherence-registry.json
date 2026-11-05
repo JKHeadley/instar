@@ -2064,6 +2064,25 @@
       }
     },
     {
+      "category": "conversation-graph",
+      "description": "Conversations hierarchy (docs/specs/conversation-effort-hierarchy-v3.md §7.2): conversation-graph/events.jsonl is the append-only, fsynced file of immutable graph events (no user text), the local source of truth for placements and front doors; conversation-graph/effort-headers.json is the erasable, versioned snapshot of effort titles, rewritten atomically so a forget removes the text. Both are DARK scaffolding in increment A: replication to every installed member (the CoherenceJournal conversation-graph-event kind and header/erasure tombstones) is not wired yet, so no read surface may present them as agent-wide state.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "deferred",
+      "paths": [
+        "conversation-graph/events.jsonl",
+        "conversation-graph/effort-headers.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "full-read",
+        "complianceHold": true,
+        "note": "Events are never rotated or deleted (a tombstone preserves identity and history). Effort headers are the only user text, and a forget removes it from the current file."
+      }
+    },
+    {
       "category": "app-conversations-index",
       "description": "Derived SQLite index over the app conversation JSONL files (WAL + busy_timeout): events, messages, deliveries, conversations. Caught up at boot from each file's last indexed offset; a missing or corrupt index is rebuilt from the files.",
       "scope": "derived-cache",

@@ -1,194 +1,392 @@
 /**
- * The pure core of the Conversations hierarchy read slice (src/core/conversationGraph.ts):
- * - opaque refs round-trip and have exactly one spelling per subject;
- * - untrusted events are validated, and junk is refused;
- * - the reducer depends only on the event SET (order and duplicates never change the result);
- * - user placements beat agent/inference placements; incompatible user placements are a visible
- *   conflict that keeps the last agreed parent; a resolution clears it;
- * - cycles and duplicate ids with different bytes are quarantined, never applied;
- * - the projection filters BEFORE it counts, searches or paths, so a hidden node leaves no trace;
- * - the source descriptor copies the flat row's id and machine exactly.
+ * The pure core of the Conversations hierarchy (src/core/conversationGraph.ts), against
+ * docs/specs/conversation-effort-hierarchy-v3.md §3.1–3.3 and §7.5. Each block names the rule it
+ * pins; the six reducer defects found in review of 6b7f81aa2 each have a regression here.
  */
 import { describe, it, expect } from 'vitest';
 import {
-  encodeRef, decodeRef, validateGraphEvent, reduceGraph, GraphProjection,
-  type GraphEvent, type ConversationSource,
+  validateNodeRef, encodeRouteRef, decodeRouteRef, nodeKey, validateGraphEvent, reduceGraph, GraphProjection,
+  type NodeRef, type EffortRef, type ConversationRef, type GraphEvent, type Authority, type ConversationSource,
 } from '../../src/core/conversationGraph.js';
 
+const VERIFY_ALL = { verify: () => true };
+const effort = (n: number): EffortRef => ({ kind: 'effort', id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}` });
+const tg = (topicId: number, chatId = '-1001234567890'): ConversationRef => ({ kind: 'conversation', platform: 'telegram', chatId, topicId });
+const RECEIPT: Record<Authority, GraphEvent['receipt']['kind']> = { owner: 'owner-proof', delegation: 'dispatch-record', import: 'import-record', inference: 'inference-candidate' };
+
 let seq = 0;
-function ev(partial: Partial<GraphEvent> & Pick<GraphEvent, 'op' | 'subject'>): GraphEvent {
+function base(subject: NodeRef, authority: Authority, extra: { eventId?: string; at?: string } = {}) {
   seq += 1;
   return {
-    schemaVersion: 1,
-    eventId: partial.eventId ?? `evt-${String(seq).padStart(6, '0')}`,
-    replacesPlacementEventIds: [],
-    source: 'user',
-    actor: 'owner',
+    schemaVersion: 1 as const,
+    eventId: extra.eventId ?? `evt-${String(seq).padStart(6, '0')}`,
+    subject, authority, principal: authority === 'owner' ? 'owner' : 'agent',
+    receipt: { kind: RECEIPT[authority], id: `r-${seq}` },
     machineId: 'm1',
-    createdAt: `2026-11-05T09:${String(10 + (seq % 49)).padStart(2, '0')}:00.000Z`,
-    ...partial,
-  } as GraphEvent;
+    createdAt: extra.at ?? `2026-11-05T10:${String(seq % 60).padStart(2, '0')}:00.000Z`,
+  };
 }
-
-const TG = (n: number) => `telegram:${n}`;
-function convo(ref: string, title: string, lastActivity: string | null, extra: Partial<ConversationSource> = {}): ConversationSource {
-  const platform = ref.split(':')[0] as ConversationSource['platform'];
-  return { ref, platform, conversationId: Number(ref.split(':')[1]) || ref, title, lastActivity, ...extra };
+function relation(subject: NodeRef, parent: NodeRef | null) {
+  if (!parent) return null;
+  if (parent.kind === 'effort') return subject.kind === 'effort' ? 'contains' : 'coordinates';
+  return 'delegates-to';
 }
+function place(subject: NodeRef, parent: NodeRef | null, authority: Authority = 'owner', replaces: string[] = [], extra: { eventId?: string; at?: string } = {}): GraphEvent {
+  return { ...base(subject, authority, extra), op: 'set-primary-placement', parent, relation: relation(subject, parent), replacesPlacementEventIds: replaces } as GraphEvent;
+}
+function create(e: EffortRef): GraphEvent { return { ...base(e, 'owner'), op: 'create-effort', projectScope: [] } as GraphEvent; }
+function frontDoor(e: EffortRef, conv: ConversationRef | null, observed: string[] = [], replaces: string[] = []): GraphEvent {
+  return { ...base(e, 'owner'), op: 'set-front-door', frontDoor: conv, replacesFrontDoorEventIds: replaces, observedPlacementEventIds: observed } as GraphEvent;
+}
+const parentOf = (g: ReturnType<typeof reduceGraph>, r: NodeRef) => g.parentOf.get(nodeKey(r));
 
-describe('refs', () => {
-  it('round-trips and is canonical', () => {
-    const o = encodeRef(TG(42));
-    expect(decodeRef(o)).toBe(TG(42));
-    expect(o).toMatch(/^[A-Za-z0-9_-]+$/);
+describe('NodeRef (§7.5)', () => {
+  const variants: NodeRef[] = [
+    effort(1), tg(42),
+    { kind: 'conversation', platform: 'slack', channelId: 'C0123ABCD' },
+    { kind: 'conversation', platform: 'slack', channelId: 'C0123ABCD', threadTs: '1730000000.123456' },
+    { kind: 'conversation', platform: 'app', conversationKey: '8dd76d04-3e1d-4784-9f9e-d70635910f3c' },
+  ];
+  it('every variant round-trips through the route parameter', () => {
+    for (const v of variants) expect(decodeRouteRef(encodeRouteRef(v))).toEqual(v);
   });
-  it('refuses a non-canonical spelling of the same ref', () => {
-    const alt = Buffer.from(JSON.stringify({ v: 1, ref: TG(42) }), 'utf8').toString('base64url');
-    expect(alt).not.toBe(encodeRef(TG(42)));
-    expect(decodeRef(alt)).toBeNull();
+  it('only the canonical spelling decodes', () => {
+    const alt = Buffer.from(JSON.stringify({ topicId: 42, kind: 'conversation', chatId: '-1001234567890', platform: 'telegram' })).toString('base64url');
+    expect(alt).not.toBe(encodeRouteRef(tg(42)));
+    expect(decodeRouteRef(alt)).toBeNull(); // same object, different key order: refused
+    expect(decodeRouteRef(encodeRouteRef(tg(42)))).toEqual(tg(42));
   });
-  it('refuses junk and unknown forms', () => {
-    for (const bad of ['', '!!', encodeRef('telegram:abc'), Buffer.from('{"v":2,"ref":"telegram:1"}').toString('base64url'), 'x'.repeat(500)]) {
-      expect(decodeRef(bad)).toBeNull();
-    }
+  it('a Telegram ref carries the chat, so equal topic ids in two groups never collide', () => {
+    expect(nodeKey(tg(5, '-1001'))).not.toBe(nodeKey(tg(5, '-1002')));
+  });
+  it('refuses extra fields, numeric aliases and malformed ids', () => {
+    expect(validateNodeRef({ ...tg(1), alias: -7 })).toBeNull();
+    expect(validateNodeRef({ kind: 'conversation', platform: 'slack', channelId: '-7' })).toBeNull();
+    expect(validateNodeRef({ kind: 'effort', id: 'not-a-uuid' })).toBeNull();
+    expect(validateNodeRef({ kind: 'conversation', platform: 'telegram', chatId: -100, topicId: 1 })).toBeNull();
   });
 });
 
 describe('validateGraphEvent', () => {
-  it('accepts a well-formed placement and refuses malformed ones', () => {
-    const good = ev({ op: 'place', subject: TG(2), parent: 'effort:alpha' });
-    expect(validateGraphEvent(JSON.parse(JSON.stringify(good)))).not.toBeNull();
-    expect(validateGraphEvent({ ...good, parent: TG(2) })).toBeNull(); // self-parent
-    expect(validateGraphEvent({ ...good, parent: 'nope' })).toBeNull();
-    expect(validateGraphEvent({ ...good, schemaVersion: 2 })).toBeNull();
-    expect(validateGraphEvent({ ...good, source: 'admin' })).toBeNull();
-    expect(validateGraphEvent({ ...good, createdAt: 'yesterday' })).toBeNull();
-    expect(validateGraphEvent({ ...good, op: 'delete' })).toBeNull();
-    expect(validateGraphEvent({ ...ev({ op: 'define-effort', subject: TG(1), title: 'x' }) })).toBeNull(); // effort op on a conversation
+  it('refuses an effort placed under a conversation (defect 6)', () => {
+    expect(validateGraphEvent({ ...place(effort(1), tg(1)), relation: 'delegates-to' })).toBeNull();
+    expect(validateGraphEvent({ ...place(effort(1), tg(1)), relation: null })).toBeNull();
+  });
+  it('refuses a receipt that does not match the claimed tier', () => {
+    const e = place(tg(1), tg(2), 'delegation');
+    expect(validateGraphEvent(e)).not.toBeNull();
+    expect(validateGraphEvent({ ...e, receipt: { kind: 'owner-proof', id: 'x' } })).toBeNull();
+  });
+  it('delegation may only produce delegates-to; create-effort and front door are owner-only', () => {
+    expect(validateGraphEvent(place(tg(1), effort(1), 'delegation'))).toBeNull();
+    expect(validateGraphEvent({ ...create(effort(1)), authority: 'delegation', receipt: { kind: 'dispatch-record', id: 'x' } })).toBeNull();
+  });
+  it('carries no free text field', () => {
+    expect(validateGraphEvent({ ...create(effort(1)), title: 'secret' } as unknown)).not.toHaveProperty('title');
   });
 });
 
 describe('reduceGraph', () => {
-  it('depends only on the event set, not order or duplicates', () => {
-    const e1 = ev({ op: 'define-effort', subject: 'effort:alpha', title: 'Alpha' });
-    const e2 = ev({ op: 'place', subject: TG(1), parent: 'effort:alpha' });
-    const e3 = ev({ op: 'place', subject: TG(2), parent: TG(1), source: 'delegation' });
-    const a = reduceGraph([e1, e2, e3]);
-    const b = reduceGraph([e3, e2, e1, e2, e3]);
+  it('unverified authority is never reduced', () => {
+    const g = reduceGraph([create(effort(1)), place(tg(1), effort(1))], { verify: () => false });
+    expect(g.parentOf.size).toBe(0);
+    expect(g.efforts.size).toBe(0);
+    expect(g.partial.evidenceMissing).toBe(true);
+    expect(new Set(g.setAside.map((s) => s.reason))).toEqual(new Set(['unverified-authority']));
+  });
+
+  it('depends only on the event set', () => {
+    const evs = [create(effort(1)), place(tg(1), effort(1)), place(tg(2), tg(1), 'delegation')];
+    const a = reduceGraph(evs, VERIFY_ALL);
+    const b = reduceGraph([...evs].reverse().concat(evs), VERIFY_ALL);
     expect(b.revision).toBe(a.revision);
-    expect([...b.parentOf]).toEqual([...a.parentOf]);
-    expect(a.parentOf.get(TG(2))).toBe(TG(1));
+    expect([...b.parentOf].sort()).toEqual([...a.parentOf].sort());
   });
 
-  it('a user placement beats a concurrent inferred one without erasing it', () => {
-    const inf = ev({ op: 'place', subject: TG(3), parent: 'effort:a', source: 'inference' });
-    const usr = ev({ op: 'place', subject: TG(3), parent: 'effort:b', source: 'user' });
-    const g = reduceGraph([inf, usr]);
-    expect(g.parentOf.get(TG(3))).toBe('effort:b');
-    expect(g.conflicts).toEqual([]);
-    expect(g.placementSource.get(TG(3))?.source).toBe('user');
+  it('a delegation event that names an owner head cannot dislodge it (defect 1)', () => {
+    const owner = place(tg(2), effort(1));
+    const agent = place(tg(2), tg(1), 'delegation', [owner.eventId]);
+    const g = reduceGraph([owner, agent], VERIFY_ALL);
+    expect(parentOf(g, tg(2))).toEqual(effort(1));
+    expect(g.placementSource.get(nodeKey(tg(2)))?.authority).toBe('owner');
   });
 
-  it('incompatible user heads are a conflict that keeps the last agreed parent; a resolution clears it', () => {
-    const base = ev({ op: 'place', subject: TG(4), parent: 'effort:a' });
-    const u1 = ev({ op: 'place', subject: TG(4), parent: 'effort:b', replacesPlacementEventIds: [base.eventId] });
-    const u2 = ev({ op: 'place', subject: TG(4), parent: 'effort:c', replacesPlacementEventIds: [base.eventId] });
-    const g = reduceGraph([base, u1, u2]);
+  it('last agreed is the newest common ancestor, not the newest replaced event (defect 2)', () => {
+    const A = place(tg(3), effort(1));
+    const B = place(tg(3), effort(2), 'owner', [A.eventId]);
+    const C = place(tg(3), effort(3), 'owner', [A.eventId]);
+    const D = place(tg(3), effort(4), 'owner', [B.eventId]);
+    const g = reduceGraph([A, B, C, D], VERIFY_ALL);
     expect(g.conflicts).toHaveLength(1);
-    expect(g.conflicts[0].lastAgreedParent).toBe('effort:a');
-    expect(g.parentOf.get(TG(4))).toBe('effort:a');
-    const res = ev({ op: 'place', subject: TG(4), parent: 'effort:c', replacesPlacementEventIds: [u1.eventId, u2.eventId] });
-    const g2 = reduceGraph([base, u1, u2, res]);
+    expect(g.conflicts[0].heads).toEqual([C.eventId, D.eventId].sort());
+    expect(g.conflicts[0].lastAgreed).toEqual(effort(1));
+    expect(parentOf(g, tg(3))).toEqual(effort(1));
+    const R = place(tg(3), effort(4), 'owner', [C.eventId, D.eventId]);
+    const g2 = reduceGraph([A, B, C, D, R], VERIFY_ALL);
     expect(g2.conflicts).toEqual([]);
-    expect(g2.parentOf.get(TG(4))).toBe('effort:c');
+    expect(parentOf(g2, tg(3))).toEqual(effort(4));
   });
 
-  it('two user heads that agree are not a conflict', () => {
-    const u1 = ev({ op: 'place', subject: TG(5), parent: 'effort:a' });
-    const u2 = ev({ op: 'place', subject: TG(5), parent: 'effort:a' });
-    expect(reduceGraph([u1, u2]).conflicts).toEqual([]);
+  it('cycle authority: an inferred placement cannot quarantine an owner placement, whatever the key order (defect 3)', () => {
+    // Choose refs so the inferred subject sorts first.
+    const lowKey = tg(1, '-1000000000001');
+    const highKey = tg(1, '-1009999999999');
+    const owner = place(highKey, lowKey);            // owner: high under low
+    const inferred = place(lowKey, highKey, 'inference'); // inference: low under high (would cycle)
+    const g = reduceGraph([inferred, owner], VERIFY_ALL);
+    expect(parentOf(g, highKey)).toEqual(lowKey);
+    expect(g.setAside).toContainEqual({ eventId: inferred.eventId, reason: 'placement-would-create-cycle' });
   });
 
-  it('quarantines a placement that would close a cycle and keeps the previous forest', () => {
-    const p1 = ev({ op: 'place', subject: TG(10), parent: TG(11) });
-    const p2 = ev({ op: 'place', subject: TG(11), parent: TG(10) });
-    const g = reduceGraph([p1, p2]);
-    expect(g.quarantined.map((q) => q.reason)).toContain('placement-would-create-cycle');
-    // exactly one of the two was applied; no subject is its own ancestor
-    const applied = [TG(10), TG(11)].filter((s) => g.parentOf.get(s));
-    expect(applied).toHaveLength(1);
+  it('a cycling placement falls back to the subject\'s previous placement (defect 3)', () => {
+    const p0 = place(tg(10), effort(1));
+    const anchor = place(tg(11), tg(10));
+    const p1 = place(tg(10), tg(11), 'owner', [p0.eventId]); // would cycle
+    const g = reduceGraph([p0, anchor, p1], VERIFY_ALL);
+    const ten = parentOf(g, tg(10));
+    const eleven = parentOf(g, tg(11));
+    // exactly one edge of the would-be cycle survives, and nothing is lost to "unplaced"
+    expect([ten, eleven].filter((p) => p !== undefined)).toHaveLength(2);
+    expect(nodeKey(ten!) === nodeKey(tg(11)) && nodeKey(eleven!) === nodeKey(tg(10))).toBe(false);
+  });
+
+  it('holds an event whose named predecessor is missing (defect 5)', () => {
+    const late = place(tg(4), effort(2), 'owner', ['evt-never-seen']);
+    const g = reduceGraph([place(tg(4), effort(1)), late], VERIFY_ALL);
+    expect(g.setAside).toContainEqual({ eventId: late.eventId, reason: 'missing-replaced-event' });
+    expect(g.partial.eventGap).toBe(true);
+    expect(parentOf(g, tg(4))).toEqual(effort(1));
   });
 
   it('quarantines both copies of a duplicate id with different bytes', () => {
-    const a = ev({ op: 'place', subject: TG(6), parent: 'effort:a', eventId: 'dup-event-1' });
-    const b = { ...a, parent: 'effort:b' };
-    const g = reduceGraph([a, b]);
-    expect(g.quarantined).toEqual([{ eventId: 'dup-event-1', reason: 'duplicate-event-id-different-payload' }]);
-    expect(g.parentOf.has(TG(6))).toBe(false);
+    const a = place(tg(6), effort(1), 'owner', [], { eventId: 'dup-event-1' });
+    const b = { ...a, parent: effort(2) } as GraphEvent;
+    const g = reduceGraph([a, b], VERIFY_ALL);
+    expect(g.setAside).toContainEqual({ eventId: 'dup-event-1', reason: 'duplicate-event-id-different-payload' });
+    expect(g.parentOf.has(nodeKey(tg(6)))).toBe(false);
+  });
+
+  it('the certified front door cannot be moved out of its effort (§3.2 guard)', () => {
+    const p = place(tg(7), effort(1));
+    const fd = frontDoor(effort(1), tg(7), [p.eventId]);
+    const move = place(tg(7), effort(2), 'owner', [p.eventId]);
+    const g = reduceGraph([create(effort(1)), p, fd, move], VERIFY_ALL);
+    expect(parentOf(g, tg(7))).toEqual(effort(1));
+    expect(g.setAside).toContainEqual({ eventId: move.eventId, reason: 'front-door-guard' });
+    expect(g.frontDoorOf.get(nodeKey(effort(1)))).toEqual(tg(7));
+  });
+
+  it('a front door must be a conversation the effort directly coordinates', () => {
+    const elsewhere = place(tg(8), effort(2));
+    const fd = frontDoor(effort(1), tg(8), [elsewhere.eventId]);
+    const g = reduceGraph([create(effort(1)), elsewhere, fd], VERIFY_ALL);
+    expect(g.frontDoorOf.has(nodeKey(effort(1)))).toBe(false);
+    expect(g.setAside).toContainEqual({ eventId: fd.eventId, reason: 'front-door-not-coordinated' });
   });
 });
 
-describe('GraphProjection (filter first, then count / search / path)', () => {
-  const events = [
-    ev({ op: 'define-effort', subject: 'effort:launch', title: 'Launch' }),
-    ev({ op: 'define-effort', subject: 'effort:secret', title: 'Secret plan' }),
-    ev({ op: 'set-front-door', subject: TG(100), frontDoor: true }),
-    ev({ op: 'place', subject: TG(100), parent: 'effort:launch' }),
-    ev({ op: 'place', subject: TG(101), parent: TG(100), source: 'delegation' }),
-    ev({ op: 'place', subject: TG(102), parent: TG(100), source: 'delegation' }),
-    ev({ op: 'place', subject: TG(200), parent: 'effort:secret' }),
-  ];
-  const graph = reduceGraph(events);
-  const conversations = [
-    convo(TG(100), 'Front door', '2026-11-05T09:00:00.000Z'),
-    convo(TG(101), 'Worker visible', '2026-11-05T09:05:00.000Z'),
-    convo(TG(102), 'Worker hidden', '2026-11-05T09:06:00.000Z'),
-    convo(TG(200), 'Secret worker', '2026-11-05T08:00:00.000Z'),
-    convo(TG(300), 'Unassigned chat', '2026-11-05T07:00:00.000Z'),
-  ];
-
-  it('the owner sees everything, with counts and paths', () => {
-    const p = new GraphProjection({ graph, conversations, mayView: () => true });
-    expect(p.item(TG(100))?.visibleChildCount).toBe(2);
-    expect(p.item(TG(100))?.role).toBe('front-door');
-    expect(p.item(TG(101))?.primaryPath.map((x) => x.title)).toEqual(['Launch', 'Front door']);
-    expect(p.roots('all', null)).toContain(TG(300));
-    expect(p.roots('overview', null)).not.toContain(TG(300)); // unassigned stays in All only
+describe('second-pass review regressions', () => {
+  const W = tg(50);
+  it('a forged lower-tier event reusing an owner event id cannot poison it (finding 1)', () => {
+    const O = place(W, effort(1));
+    const D = place(W, tg(51), 'delegation');
+    const forged = { ...place(W, tg(52), 'inference'), eventId: O.eventId } as GraphEvent;
+    const g = reduceGraph([O, D, forged], { verify: (e) => e.authority !== 'inference' });
+    expect(parentOf(g, W)).toEqual(effort(1));
+    expect(g.setAside).not.toContainEqual({ eventId: O.eventId, reason: 'duplicate-event-id-different-payload' });
+    expect(g.setAside).toContainEqual({ eventId: O.eventId, reason: 'unverified-authority' }); // the forged copy, reported
   });
 
-  it('a hidden child is not counted, not listed, not searchable', () => {
-    const p = new GraphProjection({ graph, conversations, mayView: (r) => r !== TG(102) });
-    expect(p.item(TG(100))?.visibleChildCount).toBe(1);
-    expect(p.childrenOf(TG(100))).toEqual([TG(101)]);
-    expect(p.roots('all', 'hidden')).toEqual([]);
-    expect(p.item(TG(102))).toBeNull();
+  it('an owner correction naming an unverified agent placement is applied, not held (finding 2)', () => {
+    const D = place(W, tg(51), 'delegation');
+    const O2 = place(W, effort(2), 'owner', [D.eventId]);
+    const g = reduceGraph([D, O2], { verify: (e) => e.authority === 'owner' });
+    expect(parentOf(g, W)).toEqual(effort(2));
+    expect(g.setAside).not.toContainEqual({ eventId: O2.eventId, reason: 'missing-replaced-event' });
+  });
+
+  it('a refused front-door move leaves the subject under its effort and the front door intact (finding 3)', () => {
+    const a = tg(60);
+    const p0 = place(a, effort(1));
+    const h1 = place(a, effort(1), 'owner', [p0.eventId]);
+    const h2 = place(a, effort(2), 'owner', [p0.eventId]); // owner conflict; last agreed = effort 1
+    const fd = frontDoor(effort(1), a, [h1.eventId, h2.eventId]);
+    const unlink = place(a, null, 'owner', [h1.eventId, h2.eventId]);
+    const g = reduceGraph([create(effort(1)), p0, h1, h2, fd, unlink], VERIFY_ALL);
+    expect(parentOf(g, a)).toEqual(effort(1));
+    expect(g.frontDoorOf.get(nodeKey(effort(1)))).toEqual(a);
+    expect(g.setAside).toContainEqual({ eventId: unlink.eventId, reason: 'front-door-guard' });
+    expect(g.setAside.map((x) => x.reason)).not.toContain('front-door-not-coordinated');
+  });
+
+  it('a cycle is reported as a conflict with the event that would have closed it (finding 4)', () => {
+    const x = place(tg(70), tg(71));
+    const y = place(tg(71), tg(70));
+    const g = reduceGraph([x, y], VERIFY_ALL);
+    const cyc = g.conflicts.filter((c) => c.kind === 'cycle');
+    expect(cyc).toHaveLength(1);
+    expect(cyc[0].heads).toEqual([y.eventId]); // the newer one is set aside
+  });
+
+  it('disagreeing concurrent agent heads resolve to the newest and the loser is reported (finding 5)', () => {
+    const d1 = place(tg(80), tg(81), 'delegation');
+    const d2 = place(tg(80), tg(82), 'delegation');
+    const g = reduceGraph([d1, d2], VERIFY_ALL);
+    expect(parentOf(g, tg(80))).toEqual(tg(82));
+    expect(g.setAside).toContainEqual({ eventId: d1.eventId, reason: 'concurrent-lower-tier-head' });
+    expect(g.conflicts.find((c) => c.kind === 'agent-heads')?.heads).toEqual([d1.eventId, d2.eventId].sort());
+  });
+});
+
+describe('second-pass re-review regressions', () => {
+  it('naming a conversation the owner already moved away does not pull it back (re-review 6)', () => {
+    const a = tg(90);
+    const o1 = place(a, effort(1));
+    const o2 = place(a, effort(2), 'owner', [o1.eventId]);
+    const fd = frontDoor(effort(1), a, [o2.eventId]); // chosen after the move, observing it
+    const g = reduceGraph([create(effort(1)), o1, o2, fd], VERIFY_ALL);
+    expect(parentOf(g, a)).toEqual(effort(2));
+    expect(g.setAside).not.toContainEqual({ eventId: o2.eventId, reason: 'front-door-guard' });
+    expect(g.setAside).toContainEqual({ eventId: fd.eventId, reason: 'front-door-not-coordinated' });
+  });
+
+  it('a cycle found while applying an owner-conflict result is still reported (re-review 4)', () => {
+    const x = tg(95);
+    const y = tg(96);
+    const base = place(x, y);
+    const c1 = place(x, effort(1), 'owner', [base.eventId]);
+    const c2 = place(x, effort(2), 'owner', [base.eventId]); // conflict; last agreed = y
+    const yUnderX = place(y, x); // older-or-equal tier edge that makes "x under y" a cycle
+    const g = reduceGraph([yUnderX, base, c1, c2], VERIFY_ALL);
+    expect(g.conflicts.some((c) => c.kind === 'cycle')).toBe(true);
+  });
+});
+
+describe('causal front-door guard', () => {
+  it('a backdated or late-replicated placement cannot move a certified front door (re-review 3)', () => {
+    const a = tg(110);
+    const imp = place(a, effort(1), 'import', [], { at: '2026-11-05T08:00:00.000Z' });
+    const fd = { ...frontDoor(effort(1), a, [imp.eventId]), createdAt: '2026-11-05T09:00:00.000Z' } as GraphEvent;
+    const late = place(a, tg(111), 'delegation', [imp.eventId], { at: '2026-11-05T08:30:00.000Z' });
+    const g = reduceGraph([create(effort(1)), imp, fd, late], VERIFY_ALL);
+    expect(parentOf(g, a)).toEqual(effort(1));
+    expect(g.setAside).toContainEqual({ eventId: late.eventId, reason: 'front-door-guard' });
+    expect(g.frontDoorOf.get(nodeKey(effort(1)))).toEqual(a);
+  });
+  it('a placement with the same timestamp as the choice is refused too (re-review 4)', () => {
+    const a = tg(112);
+    const p0 = place(a, effort(1), 'owner', [], { at: '2026-11-05T09:00:00.000Z' });
+    const fd = { ...frontDoor(effort(1), a, [p0.eventId]), createdAt: '2026-11-05T09:00:00.000Z' } as GraphEvent;
+    const move = place(a, effort(2), 'owner', [p0.eventId], { at: '2026-11-05T09:00:00.000Z' });
+    const g = reduceGraph([create(effort(1)), p0, fd, move], VERIFY_ALL);
+    expect(parentOf(g, a)).toEqual(effort(1));
+  });
+  it('choosing a front door must name what it observed; clearing names nothing', () => {
+    expect(validateGraphEvent(frontDoor(effort(1), tg(1), []))).toBeNull();
+    expect(validateGraphEvent(frontDoor(effort(1), null, ['evt-000001']))).toBeNull();
+    expect(validateGraphEvent(frontDoor(effort(1), null, []))).not.toBeNull();
+  });
+});
+
+describe('certified means guarded', () => {
+  it('a front door naming another conversation\'s placement is not certified (re-review 4)', () => {
+    const a = tg(120);
+    const o1 = place(a, effort(1));
+    const other = place(tg(121), effort(1));
+    const fd = frontDoor(effort(1), a, [other.eventId]);
+    const g = reduceGraph([create(effort(1)), o1, other, fd], VERIFY_ALL);
+    expect(g.frontDoorOf.size).toBe(0);
+    expect(g.setAside).toContainEqual({ eventId: fd.eventId, reason: 'front-door-observation-invalid' });
+  });
+  it('a front door whose observed head is unverified here is not certified', () => {
+    const a = tg(122);
+    const d = place(a, tg(123), 'delegation');
+    const o1 = place(a, effort(1), 'owner', [d.eventId]);
+    const fd = frontDoor(effort(1), a, [o1.eventId, d.eventId]);
+    const g = reduceGraph([create(effort(1)), d, o1, fd], { verify: (e) => e.authority === 'owner' });
+    expect(g.frontDoorOf.size).toBe(0);
+    expect(parentOf(g, a)).toEqual(effort(1));
+  });
+});
+
+describe('GraphProjection (filter first)', () => {
+  const E = effort(100);
+  const S = effort(200);
+  const events = [
+    create(E), create(S),
+    ...(() => { const p100 = place(tg(100), E); return [p100, frontDoor(E, tg(100), [p100.eventId])]; })(),
+    place(tg(101), tg(100), 'delegation'), place(tg(102), tg(100), 'delegation'),
+    place(tg(200), S),
+  ];
+  const graph = reduceGraph(events, VERIFY_ALL);
+  const conv = (r: ConversationRef, title: string, at: string | null, id: string | number = (r as { topicId: number }).topicId): ConversationSource => ({ ref: r, conversationId: id, title, lastActivity: at });
+  const conversations = [
+    conv(tg(100), 'Front door', '2026-11-05T09:00:00.000Z'),
+    conv(tg(101), 'Worker visible', '2026-11-05T09:05:00.000Z'),
+    conv(tg(102), 'Worker hidden', '2026-11-05T09:06:00.000Z'),
+    conv(tg(200), 'Secret worker', '2026-11-05T08:00:00.000Z'),
+    conv(tg(300), 'Unassigned chat', '2026-11-05T07:00:00.000Z'),
+  ];
+  const titles = (e: EffortRef) => (nodeKey(e) === nodeKey(E) ? 'Launch' : nodeKey(e) === nodeKey(S) ? 'Secret plan' : null);
+  const make = (mayView: (r: NodeRef) => boolean) => new GraphProjection({ graph, conversations, effortTitle: titles, mayView });
+  const not = (...hidden: NodeRef[]) => (r: NodeRef) => !hidden.some((h) => nodeKey(h) === nodeKey(r));
+
+  it('All lists every authorized node, assigned workers included (defect 4)', () => {
+    const all = make(() => true).list('all', null).map(nodeKey);
+    for (const r of [E, S, tg(100), tg(101), tg(102), tg(200), tg(300)]) expect(all).toContain(nodeKey(r));
+  });
+
+  it('Overview lists root efforts only; roles and counts are right for the owner', () => {
+    const p = make(() => true);
+    expect(p.list('overview', null).map(nodeKey).sort()).toEqual([nodeKey(E), nodeKey(S)].sort());
+    expect(p.item(tg(100))?.role).toBe('front-door');
+    expect(p.item(tg(101))?.role).toBe('worker');
+    expect(p.item(tg(300))?.role).toBe('unassigned');
+    expect(p.item(tg(100))?.visibleChildCount).toBe(2);
+    expect(p.item(tg(101))?.primaryPath.map((x) => x.title)).toEqual(['Launch', 'Front door']);
+  });
+
+  it('a hidden child is not counted, listed, or searchable', () => {
+    const p = make(not(tg(102)));
+    expect(p.item(tg(100))?.visibleChildCount).toBe(1);
+    expect(p.childrenOf(tg(100))).toEqual([tg(101)]);
+    expect(p.list('all', 'hidden')).toEqual([]);
+    expect(p.item(tg(102))).toBeNull();
   });
 
   it('an effort whose only children are hidden reveals nothing about them', () => {
-    const p = new GraphProjection({ graph, conversations, mayView: (r) => r !== TG(200) });
-    expect(p.item('effort:secret')?.visibleChildCount).toBe(0);
-    expect(p.childrenOf('effort:secret')).toEqual([]);
+    const p = make(not(tg(200)));
+    expect(p.item(S)?.visibleChildCount).toBe(0);
+    expect(p.childrenOf(S)).toEqual([]);
   });
 
-  it('a hidden parent leaves no trace: the child surfaces as a root with an empty path', () => {
-    const p = new GraphProjection({ graph, conversations, mayView: (r) => r !== 'effort:secret' });
-    expect(p.item(TG(200))?.primaryPath).toEqual([]);
-    expect(p.item(TG(200))?.role).toBe('unassigned');
-    expect(p.roots('all', null)).toContain(TG(200));
-    expect(JSON.stringify(p.item(TG(200)))).not.toContain('Secret plan');
+  it('a hidden parent leaves no trace', () => {
+    const p = make(not(S));
+    expect(p.item(tg(200))?.primaryPath).toEqual([]);
+    expect(p.item(tg(200))?.role).toBe('unassigned');
+    expect(JSON.stringify(p.item(tg(200)))).not.toContain('Secret plan');
   });
 
-  it('copies the flat row id and machine exactly into the source descriptor', () => {
-    const slack = { ref: 'slack:T1:C1', platform: 'slack' as const, conversationId: -7, machine: 'studio', title: 'Slack thread', lastActivity: null };
-    const p = new GraphProjection({ graph: reduceGraph([]), conversations: [slack], mayView: () => true });
-    expect(p.item('slack:T1:C1')?.source).toEqual({ platform: 'slack', conversationId: -7, title: 'Slack thread', machine: 'studio' });
-    expect(p.item('slack:T1:C1')?.source?.conversationId).toBeTypeOf('number');
+  it('a forgotten effort header leaves an empty title, never stale text', () => {
+    const p = new GraphProjection({ graph, conversations, effortTitle: () => null, mayView: () => true });
+    expect(p.item(E)?.title).toBe('');
   });
 
-  it('orders roots newest-activity first, deterministically', () => {
-    const p = new GraphProjection({ graph, conversations, mayView: () => true });
-    const a = p.roots('all', null);
-    const b = new GraphProjection({ graph, conversations: [...conversations].reverse(), mayView: () => true }).roots('all', null);
+  it('copies the flat row id and machine exactly into source', () => {
+    const slack: ConversationRef = { kind: 'conversation', platform: 'slack', channelId: 'C0123ABCD' };
+    const p = new GraphProjection({ graph: reduceGraph([], VERIFY_ALL), conversations: [{ ref: slack, conversationId: -7, machine: 'studio', title: 'Slack thread', lastActivity: null }], effortTitle: () => null, mayView: () => true });
+    expect(p.item(slack)?.source).toEqual({ platform: 'slack', conversationId: -7, title: 'Slack thread', machine: 'studio' });
+  });
+
+  it('reports partial reasons honestly', () => {
+    const unverified = reduceGraph(events, { verify: () => false });
+    const p = new GraphProjection({ graph: unverified, conversations, effortTitle: titles, mayView: () => true });
+    expect(p.partialReasons().map((r) => r.reason)).toEqual(['replica-lag', 'evidence-missing']);
+  });
+
+  it('orders deterministically regardless of inventory order', () => {
+    const a = make(() => true).list('all', null);
+    const b = new GraphProjection({ graph, conversations: [...conversations].reverse(), effortTitle: titles, mayView: () => true }).list('all', null);
     expect(b).toEqual(a);
   });
 });

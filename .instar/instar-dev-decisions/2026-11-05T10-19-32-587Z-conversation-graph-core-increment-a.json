@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-05T10:19:32.587Z",
+  "slug": "conversation-graph-core-increment-a",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 1056,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ConversationGraphStore.ts",
+      "src/core/EffortHeaderStore.ts",
+      "src/core/conversationGraph.ts",
+      "src/data/state-coherence-registry.json"
+    ],
+    "addedLines": 787,
+    "deletedLines": 269
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
