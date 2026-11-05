@@ -64,3 +64,7 @@ Inspection found the portable receiver accepted decimal-only catalog counters wh
 The added roundtrip lifecycle boots real source and destination HTTP listeners. The destination production monitor pulls source coverage and recipient-encrypted bytes at a hex-letter catalog generation, stages outside scheduling, then installs only after a destination PIN approval. A modified imported body fails real run-integrity verification. The polling assertion is bounded to 20 seconds and all listeners and monitor timers are stopped on cleanup.
 
 Second-pass concurrence: the independent reviewer verified the counter producer format, actual auth middleware, real key registration, live monitor construction, encrypted delivery and destination PIN path. No remaining code-review blocker; this does not claim test success.
+
+## Runnable lifecycle fixture correction (2026-11-05)
+
+The real roundtrip test refused to stage because its source fixture body omitted required agentmd YAML frontmatter. A diagnostic through the real production catalog loader returned complete:false/jobs:[] and the missing-frontmatter problem; adding valid name/description frontmatter returned complete:true with the portable entry. The fixture now verifies real loader admission at construction, and the lifecycle test asserts a complete signed portable advertisement and hex-letter generation before waiting on transfer. No runtime behavior or admission gate changed. The encrypted source export/replay test had passed; the corrected end-to-end case still requires a fresh execution result.

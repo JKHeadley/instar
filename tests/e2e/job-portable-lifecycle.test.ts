@@ -77,6 +77,11 @@ describe('private job transfer production initialization', () => {
     });
     await server.start();
     const auth = { Authorization: `Bearer ${source.config.authToken}` };
+    const catalog = await request(server.getApp()).get('/jobs/coverage-snapshot?nonce=' + 'f'.repeat(64)).set(auth);
+    expect(catalog.status).toBe(200);
+    expect(catalog.body.complete).toBe(true);
+    expect(catalog.body.jobs).toContainEqual(expect.objectContaining({ slug: 'portable-http', portable: true }));
+    expect(catalog.body.generation.split(':')[0]).toMatch(/[a-f]/);
     const preview = await request(server.getApp()).get('/jobs/portable/export/portable-http').set(auth);
     expect(preview.status).toBe(200);
     expect((await request(server.getApp()).post('/jobs/portable/export/portable-http/approve').set(auth)
