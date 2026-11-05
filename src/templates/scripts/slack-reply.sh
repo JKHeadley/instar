@@ -51,7 +51,10 @@ while [ "${1:-}" = '--native-reference' ]; do
   NATIVE_REFERENCES+=("$2")
   shift 2
 done
-REFS_JSON=$(printf '%s\n' "${NATIVE_REFERENCES[@]}" | python3 -c 'import json,sys; print(json.dumps([s.strip() for s in sys.stdin if s.strip()]))')
+REFS_JSON='[]'
+if [ "${#NATIVE_REFERENCES[@]}" -gt 0 ]; then
+  REFS_JSON=$(printf '%s\n' "${NATIVE_REFERENCES[@]}" | python3 -c 'import json,sys; print(json.dumps([s.strip() for s in sys.stdin if s.strip()]))')
+fi
 
 # Read message from args or stdin
 if [ $# -gt 0 ]; then
