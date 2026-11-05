@@ -48,3 +48,7 @@ Revert the commit. The app then shows "update the agent". The read writes nothin
 Its last read was MINOR ISSUES and found no leak in the auth checks or field allowlist. Its design points (peer vault unknown, unexpected vault state unrecorded, gate-off branch) were fixed and tested before this commit. No reviewer has read the code after those last fixes.
 
 **Merge note (2026-11-04):** merged main after PR 2763 landed. The two features share the allowlist, routes.ts and the migrator; each conflict kept both sides. No behaviour of this feature changed. Type check clean.
+
+## Independent security review of the peer read (2026-11-04)
+
+An independent reviewer read the final peer code and found no leak of a value, length, token, link or path, and no auth bypass. It found one high fault, now fixed: `phoneText` scrubbed the whole string before cutting, and a scrub pattern is quadratic, so one long string from a peer blocked the server for minutes (measured 51.8 s at 160 KB). Both copies of `phoneText` now cut to the shown length plus a 2,048-character margin first. A new test covers it; before the fix it took 378 s. A secret longer than the margin that starts inside the shown text is only partly scrubbed, and the Passwords text path still hides long opaque runs. Also fixed: a key name is checked for token shape after cleaning as well as before. Left as is, matching the spec: short opaque names under the token thresholds are shown; nothing writes such a name today.

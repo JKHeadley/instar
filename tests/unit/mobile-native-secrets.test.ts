@@ -107,6 +107,11 @@ describe('keys', () => {
     expect(k.truncated).toBe(false);
   });
 
+  it('a token that only appears once cleaning joins it is hidden too', () => {
+    const k = summarizeSecrets(src({ keys: { state: 'ok', names: ['authToken', 'api.a1b2c3d4\u0001e5f60718'] } })).keys as Record<string, unknown>;
+    expect(k).toMatchObject({ names: ['authToken'], count: 2, hidden: 1 });
+  });
+
   it('a name with a hex run that is not a saved drop is hidden and still counted as a key', () => {
     const k = summarizeSecrets(src({ keys: { state: 'ok', names: ['customer.0123456789abcdef', 'authToken'] } })).keys as Record<string, unknown>;
     expect(k).toMatchObject({ names: ['authToken'], count: 2, hidden: 1, savedDrops: 0, truncated: false });

@@ -97,7 +97,8 @@ function summarizeKeys(read: KeysRead): Rec {
   const savedDrops = unique.filter((n) => SAVED_DROP.test(n)).length;
   // `count` is the keys held, taken before cleaning: two long paths that shorten alike are still two keys.
   const keys = unique.filter((n) => !SAVED_DROP.test(n));
-  const shown = keys.filter((n) => !TOKEN_RUN.test(n));
+  // Checked before and after cleaning: cleaning can join a token back together.
+  const shown = keys.filter((n) => !TOKEN_RUN.test(n) && !TOKEN_RUN.test(cleanText(n, 120) ?? ''));
   const names = [...new Set(shown.map((n) => cleanText(n, 120)).filter((n): n is string => !!n))].sort((a, b) => a.localeCompare(b));
   const listed = names.slice(0, MAX_KEY_NAMES);
   return { state: 'ok', count: keys.length, names: listed, savedDrops, hidden: keys.length - shown.length, truncated: names.length > listed.length };
