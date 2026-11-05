@@ -53,6 +53,8 @@ import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDe
  */
 
 import { Router } from 'express';
+import { loadJobsDetailed } from '../scheduler/JobLoader.js';
+import { JobCoverageMonitor } from '../core/JobCoverageMonitor.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
@@ -1094,6 +1096,8 @@ export interface MobileInboundTrust {
 }
 
 export interface RouteContext {
+  /** Stops the lease coverage peer poller when AgentServer shuts down. */
+  jobCoverageStop?: (() => void) | null;
   /** Installed by createRoutes: feeds a device-authenticated app message through
    * the same inbound core the lifeline forward uses (mobile-operator-chat spec). */
   mobileInbound?: { ingest: (req: any, res: any, trust: MobileInboundTrust) => Promise<void> } | null;
@@ -18136,6 +18140,54 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     return out;
   }
 
+  // The monitor is created on scheduler-less standby too: the job catalog lives
+  // on disk independently of the awake-only scheduler.
+  const coverageIdentityManager = ctx.coordinator?.managers.identityManager;
+  const jobCoverageAuthToken = ctx.config.authToken;
+  const jobCoverage = coverageIdentityManager && ctx.meshSelfId && jobCoverageAuthToken
+    ? new JobCoverageMonitor({
+        stateDir: ctx.config.stateDir,
+        jobsFile: ctx.config.scheduler.jobsFile ?? path.join(ctx.config.stateDir, 'jobs.json'),
+        projectDir: ctx.config.projectDir,
+        port: ctx.config.port,
+        onCatalogRepair: () => { ctx.scheduler?.refreshJobs(); },
+        authToken: jobCoverageAuthToken,
+        identityManager: coverageIdentityManager,
+        isAwake: () => ctx.coordinator?.isAwake === true,
+        peerUrls: () => ctx.resolvePeerUrls?.() ?? [],
+        recordRopeResult: ctx.recordRopeResult ?? undefined,
+        clearAlert: conditionKey => { ctx.telegram?.clearAttentionCondition({ conditionKey }, 'Job coverage restored'); },
+        alert: async (conditionKey, title, summary) => {
+          if (!ctx.telegram) throw new Error('attention-destination-unavailable');
+          await ctx.telegram.createAttentionItemConfirmed({
+            id: conditionKey, conditionKey, title, summary,
+            description: summary, category: 'job', priority: 'HIGH',
+            sourceContext: 'lease-job-coverage',
+          });
+        },
+      }) : null;
+  if (jobCoverage) {
+    jobCoverage.start();
+    const onCoverageRoleChange = (_from: string, to: string) => {
+      if (to === 'awake') void jobCoverage.checkPromotionCoverage();
+    };
+    ctx.coordinator?.on('roleChange', onCoverageRoleChange);
+    ctx.jobCoverageStop = () => {
+      jobCoverage.stop();
+      ctx.coordinator?.off('roleChange', onCoverageRoleChange);
+    };
+  }
+
+  router.get('/jobs/coverage-snapshot', (req, res) => {
+    const nonce = req.query.nonce;
+    if (!jobCoverage) { res.status(503).json({ error: 'job-coverage-unavailable' }); return; }
+    if (typeof nonce !== 'string' || !/^[a-f0-9]{64}$/.test(nonce)) {
+      res.status(400).json({ error: 'invalid-nonce' }); return;
+    }
+    try { res.json(jobCoverage.localSnapshot(nonce)); }
+    catch { res.status(503).json({ error: 'catalog-unavailable' }); }
+  });
+
   async function jobsPoolMerge(localJobs: Array<Record<string, unknown>>): Promise<Record<string, unknown>> {
     const cacheKey = 'jobs';
     const cached = jobsPoolCache.get(cacheKey);
@@ -18227,6 +18279,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         peersOk: peers.length - failed.length,
         failed,
         divergences: detectJobDivergences(perMachine),
+        ...(jobCoverage ? { coverage: jobCoverage.view() } : {}),
         // WS4.4(f): honestly labeled when the shared pool-cache served any peer
         // body from its last-cached value under CPU load-shed (load-shed, never
         // silent stale). Absent/false ⇒ every peer body in this merge is fresh.

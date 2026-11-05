@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Cron } from 'croner';
 import type { JobDefinition, JobPriority, ModelTier } from '../core/types.js';
+import { validJobDependencyPath } from '../core/JobDependency.js';
 import { loadAgentMdJobs, type AgentMdLoadResult, type LoadProblem } from './AgentMdJobLoader.js';
 
 const VALID_PRIORITIES: JobPriority[] = ['critical', 'high', 'medium', 'low'];
@@ -404,6 +405,15 @@ export function validateJob(job: unknown, index?: number): void {
   // Optional args must be a string if present
   if (exec.args !== undefined && typeof exec.args !== 'string') {
     throw new Error(`${prefix}: execute.args must be a string if provided, got ${typeof exec.args}`);
+  }
+
+  if (j.catchUpPolicy !== undefined && !['skip', 'run-once', 'ask'].includes(j.catchUpPolicy as string)) {
+    throw new Error(`${prefix}: \"catchUpPolicy\" must be skip, run-once, or ask`);
+  }
+
+  if (j.requiredPaths !== undefined && (!Array.isArray(j.requiredPaths) || j.requiredPaths.length > 32
+    || j.requiredPaths.some(value => !validJobDependencyPath(value)))) {
+    throw new Error(`${prefix}: requiredPaths must be at most 32 safe project-relative paths`);
   }
 
   // Optional gate must be a string if present

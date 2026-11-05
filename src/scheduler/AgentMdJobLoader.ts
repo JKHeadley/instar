@@ -24,6 +24,7 @@ import type {
   JobPriority,
   ModelTier,
 } from '../core/types.js';
+import { validJobDependencyPath } from '../core/JobDependency.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 import {
   readLockFile,
@@ -101,6 +102,8 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'supervision',
   'mcpAccess',
   'perMachineIndependent',
+  'catchUpPolicy',
+  'requiredPaths',
   // Jev job-completion audit (spec: jev-job-supervision.md) — both wired
   // through PerSlugManifest + manifestToJobDefinition, never dead vocabulary:
   'completionAudit',
@@ -160,6 +163,8 @@ export interface PerSlugManifest {
   leanContext?: boolean;
   expectedDurationMinutes: number;
   enabled: boolean;
+  catchUpPolicy?: 'skip' | 'run-once' | 'ask';
+  requiredPaths?: string[];
   execute: { type: 'skill' | 'prompt' | 'script' | 'agentmd'; value?: string; args?: string };
   // optional pass-throughs preserved as-is
   tags?: string[];
@@ -769,6 +774,15 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
   // Enabled
   if (typeof j.enabled !== 'boolean') {
     throw new Error(`${prefix}: "enabled" must be a boolean`);
+  }
+
+  if (j.catchUpPolicy !== undefined && !['skip', 'run-once', 'ask'].includes(j.catchUpPolicy as string)) {
+    throw new Error(`${prefix}: catchUpPolicy must be skip, run-once, or ask`);
+  }
+
+  if (j.requiredPaths !== undefined && (!Array.isArray(j.requiredPaths) || j.requiredPaths.length > 32
+    || j.requiredPaths.some(value => !validJobDependencyPath(value)))) {
+    throw new Error(`${prefix}: requiredPaths must be at most 32 safe project-relative paths`);
   }
 
   // Execute block
@@ -1435,6 +1449,8 @@ function manifestToJobDefinition(
     frameworkModel: manifest.frameworkModel,
     leanContext: manifest.leanContext,
     enabled: manifest.enabled,
+    catchUpPolicy: manifest.catchUpPolicy,
+    requiredPaths: manifest.requiredPaths,
     execute: manifest.execute as JobDefinition['execute'],
     origin: manifest.origin,
     tags: manifest.tags,
