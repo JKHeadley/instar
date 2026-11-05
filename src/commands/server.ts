@@ -29896,7 +29896,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   // §4.1/§4.2 — settle, forward to the holder, ladder, then hold durably.
                   const runtime = telegramOriginBoot.runtime;
                   const outcome = await originForwardMod.forwardReplyToHolder(forwardDeps(runtime),
-                    { topicId, chatId: tg.chatId, text, silent: opts?.silent, formatMode: tg.formatMode, kindMetadata: opts?.kindMetadata });
+                    { topicId, chatId: tg.chatId, text, silent: opts?.silent, formatMode: opts?.formatMode ?? tg.formatMode, kindMetadata: opts?.kindMetadata });
                   if (outcome.kind === 'local') throw new OriginForwardSettledLocallyError();
                   if (outcome.kind === 'sent') return { messageId: outcome.messageId, topicId, destinationStoreConfirmed: true as const };
                   if (!outcome.noticeDelivered && outcome.noticeSuppressed !== 'already-noticed') void raiseHeldItem({ topicId, holder: outcome.holder, operationId: outcome.operationId, lastAttempt: outcome.lastAttempt, reason: outcome.reason });
@@ -29907,7 +29907,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 if (!holder || !url || holder === meshSelfId) throw new TelegramOriginHoldError('origin-credential-owner-unavailable');
                 const { relayOriginBot } = await import('../messaging/telegram-origin/OriginMeshRelay.js');
                 return relayOriginBot({ runtime: telegramOriginBoot.runtime, topicId, text, chatId: tg.chatId,
-                  silent: opts?.silent, formatMode: tg.formatMode, kindMetadata: opts?.kindMetadata,
+                  silent: opts?.silent, formatMode: opts?.formatMode ?? tg.formatMode, kindMetadata: opts?.kindMetadata,
                   send: command => meshClient.send({ machineId: holder, url }, command, 0, { timeoutMs: relayTimeoutMs }) });
               }
               const r = await relayOutbound(topicId, text, opts, {

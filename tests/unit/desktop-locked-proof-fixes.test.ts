@@ -43,8 +43,16 @@ function standIn(body: string): MacDesktopHost {
 
 describe.skipIf(process.platform !== 'darwin')('MacDesktopHost.lockedOp failure', () => {
   afterEach(() => {
-    for (const filename of helpers.splice(0)) {
-      SafeFsExecutor.safeUnlinkSync(filename, { operation: 'tests/unit/desktop-locked-proof-fixes.test.ts:cleanup' });
+    // The stand-ins must live beside the trusted helper during the test. Move
+    // only files this test created into an isolated temp dir before safe cleanup;
+    // SafeFsExecutor correctly refuses deletion inside the instar source tree.
+    const cleanupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-desktop-stateop-cleanup-'));
+    try {
+      for (const filename of helpers.splice(0)) {
+        fs.renameSync(filename, path.join(cleanupDir, path.basename(filename)));
+      }
+    } finally {
+      SafeFsExecutor.safeRmSync(cleanupDir, { recursive: true, force: true, operation: 'tests/unit/desktop-locked-proof-fixes.test.ts:cleanup' });
     }
   });
 
