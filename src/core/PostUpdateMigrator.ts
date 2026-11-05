@@ -1177,8 +1177,8 @@ ${MOBILE_CAPACITY_SCREENS_LINE(port)}
 ${MOBILE_PLANS_PEOPLE_LINE(port)}
 ${MOBILE_PHONES_MESSAGES_LINE(port)}
 ${MOBILE_PERMISSIONS_LINE(port)}
-${MOBILE_SECRETS_LINE(port)}
 ${MOBILE_PROPOSALS_INSIDE_LINE(port)}
+${MOBILE_SECRETS_LINE(port)}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }

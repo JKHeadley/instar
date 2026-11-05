@@ -9,15 +9,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
-import { MOBILE_PERMISSIONS_LINE, MOBILE_SECRETS_LINE, MOBILE_SECRETS_MARKER, MOBILE_ROUTES_CLAUDEMD_SECTION, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { MOBILE_PERMISSIONS_LINE, MOBILE_SECRETS_LINE, MOBILE_PROPOSALS_INSIDE_LINE, MOBILE_SECRETS_MARKER, MOBILE_ROUTES_CLAUDEMD_SECTION, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const count = (s: string) => s.split(MOBILE_SECRETS_MARKER).length - 1;
 
 describe('passwords and keys screen awareness', () => {
-  it('the Mobile app routes block carries the bullet right after the permissions bullet, with the injected port', () => {
+  it('the Mobile app routes block carries the bullet right after the Proposals bullet, with the injected port', () => {
     const lines = MOBILE_ROUTES_CLAUDEMD_SECTION(9999).split('\n');
-    expect(lines[lines.indexOf(MOBILE_PERMISSIONS_LINE(9999)) + 1]).toBe(MOBILE_SECRETS_LINE(9999));
+    expect(lines[lines.indexOf(MOBILE_PROPOSALS_INSIDE_LINE(9999)) + 1]).toBe(MOBILE_SECRETS_LINE(9999));
     expect(MOBILE_SECRETS_LINE(9999)).toContain('http://localhost:9999/mobile/secrets');
     expect(MOBILE_SECRETS_LINE(9999)).not.toContain('4042');
   });
