@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-05T04:47:04.591Z",
+  "slug": "queued-reply-coherence",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 196,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+      "src/messaging/telegram-origin/QueuedReplySupersession.ts",
+      "src/messaging/telegram-origin/TelegramOriginBoot.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts"
+    ],
+    "addedLines": 107,
+    "deletedLines": 89
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "src/testing/selfActionRegistry.ts#telegram-origin-forward-ladder",
+      "howCaught": "The existing forward ladder has a deadline and bounded attempts; the new chronology gate either holds for a later reserved attempt or makes one terminal suppression transition."
+    }
+  },
+  "verdict": "pass"
+}

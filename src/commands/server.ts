@@ -7089,6 +7089,29 @@ export async function startServer(options: StartOptions): Promise<void> {
           const { checkToneLocally } = await import('../messaging/local-tone-check.js');
           return (await checkToneLocally(messagingToneGate ?? null, text, { channel: 'telegram' })).passed;
         },
+        reviewQueuedReply: async ({ chatId, topicId, preparedAt }) => {
+          if (!telegram) return 'hold';
+          const issuesChatId = (originTelegramConfig.config as { issuesChatId?: unknown }).issuesChatId;
+          const historyTopicId = chatId === String(issuesChatId) ? 10_000_000_000 + topicId : topicId;
+          const { queuedReplyOvertaken, reviewQueuedReplyHistory } = await import('../messaging/telegram-origin/QueuedReplySupersession.js');
+          const local = telegram.getTopicHistory(historyTopicId, 500);
+          if (queuedReplyOvertaken(preparedAt, local)) return 'retire';
+          try {
+            const response = await fetch(`http://127.0.0.1:${config.port}/telegram/topics/${historyTopicId}/messages?limit=100&scope=pool`, {
+              headers: { Authorization: `Bearer ${config.authToken ?? ''}`, 'X-Instar-AgentId': config.projectName },
+              signal: AbortSignal.timeout(6_000),
+            });
+            if (!response.ok) return 'hold';
+            const body = await response.json() as { messages?: unknown; pool?: { failed?: unknown } };
+            if (!Array.isArray(body.messages) || !Array.isArray(body.pool?.failed)) return 'hold';
+            const pooled = body.messages.filter((m): m is { timestamp: string; fromUser: boolean; provenance?: string } =>
+              !!m && typeof m === 'object' && typeof m.timestamp === 'string' && Number.isFinite(Date.parse(m.timestamp)) &&
+              typeof m.fromUser === 'boolean');
+            if (pooled.length !== body.messages.length) return 'hold';
+            return reviewQueuedReplyHistory({ preparedAt, local, pooled,
+              failedPeers: body.pool.failed.length, poolPageLimit: 100 });
+          } catch { return 'hold'; }
+        },
         diagnoseUnknown: async (originId, reason) => {
           if (!sharedIntelligence) throw new Error('origin diagnostic intelligence unavailable');
           const prompt = `Diagnose an uncertain Telegram delivery. Never authorize retries or invent receipts. Origin=${originId}; reason=${reason}. Return a brief read-only diagnostic.`;
@@ -29979,7 +30002,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                 supersede: (operationId, next, detail) => runtime.store.supersedeWithAdmission({ operationId, admission: next.admission,
                   holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> }),
                 sendLocal: async detail => {
-                  const sent = await telegram.sendToTopic(detail.topicId, detail.text, { silent: detail.silent, kindMetadata: detail.kindMetadata, provenance: 'automation' });
+                  const sent = await telegram.sendToTopic(detail.topicId, detail.text, { silent: detail.silent, kindMetadata: detail.kindMetadata,
+                    provenance: originForwardMod.recoveredForwardProvenance(detail, row.producerKind) });
                   return { messageId: sent.messageId };
                 },
               }, row, operation);
@@ -29990,7 +30014,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   // Telegram id may fill that gap; this never sends a second copy.
                   const recovered = await originForwardMod.confirmedRecoveredForward(row, id => runtime.store.getOperation(id)).catch(() => null);
                   if (recovered) telegram.recordRecoveredOutbound(recovered.topicId, recovered.text, recovered.messageId,
-                    row.producerKind === 'session' ? 'agent' : 'automation');
+                    originForwardMod.recoveredForwardProvenance(row.holdDetail, row.producerKind));
                 }
                 if (outcome === 'sent' || outcome === 'resolved' || outcome === 'settled') await clearHeldItemIfResolved(row.destination.topicId);
                 return outcome;
