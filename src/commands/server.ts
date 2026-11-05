@@ -4,6 +4,7 @@
  * TccProtectedPathGuard block beside the worktree detector).
  */
 import { configureClaudeChildAuth, sweepClaudeAuthEnvFiles } from '../core/claudeChildAuth.js';
+import { holdAllSetups, holdSetupForSession } from '../recommended/setupState.js';
 import { SlackPrincipalResolver } from '../permissions/SlackPrincipalResolver.js';
 import type { InboundFacts } from '../users/MemoryInboundTracker.js';
 import { whatsappPersonKey, whatsappSpeakerJid } from '../users/MemoryAudience.js';
@@ -63,7 +64,7 @@ import { StandDownRegistry } from '../core/StandDownRegistry.js';
 import { ensureDashboardPin, persistDashboardPin, pickDashboardPin } from '../core/dashboardPin.js';
 import { getActiveOverloadShedPlanner, getMoveAftercare } from '../core/OverloadShedPlanner.js';
 import { QuietTopicScanner, type RunningTopicSession } from '../core/quietTopicScanner.js';
-import { RebalanceProofRunner, getActiveRebalanceProof, waitForSettledIdle, proofSpawnBrief, setActiveRebalanceProof, setActiveRebalanceProofStore, type ProofHistoryRow } from '../core/rebalanceProof.js';
+import { RebalanceProofRunner, deliverProbeLocally, getActiveRebalanceProof, waitForSettledIdle, proofSpawnBrief, setActiveRebalanceProof, setActiveRebalanceProofStore, type ProofHistoryRow } from '../core/rebalanceProof.js';
 import { rebalanceProofState } from '../core/StageAdvancer.js';
 import { buildHandoffContinuationInstruction, type HandoffCommitment } from '../core/handoffContinuation.js';
 import { BASELINE_PROCESS_PATTERNS } from '../core/baselineProcessPatterns.js';
@@ -210,6 +211,7 @@ import { decideLeaseGatedSpawn, sharedG3SoakLedger, applyBindingCleanupOnKill } 
 import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForwardBridge.js';
 import { formatForwardedTopicContext, crossMachineReplyEvidence, INCOMPLETE_TOPIC_HISTORY_WARNING } from '../core/ForwardedTopicContext.js';
 import { CoherenceJournalReader } from '../core/CoherenceJournalReader.js';
+import { createTopicHistoryPullHandler, pullMovedTopicHistory, TOPIC_HISTORY_PULL_MAX_MESSAGES, TOPIC_HISTORY_PULL_TIMEOUT_MS } from '../core/topicHistoryPull.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl, detectTailscaleIp, pickPrimaryLanIp, computeSelfMeshEndpoints, advertiseSelfMeshEndpoints, resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { PeerEndpointResolver } from '../core/PeerEndpointResolver.js';
 import {
@@ -346,6 +348,7 @@ import type { OrphanProcessReaper } from '../monitoring/OrphanProcessReaper.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
 import { shouldOwnTelegramPoll } from '../lifeline/telegramPollOwnership.js';
+import { TopicRef, topicRef, setTopicNameResolver } from '../messaging/shared/topicRef.js';
 // setup.ts uses @inquirer/prompts which requires Node 20.12+
 // Dynamic import to avoid breaking the server on older Node versions
 // import { installAutoStart } from './setup.js';
@@ -849,6 +852,9 @@ let _ownershipReadForDrain: ((sessionKey: string) => import('../core/SessionOwne
  *  a moved topic's prior history from the router (bug #2). Set in the mesh block where
  *  the peer-URL resolver + coordinator are in scope. */
 let _resolveRouterUrl: (() => string | null) | null = null;
+/** Signed read of a moved topic's history from the lease holder. Null when this machine
+ *  is the holder or none is known. Set in the same mesh block. */
+let _pullRouterHistory: ((topic: number) => Promise<{ ok: boolean; result?: unknown } | null>) | null = null;
 /** Every OTHER active machine with a known URL — backs GET /sessions?scope=pool
  *  (pool-wide session aggregation for the dashboard). Set in the same mesh block. */
 let _resolvePeerUrls:
@@ -1186,7 +1192,7 @@ function noteAllMachinesRefusing(telegram: TelegramAdapter, topicId: number): vo
   void telegram.createAttentionItem({
     id: `work-admission:all-refusing:${new Date().toISOString().slice(0, 13)}`, // one per UTC hour
     title: 'Every machine is overloaded — new conversations are waiting',
-    summary: `A message in topic ${topicId} is held in the durable queue because no machine is accepting new work.`,
+    summary: `A message in ${topicRef(topicId)} is held in the durable queue because no machine is accepting new work.`,
     description: 'Each machine closed its own admission on its load verdict (saturated or impaired). Queued messages are delivered when a machine reopens. Nothing is dropped and nothing is killed automatically.',
     category: 'system',
     priority: 'HIGH',
@@ -1413,9 +1419,9 @@ export async function spawnSessionForTopic(
       primary: 'SQLite-backed context with summaries and search',
       fallback: 'JSONL-based last 20 messages (no summaries, no search)',
       reason: topicMemory.isReady()
-        ? `TopicMemory returned empty context for topic ${topicId} (possible data gap)`
+        ? `TopicMemory returned empty context for ${topicRef(topicId)} (possible data gap)`
         : `TopicMemory database not open (init failure)`,
-      impact: `Session for topic ${topicId} started with degraded context — no summaries, limited history.`,
+      impact: `Session for ${topicRef(topicId)} started with degraded context — no summaries, limited history.`,
     });
   }
 
@@ -2821,7 +2827,7 @@ export function wireTelegramRouting(
             let bindableTopics: import('../threadline/HubIntentClassifier.js').HubTopicCandidate[] = [];
             try {
               bindableTopics = telegram.getAllTopicMappings()
-                .map((m) => ({ topicId: m.topicId, topicName: m.topicName ?? `topic ${m.topicId}` }));
+                .map((m) => ({ topicId: m.topicId, topicName: m.topicName ?? topicRef(m.topicId) }));
             } catch { /* best-effort — an empty enum simply means only "open" is possible */ }
             // Bounded window of recent turns so context-dependent commands ("yes,
             // tie it to that one") can resolve their target. Best-effort.
@@ -7067,7 +7073,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           await telegram.upsertAttentionItem({ id: attentionId,
             category: 'telegram-origin', priority: 'HIGH', title: 'A reply needs delivery attention',
             sourceContext: 'telegram-origin-session-hold', summary: copy.summary,
-            description: `Original reply to topic ${topicId ?? 'unknown'}; delivery state ${entry.state ?? 'held'}.` });
+            description: `Original reply to ${topicRef(topicId)}; delivery state ${entry.state ?? 'held'}.` });
           if (topicId === null) return;
           // A stable logical send id lets the origin outbox answer a repeated
           // notice with its original receipt, including after a server restart.
@@ -8641,6 +8647,10 @@ export async function startServer(options: StartOptions): Promise<void> {
     // When --no-telegram is set (lifeline owns polling), create adapter in send-only mode
     // so the server can still relay replies via /telegram/reply/:topicId
     let telegram: TelegramAdapter | undefined;
+    // Operator rule 2026-11-02: a topic id never reaches a session or a notice without its name.
+    // Every server-authored `topicRef(id)` reads the verified name from this adapter's registry,
+    // late-bound (the adapter is built just below); no adapter ⇒ "(name unresolved)".
+    setTopicNameResolver((id) => telegram?.getTopicName(id) ?? null);
     let topicMemory: TopicMemory | undefined;
     const telegramConfig = config.messaging.find(m => m.type === 'telegram' && m.enabled);
     const skipTelegram = options.telegram === false; // --no-telegram sets telegram: false
@@ -10587,6 +10597,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               const classification = await sentinel.classify(message.content);
               if (classification.category === 'emergency-stop') {
                 // Kill all sessions
+                try { holdAllSetups(config.stateDir); } catch { /* @silent-fallback-ok — the stop itself must never fail over this */ }
                 const sessions = sessionManager.listRunningSessions();
                 for (const s of sessions) {
                   try { sessionManager.killSession(s.id); } catch { /* ok */ }
@@ -12140,7 +12151,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             rawTopicA == null ? null : Number.isFinite(Number(rawTopicA)) ? Number(rawTopicA) : null;
           gapBRaiseAggregated?.(
             `unregistered-autonomous:${topicA ?? '?'}`,
-            `An autonomous-flavored run on topic ${topicA ?? '?'} is proceeding UNREGISTERED (no per-topic state file) — surfaced from a fresh open commitment + recent user activity. Register it so its survival doesn't depend on a commitment existing.`,
+            `An autonomous-flavored run on ${topicRef(topicA ?? '?')} is proceeding UNREGISTERED (no per-topic state file) — surfaced from a fresh open commitment + recent user activity. Register it so its survival doesn't depend on a commitment existing.`,
           );
         } catch { /* @silent-fallback-ok — Part A never endangers the reap path */ }
         console.log(
@@ -18812,6 +18823,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         try { _inboundQueueStop?.(String(topicId)); } catch { /* best-effort */ }
       };
       telegram.onSentinelKillSession = (sessionName: string) => {
+        try { holdSetupForSession(config.stateDir, sessionName, telegram.getTopicForSession(sessionName)); } catch { /* @silent-fallback-ok — the stop itself must never fail over this */ }
         // Save resume UUID before killing so respawn can --resume
         if (_topicResumeMap) {
           try {
@@ -18876,7 +18888,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const threadResumeMap = new ThreadResumeMap(config.stateDir, config.stateDir, undefined, undefined, {
       // A thread bound to a claude-code session checks Claude transcripts only;
       // an unknown session name tries every layout (the bounded lookups).
-      frameworkResolver: (sessionName) => state.listSessions().find((s) => s.tmuxSession === sessionName)?.framework,
+      frameworkResolver: (sessionName) => state.findSessionByTmux(sessionName)?.framework,
     });
     // Threadline Phase 1 keystone: the Conversation single-source-of-truth +
     // the warrants-a-reply gate. The gate runs once at the relay inbound funnel
@@ -20958,10 +20970,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         stopNotifier = new StopNotifier(
           {
             notifyTopic: (topicId, sessionId, text) => {
-              stopLog({ kind: 'escalated', sessionName: sessionId, detail: `topic ${topicId}: ${text}` });
+              stopLog({ kind: 'escalated', sessionName: sessionId, detail: `${topicRef(topicId)}: ${text}` });
               localTg.sendToTopic(Number(topicId), text).then(
-                () => stopLog({ kind: 'escalation-sent', sessionName: sessionId, detail: `topic ${topicId}` }),
-                (err: unknown) => stopLog({ kind: 'notify-error', sessionName: sessionId, detail: `topic ${topicId}: ${err instanceof Error ? err.message : String(err)}` }),
+                () => stopLog({ kind: 'escalation-sent', sessionName: sessionId, detail: topicRef(topicId) }),
+                (err: unknown) => stopLog({ kind: 'notify-error', sessionName: sessionId, detail: `${topicRef(topicId)}: ${err instanceof Error ? err.message : String(err)}` }),
               );
             },
             log: (kind, sessionId, detail) => stopLog({ kind, sessionName: sessionId, detail }),
@@ -22185,7 +22197,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         recoveryPrompt: async (sessionName) => {
           const convo = await keyConversationLines(sessionName);
-          return convo ? buildKeyRecoveryPrompt(convo.channel, heldMessages(convo.lines, keyNoticeTexts)) : null;
+          if (!convo) return null;
+          const held = heldMessages(convo.lines, keyNoticeTexts);
+          return { prompt: buildKeyRecoveryPrompt(convo.channel, held), held: held.length };
         },
         answeredSince: async (sessionName, sinceMs) => {
           const convo = await keyConversationLines(sessionName);
@@ -23795,7 +23809,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           DegradationReporter.getInstance().report({
             feature: 'LiveTail.standbyFreshness',
             primary: 'Standby machine receives a fresh copy of each conversation tail',
-            fallback: `Topic ${telegram.getTopicName?.(Number(topic)) ?? topic}'s standby copy is stale (flushes failing ~${Math.round(failingForMs / 60_000)}min, ${consecutiveFailures} consecutive); retries continue on capped backoff`,
+            fallback: `${TopicRef(topic)}'s standby copy is stale (flushes failing ~${Math.round(failingForMs / 60_000)}min, ${consecutiveFailures} consecutive); retries continue on capped backoff`,
             reason: 'Live-tail flushes to the standby peer are persistently rejected or unreachable',
             impact: 'A failover during this window would resume that conversation from an older tail (bounded by the outage start).',
           });
@@ -25705,7 +25719,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 _meshAttentionRaise?.({
                   id: `u41:pin-hlc-skew:${rec.origin || 'unknown-origin'}`,
                   title: `Pin record from ${rec.origin || 'an unknown machine'} quarantined for clock skew`,
-                  body: `A replicated topic-pin record (topic ${rec.key}) carries an HLC stamped ${new Date(rec.hlc.physical).toISOString()} — future-skewed beyond the drift ceiling. It is EXCLUDED from pin resolution (stickily, immune to clock progress) but kept on disk for diagnosis; check ${rec.origin}'s clock/NTP. Acknowledging this notice does NOT re-admit the record — re-admission is the explicit POST /pool/pin-quarantine/readmit action. A newer honest pin/unpin for the topic supersedes it automatically.`,
+                  body: `A replicated topic-pin record (${topicRef(rec.key)}) carries an HLC stamped ${new Date(rec.hlc.physical).toISOString()} — future-skewed beyond the drift ceiling. It is EXCLUDED from pin resolution (stickily, immune to clock progress) but kept on disk for diagnosis; check ${rec.origin}'s clock/NTP. Acknowledging this notice does NOT re-admit the record — re-admission is the explicit POST /pool/pin-quarantine/readmit action. A newer honest pin/unpin for the topic supersedes it automatically.`,
                   priority: 'medium',
                   sourceContext: 'ws13-pin-persistence',
                 });
@@ -26031,10 +26045,21 @@ export async function startServer(options: StartOptions): Promise<void> {
                 sendProbe: async (t, text, messageId) => {
                   if (!_sessionRouter) return 'no-router';
                   const o = await _sessionRouter.route({ sessionKey: String(t), messageId, payload: text, senderEnvelope: null });
-                  return o.action;
+                  return deliverProbeLocally(o.action, async () => {
+                    if (!telegram) throw new Error('no telegram adapter');
+                    const tmux = telegram.getSessionForTopic(t);
+                    if (tmux && sessionManager.isSessionAlive(tmux)) {
+                      const injected = sessionManager.injectTelegramMessage(tmux, t, text, telegram.getTopicName(t) ?? `proof-${t}`, 'Proof', 0);
+                      if (injected === false) throw new Error('inject returned false');
+                      return;
+                    }
+                    const name = await spawnSessionForTopic(sessionManager, telegram, `proof-${t}`, t, text);
+                    telegram.registerTopicSession(t, name, `proof-${t}`);
+                  }, (line) => console.warn(line));
                 },
+                machineName: (id) => _listPoolMachines?.().find((m) => m.machineId === id)?.nickname ?? null,
                 readHistory: async (t) => {
-                  const r = await fetch(`http://127.0.0.1:${config.port}/telegram/topics/${t}/messages?scope=pool&limit=50`, {
+                  const r = await fetch(`http://127.0.0.1:${config.port}/telegram/topics/${t}/messages?scope=pool&includeOrigin=1&limit=50`, {
                     headers: { Authorization: `Bearer ${config.authToken}`, 'X-Instar-AgentId': config.projectName },
                   });
                   if (!r.ok) throw new Error(`history ${r.status}`);
@@ -26701,26 +26726,25 @@ export async function startServer(options: StartOptions): Promise<void> {
               // history for the topic is empty) so the moved session continues with context
               // instead of starting blank. Best-effort — on any failure we spawn without it.
               void (async (): Promise<string> => {
-                let movedContext: string | undefined;
-                try {
-                  const url = _resolveRouterUrl?.() ?? null;
-                  if (url) {
-                    const resp = await fetch(`${url}/telegram/topics/${topicId}/messages?limit=100&scope=pool`, {
+                const history = await pullMovedTopicHistory({
+                  signedPull: _pullRouterHistory,
+                  bearerFetch: async (topic) => {
+                    const url = _resolveRouterUrl?.() ?? null;
+                    if (!url) return null;
+                    const resp = await fetch(`${url}/telegram/topics/${topic}/messages?limit=${TOPIC_HISTORY_PULL_MAX_MESSAGES}&scope=pool`, {
                       headers: { 'Authorization': `Bearer ${config.authToken}` },
+                      signal: AbortSignal.timeout(TOPIC_HISTORY_PULL_TIMEOUT_MS),
                     });
-                    if (resp.ok) {
-                      const j = (await resp.json()) as { messages?: import('../core/ForwardedTopicContext.js').ForwardedHistoryMessage[]; pool?: { failed?: unknown[] } };
-                      movedContext = formatForwardedTopicContext(j.messages, tg.getTopicName?.(topicId) ?? undefined) || undefined;
-                      if (j.pool?.failed?.length || (j.messages?.length ?? 0) >= 100) {
-                        movedContext = `${INCOMPLETE_TOPIC_HISTORY_WARNING}\n\n${movedContext ?? ''}`;
-                      }
-                    }
-                  }
-                } catch {
-                  // @silent-fallback-ok — cross-machine context relay is best-effort
-                }
-                return spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text, undefined, undefined,
-                  movedContext ?? INCOMPLETE_TOPIC_HISTORY_WARNING);
+                    if (!resp.ok) return null;
+                    const j = (await resp.json()) as { messages?: unknown[]; pool?: { failed?: unknown[] } };
+                    if (j.pool?.failed?.length) console.warn(`  [session-pool] pool history incomplete for topic ${topic}`);
+                    return Array.isArray(j.messages) ? j.messages : null;
+                  },
+                  log: (m) => console.warn(`  [session-pool] ${m}`),
+                }, topicId);
+                // A bounded pull cannot prove that no older messages lived on a prior machine.
+                const movedContext = `${INCOMPLETE_TOPIC_HISTORY_WARNING}\n\n${formatForwardedTopicContext(history.messages, tg.getTopicName?.(topicId) ?? undefined)}`;
+                return spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text, undefined, undefined, movedContext);
               })()
                 .then((name) => {
                   tg.registerTopicSession(topicId, name, spawnName);
@@ -26829,7 +26853,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             terminateSession: async (sk, reason, opts) => {
               const topicNum = Number(sk);
               const tmux = Number.isFinite(topicNum) ? telegram?.getSessionForTopic(topicNum) : null;
-              const rec = tmux ? state.listSessions().find((s) => s.tmuxSession === tmux) : undefined;
+              const rec = tmux ? state.findSessionByTmux(tmux) : undefined;
               if (!rec) return { terminated: false, skipped: 'no-local-session' };
               return terminateWithAuthority(rec.id, reason, {
                 via: 'ws12-drain',
@@ -27147,6 +27171,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                 },
               });
             },
+            'topic-history-pull': (cmd) => createTopicHistoryPullHandler({
+              readHistory: telegram ? (topic, limit) => telegram!.getTopicHistory(topic, limit) : null,
+            })(cmd as { topic?: unknown; limit?: unknown }),
             'topic-profile-pull': (cmd) => {
               if (!_topicProfileStore) return { ok: false, reason: 'topic-profile disabled' };
               return createTopicProfilePullHandler({
@@ -27733,6 +27760,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             const h = coordinator.getSyncStatus().leaseHolder;
             return h && h !== meshSelfId ? peerUrl(h) : null;
           };
+          _pullRouterHistory = async (topic) => {
+            const h = coordinator.getSyncStatus().leaseHolder;
+            const url = h && h !== meshSelfId ? peerUrl(h) : null;
+            if (!h || !url) return null;
+            return meshClient.send({ machineId: h, url }, { type: 'topic-history-pull', topic, limit: TOPIC_HISTORY_PULL_MAX_MESSAGES }, 0, { timeoutMs: TOPIC_HISTORY_PULL_TIMEOUT_MS });
+          };
           // Pool-scope readers must use the same validated multi-rope resolver as
           // routing and lease traffic. A freshly enrolled peer can have live
           // LAN/Tailscale endpoints without the legacy lastKnownUrl field; the
@@ -28115,8 +28148,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                 onExpired: (rec) => {
                   void telegram?.createAttentionItem({
                     id: `WS-PULL-EXPIRED-${rec.topic}-${rec.epoch}`,
-                    title: `Topic ${rec.topic}'s working set was never recovered`,
-                    summary: `A working-set pull for topic ${rec.topic} from ${rec.nominee} stayed unrecoverable for the full retention window (reason: ${rec.reason}, ${rec.attempts} attempts). The files remain on ${rec.nominee}; bring it back online or run POST /coherence/fetch-working-set {"topic":${rec.topic}} once reachable.`,
+                    title: `${TopicRef(rec.topic)}'s working set was never recovered`,
+                    summary: `A working-set pull for ${topicRef(rec.topic)} from ${rec.nominee} stayed unrecoverable for the full retention window (reason: ${rec.reason}, ${rec.attempts} attempts). The files remain on ${rec.nominee}; bring it back online or run POST /coherence/fetch-working-set {"topic":${rec.topic}} once reachable.`,
                     category: 'agent-health',
                     priority: 'NORMAL',
                     lane: 'agent-health',
@@ -28614,6 +28647,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               const cap = machinePoolRegistry?.getCapacity(m);
               if (!cap) return null;
               return cap.seamlessnessFlags?.ws11DeliverReceive === true;
+            },
+            liveLocalSession: (sk) => {
+              const topic = /^-?\d+$/.test(sk) ? Number(sk) : null;
+              const name = topic !== null ? telegram?.getSessionForTopic(topic) : _slackAdapter?.getSessionForChannel(sk);
+              return !!name && sessionManager.isSessionAlive(name);
             },
             markOwnerSuspect: (m) => ownerSuspectBreaker.markSuspect(m),
             onOwnerResponsive: (m) => ownerSuspectBreaker.recordSuccess(m),
@@ -29850,12 +29888,12 @@ export async function startServer(options: StartOptions): Promise<void> {
                   // attention-lifecycle-close-on-cause §3.3 — one row per topic condition; cleared
                   // when the topic has zero unresolved held operations (clearHeldItemIfResolved).
                   conditionKey: verdict.aggregate ? 'telegram-origin-held:aggregate' : `telegram-origin-held:${input.topicId}`,
-                  title: verdict.aggregate ? `Replies held on ${holderNickname(meshSelfId ?? '')}: ${heldCollapser.topics().length} topics` : `Reply to topic ${input.topicId} is held`,
+                  title: verdict.aggregate ? `Replies held on ${holderNickname(meshSelfId ?? '')}: ${heldCollapser.topics().length} topics` : `Reply to ${topicRef(input.topicId)} is held`,
                   summary: verdict.aggregate
                     ? `Replies for topics ${heldCollapser.topics().join(', ')} could not be forwarded to the lease holder (${holderName}). They are held durably and retried; see GET /telegram/origins/status → held.`
                     : input.awaitsLeaseReturn
-                      ? `My reply to topic ${input.topicId} could not be sent: this machine does not hold the serving lease (${holderName}). Its record is sealed to this machine, so it CANNOT be forwarded and is NOT retried — it can only be sent if the lease returns here, and otherwise expires undelivered.`
-                      : `My reply to topic ${input.topicId} could not be forwarded to the lease holder (${holderName}): ${input.reason}. It is held durably (hold_reason: lease-not-held) and retried on the recovery schedule.`,
+                      ? `My reply to ${topicRef(input.topicId)} could not be sent: this machine does not hold the serving lease (${holderName}). Its record is sealed to this machine, so it CANNOT be forwarded and is NOT retried — it can only be sent if the lease returns here, and otherwise expires undelivered.`
+                      : `My reply to ${topicRef(input.topicId)} could not be forwarded to the lease holder (${holderName}): ${input.reason}. It is held durably (hold_reason: lease-not-held) and retried on the recovery schedule.`,
                   sourceContext: 'telegram-origin-forward-to-holder' }, { hubOnly: true });
               } catch (error) { heldAudit({ phase: 'item-failed', topicId: input.topicId, error: error instanceof Error ? error.message : String(error) }); }
             };
@@ -29874,7 +29912,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (count !== 0) return;
               const n = Number(topicId);
               if (Number.isSafeInteger(n)) heldCollapser.clear(n);
-              try { telegram.clearAttentionCondition({ conditionKey: `telegram-origin-held:${topicId}` }, `cleared: every held reply to topic ${topicId} was delivered or resolved`); }
+              try { telegram.clearAttentionCondition({ conditionKey: `telegram-origin-held:${topicId}` }, `cleared: every held reply to ${topicRef(topicId)} was delivered or resolved`); }
               catch (error) { heldAudit({ phase: 'clear-failed', topicId: String(topicId), error: error instanceof Error ? error.message : String(error) }); }
             };
             telegram.registerAttentionConditionResolver('telegram-origin-held', (item) => {

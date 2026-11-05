@@ -15,6 +15,7 @@ import { OriginSendPolicyRefusal } from './OriginSendPolicy.js';
 import type { OriginSendPolicyDecision } from './OriginSendPolicy.js';
 export type OriginSendPolicyRefusalDecision = Extract<OriginSendPolicyDecision, { ok: false }>;
 import type { HeldOperationRow } from './StoreTypes.js';
+import { topicRef } from '../shared/topicRef.js';
 import type { OriginAuditRecord } from './StoreTypes.js';
 import { classifyOperationOutcome } from './OriginOperationOutcome.js';
 
@@ -517,7 +518,7 @@ export function heldExpiryItem(row: HeldOperationRow): { id: string; conditionKe
     conditionKey: `telegram-origin-held:${topic}:expired`,
     category: 'telegram-origin',
     priority: 'HIGH',
-    title: `Held reply to topic ${row.destination.topicId ?? '?'} expired`,
+    title: `Held reply to ${topicRef(row.destination.topicId ?? '?')} expired`,
     summary: expiredForwardWording(row),
     sourceContext: 'telegram-origin-forward-to-holder',
   };
@@ -529,6 +530,6 @@ export function expiredForwardWording(row: HeldOperationRow): string {
   const topic = row.destination.topicId ?? 'the topic';
   const hours = Math.max(1, Math.round((row.deadlineAt - row.preparedAt) / 3_600_000));
   return detail?.lastAttempt === 'outcome-unknown' || detail?.lastAttempt === 'local-sent'
-    ? `My reply to topic ${topic} may or may not have been delivered; the sending machine did not confirm within ${hours} h.`
-    : `I could not deliver my reply to topic ${topic} within ${hours} h.`;
+    ? `My reply to ${topicRef(topic)} may or may not have been delivered; the sending machine did not confirm within ${hours} h.`
+    : `I could not deliver my reply to ${topicRef(topic)} within ${hours} h.`;
 }

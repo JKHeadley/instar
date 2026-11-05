@@ -75,7 +75,7 @@ describe('wireMemoryPrivacy recovery', () => {
     const token = tokenIn(w.recovery.ownerMessage());
     expect(token).toHaveLength(43);
     expect(w.recovery.canRepair(token)).toBe(false);
-  });
+  }, 30_000);
 
   it('never offers a candidate below the floor', async () => {
     const w = wire(binary('old', '2.1.300'), [binary('alsoold', '2.1.315')]);

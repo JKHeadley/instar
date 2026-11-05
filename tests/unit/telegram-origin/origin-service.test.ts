@@ -252,6 +252,10 @@ describe('origin service durable delivery', () => {
           message: 'This machine could not read its current messaging config, so nothing was sent. It will be retried.' }) });
       queue.enqueue({ delivery_id: 'refused-issues', topic_id: 42, text_hash: 'h2', text: 'Issues note', attempted_at: at, http_code: 500,
         error_body: JSON.stringify({ error: 'issues-chat-not-configured: topic 10000000001 belongs to the issues group, but this process has no messaging config issuesChatId. Refusing to send it to the main group.' }) });
+      queue.enqueue({ delivery_id: 'refused-issues-named', topic_id: 42, text_hash: 'h7', text: 'Named issues note', attempted_at: at, http_code: 500,
+        error_body: JSON.stringify({ error: 'issues-chat-not-configured: topic 10000000001 "Issues" belongs to the issues group, but this process has no messaging config issuesChatId. Refusing to send it to the main group.' }) });
+      queue.enqueue({ delivery_id: 'refused-issues-unresolved', topic_id: 42, text_hash: 'h8', text: 'Unresolved issues note', attempted_at: at, http_code: 500,
+        error_body: JSON.stringify({ error: 'issues-chat-not-configured: topic 10000000001 (name unresolved) belongs to the issues group, but this process has no messaging config issuesChatId. Refusing to send it to the main group.' }) });
       queue.enqueue({ delivery_id: 'refused-display', topic_id: 42, text_hash: 'h5', text: 'Display note', attempted_at: at, http_code: 500,
         error_body: JSON.stringify({ error: 'origin-display-authority-unavailable' }) });
       queue.enqueue({ delivery_id: 'display-503', topic_id: 42, text_hash: 'h6', text: 'Wrong code', attempted_at: at, http_code: 503,
@@ -263,7 +267,7 @@ describe('origin service durable delivery', () => {
         error_body: JSON.stringify({ error: 'origin-config-unavailable', reason: 'x', retryable: true, message: 'm', relayedFromHolder: true }) });
       const snapshots = await h.store.legacyCandidates();
       const safe = Object.fromEntries(snapshots.map(row => [row.deliveryId, row.replaySafe]));
-      expect(safe).toEqual({ 'refused-unknown': true, 'refused-issues': true, 'refused-display': true, 'display-503': false,
+      expect(safe).toEqual({ 'refused-unknown': true, 'refused-issues': true, 'refused-issues-named': true, 'refused-issues-unresolved': true, 'refused-display': true, 'display-503': false,
         'generic-500': false, 'relayed-503': false });
       const row = snapshots.find(item => item.deliveryId === 'refused-unknown')!;
       const operation = h.service.prepareImportedLegacy(row, 'bot-1', '-100123');

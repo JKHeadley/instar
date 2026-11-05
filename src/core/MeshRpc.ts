@@ -272,6 +272,14 @@ export type MeshCommand =
       topics: string[];
     }
   | {
+      // Moved-conversation history (session-pool-signed-history). Read/observe class:
+      // the lease holder serves its OWN recent messages for one topic to a registered
+      // same-operator peer. Exists so a move needs no shared bearer token.
+      type: 'topic-history-pull';
+      topic: number;
+      limit?: number;
+    }
+  | {
       // Working-set handoff transport (WORKING-SET-HANDOFF-SPEC §3.2).
       // Read/observe class — the FRESH manifest computed per request is the
       // allowlist (own jailed working files only; no generic file-read
@@ -513,6 +521,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'working-set-pull':
     case 'app-media-pull':
     case 'topic-profile-pull':
+    case 'topic-history-pull':
     case 'commitments-sync':
     case 'preferences-sync':
     case 'state-snapshot':
@@ -559,6 +568,9 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // per-topic profile entries — disclosure-only for registered
       // same-operator peers; the receiver revalidates every field (§10.2)
       // before anything persists, so the verb carries reach, not authority.
+      // topic-history-pull joins it (session-pool-signed-history): it serves OWN recent
+      // messages for one topic, the same disclosure the bearer history route makes to
+      // this agent's own machines, capped in count and size by its handler.
       // pool-view-fetch joins it (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4): the
       // verb is reachable by any registered peer, but its HANDLER is the real
       // gate — it serves a private view body ONLY when the carried user-auth

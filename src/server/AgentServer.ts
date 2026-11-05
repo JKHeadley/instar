@@ -8,6 +8,7 @@
  * WebSocket connections for real-time terminal streaming.
  */
 
+import { holdAllSetups } from '../recommended/setupState.js';
 import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import express, { type Express, type Request, type Response } from 'express';
@@ -361,6 +362,7 @@ import {
 import { readAcceptedFallbacks, scopeAcceptedFallbacks } from '../monitoring/guardAcceptedFallbacks.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { DEV_GATED_FEATURES } from '../core/devGatedFeatures.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 export function readMentorConfigFromDisk(
   stateDir: string | undefined,
@@ -6413,6 +6415,7 @@ export class AgentServer {
         registry: routeCtx.conversationRegistry,
         dispatch: () => options.slackInboundDispatch?.() ?? null,
         killAllSessions: () => {
+          try { holdAllSetups(options.config.stateDir); } catch { /* @silent-fallback-ok — the stop itself must never fail over this */ }
           let any = false;
           for (const sess of options.sessionManager.listRunningSessions()) { try { options.sessionManager.killSession(sess.id); any = true; } catch { /* @silent-fallback-ok — already gone */ } }
           return any;
@@ -6496,7 +6499,7 @@ export class AgentServer {
             durationMs: info.durationMs, width: info.width, height: info.height,
           });
           if (!r.recorded && r.reason !== 'duplicate') {
-            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (topic ${info.topicId}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. The session still received it.`);
+            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (${topicRef(info.topicId)}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. The session still received it.`);
           }
         });
       }

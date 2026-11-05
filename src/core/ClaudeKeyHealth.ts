@@ -108,10 +108,10 @@ export interface ClaudeKeyHealthDeps {
   /** Fingerprint of the key the session was launched with, or null when it has none. */
   sessionLaunchFingerprint: (tmuxSession: string) => string | null;
   /**
-   * The prompt for one restarted conversation: its held messages and the exact reply command.
-   * Null (or absent) falls back to RECOVERY_PROMPT.
+   * The prompt for one restarted conversation (its held messages and the exact reply command),
+   * and how many messages were held. Null (or absent) falls back to RECOVERY_PROMPT.
    */
-  recoveryPrompt?: (sessionName: string) => Promise<string | null>;
+  recoveryPrompt?: (sessionName: string) => Promise<{ prompt: string; held: number } | null>;
   /**
    * Whether the conversation shows a real reply from the agent since `sinceMs`. Null when it
    * can't be read. Absent: a restart is trusted as done (the old behaviour).
@@ -424,8 +424,19 @@ export class ClaudeKeyHealth {
       let done = false;
       let newName: string | undefined;
       let prompt = RECOVERY_PROMPT;
-      try { prompt = (await this.deps.recoveryPrompt?.(item.session)) ?? RECOVERY_PROMPT; }
-      catch (err) { /* @silent-fallback-ok: the generic prompt still restarts it, and the answer check below catches a miss */ this.logger.warn(`[ClaudeKeyHealth] recovery prompt for "${item.session}" failed: ${err instanceof Error ? err.message : String(err)}`); }
+      // Null: not known what was held. An answer is awaited only when something was.
+      let held: number | null = null;
+      try {
+        const built = await this.deps.recoveryPrompt?.(item.session);
+        if (built) { prompt = built.prompt; held = built.held; }
+      } catch (err) { /* @silent-fallback-ok: reported just below as unchecked, and the generic prompt still restarts it */ this.logger.warn(`[ClaudeKeyHealth] recovery prompt for "${item.session}" failed: ${err instanceof Error ? err.message : String(err)}`); }
+      if (held === null && this.deps.recoveryPrompt) {
+        // The generic prompt still restarts it, but nothing can check it answered: say so.
+        this.deps.report({
+          reason: `Could not read what "${item.session}" had waiting when the sign-in key was fixed.`,
+          impact: 'It restarts with a general prompt, and whether it answered is not checked.',
+        });
+      }
       const startedAt = this.now();
       try {
         const result = await this.deps.refresh(item.session, prompt);
@@ -438,7 +449,8 @@ export class ClaudeKeyHealth {
         // A Slack respawn gets a new name, and that is the name the next sweep will see.
         this.state.refreshed[newName ?? item.session] = fp;
         // A restart is not an answer: the drill's session reported done and answered nobody.
-        if (this.deps.answeredSince) this.state.awaiting.push({ session: newName ?? item.session, since: startedAt });
+        // With nothing held there is nothing to answer, so nobody is asked to resend.
+        if (this.deps.answeredSince && held !== null && held > 0) this.state.awaiting.push({ session: newName ?? item.session, since: startedAt });
       }
     }
     this.save();

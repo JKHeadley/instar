@@ -447,7 +447,7 @@ describe('verb classification sets', () => {
     const overlap = [...DESTRUCTIVE_GIT_VERBS].filter((v) => READONLY_GIT_VERBS.has(v));
     // Allowed overlap: ambiguous verbs that are shape-checked at runtime.
     expect(overlap.sort()).toEqual(
-      ['branch', 'config', 'format-patch', 'remote', 'stash', 'worktree'].sort(),
+      ['branch', 'config', 'format-patch', 'reflog', 'remote', 'stash', 'worktree'].sort(),
     );
   });
 

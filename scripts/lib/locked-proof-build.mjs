@@ -50,6 +50,27 @@ export function rewriteProvenTable(source, { osMajor, version }) {
   return source.replace(whole, next);
 }
 
+/** The exact default the retained helper's folder is declared with. */
+const HELPER_ROOT_DEFAULT = "path.join(os.homedir(), '.instar', 'desktop-helper')";
+
+/**
+ * Return the source of DesktopHelperRetention.ts with the kept helper's default
+ * folder moved to `~/.instar/<dir>`. macOS keeps a permission row per path, and
+ * neither Settings nor tccutil can clear a hidden row for a bare program, so a
+ * proof Mac whose row names an older build needs a path with no row. The Swift
+ * source is untouched, so the helper source hash that binds the proof is too.
+ * Refuses when the default is not found exactly once, or for a name that could
+ * land inside the locked store or outside `~/.instar`.
+ */
+export function rewriteHelperRoot(source, dir) {
+  if (typeof dir !== 'string' || !/^desktop-helper-[a-z0-9-]+$/.test(dir)) {
+    throw new Error(`helper folder "${dir}" must look like desktop-helper-<name>`);
+  }
+  const found = source.split(HELPER_ROOT_DEFAULT).length - 1;
+  if (found !== 1) throw new Error(`expected exactly one default helper folder, found ${found}`);
+  return source.replace(HELPER_ROOT_DEFAULT, `path.join(os.homedir(), '.instar', '${dir}')`);
+}
+
 /**
  * Check a table's rows against the proof records on disk. A committed row must
  * cite, for p12 and p15, a file under docs/proofs/desktop-locked-screen/ that

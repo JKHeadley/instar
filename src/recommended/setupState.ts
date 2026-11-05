@@ -19,6 +19,8 @@ export interface ServiceSetupState {
   exhausted?: boolean;
   /** Ran a long while and stopped, most likely waiting on the person. Not restarted. */
   dormant?: boolean;
+  /** The person stopped this, or said not now to something it needs. Only their next word brings it back. */
+  held?: boolean;
   /** This key came from setup, so setup may correct it until it has passed. */
   keyStoredBySetup?: boolean;
 }
@@ -46,4 +48,21 @@ export function updateSetupState(stateDir: string, service: string, change: Part
   fs.writeFileSync(tmp, JSON.stringify(all, null, 2));
   fs.renameSync(tmp, file);
   return next;
+}
+
+/**
+ * A person stopped this session on purpose, so if it was doing setup, setup must not restart it.
+ * The topic matters because a reply brings a session back under a different name.
+ */
+export function holdSetupForSession(stateDir: string, sessionName: string, topicId?: number | null): void {
+  for (const [service, state] of Object.entries(readSetupStates(stateDir))) {
+    if (state.sessionName === sessionName || (topicId != null && state.topicId === topicId)) updateSetupState(stateDir, service, { held: true });
+  }
+}
+
+/** "Kill all sessions" also covers a setup whose session is already dead and waiting to restart. */
+export function holdAllSetups(stateDir: string): void {
+  for (const [service, state] of Object.entries(readSetupStates(stateDir))) {
+    if (state.verified?.result !== 'pass') updateSetupState(stateDir, service, { held: true });
+  }
 }

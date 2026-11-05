@@ -80,6 +80,7 @@
  * (classifyProfileChange, profilesEqual) is imported directly.
  */
 
+import { topicRef } from '../messaging/shared/topicRef.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -1543,7 +1544,7 @@ export class TopicProfileOrchestrator {
         if (cleared.length === 0) return;
         const seq = ++this.auditSeq;
         const list = cleared
-          .map((c) => `topic ${c.topicKey}: ${renderPatch(c.shadow.fields as ValidatedProfilePatch)}`)
+          .map((c) => `${topicRef(c.topicKey)}: ${renderPatch(c.shadow.fields as ValidatedProfilePatch)}`)
           .join('; ');
         // One coalesced notice — delivered to each affected topic's
         // conversation so every recorded intent's owner sees it once.

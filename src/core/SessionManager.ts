@@ -144,6 +144,7 @@ import type { DerivedTarget } from '../monitoring/selfaction/types.js';
 import { VetoedKillBackoff, normalizeReasonKey, IDLE_ZOMBIE_ESCALATION_REASONS } from './VetoedKillBackoff.js';
 import type { IncidentDedupe } from '../monitoring/IncidentDedupe.js';
 import { ensureAgentOwnedMemory, defaultClaudeConfigHome } from './AgentOwnedMemory.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 import {
   CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS,
   type ThreadlineMcpSpawnWiring,
@@ -1375,11 +1376,10 @@ export class SessionManager extends EventEmitter {
         store: this.inboundDeliveries,
         hmacKey: this.inboundDeliveryHmacKey,
         resolveRolloutPath: (delivery) => {
-          const session = this.state.listSessions().find((candidate) => candidate.tmuxSession === delivery.incarnation);
+          const session = this.state.findSessionByTmux(delivery.incarnation);
           return session ? this.codexRolloutPathForSession(session) : null;
         },
-        resolveRolloutId: (delivery) => this.state.listSessions()
-          .find((candidate) => candidate.tmuxSession === delivery.incarnation)?.claudeSessionId ?? null,
+        resolveRolloutId: (delivery) => this.state.findSessionByTmux(delivery.incarnation)?.claudeSessionId ?? null,
         bindImportedSuccessor: (delivery) => {
           if (delivery.ownerMachineId !== this.localMachineId()) return false;
           const topicId = Number(delivery.conversationId);
@@ -2050,7 +2050,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         session,
         topicId,
         reasonKey,
-        message: `Session "${session.name}" on topic ${topicId ?? 'n/a'} is permanently vetoed from idle-zombie cleanup (reason: ${reasonKey}) — likely a stuck open-commitment or a resume-loop; investigate.`,
+        message: `Session "${session.name}" on ${topicId != null ? topicRef(topicId) : 'no topic'} is permanently vetoed from idle-zombie cleanup (reason: ${reasonKey}) — likely a stuck open-commitment or a resume-loop; investigate.`,
       });
     }
   }
@@ -2184,7 +2184,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (!newName || typeof newName !== 'string') return false;
     const trimmed = newName.trim();
     if (!trimmed) return false;
-    const session = this.state.listSessions().find((s) => s.tmuxSession === tmuxSession);
+    const session = this.state.findSessionByTmux(tmuxSession);
     if (!session) return false;
     if (session.name === trimmed) return false;
     session.name = trimmed;
@@ -3201,7 +3201,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         : matches[0];
       return {
         topicId,
-        topicName: (topicToName[String(topicId)] as string) || `Topic ${topicId}`,
+        topicName: (topicToName[String(topicId)] as string) || topicRef(topicId),
         channel: 'telegram', // Currently only Telegram uses the registry
         sessionName: tmuxSession,
       };
@@ -3324,7 +3324,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           // Check if this session had a pending Telegram injection that never got a response
           const pendingInjection = this.pendingInjections.get(session.tmuxSession);
           if (pendingInjection) {
-            console.warn(`[SessionManager] Session "${session.name}" died with unanswered Telegram injection for topic ${pendingInjection.topicId} (injected ${Math.round((Date.now() - pendingInjection.injectedAt) / 1000)}s ago)`);
+            console.warn(`[SessionManager] Session "${session.name}" died with unanswered Telegram injection for ${topicRef(pendingInjection.topicId)} (injected ${Math.round((Date.now() - pendingInjection.injectedAt) / 1000)}s ago)`);
             this.pendingInjections.delete(session.tmuxSession);
             this.emit('injectionDropped', {
               topicId: pendingInjection.topicId,
@@ -3589,7 +3589,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
               // Check for unanswered injection before timeout kill
               const pendingInjection = this.pendingInjections.get(session.tmuxSession);
               if (pendingInjection) {
-                console.warn(`[SessionManager] Timed-out session "${session.name}" had unanswered injection for topic ${pendingInjection.topicId}`);
+                console.warn(`[SessionManager] Timed-out session "${session.name}" had unanswered injection for ${topicRef(pendingInjection.topicId)}`);
                 this.pendingInjections.delete(session.tmuxSession);
                 this.emit('injectionDropped', {
                   topicId: pendingInjection.topicId,
@@ -3867,7 +3867,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
                 // Check for unanswered injection before killing
                 const pendingInjection = this.pendingInjections.get(session.tmuxSession);
                 if (pendingInjection) {
-                  console.warn(`[SessionManager] Zombie session "${session.name}" had unanswered injection for topic ${pendingInjection.topicId}`);
+                  console.warn(`[SessionManager] Zombie session "${session.name}" had unanswered injection for ${topicRef(pendingInjection.topicId)}`);
                   this.pendingInjections.delete(session.tmuxSession);
                   this.emit('injectionDropped', {
                     topicId: pendingInjection.topicId,
@@ -4294,7 +4294,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         }
       } catch (err: any) {
         if (err && err.code === 'LOCK_HELD') {
-          throw new Error(`Cannot spawn session for topic ${options.topicId}: lock held by ${JSON.stringify(err.holder)}`);
+          throw new Error(`Cannot spawn session for ${topicRef(options.topicId)}: lock held by ${JSON.stringify(err.holder)}`);
         }
         throw err;
       }
@@ -8229,7 +8229,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           feature: 'SessionManager.recoverPendingInjects',
           primary: 'Re-deliver an inject orphaned by a server restart',
           fallback: `Pending inject for "${record.tmuxSession}" not re-delivered: ${reason}`,
-          reason: `Why: queued ${record.createdAt}${record.telegramTopicId !== undefined ? ` for topic ${record.telegramTopicId}` : ''}`,
+          reason: `Why: queued ${record.createdAt}${record.telegramTopicId !== undefined ? ` for ${topicRef(record.telegramTopicId)}` : ''}`,
           impact: 'A queued initial message may not have reached its session; the bridge respawns on the next inbound message.',
         });
       },
@@ -8710,7 +8710,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (priorAt !== undefined) {
         console.warn(
           `[SessionManager] Suppressed duplicate Telegram delivery to "${tmuxSession}" ` +
-          `(topic ${topicId}, messageId ${messageId}, ${Math.round((now - priorAt) / 1000)}s after first) — ` +
+          `(${topicRef(topicId)}, messageId ${messageId}, ${Math.round((now - priorAt) / 1000)}s after first) — ` +
           `a single user message was forwarded more than once; delivering only once.`,
         );
         return true; // already delivered on the first call — success without re-injecting
@@ -8773,7 +8773,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // to ride here too — the observed 2026-08-20 re-deliveries were all long
     // messages, i.e. exactly this branch. buildInjectionTag(topicId) with a
     // falsy flag returns `[telegram:N]`, byte-identical to the previous literal.
-    const refTag = buildInjectionTag(topicId, undefined, undefined, undefined, opts?.reDelivered, opts?.signedByAgent);
+    const refTag = buildInjectionTag(topicId, safeTopic, undefined, undefined, opts?.reDelivered, opts?.signedByAgent);
     const ref = `${refTag} [Long message saved to ${filepath} — read it to see the full message]`;
     return this.injectMessage(tmuxSession, ref) !== false;
   }
@@ -8962,7 +8962,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           // Wrong topic — log, alert, and drop
           console.error(
             `[InputGuard] BLOCKED cross-topic injection: message bound for different topic, ` +
-            `session "${tmuxSession}" is bound to topic ${binding.topicId}`
+            `session "${tmuxSession}" is bound to ${topicRef(binding.topicId)}`
           );
           this.inputGuard.logSecurityEvent({
             event: 'input-provenance-block',
@@ -9311,7 +9311,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   private injectionIncarnationId(tmuxSession: string): string | null {
     try {
-      return this.state.listSessions().find((s) => s.tmuxSession === tmuxSession)?.claudeSessionId ?? null;
+      return this.state.findSessionByTmux(tmuxSession)?.claudeSessionId ?? null;
     } catch {
       return null; // a state read failure must never turn into a false verdict
     }

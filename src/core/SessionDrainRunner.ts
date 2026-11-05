@@ -44,6 +44,7 @@
 
 import type { OwnershipAction, SessionOwnershipRecord } from './SessionOwnership.js';
 import { mergeDefaults } from './mergeDefaults.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 export interface DrainRequest {
   /** The topic key being transferred. */
@@ -198,7 +199,7 @@ export class SessionDrainRunner {
     // 2026-10-23 rule). Anything else leaves it running and on the audit.
     const closeAfterTargetClaimed = async (): Promise<void> => {
       try {
-        const res = await d.terminateSession(req.sessionKey, `topic ${req.sessionKey} now owned by ${req.target} — closing the local copy`, { force: true });
+        const res = await d.terminateSession(req.sessionKey, `${topicRef(req.sessionKey)} now owned by ${req.target} — closing the local copy`, { force: true });
         if (!res.terminated && !isNothingToClose(res.skipped ?? 'unknown')) audit('drain-lost-abort-close-refused', { skipped: res.skipped });
       } catch (err) { audit('drain-lost-abort-close-failed', { detail: err instanceof Error ? err.message : String(err) }); }
     };
@@ -321,8 +322,8 @@ export class SessionDrainRunner {
       }
     }
     const reason = interrupted
-      ? `topic ${req.sessionKey} transferring to ${req.target} — drain bound reached, closing mid-task`
-      : `topic ${req.sessionKey} transferring to ${req.target} — turn boundary reached, clean close`;
+      ? `${topicRef(req.sessionKey)} transferring to ${req.target} — drain bound reached, closing mid-task`
+      : `${topicRef(req.sessionKey)} transferring to ${req.target} — turn boundary reached, clean close`;
     let closeSkipped: string | undefined;
     let closeRefused = false;
     try {

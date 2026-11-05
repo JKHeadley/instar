@@ -1,0 +1,42 @@
+{
+  "ts": "2026-11-04T18:29:57.668Z",
+  "slug": "topic-name-beside-id",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 21,
+  "loc": 159,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/postDriveTranscriptAudit.ts",
+      "src/core/BetweenWindowAdmissionGate.ts",
+      "src/core/DirectDesktopAccess.ts",
+      "src/core/LiveTailSource.ts",
+      "src/core/OwnershipApplier.ts",
+      "src/core/SessionManager.ts",
+      "src/core/TelegramLiveSender.ts",
+      "src/core/TopicProfileOrchestrator.ts",
+      "src/core/TopicProfileStore.ts",
+      "src/core/TopicProfileTransferCarrier.ts",
+      "src/core/conversationBindGate.ts",
+      "src/memory/TopicSummarizer.ts",
+      "src/messaging/NotificationBatcher.ts",
+      "src/messaging/telegram-origin/OriginLegacy.ts",
+      "src/messaging/telegramTopicSpace.ts",
+      "src/monitoring/PromiseBeacon.ts",
+      "src/monitoring/ReapNotifier.ts",
+      "src/monitoring/SessionRecovery.ts",
+      "src/monitoring/sentinelWiring.ts",
+      "src/server/routes.ts",
+      "src/threadline/PairingInviteTelegram.ts"
+    ],
+    "addedLines": 88,
+    "deletedLines": 71
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

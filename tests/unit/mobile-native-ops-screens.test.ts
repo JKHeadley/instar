@@ -225,6 +225,13 @@ describe('words and allowlist', () => {
     expect(phoneText('  a\n b  ', 10)).toBe('a b');
     expect(phoneText('', 10)).toBeNull();
   });
+  it('phoneText cuts long text before scrubbing, so one huge peer string cannot stall the server', () => {
+    const started = Date.now();
+    const out = phoneText('a-'.repeat(240_000), 120);
+    expect(out!.length).toBeLessThanOrEqual(120);
+    // Unbounded this took minutes; the cut makes it milliseconds, with room for a loaded machine.
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
   it('exactly three new read-only device entries; the raw Bearer routes are not allowlisted', () => {
     for (const p of ['/mobile/jobs', '/mobile/commitments', '/mobile/machines']) {
       const rules = DEVICE_ALLOWLIST.filter((x) => x.re.test(p));

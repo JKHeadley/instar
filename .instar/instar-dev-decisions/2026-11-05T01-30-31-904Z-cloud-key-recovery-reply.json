@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-05T01:30:31.904Z",
+  "slug": "cloud-key-recovery-reply",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 30,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ClaudeKeyHealth.ts",
+      "src/core/claudeKeyRecovery.ts"
+    ],
+    "addedLines": 22,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The refresh brake is unchanged (controller claude-key-session-refresh). This change only narrows when a resend request can go out: at most one per restarted conversation per episode, and now only when messages were held."
+    }
+  },
+  "verdict": "pass"
+}

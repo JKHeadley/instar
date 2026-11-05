@@ -50,6 +50,7 @@
 import type { SessionOwnershipRecord } from './SessionOwnership.js';
 import type { MergedClaimAnnotation } from './TopicClaimAnnotationStore.js';
 import type { AttentionConditionIdentity, AttentionConditionObservation } from './AttentionConditionStore.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 /** Config subtree: multiMachine.sessionPool.staleOwnerRelease (§5). */
 export interface StaleOwnerReleaseConfig {
@@ -815,7 +816,7 @@ export class StaleOwnerReleaseEngine {
     try {
       this.d.raiseAttention({
         id: key,
-        title: `Stale-owner release gave up${topic ? ` on topic ${topic}` : ''} (${owner})`,
+        title: `Stale-owner release gave up${topic ? ` on ${topicRef(topic)}` : ''} (${owner})`,
         body: `${detail}. No further automatic attempts this episode — manual demote or investigation needed.`,
         priority: 'high',
         sourceContext: `stale-owner-release:${owner}`,

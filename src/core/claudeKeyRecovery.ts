@@ -1,6 +1,6 @@
 /**
  * claudeKeyRecovery — what a conversation restarted after a dead sign-in key is told, and how we
- * check it really answered (spec cloud-key-internal-calls §recovery reply).
+ * check it answered (follow-up to spec cloud-key-internal-calls, Part 2; upgrades/side-effects/cloud-key-recovery-reply.md).
  *
  * The 2026-11-04 nimbus drill: the restarted sessions got a bare prompt with no reply command and
  * no copy of the held messages. Both posted their channel id as the reply; one person's messages
