@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "peer-stream-read-cache",
+  "sessionId": "501849a3-8fc5-483e-b8f2-b09fce0f4d96",
+  "timestamp": "2026-11-05T08:47:59.479Z",
+  "artifactPath": "upgrades/side-effects/peer-stream-read-cache.md",
+  "artifactSha256": "a3ce1f3c2fccd65756b964aa130bb784d25cbdda95c2303aaa821eeffef1d682",
+  "coveredFiles": [
+    "docs/specs/peer-stream-read-cache.eli16.md",
+    "src/commands/server.ts",
+    "src/core/ClassReviewReplicatedStore.ts",
+    "src/core/ReplicatedPeerStreamReader.ts",
+    "tests/unit/ReplicatedPeerStreamReader.test.ts",
+    "tests/unit/correction-class-review.test.ts",
+    "upgrades/next/peer-stream-read-cache.md",
+    "upgrades/side-effects/peer-stream-read-cache.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-path speed fix with identical answers; a revert undoes it.",
+  "eli16Path": "docs/specs/peer-stream-read-cache.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/peer-stream-read-cache.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

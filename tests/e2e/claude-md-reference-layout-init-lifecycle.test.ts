@@ -51,7 +51,7 @@ describe('fresh init writes the small CLAUDE.md + reference files', () => {
     const index = fs.readFileSync(path.join(refDir, 'INDEX.md'), 'utf-8');
     expect(index).toContain('Normal-Chrome browser');
     const allRef = fs.readdirSync(refDir).map(f => fs.readFileSync(path.join(refDir, f), 'utf-8')).join('\n');
-    expect(allRef).toContain('### Normal-Chrome browser (account-bound web tasks, macOS + Windows)');
+    expect(allRef).toContain('### Normal-Chrome browser (account-bound web tasks, macOS + Windows + Linux)');
 
     // First server start: the migrator runs (now with Telegram configured).
     const result = new PostUpdateMigrator({

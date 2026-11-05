@@ -12,9 +12,11 @@ export function slackHistoryLabel(
   message: { user?: string | null },
   botUserId: string | null | undefined,
   current: { userId?: string | null; name?: string | null },
+  resolvedNames?: ReadonlyMap<string, string>,
 ): string {
   const user = message.user ?? '';
   if (botUserId && user === botUserId) return 'Agent';
   if (user && current.userId && user === current.userId && current.name) return current.name;
+  if (user && resolvedNames?.get(user)) return resolvedNames.get(user)!;
   return user || 'unknown';
 }

@@ -9,6 +9,8 @@
  *   POST /mobile/permissions/requests/:id/approve   — approve a waiting request held here
  *   POST /mobile/permissions/requests/:id/decline   — decline it, with a reason
  *   POST /mobile/permissions/features/:id           — set a switch on or off
+ *   POST /mobile/secrets/requests                   — ask someone for a password or key (docs/specs/mobile-native-secrets-writes.md)
+ *   POST /mobile/secrets/requests/:key/cancel       — cancel a waiting request held here
  *
  * The reads: the bearer or an owner phone. The writes: ONLY an active owner phone that signs the
  * request with its device key AND carries a fresh presence-key signature (Face ID / Touch ID /
@@ -23,6 +25,7 @@ import path from 'node:path';
 import type { Request, Response, Router } from 'express';
 import { ownerOrBearer, rowKey } from './mobileCapacityRoutes.js';
 import { cleanText } from './mobilePlansPeopleRoutes.js';
+import { TOKEN_RUN } from './mobileSecretsRoutes.js';
 import { activeOwnerPhone, isConsoleTicketEnabled, normalHost, verifyPresenceSignature } from './mobileConsoleTicket.js';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
@@ -41,8 +44,12 @@ export const PERMISSION_CHALLENGE_TOTAL = 64;
 export const MAX_APPROVAL_ROWS = 100;
 export const MAX_SLIP_ROWS = 100;
 export const MAX_REASON_CHARS = 500;
+export const MAX_SECRET_LABEL_CHARS = 120;
+export const MAX_SECRET_NOTE_CHARS = 500;
 /** Peers read per answer (the phones-messages ceiling); any beyond are counted as not answering. */
 export const MAX_PEERS = 16;
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/;
 const TARGET_PATTERN = /^[a-z0-9._:-]{1,128}$/;
 /** The disclosure word for a switch that records no consent (turning off, or an informational/local tier). */
 export const NO_DISCLOSURE = 'none';
@@ -70,7 +77,9 @@ export function isPermissionActionsEnabled(config: InstarConfig): boolean {
 export type PermissionAction =
   | { kind: 'approve-request'; target: string; proposalHash: string }
   | { kind: 'decline-request'; target: string; reason: string }
-  | { kind: 'set-feature'; target: string; value: 'enabled' | 'disabled'; disclosureHash: string };
+  | { kind: 'set-feature'; target: string; value: 'enabled' | 'disabled'; disclosureHash: string }
+  | { kind: 'request-secret'; target: 'new'; label: string; note: string; topicId: number | null }
+  | { kind: 'cancel-secret'; target: string };
 
 /** The SHA-256 (hex) of the decline reason's exact UTF-8 bytes as sent (no trimming, no normalisation). */
 export function reasonHash(reason: string): string { return sha256(reason); }
@@ -81,6 +90,8 @@ export function actionLine(a: PermissionAction): string {
     case 'approve-request': return `approve-request ${a.target} ${a.proposalHash}`;
     case 'decline-request': return `decline-request ${a.target} ${reasonHash(a.reason)}`;
     case 'set-feature': return `set-feature ${a.target} ${a.value} ${a.disclosureHash}`;
+    case 'request-secret': return `request-secret new ${reasonHash(a.label)} ${reasonHash(a.note)} ${a.topicId ?? 'none'}`;
+    case 'cancel-secret': return `cancel-secret ${a.target}`;
   }
 }
 
@@ -90,7 +101,7 @@ export function permissionPresenceMessage(deviceId: string, host: string, challe
 }
 
 /** Builds an action from its parts, or names what is wrong with them. */
-export function buildAction(kind: unknown, target: unknown, extra: { value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
+export function buildAction(kind: unknown, target: unknown, extra: { value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown; label?: unknown; note?: unknown; topicId?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
   if (typeof target !== 'string' || !TARGET_PATTERN.test(target)) return { ok: false, error: 'bad-target' };
   if (kind === 'approve-request') {
     if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
@@ -107,7 +118,32 @@ export function buildAction(kind: unknown, target: unknown, extra: { value?: unk
     if (typeof d !== 'string' || !(d === NO_DISCLOSURE || /^[0-9a-f]{64}$/.test(d))) return { ok: false, error: 'bad-disclosure-hash' };
     return { ok: true, action: { kind, target, value: extra.value, disclosureHash: d } };
   }
+  if (kind === 'request-secret') {
+    if (target !== 'new') return { ok: false, error: 'bad-target' };
+    const label = extra.label;
+    if (typeof label !== 'string' || label.trim().length === 0) return { ok: false, error: 'label-required' };
+    if (label !== label.trim()) return { ok: false, error: 'bad-label' };
+    if (label.length > MAX_SECRET_LABEL_CHARS) return { ok: false, error: 'label-too-long' };
+    const note = extra.note ?? '';
+    if (typeof note !== 'string' || note.length > MAX_SECRET_NOTE_CHARS) return { ok: false, error: 'note-too-long' };
+    if (CONTROL_CHARS.test(label) || CONTROL_CHARS.test(note.replace(/[\n\t]/g, ' '))) return { ok: false, error: 'bad-characters' };
+    if (holdsToken(label) || holdsToken(note)) return { ok: false, error: 'looks-like-a-secret' };
+    // The phone sends its fields as strings, so a topic may arrive as its digits.
+    const raw = extra.topicId ?? null;
+    const topic = typeof raw === 'string' && /^[1-9][0-9]{0,15}$/.test(raw) ? Number(raw) : raw;
+    if (topic !== null && !(typeof topic === 'number' && Number.isSafeInteger(topic) && topic > 0)) return { ok: false, error: 'bad-topic' };
+    return { ok: true, action: { kind, target, label, note, topicId: topic as number | null } };
+  }
+  if (kind === 'cancel-secret') {
+    if (!/^[0-9a-f]{16}$/.test(target)) return { ok: false, error: 'bad-target' };
+    return { ok: true, action: { kind, target } };
+  }
   return { ok: false, error: 'bad-action' };
+}
+
+/** Text that holds a token, before or after cleaning: a name is not where a key goes. */
+function holdsToken(s: string): boolean {
+  return TOKEN_RUN.test(s) || TOKEN_RUN.test(cleanText(s, 1000) ?? '');
 }
 
 // ── challenges ────────────────────────────────────────────────────────────────
@@ -158,8 +194,8 @@ export class ActionChallengeStore {
 
 // ── audit ─────────────────────────────────────────────────────────────────────
 
-export type PermissionAuditEvent = 'challenge' | 'approved' | 'declined' | 'feature-set' | 'refused';
-export interface PermissionAuditRow { at: string; event: PermissionAuditEvent; deviceId: string | null; route?: string; personId?: string | null; action?: string; target?: string; value?: string; reason?: string; status?: number }
+export type PermissionAuditEvent = 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'refused';
+export interface PermissionAuditRow { at: string; event: PermissionAuditEvent; deviceId: string | null; route?: string; personId?: string | null; action?: string; target?: string; requestKey?: string; value?: string; reason?: string; status?: number }
 
 /** Metadata-only trail of every phone permission write (never a decline text, never a secret). A record, not a gate. */
 export class PermissionActionAudit {
@@ -448,10 +484,19 @@ export interface MobilePermissionsDeps {
   deny: (id: string, reason: string, deviceId: string) => ActionResult;
   /** The console's operator-switch path (after its operator-session check). */
   setFeature: (req: Request, id: string, to: 'enabled' | 'disabled', deviceId: string, stillAuthorized: () => string | null) => Promise<ActionResult>;
+  /** Ask for a password or key on this machine (mobileSecretsRoutes.ts `askForSecret`). Never answers a token or link. */
+  requestSecret: (label: string, note: string, topicId: number | null) => ActionResult;
+  /** Cancel the request behind this one-way key, on this machine. */
+  cancelSecret: (key: string) => ActionResult;
   now?: () => number;
 }
 
 type Refusal = { status: number; error: string; detail?: string };
+
+/** The route for an audit row. A secrets path is named, not copied: its key segment is caller-supplied text. */
+function auditRoute(req: Request): string {
+  return req.path.startsWith('/mobile/secrets/') ? '/mobile/secrets/requests' : req.path.slice(0, 120);
+}
 
 function principalDevice(req: Request): string | null {
   const p = (req as unknown as { instarPrincipal?: { kind: string; deviceId?: unknown } }).instarPrincipal;
@@ -468,7 +513,7 @@ function overLocalTls(req: Request): boolean {
 }
 
 /** What the caller could do here (shown before any button). */
-export function actionsState(req: Request, deps: MobilePermissionsDeps): { state: 'available' | 'console-only'; reason: string | null; presenceKey: boolean } {
+export function actionsState(req: Request, deps: Pick<MobilePermissionsDeps, 'pairing' | 'config'>): { state: 'available' | 'console-only'; reason: string | null; presenceKey: boolean } {
   const p = (req as unknown as { instarPrincipal?: { kind: string; deviceId?: string } }).instarPrincipal;
   const svc = deps.pairing();
   if (!p || p.kind !== 'device' || typeof p.deviceId !== 'string') return { state: 'console-only', reason: 'bearer', presenceKey: false };
@@ -548,7 +593,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     res.set('Cache-Control', 'no-store');
     // Every refusal leaves a trace before the answer (A Refusal Stays a Refusal); the bearer has no device id.
     const refuse = (r: Refusal, deviceId: string | null = principalDevice(req)): null => {
-      audit.record({ event: 'refused', deviceId, route: req.path.slice(0, 120), reason: r.error, status: r.status });
+      audit.record({ event: 'refused', deviceId, route: auditRoute(req), reason: r.error, status: r.status });
       res.status(r.status).json({ error: r.error, ...(r.detail ? { detail: r.detail } : {}) });
       return null;
     };
@@ -573,8 +618,8 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     const g = writeGate(req, res);
     if (!g) return;
     const b = rec(req.body);
-    const built = buildAction(b.action, b.target, { value: b.value, reason: b.reason, proposalHash: b.proposalHash, disclosureHash: b.disclosureHash });
-    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: req.path.slice(0, 120), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+    const built = buildAction(b.action, b.target, { value: b.value, reason: b.reason, proposalHash: b.proposalHash, disclosureHash: b.disclosureHash, label: b.label, note: b.note, topicId: b.topicId });
+    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
     const line = actionLine(built.action);
     const c = challenges.issue(g.deviceId, g.host, line);
     audit.record({ event: 'challenge', deviceId: g.deviceId, personId: g.personId, action: built.action.kind, target: built.action.target, ...(built.action.kind === 'set-feature' ? { value: built.action.value } : {}) });
@@ -601,7 +646,9 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
 
   const finish = (res: Response, event: PermissionAuditEvent, action: PermissionAction, g: { deviceId: string; personId: string | null }, r: ActionResult): void => {
     const ok = r.status >= 200 && r.status < 300;
-    audit.record({ event: ok ? event : 'refused', deviceId: g.deviceId, personId: g.personId, action: action.kind, target: action.target, ...(action.kind === 'set-feature' ? { value: action.value } : {}), status: r.status, ...(ok ? {} : { reason: errorCode(r.body) }) });
+    // A request's signed target is `new`; its one-way key ties the row to the request it made.
+    const madeKey = rec(r.body).key;
+    audit.record({ event: ok ? event : 'refused', deviceId: g.deviceId, personId: g.personId, action: action.kind, target: action.target, ...(action.kind === 'request-secret' && typeof madeKey === 'string' ? { requestKey: madeKey } : {}), ...(action.kind === 'set-feature' ? { value: action.value } : {}), status: r.status, ...(ok ? {} : { reason: errorCode(r.body) }) });
     res.status(r.status).json(r.body);
   };
 
@@ -609,7 +656,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     const g = writeGate(req, res);
     if (!g) return;
     const built = buildAction('approve-request', String(req.params.id), { proposalHash: rec(req.body).proposalHash });
-    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: req.path.slice(0, 120), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
     if (!proven(req, res, g, built.action)) return;
     const a = built.action as Extract<PermissionAction, { kind: 'approve-request' }>;
     finish(res, 'approved', a, g, runAction(() => deps.approve(a.target, a.proposalHash, g.deviceId)));
@@ -619,17 +666,38 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     const g = writeGate(req, res);
     if (!g) return;
     const built = buildAction('decline-request', String(req.params.id), { reason: rec(req.body).reason });
-    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: req.path.slice(0, 120), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
     if (!proven(req, res, g, built.action)) return;
     const a = built.action as Extract<PermissionAction, { kind: 'decline-request' }>;
     finish(res, 'declined', a, g, runAction(() => deps.deny(a.target, a.reason, g.deviceId)));
+  });
+
+  router.post('/mobile/secrets/requests', (req: Request, res: Response) => {
+    const g = writeGate(req, res);
+    if (!g) return;
+    const body = rec(req.body);
+    const built = buildAction('request-secret', 'new', { label: body.label, note: body.note, topicId: body.topicId });
+    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+    if (!proven(req, res, g, built.action)) return;
+    const a = built.action as Extract<PermissionAction, { kind: 'request-secret' }>;
+    finish(res, 'secret-requested', a, g, runAction(() => deps.requestSecret(a.label, a.note, a.topicId)));
+  });
+
+  router.post('/mobile/secrets/requests/:key/cancel', (req: Request, res: Response) => {
+    const g = writeGate(req, res);
+    if (!g) return;
+    const built = buildAction('cancel-secret', String(req.params.key), {});
+    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+    if (!proven(req, res, g, built.action)) return;
+    const a = built.action as Extract<PermissionAction, { kind: 'cancel-secret' }>;
+    finish(res, 'secret-cancelled', a, g, runAction(() => deps.cancelSecret(a.target)));
   });
 
   router.post('/mobile/permissions/features/:id', async (req: Request, res: Response) => {
     const g = writeGate(req, res);
     if (!g) return;
     const built = buildAction('set-feature', String(req.params.id), { value: rec(req.body).to, disclosureHash: rec(req.body).disclosureHash });
-    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: req.path.slice(0, 120), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
     if (!proven(req, res, g, built.action)) return;
     const a = built.action as Extract<PermissionAction, { kind: 'set-feature' }>;
     // The disclosure the phone signed must be the one turning this switch on records consent to now.

@@ -29,6 +29,7 @@ import { OverloadShedPlanner, DEFAULT_OVERLOAD_SHED } from '../core/OverloadShed
 import { PlacementExecutor } from '../core/PlacementExecutor.js';
 import type { MachineCapacity } from '../core/types.js';
 import { HostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
+import { CHROME_UPGRADE_INTERVAL_MS, MAX_INSTALL_ATTEMPTS, decideProvision, type BackoffRecord, type MachineFacts, type ProvisionRecord } from '../core/linuxBrowserProvision.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import { checkThrowawayExpiry, MAX_TEARDOWN_ATTEMPTS } from '../core/ThrowawayAgentGuard.js';
@@ -315,6 +316,36 @@ const desktopRelockGuardReplacement: SelfActionController = {
         if (decideGuardReplacement(replacements) === 'give-up') return;
         replacements += 1;
         sink.emit({ verb: 'respawn', target: 'relock-guard' });
+      },
+    };
+  },
+};
+
+const LINUX_BROWSER_FACTS: MachineFacts = { platform: 'linux', wsl: false, arch: 'x64', osRelease: 'ID=ubuntu\nVERSION_ID="24.04"\n', hasApt: true, sudoWorks: true, freeBytes: 10 * 1024 ** 3 };
+
+/** linux-browser-install-retry: every attempt fails and the machine stays up, so the hourly check keeps
+ * asking. The real decision paces it at 1 h, 6 h, 24 h, then stops for good until an operator says yes. */
+const linuxBrowserInstallRetry: SelfActionController = {
+  id: 'linux-browser-install-retry',
+  actionVerb: 'retry',
+  models: 'src/core/linuxBrowserProvision.ts (provisionLinuxBrowser — decideProvision, MAX_INSTALL_ATTEMPTS)',
+  modelsPath: 'src/core/linuxBrowserProvision.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The attempt count is on disk in provision-backoff.json, so a restart cannot reset it.' },
+  boundK: MAX_INSTALL_ATTEMPTS,
+  perTargetBoundK: MAX_INSTALL_ATTEMPTS,
+  ticks: 24 * 30,
+  tickMs: 60 * 60_000,
+  eternalSentinel: undefined,
+  makeUnderPressure(f, sink) {
+    let backoff: BackoffRecord | null = null;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        const decision = decideProvision({ wanted: true, depsPresent: false, bindings: 0, facts: LINUX_BROWSER_FACTS, record: null, backoff, now });
+        if (decision.action !== 'install') return;
+        backoff = { attempts: (backoff?.attempts ?? 0) + 1, lastAt: now };
+        sink.emit({ verb: 'retry', target: 'linux-browser-install' });
       },
     };
   },
@@ -3932,6 +3963,7 @@ const jobSilenceAlert: SelfActionController = {
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   jobPortableTransferPoll,
   jobCoverageAlertRetry,
+  linuxBrowserInstallRetry,
   claudeKeySessionRefresh,
   desktopRelockGuardReplacement,
   desktopLockedHelperRespawn,
