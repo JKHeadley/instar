@@ -3672,7 +3672,7 @@ If no overdue or stale items, exit silently (after the clear above).`,
       priority: 'high',
       expectedDurationMinutes: 5,
       model: 'haiku',
-      enabled: true,
+      enabled: false,
       gate: 'bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/git-sync-gate.sh',
       execute: {
         type: 'skill',
@@ -4037,23 +4037,9 @@ function refreshJobs(stateDir: string): void {
     }
     if (repaired > 0) added++; // force write
 
-    // Auto-enable git-sync if git + remote are available (migration from disabled default)
-    const gitSyncJob = existingJobs.find(j => j.slug === 'git-sync') as Record<string, unknown> | undefined;
-    if (gitSyncJob && !gitSyncJob.enabled) {
-      const projectDir = path.dirname(stateDir);
-      const hasGit = fs.existsSync(path.join(projectDir, '.git'));
-      let hasRemote = false;
-      if (hasGit) {
-        try {
-          const remote = SafeGitExecutor.readSync(['remote'], { cwd: projectDir, stdio: 'pipe', operation: 'src/commands/init.ts:3331' }).toString().trim();
-          hasRemote = remote.length > 0;
-        } catch { /* no git or no remote */ }
-      }
-      if (hasGit && hasRemote) {
-        gitSyncJob.enabled = true;
-        added++; // force write
-      }
-    }
+    // Git synchronization can stage token-bearing local config. Never infer
+    // consent from a remote or an existing disabled job; only the operator
+    // may enable it explicitly.
 
     if (added > 0) {
       fs.writeFileSync(jobsPath, JSON.stringify(existingJobs, null, 2));

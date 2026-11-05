@@ -123,7 +123,7 @@ import {
 } from '../scaffold/claudeMdLayout.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
-import { installBuiltinSkills, installBrowserScripts } from '../commands/init.js';
+import { getDefaultJobs, installBuiltinSkills, installBrowserScripts } from '../commands/init.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { recordInstallProvenanceIfAbsent, hasInstallProvenanceRecord } from './ApprenticeshipStallGate.js';
 import { IdentityManager } from '../threadline/client/IdentityManager.js';
@@ -2489,6 +2489,7 @@ export class PostUpdateMigrator {
     this.migrateGitignore(result);
     this.migrateBuiltinSkills(result);
     this.migrateBuiltinJobs(result);
+    this.migrateLegacyDefaultJobs(result);
     this.autoMigrateLegacyJobsJson(result);
     this.migrateSkillPortHardcoding(result);
     this.migrateBuildSkillMethodology(result);
@@ -6782,6 +6783,45 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       result.skipped.push('built-in skills: checked (non-destructive)');
     } catch (err) {
       result.errors.push(`built-in skills: ${err}`);
+    }
+  }
+
+  /**
+   * Reconcile legacy default jobs on every update, before a pending jobs.json
+   * migration reads that file. Built-in agentmd jobs are handled separately.
+   * The legacy git-sync default is disabled and never auto-enabled by refresh.
+   */
+  private migrateLegacyDefaultJobs(result: MigrationResult): void {
+    const jobsPath = path.join(this.config.stateDir, 'jobs.json');
+    if (!fs.existsSync(jobsPath)) {
+      result.skipped.push('legacy default jobs: no jobs.json');
+      return;
+    }
+    try {
+      const jobs = JSON.parse(fs.readFileSync(jobsPath, 'utf8')) as unknown;
+      if (!Array.isArray(jobs) || jobs.some(job => !job || typeof job !== 'object' || typeof job.slug !== 'string')) {
+        throw new Error('jobs.json must be an array of jobs with slugs');
+      }
+      const slugs = new Set(jobs.map(job => job.slug));
+      const missing = (getDefaultJobs(this.config.port) as Array<{ slug: string; enabled?: boolean }>)
+        .filter(job => !slugs.has(job.slug));
+      // An update may add shipped defaults, but must not rewrite an existing
+      // legacy body before jobsMigrate can classify and preserve user edits.
+      // A Git remote is never an opt-in to running git-sync.
+      for (const job of missing) {
+        if (job.slug === 'git-sync') job.enabled = false;
+        jobs.push(job);
+      }
+      if (missing.length > 0) {
+        SafeFsExecutor.atomicWriteJsonSync(jobsPath, jobs, {
+          operation: 'PostUpdateMigrator.migrateLegacyDefaultJobs', indent: 2,
+        });
+        result.upgraded.push(`legacy default jobs: ${missing.length} missing job(s) installed`);
+      } else {
+        result.skipped.push('legacy default jobs: already present');
+      }
+    } catch (err) {
+      result.errors.push(`legacy default jobs: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
