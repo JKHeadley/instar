@@ -2,6 +2,7 @@ import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
 import { registerRecommendedServiceRoutes } from './recommendedServiceRoutes.js';
 import { catalogWithProving } from '../recommended/recipes.js';
 import { classifyLocation, readThrowawayRecord } from '../core/ThrowawayAgentGuard.js';
+import { browserCapability, provisionLinuxBrowser } from '../core/linuxBrowserProvision.js';
 import { holdSetupForSession } from '../recommended/setupState.js';
 import { GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS } from '../core/PinAttemptStore.js';
 import { isRetiredLegacyOffer } from '../recommended/legacyDeclines.js';
@@ -1146,7 +1147,7 @@ export interface RouteContext {
    *  honor config flips WITHOUT a restart (outbound-advisory rollback
    *  contract — spec outbound-jargon-filepath-gap §5) read through this.
    *  Null on older callers/tests → consumers fall back to code defaults. */
-  liveConfig?: { get<T>(path: string, def: T): T } | null;
+  liveConfig?: { get<T>(path: string, def: T): T; set?(path: string, value: unknown): void } | null;
   /** Validates an X-Instar-DeliveryId against an ACTUAL PendingRelayStore
    *  row — the §2.1 redrive exemption for the kindless-job-send breadcrumb
    *  (a fabricated header must not buy the exemption). Wired by AgentServer
@@ -27575,8 +27576,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const systemMsg = `[secret-drop-stuck] Secret "${event.label}" was submitted but has not been consumed by an agent process. ` +
       `If you weren't expecting this, the consumer may have hit a bug. ` +
       `The submission will auto-clean in ~${event.minutesUntilCleanup} minute(s). ` +
-      `To retry, use the hardened helper (non-destructive): node .instar/scripts/secret-drop-retrieve.mjs ${event.token} <field-name>. ` +
-      `Discover field names with --names. DO NOT use raw curl against /secrets/retrieve.`;
+      (event.browserHost
+        ? `It is a password for ${event.browserHost}: with that page's password box focused, run XD_PROFILE=<profile> node .instar/scripts/secret-drop-retrieve.mjs ${event.token} <field-name> --browser. Nothing else can read it. `
+        : `To retry, use the hardened helper (non-destructive): node .instar/scripts/secret-drop-retrieve.mjs ${event.token} <field-name>. ` +
+          `Discover field names with --names. `) +
+      `DO NOT use raw curl against /secrets/retrieve.`;
     try {
       const sdRegistryPath = path.join(ctx.config.stateDir, 'topic-session-registry.json');
       let targetSession: string | null = null;
@@ -27612,7 +27616,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   function validateSecretRequestBody(
     body: any,
   ): { error: string } | { opts: CreateSecretRequestOptions } {
-    const { label, description, fields, topicId, ttlMs, senderVerification } = body ?? {};
+    const { label, description, fields, topicId, ttlMs, senderVerification, browserHost } = body ?? {};
 
     if (!label || typeof label !== 'string' || label.length > 256) {
       return { error: '"label" must be a non-empty string under 256 characters' };
@@ -27649,8 +27653,43 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
 
-    return { opts: { label, description, fields, topicId, ttlMs, senderVerification } };
+    if (browserHost !== undefined) {
+      // The same host pattern the Linux driver applies. A sealed handoff has no form, so no person would see the host.
+      if (typeof browserHost !== 'string' || browserHost.length > 253 || !/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(browserHost)) {
+        return { error: '"browserHost" must be a lowercase host name, such as accounts.example.com' };
+      }
+      if (senderVerification !== undefined) {
+        return { error: '"browserHost" cannot be combined with "senderVerification": no person would see the host' };
+      }
+    }
+
+    return { opts: { label, description, fields, topicId, ttlMs, senderVerification, browserHost } };
   }
+
+  // An operator's yes to the browser install on an existing Linux agent: sets the flag for this
+  // machine and starts the install now, with no restart. Spec: docs/specs/normal-chrome-linux.md.
+  router.post('/browser/linux/install', async (req, res) => {
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    const projectDir = ctx.config.projectDir;
+    if (classifyLocation({ projectDir, record: readThrowawayRecord(projectDir) }).throwaway) {
+      res.status(409).json({ error: 'a throwaway agent never installs system packages' });
+      return;
+    }
+    if (ctx.liveConfig?.get<boolean | undefined>('browser.linuxDriver.autoInstall', undefined) === false) {
+      res.status(409).json({ error: 'browser.linuxDriver.autoInstall is false; only a person changes that' });
+      return;
+    }
+    ctx.liveConfig?.set?.('browser.linuxDriver.autoInstall', true);
+    const decision = await provisionLinuxBrowser({
+      stateDir: ctx.config.stateDir, projectDir, configured: true, throwaway: false, bypassBackoff: true,
+    });
+    res.status(202).json({ decision, browser: browserCapability(ctx.config.stateDir) });
+  });
+
+  // The browser this agent always has. Spec: docs/specs/normal-chrome-linux.md, "Browser awareness".
+  router.get('/browser/state', (_req, res) => {
+    res.json(browserCapability(ctx.config.stateDir));
+  });
 
   // Create a new secret request (agent-facing, requires auth)
   router.post('/secrets/request', (req, res) => {
@@ -27809,7 +27848,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Best-effort + loud on failure: the ephemeral copy still exists for immediate
     // use, so a keychain/disk hiccup must not 500 the user's submission. Opt out with
     // config.secrets.persistDrops=false. NEVER log the secret value.
-    if (ctx.config.secrets?.persistDrops !== false) {
+    // A browser password is not persisted: a refused one must not outlive the received-submission cap.
+    if (ctx.config.secrets?.persistDrops !== false && !submission.browserHost) {
       try {
         const store = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
         store.set(`secretDrops.${req.params.token}`, {
@@ -27840,7 +27880,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const topicId = submission.topicId;
       const fieldCount = Object.keys(submission.values).length;
       const fieldNames = Object.keys(submission.values).join(', ');
-      const systemMsg = `[secret-drop-received] Secret "${submission.label}" was just submitted (${fieldCount} field${fieldCount !== 1 ? 's' : ''}: ${fieldNames}). ` +
+      const systemMsg = submission.browserHost
+        ? `[secret-drop-received] The password "${submission.label}" for ${submission.browserHost} was just submitted (field: ${fieldNames}). ` +
+          `Focus that page's password box, then run XD_PROFILE=<profile> node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} <field-name> --browser. ` +
+          `That is the only way it can leave; it goes straight into the box and you never see it. ` +
+          `Then acknowledge receipt to the user conversationally via ${telegramTopicRef(topicId)}.`
+        : `[secret-drop-received] Secret "${submission.label}" was just submitted (${fieldCount} field${fieldCount !== 1 ? 's' : ''}: ${fieldNames}). ` +
         `Retrieve with the HARDENED helper (streams field value to stdout, never prints the response body): node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} <field-name>. ` +
         `Discover field names with: node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} --names. ` +
         `Default is non-destructive (safe to retry); append --consume after successful handoff. ` +

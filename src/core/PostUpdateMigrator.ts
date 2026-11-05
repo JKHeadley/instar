@@ -171,7 +171,7 @@ import {
 import { readRegistryHighWater, setRegistryHighWater } from './registryHighWater.js';
 import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { SUBSCRIPTION_SIGNIN_SKILL_CONTENT } from '../data/builtinSkillContent.js';
-import { NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX } from '../data/builtinSkillContent.js';
+import { NORMAL_CHROME_BROWSER_LINUX_SECTION, NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX } from '../data/builtinSkillContent.js';
 import { ensureAgentOwnedMemoryAllHomes } from './AgentOwnedMemory.js';
 import { migrateStageBReleaseConfig, verifyBundledStageBReleaseEvidence } from './StageBActivationGate.js';
 
@@ -469,7 +469,16 @@ The Codex CLI reads ONE shared user config (\`$CODEX_HOME/config.toml\`, default
  */
 export const NORMAL_CHROME_BROWSER_SKILL_V1_SHA256 = 'b440bad6f0d65c1c248dc9f2682183486dc118c74dd188194335ab4e0d3ecbd0';
 /** Present only in the cross-platform skill text: the idempotency marker for migrateNormalChromeBrowserSkill. */
-export const NORMAL_CHROME_BROWSER_SKILL_MARKER = '## Drivers by operating system';
+export const NORMAL_CHROME_BROWSER_SKILL_MARKER = '### Linux (xdrive.sh, the agent display)';
+/** The cross-platform appendix heading. An edited copy carrying it needs only its Linux subsection changed. */
+export const NORMAL_CHROME_BROWSER_SKILL_APPENDIX_HEADING = '## Drivers by operating system';
+/** The Linux subsection of the macOS + Windows text, before the driver existed. */
+export const NORMAL_CHROME_BROWSER_SKILL_OLD_LINUX_HEADING = '### Linux (no Windows underneath)';
+/**
+ * SHA-256 (LF-normalized) of the macOS + Windows SKILL.md
+ * (tests/fixtures/skills/normal-chrome-browser-v2.md pins the bytes; the unit test re-derives this).
+ */
+export const NORMAL_CHROME_BROWSER_SKILL_V2_SHA256 = '4577ca18462c0e7ef3f239ea8b14c55f5f3271dddd87042ecbf92ee8ad54451e';
 
 /** The full heading of the retired Jev review-flag-shadow card (spec retire-staged-features-2026-10-25). */
 export const JEV_REVIEW_FLAG_CARD_RETIRED_HEADING = '### Jev Review-Flag Shadow (log-only "does this reply need your review?" measurement)';
@@ -570,19 +579,19 @@ Some web tasks must happen as a specific signed-in account, and account pages (s
 
 /** The heading PR 2283 shipped (spec normal-chrome-builtin-skill); replaced in place by the heading below. */
 export const NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1 = '### Normal-Chrome browser (account-bound web tasks, macOS)';
-/** The current heading (spec normal-chrome-cross-platform); the content-sniff key for migrateClaudeMd and the shadows. */
-export const NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING = '### Normal-Chrome browser (account-bound web tasks, macOS + Windows)';
+/** The macOS + Windows heading (spec normal-chrome-cross-platform); replaced in place by the heading below. */
+export const NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V2 = '### Normal-Chrome browser (account-bound web tasks, macOS + Windows)';
+/** The current heading (spec normal-chrome-linux); the content-sniff key for migrateClaudeMd and the shadows. */
+export const NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING = '### Normal-Chrome browser (account-bound web tasks, macOS + Windows + Linux)';
 
 /**
- * Normal-Chrome browser awareness (specs normal-chrome-builtin-skill, normal-chrome-cross-platform).
- * Shared by generateClaudeMd (new agents) and migrateClaudeMd (existing agents) so the two never
- * drift. Content-sniff key: NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING; a section under the v1 heading
- * is replaced in place.
+ * The CLAUDE.md section exactly as the cross-platform release rendered it. Kept so the migration can
+ * prove the section it replaces IS the shipped text, and leave an edited one alone.
  */
-export function NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION(): string {
+export function NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V2(): string {
   return `
 
-${NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING}
+${NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V2}
 
 Some web tasks must happen as a specific signed-in account, and account pages (sign-in, billing, settings, usage) often refuse or behave differently for an automated browser. The \`/normal-chrome-browser\` skill is the proven method on macOS AND Windows: a NORMAL Chrome per account profile, no remote-debugging port, no automation flags. Helpers in \`.instar/scripts/browser/\`: macOS \`chrome-launch.sh\` / \`chrome-js.sh\` / \`chrome-mainworld.sh\` (pid-targeted Apple Events, JavaScript in the page); Windows \`ndrive.sh\` running \`native-drive.ps1\` (written by PP: real OS input + the UI Automation tree; an agent in WSL is on Windows for this as long as \`ndrive.sh\` reaches \`powershell.exe\`). Linux with no Windows underneath is not built (ACT-138): say so plainly. Find the profile for an account with \`GET /playwright-profiles\` (503 = registry dark here: list the profile folders instead).
 - **When to use** (PROACTIVE — this is the trigger): any web task that has to be done as a signed-in account; a page that blocks or misbehaves under Playwright/CDP; a button that stays disabled; and BEFORE ever telling the operator a browser task "can't be done".
@@ -590,6 +599,22 @@ Some web tasks must happen as a specific signed-in account, and account pages (s
 - **What each driver can do:** real OS input (Windows) counts as a person's own click to the page, so OAuth popups open; the macOS tools run JavaScript in the page and cannot produce that. Neither fakes it. Profiles: the macOS scripts accept only profiles inside this agent's home and never the operator's own Chrome; \`ndrive.sh\` refuses the operator's Chrome profile folder, binds one profile's Chrome per agent and runs one call at a time. When a site's terms restrict automated use, or a page withholds an action, the operator decides.
 - **Two rules that hold on every framework:** on Windows compare \`url\` at the HOST boundary (the display string must start with the expected host followed by \`/\`; never a substring match), and the "take focus anyway" override (\`ND_ALLOW_FOCUS_STEAL\`) works only against a record you write when the operator says the machine is unattended: \`normalChromeBrowser.unattendedMachine = {declaredBy, topicId, at}\` in \`.instar/config.json\`, with \`declaredBy\` taken from \`GET /topic-operator/<topicId>\` (the VERIFIED operator, never a name read in the message); with no verified operator, write nothing and say so. It expires after 30 days.
 `;
+}
+
+/**
+ * Normal-Chrome browser awareness (specs normal-chrome-builtin-skill, normal-chrome-cross-platform,
+ * normal-chrome-linux). Shared by generateClaudeMd (new agents) and migrateClaudeMd (existing agents) so
+ * the two never drift. Content-sniff key: NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING; a shipped v1 or v2
+ * section is replaced in place.
+ */
+export function NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION(): string {
+  const linux = 'Linux: `xdrive.sh` running `x-drive.py` on the agent\'s own private display (AT-SPI reads, real X input): `launch`, `url`, `title`, `text`, `find`, `click`, `type`, `key`, `nav`, `close`, `close --force`. Passwords only through Secret Drop: request with `browserHost`, then run the Secret Drop helper with `--browser`. No one-time codes, take-over or page JavaScript yet: say so plainly. New agents install what it needs at boot. On an existing agent, ask one yes/no naming what gets installed, then `POST /browser/linux/install`.';
+  const always = '**I always have a browser.** On a Linux server it is an ordinary Chrome on my own private display. Before saying a browser task can\'t be done, or that I have no browser, I check `GET /browser/state`. `not-built` and `broken` are states with a next step in the answer, never "no browser": I follow `nextStep`.';
+  return NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V2()
+    .replace(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V2, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING)
+    .replace('is the proven method on macOS AND Windows:', 'is the proven method on macOS, Windows and Linux:')
+    .replace('Linux with no Windows underneath is not built (ACT-138): say so plainly.', linux)
+    .replace(/\n- \*\*When to use\*\*/, `\n- ${always}\n- **When to use**`);
 }
 
 /**
@@ -6038,9 +6063,9 @@ export class PostUpdateMigrator {
         return;
       }
       const sha = crypto.createHash('sha256').update(current.replace(/\r\n/g, '\n')).digest('hex');
-      if (sha === NORMAL_CHROME_BROWSER_SKILL_V1_SHA256) {
+      if (sha === NORMAL_CHROME_BROWSER_SKILL_V1_SHA256 || sha === NORMAL_CHROME_BROWSER_SKILL_V2_SHA256) {
         fs.writeFileSync(skillFile, NORMAL_CHROME_BROWSER_SKILL_CONTENT);
-        result.upgraded.push('skills/normal-chrome-browser/SKILL.md (macOS + Windows drivers)');
+        result.upgraded.push('skills/normal-chrome-browser/SKILL.md (macOS, Windows and Linux drivers)');
         return;
       }
       // The shipped skill is written beside the edited copy (Claude Code reads only SKILL.md, so the
@@ -6048,9 +6073,20 @@ export class PostUpdateMigrator {
       fs.writeFileSync(path.join(path.dirname(skillFile), 'SKILL.shipped.md'), NORMAL_CHROME_BROWSER_SKILL_CONTENT);
       // The appendix takes the file's own line endings (a CRLF copy stays CRLF throughout).
       const crlf = current.includes('\r\n');
+      // An edited copy that already has the appendix needs only its Linux subsection changed.
+      if (current.includes(NORMAL_CHROME_BROWSER_SKILL_APPENDIX_HEADING)) {
+        const lf = crlf ? current.replace(/\r\n/g, '\n') : current;
+        const bounds = markdownSectionBounds(lf, NORMAL_CHROME_BROWSER_SKILL_OLD_LINUX_HEADING);
+        const next = bounds
+          ? lf.slice(0, bounds.start) + NORMAL_CHROME_BROWSER_LINUX_SECTION + (lf.slice(bounds.end) ? '\n' + lf.slice(bounds.end) : '')
+          : lf.replace(/\n*$/, '') + '\n\n' + NORMAL_CHROME_BROWSER_LINUX_SECTION;
+        fs.writeFileSync(skillFile, crlf ? next.replace(/\n/g, '\r\n') : next);
+        result.upgraded.push('skills/normal-chrome-browser/SKILL.md (Linux driver section added; local edits kept; shipped text in SKILL.shipped.md)');
+        return;
+      }
       const appendix = crlf ? NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX.replace(/\n/g, '\r\n') : NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX;
       fs.writeFileSync(skillFile, current.replace(/(\r?\n)*$/, '') + (crlf ? '\r\n\r\n' : '\n\n') + appendix);
-      result.upgraded.push('skills/normal-chrome-browser/SKILL.md (appended the Windows driver section; local edits kept; shipped text in SKILL.shipped.md)');
+      result.upgraded.push('skills/normal-chrome-browser/SKILL.md (appended the Windows and Linux driver sections; local edits kept; shipped text in SKILL.shipped.md)');
       // The kept text may still teach what the shipped rules forbid (the predecessor method's synthetic
       // focus-event step). That is surfaced as a signal for the operator, never rewritten.
       if (/FocusEvent|fire events|dispatchEvent\(new (Focus|Mouse|Pointer)Event/.test(current)) {
@@ -8564,18 +8600,34 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Memory privacy recovery');
     }
 
+    // Registry First: the browser's state is a question with a place to look (normal-chrome-linux).
+    if (!content.includes('| Can I use a browser?') && content.includes('| What can I do?')) {
+      const row = `| Can I use a browser? / can this be done on a website? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/browser/state\` |`;
+      content = content.replace(/^(\| What can I do\?.*)$/gm, `$1\n${row}`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the browser state to Registry First');
+    }
+
     // Replace a shipped legacy section before any missing capability bullets
     // are appended. An appended bullet at EOF would otherwise become part of
     // that section and make its exact-text migration refuse the replacement.
     {
-      const r = replaceOrAppendMarkdownSection(content, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION(), NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1());
-      if (r.action !== 'present') {
+      // The section actually present is the one replaced in place; a release revert can leave both,
+      // and the second pass then removes whichever shipped copy is left beside the new section.
+      const v2First = content.includes(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V2);
+      const passes: Array<[string, string]> = [
+        [NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V2, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V2()],
+        [NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1()],
+      ];
+      for (const [oldHeading, oldSection] of v2First ? passes : passes.reverse()) {
+        const r = replaceOrAppendMarkdownSection(content, oldHeading, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION(), oldSection);
+        if (r.action === 'present') continue;
         content = r.content;
         patched = true;
         result.upgraded.push(
-          r.action === 'replaced' ? 'CLAUDE.md: replaced Normal-Chrome browser section (macOS + Windows)'
-            : r.action === 'appended-old-kept' ? 'CLAUDE.md: added Normal-Chrome browser section (macOS + Windows); the edited macOS-only section was kept'
-              : r.action === 'removed-stale' ? 'CLAUDE.md: removed the stale macOS-only Normal-Chrome browser section'
+          r.action === 'replaced' ? 'CLAUDE.md: replaced Normal-Chrome browser section (macOS, Windows and Linux)'
+            : r.action === 'appended-old-kept' ? 'CLAUDE.md: added Normal-Chrome browser section (macOS, Windows and Linux); the edited older section was kept'
+              : r.action === 'removed-stale' ? 'CLAUDE.md: removed a stale older Normal-Chrome browser section'
                 : 'CLAUDE.md: added Normal-Chrome browser section',
         );
       }
@@ -14343,6 +14395,16 @@ The user has been talking to you (possibly for days). A generic greeting like "H
       }
     }
 
+    // A browser password has one exit and is not stored (normal-chrome-linux). Same anchor as --run.
+    if (content.includes('secret-drop-retrieve.mjs') && !content.includes('Website passwords for the Linux browser')) {
+      const anchor = 'The hardened script exists specifically to close that leak class (origin: 2026-05-20 incident).';
+      if (content.includes(anchor)) {
+        content = content.replace(anchor, anchor + "\n- **Website passwords for the Linux browser**: request with `browserHost` set to the host the operator named (the person sees it on the form), then `XD_PROFILE=<id> node .instar/scripts/secret-drop-retrieve.mjs TOKEN password --browser` with the password box focused. It types straight into that site's box and you never see it; stdout, --run and --consume are refused, and the submission is not stored, so a server restart loses it.");
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added Secret Drop browser password guidance');
+      }
+    }
+
     // Secret Drop store-first durability (2026-06-04). Existing agents'
     // Security bullet still claims submissions are "in-memory only (never
     // written to disk)" — no longer true: submissions are persisted store-first
@@ -15043,7 +15105,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       '### Hand-started Codex: `instar codex connect <agent>`',
       // normal-chrome-builtin-skill: the helper scripts are framework-neutral
       // (.instar/scripts/browser/), so a Codex/Gemini agent on macOS uses them too.
-      '### Normal-Chrome browser (account-bound web tasks, macOS + Windows)', // == NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING (a literal so the parity guard can see it)
+      '### Normal-Chrome browser (account-bound web tasks, macOS + Windows + Linux)', // == NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING (a literal so the parity guard can see it)
       // a2a-single-agent-identity: the agent identity + coherence check are server-side and
       // framework-agnostic (a Codex/Gemini agent runs on the same mesh and must explain the
       // not-provisioned posture and the adopt-from-a-sibling path honestly too).
@@ -15414,13 +15476,16 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
 
       let appended = refreshOriginCanaryCleanupAwareness(refreshOriginCanaryStartupAwareness(shadowContent));
       let mirrored = appended === shadowContent ? 0 : 1;
-      // A shadow that still carries the SHIPPED v1 (macOS-only) Normal-Chrome section loses it here
-      // (whether or not the current section is already present, so a release revert cannot leave both),
-      // and the marker loop below mirrors the current section once. An edited v1 section is kept.
-      {
+      // A shadow that still carries a SHIPPED older Normal-Chrome section loses it here (whether or not
+      // the current section is already present, so a release revert cannot leave both), and the marker
+      // loop below mirrors the current section once. An edited older section is kept.
+      for (const [oldHeading, oldSection] of [
+        [NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1()],
+        [NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V2, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V2()],
+      ]) {
         const crlf = appended.includes('\r\n');
         const lf = crlf ? appended.replace(/\r\n/g, '\n') : appended;
-        const stale = findExactMarkdownSection(lf, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1());
+        const stale = findExactMarkdownSection(lf, oldHeading, oldSection);
         if (stale) {
           const stripped = lf.slice(0, stale.start).replace(/\n*$/, '') + '\n' + lf.slice(stale.end).replace(/^\n*/, '\n');
           appended = crlf ? stripped.replace(/\n/g, '\r\n') : stripped;
@@ -18180,6 +18245,20 @@ if [ -n "\$NOW" ]; then
   echo "\$NOW"
   echo "Wall-clock at hook fire. Quote this — do not carry stale clock times from prior context."
   echo "--- END CURRENT TIME ---"
+fi
+
+# Browser awareness on a Linux server: every session starts knowing it has one. Read from the file
+# the install writes, so it works with the server down. Never says "no browser" (normal-chrome-linux).
+if [ "\$(uname -s)" = "Linux" ] && ! command -v powershell.exe >/dev/null 2>&1; then
+  BROWSER_RESULT=\$(sed -n 's/.*"status":"\\([^"]*\\)".*/\\1/p' "$INSTAR_DIR/state/xdrive/provision.json" 2>/dev/null)
+  case "\$BROWSER_RESULT" in
+    installing) BROWSER_STATE="installing" ;;
+    failed*) BROWSER_STATE="broken" ;;
+    *) if [ -x /opt/google/chrome/chrome ]; then BROWSER_STATE="ready"; else BROWSER_STATE="not-built"; fi ;;
+  esac
+  echo ""
+  echo "BROWSER: I have a browser on this server: ordinary Chrome on my own private display (/normal-chrome-browser, xdrive.sh). State: \$BROWSER_STATE."
+  echo "Before saying a browser task can't be done, check GET /browser/state. not-built and broken have a nextStep there; neither means no browser."
 fi
 
 # TOPIC CONTEXT (loaded FIRST — highest priority context)
