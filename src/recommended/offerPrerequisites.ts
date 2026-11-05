@@ -12,6 +12,7 @@
  * Both are per machine and live apart from the replicated choices. Unreadable means not yet, so
  * they can only hold an offer back.
  */
+import { markBrowserAutoInstall } from '../core/linuxBrowserProvision.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -68,6 +69,8 @@ export function markNewAgent(stateDir: string, now: () => Date = () => new Date(
   const current = readJson(migrationFile(stateDir));
   if (typeof current?.newAgentAt === 'string') return;
   writeJson(migrationFile(stateDir), { ...current, newAgentAt: now().toISOString() });
+  // Reached only for an agent being created now, so an existing agent can never gain it.
+  markBrowserAutoInstall(stateDir);
 }
 
 export function markMigrationComplete(stateDir: string, owner: string, now: () => Date = () => new Date()): void {
