@@ -209,7 +209,8 @@ import { isRemotelyHandled } from '../core/SessionRouter.js';
 import { confirmLocalPlacementAfterDelivery } from '../core/SessionPoolLocalClaim.js';
 import { decideLeaseGatedSpawn, sharedG3SoakLedger, applyBindingCleanupOnKill } from '../core/leaseGatedSpawn.js';
 import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForwardBridge.js';
-import { formatForwardedTopicContext } from '../core/ForwardedTopicContext.js';
+import { formatForwardedTopicContext, crossMachineReplyEvidence, INCOMPLETE_TOPIC_HISTORY_WARNING } from '../core/ForwardedTopicContext.js';
+import { CoherenceJournalReader } from '../core/CoherenceJournalReader.js';
 import { createTopicHistoryPullHandler, pullMovedTopicHistory, TOPIC_HISTORY_PULL_MAX_MESSAGES, TOPIC_HISTORY_PULL_TIMEOUT_MS } from '../core/topicHistoryPull.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl, detectTailscaleIp, pickPrimaryLanIp, computeSelfMeshEndpoints, advertiseSelfMeshEndpoints, resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { PeerEndpointResolver } from '../core/PeerEndpointResolver.js';
@@ -2636,6 +2637,7 @@ export function wireTelegramRouting(
     modelTier: 'fast' | 'balanced' | 'capable';
     stateDir: string;
   } | null,
+  poolHistoryAccess?: { port: number; authToken: string },
 ): void {
   // Guard: tracks which topic IDs have a spawn in progress.
   // Prevents duplicate concurrent spawns for the same topic when messages
@@ -3320,7 +3322,23 @@ export function wireTelegramRouting(
       if (!spawnName) spawnName = `topic-${topicId}`;
 
       // Use the shared spawn helper that includes topic history + user context
-      spawnSessionForTopic(sessionManager, telegram, spawnName, topicId, text, topicMemory, resolvedUser ?? undefined).then((newSessionName) => {
+      (async () => {
+        let movedContext: string | undefined;
+        if (poolHistoryAccess && _sessionPoolStage() !== 'dark') {
+          try {
+            const r = await fetch(`http://127.0.0.1:${poolHistoryAccess!.port}/telegram/topics/${topicId}/messages?limit=100&scope=pool`, {
+              headers: { Authorization: `Bearer ${poolHistoryAccess!.authToken}` }, signal: AbortSignal.timeout(8_000),
+            });
+            if (r.ok) {
+              const j = await r.json() as { messages?: import('../core/ForwardedTopicContext.js').ForwardedHistoryMessage[]; pool?: { failed?: unknown[]; queried?: unknown[] } };
+              const history = Array.isArray(j.messages) ? j.messages : [];
+              movedContext = `${INCOMPLETE_TOPIC_HISTORY_WARNING}\n\n${formatForwardedTopicContext(history, spawnName)}`;
+              if (j.pool?.failed?.length || history.length >= 100) movedContext = `${INCOMPLETE_TOPIC_HISTORY_WARNING}\n\n${movedContext ?? ''}`;
+            } else movedContext = INCOMPLETE_TOPIC_HISTORY_WARNING;
+          } catch { movedContext = INCOMPLETE_TOPIC_HISTORY_WARNING; }
+        }
+        return spawnSessionForTopic(sessionManager, telegram, spawnName, topicId, text, topicMemory, resolvedUser ?? undefined, movedContext);
+      })().then((newSessionName) => {
         telegram.registerTopicSession(topicId, newSessionName, spawnName);
         confirmLocalSessionPoolClaim();
         sendDeterministicTelegramNotice(telegram, 'session-lifecycle', topicId, `Session starting up — reading your message now. One moment.`).catch(() => {
@@ -8804,7 +8822,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null,
         () => _agentServerRef?.getTopicOperatorStore() ?? null,
         () => state.get<number>('agent-attention-topic'),
-        () => resolveHubClassifierDeps(config, _sharedIntelligence));
+        () => resolveHubClassifierDeps(config, _sharedIntelligence),
+        { port: config.port, authToken: config.authToken ?? '' });
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, undefined, config.sessions.claudePath, topicMemory);
       console.log(pc.green('  Telegram routing + command callbacks wired (send-only)'));
     }
@@ -8931,7 +8950,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null,
         () => _agentServerRef?.getTopicOperatorStore() ?? null,
         () => state.get<number>('agent-attention-topic'),
-        () => resolveHubClassifierDeps(config, _sharedIntelligence));
+        () => resolveHubClassifierDeps(config, _sharedIntelligence),
+        { port: config.port, authToken: config.authToken ?? '' });
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, accountSwitcher, config.sessions.claudePath, topicMemory);
 
       // Wire up unknown-user handling (Multi-User Setup Wizard Phase 4.5)
@@ -26688,6 +26708,15 @@ export async function startServer(options: StartOptions): Promise<void> {
             // every follow-up — the moved conversation never advances. So: if a live
             // session exists, inject the text into it (with the [telegram:N …] prefix the
             // session expects) and return; only spawn when there is none.
+            // The receiver owns the reply, so claim the original inbound key here.
+            // Its outbound commit then broadcasts a marker back to the router's
+            // ledger, which otherwise stays processing forever.
+            if (messageLedger && currentInboundByTopic && /^\d+$/.test(cmd.messageId)) {
+              const key = dedupeKeyFor('telegram', topicId, cmd.messageId);
+              if (messageLedger.claimForwardedInbound(key, String(topicId), text ?? '', 0)) {
+                currentInboundByTopic.set(String(topicId), key);
+              }
+            }
             const existing = tg.getSessionForTopic(topicId);
             if (existing && sessionManager.isSessionAlive(existing)) {
               if (text) {
@@ -26727,17 +26756,19 @@ export async function startServer(options: StartOptions): Promise<void> {
                   bearerFetch: async (topic) => {
                     const url = _resolveRouterUrl?.() ?? null;
                     if (!url) return null;
-                    const resp = await fetch(`${url}/telegram/topics/${topic}/messages?limit=${TOPIC_HISTORY_PULL_MAX_MESSAGES}`, {
+                    const resp = await fetch(`${url}/telegram/topics/${topic}/messages?limit=${TOPIC_HISTORY_PULL_MAX_MESSAGES}&scope=pool`, {
                       headers: { 'Authorization': `Bearer ${config.authToken}` },
                       signal: AbortSignal.timeout(TOPIC_HISTORY_PULL_TIMEOUT_MS),
                     });
                     if (!resp.ok) return null;
-                    const j = (await resp.json()) as { messages?: unknown[] };
+                    const j = (await resp.json()) as { messages?: unknown[]; pool?: { failed?: unknown[] } };
+                    if (j.pool?.failed?.length) console.warn(`  [session-pool] pool history incomplete for topic ${topic}`);
                     return Array.isArray(j.messages) ? j.messages : null;
                   },
                   log: (m) => console.warn(`  [session-pool] ${m}`),
                 }, topicId);
-                const movedContext = formatForwardedTopicContext(history.messages, tg.getTopicName?.(topicId) ?? undefined) || undefined;
+                // A bounded pull cannot prove that no older messages lived on a prior machine.
+                const movedContext = `${INCOMPLETE_TOPIC_HISTORY_WARNING}\n\n${formatForwardedTopicContext(history.messages, tg.getTopicName?.(topicId) ?? undefined)}`;
                 return spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text, undefined, undefined, movedContext);
               })()
                 .then((name) => {
@@ -32337,14 +32368,56 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
         } as Message);
       };
-      const runStuckRecovery = (): void => {
+      let stuckRecoveryRunning = false;
+      const runStuckRecovery = async (): Promise<void> => {
+        if (stuckRecoveryRunning) return;
+        stuckRecoveryRunning = true;
         try {
+          if (!coordinator.holdsLease()) return;
+          const remoteEvidence = new Map<string, 'answered' | 'unanswered' | 'unknown'>();
+          if (sessionOwnershipRegistry || _sessionPoolStage() !== 'dark') {
+            const placementReader = new CoherenceJournalReader({ stateDir: config.stateDir });
+            const entries = ledgerForRecovery.reclaimStuck(seamlessness.maxProcessingMs);
+            const topics = [...new Set(entries.map(e => e.topic).filter((t): t is string => !!t))];
+            await Promise.all(topics.map(async topic => {
+              let history: import('../core/ForwardedTopicContext.js').ForwardedHistoryMessage[] = [];
+              let failed = true;
+              let failedIds: string[] = [];
+              let queriedIds: string[] = [];
+              try {
+                const r = await fetch(`http://127.0.0.1:${config.port}/telegram/topics/${topic}/messages?limit=100&scope=pool`, {
+                  headers: { Authorization: `Bearer ${config.authToken}` }, signal: AbortSignal.timeout(8_000),
+                });
+                if (r.ok) {
+                  const j = await r.json() as { messages?: import('../core/ForwardedTopicContext.js').ForwardedHistoryMessage[]; pool?: { failed?: unknown[]; queried?: unknown[] } };
+                  history = Array.isArray(j.messages) ? j.messages : [];
+                  failedIds = (j.pool?.failed ?? []).map(f => (f as { machineId?: string }).machineId ?? '');
+                  queriedIds = (j.pool?.queried ?? []).filter((id): id is string => typeof id === 'string');
+                  failed = !Array.isArray(j.messages) || !Array.isArray(j.pool?.queried);
+                }
+              } catch { /* missing peer evidence remains unknown */ }
+              let priorOwners: string[] = [];
+              try {
+                const placements = placementReader.query({ topic: Number(topic), kind: 'topic-placement', limit: 100 });
+                if (placements.truncated || placements.entries.length === 0) failed = true;
+                priorOwners = placements.entries.map(e => (e.data as { owner?: unknown }).owner)
+                  .filter((owner): owner is string => typeof owner === 'string' && owner !== _meshSelfId);
+              } catch { failed = true; }
+              for (const entry of entries.filter(e => e.topic === topic)) {
+                const id = Number(entry.dedupeKey.split(':').at(-1));
+                remoteEvidence.set(entry.dedupeKey,
+                  Number.isSafeInteger(id) ? crossMachineReplyEvidence(history, id, priorOwners, queriedIds, failedIds, !failed) : 'unknown');
+              }
+            }));
+          }
           const res = recoverStuckMessages({
             ledger: ledgerForRecovery,
             holdsLease: () => coordinator.holdsLease(),
             epoch: coordinator.getLeaseEpoch(),
             maxProcessingMs: seamlessness.maxProcessingMs,
             reinject: reinjectStuck,
+            remoteReplyEvidence: sessionOwnershipRegistry || _sessionPoolStage() !== 'dark'
+              ? entry => remoteEvidence.get(entry.dedupeKey) ?? 'unknown' : undefined,
             // Part D, third site (ownership-follows-live-work): per-topic owner check
             // ON TOP of the existing machine-level holdsLease() gate. SKIP a topic
             // owned by a REACHABLE peer (leave its stuck messages in the ledger for
@@ -32389,10 +32462,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
         } catch (err) {
           console.error(`[stuck-recovery] ${err instanceof Error ? err.message : err}`);
-        }
+        } finally { stuckRecoveryRunning = false; }
       };
-      runStuckRecovery(); // boot: re-run anything a prior crash left mid-turn
-      const stuckTimer = setInterval(runStuckRecovery, Math.max(30_000, seamlessness.maxProcessingMs));
+      void runStuckRecovery(); // boot: re-run anything a prior crash left mid-turn
+      const stuckTimer = setInterval(() => { void runStuckRecovery(); }, Math.max(30_000, seamlessness.maxProcessingMs));
       if (stuckTimer.unref) stuckTimer.unref();
       console.log(pc.dim('  Stuck-message recovery active (no-loss half, spec §8 G3a)'));
     }
