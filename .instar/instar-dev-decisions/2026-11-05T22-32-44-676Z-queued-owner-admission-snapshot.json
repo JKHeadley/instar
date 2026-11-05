@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-05T22:32:44.676Z",
+  "slug": "queued-owner-admission-snapshot",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 87,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/mobileOwnerDeviceAdmission.ts"
+    ],
+    "addedLines": 70,
+    "deletedLines": 17
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

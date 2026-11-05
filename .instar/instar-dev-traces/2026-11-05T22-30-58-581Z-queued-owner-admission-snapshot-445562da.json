@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "queued-owner-admission-snapshot",
+  "sessionId": "31b71f33-7afc-4135-b6e9-972c8c413245",
+  "timestamp": "2026-11-05T22:30:58.581Z",
+  "artifactPath": "upgrades/side-effects/queued-owner-admission-snapshot.md",
+  "artifactSha256": "5abd2f68892186b5a99599b5f499df2252297654fc8145cccae90aa8f9a135a9",
+  "coveredFiles": [
+    "src/server/mobileOwnerDeviceAdmission.ts",
+    "tests/unit/queued-owner-admission-snapshot.test.ts",
+    "upgrades/next/queued-owner-admission-snapshot.md",
+    "upgrades/queued-owner-admission-snapshot.eli16.md",
+    "upgrades/side-effects/queued-owner-admission-snapshot.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive export with no caller and a pure refactor of the live helper into one shared policy function (results unchanged, reviewer-confirmed); a revert removes it fully. Authorization-adjacent, so an independent review ran anyway and concurred after round 2.",
+  "eli16Path": "upgrades/queued-owner-admission-snapshot.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/queued-owner-admission-snapshot.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
