@@ -32,7 +32,7 @@ No LLM is involved. Which ids count as security or data-loss is a reviewed list,
 
 ## 5. Interactions
 
-`getEvents`, `getRecentEvents`, `getUnreportedEvents` and `hasDegradations` filter ignored ids, so `/health`, `/health/degradations` and the daily digest agree. `/health/degradations` serves a hidden event as reported, at read time, so the digest doesn't turn it into an attention item; the stored event stays unreported, so it is raised normally once a snooze ends. The self-healer still runs on a hidden event. `/health`'s `status` and `degradations` change only for an ignored id. The lifeline reads `/health` for liveness, not these counts, and scripts see one problem fewer only because a person asked. `degradations.json` keeps events from before the choice as history; nothing reads it back into memory.
+`getEvents`, `getRecentEvents`, `getUnreportedEvents` and `hasDegradations` filter ignored ids, so `/health`, `/health/degradations` and the daily digest agree. `/health/degradations` serves a hidden event as reported, at read time, so the digest doesn't turn it into an attention item; the stored event stays unreported, so it is raised normally once a snooze ends. The self-healer still runs on a hidden event. `/health`'s `status` and `degradations` change only for an ignored id. The lifeline reads `/health` for liveness, not these counts, and scripts see one problem fewer only because a person asked. `degradations.json` keeps events from before the choice as history; nothing reads it back into memory. The reporter now imports the store, which brings `healthChoices.ts` and `scrubSecrets.ts` into the Stage-B closure; both are declared as excluded, with reasons, in `src/data/stageBCertifiedSet.ts`.
 
 ## 6. External surfaces
 
