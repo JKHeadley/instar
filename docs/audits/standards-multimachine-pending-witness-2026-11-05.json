@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-11-05T09:43:18.000Z",
+  "reviewers": [
+    "dawn:claude-code",
+    "independent-verifier:claude-code",
+    "echo:codex"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 5
+  },
+  "convergenceReport": "docs/specs/reports/standards-multimachine-pending-witness-2026-11-05.md",
+  "convergenceSha256": "91627413a92892995181c36f96fab54dacc166201598620027b2c03fec486e6f",
+  "areas": {
+    "Building": {
+      "areaSha256": "349c51c497866809e709b4d08bab471b99a74cfe7a9df3bfc21d8bce8b98c8b1",
+      "verdict": "accepted"
+    }
+  }
+}
