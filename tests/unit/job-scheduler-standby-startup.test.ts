@@ -52,6 +52,32 @@ describe('JobScheduler read-only standby startup containment', () => {
     expect(skips.filter((s) => s.reason === 'role-guard')).toHaveLength(1);
   });
 
+  it('refuses a job whose gate passes after lease demotion', async () => {
+    const jobs: JobDefinition[] = [{
+      slug: 'raced-pass', name: 'Raced Pass', description: 'Gate passes after demotion',
+      schedule: '* * * * *', priority: 'medium', expectedDurationMinutes: 5,
+      model: 'sonnet', enabled: true, gate: 'sleep 0.1; exit 0',
+      execute: { type: 'prompt', value: 'do work' },
+    }];
+    const jobsFile = createSampleJobsFile(project.stateDir, jobs);
+    scheduler = new JobScheduler({
+      jobsFile, enabled: true, maxParallelJobs: 1, gateRetries: 1,
+      startupGraceMs: 60_000,
+      quotaThresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 },
+    }, mockSM as any, project.state, project.stateDir);
+    scheduler.start();
+
+    const fire = scheduler.triggerJob('raced-pass', 'cron-tick');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    project.state.setReadOnly(true);
+    scheduler.pause();
+
+    await expect(fire).resolves.toBe('skipped');
+    expect(mockSM._spawnCount).toBe(0);
+    const skips = scheduler.getSkipLedger?.()?.getSkips?.({ slug: 'raced-pass' }) ?? [];
+    expect(skips.some((row) => row.reason === 'role-guard')).toBe(true);
+  });
+
   it('contains a demotion that races a startup missed-job gate', async () => {
     const jobs: JobDefinition[] = [{
       slug: 'raced-startup-miss',

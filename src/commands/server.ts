@@ -8320,11 +8320,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       try {
         const nowAwake = coordinator.isAwake;
         if (nowAwake === bootAwake) return;
-        const lease = config.multiMachine?.leaseSelfHeal;
-        const peer = Object.entries(coordinator.managers.identityManager.loadRegistry().machines ?? {})
-          .some(([id, entry]) => id !== coordinator.identity?.machineId && !entry.revokedAt);
         const decision = decideRoleRestart({
-          applies: !!lease?.soloCaptainHold?.enabled && !lease?.preferredAwakeMachineId && peer,
+          // Every scheduler-enabled lease holder needs the awake boot path. The
+          // optional self-heal policy and preferred-machine hint do not change
+          // which machine currently owns the lease.
+          applies: config.scheduler.enabled,
           bootAwake, nowAwake, lastRestartAtMs: readLastRoleRestart(config.stateDir), nowMs: Date.now(),
         });
         if (decision === 'restart') {
@@ -8336,11 +8336,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     };
     coordinator.on('roleChange', (_from, to) => {
-      const lease = config.multiMachine?.leaseSelfHeal;
-      if (lease?.soloCaptainHold?.enabled && !lease?.preferredAwakeMachineId) {
-        if (to === 'awake') scheduler?.resume();
-        else scheduler?.pause();
-      }
+      // A demoted holder stops jobs immediately, even while the planned
+      // restart is throttled or pending. A promoted standby restarts through
+      // the normal boot path, which constructs its missing scheduler.
+      if (to === 'awake') scheduler?.resume();
+      else scheduler?.pause();
       reconcileRole();
     });
     // A change inside the restart window, or a failed request, is retried until the role matches.
