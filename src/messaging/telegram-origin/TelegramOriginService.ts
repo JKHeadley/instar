@@ -112,6 +112,7 @@ export class TelegramOriginService {
   readonly #automationCredentials = new Map<string, { producer: TelegramOriginProducer; bodyDigest: string; topicId: number; expiresAt: number; logicalSendKey?: string }>();
   readonly #limits: OriginLimits;
   readonly #diagnosed = new Set<string>();
+  readonly #firstSendsRunning = new Set<string>();
   readonly #held = new Map<string, { reason: string; since: number; operation: OriginPreparedBotOperation | null }>();
   readonly #expiredHolds = new Map<string, { reason: 'expired-unresolved'; since: number; expiredAt: number }>();
   #expiredHoldTotal = 0;
@@ -513,10 +514,18 @@ export class TelegramOriginService {
     try { await this.#recordEvidence(operation.admission.record); }
     catch { return this.#hold(operation, 'all-durable-recording-sinks-unavailable'); }
   }
+  /** Recovery leaves a send alone while its own first pass is still running. Its
+   * policy review can take seconds, and a tick landing inside that window could
+   * otherwise judge a reply overtaken and retire it before it was ever tried. */
+  isFirstSendRunning(operationId: string): boolean { return this.#firstSendsRunning.has(operationId); }
+  async runFirstSend<T>(operationId: string, work: () => Promise<T>): Promise<T> {
+    this.#firstSendsRunning.add(operationId);
+    try { return await work(); } finally { this.#firstSendsRunning.delete(operationId); }
+  }
   async sendBot(input: { method: string; accountId: string; params: BotParameters; attachments?: import('./OriginMultipart.js').PreparedOriginAttachments },
     network: OriginBotTransport): Promise<Response> {
     const operation = this.prepareBot(input);
-    try {
+    return this.runFirstSend(operation.record.operationId, async () => { try {
       if (this.#scope.getStore()?.logicalSendKey) {
         if (!this.options.store.getOperation) throw new TelegramOriginHoldError('logical-send-index-unavailable', operation.record.operationId);
         const existing = await this.options.store.getOperation(operation.record.operationId);
@@ -547,7 +556,7 @@ export class TelegramOriginService {
     } catch (error) {
       if (error instanceof TelegramOriginHoldError) throw error;
       return this.#hold(operation, 'origin-execution-state-unavailable');
-    }
+    } });
   }
   async bindRevision(operation: OriginPreparedBotOperation): Promise<void> {
     const destination = operation.record.destination;
