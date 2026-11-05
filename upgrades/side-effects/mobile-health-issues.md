@@ -48,3 +48,5 @@ A fourth read found three wording overclaims, all fixed. Findings had shrunk fro
 The reviewer confirmed: `/health` shape unchanged, owner and bearer authorization correct, `?ask` only fills a text box, internal rows stay out of Home's count.
 
 **Follow-up from the verify run (2026-11-05):** three test floors caught real slips: a raw scroll on the Health page (now the shared helper), a fallback mark on the wrong line, and a test that named the old legacy Health link.
+
+**Test isolation added (2026-11-05):** `tests/e2e/quota-manager-lifecycle.test.ts` failed once on the Mac Mini in a full verify, on a merge tree that had passed there 26 minutes earlier. The assertion was not kept. Alone it passed 7 of 7 there, and one of its tests was reading the machine's real transcript folder (20 s, 5.69 GB). It now reads its own empty folder. This change makes the test self-contained; it is not proven to be the cause of that failure.
