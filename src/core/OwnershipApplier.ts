@@ -30,6 +30,7 @@
  * is a tracked follow-on (PlacementData does not yet carry leaseEpoch).
  */
 
+import { topicRef } from '../messaging/shared/topicRef.js';
 import type { SessionOwnershipRecord } from './SessionOwnership.js';
 import type { SessionOwnershipStore } from './SessionOwnershipRegistry.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -319,14 +320,14 @@ export class OwnershipApplier {
           };
           if (this.d.store.correctMaterializedStatus(corrected)) {
             statusCorrected++;
-            this.log(`corrected topic ${sessionKey} @epoch ${best.epoch}: active(${best.owner}) → RELEASED (the applier's own earlier materialization of a release row)`);
+            this.log(`corrected ${topicRef(sessionKey)} @epoch ${best.epoch}: active(${best.owner}) → RELEASED (the applier's own earlier materialization of a release row)`);
           }
           continue;
         }
         if (best.epoch <= localEpoch) continue; // not newer → nothing to adopt (fast-forward only)
         // Epoch fence (Finding SE2): a corrupt huge epoch jump can't wedge a topic forever.
         if (best.epoch - localEpoch > maxEpochJump) {
-          this.log(`epoch-fence: refusing topic ${sessionKey} epoch ${best.epoch} (local ${localEpoch}, jump > ${maxEpochJump})`);
+          this.log(`epoch-fence: refusing ${topicRef(sessionKey)} epoch ${best.epoch} (local ${localEpoch}, jump > ${maxEpochJump})`);
           featureEvidence.recordAtMostEvery('multiMachine.durableOwnership', `epoch-fence|${sessionKey}|${best.epoch}`, 60 * 60_000, { kind: 'error', reason: 'refused placement: epoch jump over the fence', context: { topic: sessionKey, epoch: best.epoch, localEpoch, maxEpochJump, owner: best.owner } });
           continue;
         }
@@ -358,7 +359,7 @@ export class OwnershipApplier {
               else timestamp = carried;
             }
           } else {
-            this.log(`transferring→active downgrade for topic ${sessionKey}: invalid transferTo ${JSON.stringify(t)}`);
+            this.log(`transferring→active downgrade for ${topicRef(sessionKey)}: invalid transferTo ${JSON.stringify(t)}`);
           }
         }
         const rec: SessionOwnershipRecord = {
@@ -379,7 +380,7 @@ export class OwnershipApplier {
           materialized++;
           const self = this.resolveSelf();
           this.log(
-            `materialized topic ${sessionKey} → owner ${best.owner} @epoch ${best.epoch}` +
+            `materialized ${topicRef(sessionKey)} → owner ${best.owner} @epoch ${best.epoch}` +
               (status === 'released'
                 ? ' (RELEASED — no live owner; the next message or the pin target re-places it)'
                 : self && best.owner === self

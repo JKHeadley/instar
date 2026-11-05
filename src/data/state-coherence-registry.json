@@ -950,6 +950,24 @@
       }
     },
     {
+      "category": "linux-browser-driver-state",
+      "description": "Linux Chrome driver (docs/specs/normal-chrome-linux.md): bindings, latches, lock, display record, cookie, socket folder, install result (provision.json, provision-backoff.json, auto-install.json) and page reads under out/ (24 h, 200 MB). Describes live processes and packages on this machine only.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/xdrive/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "domain-cardinality",
+        "note": "One file per running owned Chrome instance; BrowserCareSweep removes the file once its process has exited, so the count tracks open browsers, never history."
+      }
+    },
+    {
       "category": "audit-browser-care",
       "description": "Browser care audit (docs/specs/machine-self-maintenance.md, Part B): what the watch-only sweep and chrome-close.sh would close or keep, and why. Profile paths relative to the agent home, never page content. Machine-local observability; never authority, never replicated.",
       "scope": "machine-local",

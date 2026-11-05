@@ -22,7 +22,8 @@ describe('machine maintenance cannot act', () => {
   });
 
   it('imports only from an allowlist, so a new reach into the system fails here', () => {
-    const allowed = new Set(['node:fs', 'node:os', 'node:path', 'node:crypto', '../../core/hostSemaphoreCore.js', '../../core/SafeFsExecutor.js', '../../core/pollIntent.js']);
+    // topicRef is a pure, read-only formatter; it cannot actuate maintenance work.
+    const allowed = new Set(['node:fs', 'node:os', 'node:path', 'node:crypto', '../../core/hostSemaphoreCore.js', '../../core/SafeFsExecutor.js', '../../core/pollIntent.js', '../../messaging/shared/topicRef.js']);
     for (const f of files) {
       const source = code(f);
       for (const m of source.matchAll(/(?:from|import\()\s*['"]([^'"]+)['"]/g)) {

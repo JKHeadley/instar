@@ -95,6 +95,22 @@ describe('Single-alerts-topic routing (default mode)', () => {
     await expect((adapter as any).editMessageWithRetry(123, 'Prompt answered')).rejects.toBe(failure);
     expect(api).toHaveBeenCalledOnce();
   });
+  it('confirms an attention send and retries an existing item after transport failure', async () => {
+    makeAdapter({ getAttentionHubTopicId: () => 7848 });
+    const rec = installApiStub(adapter);
+    const failedSend = vi.spyOn(adapter, 'sendToTopic').mockRejectedValue(new Error('transport down'));
+    const item = { id: 'lease-coverage-alert', title: 'Scheduled jobs need review',
+      summary: 'A job is missing after takeover', category: 'job' as const,
+      priority: 'HIGH' as const };
+    await expect(adapter.createAttentionItemConfirmed(item)).rejects.toThrow('transport down');
+    expect(adapter.getAttentionItems().some(row => row.id === item.id)).toBe(true);
+    failedSend.mockRestore();
+    const delivered = await adapter.createAttentionItemConfirmed(item);
+    expect(rec.messagesByThread.get(delivered.topicId!)).toHaveLength(1);
+    await adapter.createAttentionItemConfirmed(item);
+    expect(rec.messagesByThread.get(delivered.topicId!)).toHaveLength(2);
+  });
+
   it('keeps origin recovery in the operator hub even with legacy per-item routing enabled', async () => {
     makeAdapter({ attentionRouting: { mode: 'per-item' }, getAttentionHubTopicId: () => 7848 });
     const rec = installApiStub(adapter);
@@ -278,7 +294,7 @@ describe('Single-alerts-topic routing (default mode)', () => {
     expect(rec.messagesByThread.get(healedThread)?.length).toBe(1);
   });
 
-  it('an agent-health-lane item STILL routes to the lane topic, not the hub', async () => {
+  it('an Agent Health item that needs the user routes to the lane, not the hub', async () => {
     const HUB = 780;
     makeAdapter({ getAttentionHubTopicId: () => HUB });
     const rec = installApiStub(adapter);
@@ -286,7 +302,7 @@ describe('Single-alerts-topic routing (default mode)', () => {
     const item = await adapter.createAttentionItem({
       id: 'lane-1', healthKey: 'lane-entity', lane: 'agent-health',
       title: 'Heads-up on the "X" session', summary: 'maybe stuck',
-      category: 'degradation', priority: 'HIGH',
+      category: 'degradation', priority: 'HIGH', needsUser: true,
     });
 
     expect(rec.forumTopicsCreated).toBe(1);
@@ -295,7 +311,58 @@ describe('Single-alerts-topic routing (default mode)', () => {
     expect(rec.messagesByThread.get(HUB)).toBeUndefined();
   });
 
-  it('the agent-health lane ITEM post rides parse_mode HTML + _formatMode html (the 2026-07-14 raw <b>-tag fix)', async () => {
+  it('records routine Agent Health observations without a Telegram post, including urgent refreshes', async () => {
+    const HUB = 780;
+    makeAdapter({ getAttentionHubTopicId: () => HUB });
+    const rec = installApiStub(adapter);
+    const base = { id: 'routine-health', healthKey: 'laptop', lane: 'agent-health' as const,
+      title: 'Inbound stranded on Laptop', summary: 'Internal routing issue', category: 'agent-health',
+      priority: 'URGENT' as const, sourceContext: 'stranded-topic:laptop' };
+    const item = await adapter.createAttentionItem(base);
+    await adapter.upsertAttentionItem({ ...base, summary: 'Still waiting' });
+    expect(adapter.getAttentionItem(item.id)).toBeDefined();
+    expect(item.hubHeld).toBe(true);
+    expect(rec.forumTopicsCreated).toBe(0);
+    expect([...rec.messagesByThread.values()].flat()).toEqual([]);
+    expect(fs.readFileSync(path.join(tmpDir, 'logs', 'attention-hub-held.jsonl'), 'utf8')).toContain('agent-health-routine');
+  });
+
+  it('posts when a recorded Agent Health condition later needs the user', async () => {
+    makeAdapter({ getAttentionHubTopicId: () => 780 });
+    const rec = installApiStub(adapter);
+    const base = { id: 'health-now-needs-user', healthKey: 'machine', lane: 'agent-health' as const,
+      title: 'A machine needs your help', summary: 'Please reconnect the Mac Studio.',
+      category: 'agent-health', priority: 'NORMAL' as const };
+    await adapter.createAttentionItem(base);
+    expect(rec.forumTopicsCreated).toBe(0);
+    const item = await adapter.upsertAttentionItem({ ...base, needsUser: true });
+    expect(item.hubHeld).toBe(false);
+    expect(item.needsUser).toBe(true);
+    expect(adapter.attentionHubAdmits(item.id)).toBe(true);
+    expect(rec.forumTopicsCreated).toBe(1);
+    expect(rec.messagesByThread.get(item.topicId!)?.some(m => m.includes('Please reconnect the Mac Studio.'))).toBe(true);
+    await adapter.upsertAttentionItem({ ...base, summary: 'Recovered; no action needed.' });
+    expect(item.needsUser).toBe(false);
+    expect(item.hubHeld).toBe(true);
+    expect(adapter.attentionHubAdmits(item.id)).toBe(false);
+    expect(rec.messagesByThread.get(item.topicId!)?.filter(m => m.includes('Recovered'))).toEqual([]);
+  });
+
+  it('a recent WONT_DO keeps a held Agent Health item quiet when a producer marks it actionable', async () => {
+    makeAdapter({ getAttentionHubTopicId: () => 780 });
+    const rec = installApiStub(adapter);
+    const base = { id: 'dismissed-health', healthKey: 'dismissed-machine', lane: 'agent-health' as const,
+      title: 'Machine needs attention', summary: 'Routine observation',
+      category: 'agent-health', priority: 'NORMAL' as const };
+    await adapter.createAttentionItem(base);
+    await adapter.updateAttentionStatus(base.id, 'WONT_DO');
+    const item = await adapter.createAttentionItem({ ...base, needsUser: true });
+    expect(item.status).toBe('WONT_DO');
+    expect(rec.forumTopicsCreated).toBe(0);
+    expect([...rec.messagesByThread.values()].flat()).toEqual([]);
+  });
+
+  it('an actionable Agent Health post renders formatting without raw tags', async () => {
     makeAdapter({ getAttentionHubTopicId: () => 781 });
     const rec = installApiStub(adapter);
 
@@ -303,7 +370,7 @@ describe('Single-alerts-topic routing (default mode)', () => {
       id: 'lane-fmt-1', healthKey: 'lane-entity-fmt', lane: 'agent-health',
       title: 'Inbound stranded on Laptop (67 topics)',
       summary: "Topics owned by Laptop — inbound can't reach a servable machine.",
-      category: 'agent-health', priority: 'NORMAL',
+      category: 'agent-health', priority: 'NORMAL', needsUser: true,
     });
 
     const laneThread = item.topicId!;
@@ -317,7 +384,7 @@ describe('Single-alerts-topic routing (default mode)', () => {
     expect(itemPost!._formatMode).toBe('html');
   });
 
-  it('refreshes and visibly reopens one target-stable Agent-Health item across episodes', async () => {
+  it('refreshes and quietly reopens one target-stable Agent Health item across episodes', async () => {
     makeAdapter({ getAttentionHubTopicId: () => 782 });
     const rec = installApiStub(adapter);
     const base = {
@@ -345,10 +412,9 @@ describe('Single-alerts-topic routing (default mode)', () => {
     expect(reopened.status).toBe('OPEN');
     expect(reopened.summary).toBe('second refusal episode');
     expect(reopened.description).toBe('second episode');
-    expect(rec.forumTopicsCreated).toBe(1);
-    const sends = rec.messagesByThread.get(reopened.topicId!) ?? [];
-    expect(sends.some(text => text.includes('second refusal episode'))).toBe(true);
-    expect(sends.some(text => text.includes('returned after recovery'))).toBe(true);
+    expect(rec.forumTopicsCreated).toBe(0);
+    expect(reopened.hubHeld).toBe(true);
+    expect([...rec.messagesByThread.values()].flat()).toEqual([]);
   });
 
   it('a reopen whose notice is held as duplicate-content counts as delivered (no endless caller retry)', async () => {
@@ -360,7 +426,7 @@ describe('Single-alerts-topic routing (default mode)', () => {
     const base = {
       id: 'spawn-drain-refusal-giveup:peer', healthKey: 'spawn-drain-refusal:peer', lane: 'agent-health' as const,
       title: 'Spawn drain gave up for peer', summary: 's', description: 'd', category: 'agent-health',
-      priority: 'HIGH' as const, sourceContext: 'spawn-drain-refusal:peer',
+      priority: 'HIGH' as const, sourceContext: 'spawn-drain-refusal:peer', needsUser: true,
     };
     await adapter.createOrReopenAgentHealthAttentionItem(base);
     const send = vi.spyOn(adapter, 'sendToTopic');

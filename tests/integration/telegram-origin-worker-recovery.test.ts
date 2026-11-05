@@ -62,6 +62,24 @@ async function harness(storageTimeouts: { requestTimeoutMs?: number; stallTimeou
 }
 
 describe('Telegram reply path across an origin worker stall', () => {
+  it('retires an unaccepted queued reply before transport when the conversation has moved on', async () => {
+    const h = await harness();
+    h.runtime.service.options.authorize = async () => false;
+    const held = await h.reply('Old status asking a question already answered later.');
+    expect(held.status).toBe(409);
+    expect(h.network).not.toHaveBeenCalled();
+
+    h.runtime.service.options.authorize = async () => true;
+    const overtaken = vi.fn(async () => 'retire' as const);
+    h.runtime.options.reviewQueuedReply = overtaken;
+    await h.runtime.recoverHeld();
+
+    expect(overtaken).toHaveBeenCalledWith(expect.objectContaining({ topicId: 42 }));
+    expect(h.network).not.toHaveBeenCalled();
+    const records = await h.runtime.store.listOrigins();
+    expect(records.records[0].operation?.state).toBe('suppressed');
+  });
+
   it('holds during the stall and delivers again after automatic recovery, with no server restart', async () => {
     const report = vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => undefined);
     const h = await harness();

@@ -22,6 +22,8 @@ import { edPrivateToX25519, deriveX25519PublicKey, computeFingerprint } from '@s
 const HKDF_INFO = 'threadline-relay-v1';
 
 /** Plaintext message content before encryption */
+import type { KindedAckWire } from '../requiredAck.js';
+
 export interface PlaintextMessage {
   content: string;
   type?: string;
@@ -32,6 +34,10 @@ export interface PlaintextMessage {
    * a receiver uses it only to word a "resent copy" notice.
    */
   resend?: boolean;
+  /** a2a-required-acknowledgment D1: "I understand kinded acks." Ignored by older receivers. */
+  ackKinds?: number;
+  /** a2a-required-acknowledgment D1: present only on `type: 'ack'` kinded receipts. */
+  ack?: KindedAckWire;
 }
 
 // The Ed25519→X25519 private-key conversion, the matching X25519 public key and the routing

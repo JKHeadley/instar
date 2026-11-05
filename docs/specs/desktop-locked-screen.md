@@ -104,6 +104,7 @@ The machine card on the Desktop page, behind the PIN, on the phone or anywhere: 
 
 - While the feature is on, every helper verb runs through `MacDesktopHost.trustedBinary()`, which resolves to that copy, so `screenGrant` and `inputGrant` describe the binary that will type and relock.
 - The password path needs `helperSource: retained` and the helper's own input grant. Anything else is off with a named reason, and it never falls back to an ungranted build. Until PR 2562 lands that field is absent, so the password path stays off.
+- On a proof Mac whose macOS row names an older build, the test build alone may keep the helper in another folder (`build-locked-proof.mjs --helper-dir`). macOS keeps one row per path, and that row can be neither seen in Settings nor cleared with `tccutil` for a bare program. The helper source and its hash stay the same, so the proof still binds to the shipped helper.
 - A helper source change loses the macOS grant, and the password path is off until it is granted again. With a stable signing identity the grant would survive source changes at the same path.
 - The locked-screen state lives beside it in `~/.instar/desktop-helper/locked/`, outside any agent's project tree.
 

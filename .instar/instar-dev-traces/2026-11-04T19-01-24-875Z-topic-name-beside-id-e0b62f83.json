@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "topic-name-beside-id",
+  "sessionId": "81a696e0-037c-4766-86ae-02a2fd45723d",
+  "timestamp": "2026-11-04T19:01:24.875Z",
+  "artifactPath": "upgrades/side-effects/topic-name-beside-id.md",
+  "artifactSha256": "73f91ae7027d40e72de38de04572113352818fc17915f1cda6403179f2fa988c",
+  "coveredFiles": [
+    "tests/unit/machine-maintenance-watch-only.test.ts",
+    "tests/unit/telegram-origin-forward-on-standby.test.ts",
+    "upgrades/next/topic-name-beside-id.md",
+    "upgrades/side-effects/topic-name-beside-id.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible test expectations and release-note placement after full-suite failures; the maintenance import is a pure formatter.",
+  "eli16Path": "docs/specs/topic-name-beside-id.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/topic-name-beside-id.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

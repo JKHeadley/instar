@@ -29,7 +29,7 @@ import { claudeHeadlessExtraFlags } from '../../../src/core/frameworkSessionLaun
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'execute-units.test.ts' }); });
 function tmp(prefix = 'exec-units-'): string { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); dirs.push(d); return d; }
-function write(root: string, rel: string, text: string) { fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true }); fs.writeFileSync(path.join(root, rel), text); }
+function write(root: string, rel: string, text: string | Buffer) { fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true }); fs.writeFileSync(path.join(root, rel), text); }
 
 describe('policy', () => {
   it('config defaults: dry-run on, the agent home as source only when it is a source checkout, caps clamped', () => {
@@ -241,18 +241,29 @@ describe('change set', () => {
     expect(claudeDirBreach(ws)).toBeNull();
   });
 
-  it('allows a large modified source file plus a small test, but caps at 200 files or 4 MB', () => {
+  it('admits the measured paired source files plus tests, but caps at 200 files or 5 MiB', () => {
     const { ws, pub } = trees();
     for (let i = 0; i < 201; i++) write(ws, `src/many/f${i}.ts`, 'x');
     expect(() => buildChangeSet(ws, pub)).toThrow(/changeset-too-large/);
     const t2 = trees();
-    write(t2.pub, 'src/commands/server.ts', 'a'.repeat(1_900_000));
-    write(t2.ws, 'src/commands/server.ts', 'b'.repeat(1_900_000));
+    write(t2.pub, 'src/commands/server.ts', 'a'.repeat(2_006_095));
+    write(t2.ws, 'src/commands/server.ts', 'b'.repeat(2_006_095));
+    write(t2.pub, 'src/server/routes.ts', 'a'.repeat(2_349_959));
+    write(t2.ws, 'src/server/routes.ts', 'b'.repeat(2_349_959));
     write(t2.ws, 'tests/unit/fix.test.ts', 'x'.repeat(250_000));
-    expect(buildChangeSet(t2.ws, t2.pub).totalBytes).toBe(2_150_000);
+    expect(buildChangeSet(t2.ws, t2.pub).totalBytes).toBe(4_606_054);
     const t3 = trees();
-    write(t3.ws, 'src/big.ts', 'x'.repeat(4 * 1024 * 1024 + 1));
+    write(t3.ws, 'src/big.ts', 'x'.repeat(5 * 1024 * 1024));
+    expect(buildChangeSet(t3.ws, t3.pub).totalBytes).toBe(5 * 1024 * 1024);
+    write(t3.ws, 'src/big.ts', 'x'.repeat(5 * 1024 * 1024 + 1));
     expect(() => buildChangeSet(t3.ws, t3.pub)).toThrow(/changeset-too-large/);
+    const t4 = trees();
+    write(t4.ws, 'src/binary.dat', Buffer.concat([Buffer.from([0]), Buffer.alloc(4 * 1024 * 1024 - 1)]));
+    expect(buildChangeSet(t4.ws, t4.pub).totalBytes).toBe(4 * 1024 * 1024);
+    write(t4.ws, 'src/binary.dat', Buffer.concat([Buffer.from([0]), Buffer.alloc(4 * 1024 * 1024)]));
+    expect(() => buildChangeSet(t4.ws, t4.pub)).toThrow(/binary content above 4 MiB/);
+    write(t4.ws, 'src/binary.dat', Buffer.concat([Buffer.from([0xff]), Buffer.alloc(4 * 1024 * 1024, 0x61)]));
+    expect(() => buildChangeSet(t4.ws, t4.pub)).toThrow(/non-UTF-8 content above 4 MiB/);
   });
 
   it('diff gate and secret gate (names only)', () => {

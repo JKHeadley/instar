@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-05T06:14:22.147Z",
+  "slug": "lease-job-coverage-and-catchup",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 15,
+  "loc": 916,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/JobCoverage.ts",
+      "src/core/JobCoverageMonitor.ts",
+      "src/core/JobDependency.ts",
+      "src/core/roleFollowRestart.ts",
+      "src/core/types.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/monitoring/guardManifest.ts",
+      "src/scheduler/AgentMdJobLoader.ts",
+      "src/scheduler/JobCatalogReconcile.ts",
+      "src/scheduler/JobLoader.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/scheduler/PromotionCatchUpStore.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 905,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

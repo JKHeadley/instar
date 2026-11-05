@@ -57,6 +57,14 @@ const INSTAR_ENV_ALLOWLIST = new Set([
   // true no matter where the read moves to.
   'INSTAR_HOST_TEST_SEMAPHORE',
   'INSTAR_HOST_TEST_MAX',
+  // Opt-in for the real desktop helper's state-op tests (desktop-helper-state-op.test.ts).
+  // It chooses which tests run, never what the code under test does; stripped, the
+  // opt-in could never be honoured and those tests were always skipped.
+  'INSTAR_REAL_DESKTOP_HELPER_TESTS',
+  // The same kind of opt-in, also stripped until now: the live hub-intent tier
+  // (hub-intent-discrimination.test.ts) and the real wedge-canary tests.
+  'INSTAR_LIVE_HUB_INTENT',
+  'INSTAR_REAL_WEDGE_CANARY_TESTS',
 ]);
 for (const key of Object.keys(process.env)) {
   if (key.startsWith('INSTAR_') && !INSTAR_ENV_ALLOWLIST.has(key)) {

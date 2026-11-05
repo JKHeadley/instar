@@ -338,6 +338,13 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     fileLevel: 'git-sync-excluded',
     note: 'requests, tickets and grants are process-local and never restored; only a redacted local audit survives',
   } });
+  // Linux browser install: sets this machine's own flag and installs on this machine.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/browser/linux/install', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'writes state/xdrive/ for the packages on this machine; a peer answers for its own machine',
+  } });
   // Console composer attachments: the file must sit on the disk of the machine
   // running the session, which reads it by path. Never converges across machines.
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/sessions/:name/attachments', domain: 'machine-local', story: {
@@ -359,6 +366,24 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     onSharedGitSyncedPath: false,
     fileLevel: 'git-sync-excluded',
     note: 'activation requests a supervised restart on this host; no grant or shared state is written',
+  } });
+  // Memory-privacy owner fix link: spends a process-local token and points THIS
+  // machine's sessions.claudePath at a Claude binary measured on this machine.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/memory-privacy/fix/', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'the link token lives only in this process; the repair writes sessions.claudePath in .instar/config.json (sync-excluded in FileClassifier), a path to a binary on this machine\'s disk',
+  } });
+
+  // a2a-required-acknowledgment D4: closes a watch on the machine whose session has the
+  // message. A standby forwards the receipt to the relay holder over the mesh, so this
+  // must admit on every machine; the sender's health read merges across the pool.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/threadline/ack', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'watch and pending rows live in this machine\'s delivery-tracker database; visible pool-wide through the merged ?scope=pool peer-health read',
   } });
 
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
@@ -468,6 +493,19 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/enable', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/override', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/unfork', domain: 'cluster-shared' });
+  // Portable export consent and bundle replay accounting belong to the source
+  // machine, which may be a standby. Their state is excluded from git-sync.
+  const portableSourceStory: ConvergenceStory = {
+    logical: 'per-machine-path', onSharedGitSyncedPath: true, fileLevel: 'git-sync-excluded',
+    note: 'exact-root export approval and nonce ledger stay on the source machine',
+  };
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/portable-bundle', domain: 'machine-local', story: portableSourceStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/portable/export/', domain: 'machine-local', story: portableSourceStory });
+  // Import approval, rollback and rearm may change the runnable job manifest.
+  // The serving lease holder is their single writer.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/portable/import/', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/portable/rollback', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/portable/rearm', domain: 'cluster-shared' });
   // Secure A2A verified pairing (docs/specs/secure-a2a-verified-pairing.md §3.2): starting a
   // pairing writes the trust profile and the pending-words store. It only does anything on
   // the machine that holds the Threadline relay identity (it answers 503 elsewhere), and the
@@ -581,6 +619,21 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       onSharedGitSyncedPath: true,
       fileLevel: 'git-sync-excluded',
       note: 'the guard evidence (armed / graduated / counters) describes this disk\'s lifeline-to-server loopback hop and its own secret; it lives under the key-material prefix state/lifeline-ingress-secret*, which is gitignored, backup-excluded and never served',
+    },
+  });
+  // Legacy repair settles only the inbound row held on THIS machine. Normal
+  // replies carry a replicated marker; this route audits an exact historical
+  // reply and closes the local row without replaying the inbound.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/telegram/reconcile-stuck-ledger',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'the ingress ledger and reconciliation audit live below this machine\'s git-sync-excluded stateDir; an owner reply is checked through pooled history before the local row is settled',
     },
   });
   // POST /mcp/threadline — this machine's own sessions calling this machine's

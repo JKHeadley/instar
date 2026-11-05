@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { refreshHooksAndSettings } from '../../src/commands/init.js';
+import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { loadJobs } from '../../src/scheduler/JobLoader.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -96,6 +97,66 @@ describe('refreshJobs()', () => {
 
   afterEach(() => {
     project?.cleanup();
+  });
+
+  it('reconciles missing legacy defaults during post-update migration', () => {
+    project = createTestProject({ jobs: [makeJob('health-check')] });
+    const migrator = new PostUpdateMigrator({
+      projectDir: project.dir, stateDir: project.stateDir, port: 4321,
+      hasTelegram: false, projectName: 'test-agent',
+    });
+    const result = { upgraded: [], skipped: [], errors: [] };
+    (migrator as any).migrateLegacyDefaultJobs(result);
+    const jobs = JSON.parse(fs.readFileSync(project.jobsPath, 'utf-8')) as Array<{ slug: string; enabled: boolean }>;
+    expect(jobs.some(job => job.slug === 'guardian-pulse')).toBe(true);
+    expect(jobs.find(job => job.slug === 'git-sync')?.enabled).toBe(false);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('preserves a customized default body before legacy migration', () => {
+    project = createTestProject({ jobs: [makeJob('health-check', {
+      gate: 'my-private-gate', execute: { type: 'prompt', value: 'my custom instructions' },
+    })] });
+    const migrator = new PostUpdateMigrator({
+      projectDir: project.dir, stateDir: project.stateDir, port: 4321,
+      hasTelegram: false, projectName: 'test-agent',
+    });
+    const result = { upgraded: [], skipped: [], errors: [] };
+    (migrator as any).migrateLegacyDefaultJobs(result);
+    const jobs = JSON.parse(fs.readFileSync(project.jobsPath, 'utf-8')) as Array<{
+      slug: string; gate?: string; execute: { value: string };
+    }>;
+    expect(jobs.find(job => job.slug === 'health-check')).toMatchObject({
+      gate: 'my-private-gate', execute: { value: 'my custom instructions' },
+    });
+    expect(result.errors).toEqual([]);
+  });
+
+  it('reports a malformed legacy catalog during update', () => {
+    project = createTestProject({ jobs: [makeJob('health-check')] });
+    fs.writeFileSync(project.jobsPath, '{invalid');
+    const migrator = new PostUpdateMigrator({
+      projectDir: project.dir, stateDir: project.stateDir, port: 4321,
+      hasTelegram: false, projectName: 'test-agent',
+    });
+    const result = { upgraded: [], skipped: [], errors: [] };
+    (migrator as any).migrateLegacyDefaultJobs(result);
+    expect(result.errors).toHaveLength(1);
+    expect(fs.readFileSync(project.jobsPath, 'utf-8')).toBe('{invalid');
+  });
+
+  it('does not activate git-sync when adding missing defaults', () => {
+    project = createTestProject({ jobs: [makeJob('health-check')] });
+    refreshHooksAndSettings(project.dir, project.stateDir);
+    const jobs = JSON.parse(fs.readFileSync(project.jobsPath, 'utf-8')) as Array<{ slug: string; enabled: boolean }>;
+    expect(jobs.find(job => job.slug === 'git-sync')?.enabled).toBe(false);
+  });
+
+  it('preserves an explicitly disabled git-sync job', () => {
+    project = createTestProject({ jobs: [makeJob('git-sync', { enabled: false })] });
+    refreshHooksAndSettings(project.dir, project.stateDir);
+    const jobs = JSON.parse(fs.readFileSync(project.jobsPath, 'utf-8')) as Array<{ slug: string; enabled: boolean }>;
+    expect(jobs.find(job => job.slug === 'git-sync')?.enabled).toBe(false);
   });
 
   describe('adding new default jobs to existing agents', () => {

@@ -198,6 +198,8 @@ export type SessionStatus = 'starting' | 'running' | 'completed' | 'failed' | 'k
 export type ModelTier = 'opus' | 'sonnet' | 'haiku';
 
 export interface SessionManagerConfig {
+  /** Actual agent state directory; inbound attachments may live outside projectDir/.instar. */
+  stateDir?: string;
   /** Project name used as the stable local agent id for auth-bound calls. */
   projectName: string;
   /**
@@ -536,6 +538,12 @@ export interface JobDefinition {
   frameworkModel?: string;
   /** Opt-in to reviewed, non-safety session-start context omissions. */
   leanContext?: boolean;
+  /** Explicit missed-work handling after a verified lease promotion. Absent means ask. */
+  catchUpPolicy?: 'skip' | 'run-once' | 'ask';
+  /** Explicit project-relative prerequisites. Never interpreted as commands. */
+  requiredPaths?: string[];
+  /** Source intent to offer this user job for private peer transfer; execution still requires exact-root approval. */
+  portable?: boolean;
   /** Whether this job is currently enabled */
   enabled: boolean;
   /** The skill or prompt to execute */
@@ -1819,13 +1827,17 @@ export interface EvolutionManagerConfig {
   stateDir: string;
   /** Whether auto-implementation of approved proposals is enabled */
   autoImplement?: boolean;
-  /** Maximum proposals before oldest get archived */
+  /** Stable archive origin identity, supplied by the server machine identity. */
+  archiveOrigin?: string;
+  /** Soft TOTAL retention targets; active work is always exempt. Zero is preserved. */
+  retentionTargets?: { proposals?: number; learnings?: number; gaps?: number; actions?: number };
+  /** @deprecated Use retentionTargets.proposals (soft total target). */
   maxProposals?: number;
-  /** Maximum learning entries before oldest get archived */
+  /** @deprecated Use retentionTargets.learnings (soft total target). */
   maxLearnings?: number;
-  /** Maximum gaps before oldest addressed get archived */
+  /** @deprecated Use retentionTargets.gaps (soft total target). */
   maxGaps?: number;
-  /** Maximum action items before oldest completed get archived */
+  /** @deprecated Use retentionTargets.actions (soft total target). */
   maxActions?: number;
   /** Conservative stale pending-action cleanup. Server defaults are dry-run-first. */
   autoExpiry?: {
@@ -2754,6 +2766,8 @@ export interface MeshTransportConfig {
 export interface MultiMachineConfig {
   /** Whether multi-machine is enabled */
   enabled: boolean;
+  /** Private, approved user-job transfer. Dark until paired-machine proof. */
+  jobDefinitionSync?: { enabled?: boolean; dryRun?: boolean };
   /** Whether to auto-promote standby when awake goes silent */
   autoFailover: boolean;
   /** Minutes of silence before auto-failover (default: 15) */
@@ -3253,6 +3267,10 @@ export interface SessionPoolConfig {
    * a direct write is rejected. Default 'dark'.
    */
   stage?: 'dark' | 'shadow' | 'live-transfer' | 'rebalance';
+  /** When sharing was turned on at a first pairing. Absent on every other pool. */
+  activatedAtPairing?: string;
+  /** `false` keeps a first pairing from turning sharing on. */
+  autoActivate?: boolean;
   /**
    * When true, the placement engine LOGS the decision it would make but always
    * places locally (Stage-0 behavior). Default true.
@@ -4005,6 +4023,11 @@ export interface InstarConfig {
      */
     consoleTicket?: { enabled?: boolean };
     /**
+     * Face ID-confirmed permission writes from the owner's phone (docs/specs/mobile-native-permissions.md).
+     * `enabled` omitted ⇒ live on a development agent, dark on the fleet (DEV_GATED_FEATURES). Read live.
+     */
+    permissionActions?: { enabled?: boolean };
+    /**
      * The operator's Slack user id (`U…`), the sender a message typed in the Instar app speaks as
      * in a Slack conversation (mobile-native-conversations §4.9). Never inferred: the agent
      * proposes it from the Slack channel's verified operator and sets it after the operator says
@@ -4160,6 +4183,8 @@ export interface InstarConfig {
      * conversation-key scheme (numeric topic id, or `slack:<channel>[:<thread>]`).
      */
     defaults?: Record<string, { model?: string; thinkingMode?: string; effort?: string }>;
+    /** Config-owned defaults for the Telegram issues group; operator pins still win. */
+    groupDefaults?: { issues?: { framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build'; model?: string } };
   };
   /**
    * Playwright Profile Registry (docs/specs/playwright-profile-registry.md).
@@ -5900,6 +5925,20 @@ export interface ThreadlineListenerConfig {
 export interface ThreadlineConfig {
   /** Whether cloud relay is enabled (default: false, opt-in) */
   relayEnabled: boolean;
+  /**
+   * A sender is never left guessing (docs/specs/a2a-required-acknowledgment.md).
+   * On unless `enabled: false`, which turns off sending, watching and the instruction;
+   * inbound kinded acks are always consumed safely.
+   */
+  requiredAck?: {
+    enabled?: boolean;
+    /** Reminder to an interactive session. Default 5 minutes. */
+    reminderMs?: number;
+    /** Tell the sender `unacknowledged`. Default 15 minutes. */
+    attentionMs?: number;
+    /** Reminders per peer per day. Default 20. */
+    reminderDailyCap?: number;
+  };
   /** Cloud relay URL (default: 'wss://threadline-relay.fly.dev/v1/connect') */
   relayUrl?: string;
   /** Agent visibility on the relay network: 'public' (discoverable), 'unlisted' (direct only), 'private' (no relay) */

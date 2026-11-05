@@ -7,6 +7,10 @@
  *   node scripts/locked-proof/driver.mjs calibrate --execute [opts]    # one normal unlock: measures the typing pace
  *   node scripts/locked-proof/driver.mjs run --execute [--cases 12.1,P15] [opts]
  *
+ * Before any run: stage-proof-agents.sh --tgz, then --start, then --finalize (all three, in
+ * that order). The driver refuses to start while a proof agent lacks its dashboard PIN or is
+ * not yet its own desktop front, and names the --finalize step.
+ *
  * Options:
  *   --agent-home DIR     the operator-side agent home holding the vault (secret-get.mjs)  [required for calibrate/run]
  *   --proof-dir DIR      proof agent A's project directory (default /Users/instarproof/.instar/agents/locked-proof)
@@ -27,9 +31,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { BLOCKING, PROOF_USER, TERMINAL, VAULT_KEY, assertProofTarget, renderExpected, runCase, selectCases } from './lib.mjs';
+import { BLOCKING, PROOF_USER, TERMINAL, VAULT_KEY, assertProofTarget, launchdServePlist, renderExpected, runCase, selectCases } from './lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+/** The viewer is ready when it offers a request or has already opened the stream. */
+export const VIEWER_READY = '#requestButton:not([disabled]), #control:not([hidden])';
 const LOCK_PY = 'import ctypes; ctypes.CDLL("/System/Library/PrivateFrameworks/login.framework/Versions/Current/login").SACLockScreenImmediate()';
 
 function opt(name, fallback) {
@@ -44,8 +50,41 @@ function sh(cmd, args, { allowFail = false, input } = {}) {
   return r.stdout ?? '';
 }
 const sudo = (args, o) => sh('sudo', ['-n', ...args], o);
+/**
+ * What setup still owes before a run, one line each. A proof agent needs a
+ * dashboard PIN (configure-proof-agent.mjs --pin-stdin, from the vault) and to
+ * be its own desktop front, which only `stage-proof-agents.sh --finalize
+ * --execute` records (it needs the machine id from the first server start).
+ */
+export function setupGaps(agents) {
+  const gaps = [];
+  for (const [dir, config] of agents) {
+    if (typeof config.dashboardPin !== 'string' || !config.dashboardPin) {
+      gaps.push(`${dir}: no dashboard PIN. Run stage-proof-agents.sh --finalize --agent-home DIR --execute (the PIN comes from the vault).`);
+    }
+    if (!config.remoteDesktop?.frontMachineId) {
+      gaps.push(`${dir}: not its own desktop front yet. Run stage-proof-agents.sh --finalize --agent-home DIR --execute after --start.`);
+    }
+  }
+  return gaps;
+}
+
 /** The login name owning a pid, or '' when it is gone. */
 export function ownerOf(pid) { return sh('ps', ['-o', 'user=', '-p', String(pid)], { allowFail: true }).trim(); }
+
+/**
+ * Sends one person step and writes down whether it went. A refused send used to
+ * vanish, so a person was never told and the case simply timed out; now the
+ * refusal is in person-steps.jsonl and on stderr for whoever is watching the run.
+ */
+export function recordPersonStep(o, text, send) {
+  const result = o.notifyTopic ? send() : null;
+  const sent = result ? result.status === 0 : false;
+  const row = { at: new Date().toISOString(), text, topic: o.notifyTopic ?? null, sent };
+  fs.appendFileSync(path.join(o.out, 'person-steps.jsonl'), `${JSON.stringify(row)}\n`);
+  if (o.notifyTopic && !sent) process.stderr.write(`[locked-proof] person step NOT delivered to topic ${o.notifyTopic}: ${text}\n`);
+  return row;
+}
 
 /** The proof Mac, the proof user, its two agents and the real viewer page. */
 export class RealTarget {
@@ -67,8 +106,12 @@ export class RealTarget {
   agentConfig(dir) { return JSON.parse(sudo(['cat', path.join(dir, '.instar', 'config.json')])); }
 
   async init() {
-    this.a = { port: this.o.port, dir: this.o.proofDir, ...this.pick(this.agentConfig(this.o.proofDir)) };
-    this.b = { port: this.o.portB, dir: this.o.proofDirB, ...this.pick(this.agentConfig(this.o.proofDirB)) };
+    const configA = this.agentConfig(this.o.proofDir);
+    const configB = this.agentConfig(this.o.proofDirB);
+    const missing = setupGaps([[this.o.proofDir, configA], [this.o.proofDirB, configB]]);
+    if (missing.length) throw new Error(missing.join('\n'));
+    this.a = { port: this.o.port, dir: this.o.proofDir, ...this.pick(configA) };
+    this.b = { port: this.o.portB, dir: this.o.proofDirB, ...this.pick(configB) };
     for (const agent of [this.a, this.b]) {
       const health = await this.api(agent, 'GET', '/health');
       // The real owner of the process answering on this port, not a constant.
@@ -111,6 +154,17 @@ export class RealTarget {
     try { return JSON.parse(raw); } catch { return {}; }
   }
 
+  /**
+   * This case's markers. Finished ones stay in the store for days with their lease and
+   * heartbeat files, and would fire injections, settle the case and count as its evidence.
+   */
+  caseMarkers(state = this.readStore()) {
+    const prior = this.priorMarkers ?? {};
+    return Object.fromEntries(Object.entries(state.markers ?? {}).filter(([key, m]) => !(key in prior && prior[key] === m.requestId)));
+  }
+
+  consoleOwner() { return sh('stat', ['-f', '%Su', '/dev/console']).trim(); }
+
   processes() {
     return sudo(['ps', '-U', PROOF_USER, '-o', 'pid=,lstart=,command='], { allowFail: true }).split('\n')
       .map(line => line.match(/^\s*(\d+)\s+(\w{3} \w{3} +\d+ [\d:]+ \d{4})\s+(.*)$/)).filter(Boolean)
@@ -119,7 +173,7 @@ export class RealTarget {
 
   async snapshot() {
     const state = this.readStore();
-    const markers = state.markers ?? {};
+    const markers = this.caseMarkers(state);
     const procs = this.processes();
     const helper = procs.filter(p => p.command.includes('instar-desktop-host'));
     const guard = helper.find(p => p.command.includes('relock-guard'));
@@ -134,7 +188,7 @@ export class RealTarget {
     }
     if (guard) { this.events.add('guard-spawned'); this.pids.firstGuard ??= guard.pid; this.pids.guard = guard.pid; }
     if (typist) this.pids.typist = typist.pid;
-    if (sh('stat', ['-f', '%Su', '/dev/console']).trim() === PROOF_USER) this.events.add('proof-user-console');
+    if (this.consoleOwner() === PROOF_USER) this.events.add('proof-user-console');
     return { now, markers, dirty: state.dirty !== undefined && state.dirty !== null, lockState, typistRunning: !!typist, guardPid: guard?.pid, events: [...this.events],
       processesGone: !Object.values(markers).every(m => TERMINAL.includes(m.state)) ? undefined : !guard && !typist, procs };
   }
@@ -169,6 +223,7 @@ export class RealTarget {
       if (this.now() > until) throw new Error('a duty from the previous case is still open');
       await this.sleep(1_000);
     }
+    this.priorMarkers = Object.fromEntries(Object.entries(this.readStore().markers ?? {}).map(([key, m]) => [key, m.requestId]));
     // Attempt counter reset under the helper's own lock (plan 4.4), audited.
     sudo(['-u', PROOF_USER, 'python3', path.join(HERE, 'reset-attempts.py'), '--execute', this.store]);
     fs.appendFileSync(path.join(this.o.out, 'attempt-resets.jsonl'), `${JSON.stringify({ at: new Date().toISOString(), before: c.id })}\n`);
@@ -182,15 +237,24 @@ export class RealTarget {
     await page.goto(`http://127.0.0.1:${agent.port}/dashboard/desktop.html`);
     await page.fill('#pin', agent.pin);
     await page.click('#unlockButton');
-    await page.waitForSelector('#requestButton:not([disabled])', { timeout: 20_000 });
+    // desktop.js opens the stream by itself when exactly one machine is ready,
+    // keeping #request hidden; either outcome means the page is ready.
+    await page.waitForSelector(VIEWER_READY, { timeout: 20_000 });
     const v = { agent, context, page };
     this.viewers.push(v);
     return v;
   }
 
+  /** Asks for a grant only when the page has not already opened one itself. */
+  async requestGrant(v) {
+    if (await v.page.isVisible('#control').catch(() => false)) return { clicked: false };
+    await v.page.click('#requestButton');
+    return { clicked: true };
+  }
+
   async openGrant(c) {
     const v = await this.viewer(this.a);
-    await v.page.click('#requestButton');
+    await this.requestGrant(v);
     await v.page.waitForSelector('#control:not([hidden])', { timeout: 30_000 });
     this.main = v;
     this.mainOpenedAt = this.now();
@@ -208,7 +272,9 @@ export class RealTarget {
       const startAt = enterAt - this.cal.reserveMs - this.cal.perCharMs * this.password.length;
       await this.sleep(Math.max(0, startAt - this.now()));
     }
-    await page.fill('#lockedPasswordInput', this.password);
+    // Delayed-completion cases need an open duty with the Mac still locked: a refused password
+    // gives that without a test build holding the submission back, and the person unlocks later.
+    await page.fill('#lockedPasswordInput', c.wrongPassword ? `${this.password}x` : this.password);
     await page.press('#lockedPasswordInput', 'Enter');
     const until = this.now() + 60_000;
     while (this.now() < until) {
@@ -245,12 +311,80 @@ export class RealTarget {
   async recover() {
     const problems = [];
     if (this.stopper) { clearInterval(this.stopper); this.stopper = null; }
+    if (this.launchdJob) {
+      try { this.endLaunchdServe(); await this.act('start-server', {}); }
+      catch (err) { problems.push(`launchd job: ${err instanceof Error ? err.message : String(err)}`); }
+    }
     for (const pid of [...this.stopped]) {
       try { this.kill(pid, 'CONT'); } catch (err) { problems.push(String(err instanceof Error ? err.message : err)); this.stopped.delete(pid); }
     }
     try { if (await this.readLockState() !== 'locked-in-session') await this.act('lock-now', {}); }
     catch (err) { problems.push(`lock-now: ${err instanceof Error ? err.message : String(err)}`); }
     return problems;
+  }
+
+  /** Moves agent A's server from tmux to its own launchd job, so launchd-kill has a real target. */
+  async serveUnderLaunchd() {
+    const dir = this.a.dir;
+    const home = `/Users/${PROOF_USER}/.instar`;
+    const label = `ai.instar.lockedproof.${path.basename(dir)}`;
+    const plist = path.join(home, `${label}.plist`);
+    const staged = path.join(this.o.out, `${label}.plist`);
+    // Set first, so recover() restores the server if anything below throws. A job left by a
+    // driver that died mid-case would hold the port, so it goes before the stop.
+    this.launchdJob = { label, plist };
+    this.endLaunchdServe();
+    this.launchdJob = { label, plist };
+    this.asProof([path.join(this.o.proofInstall, 'node_modules/.bin/instar'), 'server', 'stop', '--dir', dir]);
+    await this.waitForServer(false, 60_000);
+    fs.writeFileSync(staged, launchdServePlist({
+      label, dir, node: process.execPath, cli: path.join(this.o.proofInstall, 'node_modules/instar/dist/cli.js'),
+      pathEnv: process.env.PATH ?? '/usr/bin:/bin', log: path.join(home, `${label}.log`),
+    }));
+    sudo(['install', '-o', PROOF_USER, '-m', '644', staged, plist]);
+    sudo(['launchctl', 'bootstrap', `gui/${this.uid}`, plist]);
+    const pid = await this.waitForServer(true, 90_000);
+    return { label, pid };
+  }
+
+  /**
+   * Throws unless the server under the job really died and the relock guard outlived it:
+   * launchd reaps a job's process group, and the guard has to stand outside that group.
+   */
+  async launchdKill() {
+    if (!this.launchdJob) throw new Error('launchd-kill: no launchd job is serving this agent');
+    const pid = this.serverPid(this.a);
+    if (!pid) throw new Error('launchd-kill: no server is running under the job');
+    const guards = () => this.processes().filter(p => p.command.includes('instar-desktop-host') && p.command.includes('relock-guard')).map(p => p.pid);
+    const guardPid = guards()[0];
+    if (!guardPid) throw new Error('launchd-kill: no relock guard running before the kill');
+    this.signalJob(this.launchdJob.label);
+    await this.waitForServer(false, 15_000);
+    await this.sleep(2_000); // launchd reaps the group after the main process exits.
+    if (!guards().includes(guardPid)) throw new Error(`launchd-kill: relock guard ${guardPid} did not survive the kill`);
+    return { label: this.launchdJob.label, killedPid: pid, guardPid, guardSurvived: true };
+  }
+
+  signalJob(label) { sudo(['launchctl', 'kill', 'SIGKILL', `gui/${this.uid}/${label}`], { allowFail: true }); }
+
+  /** Removes the job, so start-server can put the agent back in tmux. */
+  endLaunchdServe() {
+    if (!this.launchdJob) return { removed: null };
+    const { label, plist } = this.launchdJob;
+    sudo(['launchctl', 'bootout', `gui/${this.uid}/${label}`], { allowFail: true });
+    sudo(['rm', '-f', plist], { allowFail: true });
+    this.launchdJob = null;
+    return { removed: label };
+  }
+
+  async waitForServer(up, ms) {
+    const until = this.now() + ms;
+    while (this.now() < until) {
+      const pid = this.serverPid(this.a);
+      if (!!pid === up) return pid;
+      await this.sleep(500);
+    }
+    throw new Error(`server on port ${this.a.port} did not ${up ? 'start' : 'stop'} within ${ms} ms`);
   }
 
   asProof(args) { return sudo(['launchctl', 'asuser', this.uid, 'sudo', '-u', PROOF_USER, '-H', ...args], { allowFail: true }); }
@@ -265,14 +399,13 @@ export class RealTarget {
         this.asProof([path.join(this.o.proofInstall, 'node_modules/.bin/instar'), 'server', 'start', '--dir', this.a.dir]);
         const until = this.now() + 60_000;
         while (this.now() < until && !this.serverPid(this.a)) await this.sleep(1_000);
-        return { started: !!this.serverPid(this.a) };
+        if (!this.serverPid(this.a)) throw new Error(`start-server: nothing listening on port ${this.a.port} after 60 s`);
+        return { started: true };
       }
       case 'kill-tmux': return { out: this.asProof(['tmux', 'kill-server']) };
-      case 'launchd-kill': {
-        const labels = sudo(['launchctl', 'print', `gui/${this.uid}`], { allowFail: true }).match(/ai\.instar\.lockedproof\.[\w.-]+/g) ?? [];
-        for (const label of new Set(labels)) sudo(['launchctl', 'kill', 'SIGKILL', `gui/${this.uid}/${label}`], { allowFail: true });
-        return { labels: [...new Set(labels)] };
-      }
+      case 'serve-under-launchd': return this.serveUnderLaunchd();
+      case 'launchd-kill': return this.launchdKill();
+      case 'end-launchd-serve': return this.endLaunchdServe();
       case 'kill-guard': return this.kill(this.pids.killedGuard = helper().find(p => p.command.includes('relock-guard'))?.pid, 'KILL');
       case 'stop-guard': return this.kill(this.pids.stoppedGuard = helper().find(p => p.command.includes('relock-guard'))?.pid, 'STOP');
       case 'cont-old-guard': return this.kill(this.pids.stoppedGuard, 'CONT');
@@ -290,10 +423,10 @@ export class RealTarget {
         for (const p of helper().filter(x => x.command.includes('relock-guard'))) this.kill(p.pid, 'CONT');
         return { released: true };
       case 'revoke': {
-        const requestId = Object.values(this.readStore().markers ?? {}).find(m => m.requestId)?.requestId;
+        const requestId = Object.values(this.caseMarkers()).find(m => m.requestId)?.requestId;
+        if (!requestId) throw new Error('revoke: this case has no open request to revoke');
         const session = await this.operatorSession(this.a);
-        return requestId ? this.api(this.a, 'POST', `/desktop/requests/${encodeURIComponent(requestId)}/revoke`, {}, { 'X-Instar-Operator-Session': session })
-          : { error: 'no-request-id' };
+        return this.api(this.a, 'POST', `/desktop/requests/${encodeURIComponent(requestId)}/revoke`, {}, { 'X-Instar-Operator-Session': session });
       }
       case 'stop-viewer': await this.main.page.click('#stopButton'); return { clicked: 'stop' };
       case 'leave-unlocked': await this.main.page.click('#leaveUnlockedButton'); return { clicked: 'leave-unlocked' };
@@ -302,7 +435,7 @@ export class RealTarget {
       case 'type-letter': await this.main.page.focus('#surface'); await this.main.page.keyboard.press('a'); return { pressed: 'a' };
       case 'grant-other-agent': {
         const v = await this.viewer(this.b);
-        await v.page.click('#requestButton');
+        await this.requestGrant(v);
         await this.sleep(5_000);
         const text = (await v.page.textContent('#status').catch(() => '')) ?? '';
         const opened = await v.page.isVisible('#control');
@@ -312,12 +445,19 @@ export class RealTarget {
       case 'open-next-grant': {
         await this.main.page.click('#stopButton').catch(() => {});
         const v = await this.viewer(this.a);
-        await v.page.click('#requestButton');
+        await this.requestGrant(v);
         await v.page.waitForSelector('#control:not([hidden])', { timeout: 30_000 }).catch(() => {});
         this.events.add('next-grant-open');
         return { opened: await v.page.isVisible('#control') };
       }
-      case 'logout-proof-user': return { out: sudo(['launchctl', 'bootout', `gui/${this.uid}`], { allowFail: true }) };
+      case 'logout-proof-user': {
+        const out = sudo(['launchctl', 'bootout', `gui/${this.uid}`], { allowFail: true });
+        // The event is sticky, and this case waits for the user's return: it must first see them gone.
+        const until = this.now() + 30_000;
+        while (this.now() < until && this.consoleOwner() === PROOF_USER) await this.sleep(500);
+        this.events.delete('proof-user-console');
+        return { out };
+      }
       case 'lock-now': return { out: this.asProof(['python3', '-c', LOCK_PY]) };
       default: throw new Error(`unknown action ${action}${step ? ` (case step ${step.at})` : ''}`);
     }
@@ -325,10 +465,9 @@ export class RealTarget {
 
   async askPerson(text) {
     process.stdout.write(`\n>>> PERSON STEP: ${text}\n\n`);
-    if (this.o.notifyTopic) {
-      sh('bash', [path.join(this.o.agentHome, '.instar/scripts/telegram-reply.sh'), String(this.o.notifyTopic)],
-        { input: `Locked-Mac proof: ${text}`, allowFail: true });
-    }
+    recordPersonStep(this.o, text, () => spawnSync('bash',
+      [path.join(this.o.agentHome, '.instar/scripts/telegram-reply.sh'), String(this.o.notifyTopic)],
+      { encoding: 'utf8', input: `Locked-Mac proof: ${text}`, timeout: 30_000 }));
   }
 
   async extraEvidence(c, ev) {
@@ -357,7 +496,7 @@ export class RealTarget {
     };
     try {
       const list = await this.api(this.a, 'GET', '/attention');
-      const item = (list.items ?? []).find(i => String(i.id).startsWith('agent:desktop-relock'));
+      const item = (list.items ?? []).find(i => String(i.id).startsWith('agent:desktop-relock') && Date.parse(i.createdAt) >= ev.startedAt);
       const failedAt = ev.samples.find(s => Object.values(s.markers ?? {}).some(m => m.state === 'relock-failed'))?.t;
       out.securityItemRaised = !!item;
       if (item && failedAt) out.securityItemMs = Date.parse(item.createdAt) - failedAt;
@@ -389,6 +528,7 @@ const STATUS_REASONS = [
   ['finishing a relock', 'relock-pending'], ['Too many tries in this session', 'attempts-per-request'],
   ['Too many tries today', 'attempts-per-day'], ['connection changed', 'seal-stale'],
   ['Stopped before the password finished', 'aborted'], ['Clearing the password field', 'field-dirty'],
+  ['secure tunnel is up', 'tunnel-not-active'], ['kept desktop helper', 'retained-helper-required'],
   ['Password entry from a browser is off', 'browser-box-off'], ['backup connection', 'tunnel-not-first-tier'],
   ['did not accept that', 'refused-other'],
 ];

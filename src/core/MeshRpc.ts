@@ -71,6 +71,21 @@ export type MeshCommand =
       purpose?: string;
     }
   | {
+      // a2a-required-acknowledgment D4: a relay STANDBY hands one kinded ack to my
+      // machine holding the relay. A verb of its own, because the chat forward carries
+      // only a chat body: a mixed-version holder would send a summary as a real
+      // message. Registered-peer class; the HANDLER is the gate (feature on, holder
+      // not a standby, capability). A holder without the verb refuses it, and the
+      // standby's pending row stays pending until it expires.
+      type: 'a2a-relay-forward-ack';
+      peerFp: string;
+      ack: { kind: string; state?: string; reason?: string; refMessageIds: string[]; summary?: string };
+      text: string;
+      threadId?: string | null;
+      triggerEncrypted: boolean;
+      ackKinds?: number | null;
+    }
+  | {
       // A2A cross-machine route §5: the relay holder asks the machine that has a
       // topic's live session to type a reply into it. Registered-peer class —
       // the RECEIVER decides from its own live session for the topic, injects
@@ -255,6 +270,21 @@ export type MeshCommand =
       // persist or drive a launch — this verb adds reach, never authority.
       type: 'topic-profile-pull';
       topics: string[];
+    }
+  | {
+      // Moved-conversation history (session-pool-signed-history). Read/observe class:
+      // the lease holder serves its OWN recent messages for one topic to a registered
+      // same-operator peer. Exists so a move needs no shared bearer token.
+      type: 'topic-history-pull';
+      topic: number;
+      limit?: number;
+    }
+  | {
+      // Duplicate check (session-pool-activation-at-pairing, Change 8). Read/observe class:
+      // says only whether this machine holds a live session for one conversation.
+      type: 'session-live-probe';
+      platform: string;
+      platformId: string;
     }
   | {
       // Working-set handoff transport (WORKING-SET-HANDOFF-SPEC §3.2).
@@ -498,6 +528,8 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'working-set-pull':
     case 'app-media-pull':
     case 'topic-profile-pull':
+    case 'topic-history-pull':
+    case 'session-live-probe':
     case 'commitments-sync':
     case 'preferences-sync':
     case 'state-snapshot':
@@ -507,6 +539,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'ssh-proof-publish':
     case 'a2a-inbox-deliver':
     case 'a2a-relay-forward':
+    case 'a2a-relay-forward-ack':
     case 'a2a-topic-reply-inject':
     case 'agent-identity-observe':
     case 'agent-identity-request':
@@ -543,6 +576,9 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // per-topic profile entries — disclosure-only for registered
       // same-operator peers; the receiver revalidates every field (§10.2)
       // before anything persists, so the verb carries reach, not authority.
+      // topic-history-pull joins it (session-pool-signed-history): it serves OWN recent
+      // messages for one topic, the same disclosure the bearer history route makes to
+      // this agent's own machines, capped in count and size by its handler.
       // pool-view-fetch joins it (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4): the
       // verb is reachable by any registered peer, but its HANDLER is the real
       // gate — it serves a private view body ONLY when the carried user-auth

@@ -35,6 +35,7 @@ const CHAT_SENDERS: Record<string, (c: ThreadlineClient, fp: string) => unknown>
 };
 const NOT_CHAT: Record<string, string> = {
   sendAck: 'typed ack: a delivery receipt, stays plaintext by design',
+  sendKindedAck: 'typed ack: a receipt, encrypted to a pinned peer; never chat (a2a-required-acknowledgment D1)',
   sendInviteControlPlaintext: 'invite accept: the inviter holds no key yet (spec §4.3); typed op, not chat',
   sendCredentialToPinned: 'always encrypted to the given pinned key',
   sendPairVerifyReceipt: 'always encrypted to the given pinned key',
@@ -89,7 +90,7 @@ describe('no plaintext chat to an enforce-mode invite peer, by any public send m
     const id = client.sendPlaintext(peer.fp, 'nudge text', 'thread-redrive');
     expect(typeof id).toBe('string');
     expect(encrypted).toHaveLength(1);
-    expect(encrypted[0].message).toEqual({ content: 'nudge text' });
+    expect(encrypted[0].message).toEqual({ content: 'nudge text', ackKinds: 1 });
     expect(wire[0].threadId).toBe('thread-redrive');
   });
 

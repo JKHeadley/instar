@@ -18,6 +18,7 @@
  * Part of PROP-session-stall-recovery (Instar integration)
  */
 
+import { topicRef } from '../messaging/shared/topicRef.js';
 import { EventEmitter } from 'events';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -276,8 +277,8 @@ export class SessionRecovery extends EventEmitter {
         recovered: false,
         failureType: null,
         message: nonePending
-          ? `Recovery skipped — topic ${topicId} owned by a reachable peer and no pending inbound to forward`
-          : `Recovery forwarded — topic ${topicId} owned by a reachable peer; ${forwarded} pending inbound routed to the owner`,
+          ? `Recovery skipped — ${topicRef(topicId)} owned by a reachable peer and no pending inbound to forward`
+          : `Recovery forwarded — ${topicRef(topicId)} owned by a reachable peer; ${forwarded} pending inbound routed to the owner`,
       };
     }
     if (ownershipDecision === 'withhold') {
@@ -288,7 +289,7 @@ export class SessionRecovery extends EventEmitter {
       return {
         recovered: false,
         failureType: null,
-        message: `Recovery withheld — topic ${topicId} owned by an unreachable peer; the message rides the durable inbound queue (not re-run locally to avoid double-dispatch)`,
+        message: `Recovery withheld — ${topicRef(topicId)} owned by an unreachable peer; the message rides the durable inbound queue (not re-run locally to avoid double-dispatch)`,
       };
     }
     // ownershipDecision === 'proceed' → fall through to today's recovery logic.

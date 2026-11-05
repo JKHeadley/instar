@@ -12,6 +12,8 @@ import type { ChannelDefinition, ChannelProbeResult } from './channelRegistry.js
 
 /** What the registry needs from the running server. Injected so the definitions stay testable. */
 export interface ChannelProbeContext {
+  /** Whole-agent relay answer; local client state alone is not agent reachability. */
+  agentRelayStatus?: () => Promise<import('../threadline/agentRelayStatus.js').AgentRelayStatus>;
   /** Live relay state, or null when the threadline layer was never constructed. */
   relayStatus: () => { ready: boolean; connected: boolean } | null;
   /** True when the mutual-SSH runtime constructed successfully (it throws on some installs). */
@@ -44,6 +46,17 @@ export function buildChannelDefinitions(ctx: ChannelProbeContext): ChannelDefini
       whenPreferred: 'The default for peer work: fastest, and invisible to the operator, so it does not spend their attention.',
       cost: 'Requires the server process relay client to be connected, and another process can hold a different relay state. Invisible when it fails, which is its main hazard.',
       probe: async (): Promise<ChannelProbeResult> => {
+        if (ctx.agentRelayStatus) {
+          const agent = await ctx.agentRelayStatus();
+          if (agent.state === 'reachable') return {
+            state: 'working', direction: 'bidirectional',
+            detail: `Agent reachable through ${agent.throughMachine}; ${agent.ifMachineAway}`,
+          };
+          if (agent.state === 'unknown') return {
+            state: 'unknown', direction: 'none', detail: agent.reason,
+          };
+          return { state: 'broken', direction: 'none', detail: agent.reason };
+        }
         const s = ctx.relayStatus();
         if (s === null) {
           return { state: 'not-configured', direction: 'none', detail: 'threadline layer was never constructed on this agent' };

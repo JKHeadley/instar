@@ -1,3 +1,4 @@
+import { topicRef } from '../messaging/shared/topicRef.js';
 /**
  * TopicReachabilityVerifier — F7 Piece 2 (PURE SIGNAL)
  * (docs/specs/verify-after-reachability.md §Piece 2).
@@ -183,7 +184,7 @@ export class TopicReachabilityVerifier {
         this.d.surface({
           key: `topic-reachability:${o.topic}`,
           topics: [o.topic],
-          reason: `topic ${o.topic} may be unreachable (${o.reason})`,
+          reason: `${topicRef(o.topic)} may be unreachable (${o.reason})`,
           rolledUp: false,
         });
         this.bumpDedup(o.topic, now);

@@ -39,7 +39,7 @@ export const CASES = [
   { id: '12.2d', gate: 'P12', title: 'Node killed after the ack, before the first character', password: true, inject: [{ action: 'kill-server', at: 'guard-acked' }], then: ['start-server'], final: 'locked' },
   { id: '12.2e', gate: 'P12', title: 'Node killed mid-typing', password: true, inject: [{ action: 'kill-server', at: 'typing' }], then: ['start-server'], final: 'locked' },
   { id: '12.3', gate: 'P12', title: 'tmux killed', password: true, inject: [{ action: 'kill-tmux', at: 'marker:owed' }], then: ['start-server'], final: 'locked' },
-  { id: '12.4', gate: 'P12', title: 'launchd kill of the server', password: true, inject: [{ action: 'launchd-kill', at: 'marker:owed' }], then: ['start-server'], final: 'locked' },
+  { id: '12.4', gate: 'P12', title: 'launchd kill of the server', password: true, before: ['serve-under-launchd'], inject: [{ action: 'launchd-kill', at: 'guard-acked' }], then: ['end-launchd-serve', 'start-server'], final: 'locked' },
   { id: '12.5a', gate: 'P12', title: 'Guard killed in owed', password: true, inject: [{ action: 'kill-guard', at: 'marker:owed' }], final: 'locked', markerEnd: ['relocked'], guardReplaced: true },
   { id: '12.5b', gate: 'P12', title: 'Guard killed in executing', password: true, inject: [{ action: 'stop-viewer', at: 'sent' }, { action: 'kill-guard', at: 'marker:executing' }], final: 'locked', markerEnd: ['relocked'], guardReplaced: true },
   { id: '12.5c', gate: 'P12', title: 'Guard killed in watching', password: true, inject: [{ action: 'stop-viewer', at: 'sent' }, { action: 'kill-guard', at: 'marker:watching' }], final: 'locked', markerEnd: ['relocked'], guardReplaced: true },
@@ -67,8 +67,8 @@ export const CASES = [
   { id: '15.7', gate: 'P15', title: 'Node kill immediately before Enter', password: true, inject: [{ action: 'kill-server', at: 'before-enter' }], then: ['start-server'], final: 'locked', noSubmissionAfterClose: true },
   { id: '15.8', gate: 'P15', title: 'Node kill immediately after Enter', password: true, inject: [{ action: 'kill-server', at: 'after-enter' }], then: ['start-server'], final: 'locked', noSubmissionAfterClose: true },
   { id: '15.9', gate: 'P15', title: 'input-stream suspended mid-password', password: true, inject: [{ action: 'stop-typist', at: 'typing' }, { action: 'revoke', at: 'typing', delayMs: 2_000 }], final: 'locked', typistGone: true, fieldClearedBeforeNextEnter: true },
-  { id: '15.10', gate: 'P15', title: 'Delayed completion inside the watch', password: false, inject: [{ action: 'revoke', at: 'now' }], person: { text: 'In about 30 seconds, when I say so, unlock the test account at the test Mac once and leave it.', cueAfterMs: 30_000, until: 'marker:relocked', timeoutMs: 180_000 }, final: 'locked', markerEnd: ['relocked'] },
-  { id: '15.11', gate: 'P15', title: 'Delayed completion past the watch', password: false, inject: [{ action: 'revoke', at: 'now' }], person: { text: 'In about 2 minutes 10 seconds, when I say so, unlock the test account at the test Mac once and leave it.', cueAfterMs: 130_000, until: 'unlocked', timeoutMs: 300_000 }, final: 'unlocked-accepted-risk', markerEnd: ['relocked'], cleanup: ['lock-now'] },
+  { id: '15.10', gate: 'P15', title: 'Delayed completion inside the watch', password: true, wrongPassword: true, inject: [{ action: 'revoke', at: 'after-enter' }], person: { text: 'In about 30 seconds, when I say so, unlock the test account at the test Mac once and leave it.', cueAfterMs: 30_000, until: 'marker:relocked', timeoutMs: 180_000, mustUnlock: true }, final: 'locked', markerEnd: ['relocked'] },
+  { id: '15.11', gate: 'P15', title: 'Delayed completion past the watch', password: true, wrongPassword: true, inject: [{ action: 'revoke', at: 'after-enter' }], person: { text: 'In about 2 minutes 10 seconds, when I say so, unlock the test account at the test Mac once and leave it.', cueAfterMs: 130_000, until: 'unlocked', timeoutMs: 300_000, mustUnlock: true }, final: 'unlocked-accepted-risk', markerEnd: ['relocked'], cleanup: ['lock-now'] },
 ];
 
 export function selectCases(ids) {
@@ -148,6 +148,7 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
   const pending = [...c.inject];
   try {
     await target.prepare(c);
+    for (const step of c.before ?? []) evidence.fired.push({ action: step, at: 'before', t: target.now(), result: (await target.act(step, { case: c })) ?? null });
     const ctx = { sent: false, beforeEnterDue: undefined };
     const grant = await target.openGrant(c);
     evidence.grantOpenedAt = target.now();
@@ -158,7 +159,7 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
         r => { ctx.sent = r?.sent === true; evidence.secretResult = r ?? null; },
         err => { evidence.secretResult = { error: err instanceof Error ? err.message : String(err) }; });
     }
-    const deadline = target.now() + (c.timeoutMs ?? WATCH_MS + GRANT_CEILING_MS / 4);
+    let deadline = target.now() + (c.timeoutMs ?? WATCH_MS + GRANT_CEILING_MS / 4);
     let personCued = false;
     while (target.now() < deadline) {
       const snap = await sample();
@@ -175,8 +176,12 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
         if (c.person.cueAfterMs) await target.sleep(c.person.cueAfterMs);
         evidence.person = { cuedAt: target.now(), text: c.person.text };
         await target.askPerson(c.person.text);
+        deadline = Math.max(deadline, target.now() + (c.person.timeoutMs ?? 0));
       }
-      const settled = pending.length === 0 && (!c.person || personCued) && target.settled(snap, c);
+      // A person step is finished only when its result is seen. Asking is not doing.
+      if (personCued && !evidence.person.doneAt && (!c.person.until || matchAt(c.person.until, snap, ctx))) evidence.person.doneAt = target.now();
+      if (personCued && c.person.mustUnlock && snap.lockState === 'unlocked') evidence.person.sawUnlock = true;
+      const settled = pending.length === 0 && (!c.person || (evidence.person?.doneAt && (!c.person.mustUnlock || evidence.person.sawUnlock))) && target.settled(snap, c);
       if (settled) break;
       await target.sleep(pollMs);
     }
@@ -199,6 +204,28 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
 }
 
 export const RESUME_WINDOW_MS = 30_000;
+
+const xml = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/**
+ * The launchd job for the launchd-kill case: the real server in the foreground, directly
+ * under launchd. No KeepAlive, so a kill leaves it dead until the case starts it again.
+ */
+export function launchdServePlist({ label, node, cli, dir, pathEnv, log }) {
+  const args = [node, cli, 'server', 'start', '--foreground', '--dir', dir].map(a => `<string>${xml(a)}</string>`).join('');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>${xml(label)}</string>
+<key>ProgramArguments</key><array>${args}</array>
+<key>WorkingDirectory</key><string>${xml(dir)}</string>
+<key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(pathEnv)}</string></dict>
+<key>RunAtLoad</key><true/>
+<key>StandardOutPath</key><string>${xml(log)}</string>
+<key>StandardErrorPath</key><string>${xml(log)}</string>
+</dict></plist>
+`;
+}
 
 /** Measurements every target gets from its own samples (the target may add more). */
 export function measured(ev) {
@@ -227,6 +254,17 @@ export function judge(c, ev) {
     reasons.push(`marker ended ${markers.map(m => m.state).join(',') || 'absent'}, expected ${c.markerEnd.join(' or ')}`);
   }
   const lock = ev.final?.lockState;
+  const hadDuty = markers.length > 0 || (ev.samples ?? []).some(x => Object.keys(x.markers ?? {}).length > 0);
+  if (c.password && !c.secretRefused && !hadDuty) reasons.push('no duty was ever opened: the password never reached the Mac');
+  // A case that lands on typing or Enter tested nothing if the helper refused before typing.
+  const landsOnTyping = (c.inject ?? []).some(x => ['before-enter', 'after-enter', 'typing', 'sent'].includes(x.at));
+  const typed = (ev.samples ?? []).some(x => x.dirty === true || Object.values(x.markers ?? {}).some(m => typeof m.enterPendingAt === 'number'));
+  const refusedWord = ev.secretResult?.refused;
+  const typingRefused = !!refusedWord && !['aborted', 'no-result-within-60s'].includes(refusedWord);
+  if (landsOnTyping && !c.secretRefused && (!typed || typingRefused)) reasons.push(`the password was never typed${refusedWord ? ` (${refusedWord})` : ''}`);
+  if (c.person && !ev.person?.doneAt) reasons.push(`person step never completed: ${c.person.until ?? 'no result seen'}`);
+  if (c.person?.mustUnlock && !ev.person?.sawUnlock) reasons.push('no unlock was seen after the person was asked');
+  if (c.final === 'unlocked-accepted-risk' && lock !== 'unlocked') reasons.push(`Mac ended ${lock}, expected unlocked with the risk recorded`);
   if (c.final === 'locked' && lock !== 'locked-in-session' && lock !== 'locked') reasons.push(`Mac ended ${lock}, expected locked`);
   if (c.final === 'left-unlocked' && !terminal.some(m => m.state === 'left-unlocked')) reasons.push('Leave unlocked was not the recorded outcome');
   if (c.final === 'either') {

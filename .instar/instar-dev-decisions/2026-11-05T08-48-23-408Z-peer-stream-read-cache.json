@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-05T08:48:23.408Z",
+  "slug": "peer-stream-read-cache",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 81,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ClassReviewReplicatedStore.ts",
+      "src/core/ReplicatedPeerStreamReader.ts"
+    ],
+    "addedLines": 63,
+    "deletedLines": 18
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

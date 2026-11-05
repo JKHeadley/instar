@@ -6,9 +6,10 @@
  * and can be monitored/reaped by the server.
  */
 
+import type { MemoryPrivacyRecovery } from '../users/MemoryPrivacyRecovery.js';
 import { isCredentialEnvName, CLAUDE_CONFINED_PERMISSION_ARGS } from './credentialEnvNames.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
-import { applyMemorySessionLaunch, buildMemorySessionSettings, moveInboundFilesIntoScope } from './memorySessionPolicy.js';
+import { applyMemorySessionLaunch, buildMemorySessionSettings, memorySessionInboundRoots, moveInboundFilesIntoScope, prepareSessionCurlHome } from './memorySessionPolicy.js';
 import { audienceKey, type MemoryPrivacy, type SessionPlaceInput } from '../users/MemoryPrivacy.js';
 import { isScopedAudience, memoryScopeEnvValue, type MemoryAudience, type MemoryPlace } from '../users/MemoryAudience.js';
 import { execFileSync, execFile } from 'node:child_process';
@@ -111,6 +112,7 @@ import {
   computeGrokInteractiveOptIn,
 } from './frameworkSessionLaunch.js';
 import { frameworkFromEnv } from './intelligenceProviderFactory.js';
+import { codexSupportsGpt61Sol } from './codexCapabilities.js';
 import { decideSdkVsSubscription, DEFAULT_SAFETY_MARGIN_FRACTION } from '../providers/costAwareRouting.js';
 import {
   resolveCodexLaunchModelWithUsage,
@@ -142,6 +144,7 @@ import type { DerivedTarget } from '../monitoring/selfaction/types.js';
 import { VetoedKillBackoff, normalizeReasonKey, IDLE_ZOMBIE_ESCALATION_REASONS } from './VetoedKillBackoff.js';
 import type { IncidentDedupe } from '../monitoring/IncidentDedupe.js';
 import { ensureAgentOwnedMemory, defaultClaudeConfigHome } from './AgentOwnedMemory.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 import {
   CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS,
   type ThreadlineMcpSpawnWiring,
@@ -1057,11 +1060,17 @@ export class SessionManager extends EventEmitter {
     telegramGroupKey: () => string | null;
     /** True when the boot probe proved the OS sandbox starts here. */
     sandboxReady: () => boolean;
+    /** Why scoped sessions cannot run, and the plain fix. Null when they can. */
+    blocker?: () => string | null;
+    fix?: () => string | null;
+    /** The owner's one-time repair link. */
+    recovery?: () => MemoryPrivacyRecovery;
     /** Scripts a scoped session runs, as absolute paths. */
     replyScripts: () => string[];
     /** Finds the Slack channel of a session started before places were recorded. */
     slackChannelForSession?: (sessionName: string) => string | null;
   };
+  private memoryInboundClaims = new Map<string, { place: string; dev: number; ino: number; size: number; mtimeMs: number; claimedAt: number }>();
 
   /**
    * Census #5/#6: live credential re-pointing gate. When set AND enabled, a pinned account's
@@ -1368,11 +1377,10 @@ export class SessionManager extends EventEmitter {
         store: this.inboundDeliveries,
         hmacKey: this.inboundDeliveryHmacKey,
         resolveRolloutPath: (delivery) => {
-          const session = this.state.listSessions().find((candidate) => candidate.tmuxSession === delivery.incarnation);
+          const session = this.state.findSessionByTmux(delivery.incarnation);
           return session ? this.codexRolloutPathForSession(session) : null;
         },
-        resolveRolloutId: (delivery) => this.state.listSessions()
-          .find((candidate) => candidate.tmuxSession === delivery.incarnation)?.claudeSessionId ?? null,
+        resolveRolloutId: (delivery) => this.state.findSessionByTmux(delivery.incarnation)?.claudeSessionId ?? null,
         bindImportedSuccessor: (delivery) => {
           if (delivery.ownerMachineId !== this.localMachineId()) return false;
           const topicId = Number(delivery.conversationId);
@@ -1851,16 +1859,37 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /** Memory privacy: a scoped session reads its files from its own inbox. */
+  registerMemoryInboundFile(place: string, filePath: string): void {
+    if (!this.memoryPrivacyWiring?.privacy.enabled) return;
+    try {
+      const now = Date.now();
+      for (const [key, claim] of this.memoryInboundClaims) {
+        if (now - claim.claimedAt > 10 * 60_000) this.memoryInboundClaims.delete(key);
+      }
+      const real = fs.realpathSync(filePath);
+      const info = fs.lstatSync(filePath);
+      if (!info.isFile() || info.nlink !== 1) return;
+      this.memoryInboundClaims.set(real, { place, dev: info.dev, ino: info.ino, size: info.size, mtimeMs: info.mtimeMs, claimedAt: now });
+    } catch { /* A missing attachment cannot be claimed. */ }
+  }
+
   private withInboundFilesInScope(tmuxSession: string, text: string): string {
     if (!this.memoryPrivacyWiring) return text;
-    const scopeDir = this.listRunningSessions().find((s) => s.tmuxSession === tmuxSession)?.memoryScopeDir;
+    const session = this.listRunningSessions().find((s) => s.tmuxSession === tmuxSession);
+    const scopeDir = session?.memoryScopeDir;
     if (!scopeDir) return text;
-    const state = path.join(this.config.projectDir, '.instar');
-    return moveInboundFilesIntoScope(text, scopeDir, [
-      path.join(state, 'telegram-inbound'), path.join(state, 'telegram-images'), path.join(state, 'telegram-files'),
-      path.join(state, 'slack-files'), path.join(state, 'imessage', 'attachments'), path.join(state, 'state', 'dashboard-uploads'),
-      '/tmp/instar-slack', '/private/tmp/instar-slack',
-    ]);
+    const place = session.telegramTopicId !== undefined ? `telegram:${session.telegramTopicId}`
+      : session.slackChannelId ? `slack:${session.slackChannelId}` : null;
+    const projectState = path.join(this.config.projectDir, '.instar');
+    const roots = memorySessionInboundRoots(this.config.stateDir ?? projectState);
+    if (this.config.stateDir && this.config.stateDir !== projectState) roots.push(path.join(projectState, 'telegram-inbound'));
+    const staged = moveInboundFilesIntoScope(text, scopeDir, roots, Date.now(), (real, info) => {
+      const claim = this.memoryInboundClaims.get(real);
+      return !!place && claim?.place === place && Date.now() - claim.claimedAt <= 10 * 60_000 && claim.dev === info.dev && claim.ino === info.ino
+        && claim.size === info.size && claim.mtimeMs === info.mtimeMs;
+    });
+    if (staged === text && !/\b(?:file|document|photo|image|attachment)\b/i.test(text)) return staged;
+    return `${staged}\n[File access: If one referenced file fails to open, retry that file once. Then say which file failed and ask the sender to resend it. Do not conclude that other files cannot open in this session.]`;
   }
 
   /** The audience kind a place would get, for callers that shape what they send there. */
@@ -1876,15 +1905,27 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /** What the status route reports. No people's names beyond the owner's id. */
-  memoryPrivacyStatus(): { enabled: boolean; multiPerson: boolean; ownerUserId: string | null; sandboxReady: boolean } {
+  memoryPrivacyStatus(): { enabled: boolean; multiPerson: boolean; ownerUserId: string | null; sandboxReady: boolean; blocker: string | null; fix: string | null } {
     const wiring = this.memoryPrivacyWiring;
-    if (!wiring) return { enabled: false, multiPerson: false, ownerUserId: null, sandboxReady: false };
+    if (!wiring) return { enabled: false, multiPerson: false, ownerUserId: null, sandboxReady: false, blocker: null, fix: null };
     return {
       enabled: wiring.privacy.enabled,
       multiPerson: wiring.privacy.isMultiPerson(),
       ownerUserId: wiring.privacy.ownerUserId(),
       sandboxReady: wiring.sandboxReady(),
+      blocker: wiring.blocker?.() ?? null,
+      fix: wiring.fix?.() ?? null,
     };
+  }
+
+  memoryPrivacyRecovery(): MemoryPrivacyRecovery | null {
+    return this.memoryPrivacyWiring?.recovery?.() ?? null;
+  }
+
+  /** New sessions launch from this binary. Live sessions keep the one they started with. */
+  setClaudeBinary(binaryPath: string): void {
+    this.config.claudePath = binaryPath;
+    if (this.config.frameworkBinaryPaths?.['claude-code']) this.config.frameworkBinaryPaths['claude-code'] = binaryPath;
   }
 
   /** True when memory privacy is on and more than one person can reach this agent. */
@@ -2031,7 +2072,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         session,
         topicId,
         reasonKey,
-        message: `Session "${session.name}" on topic ${topicId ?? 'n/a'} is permanently vetoed from idle-zombie cleanup (reason: ${reasonKey}) — likely a stuck open-commitment or a resume-loop; investigate.`,
+        message: `Session "${session.name}" on ${topicId != null ? topicRef(topicId) : 'no topic'} is permanently vetoed from idle-zombie cleanup (reason: ${reasonKey}) — likely a stuck open-commitment or a resume-loop; investigate.`,
       });
     }
   }
@@ -2165,7 +2206,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (!newName || typeof newName !== 'string') return false;
     const trimmed = newName.trim();
     if (!trimmed) return false;
-    const session = this.state.listSessions().find((s) => s.tmuxSession === tmuxSession);
+    const session = this.state.findSessionByTmux(tmuxSession);
     if (!session) return false;
     if (session.name === trimmed) return false;
     session.name = trimmed;
@@ -3182,7 +3223,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         : matches[0];
       return {
         topicId,
-        topicName: (topicToName[String(topicId)] as string) || `Topic ${topicId}`,
+        topicName: (topicToName[String(topicId)] as string) || topicRef(topicId),
         channel: 'telegram', // Currently only Telegram uses the registry
         sessionName: tmuxSession,
       };
@@ -3293,7 +3334,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
           featureEvidence.record('monitoring.tmuxResilience.asyncHotPath', { kind: 'fired', reason: 'probe-classified-session-dead', context: { session: session.tmuxSession } });
         }
         if (alive === false) {
-          // CAS re-read after the await: an operator kill (or another killer)
+          const lastSample = this.startupTails.get(session.tmuxSession);
+          const knownExitCode = this.terminalExitCodes.get(session.tmuxSession);
+          const exitCode = knownExitCode ?? 0;
+          // Retained Codex panes preserve the terminal error after the process exits.
+          // Read at the death boundary so a later 429 is not missed by startup sampling.
+          const exitTail = session.framework === 'codex-cli'
+            ? (await this.captureOutputMaybeAsync(session.tmuxSession, 60)) || lastSample?.tail || ''
+            : lastSample?.tail || '';
+          const codexRateLimited = session.framework === 'codex-cli'
+            && knownExitCode !== undefined && knownExitCode !== 0
+            && /(?:\b429\b[^\n]*too many requests|too many requests[^\n]*\b429\b)/i.test(exitTail);
+          // CAS re-read after the Codex capture await: an operator kill (or another killer)
           // can land mid-probe, so re-read the live record before mutating it —
           // mirrors terminateSession's status CAS. If it already drifted off
           // 'running', another writer owns the transition; skip this inline
@@ -3305,7 +3357,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           // Check if this session had a pending Telegram injection that never got a response
           const pendingInjection = this.pendingInjections.get(session.tmuxSession);
           if (pendingInjection) {
-            console.warn(`[SessionManager] Session "${session.name}" died with unanswered Telegram injection for topic ${pendingInjection.topicId} (injected ${Math.round((Date.now() - pendingInjection.injectedAt) / 1000)}s ago)`);
+            console.warn(`[SessionManager] Session "${session.name}" died with unanswered Telegram injection for ${topicRef(pendingInjection.topicId)} (injected ${Math.round((Date.now() - pendingInjection.injectedAt) / 1000)}s ago)`);
             this.pendingInjections.delete(session.tmuxSession);
             this.emit('injectionDropped', {
               topicId: pendingInjection.topicId,
@@ -3325,9 +3377,6 @@ rm()  { "${shimRunner}" rm  "$@"; }
           const uptimeSeconds = fresh.startedAt
             ? Math.max(0, Math.round((Date.now() - new Date(fresh.startedAt).getTime()) / 1000))
             : undefined;
-          const lastSample = this.startupTails.get(session.tmuxSession);
-          const knownExitCode = this.terminalExitCodes.get(session.tmuxSession);
-          const exitCode = knownExitCode ?? 0;
           this.terminalExitCodes.delete(session.tmuxSession);
           // A headless one-shot (`claude -p` / completionMode 'exit') finishes BY exiting, often well
           // inside the startup window. Under `remain-on-exit failed` a failed exit keeps its pane and
@@ -3343,9 +3392,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
           const duringStartup = !finishedHeadless && uptimeSeconds !== undefined && uptimeSeconds * 1000 < STARTUP_TAIL_WINDOW_MS;
           const midWork = exitCode !== 0;
           this.startupTails.delete(session.tmuxSession);
-          fresh.status = 'completed';
+          fresh.status = codexRateLimited ? 'failed' : 'completed';
           fresh.endedAt = new Date().toISOString();
-          fresh.endedReason = duringStartup ? 'process-exited-during-startup' : 'process-exited';
+          fresh.endedReason = codexRateLimited ? 'codex-rate-limited'
+            : duringStartup ? 'process-exited-during-startup' : 'process-exited';
           this.state.saveSession(fresh);
           console.warn(
             `[SessionManager] Session "${fresh.name}" (${fresh.framework ?? 'unknown framework'}) exited on its own` +
@@ -3357,11 +3407,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
             session: fresh,
             reason: fresh.endedReason,
             uptimeSeconds,
-            lastTail: lastSample?.tail,
+            lastTail: exitTail || undefined,
             exitCode,
             midWork,
             outcome: midWork ? 'stopped-mid-work' : 'completed',
           });
+          if (codexRateLimited) this.#emitListenersIsolated('codexRateLimitExit', fresh);
           this.revokeOriginSession(fresh.id);
           this.emit('sessionComplete', fresh);
           // The result is recorded; a job's retained dead pane has no further
@@ -3570,7 +3621,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
               // Check for unanswered injection before timeout kill
               const pendingInjection = this.pendingInjections.get(session.tmuxSession);
               if (pendingInjection) {
-                console.warn(`[SessionManager] Timed-out session "${session.name}" had unanswered injection for topic ${pendingInjection.topicId}`);
+                console.warn(`[SessionManager] Timed-out session "${session.name}" had unanswered injection for ${topicRef(pendingInjection.topicId)}`);
                 this.pendingInjections.delete(session.tmuxSession);
                 this.emit('injectionDropped', {
                   topicId: pendingInjection.topicId,
@@ -3848,7 +3899,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
                 // Check for unanswered injection before killing
                 const pendingInjection = this.pendingInjections.get(session.tmuxSession);
                 if (pendingInjection) {
-                  console.warn(`[SessionManager] Zombie session "${session.name}" had unanswered injection for topic ${pendingInjection.topicId}`);
+                  console.warn(`[SessionManager] Zombie session "${session.name}" had unanswered injection for ${topicRef(pendingInjection.topicId)}`);
                   this.pendingInjections.delete(session.tmuxSession);
                   this.emit('injectionDropped', {
                     topicId: pendingInjection.topicId,
@@ -4275,7 +4326,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         }
       } catch (err: any) {
         if (err && err.code === 'LOCK_HELD') {
-          throw new Error(`Cannot spawn session for topic ${options.topicId}: lock held by ${JSON.stringify(err.holder)}`);
+          throw new Error(`Cannot spawn session for ${topicRef(options.topicId)}: lock held by ${JSON.stringify(err.holder)}`);
         }
         throw err;
       }
@@ -5344,14 +5395,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     try {
       const paneInfo = withSyncOp(() => execFileSync(
         this.config.tmuxPath,
-        ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}'],
+        ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}||#{pane_dead_signal}'],
         { encoding: 'utf-8', timeout: 5000 }
       )).trim();
       const fields = paneInfo.split('||');
       if (fields[2] === '1') {
-        const code = Number(fields[3]);
-        if (Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
-        return false;
+        return this.terminalPaneLiveness(tmuxSession, fields[3], fields[4]) !== false;
       }
       const [paneCmd, startCmd] = fields;
       // Claude Code runs as 'claude' or 'node' process
@@ -5376,6 +5425,20 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // @silent-fallback-ok — pane inspection, assumes alive
       return true;
     }
+  }
+
+  /** tmux may close the pane fd before waitpid publishes an exit status.
+   * An empty status is unknown, never exit zero. A signal is also terminal
+   * evidence, though tmux exposes no numeric exit code for that case. */
+  private terminalPaneLiveness(tmuxSession: string, status?: string, signal?: string): false | 'indeterminate' {
+    if (status?.trim()) {
+      const code = Number(status);
+      if (Number.isFinite(code)) {
+        this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
+        return false;
+      }
+    }
+    return signal?.trim() ? false : 'indeterminate';
   }
 
   /**
@@ -5435,14 +5498,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       try {
         const { stdout } = await execFileAsync(
           this.config.tmuxPath,
-          ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}'],
+          ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}||#{pane_dead_signal}'],
           { timeout: 5000 }
         );
         const fields = stdout.trim().split('||');
         if (fields[2] === '1') {
-          const code = Number(fields[3]);
-          if (Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
-          return false;
+          return this.terminalPaneLiveness(tmuxSession, fields[3], fields[4]);
         }
         return this.classifyPaneCommand(tmuxSession, fields.slice(0, 2).join('||'));
       } catch {
@@ -5468,14 +5529,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       '-t',
       `=${tmuxSession}:`,
       '-p',
-      '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}',
+      '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}||#{pane_dead_signal}',
     ]);
     if (disp.state !== 'success') return true; // unprobeable ⇒ assume alive (preserves the legacy catch)
     const fields = disp.stdout.trim().split('||');
     if (fields[2] === '1') {
-      const code = Number(fields[3]);
-      if (Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
-      return false;
+      return this.terminalPaneLiveness(tmuxSession, fields[3], fields[4]);
     }
     return this.classifyPaneCommand(tmuxSession, fields.slice(0, 2).join('||'));
   }
@@ -7300,9 +7359,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
     });
     if (decision.swapped) {
       console.log(`[SessionManager] ${decision.reason}`);
-      return decision.model;
     }
-    return requestedModel;
+    const selected = decision.swapped ? decision.model : requestedModel;
+    if (framework === 'codex-cli' && selected === 'gpt-6.1-sol') {
+      const binary = resolveFrameworkBinaryPath({
+        framework,
+        frameworkBinaryPaths: this.config.frameworkBinaryPaths,
+        claudePath: this.config.claudePath,
+        configuredFramework: this.config.framework,
+      });
+      if (!binary || !codexSupportsGpt61Sol(binary)) {
+        console.warn('[SessionManager] This machine has an older Codex CLI; using gpt-6-sol for this session.');
+        return 'gpt-6-sol';
+      }
+    }
+    return selected;
   }
 
   /**
@@ -7733,6 +7804,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ? this.memoryPrivacyWiring!.privacy.issueSessionToken(interactiveSessionId, memoryPlan!.audience, memoryPlan!.placeKey)
       : null;
     const memoryScopeEnv = memoryPlan ? memoryScopeEnvValue(memoryPlan.audience) : null;
+    // Linux: the sandboxed shell reaches the agent server only through the sandbox proxy.
+    const memoryCurlHome = memoryScoped ? prepareSessionCurlHome(memoryPlan!.scopeDir!) : null;
 
     // Spawn the framework CLI in tmux — no bash -c shell intermediary.
     // Uses tmux -e flags to set/unset env vars directly, matching spawnSession pattern.
@@ -7764,6 +7837,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           '-e', `CLAUDE_CODE_TMPDIR=${path.join(memoryPlan!.scopeDir!, 'tmp')}`,
           '-e', `TMPDIR=${path.join(memoryPlan!.scopeDir!, 'tmp')}`,
         ] : []),
+        ...(memoryCurlHome ? ['-e', `CURL_HOME=${memoryCurlHome}`] : []),
         ...(memoryScoped ? [] : interactiveThreadline.secretEnvFlags), // threadline-mcp-local-http D2 (flag on only)
         ...(framework === 'claude-code' ? CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS : []), // long waits
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
@@ -8195,7 +8269,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           feature: 'SessionManager.recoverPendingInjects',
           primary: 'Re-deliver an inject orphaned by a server restart',
           fallback: `Pending inject for "${record.tmuxSession}" not re-delivered: ${reason}`,
-          reason: `Why: queued ${record.createdAt}${record.telegramTopicId !== undefined ? ` for topic ${record.telegramTopicId}` : ''}`,
+          reason: `Why: queued ${record.createdAt}${record.telegramTopicId !== undefined ? ` for ${topicRef(record.telegramTopicId)}` : ''}`,
           impact: 'A queued initial message may not have reached its session; the bridge respawns on the next inbound message.',
         });
       },
@@ -8676,7 +8750,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (priorAt !== undefined) {
         console.warn(
           `[SessionManager] Suppressed duplicate Telegram delivery to "${tmuxSession}" ` +
-          `(topic ${topicId}, messageId ${messageId}, ${Math.round((now - priorAt) / 1000)}s after first) — ` +
+          `(${topicRef(topicId)}, messageId ${messageId}, ${Math.round((now - priorAt) / 1000)}s after first) — ` +
           `a single user message was forwarded more than once; delivering only once.`,
         );
         return true; // already delivered on the first call — success without re-injecting
@@ -8734,12 +8808,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const filename = `msg-${topicId}-${Date.now()}-${randomUUID().slice(0, 8)}.txt`;
     const filepath = path.join(tmpDir, filename);
     fs.writeFileSync(filepath, taggedText);
+    this.registerMemoryInboundFile(`telegram:${topicId}`, filepath);
 
     // The session sees ONLY this line until it opens the file, so the marker has
     // to ride here too — the observed 2026-08-20 re-deliveries were all long
     // messages, i.e. exactly this branch. buildInjectionTag(topicId) with a
     // falsy flag returns `[telegram:N]`, byte-identical to the previous literal.
-    const refTag = buildInjectionTag(topicId, undefined, undefined, undefined, opts?.reDelivered, opts?.signedByAgent);
+    const refTag = buildInjectionTag(topicId, safeTopic, undefined, undefined, opts?.reDelivered, opts?.signedByAgent);
     const ref = `${refTag} [Long message saved to ${filepath} — read it to see the full message]`;
     return this.injectMessage(tmuxSession, ref) !== false;
   }
@@ -8928,7 +9003,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           // Wrong topic — log, alert, and drop
           console.error(
             `[InputGuard] BLOCKED cross-topic injection: message bound for different topic, ` +
-            `session "${tmuxSession}" is bound to topic ${binding.topicId}`
+            `session "${tmuxSession}" is bound to ${topicRef(binding.topicId)}`
           );
           this.inputGuard.logSecurityEvent({
             event: 'input-provenance-block',
@@ -9277,7 +9352,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   private injectionIncarnationId(tmuxSession: string): string | null {
     try {
-      return this.state.listSessions().find((s) => s.tmuxSession === tmuxSession)?.claudeSessionId ?? null;
+      return this.state.findSessionByTmux(tmuxSession)?.claudeSessionId ?? null;
     } catch {
       return null; // a state read failure must never turn into a false verdict
     }
@@ -9888,7 +9963,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       const [dead, status] = out.split('||');
       if (dead !== '1') return false;
       const code = Number(status);
-      if (Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
+      if (status?.trim() && Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
       return true;
     } catch {
       // @silent-fallback-ok — an unprobeable pane is treated as alive (previous behaviour).

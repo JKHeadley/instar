@@ -13,6 +13,7 @@
  * and reaches the owner by name (D2). It neither stalls restarts for ever nor ends
  * silently.
  */
+import { topicRef } from '../../messaging/shared/topicRef.js';
 
 export type YieldClass = 'cancel-requeue' | 'checkpoint-resume' | 'stop-at-boundary' | 'finish-bounded';
 
@@ -51,7 +52,7 @@ export interface WorkYieldEntry {
   discover(input: WorkCensusInputs): WorkItem[];
 }
 
-const sessionLabel = (s: WorkCensusInputs['sessions'][number]): string => (s.topicId !== undefined ? `topic ${s.topicId}` : s.name);
+const sessionLabel = (s: WorkCensusInputs['sessions'][number]): string => (s.topicId !== undefined ? topicRef(s.topicId) : s.name);
 const isSlack = (s: WorkCensusInputs['sessions'][number]): boolean => !s.jobSlug && !!s.slackRoutingKey;
 
 export const WORK_YIELD_REGISTRY: readonly WorkYieldEntry[] = [
@@ -147,7 +148,7 @@ export const WORK_YIELD_REGISTRY: readonly WorkYieldEntry[] = [
     wouldYield: 'mark the state file suspended for this episode so stopping is not a completion',
     comesBackVia: 'resume-queue',
     maxYieldSeconds: 900,
-    discover: (i) => i.autonomousRuns.map((r) => ({ kind: 'autonomous-run', key: `autonomous:${r.topic}`, label: `topic ${r.topic}` })),
+    discover: (i) => i.autonomousRuns.map((r) => ({ kind: 'autonomous-run', key: `autonomous:${r.topic}`, label: topicRef(r.topic) })),
   },
 ];
 

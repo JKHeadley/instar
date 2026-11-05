@@ -316,7 +316,9 @@ describe('JobScheduler bounded failure escalation', () => {
     expect(state.get('job-failure-alert-health-check')).toBeNull();
 
     await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
-    expect(send).toHaveBeenCalledTimes(1);
+    // A separate silence alert may become due after a full day without another
+    // success; recovery must not revive the failure episode itself.
+    expect(send.mock.calls.filter(([message]) => !String(message.content).includes('not running as expected'))).toHaveLength(1);
   });
 
   it('clears the durable episode on recovery', async () => {
@@ -340,6 +342,8 @@ describe('JobScheduler bounded failure escalation', () => {
 
     expect(state.get('job-failure-alert-health-check')).toBeNull();
     await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
-    expect(send).toHaveBeenCalledTimes(1);
+    // A separate silence alert may become due after a full day without another
+    // success; recovery must not revive the failure episode itself.
+    expect(send.mock.calls.filter(([message]) => !String(message.content).includes('not running as expected'))).toHaveLength(1);
   });
 });

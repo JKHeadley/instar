@@ -545,7 +545,7 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   installEmitSessionClock(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/emit-session-clock.sh`);
   installBrowserScripts(projectDir);
-  console.log(`  ${pc.green('✓')} Created .instar/scripts/browser/ (normal-Chrome helpers, macOS + Windows)`);
+  console.log(`  ${pc.green('✓')} Created .instar/scripts/browser/ (normal-Chrome helpers, macOS, Windows and Linux)`);
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -952,7 +952,7 @@ async function initExistingProject(options: InitOptions): Promise<void> {
   installSecretGet(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-get.mjs');
   installBrowserScripts(projectDir);
-  console.log(pc.green('  Created:') + ' .instar/scripts/browser/ (normal-Chrome helpers, macOS + Windows)');
+  console.log(pc.green('  Created:') + ' .instar/scripts/browser/ (normal-Chrome helpers, macOS, Windows and Linux)');
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -3672,7 +3672,7 @@ If no overdue or stale items, exit silently (after the clear above).`,
       priority: 'high',
       expectedDurationMinutes: 5,
       model: 'haiku',
-      enabled: true,
+      enabled: false,
       gate: 'bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/git-sync-gate.sh',
       execute: {
         type: 'skill',
@@ -4037,23 +4037,9 @@ function refreshJobs(stateDir: string): void {
     }
     if (repaired > 0) added++; // force write
 
-    // Auto-enable git-sync if git + remote are available (migration from disabled default)
-    const gitSyncJob = existingJobs.find(j => j.slug === 'git-sync') as Record<string, unknown> | undefined;
-    if (gitSyncJob && !gitSyncJob.enabled) {
-      const projectDir = path.dirname(stateDir);
-      const hasGit = fs.existsSync(path.join(projectDir, '.git'));
-      let hasRemote = false;
-      if (hasGit) {
-        try {
-          const remote = SafeGitExecutor.readSync(['remote'], { cwd: projectDir, stdio: 'pipe', operation: 'src/commands/init.ts:3331' }).toString().trim();
-          hasRemote = remote.length > 0;
-        } catch { /* no git or no remote */ }
-      }
-      if (hasGit && hasRemote) {
-        gitSyncJob.enabled = true;
-        added++; // force write
-      }
-    }
+    // Git synchronization can stage token-bearing local config. Never infer
+    // consent from a remote or an existing disabled job; only the operator
+    // may enable it explicitly.
 
     if (added > 0) {
       fs.writeFileSync(jobsPath, JSON.stringify(existingJobs, null, 2));
@@ -5217,10 +5203,13 @@ function installSecretGet(projectDir: string): void {
 
 /**
  * The normal-Chrome helper scripts shipped in src/templates/scripts/browser/: the three macOS tools
- * (Apple Events) and the Windows driver written by PP (native-drive.ps1, real OS input + UI Automation)
- * with its WSL wrapper (ndrive.sh). All five install everywhere; each refuses the wrong platform itself.
+ * (Apple Events), the Windows driver written by PP (native-drive.ps1, real OS input + UI Automation)
+ * with its WSL wrapper (ndrive.sh), and the Linux driver (x-drive.py, AT-SPI + XTEST on an agent-private
+ * display) with its wrapper (xdrive.sh). All install everywhere; each refuses the wrong platform itself.
  */
-export const BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh'] as const;
+export const BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh', 'xdrive.sh', 'x-drive.py'] as const;
+/** Started by the agent's own boot, never by a person or the skill, so the skill does not name it. */
+export const BROWSER_PROVISION_SCRIPT_NAMES = ['xdrive-provision.sh'] as const;
 /** The three macOS (Apple Events) scripts: the ones that refuse with ERR macos-only off macOS. */
 export const MACOS_BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh'] as const;
 /**
@@ -5243,7 +5232,7 @@ export function installBrowserScripts(projectDir: string): string[] {
   const scriptsDir = path.join(projectDir, '.instar', 'scripts', 'browser');
   const modDir = __dirname;
   const written: string[] = [];
-  for (const name of [...BROWSER_SCRIPT_NAMES, ...BROWSER_CARE_SCRIPT_NAMES]) {
+  for (const name of [...BROWSER_SCRIPT_NAMES, ...BROWSER_CARE_SCRIPT_NAMES, ...BROWSER_PROVISION_SCRIPT_NAMES]) {
     const candidates = [
       path.resolve(modDir, '..', 'templates', 'scripts', 'browser', name),
       path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'browser', name),

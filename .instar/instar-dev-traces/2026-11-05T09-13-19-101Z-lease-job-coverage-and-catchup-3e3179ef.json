@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "lease-job-coverage-and-catchup",
+  "sessionId": "6e60beaa-e310-4179-aa75-c7985b17f28f",
+  "timestamp": "2026-11-05T09:13:19.101Z",
+  "artifactPath": "upgrades/side-effects/lease-job-coverage-and-catchup.md",
+  "artifactSha256": "5ddae012514710fb6d2dace008d041a5408b4662fccec61dc3f94d0c15103867",
+  "specPath": "docs/specs/lease-job-coverage-and-catchup.md",
+  "coveredFiles": [
+    "tests/e2e/lease-job-coverage-lifecycle.test.ts",
+    "tests/helpers/lease-job-http.ts",
+    "tests/integration/lease-job-coverage-routes.test.ts",
+    "upgrades/side-effects/lease-job-coverage-and-catchup.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Completes mandatory integration and production initialization proof for the approved coverage feature.",
+  "secondPass": "not-required",
+  "reviewerConcurred": false
+}

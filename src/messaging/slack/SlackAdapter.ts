@@ -728,7 +728,7 @@ export class SlackAdapter implements MessagingAdapter {
   async sendToChannel(
     channelId: string,
     text: string,
-    options?: { thread_ts?: string; formatMode?: SlackFormatMode; originFooter?: string },
+    options?: { thread_ts?: string; formatMode?: SlackFormatMode; nativeReferences?: string[]; originFooter?: string },
   ): Promise<string> {
     const parsed = this.parseRoutingKey(channelId);
     const params: Record<string, unknown> = { channel: parsed.channelId, text };
@@ -737,6 +737,7 @@ export class SlackAdapter implements MessagingAdapter {
     // Per-call formatter opt-out for callers that already author mrkdwn
     // (stripped from params inside the formatting funnel, never sent to Slack).
     if (options?.formatMode) params._formatMode = options.formatMode;
+    if (options?.nativeReferences?.length) params._nativeReferences = options.nativeReferences;
     if (options?.originFooter) params._originFooter = options.originFooter;
     const result = await this.formattedApiCall('chat.postMessage', params);
     return result.ts as string;
@@ -844,6 +845,74 @@ export class SlackAdapter implements MessagingAdapter {
   /** Download a file. */
   async downloadFile(url: string, destPath: string): Promise<string> {
     return this.fileHandler.downloadFile(url, destPath);
+  }
+
+  /** The people who may talk to this agent (its operators). */
+  getAuthorizedUserIds(): string[] {
+    return [...this.authorizedUsers];
+  }
+
+  /**
+   * Which authorized people are members of a channel. A post to a channel none of them is in
+   * reaches nobody, so a caller that must reach a person checks this first.
+   */
+  async authorizedMembersOf(channelId: string): Promise<string[]> {
+    const members = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const result = await this.apiClient.call('conversations.members', { channel: channelId, limit: 1000, ...(cursor ? { cursor } : {}) });
+      for (const id of (result.members as string[] | undefined) ?? []) members.add(id);
+      cursor = (result.response_metadata as { next_cursor?: string } | undefined)?.next_cursor || undefined;
+      if (!cursor) break;
+    }
+    return [...this.authorizedUsers].filter((id) => members.has(id));
+  }
+
+  /**
+   * The latest messages of one conversation, read from Slack itself rather than the ring buffer.
+   * A `<channel>:<thread_ts>` key reads that thread. A channel key reads the channel's top level
+   * plus the thread its latest inbound message came from, because a channel session replies
+   * into that thread (`inboundThreadFor`). Oldest first.
+   */
+  async recentConversationMessages(routingKey: string, limit = 50): Promise<SlackMessage[]> {
+    const { channelId, threadTs } = this.parseRoutingKey(routingKey);
+    if (threadTs) return this.latestThreadReplies(channelId, threadTs, limit);
+    const top = await this.channelManager.getChannelHistory(channelId, limit);
+    const inbound = this.inboundThreadFor(channelId);
+    const thread = inbound ? await this.latestThreadReplies(channelId, inbound, limit) : [];
+    const byTs = new Map<string, SlackMessage>();
+    for (const m of [...top, ...thread]) byTs.set(m.ts, m);
+    return [...byTs.values()].sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts)).slice(-limit);
+  }
+
+  /** A thread's latest replies. Slack pages them oldest first, so a long thread is walked to its end. */
+  private async latestThreadReplies(channelId: string, threadTs: string, limit: number): Promise<SlackMessage[]> {
+    const all: SlackMessage[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const result = await this.apiClient.call('conversations.replies', { channel: channelId, ts: threadTs, limit: 200, ...(cursor ? { cursor } : {}) });
+      for (const m of (result.messages as SlackMessage[] | undefined) ?? []) all.push({ ...m, channel: channelId });
+      cursor = (result.response_metadata as { next_cursor?: string } | undefined)?.next_cursor || undefined;
+      if (!cursor) break;
+    }
+    return all.slice(-limit);
+  }
+
+  /**
+   * True when this agent's server itself posted the message (a standby note, a notice), not a
+   * session answering. From the origin ledger; a message it has no record of is not claimed.
+   */
+  isServerAutomationPost(channelId: string, ts: string): boolean {
+    const hit = this.originLedger.lookup(channelId, ts);
+    return 'evidence' in hit && hit.evidence.producerKind === 'server-automation';
+  }
+
+  /** Send a direct message to one person. Resolves to the message ts. */
+  async sendDirectMessage(userId: string, text: string): Promise<string> {
+    const opened = await this.apiClient.call('conversations.open', { users: userId });
+    const channelId = (opened.channel as { id?: string } | undefined)?.id;
+    if (!channelId) throw new Error('Slack did not open a direct message channel');
+    return this.sendToChannel(channelId, text);
   }
 
   /** Get the underlying API client (for routes). */
@@ -1612,6 +1681,7 @@ export class SlackAdapter implements MessagingAdapter {
         threadTs: threadTs,
         channelId,
         isDM,
+        inboundFilePaths: filePaths,
       },
     };
 
@@ -1726,6 +1796,7 @@ export class SlackAdapter implements MessagingAdapter {
     // Download and process the file
     const ts = `file-${fileId}-${Date.now()}`;
     let cleanText = '';
+    let inboundFilePath: string | null = null;
 
     try {
       const isImage = mimetype.startsWith('image/');
@@ -1733,6 +1804,7 @@ export class SlackAdapter implements MessagingAdapter {
       const destName = `${isImage ? 'photo' : isAudio ? 'voice' : 'file'}-${Date.now()}-${fileId}.${filename.split('.').pop() ?? 'bin'}`;
       const destPath = path.join(this.fileHandler.downloadDir, destName);
       const savedPath = await this.fileHandler.downloadFile(url, destPath);
+      inboundFilePath = savedPath;
       let keptAs: SlackInboundMedia['declaredKind'] = 'file';
 
       if (isImage) {
@@ -1809,6 +1881,7 @@ export class SlackAdapter implements MessagingAdapter {
         ts,
         channelId,
         isDM,
+        inboundFilePaths: inboundFilePath ? [inboundFilePath] : [],
       },
     };
 
@@ -2709,4 +2782,3 @@ export function reportBotOnlyAuthorization(authorizedUserIds: readonly string[],
   });
   return true;
 }
-

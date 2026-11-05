@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  buildMemorySessionSettings, memorySessionAllowedTools, applyMemorySessionLaunch, moveInboundFilesIntoScope,
+  buildMemorySessionSettings, memorySessionAllowedTools, applyMemorySessionLaunch, memorySessionInboundRoots, moveInboundFilesIntoScope, prepareSessionCurlHome,
 } from '../../src/core/memorySessionPolicy.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -95,18 +95,95 @@ describe('moveInboundFilesIntoScope', () => {
   afterEach(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/memory-session-policy.test.ts' }));
   const roots = () => [path.join(dir, 'inbound')];
 
+  it('includes the actual Telegram PDF directory and Slack recovery directory', () => {
+    expect(memorySessionInboundRoots(path.join(dir, '.instar'))).toContain(path.join(dir, '.instar', 'telegram-documents'));
+    expect(memorySessionInboundRoots(dir)).toContain('/tmp/instar-slack');
+  });
+
   it('copies a named file and points the text at the copy', () => {
-    const out = moveInboundFilesIntoScope(`see ${dir}/inbound/a.txt now`, path.join(dir, 'scope'), roots());
-    expect(out).toBe(`see ${dir}/scope/inbox/a.txt now`);
-    expect(fs.readFileSync(path.join(dir, 'scope/inbox/a.txt'), 'utf8')).toBe('made-up');
+    const out = moveInboundFilesIntoScope(`see ${dir}/inbound/a.txt now`, path.join(dir, 'scope'), roots(), Date.now(), () => true);
+    const staged = out.slice('see '.length, -' now'.length);
+    expect(staged).toMatch(/\/scope\/inbox\/[0-9a-f-]+-a\.txt$/);
+    expect(fs.readFileSync(staged, 'utf8')).toBe('made-up');
+  });
+  it('does not copy a recent file without a delivery claim', () => {
+    const typed = `read ${dir}/inbound/a.txt`;
+    expect(moveInboundFilesIntoScope(typed, path.join(dir, 'scope'), roots())).toBe(typed);
+    expect(fs.readdirSync(path.join(dir, 'scope', 'inbox'))).toEqual([]);
+  });
+  it('does not copy another conversation\'s recent file in the same shared directory', () => {
+    const other = path.join(dir, 'inbound', 'other-person.pdf');
+    fs.writeFileSync(other, '%PDF-1.4');
+    const claimed = fs.realpathSync(path.join(dir, 'inbound', 'a.txt'));
+    const typed = `read ${other}`;
+    expect(moveInboundFilesIntoScope(typed, path.join(dir, 'scope'), roots(), Date.now(), (real) => real === claimed)).toBe(typed);
+    expect(fs.readdirSync(path.join(dir, 'scope', 'inbox'))).toEqual([]);
   });
   it('will not follow a typed path out of the inbound folder', () => {
     const typed = `read ${dir}/inbound/../other.txt`;
-    expect(moveInboundFilesIntoScope(typed, path.join(dir, 'scope'), roots())).toBe(typed);
+    expect(moveInboundFilesIntoScope(typed, path.join(dir, 'scope'), roots(), Date.now(), () => true)).toBe(typed);
     expect(fs.existsSync(path.join(dir, 'scope/inbox/other.txt'))).toBe(false);
   });
   it('leaves text alone when the file does not exist or the path is elsewhere', () => {
     const typed = `${dir}/inbound/none.txt and ${dir}/other.txt`;
-    expect(moveInboundFilesIntoScope(typed, path.join(dir, 'scope'), roots())).toBe(typed);
+    expect(moveInboundFilesIntoScope(typed, path.join(dir, 'scope'), roots(), Date.now(), () => true)).toBe(typed);
+  });
+  it('copies a PDF named inside a long-message wrapper and rewrites the wrapper', () => {
+    const pdf = path.join(dir, 'inbound', 'report.pdf');
+    fs.writeFileSync(pdf, Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n'));
+    const wrapper = path.join(dir, 'inbound', 'msg-1.txt');
+    fs.writeFileSync(wrapper, `[telegram:1] Please review ${pdf}`);
+    const out = moveInboundFilesIntoScope(`Read ${wrapper}`, path.join(dir, 'scope'), roots(), Date.now(), () => true);
+    const stagedWrapper = out.slice('Read '.length);
+    const stagedText = fs.readFileSync(stagedWrapper, 'utf8');
+    const stagedPdf = stagedText.slice('[telegram:1] Please review '.length);
+    expect(stagedWrapper).toMatch(/\/scope\/inbox\/[0-9a-f-]+-msg-1\.txt$/);
+    expect(stagedPdf).toMatch(/\/scope\/inbox\/[0-9a-f-]+-report\.pdf$/);
+    expect(fs.readFileSync(stagedPdf).subarray(0, 4).toString()).toBe('%PDF');
+  });
+  it('does not copy a symlink that leaves the inbound folder', () => {
+    fs.symlinkSync(path.join(dir, 'other.txt'), path.join(dir, 'inbound', 'linked.txt'));
+    const text = `read ${dir}/inbound/linked.txt`;
+    expect(moveInboundFilesIntoScope(text, path.join(dir, 'scope'), roots(), Date.now(), () => true)).toBe(text);
+    expect(fs.existsSync(path.join(dir, 'scope', 'inbox', 'linked.txt'))).toBe(false);
+  });
+  it('accepts a canonical spelling of a symlinked inbound root', () => {
+    const alias = path.join(dir, 'agent-link');
+    fs.symlinkSync(path.join(dir, 'inbound'), alias);
+    const canonicalText = `read ${path.join(dir, 'inbound', 'a.txt')}`;
+    const out = moveInboundFilesIntoScope(canonicalText, path.join(dir, 'scope'), [alias], Date.now(), () => true);
+    expect(out).toMatch(/\/scope\/inbox\/[0-9a-f-]+-a\.txt$/);
+  });
+  it('does not copy an old file, including one named inside a recent wrapper', () => {
+    const pdf = path.join(dir, 'inbound', 'old.pdf');
+    fs.writeFileSync(pdf, '%PDF-1.4');
+    fs.utimesSync(pdf, new Date(Date.now() - 11 * 60_000), new Date(Date.now() - 11 * 60_000));
+    const wrapper = path.join(dir, 'inbound', 'msg-2.txt');
+    fs.writeFileSync(wrapper, `read ${pdf}`);
+    const out = moveInboundFilesIntoScope(`read ${wrapper}`, path.join(dir, 'scope'), roots(), Date.now(), () => true);
+    expect(fs.readFileSync(out.slice('read '.length), 'utf8')).toContain(pdf);
+    expect(fs.readdirSync(path.join(dir, 'scope', 'inbox')).some((name) => name.endsWith('-old.pdf'))).toBe(false);
+  });
+});
+
+describe('prepareSessionCurlHome', () => {
+  let scope: string;
+  beforeEach(() => { scope = fs.mkdtempSync(path.join(os.tmpdir(), 'mp-curl-')); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(scope, { recursive: true, force: true, operation: 'tests/unit/memory-session-policy.test.ts:curl' }); });
+
+  it('on Linux, writes a curl config that sends localhost through the sandbox proxy', () => {
+    const home = prepareSessionCurlHome(scope, 'linux');
+    expect(home).toBe(path.join(scope, '.curl'));
+    expect(fs.readFileSync(path.join(home!, '.curlrc'), 'utf8')).toBe('noproxy = ""\n');
+  });
+  it('restores the config when the session changed it', () => {
+    const home = prepareSessionCurlHome(scope, 'linux')!;
+    fs.writeFileSync(path.join(home, '.curlrc'), 'proxy = "http://elsewhere"\n');
+    prepareSessionCurlHome(scope, 'linux');
+    expect(fs.readFileSync(path.join(home, '.curlrc'), 'utf8')).toBe('noproxy = ""\n');
+  });
+  it('does nothing on macOS, where the session shares the host loopback', () => {
+    expect(prepareSessionCurlHome(scope, 'darwin')).toBeNull();
+    expect(fs.existsSync(path.join(scope, '.curl'))).toBe(false);
   });
 });

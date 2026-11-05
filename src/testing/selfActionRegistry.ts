@@ -22,12 +22,16 @@
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { advanceEvolutionArchiveFailure, evolutionArchiveSyncAttemptDue, EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES } from '../core/EvolutionArchiveSync.js';
+import type { EvolutionArchiveSyncPeer } from '../core/EvolutionArchive.js';
+import { PENDING_MAX_BACKOFF_MS, PENDING_TICK_MS, PENDING_TTL_MS } from '../threadline/requiredAckService.js';
 import { decideSetupRestart, MAX_SETUP_STARTS } from '../recommended/setupRestart.js';
 import { MAX_GUARD_REPLACEMENTS, RESPAWNS_PER_REQUEST, decideGuardReplacement, decideLockedRespawn } from '../core/DesktopLockedController.js';
 import { OverloadShedPlanner, DEFAULT_OVERLOAD_SHED } from '../core/OverloadShedPlanner.js';
 import { PlacementExecutor } from '../core/PlacementExecutor.js';
 import type { MachineCapacity } from '../core/types.js';
 import { HostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
+import { CHROME_UPGRADE_INTERVAL_MS, MAX_INSTALL_ATTEMPTS, decideProvision, type BackoffRecord, type MachineFacts, type ProvisionRecord } from '../core/linuxBrowserProvision.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import { checkThrowawayExpiry, MAX_TEARDOWN_ATTEMPTS } from '../core/ThrowawayAgentGuard.js';
@@ -314,6 +318,36 @@ const desktopRelockGuardReplacement: SelfActionController = {
         if (decideGuardReplacement(replacements) === 'give-up') return;
         replacements += 1;
         sink.emit({ verb: 'respawn', target: 'relock-guard' });
+      },
+    };
+  },
+};
+
+const LINUX_BROWSER_FACTS: MachineFacts = { platform: 'linux', wsl: false, arch: 'x64', osRelease: 'ID=ubuntu\nVERSION_ID="24.04"\n', hasApt: true, sudoWorks: true, freeBytes: 10 * 1024 ** 3 };
+
+/** linux-browser-install-retry: every attempt fails and the machine stays up, so the hourly check keeps
+ * asking. The real decision paces it at 1 h, 6 h, 24 h, then stops for good until an operator says yes. */
+const linuxBrowserInstallRetry: SelfActionController = {
+  id: 'linux-browser-install-retry',
+  actionVerb: 'retry',
+  models: 'src/core/linuxBrowserProvision.ts (provisionLinuxBrowser — decideProvision, MAX_INSTALL_ATTEMPTS)',
+  modelsPath: 'src/core/linuxBrowserProvision.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The attempt count is on disk in provision-backoff.json, so a restart cannot reset it.' },
+  boundK: MAX_INSTALL_ATTEMPTS,
+  perTargetBoundK: MAX_INSTALL_ATTEMPTS,
+  ticks: 24 * 30,
+  tickMs: 60 * 60_000,
+  eternalSentinel: undefined,
+  makeUnderPressure(f, sink) {
+    let backoff: BackoffRecord | null = null;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        const decision = decideProvision({ wanted: true, depsPresent: false, bindings: 0, facts: LINUX_BROWSER_FACTS, record: null, backoff, now });
+        if (decision.action !== 'install') return;
+        backoff = { attempts: (backoff?.attempts ?? 0) + 1, lastAt: now };
+        sink.emit({ verb: 'retry', target: 'linux-browser-install' });
       },
     };
   },
@@ -833,6 +867,39 @@ const appMediaReplication: SelfActionController = {
     };
   },
 };
+
+/** Full-content archive retry: the actual runtime helper parks the durable peer after six failures. */
+const evolutionArchiveSyncRetry: SelfActionController = {
+  id: 'evolution-archive-sync',
+  actionVerb: 'archive-sync-retry',
+  models: 'src/core/EvolutionArchiveSync.ts (onPeerRecorded uses evolutionArchiveSyncAttemptDue + advanceEvolutionArchiveFailure; durable park after six rejected requests)',
+  modelsPath: 'src/core/EvolutionArchiveSync.ts',
+  boundK: EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES,
+  perTargetBoundK: EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES,
+  ticks: 120,
+  tickMs: 30_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return makeEvolutionArchiveSyncPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) { return makeEvolutionArchiveSyncPressure(f, sink); },
+};
+
+function makeEvolutionArchiveSyncPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const key = 'evolution-archive-sync:peer';
+  return { tick() {
+    sink.considered++;
+    const peer = (f.durableState.get(key) as EvolutionArchiveSyncPeer | undefined) ?? {
+      url: 'https://archive-peer.example', offset: 0, failures: 0, nextAttemptAt: 0, parked: false,
+    };
+    if (!evolutionArchiveSyncAttemptDue(peer, f.clock.nowMs())) return;
+    // Match the runtime's durable reservation-before-network ordering.
+    f.durableState.set(key, advanceEvolutionArchiveFailure(peer, f.clock.nowMs()));
+    sink.emit({ verb: 'archive-sync-retry', target: 'archive-peer' });
+    sink.emitTimesMs.push(f.clock.nowMs());
+    if (!f.targetAlwaysRejects()) f.durableState.set(key, { ...peer, failures: 0, nextAttemptAt: 0, parked: false });
+  } };
+}
 
 const evolutionActionExpirySweep: SelfActionController = {
   id: 'evolution-action-expiry-sweep',
@@ -3800,11 +3867,170 @@ function makeMachineWedgeNotice(f: PressureFixture, sink: ActionSink): { tick():
   };
 }
 
+/**
+ * a2a-required-acknowledgment D1: a receipt the sender must hear is a pending row,
+ * retried with doubling backoff to a ceiling, and expired after an hour. Under a
+ * send that always fails, the row must stop by itself. Its state is durable, so a
+ * restart neither resets the backoff nor extends the expiry.
+ */
+const requiredAckPendingRetry: SelfActionController = {
+  id: 'required-ack-pending-retry',
+  actionVerb: 'receipt-retry',
+  models: 'src/threadline/requiredAckService.ts (tick: pending rows with doubling backoff and a one-hour expiry)',
+  modelsPath: 'src/threadline/requiredAckService.ts',
+  boundK: 12,
+  perTargetBoundK: 12,
+  ticks: 480,
+  tickMs: PENDING_TICK_MS,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeRequiredAckPendingRetry(f, sink),
+  },
+  makeUnderPressure(f, sink) {
+    return makeRequiredAckPendingRetry(f, sink);
+  },
+};
+
+function makeRequiredAckPendingRetry(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const row = (f.durableState.get('required-ack:pending') as { expiresAt: number; attempts: number; nextAt: number } | undefined)
+        ?? { expiresAt: now + PENDING_TTL_MS, attempts: 0, nextAt: now };
+      if (now >= row.expiresAt) { f.durableState.set('required-ack:pending', row); return; }
+      if (now < row.nextAt) { f.durableState.set('required-ack:pending', row); return; }
+      sink.emit({ verb: 'receipt-retry', target: 'peer:one' });
+      // The pressure: the send never succeeds.
+      const attempts = row.attempts + 1;
+      const wait = Math.min(PENDING_TICK_MS * 2 ** Math.max(0, attempts - 1), PENDING_MAX_BACKOFF_MS);
+      f.durableState.set('required-ack:pending', { ...row, attempts, nextAt: now + wait });
+    },
+  };
+}
+
+/** Coverage alert delivery under a permanently failing transport. The on-disk
+ * episode timestamp is the brake and survives reconstruction. */
+const jobCoverageAlertRetry: SelfActionController = {
+  id: 'job-coverage-alert-retry',
+  actionVerb: 'retry-coverage-alert',
+  models: 'src/core/JobCoverageMonitor.ts (durable episode attempts, one-hour failed-send floor and daily delivered reminder)',
+  modelsPath: 'src/core/JobCoverageMonitor.ts',
+  delegatedGiveUp: 'operator recovery closes the episode; unresolved coverage is an eternal health signal with a one-hour minimum retry interval',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => makeJobCoverageAlertRetry(f, sink) },
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 300,
+  tickMs: 5 * 60_000,
+  eternalSentinel: { reason: 'a failing coverage alert retries no more than hourly', rateFloorMs: 60 * 60_000 },
+  makeUnderPressure: (f, sink) => makeJobCoverageAlertRetry(f, sink),
+};
+
+function makeJobCoverageAlertRetry(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered += 1;
+    const now = f.clock.nowMs();
+    const lastAttempt = f.durableState.get('coverage-alert:last-attempt') as number | undefined;
+    if (lastAttempt !== undefined && now - lastAttempt < 60 * 60_000) return;
+    f.durableState.set('coverage-alert:last-attempt', now);
+    sink.emit({ verb: 'retry-coverage-alert', target: 'operator' });
+    sink.emitTimesMs.push(now);
+  } };
+}
+
+/** A portable transfer tick selects at most twenty jobs and cannot overlap. */
+const jobPortableTransferPoll: SelfActionController = {
+  id: 'job-portable-transfer-poll',
+  actionVerb: 'retry-portable-job-batch',
+  models: 'src/core/JobCoverageMonitor.ts (five-minute non-overlapping tick, durable rotating cursor, at most twenty jobs per peer)',
+  modelsPath: 'src/core/JobCoverageMonitor.ts',
+  delegatedGiveUp: 'a revoked or unavailable peer is reported as a coverage gap; a later bounded tick retries',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => makeJobPortableTransferPoll(f, sink) },
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 200,
+  tickMs: 5 * 60_000,
+  eternalSentinel: { reason: 'portable transfer is bounded to one batch per coverage tick', rateFloorMs: 5 * 60_000 },
+  makeUnderPressure: (f, sink) => makeJobPortableTransferPoll(f, sink),
+};
+function makeJobPortableTransferPoll(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered += 1;
+    const now = f.clock.nowMs();
+    const last = f.durableState.get('portable-transfer:last-batch') as number | undefined;
+    if (last !== undefined && now - last < 5 * 60_000) return;
+    f.durableState.set('portable-transfer:last-batch', now);
+    sink.emit({ verb: 'retry-portable-job-batch', target: 'registered-peer' });
+    sink.emitTimesMs.push(now);
+  } };
+}
+/**
+ * job-silence-alert — a persistent silent job keeps asking the operator for
+ * attention. A durable last-attempt stamp floors failed sends at one hour;
+ * confirmed deliveries are reminded no more than once per day. The fixture
+ * keeps delivery failing forever, the highest attempt-rate case.
+ */
+const jobSilenceAlert: SelfActionController = {
+  id: 'job-silence-alert',
+  actionVerb: 'silence-notify',
+  models: 'src/scheduler/JobScheduler.ts (raiseContinuityAlert — hourly attempt floor and daily delivered reminder)',
+  modelsPath: 'src/scheduler/JobScheduler.ts',
+  delegatedGiveUp: 'the durable one-hour attempt floor; failed delivery cannot spin inside the five-minute poll',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 48 * 12,
+  tickMs: 5 * 60_000,
+  eternalSentinel: { reason: 'an enabled silent job remains operator-relevant, with a durable one-hour failed-send floor', rateFloorMs: 60 * 60_000 },
+  restartPosture: { pressureSurvives: true, restartUnderPressure(f, sink) { return jobSilenceAlert.makeUnderPressure(f, sink); } },
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const last = f.durableState.get('job-silence-last-attempt') as number | undefined;
+      if (last !== undefined && now - last < 60 * 60_000) return;
+      f.durableState.set('job-silence-last-attempt', now);
+      sink.emit({ verb: 'silence-notify', target: 'silent-job' });
+      sink.emitTimesMs.push(now);
+    } };
+  },
+};
+
+/** A retained Codex 429 pane is transitioned from running to failed before
+ * the exit notice is emitted. The persisted status is the settling brake: a
+ * monitor tick or server restart cannot emit a second notice for that run. */
+const codex429ExitNotice: SelfActionController = {
+  id: 'codex-429-exit-notice',
+  actionVerb: 'rate-limit-notify',
+  models: 'src/commands/server.ts (codexRateLimitExit listener, driven by SessionManager terminal status transition)',
+  modelsPath: 'src/commands/server.ts',
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 100,
+  tickMs: 5_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => codex429ExitNotice.makeUnderPressure(f, sink),
+  },
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered += 1;
+      if (f.durableState.get('codex-429-session-status') === 'failed') return;
+      f.durableState.set('codex-429-session-status', 'failed');
+      sink.emit({ verb: 'rate-limit-notify', target: 'codex-session:one' });
+    } };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  jobPortableTransferPoll,
+  jobCoverageAlertRetry,
+  linuxBrowserInstallRetry,
+  codex429ExitNotice,
   claudeKeySessionRefresh,
   desktopRelockGuardReplacement,
   desktopLockedHelperRespawn,
   sessionPoolStagePromotion,
+  jobSilenceAlert,
   jobSupervisionProviderRetry,
   jobSupervisionCensusRepair,
   throwawayExpiryTeardown,
@@ -3846,6 +4072,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   subscriptionReloginRedrive,
   standDownMaintenance,
   evolutionActionExpirySweep,
+  evolutionArchiveSyncRetry,
   appMediaCapacityNotice,
   appMediaReplication,
   spendReconSweep,
@@ -3884,5 +4111,6 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   replicatedStoreReconcilerRetry,
   preparingRunWatchdog,
   machineWedgeNotice,
+  requiredAckPendingRetry,
   recommendedServiceSetupRestart,
 ];

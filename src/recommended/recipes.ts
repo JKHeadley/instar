@@ -34,12 +34,16 @@ Rules that apply whatever you find:
 - This job is entirely yours until the check below passes. The person only approves decisions, such as a payment, or supplies a credential. They never open a browser, fetch a key, visit a provider's site, run a command, edit a file or follow steps.
 - If a provider's flow has changed from what this says, research it and adapt. Routine failures are yours to diagnose, retry and repair, quietly.
 - Credentials only ever come through a one-time Secret Drop link, never chat or a file. Ask for one thing at a time, in plain words.
+- If you have to hold a key or sign-in code for a moment, or a picture of one, keep it in your session's private temporary folder, never a shared one, and delete it as soon as it's used.
 - Whose account is the person's choice: you can fully manage their own accounts, use accounts of your own, or both. Follow what they have said. If they haven't said, ask once and present both as good options.
+- Never open an account on a disposable or temporary email address, because the account is lost when that inbox goes. If you have no lasting address to use, say so and ask for the smallest thing you need.
+- Close any browser window you opened as soon as you're done with it. A no can end this session without warning, and whatever is still open stays open.
 - Talk to the person in this conversation's topic, $INSTAR_TELEGRAM_TOPIC. It is yours for this job, and replies there reach you.
 - No spending and no permission grants without their yes. Nothing checks your browser clicks, so this is on you: stop and ask before any page that charges or grants.
 - Your calls to this server need the header "Authorization: Bearer $INSTAR_AUTH_TOKEN".
 - Just before you activate or store anything, read GET http://localhost:${port}/recommended-services and find this service. If grantedHere is false, the person has said no or this machine isn't authorized: stop, change nothing more, and end.
 - When you think it works, call POST http://localhost:${port}/recommended-services/${service}/verify with the header "X-Instar-Request: 1". Only result "pass" means done. Then tell the person, in one plain message, that it works and what it means for them.
+- If the person says not now to something this job needs, tell them plainly where that leaves things, then call POST http://localhost:${port}/recommended-services/${service}/hold with the header "X-Instar-Request: 1" and stop. Nothing restarts you after that, and their next message reaches you here.
 - If you run out of options, tell them what you tried in plain words, and name the smallest thing you need. Never hand it back as steps.
 `;
 
@@ -56,7 +60,7 @@ Store the key as a plain text body, and don't print it:
 curl -s -X POST http://localhost:${port}/recommended-services/jev/key -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-Request: 1" -H "Content-Type: text/plain" --data-binary @-
 It refuses to replace a key that was here before setup started. Your own key can be corrected until it passes.
 
-Before anything costs money, confirm the current price with the person. Features that use Jev turn on separately as each is proven, so don't promise the efficiency gains yet.
+As of 2026-11-05 a new account opens at no cost, but TypeSafe refuses to create a key until the account has credits, so say that early. Ask for a yes to the smallest top-up and a cap. A TypeSafe credit code avoids a card. Before anything costs money, confirm the current price with the person. Features that use Jev turn on separately as each is proven, so don't promise the efficiency gains yet.
 ${RULES('jev', port)}`,
     verify: async ({ readSecret, fetch: doFetch = fetch }) => {
       const key = readSecret('typesafe_api_key');

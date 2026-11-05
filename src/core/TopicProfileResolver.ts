@@ -44,6 +44,8 @@ import {
 } from './topicProfileValidation.js';
 import { resolveTierModel, type TierEscalationConfig } from './ModelTierEscalation.js';
 import { SUPPORTED_FRAMEWORKS } from './TopicFrameworksStore.js';
+import { isIssuesTopicId } from '../messaging/telegramTopicSpace.js';
+import { codexSupportsGpt61Sol } from './codexCapabilities.js';
 
 export interface ResolvedTopicProfile {
   framework: IntelligenceFramework;
@@ -80,6 +82,10 @@ export interface TopicProfileResolverOptions {
   configTopicFrameworks: () => Record<string, string>;
   /** `topicProfiles.defaults` — per-topic config-default profiles (§12.5). */
   configProfileDefaults: () => Record<string, { model?: string; thinkingMode?: string; effort?: string }>;
+  /** A config-owned group policy, separate from per-topic operator pins. */
+  configGroupDefaults?: () => { issues?: { framework?: IntelligenceFramework; model?: string } };
+  /** Test seam; production probes the resolved Codex CLI version. */
+  codexModelSupported?: (binaryPath: string) => boolean;
   /** `frameworkDefaultModels` config layer. */
   frameworkDefaultModels: () => Partial<Record<IntelligenceFramework, string>>;
   /** Live tier-escalation config — resolves a modelTier pin to a concrete id. */
@@ -130,6 +136,9 @@ export class TopicProfileResolver {
     const key = String(topicKey);
     const pin: TopicProfile | null = this.opts.store.resolve(key);
     const notices: string[] = [];
+    const groupDefault = isIssuesTopicId(topicKey)
+      ? { framework: 'codex-cli' as IntelligenceFramework, model: 'gpt-6.1-sol', ...this.opts.configGroupDefaults?.().issues }
+      : undefined;
 
     // ── framework arm ────────────────────────────────────────────────────
     let framework: IntelligenceFramework | null = null;
@@ -163,6 +172,12 @@ export class TopicProfileResolver {
         framework = configFw as IntelligenceFramework;
         frameworkSource = 'config-default';
       }
+    }
+    if (!framework && groupDefault?.framework
+      && (SUPPORTED_FRAMEWORKS as readonly string[]).includes(groupDefault.framework)
+      && this.isAdmissible(groupDefault.framework)) {
+      framework = groupDefault.framework;
+      frameworkSource = 'group-config-default';
     }
     if (!framework) {
       framework = this.opts.defaultFramework();
@@ -225,11 +240,31 @@ export class TopicProfileResolver {
       }
     }
     if (model === undefined && modelSource === 'account-default') {
+      if (groupDefault?.model) {
+        const err = validateModelId(groupDefault.model, framework);
+        if (err === null) {
+          model = groupDefault.model;
+          modelSource = 'group-config-default';
+        }
+      }
+    }
+    if (model === undefined && modelSource === 'account-default') {
       const fwDefault = this.opts.frameworkDefaultModels()[framework];
       if (fwDefault) {
         model = fwDefault;
         modelSource = 'frameworkDefaultModels';
       }
+    }
+    if (framework === 'codex-cli' && model === 'gpt-6.1-sol') {
+      const binary = this.opts.frameworkBinaryPath(framework);
+      const supported = binary && (this.opts.codexModelSupported ?? codexSupportsGpt61Sol)(binary);
+      if (!supported) {
+        model = 'gpt-6-sol';
+        modelSource = 'older-codex-cli-fallback';
+        const notice = this.onceNotice(key, 'older-codex-cli',
+          'This machine has an older Codex CLI that cannot run gpt-6.1-sol; using gpt-6-sol for this session.');
+        if (notice) notices.push(notice);
+      } else this.clearTransition(key, 'older-codex-cli');
     }
 
     // ── thinking arm ─────────────────────────────────────────────────────

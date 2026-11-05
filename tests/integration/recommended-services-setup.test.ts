@@ -13,7 +13,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { RecommendedServicesLedger } from '../../src/recommended/RecommendedServicesLedger.js';
 import { RECOMMENDED_SERVICE_CATALOG, isServiceAvailable, type CatalogRow } from '../../src/recommended/catalog.js';
 import { SETUP_RECIPES, catalogWithProving } from '../../src/recommended/recipes.js';
-import { readSetupStates, updateSetupState } from '../../src/recommended/setupState.js';
+import { holdAllSetups, holdSetupForSession, readSetupStates, updateSetupState } from '../../src/recommended/setupState.js';
 import { registerRecommendedServiceRoutes } from '../../src/server/recommendedServiceRoutes.js';
 import type { MachineKeyLookup, MachineSigner } from '../../src/core/AppRecordSignatures.js';
 
@@ -39,6 +39,7 @@ describe('recommended services setup', () => {
   let answer: { ok: boolean; status: number } | Error;
   let reconcile: () => Promise<void>;
   let running: string[];
+  let topicSession: string | null;
   let now: number;
 
   const app = () => {
@@ -50,6 +51,7 @@ describe('recommended services setup', () => {
       ledger: () => ledger, stateDir: dir, owner: () => '42', catalog: [PROVEN], port: 4040, now: () => now,
       checkPin: () => true, checkConfirmPin: () => true, recordApproval: () => undefined,
       openCommitment: () => 'CMT-1', finishCommitment: finish, withdrawCommitment: withdraw, startSetup: start, stopSetup: stop,
+      sessionForTopic: () => topicSession,
       isSetupRunning: (id) => running.includes(id), notifyStuck: stuck, clearStuck: cleared, tellOwner: told,
       readSecret: () => secret, writeSecret: (_n, v) => { secret = v; },
       fetch: (async () => { if (answer instanceof Error) throw answer; return answer; }) as unknown as typeof fetch,
@@ -70,6 +72,7 @@ describe('recommended services setup', () => {
     dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'rec-setup-'));
     ledger = new RecommendedServicesLedger({ stateDir: dir, signer, keyLookup: (() => ({ status: 'unknown' })) as unknown as MachineKeyLookup });
     running = [];
+    topicSession = null;
     start = vi.fn(async () => { running.push('sess-1'); return { sessionName: 'sess-1', topicId: 7 }; });
     finish = vi.fn(); withdraw = vi.fn(); stuck = vi.fn(async () => true); cleared = vi.fn(); told = vi.fn();
     stop = vi.fn(() => { running = []; return true; });
@@ -235,6 +238,30 @@ describe('recommended services setup', () => {
       expect((await put(a, 'another')).body.error).toBe('already-held');
     });
 
+    it('a yes after a no can replace the key setup stored, and still never one that was already here', async () => {
+      const a = app();
+      await say(a, 'yes');
+      await started();
+      await put(a, 'first-key');
+      await verify(a);
+      await say(a, 'no');
+      answer = { ok: false, status: 401 };
+      await say(a, 'yes');
+      expect((await put(a, 'second-key')).body.stored).toBe(true);
+      expect(secret).toBe('second-key');
+    });
+
+    it('a key that was here before setup stays protected through a no and a yes', async () => {
+      const a = app();
+      secret = 'live-key';
+      answer = { ok: false, status: 401 };
+      await say(a, 'yes');
+      await say(a, 'no');
+      await say(a, 'yes');
+      expect((await put(a, 'new-key')).body.error).toBe('already-held');
+      expect(secret).toBe('live-key');
+    });
+
     it('needs a yes on this machine, a real value and the header', async () => {
       const a = app();
       expect((await put(a, 'k')).body.error).toBe('not-granted-here');
@@ -338,6 +365,123 @@ describe('recommended services setup', () => {
       expect((await request(app()).get('/recommended-services')).body.services[0].stalled).toBe(true);
     });
 
+    it('a person stopping the session keeps it stopped, and only that session', async () => {
+      await say(app(), 'yes');
+      await started();
+      holdSetupForSession(dir, 'some-other-session');
+      expect(readSetupStates(dir).jev.held).toBeUndefined();
+      running = [];
+      holdSetupForSession(dir, 'sess-1');
+      for (let i = 0; i < 4; i += 1) { later(10); await reconcile(); }
+      expect(start).toHaveBeenCalledTimes(1);
+      expect(stuck).not.toHaveBeenCalled();
+      expect((await request(app()).get('/recommended-services')).body.services[0].held).toBe(true);
+    });
+
+    it('a session whose person said not now can hold itself, and a new yes starts it again', async () => {
+      await say(app(), 'yes');
+      await started();
+      const refused = await request(app()).post('/recommended-services/jev/hold').send({});
+      expect(refused.status).toBe(403);
+      expect(readSetupStates(dir).jev.held).toBeUndefined();
+      const held = await request(app()).post('/recommended-services/jev/hold').set('X-Instar-Request', '1').send({});
+      expect(held.body.held).toBe(true);
+      running = [];
+      later(10);
+      await reconcile();
+      expect(start).toHaveBeenCalledTimes(1);
+      await say(app(), 'yes');
+      await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(readSetupStates(dir).jev.held).toBeUndefined());
+    });
+
+    it('a new yes lifts a hold while the session is still open', async () => {
+      await say(app(), 'yes');
+      await started();
+      holdSetupForSession(dir, 'sess-1');
+      await say(app(), 'yes');
+      await vi.waitFor(() => expect(readSetupStates(dir).jev.held).toBeUndefined());
+      expect(start).toHaveBeenCalledTimes(1);
+    });
+
+    it('a session a reply brought back under a new name is not started twice, and a no still stops it', async () => {
+      await say(app(), 'yes');
+      await started();
+      holdSetupForSession(dir, 'sess-1');
+      running = ['reply-name'];
+      topicSession = 'reply-name';
+      await say(app(), 'yes');
+      await vi.waitFor(() => expect(readSetupStates(dir).jev.sessionName).toBe('reply-name'));
+      await settle();
+      expect(start).toHaveBeenCalledTimes(1);
+      await say(app(), 'no');
+      expect(stop).toHaveBeenCalledWith('reply-name');
+    });
+
+    it('after a no, a reply in that conversation is left alone', async () => {
+      await say(app(), 'yes');
+      await started();
+      await say(app(), 'no');
+      stop.mockClear();
+      topicSession = 'reply-name';
+      running = ['reply-name'];
+      app();
+      await reconcile();
+      expect(stop).not.toHaveBeenCalled();
+      expect(readSetupStates(dir).jev.sessionName).toBeUndefined();
+    });
+
+    it('a stop finds a session under its new name through the topic', async () => {
+      await say(app(), 'yes');
+      await started();
+      holdSetupForSession(dir, 'reply-name', 7);
+      expect(readSetupStates(dir).jev.held).toBe(true);
+    });
+
+    it('a repeat yes after a hold gets its restarts back', async () => {
+      await say(app(), 'yes');
+      await started();
+      updateSetupState(dir, 'jev', { attempts: 3 });
+      holdSetupForSession(dir, 'sess-1');
+      running = [];
+      await say(app(), 'yes');
+      await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(readSetupStates(dir).jev.attempts).toBe(1));
+    });
+
+    it('stopping everything holds a setup waiting to restart, but leaves a passed one alone', async () => {
+      await say(app(), 'yes');
+      await started();
+      running = [];
+      updateSetupState(dir, 'other', { verified: { at: 'x', result: 'pass', detail: 'ok' } });
+      holdAllSetups(dir);
+      expect(readSetupStates(dir).jev.held).toBe(true);
+      expect(readSetupStates(dir).other.held).toBeUndefined();
+    });
+
+    it('a pass clears a hold, with or without an open promise', async () => {
+      await say(app(), 'yes');
+      await started();
+      updateSetupState(dir, 'jev', { commitmentId: undefined });
+      holdSetupForSession(dir, 'sess-1');
+      secret = 'a-key';
+      await verify(app());
+      expect(readSetupStates(dir).jev.held).toBeUndefined();
+    });
+
+    it('the four named stop paths call the hold', () => {
+      const source = (f: string) => fs.readFileSync(path.join(process.cwd(), f), 'utf8');
+      const server = source('src/commands/server.ts');
+      expect(server.slice(server.indexOf('telegram.onSentinelKillSession ='), server.indexOf('telegram.onSentinelKillSession =') + 200)).toContain('holdSetupForSession');
+      const slack = server.indexOf("'🛑 Emergency stop — all sessions killed.'");
+      expect(server.slice(slack - 400, slack)).toContain('holdAllSetups');
+      const agentServer = source('src/server/AgentServer.ts');
+      expect(agentServer.slice(agentServer.indexOf('killAllSessions: () => {'), agentServer.indexOf('killAllSessions: () => {') + 200)).toContain('holdAllSetups');
+      const routes = source('src/server/routes.ts');
+      const del = routes.indexOf("router.delete('/sessions/:id'");
+      expect(routes.slice(del, routes.indexOf('Remote Session Close', del))).toContain('holdSetupForSession');
+    });
+
     it('tries the notice again if it did not go out', async () => {
       await say(app(), 'yes');
       await started();
@@ -436,6 +580,10 @@ describe('recommended services setup', () => {
         expect(RECOMMENDED_SERVICE_CATALOG.some((r) => r.id === recipe.service), recipe.id).toBe(true);
         const brief = recipe.brief({ port: 1 });
         expect(brief).toContain('They never open a browser');
+        // Each of these was something a real session did, or nearly did, in the first live run.
+        expect(brief).toContain('never a shared one');
+        expect(brief).toContain('disposable or temporary email');
+        expect(brief).toContain('Close any browser window');
         expect(brief).not.toMatch(/ask (the person|them) to (open|go|visit|sign|run|paste|get|fetch)/i);
       }
     });

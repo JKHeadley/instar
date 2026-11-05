@@ -77,7 +77,7 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     name: 'Jev (TypeSafe)',
     benefit: 'Could bring large efficiency gains, by answering routine yes-or-no judgments quickly and cheaply, and adds another opinion on advisory checks. Not measured yet. The gains arrive as each feature using it is proven, not all at once.',
     dataLeaves: 'Short pieces of text from those checks go to TypeSafe, with secrets removed first.',
-    cost: 'Paid by use, at a very small cost per call. I confirm the current price with you first.',
+    cost: 'Paid by use, at a very small cost per call. TypeSafe needs credits added before it gives out a key, so this needs a card or a credit code. I confirm the price and amount with you first.',
     account: 'A TypeSafe account and key, which I get myself.',
     backup: 'Those checks skip it or use their normal path.',
     backupStatus: 'specified',

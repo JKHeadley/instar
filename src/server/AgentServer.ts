@@ -8,6 +8,7 @@
  * WebSocket connections for real-time terminal streaming.
  */
 
+import { holdAllSetups } from '../recommended/setupState.js';
 import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import express, { type Express, type Request, type Response } from 'express';
@@ -191,6 +192,7 @@ import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
+import { buildSlackHolderRead } from './mobileSlackHolderProxy.js';
 import { createMobileMediaRouter } from './mobileMediaRoutes.js';
 import { createMobileSessionRouter } from './mobileSessionRoutes.js';
 import { createMobileSessionTerminalRouter, peerRowsMatch, PEER_LOOKUP_MAX, PEER_LOOKUP_TIMEOUT_MS, type PeerLookup } from './mobileSessionTerminalRoutes.js';
@@ -361,6 +363,7 @@ import {
 import { readAcceptedFallbacks, scopeAcceptedFallbacks } from '../monitoring/guardAcceptedFallbacks.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { DEV_GATED_FEATURES } from '../core/devGatedFeatures.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 export function readMentorConfigFromDisk(
   stateDir: string | undefined,
@@ -529,6 +532,8 @@ export class AgentServer {
   }
 
   private desktopLockedOsMajor: number | undefined;
+  /** Removes the tunnel lifecycle listener that refreshes open desktop viewers. */
+  private desktopTunnelListenerOff: (() => void) | null = null;
   private desktopHelperNotice: DesktopHelperPermissionNotice | null = null;
   private macDesktopHost: MacDesktopHost | null = null;
   private desktopMeshBroker: DesktopMeshBroker | null = null;
@@ -545,6 +550,7 @@ export class AgentServer {
     senderBotId: string;
   }) => Promise<{ ok: boolean; agentMessage?: boolean; reason?: string }>;
   private routeContext: {
+    jobCoverageStop?: (() => void) | null;
     telegramOrigin?: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime | null;
     wsManager: import('./WebSocketManager.js').WebSocketManager | null;
     directDesktopAccess?: DirectDesktopAccess | null;
@@ -899,7 +905,13 @@ export class AgentServer {
     };
     return {
       machineId,
-      status: async () => controller.status(await osMajor()),
+      status: async () => {
+        // The newest probe if recent, else one shared fresh probe; a failed
+        // probe leaves readiness as "helper-unprobed", never ready.
+        const probe = await access.readinessProbe();
+        if (probe?.osMajor !== undefined) this.desktopLockedOsMajor ??= probe.osMajor;
+        return controller.status(await osMajor(), probe);
+      },
       settings: async patch => {
         if (patch.enabled === true) {
           const refusal = controller.enableRefusal(await osMajor());
@@ -1339,6 +1351,7 @@ export class AgentServer {
     memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacy;
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
     a2aDeliveryTracker?: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker;
+    requiredAck?: import('../threadline/requiredAckService.js').RequiredAckService;
     /** Honest-delivery verdict counters (spec §1) for the authed branch of /health. */
     relayVerdictCounters?: () => Record<string, number>;
     /** A2A inbound message-id ledger controller, shared with the relay consumer (server.ts). */
@@ -1945,6 +1958,13 @@ export class AgentServer {
         peerEndpointRecorder: options.peerEndpointRecorder,
         getSelfMeshEndpoints: options.getSelfMeshEndpoints,
         identityReannounce: options.identityReannounce,
+        getTelegramHandoverSource: () => {
+          const entry = options.config.messaging?.find((m) => m.type === 'telegram' && m.enabled !== false);
+          const { token, chatId } = (entry?.config ?? {}) as { token?: unknown; chatId?: unknown };
+          return typeof token === 'string' && token && chatId !== undefined && chatId !== null
+            ? { botToken: token, chatId: String(chatId) }
+            : null;
+        },
         getIdentityRecoveryBearerToken: () => resolveDevAgentGate(options.config.multiMachine?.identityReannounce?.enabled, options.config)
           ? options.config.multiMachine?.identityReannounce?.sharedBearerToken
           : undefined,
@@ -3034,6 +3054,10 @@ export class AgentServer {
               const lifecycle = options.tunnel?.lifecycleState;
               return lifecycle?.lastState === 'active' && String(lifecycle.activeProvider).startsWith('cloudflare');
             },
+            tunnelActive: () => {
+              const state = options.tunnel?.lifecycleState?.lastState;
+              return state === 'active' || state === 'relay-active';
+            },
             raiseSecurity: item => this.raiseLockedSecurityItem(item),
           }) : null;
           if (macHost && this.desktopLockedController) macHost.setLockedRoot(this.desktopLockedController.root);
@@ -3076,6 +3100,15 @@ export class AgentServer {
           this.desktopLockedController,
         );
         void this.desktopLockedController?.sweep(true).catch(() => { console.warn('[instar] locked-screen boot sweep failed'); });
+        // The browser box needs the first-tier tunnel; tell open viewers when it changes.
+        if (this.desktopLockedController) {
+          if (typeof options.tunnel?.on === 'function') {
+            const tunnel = options.tunnel;
+            const refresh = () => this.directDesktopAccess?.refreshLockedState();
+            tunnel.on('lifecycle', refresh);
+            this.desktopTunnelListenerOff = () => tunnel.off('lifecycle', refresh);
+          }
+        }
         this.desktopStreamManager = new DesktopStreamManager(request => this.directDesktopAccess!.admit(request));
         if (helperRetention) {
           const access = this.directDesktopAccess;
@@ -5390,6 +5423,7 @@ export class AgentServer {
       hookEventReceiver: options.hookEventReceiver ?? null,
       nativeHookIngest: this.nativeHookIngest,
       mobileOwnNames: this.mobilePairing?.ownNames ?? null,
+      mobilePairingService: this.mobilePairing,
       worktreeMonitor: options.worktreeMonitor ?? null,
       subagentTracker: options.subagentTracker ?? null,
       instructionsVerifier: options.instructionsVerifier ?? null,
@@ -5410,6 +5444,7 @@ export class AgentServer {
       a2aRelayForward: options.a2aRelayForward ?? null,
       listenerManager: options.listenerManager ?? null,
       a2aDeliveryTracker: options.a2aDeliveryTracker ?? this.a2aDeliveryTracker,
+      requiredAck: options.requiredAck ?? null,
       relayVerdictCounters: this.relayVerdictCounters,
       inboundIdLedger: this.inboundIdLedger,
       inboundIdLedgerDaemonDeferred: options.inboundIdLedgerDaemonDeferred ?? null,
@@ -6389,6 +6424,7 @@ export class AgentServer {
         registry: routeCtx.conversationRegistry,
         dispatch: () => options.slackInboundDispatch?.() ?? null,
         killAllSessions: () => {
+          try { holdAllSetups(options.config.stateDir); } catch { /* @silent-fallback-ok — the stop itself must never fail over this */ }
           let any = false;
           for (const sess of options.sessionManager.listRunningSessions()) { try { options.sessionManager.killSession(sess.id); any = true; } catch { /* @silent-fallback-ok — already gone */ } }
           return any;
@@ -6403,6 +6439,13 @@ export class AgentServer {
         slack: slackBridge ? () => slackBridge : null, sentinel: options.sentinel ?? null,
         // The same machine id the conversation list puts on its rows.
         machineId: () => this.appConversations?.deps.machineId() ?? 'local',
+        holderRead: buildSlackHolderRead({
+          peers: () => routeCtx.resolvePeerUrls?.() ?? [],
+          allowlist: () => (options.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,
+          token: () => options.config.authToken,
+          selfMachineId: () => this.appConversations?.deps.machineId() ?? 'local',
+          record: routeCtx.recordRopeResult ?? undefined,
+        }),
         originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
       }));
       this.app.use(createMobileConversationRouter({
@@ -6472,7 +6515,7 @@ export class AgentServer {
             durationMs: info.durationMs, width: info.width, height: info.height,
           });
           if (!r.recorded && r.reason !== 'duplicate') {
-            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (topic ${info.topicId}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. The session still received it.`);
+            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (${topicRef(info.topicId)}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. The session still received it.`);
           }
         });
       }
@@ -8354,6 +8397,7 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    this.routeContext?.jobCoverageStop?.();
     this.mobilePairing?.push?.stop();
     this.mobilePairing?.stop();
     this.appConversations?.stop();
@@ -8362,6 +8406,8 @@ export class AgentServer {
     if (this.directDesktopAccess) this.telegramAdapter?.setDesktopApprovalHandler?.(null);
     this.desktopStreamManager?.closeAll();
     this.desktopHelperNotice?.stop();
+    this.desktopTunnelListenerOff?.();
+    this.desktopTunnelListenerOff = null;
     try { this.routeContext?.subscriptionRelogin?.close?.(); }
     catch (error) { console.warn('[subscription-relogin] clean stop failed:', error); }
     try { this.agentIdentityRuntime?.coherence.stop(); } catch { /* best-effort teardown */ }
