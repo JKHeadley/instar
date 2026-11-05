@@ -13646,7 +13646,7 @@ export function createRoutes(ctx: RouteContext): Router {
     try { local = { machineId: ctx.desktopLocked.machineId, ...await ctx.desktopLocked.status() }; }
     catch (error) {
       // @silent-fallback-ok — the helper's state could not be read; answer 503 with the reason instead of hanging the request.
-      const code = error instanceof Error && /^mac-desktop-host-[a-z-]+$/.test(error.message) ? error.message : 'locked-state-unreadable';
+      const code = error instanceof Error && /^mac-desktop-host-[a-z0-9-]+$/.test(error.message) ? error.message : 'locked-state-unreadable';
       res.status(503).json({ error: 'Locked-screen state could not be read on this machine', code });
       return;
     }
