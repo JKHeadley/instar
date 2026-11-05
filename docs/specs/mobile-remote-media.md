@@ -6,9 +6,9 @@ parent-principle: "Know Your Principal"
 eli16-overview: "docs/specs/mobile-remote-media.eli16.md"
 approved: true
 approved-by: "echo, assigned by coordinator session for topic 137342 under Justin's approval of Conversations build through deploy (2026-11-05 00:37 and 00:58 PST)"
-review-convergence: "2026-11-05T15:13:13.419Z"
+review-convergence: "2026-11-05T18:24:19.297Z"
 review-iterations: 3
-review-completed-at: "2026-11-05T15:13:13.419Z"
+review-completed-at: "2026-11-05T18:24:19.297Z"
 review-report: "docs/specs/reports/mobile-remote-media-convergence.md"
 cross-model-review: "codex-cli:gpt-6-astra"
 ---
@@ -30,7 +30,8 @@ On the machine that answered the phone, when `machine` names another machine:
 3. A `Range` header is refused with 416 `range-unsupported`.
 4. `buildMediaHolderStream`: holder by exact machine id from `resolvePeerUrls` (409 `wrong-machine` if unknown), `isPeerUrlAllowedForCredentials`, at most 6 streams at once and 2 per holder, separate from the history read's slots. When full, it answers the 202 `fetching` wait the app already polls, with a 5 s retry, not a failure. File downloads count in their own 120-a-minute `media-read` bucket, so waiting files cannot use up chat reads.
 5. `poolPeerFetch` with the agent bearer, `redirect: 'manual'`, GET, carrying `holderHop=1` and the exact ref and machine. `isCurrent()` runs inside the fetch, so before every rope dial.
-6. Limits: 15 s to the first byte, 20 s between holder bytes, 60 s for a phone that has stopped taking bytes (so a suspended phone gives its slot back), 300 s overall, with the route's own timeout set past that to 330 s, `MAX_FILE_BYTES` (50 MiB) whether or not a length was declared.
+6. A download whose buffered bytes have not moved for 60 s gives its slot back but keeps running, up to the overall limit. It is not cut there, because a server cannot see into the kernel's buffers: on macOS loopback a phone reading steadily at 8 KB/s showed no visible movement for 47 s, the same as a suspended one. So the 6 and 2 are limits on downloads that are moving, and quiet ones stay open until 300 s. A limit that ends the stream while it waits on the phone is not reported against the holder.
+6a. Limits: 15 s to the first byte, 20 s between holder bytes, 300 s overall, with the route's own timeout set past that to 330 s, `MAX_FILE_BYTES` (50 MiB) whether or not a length was declared.
 7. Bytes stream through with backpressure: one chunk is deliberately withheld, on top of the transport's own bounded buffers, and the file is never held whole. `isCurrent()` is read before the first byte, immediately before every write to the phone, on a 200 ms timer throughout, whether bytes are moving or not (a stalled holder or a phone that stopped reading included), and again before the last chunk. A check that fails or throws aborts the holder read and breaks the phone's connection. An empty chunk from the holder is skipped: it neither counts as progress for the idle limit nor takes the withheld chunk's place. The last chunk is held until the running sha256 matches the requested hash and any declared length matches, so a bad, short or revoked stream ends as a broken connection and never as a complete response.
 8. Type and file name are recomputed here (`isInlineSafe`, `safeFileName`) and the fixed security headers set; nothing else from the holder passes. Refusals map to fixed codes.
 

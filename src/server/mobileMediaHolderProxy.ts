@@ -23,7 +23,14 @@ import { poolPeerFetch, PoolPeerAdmissionError, type PoolPeerTarget, type RopeRe
 export const HOLDER_MEDIA_HEADER = 'x-instar-holder-media';
 export const HOLDER_MEDIA_FIRST_BYTE_MS = 15_000;
 export const HOLDER_MEDIA_IDLE_MS = 20_000;
-/** A phone that takes no bytes for this long gives its slot back: a suspended phone must not hold one. */
+/**
+ * A download whose buffered bytes have not moved for this long gives its slot back and keeps
+ * running, up to the overall deadline. The stream is not cut: bytes sit in kernel buffers that a
+ * server cannot read, so a phone still reading slowly and a suspended one can look the same here
+ * (measured on macOS loopback at 8 KB/s: nothing visible for 47 s). E2E-PAIRING: EXEMPT — a limit
+ * inside an already alive route; a 60 s stall is not E2E-observable and integration drives it on
+ * real sockets.
+ */
 export const HOLDER_MEDIA_DRAIN_MS = 60_000;
 /** How long a phone waits when every slot is taken. Four waiting files stay well under the media bucket. */
 export const HOLDER_MEDIA_BUSY_RETRY_MS = 5_000;
@@ -135,6 +142,14 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
     if (inFlight >= HOLDER_MEDIA_MAX_IN_FLIGHT || mine >= HOLDER_MEDIA_MAX_PER_HOLDER) { res.status(202).json({ state: 'fetching', retryAfterMs: HOLDER_MEDIA_BUSY_RETRY_MS }); return; }
     inFlight++;
     perHolder.set(q.machine, mine + 1);
+    let slotHeld = true;
+    const releaseSlot = () => {
+      if (!slotHeld) return;
+      slotHeld = false;
+      inFlight--;
+      const left = (perHolder.get(q.machine) ?? 1) - 1;
+      if (left > 0) perHolder.set(q.machine, left); else perHolder.delete(q.machine);
+    };
 
     const abort = new AbortController();
     // A phone that hangs up stops the holder's read too.
@@ -160,6 +175,8 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
     }, recheckMs > 0 ? recheckMs : 50);
     watch.unref?.();
 
+    // Set when a limit ended the stream while it waited on the phone, not on the holder.
+    let phoneWaiting = false;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
       const path = `/mobile/media/${q.sha256}?ref=${encodeURIComponent(q.ref)}&machine=${encodeURIComponent(q.machine)}&holderHop=1`;
@@ -210,14 +227,32 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
         if (length !== null) res.setHeader('Content-Length', String(length));
         started = true;
       };
+      // A slow phone is not a stalled holder: the overall deadline bounds this wait.
+      const phoneDrain = async () => {
+        if (idle) clearTimeout(idle);
+        const drainMs = deps.drainMs ?? HOLDER_MEDIA_DRAIN_MS;
+        let left = res.writableLength;
+        let moved = Date.now();
+        const stall = setInterval(() => {
+          const now = res.writableLength;
+          if (now < left) { left = now; moved = Date.now(); } else if (Date.now() - moved >= drainMs) releaseSlot();
+        }, Math.max(10, Math.min(1_000, drainMs / 4)));
+        stall.unref?.();
+        try {
+          await once(res, 'drain', { signal: abort.signal });
+        } catch (err) {
+          phoneWaiting = true;
+          throw err;
+        } finally {
+          clearInterval(stall);
+        }
+      };
       const send = async (chunk: Uint8Array) => {
         // Every write, not only the timer: nothing goes out after the owner check fails.
         if (!ownerNow()) { revoked = true; abort.abort(new DOMException('owner check failed', 'AbortError')); throw new PoolPeerAdmissionError('owner-phone-required'); }
         if (!started) start();
         if (res.write(chunk)) return;
-        // A slow phone is not a stalled holder, so it gets its own, longer limit.
-        wait(deps.drainMs ?? HOLDER_MEDIA_DRAIN_MS);
-        await once(res, 'drain', { signal: abort.signal });
+        await phoneDrain();
         wait(deps.idleMs ?? HOLDER_MEDIA_IDLE_MS);
       };
       for (;;) {
@@ -241,6 +276,8 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
     } catch (err) {
       if (err instanceof PoolPeerAdmissionError || revoked) { ownerOnly(res); return; }
       if (res.destroyed) return;
+      // The phone went quiet: nothing is wrong with the holder, so nothing is reported against it.
+      if (phoneWaiting) { res.destroy(); return; }
       const name = (err as { name?: string } | null)?.name;
       const reasonName = (abort.signal.reason as { name?: string } | undefined)?.name;
       const timedOut = name === 'TimeoutError' || reasonName === 'TimeoutError';
@@ -251,9 +288,7 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
       if (idle) clearTimeout(idle);
       res.off('close', onClose);
       void reader?.cancel().catch(() => undefined); // @silent-fallback-ok — a finished or aborted read has nothing to release
-      inFlight--;
-      const left = (perHolder.get(q.machine) ?? 1) - 1;
-      if (left > 0) perHolder.set(q.machine, left); else perHolder.delete(q.machine);
+      releaseSlot();
     }
   };
 }

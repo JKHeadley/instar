@@ -2050,7 +2050,7 @@ export class AgentServer {
     }).multiMachine?.accountFollowMe?.remoteScrapeTimeoutMs;
     this.app.use(requestTimeout(
       options.config.requestTimeoutMs,
-      buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs, followMeRemoteScrapeTimeoutMs }),
+      buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs, followMeRemoteScrapeTimeoutMs, defaultTimeoutMs: options.config.requestTimeoutMs }),
     ));
 
     // ── Token Ledger ──────────────────────────────────────────────────

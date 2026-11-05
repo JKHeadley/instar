@@ -6,6 +6,8 @@ This change lets the machine your phone talks to fetch the file from the machine
 
 The file passes straight through rather than being stored in the middle, with a size limit and time limits. The owner check is repeated before connecting, before the first byte, before every piece sent and on a timer throughout. Those repeats happen on the machine your phone talks to. The holder checks once at the start, and what it trusts is the agent's own machine credential, which proves a trusted machine, not your phone. So this does not protect you if the machine your phone talks to is itself taken over. If your phone is removed partway, the transfer is cut. The last piece is held back until the whole file's fingerprint matches, so a damaged or incomplete file can never look finished. The phone checks that fingerprint again and keeps nothing if it fails.
 
+If a download goes quiet for a minute, for example because the phone locked, it gives up its place in line so other files can start, and it keeps running until the overall five-minute limit. It is not cut sooner, because a server cannot tell a very slow phone from a sleeping one.
+
 If the holder is missing the file, asking for it can start the usual background copy from another machine, under the existing storage and cleanup limits.
 
 Each copy on the phone is stored separately per agent, machine and conversation, so a file allowed in one place is not treated as allowed in another.

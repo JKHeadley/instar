@@ -1,12 +1,14 @@
 /** The stream's own rules, off the network (docs/specs/mobile-remote-media.md). */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { Response as ExpressResponse } from 'express';
+import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 import { MOBILE_MEDIA_TIMEOUT_MS, buildRequestTimeoutOverrides, resolveRequestTimeout } from '../../src/server/middleware.js';
 import { HOLDER_MEDIA_BUSY_RETRY_MS, HOLDER_MEDIA_DEADLINE_MS, HOLDER_MEDIA_HEADER, buildMediaHolderStream, holderBearerOk } from '../../src/server/mobileMediaHolderProxy.js';
 
 class FakeRes extends EventEmitter {
+  writableLength = 0;
   statusCode = 200; headers: Record<string, string> = {}; chunks: Buffer[] = []; body: unknown = null;
   headersSent = false; destroyed = false; writableFinished = false; ended = false;
   status(n: number) { this.statusCode = n; return this; }
@@ -136,21 +138,64 @@ describe('buildMediaHolderStream', () => {
     expect(f).not.toHaveBeenCalled();
   });
 
-  it('a phone that stops reading gives its slot back at the drain limit', async () => {
-    class Stuck extends FakeRes { write(c: Uint8Array) { super.write(c); return false; } }
+  class Stuck extends FakeRes { writableLength = 1_000; write(c: Uint8Array) { super.write(c); return false; } }
+  const stuckStream = (over = {}) => {
     const list = [Buffer.from('one'), Buffer.from('two'), Buffer.from('three')];
     const f = (async () => body(parts(list))) as typeof fetch;
-    const stream = buildMediaHolderStream({ peers: () => [{ machineId: 'm_b', url: 'http://127.0.0.1:9', kind: 'lan' }], token: () => 't', selfMachineId: () => 'm_a', fetchImpl: f, recheckMs: 60_000, drainMs: 40 });
-    const q = { sha256: sha(Buffer.concat(list)), ref: 'slack:_:C', machine: 'm_b', isCurrent: () => true };
-    for (let i = 0; i < 3; i++) { // two per holder: a third only starts if the slots came back
-      const res = new Stuck();
-      const t0 = Date.now();
-      await stream(q, res as unknown as ExpressResponse);
-      expect(Date.now() - t0).toBeLessThan(1_000);
-      expect(res.chunks.length).toBeGreaterThan(0);
-      expect(res.ended).toBe(false);
-      expect(res.destroyed).toBe(true);
-    }
+    const stream = buildMediaHolderStream({ peers: () => [{ machineId: 'm_b', url: 'http://127.0.0.1:9', kind: 'lan' }], token: () => 't', selfMachineId: () => 'm_a', fetchImpl: f, recheckMs: 60_000, drainMs: 40, deadlineMs: 400, ...over });
+    return { stream, q: { sha256: sha(Buffer.concat(list)), ref: 'slack:_:C', machine: 'm_b', isCurrent: () => true } };
+  };
+  const settle = (ms: number) => new Promise((go) => setTimeout(go, ms));
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('a suspended phone gives its slot back at the drain limit and is not cut until the deadline', async () => {
+    const { stream, q } = stuckStream();
+    const first = [new Stuck(), new Stuck()];
+    const running = first.map((r) => stream(q, r as unknown as ExpressResponse));
+    await settle(150);
+    expect(first.every((r) => !r.destroyed)).toBe(true); // still open
+    const third = new Stuck();
+    const next = stream(q, third as unknown as ExpressResponse);
+    await settle(20);
+    expect(third.statusCode).toBe(200); // not the 202 wait: the slots came back
+    await Promise.all([...running, next]);
+    expect(first.every((r) => r.destroyed && !r.ended)).toBe(true);
+  });
+
+  it('buffered bytes that keep moving hold the slot, and the file completes when the phone catches up', async () => {
+    const { stream, q } = stuckStream({ deadlineMs: 2_000 });
+    const res = new Stuck();
+    const running = stream(q, res as unknown as ExpressResponse);
+    for (let i = 0; i < 8; i++) { await settle(20); res.writableLength -= 10; } // 160 ms, past the 40 ms limit
+    const a = new Stuck(); const b = new Stuck();
+    const others = [stream(q, a as unknown as ExpressResponse), stream(q, b as unknown as ExpressResponse)];
+    await settle(10);
+    expect(b.statusCode).toBe(202); // the moving download still counts, so one slot was left
+    for (let n = 0; n < 40 && !res.ended; n++) { res.emit('drain'); a.emit('drain'); await settle(5); }
+    expect(res.ended).toBe(true);
+    expect(Buffer.concat(res.chunks).toString()).toBe('onetwothree');
+    for (let n = 0; n < 40 && !a.ended; n++) { a.emit('drain'); await settle(5); }
+    await Promise.all([running, ...others]);
+  });
+
+  it('a phone that never catches up is not reported against the holder', async () => {
+    const report = vi.fn();
+    vi.spyOn(DegradationReporter, 'getInstance').mockReturnValue({ report } as never);
+    const { stream, q } = stuckStream({ deadlineMs: 80 });
+    const res = new Stuck();
+    await stream(q, res as unknown as ExpressResponse);
+    expect(res.destroyed).toBe(true);
+    expect(res.ended).toBe(false);
+    expect(report).not.toHaveBeenCalled();
+  });
+
+  it('a holder that stalls is still reported', async () => {
+    const report = vi.fn();
+    vi.spyOn(DegradationReporter, 'getInstance').mockReturnValue({ report } as never);
+    const hang = ((_u: unknown, init: { signal: AbortSignal }) => new Promise((_ok, no) => { init.signal.addEventListener('abort', () => no(init.signal.reason)); })) as unknown as typeof fetch;
+    const r = await run(hang, () => true, 'a'.repeat(64), { firstByteMs: 30 });
+    expect(r.statusCode).toBe(504);
+    expect(report).toHaveBeenCalledTimes(1);
   });
 
   it('full slots ask the phone to wait longer than a chat poll', async () => {
@@ -171,6 +216,10 @@ describe('buildMediaHolderStream', () => {
     expect(resolveRequestTimeout(`/mobile/media/${'a'.repeat(64)}`, 30_000, o)).toBe(MOBILE_MEDIA_TIMEOUT_MS);
     expect(resolveRequestTimeout('/mobile/media/uploads/x/chunks/0', 30_000, o)).toBe(30_000);
     expect(resolveRequestTimeout('/mobile/media/purge', 30_000, o)).toBe(30_000);
+    const longer = buildRequestTimeoutOverrides({ defaultTimeoutMs: 600_000 });
+    expect(resolveRequestTimeout('/mobile/media/uploads/x/chunks/0', 600_000, longer)).toBe(600_000);
+    expect(resolveRequestTimeout('/mobile/media/purge', 600_000, longer)).toBe(600_000);
+    expect(resolveRequestTimeout(`/mobile/media/${'a'.repeat(64)}`, 600_000, longer)).toBe(600_000);
   });
 
   it('a machine with no token of its own accepts no hop', () => {

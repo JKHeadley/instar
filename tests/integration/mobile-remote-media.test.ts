@@ -42,7 +42,7 @@ type Peer = { machineId: string; url: string; kind: string };
 const jpeg = (n: number) => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), crypto.randomBytes(n)]);
 const sha = (b: Buffer) => crypto.createHash('sha256').update(b).digest('hex');
 
-async function machine(id: string, peers: () => Peer[], over: { maxBytes?: number; firstByteMs?: number; idleMs?: number } = {}) {
+async function machine(id: string, peers: () => Peer[], over: { maxBytes?: number; firstByteMs?: number; idleMs?: number; drainMs?: number } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mremotemedia-'));
   dirs.push(dir);
   await new MachineIdentityManager(dir).generateIdentity({ name: id });
@@ -77,7 +77,7 @@ async function machine(id: string, peers: () => Peer[], over: { maxBytes?: numbe
     slackHeld: (key) => slackConversationHeldLocally(registry, key),
     ownerAdmission: (req) => mobileOwnerDeviceAdmission(pairing, req),
     bearerOk: (req) => bearerMatches(req, 'tok-1'),
-    holderMedia: buildMediaHolderStream({ peers, token: () => 'tok-1', selfMachineId: () => id, firstByteMs: over.firstByteMs ?? 1_500, idleMs: over.idleMs ?? 1_500, maxBytes: over.maxBytes, recheckMs: 0 }),
+    holderMedia: buildMediaHolderStream({ peers, token: () => 'tok-1', selfMachineId: () => id, firstByteMs: over.firstByteMs ?? 1_500, idleMs: over.idleMs ?? 1_500, drainMs: over.drainMs, maxBytes: over.maxBytes, recheckMs: 0 }),
   }));
   app.use(createMobilePairingRouter(pairing, deps, { config } as never));
   const server = http.createServer(app);
@@ -212,6 +212,51 @@ describe('the owner phone opens a Slack file held by another machine', () => {
     expect(limited).toBe(5);
     expect((await phoneGet(a, p, '/mobile/people')).status).not.toBe(429);
   });
+
+  it('a phone reading slowly on a real socket finishes the file, past the drain limit', async () => {
+    const { a, b } = await pair({ drainMs: 100 });
+    const bytes = jpeg(6 * 1024 * 1024);
+    const key = await b.held('C0SLOW111', bytes);
+    const p = await phone(a);
+    const r = route(sha(bytes), key, 'm_b');
+    const u = new URL(a.url);
+    const got = await new Promise<{ status: number; body: Buffer; complete: boolean; ms: number }>((resolve, reject) => {
+      const t0 = Date.now();
+      http.get({ host: u.hostname, port: u.port, path: r, headers: signedHeaders(p, r) }, (m) => {
+        const parts: Buffer[] = [];
+        m.pause();
+        const pump = setInterval(() => { for (let i = 0; i < 2; i++) { const c = m.read(32 * 1024) ?? m.read(); if (c) parts.push(c as Buffer); } }, 25);
+        m.on('readable', () => undefined);
+        m.on('close', () => { clearInterval(pump); const c = m.read(); if (c) parts.push(c as Buffer); resolve({ status: m.statusCode ?? 0, body: Buffer.concat(parts), complete: m.complete, ms: Date.now() - t0 }); });
+      }).on('error', reject);
+    });
+    expect(got.status).toBe(200);
+    expect(got.complete).toBe(true);
+    expect(sha(got.body)).toBe(sha(bytes));
+    expect(got.ms).toBeGreaterThan(300); // slower than the limit, or this proved nothing
+  }, 30_000);
+
+  it('a phone that stops reading on a real socket gives its slot back while staying connected', async () => {
+    const { a, b } = await pair({ drainMs: 100 });
+    const bytes = jpeg(24 * 1024 * 1024);
+    const key = await b.held('C0STALL11', bytes);
+    const small = jpeg(3_000);
+    const smallKey = await b.held('C0STALL22', small);
+    const p = await phone(a);
+    const r = route(sha(bytes), key, 'm_b');
+    const u = new URL(a.url);
+    const open = () => new Promise<http.ClientRequest>((resolve, reject) => {
+      const q = http.get({ host: u.hostname, port: u.port, path: r, headers: signedHeaders(p, r) }, (m) => { m.pause(); resolve(q); });
+      q.on('error', () => undefined);
+      setTimeout(() => reject(new Error('no answer')), 5_000).unref();
+    });
+    const stalled = [await open(), await open()];
+    await new Promise((go) => setTimeout(go, 600));
+    const next = await phoneGet(a, p, route(sha(small), smallKey, 'm_b'));
+    expect(next.status).toBe(200);
+    expect(sha(next.body)).toBe(sha(small));
+    for (const q of stalled) q.destroy();
+  }, 30_000);
 
   it('naming this machine serves locally with Range still honored and no dial', async () => {
     const { a, b } = await pair();

@@ -737,6 +737,7 @@ export const MOBILE_MEDIA_TIMEOUT_MS = 330_000;
 export function buildRequestTimeoutOverrides(opts?: {
   paritySourceTotalTimeoutMs?: number;
   followMeRemoteScrapeTimeoutMs?: number;
+  defaultTimeoutMs?: number;
 }): Record<string, number> {
   const configuredTotal = opts?.paritySourceTotalTimeoutMs;
   const followMe = resolveFollowMeBudgets(opts?.followMeRemoteScrapeTimeoutMs);
@@ -751,10 +752,10 @@ export function buildRequestTimeoutOverrides(opts?: {
     '/imessage/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/imessage/validate-send': OUTBOUND_MESSAGING_TIMEOUT_MS,
     // A file from another machine has its own 300 s limit, and a 408 under the stream would leave
-    // its slot held. Uploads and purge keep the default.
-    '/mobile/media': MOBILE_MEDIA_TIMEOUT_MS,
-    '/mobile/media/uploads': 30_000,
-    '/mobile/media/purge': 30_000,
+    // its slot held. Uploads and purge keep the agent's configured default.
+    '/mobile/media': Math.max(MOBILE_MEDIA_TIMEOUT_MS, opts?.defaultTimeoutMs ?? 30_000),
+    '/mobile/media/uploads': opts?.defaultTimeoutMs ?? 30_000,
+    '/mobile/media/purge': opts?.defaultTimeoutMs ?? 30_000,
     '/spec/conformance-check': SPEC_REVIEW_TIMEOUT_MS,
     '/corrections/analyze': CORRECTIONS_ANALYZE_TIMEOUT_MS,
     '/cutover-readiness/parity-pass': parityBudgetMs,
