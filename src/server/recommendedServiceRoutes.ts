@@ -36,6 +36,8 @@ export interface RecommendedServiceRouteDeps {
   startSetup: (service: string, name: string, brief: string, topicId?: number) => Promise<{ sessionName: string; topicId: number }>;
   /** False when the session didn't stop. */
   stopSetup: (sessionName: string) => boolean;
+  /** The session a conversation runs in now. A reply can bring it back under another name. */
+  sessionForTopic?: (topicId: number) => string | null;
   /** Sessions outlive a server restart, so a resume must not start a second copy. */
   isSetupRunning: (sessionName: string) => boolean;
   /** Starts ran out. One notice to the person, because nothing else would say so. True once it's sent. */
@@ -56,8 +58,8 @@ export interface RecommendedServiceRouteDeps {
 }
 
 /** What the list shows about setup on this machine. */
-function setupView(state: ServiceSetupState | undefined): { verified: ServiceSetupState['verified'] | null; alreadyHeld: boolean; stalled: boolean } {
-  return { verified: state?.verified ?? null, alreadyHeld: !!state?.alreadyHeld, stalled: !!state?.exhausted };
+function setupView(state: ServiceSetupState | undefined): { verified: ServiceSetupState['verified'] | null; alreadyHeld: boolean; stalled: boolean; held: boolean } {
+  return { verified: state?.verified ?? null, alreadyHeld: !!state?.alreadyHeld, stalled: !!state?.exhausted, held: !!state?.held };
 }
 
 export function registerRecommendedServiceRoutes(router: Router, deps: RecommendedServiceRouteDeps): void {
@@ -75,9 +77,20 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     const ledger = deps.ledger();
     return !!ledger && ledger.activeGrant(service, ledger.machineId()) !== null;
   };
+  const currentState = (service: string): ServiceSetupState | undefined => {
+    const state = readSetupStates(deps.stateDir)[service];
+    // Only while setup has a session: a topic keeps its last name after a kill, and a no has let go of this one.
+    const live = state?.sessionName && state.topicId !== undefined ? deps.sessionForTopic?.(state.topicId) : null;
+    return live && live !== state?.sessionName ? updateSetupState(deps.stateDir, service, { sessionName: live }) : state;
+  };
+  /** A new yes from the person: a clean start, with the restarts it would have had the first time. */
+  const liftHold = (service: string): void => {
+    if (!readSetupStates(deps.stateDir)[service]?.held) return;
+    updateSetupState(deps.stateDir, service, { held: undefined, attempts: undefined, lastAttemptAt: undefined, exhausted: undefined, dormant: undefined });
+  };
   /** A no ends the work in progress and the promise to finish it, on this machine. */
   const endSetup = (service: string): void => {
-    const state = readSetupStates(deps.stateDir)[service];
+    const state = currentState(service);
     if (!state) return;
     try {
       // Only forget a session that really stopped, so the next tick tries again if it didn't.
@@ -86,7 +99,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       updateSetupState(deps.stateDir, service, {
         sessionName: stopped ? undefined : state.sessionName, commitmentId: undefined, verified: undefined,
         // keyStoredBySetup stays: the key itself stays after a no, so a later yes can still replace one that has died.
-        alreadyHeld: undefined, attempts: undefined, lastAttemptAt: undefined, exhausted: undefined, dormant: undefined,
+        alreadyHeld: undefined, attempts: undefined, lastAttemptAt: undefined, exhausted: undefined, dormant: undefined, held: undefined,
       });
       deps.clearStuck(service);
     } catch (err) {
@@ -100,6 +113,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     const state = updateSetupState(deps.stateDir, service, {
       verified: { at: new Date(deps.now?.() ?? Date.now()).toISOString(), ...outcome },
       ...(alreadyHeld ? { alreadyHeld: true } : {}),
+      ...(outcome.result === 'pass' ? { held: undefined } : {}),
     });
     if (outcome.result !== 'pass' || !state.commitmentId) return;
     try {
@@ -118,12 +132,14 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   const beginSetup = async (row: CatalogRow): Promise<void> => {
     const recipe = recipeFor(row);
     if (!recipe || starting.has(row.id)) return;
-    const before = readSetupStates(deps.stateDir)[row.id];
+    const before = currentState(row.id);
     if (before?.sessionName && deps.isSetupRunning(before.sessionName)) return;
     starting.add(row.id);
     try {
       const preflight = await recipe.verify({ readSecret: deps.readSecret, fetch: deps.fetch });
       if (!hasGrant(row.id) || preflight.result === 'unknown') return;
+      // The check takes a moment, and a stop can land in it.
+      if (readSetupStates(deps.stateDir)[row.id]?.held) return;
       if (preflight.result === 'pass') {
         recordVerify(row.id, preflight, true);
         deps.tellOwner(`${row.name} was already working on this machine, so there's nothing for me to set up.`);
@@ -148,15 +164,14 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   const reconcile = async (): Promise<void> => {
     const ledger = deps.ledger();
     if (!ledger) return;
-    const states = readSetupStates(deps.stateDir);
     const nowMs = deps.now?.() ?? Date.now();
     for (const row of catalog) {
-      const state = states[row.id];
+      const state = currentState(row.id);
       if (!hasGrant(row.id)) {
         if (state?.commitmentId || state?.sessionName) endSetup(row.id);
         continue;
       }
-      if (!isServiceAvailable(row) || state?.verified?.result === 'pass' || state?.exhausted || state?.dormant) continue;
+      if (!isServiceAvailable(row) || state?.verified?.result === 'pass' || state?.exhausted || state?.dormant || state?.held) continue;
       if (state?.sessionName && deps.isSetupRunning(state.sessionName)) continue;
       const decision = decideSetupRestart({ starts: state?.attempts ?? 0, lastStartMs: state?.lastAttemptAt ? Date.parse(state.lastAttemptAt) : null, nowMs });
       if (decision === 'restart') await beginSetup(row);
@@ -180,6 +195,20 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       return { ...text, ...ledger.effective(id), available: isServiceAvailable(row), grantedHere: ledger.activeGrant(id, ledger.machineId()) !== null, ...setupView(readSetupStates(deps.stateDir)[id]) };
     });
     res.json({ services, offersLive: false, migrationComplete: isMigrationComplete(deps.stateDir), firstResult: readDeliveredFirstResult(deps.stateDir), replicating: ledger.isReplicating() });
+  });
+
+  /** Asks for nothing and grants nothing: it only stops this session being restarted, so it needs no PIN. */
+  router.post('/recommended-services/:id/hold', (req, res) => {
+    const row = catalog.find((r) => r.id === req.params.id);
+    if (!row || !recipeFor(row)) {
+      res.status(404).json({ error: 'no-recipe' });
+      return;
+    }
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'X-Instar-Request: 1 required' });
+      return;
+    }
+    res.json({ held: !!updateSetupState(deps.stateDir, req.params.id, { held: true }).held });
   });
 
   router.post('/recommended-services/:id/no', (req, res) => {
@@ -336,6 +365,11 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     // text, or from a new owner, is a fresh consent and gets its own row.
     const already = ledger.activeGrant(row.id, binding.targetMachine);
     if (already && already.offerTextHash === binding.offerTextHash && already.principal === binding.owner) {
+      // The only thing a repeat yes changes: it lifts a hold, because the person has now asked again.
+      if (readSetupStates(deps.stateDir)[row.id]?.held) {
+        liftHold(row.id);
+        void beginSetup(row);
+      }
       res.json(ledger.effective(row.id));
       return;
     }
@@ -369,6 +403,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
         });
       }
     }
+    liftHold(row.id);
     void beginSetup(row);
     res.json(ledger.effective(row.id));
   });

@@ -105,6 +105,14 @@ describe('recommended services: production wiring', () => {
     expect(res.body.error).toBe('no-recipe');
   });
 
+  it('the hold route refuses on an agent that is not proving a recipe', async () => {
+    const { server } = boot(true);
+    const res = await request(server.getApp()).post('/recommended-services/jev/hold')
+      .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('no-recipe');
+  });
+
   it('refuses to surface a retired offer', async () => {
     const { server } = boot(true);
     const res = await request(server.getApp()).post('/features/git-backup/surface').set('Authorization', `Bearer ${AUTH}`).send({ trigger: 't' });

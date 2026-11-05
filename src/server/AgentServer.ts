@@ -8,6 +8,7 @@
  * WebSocket connections for real-time terminal streaming.
  */
 
+import { holdAllSetups } from '../recommended/setupState.js';
 import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import express, { type Express, type Request, type Response } from 'express';
@@ -6413,6 +6414,7 @@ export class AgentServer {
         registry: routeCtx.conversationRegistry,
         dispatch: () => options.slackInboundDispatch?.() ?? null,
         killAllSessions: () => {
+          try { holdAllSetups(options.config.stateDir); } catch { /* @silent-fallback-ok — the stop itself must never fail over this */ }
           let any = false;
           for (const sess of options.sessionManager.listRunningSessions()) { try { options.sessionManager.killSession(sess.id); any = true; } catch { /* @silent-fallback-ok — already gone */ } }
           return any;

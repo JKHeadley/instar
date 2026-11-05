@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "slug": "recommended-services-stop-holds",
+  "sessionId": "58f67d35-e862-45fd-a8db-06c862c54056",
+  "timestamp": "2026-11-05T02:01:49.070Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-stop-holds.md",
+  "artifactSha256": "620c39e3777674ea2168298c7d8c70fd25edeeef3aa752c5416d653123da0986",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "docs/specs/recommended-services-stop-holds.eli16.md",
+    "docs/specs/recommended-services.eli16.md",
+    "docs/specs/recommended-services.md",
+    "src/commands/server.ts",
+    "src/recommended/catalog.ts",
+    "src/recommended/recipes.ts",
+    "src/recommended/setupState.ts",
+    "src/server/AgentServer.ts",
+    "src/server/recommendedServiceRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/recommended-services-alive.test.ts",
+    "tests/integration/recommended-services-setup.test.ts",
+    "upgrades/next/recommended-services-stop-holds.md",
+    "upgrades/side-effects/recommended-services-stop-holds.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes when a setup session restarts and adds a route. Dark on real agents, but session lifecycle, so it took the second-pass review.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "closure": "n/a",
+    "reason": "A recorded fact that stops an automatic restart, with no loop, no retry and no new way to act."
+  }
+}
