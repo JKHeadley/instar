@@ -12255,6 +12255,38 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.sessionManager.memoryPrivacyStatus());
   });
 
+  // The owner's one-time repair (spec: "Owner recovery"). The token is the auth, the
+  // same posture as Secret Drop. GET changes nothing, because apps fetch links to build
+  // previews; only the page's POST spends the token. The body is ignored on purpose.
+  const memoryFixEsc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
+  const memoryFixPage = (title: string, body: string): string => {
+    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${memoryFixEsc(title)}</title></head><body style="font-family:system-ui;max-width:32rem;margin:2rem auto;padding:0 1rem"><h1 style="font-size:1.3rem">${memoryFixEsc(title)}</h1>${body}</body></html>`;
+  };
+  router.get('/memory-privacy/fix/:token', (req, res) => {
+    const recovery = ctx.sessionManager.memoryPrivacyRecovery();
+    res.set('Cache-Control', 'no-store').set('Referrer-Policy', 'no-referrer');
+    if (!recovery?.linkIsLive(req.params.token)) {
+      res.status(410).send(memoryFixPage('This link has expired', '<p>Ask the agent again in a private chat for a new one.</p>'));
+      return;
+    }
+    const cause = `<p>${memoryFixEsc(recovery.describe(req.params.token))}</p>`;
+    res.send(recovery.canRepair(req.params.token)
+      ? memoryFixPage('Fix private memory', `${cause}<p>This points the agent at that working Claude Code. Memory stays private. Sessions already running are not touched.</p><form method="post"><button type="submit" style="font-size:1rem;padding:.6rem 1rem">Fix it</button></form>`)
+      : memoryFixPage('How to fix private memory', cause));
+  });
+  router.post('/memory-privacy/fix/:token', async (req, res) => {
+    const recovery = ctx.sessionManager.memoryPrivacyRecovery();
+    res.set('Cache-Control', 'no-store').set('Referrer-Policy', 'no-referrer');
+    const outcome = recovery ? await recovery.redeem(req.params.token) : 'expired';
+    if (outcome === 'fixed') {
+      res.send(memoryFixPage('Fixed', '<p>Private memory is working. Send your message again and the agent will answer.</p>'));
+    } else if (outcome === 'not-fixed') {
+      res.status(500).send(memoryFixPage('Not fixed', `<p>${memoryFixEsc(recovery?.describe() ?? '')}</p>`));
+    } else {
+      res.status(410).send(memoryFixPage('This link has expired', '<p>Ask the agent again in a private chat for a new one.</p>'));
+    }
+  });
+
   router.post('/sessions/spawn', spawnLimiter, async (req, res) => {
     const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole } = req.body;
 

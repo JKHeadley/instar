@@ -69,7 +69,7 @@ describe('memory privacy (alive on the production wiring path)', () => {
   it('is alive: the status route answers 200 with the real state', async () => {
     const res = await request(app).get('/memory-privacy').set('Authorization', `Bearer ${agentToken}`);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ enabled: true, multiPerson: true, ownerUserId: 'pat', sandboxReady: true });
+    expect(res.body).toMatchObject({ enabled: true, multiPerson: true, ownerUserId: 'pat', sandboxReady: true });
   });
 
   it('is wired: a session token issued by the live object is honoured by the auth layer', async () => {

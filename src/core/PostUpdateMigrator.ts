@@ -8472,6 +8472,11 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: memory privacy is opt-in for existing agents');
     }
+    if (!content.includes('one-time repair link')) {
+      content += `\n\n- **Memory privacy recovery**: when \`sandboxReady\` is false, \`GET /memory-privacy\` gives \`blocker\` and \`fix\`, the real cause in plain words, and the owner also gets a private link to the solution, with a one-time repair link when one click can fix it. Owner reports "I can't reply here yet: private memory isn't set up" → read \`fix\` and tell them exactly that. Never set \`memoryPrivacy.enabled\` false to get past it unless the owner asks: that reopens the leak.`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Memory privacy recovery');
+    }
 
     // Replace a shipped legacy section before any missing capability bullets
     // are appended. An appended bullet at EOF would otherwise become part of
@@ -14867,6 +14872,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     const markers = [
       '**Memory privacy**',
       'An update never turns it on',
+      'one-time repair link',
       '### Feature switches apply their setting (read `effective` before saying a feature is on)',
       '### Telegram message origin',
       // message-origin-all-platforms: server-side and framework-neutral (app + Slack recording).

@@ -52,6 +52,33 @@ export function installBwrapProfile(): Promise<boolean> {
   });
 }
 
+/** Why scoped sessions cannot run here. Null means they can. */
+export type MemorySandboxBlocker = 'sandbox' | 'claude-missing' | 'claude-too-old';
+
+/** The version a Claude binary reports, or null when it will not run. */
+export function readClaudeVersion(claudePath: string | undefined): Promise<string | null> {
+  return new Promise((resolve) => {
+    if (!claudePath) { resolve(null); return; }
+    execFile(claudePath, ['--version'], { timeout: 10_000 }, (err, stdout) => {
+      const have = /(\d+\.\d+\.\d+)/.exec(String(stdout));
+      resolve(err || !have ? null : have[1]);
+    });
+  });
+}
+
+/** Where Claude Code is usually installed, for a server whose PATH is thin under launchd. */
+export function knownClaudePaths(home: string): string[] {
+  return ['/opt/homebrew/bin/claude', '/usr/local/bin/claude', `${home}/.local/bin/claude`, `${home}/.claude/local/claude`];
+}
+
+/** The first of these that really runs at or above the floor. Each one is executed, not assumed. */
+export async function findClaudeAtFloor(paths: string[], floor: string): Promise<string | null> {
+  for (const candidate of paths) {
+    if (await claudeMeetsFloor(candidate, floor)) return candidate;
+  }
+  return null;
+}
+
 /** An older binary could ignore these settings, which would leave the shell unbounded. */
 export function claudeMeetsFloor(claudePath: string | undefined, floor: string): Promise<boolean> {
   return new Promise((resolve) => {

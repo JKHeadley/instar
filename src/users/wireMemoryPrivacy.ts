@@ -9,8 +9,13 @@ import path from 'node:path';
 import type { UserProfile } from '../core/types.js';
 import type { SessionManager } from '../core/SessionManager.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
-import { claudeMeetsFloor, installBwrapProfile, installSandboxPackages, memorySandboxWorks } from '../core/memorySandboxProbe.js';
+import { writeConfigAtomic } from '../core/BootSelfKnowledge.js';
+import {
+  claudeMeetsFloor, findClaudeAtFloor, installBwrapProfile, installSandboxPackages, knownClaudePaths,
+  memorySandboxWorks, readClaudeVersion, type MemorySandboxBlocker,
+} from '../core/memorySandboxProbe.js';
 import { MemoryInboundTracker } from './MemoryInboundTracker.js';
+import { memoryFixText, MemoryPrivacyRecovery, type RecoveryFacts } from './MemoryPrivacyRecovery.js';
 import { MemoryPrivacy, type MemoryPrivacyConfig, type ReachableLists } from './MemoryPrivacy.js';
 
 /** The oldest Claude Code these session settings were verified on. */
@@ -37,6 +42,10 @@ export interface WireMemoryPrivacyInput {
   claudePath?: string;
   instarRoot?: string;
   probe?: () => Promise<boolean>;
+  /** Other places to look for a Claude binary at the floor. Defaults to the usual ones. */
+  claudeCandidates?: string[];
+  /** The address of a path on this server, for the owner's link. */
+  linkFor?: (urlPath: string) => string | null;
 }
 
 function readJson<T>(file: string, fallback: T): T {
@@ -53,6 +62,7 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
   tracker: MemoryInboundTracker;
   users: () => UserProfile[];
   ready: Promise<void>;
+  recovery: MemoryPrivacyRecovery;
 } {
   const users = (): UserProfile[] => readJson(path.join(input.stateDir, 'users.json'), input.initialUsers ?? []);
   const entry = (type: string) => input.messaging().find((m) => m.type === type && (m as { enabled?: boolean }).enabled !== false)?.config ?? {};
@@ -91,11 +101,16 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
   });
 
   let sandboxReady = false;
+  let claudePath = input.claudePath;
+  let blockerFacts: RecoveryFacts | null = null;
   input.sessionManager.setMemoryPrivacy({
     privacy,
     telegramGroupKey: () => telegramKey(),
     slackChannelForSession: input.slackChannelForSession,
     sandboxReady: () => sandboxReady,
+    blocker: () => blockerFacts?.blocker ?? null,
+    fix: () => (blockerFacts ? memoryFixText(blockerFacts) : null),
+    recovery: () => recovery,
     replyScripts: () => REPLY_SCRIPTS.map((s) => path.join(input.projectDir, '.instar', 'scripts', s)),
   });
 
@@ -103,37 +118,77 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
   // Slack may never connect (bad token), and the baseline must not wait forever.
   setTimeout(() => privacy.establishBaseline({ force: true }), BASELINE_WAIT_MS).unref();
 
+  const findBlocker = async (): Promise<MemorySandboxBlocker | null> => {
+    if (input.probe) return (await input.probe()) ? null : 'sandbox';
+    if (!(await memorySandboxWorks())) return 'sandbox';
+    if (await claudeMeetsFloor(claudePath, MEMORY_PRIVACY_CLAUDE_FLOOR)) return null;
+    return (await readClaudeVersion(claudePath)) ? 'claude-too-old' : 'claude-missing';
+  };
+
+  const assess = async (): Promise<void> => {
+    let blocker = await findBlocker();
+    if (blocker === 'sandbox' && process.platform === 'linux' && !input.probe) {
+      await installSandboxPackages();
+      await installBwrapProfile();
+      blocker = await findBlocker();
+    }
+    sandboxReady = blocker === null;
+    if (blocker === null) { blockerFacts = null; return; }
+    const elsewhere = (input.claudeCandidates ?? knownClaudePaths(os.homedir())).filter((p) => p !== claudePath);
+    blockerFacts = {
+      blocker,
+      platform: process.platform,
+      floor: MEMORY_PRIVACY_CLAUDE_FLOOR,
+      haveVersion: await readClaudeVersion(claudePath),
+      candidate: blocker === 'sandbox' ? null : await findClaudeAtFloor(elsewhere, MEMORY_PRIVACY_CLAUDE_FLOOR),
+    };
+  };
+
+  const recovery = new MemoryPrivacyRecovery({
+    facts: () => blockerFacts,
+    linkFor: (urlPath) => input.linkFor?.(urlPath) ?? null,
+    repair: async () => {
+      const chosen = blockerFacts?.candidate;
+      // Measured again here: the binary may have changed since boot.
+      if (!chosen || !(await claudeMeetsFloor(chosen, MEMORY_PRIVACY_CLAUDE_FLOOR))) {
+        await assess();
+        return false;
+      }
+      writeConfigAtomic(path.join(input.projectDir, '.instar', 'config.json'), (cfg) => {
+        const sessions = (cfg.sessions ??= {}) as { claudePath?: string; frameworkBinaryPaths?: Record<string, string> };
+        sessions.claudePath = chosen;
+        if (sessions.frameworkBinaryPaths?.['claude-code']) sessions.frameworkBinaryPaths['claude-code'] = chosen;
+        return { value: chosen };
+      });
+      claudePath = chosen;
+      input.sessionManager.setClaudeBinary(chosen);
+      await assess();
+      return sandboxReady;
+    },
+  });
+
   const tracker = new MemoryInboundTracker({
     privacy,
     retireSessions: () => input.sessionManager.retireSessionsForAudienceChange(),
     retireSessionUnlessAudience: (name, audience) => input.sessionManager.retireSessionUnlessAudience(name, audience),
     sandboxReady: () => sandboxReady,
     framework: input.framework,
+    recovery,
   });
 
-  const probe = input.probe ?? (async () => (await memorySandboxWorks()) && (await claudeMeetsFloor(input.claudePath, MEMORY_PRIVACY_CLAUDE_FLOOR)));
   // With it off there is nothing to protect: no probe, no install, no report. Turning it
   // on takes a restart, which runs this.
-  const ready = !privacy.enabled ? Promise.resolve() : probe().then(async (first) => {
-    let works = first;
-    if (!works && process.platform === 'linux' && !input.probe) {
-      await installSandboxPackages();
-      await installBwrapProfile();
-      works = await probe();
-    }
-    sandboxReady = works;
-    if (!works) {
-      DegradationReporter.getInstance().report({
-        feature: 'MemoryPrivacy.sandbox',
-        primary: 'Run sessions for people and shared places inside the OS sandbox',
-        fallback: 'Those conversations get a fixed reply; nothing runs unprotected',
-        reason: 'Why: the sandbox did not start on this machine',
-        impact: process.platform === 'linux'
-          ? 'Everyone but the owner in private chats gets a fixed reply instead of an answer. To fix it, install bubblewrap and socat as an administrator, and on Ubuntu 24.04 add the bubblewrap AppArmor profile.'
-          : 'This platform has no supported sandbox.',
-      });
-    }
+  const ready = !privacy.enabled ? Promise.resolve() : assess().then(() => {
+    if (!blockerFacts) return;
+    DegradationReporter.getInstance().report({
+      feature: 'MemoryPrivacy.sandbox',
+      primary: 'Run sessions for people and shared places inside the OS sandbox',
+      fallback: 'Those conversations get a fixed reply; nothing runs unprotected',
+      reason: `Why: ${blockerFacts.blocker}`,
+      // This report can leave the machine, so it carries no paths.
+      impact: `Everyone but the owner in private chats gets a fixed reply instead of an answer. ${memoryFixText(blockerFacts, true)}`,
+    });
   });
 
-  return { privacy, tracker, users, ready };
+  return { privacy, tracker, users, ready, recovery };
 }

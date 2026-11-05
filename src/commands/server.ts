@@ -5,8 +5,8 @@
  */
 import { configureClaudeChildAuth, sweepClaudeAuthEnvFiles } from '../core/claudeChildAuth.js';
 import { SlackPrincipalResolver } from '../permissions/SlackPrincipalResolver.js';
-import { MEMORY_PRIVACY_UNAVAILABLE_REPLY } from '../users/MemoryInboundTracker.js';
-import { whatsappPersonKey } from '../users/MemoryAudience.js';
+import type { InboundFacts } from '../users/MemoryInboundTracker.js';
+import { whatsappPersonKey, whatsappSpeakerJid } from '../users/MemoryAudience.js';
 import { slackHistoryLabel } from '../messaging/slack/threadHistoryLabel.js';
 import { readPairingOwnerName } from '../threadline/pairingOwnerName.js';
 import { buildThrowawayJobGuard, checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
@@ -731,6 +731,8 @@ let _topicProfileCtxRef: {
 let _inboundQueue: import('../core/QueueDrainLoop.js').QueueDrainLoop | null = null;
 /** Memory privacy (docs/specs/memory-privacy.md): set in startServer, read at every inbound. */
 let _memoryInbound: import('../users/MemoryInboundTracker.js').MemoryInboundTracker | null = null;
+/** The tunnel's address for a path, once a tunnel exists. The tunnel starts after memory privacy. */
+let _memoryLinkFor: ((urlPath: string) => string | null) | null = null;
 function telegramConfiguredForMemory(config: { messaging?: Array<{ type: string }> }): boolean {
   return (config.messaging ?? []).some((m) => m.type === 'telegram');
 }
@@ -2647,16 +2649,21 @@ export function wireTelegramRouting(
 
     // Memory privacy: record who spoke and re-check the group's readers BEFORE routing.
     if (_memoryInbound) {
-      const verdict = await _memoryInbound.onInbound({
+      const memoryFacts: InboundFacts = {
         placeKey: telegram.memoryPlaceKey,
         placeKind: 'shared',
         senderKey: resolvedUser ? `user:${resolvedUser.id}` : telegramUserId ? `telegram:${telegramUserId}` : null,
         personId: resolvedUser?.id ?? null,
         readerCount: () => telegram.groupReaderCount(),
         liveSession: () => telegram.getSessionForTopic(topicId),
-      });
+      };
+      const verdict = await _memoryInbound.onInbound(memoryFacts);
       if (verdict === 'unavailable') {
-        await telegram.sendToTopic(topicId, MEMORY_PRIVACY_UNAVAILABLE_REPLY);
+        await telegram.sendToTopic(topicId, await _memoryInbound.refuse(memoryFacts, async (text) => {
+          // This DM has one fixed recipient, so it goes only when that is who asked.
+          if (!telegramUserId || telegram.getOwnerUserId() !== telegramUserId) return false;
+          return (await telegram.sendToOwnerDM(text)) !== null;
+        }));
         return;
       }
     }
@@ -3553,16 +3560,22 @@ async function whatsappMemoryCheck(
   metadata: Record<string, unknown> | undefined,
 ): Promise<boolean> {
   if (!_memoryInbound) return true;
-  const profile = _memoryUserResolver?.channel('whatsapp', jid) ?? null;
-  const verdict = await _memoryInbound.onInbound({
+  const senderJid = whatsappSpeakerJid(metadata, jid);
+  const profile = _memoryUserResolver?.channel('whatsapp', senderJid) ?? null;
+  const memoryFacts: InboundFacts = {
     placeKey: `whatsapp:${jid}`,
     placeKind: jid.endsWith('@g.us') ? 'shared' : 'private',
-    senderKey: profile ? `user:${profile.id}` : whatsappPersonKey((metadata?.senderJid as string | undefined) ?? jid),
+    senderKey: profile ? `user:${profile.id}` : whatsappPersonKey(senderJid),
     personId: profile?.id ?? null,
     liveSession: () => whatsapp.getSessionForChannel(jid),
-  });
+  };
+  const verdict = await _memoryInbound.onInbound(memoryFacts);
   if (verdict === 'deliver') return true;
-  await whatsapp.send({ userId: jid, content: MEMORY_PRIVACY_UNAVAILABLE_REPLY, channel: { type: 'whatsapp', identifier: jid } });
+  const content = await _memoryInbound.refuse(memoryFacts, async (text) => {
+    await whatsapp.send({ userId: senderJid, content: text, channel: { type: 'whatsapp', identifier: senderJid } });
+    return true;
+  });
+  await whatsapp.send({ userId: jid, content, channel: { type: 'whatsapp', identifier: jid } });
   return false;
 }
 
@@ -3770,16 +3783,17 @@ function wireIMessageRouting(
     // with imsg, which the sandbox cannot give, so a scoped session is refused here.
     if (_memoryInbound) {
       const imProfile = _memoryUserResolver?.channel('imessage', sender) ?? null;
-      const verdict = await _memoryInbound.onInbound({
+      const memoryFacts: InboundFacts = {
         placeKey: `imessage:${senderNorm}`,
         placeKind: 'private',
         senderKey: imProfile ? `user:${imProfile.id}` : `imessage:${sender}`,
         personId: imProfile?.id ?? null,
         scopedUnsupported: true,
         liveSession: () => imessage.getSessionForSender(sender),
-      });
+      };
+      const verdict = await _memoryInbound.onInbound(memoryFacts);
       if (verdict === 'unavailable') {
-        await imessage.send({ userId: sender, content: MEMORY_PRIVACY_UNAVAILABLE_REPLY, channel: { type: 'imessage', identifier: sender } });
+        await imessage.send({ userId: sender, content: await _memoryInbound.refuse(memoryFacts), channel: { type: 'imessage', identifier: sender } });
         return;
       }
     }
@@ -6924,6 +6938,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       projectName: config.projectName,
       framework: () => sessionManagerConfig.framework ?? 'claude-code',
       claudePath: sessionManagerConfig.frameworkBinaryPaths?.['claude-code'] ?? sessionManagerConfig.claudePath,
+      linkFor: (urlPath) => _memoryLinkFor?.(urlPath) ?? null,
       memoryPrivacy: () => (config as { memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacyConfig }).memoryPrivacy,
       messaging: () => (config.messaging ?? []) as Array<{ type: string; config?: Record<string, unknown> }>,
       initialUsers: config.users,
@@ -10189,16 +10204,21 @@ export async function startServer(options: StartOptions): Promise<void> {
           // a channel or thread is shared, and a thread's audience is its channel's.
           if (_memoryInbound) {
             const slackProfile = slackUserId ? _memoryUserResolver?.slack(slackUserId) ?? null : null;
-            const verdict = await _memoryInbound.onInbound({
+            const memoryFacts: InboundFacts = {
               placeKey: `slack:${channelId}`,
               placeKind: channelId.startsWith('D') ? 'private' : 'shared',
               senderKey: slackProfile ? `user:${slackProfile.id}` : slackUserId ? `slack:${slackUserId}` : null,
               personId: slackProfile?.id ?? null,
               readerCount: () => slackAdapter!.channelReaderCount(channelId),
               liveSession: () => slackAdapter!.getSessionForChannel(routingKey),
-            });
+            };
+            const verdict = await _memoryInbound.onInbound(memoryFacts);
             if (verdict === 'unavailable') {
-              await slackAdapter!.sendToChannel(channelId, MEMORY_PRIVACY_UNAVAILABLE_REPLY, replyThreadTs ? { thread_ts: replyThreadTs } : undefined);
+              // Posting to a user id opens the app's direct message with them.
+              const reply = await _memoryInbound.refuse(memoryFacts, slackUserId
+                ? async (text) => { await slackAdapter!.sendToChannel(slackUserId, text); return true; }
+                : undefined);
+              await slackAdapter!.sendToChannel(channelId, reply, replyThreadTs ? { thread_ts: replyThreadTs } : undefined);
               return 'refused';
             }
           }
@@ -13780,6 +13800,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (!config.tunnel) {
         liveConfig.set('tunnel', { enabled: true, type: 'quick' });
       }
+      _memoryLinkFor = (urlPath) => tunnel?.getExternalUrl(urlPath) ?? null;
       tunnel = new TunnelManager({
         enabled: true,
         type: config.tunnel?.type || 'quick',
