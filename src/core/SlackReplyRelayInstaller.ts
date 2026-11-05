@@ -20,6 +20,9 @@ export const PRIOR_SHIPPED_SLACK_RELAY_SHA256 = new Set([
   '166438d58f0246699b6f4b0398983677faa0943feaf2c0c92b30d9d8d89a8fa7',
   // Before a bound session dropped a habitual channel-id argument (cloud-key recovery drill).
   'e9489783f4a85e6c0d38a2e46b4b1a2fd5d898c259484a01e6e02e326bc634c3',
+  // Earlier revisions of this PR remain in first-parent history after its main merge.
+  'be2654a519d8cf4d727ea65ca5dce19bb3e47839cc0748034ab4d97a0c11c881',
+  '973691e6e54b7c0426d53679493b530ac72ed50364c526bff4fb1e44a1ba3342',
 ]);
 
 export interface SlackRelayInstallResult {

@@ -38,11 +38,11 @@ No static heuristic is added at a competing-signals judgment point. The accepted
 
 ## 5. Interactions
 
-Code extraction precedes native-reference extraction, so quoted code cannot ping. The relay target list is carried through the bound session route and stripped from Slack API params. Reference extraction precedes prose escaping, so intentional syntax survives exactly once. Markdown link conversion and the existing safe-scheme check remain active. Names are cached by the adapter; failed lookups leave the prior ID fallback. No shared state or retry loop is added.
+Code extraction precedes native-reference extraction, so quoted code cannot ping. The relay target list is carried through the bound session route and stripped from Slack API params. The shipped-template migration allowlist now includes the two earlier revisions of this PR that the first-parent history lint sees after merging current main; each hash comes from a reviewed PR commit, so only those exact relay bytes gain overwrite authority. Reference extraction precedes prose escaping, so intentional syntax survives exactly once. Markdown link conversion and the existing safe-scheme check remain active. Names are cached by the adapter; failed lookups leave the prior ID fallback. No shared state or retry loop is added.
 
 ## 6. External surfaces
 
-Slack recipients see rendered references and may receive a notification for an individually mentioned user. The channel and link display correctly. Session context shows participant names when available. The test post used the bot's own ID in an isolated test channel to avoid a human ping.
+Slack recipients see rendered references and may receive a notification for an individually mentioned user. The channel and link display correctly. Session context shows participant names when available. The final live post used Echo's demo bot to mention a real human member in the isolated mention-proof channel. Slack readback kept that mention active and left a copied example literal.
 
 ## 6b. Operator-surface quality
 
@@ -62,10 +62,13 @@ The live post and targeted tests support the narrow protocol repair. The first s
 
 ## Second-pass review
 
-**Reviewer:** independent /instar-dev reviewer. **Finding:** the original design was not safe; an explicit per-target bound relay choice and oversized fallback escape were added. **Final re-review:** concurred with the per-target design. The same-target excerpt and legacy-mode limits are recorded in Under-block.
+**Reviewer:** independent /instar-dev reviewer. **Finding:** the original design was not safe; an explicit per-target bound relay choice and oversized fallback escape were added. **Final re-review:** concurred with the per-target design. The same-target excerpt and legacy-mode limits are recorded in Under-block. **Current-main SHA repair review:** an independent /instar-dev reviewer rehashed both PR revisions, confirmed the allowlist contains their exact bytes, and concurred that the isolated real-human Slack readback supports release.
 
 ## Evidence pointers
 
 - Before: `slack-mrkdwn-formatter.test.ts` failed on the supplied mention; 60 tests passed, 1 failed.
 - After: formatter, history-label, and wire-up suites passed: 81 tests; the bound-route integration suite passed 4 tests and verifies the opt-in field reaches the adapter. A mocked canonical relay invocation proved the explicit target list enters the bound-session request body.
 - Live Slack workspace `T0AQ9MLRHEC`, test channel `C0CES4G5H0B`, message `1793820889.173479`: history returned active self mention, channel reference, safe link, and escaped broadcast tokens.
+
+- Final live human proof against the candidate built from merged main: demo workspace `T0AQ9MLRHEC`, channel `C0CES4G5H0B`, bot message `1793859757.182909`. Slack readback returned active `<@U0AP927E2R1>`; `users.info` verified that ID is human member Justin Headley (`is_bot:false`), and the copied code example remained `&lt;@U0C62ABNDK8&gt;`. The human was added to the isolated channel before posting; no shared canary restarted.
+- Local SHA-history test: 3 passed after adding hashes for the two earlier PR revisions.
