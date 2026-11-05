@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { PROOF_MOVE_TIMEOUT_MS, PROOF_SETTLED_INTERVAL_MS, PROOF_SETTLED_READS, PROOF_SPAWN_TIMEOUT_MS, RebalanceProofRunner, waitForSettledIdle, proofProbeText, type ProofHistoryRow, type ProofRecord, type RebalanceProofDeps } from '../../src/core/rebalanceProof.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { deliverProbeLocally, rowIsFromMachine, PROOF_MOVE_TIMEOUT_MS, PROOF_SETTLED_INTERVAL_MS, PROOF_SETTLED_READS, PROOF_SPAWN_TIMEOUT_MS, RebalanceProofRunner, waitForSettledIdle, proofProbeText, type ProofHistoryRow, type ProofRecord, type RebalanceProofDeps } from '../../src/core/rebalanceProof.js';
 
 const SELF = 'm_a'; const TARGET = 'm_b'; const TOPIC = 700; const NONCE = 'nonce-1';
 
@@ -287,5 +289,63 @@ describe('evidence reads the source session even when the move failed', () => {
     expect(done.state).toBe('red');
     expect(done.reason).toMatch(/^move-/);
     expect((r.evidence[0].steps as Record<string, unknown>).sourceSessionGone).toBe('unknown');
+  });
+});
+
+describe('a probe the router leaves to this machine', () => {
+  it('is delivered here, and keeps the verdict', async () => {
+    const deliver = vi.fn(async () => {});
+    expect(await deliverProbeLocally('handled-locally', deliver)).toBe('handled-locally');
+    expect(deliver).toHaveBeenCalledOnce();
+  });
+
+  it('reads as undelivered when delivery fails, never as a clean verdict', async () => {
+    const lines: string[] = [];
+    const out = await deliverProbeLocally('handled-locally', async () => { throw new Error('spawn refused'); }, (l) => lines.push(l));
+    expect(out).toBe('undelivered');
+    expect(lines.join()).toContain('spawn refused');
+  });
+
+  it('leaves a forwarded probe to the machine it went to', async () => {
+    const deliver = vi.fn(async () => {});
+    expect(await deliverProbeLocally('forwarded', deliver)).toBe('forwarded');
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it('is wired into the production sendProbe', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf-8');
+    const at = src.indexOf('sendProbe: async (t, text, messageId)');
+    expect(at).toBeGreaterThan(0);
+    expect(src.slice(at, at + 1200)).toContain('deliverProbeLocally(o.action');
+  });
+});
+
+describe('who wrote a reply', () => {
+  const HOLDER = 'm_holder';
+  const relayed = { text: NONCE, machine: HOLDER, origin: { machine: { value: 'Target Box', status: 'observed' } } };
+
+  it('a reply relayed through the holder counts for the machine that wrote it', async () => {
+    const r = rig({ rows: [relayed], machineName: () => 'Target Box' });
+    expect((await run(r)).state).toBe('green');
+  });
+
+  it('a reply the holder wrote itself does not count for the target, whatever logged it', async () => {
+    const row = { text: NONCE, machine: TARGET, origin: { machine: { value: 'Other Box', status: 'observed' } } };
+    const r = rig({ rows: [row], machineName: () => 'Target Box' });
+    expect(await run(r)).toMatchObject({ state: 'red', reason: 'reply-from-wrong-machine' });
+  });
+
+  it('falls back to the row when no author was observed or the name is unknown', () => {
+    expect(rowIsFromMachine({ machine: TARGET, origin: { machine: { value: null, status: 'unknown' } } }, TARGET, 'Target Box')).toBe(true);
+    expect(rowIsFromMachine({ machine: HOLDER, origin: { machine: { value: null, status: 'unknown' } } }, TARGET, 'Target Box')).toBe(false);
+    expect(rowIsFromMachine(relayed, TARGET, null)).toBe(false);
+  });
+
+  it('production asks for origin records and names machines', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf-8');
+    const at = src.indexOf('setActiveRebalanceProof(new RebalanceProofRunner({');
+    const block = src.slice(at, at + 6000);
+    expect(block).toContain('scope=pool&includeOrigin=1');
+    expect(block).toContain('machineName: (id) =>');
   });
 });
