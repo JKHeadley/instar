@@ -1103,6 +1103,14 @@ export function MOBILE_PROPOSALS_INSIDE_LINE(port: number): string {
   return `- The app's native Proposals and How I'm doing inside screens read \`GET /mobile/proposals\` (proposed fixes waiting, across the machines that answer; dismissing stays in the console) and \`GET /mobile/inside\` (recent records, repeating problems, checks on my own claims and correction reviews, per machine). Read-only; an owner phone or my token; an MSP phone gets 403 \`owner-phone-required\`: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/inside\`.`;
 }
 export const MOBILE_PROPOSALS_INSIDE_MARKER = 'GET /mobile/proposals';
+/**
+ * The native console pages and file browser (docs/specs/mobile-native-console-pages.md), one bullet in the
+ * Mobile app routes block after the Passwords & keys bullets. Sniff: `GET /mobile/ideas`.
+ */
+export function MOBILE_CONSOLE_PAGES_LINE(port: number): string {
+  return `- The app's native Ideas, Pace, Development, Maturation and Files screens read \`GET /mobile/ideas\`, \`/mobile/pace\`, \`/mobile/development\`, \`/mobile/maturation\`, \`/mobile/files?path=\` and \`/mobile/files/read?path=\` (owner phone or bearer, read-only, each built from the console route it mirrors so a phone never sees more than the console; files whose name says they hold a secret are hidden even where the console shows them). Check one: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/pace\`. **When to use**: the owner asks how queues, shipping or features are doing from the phone, or asks to see a file. Changes stay in the console.`;
+}
+export const MOBILE_CONSOLE_PAGES_MARKER = 'GET /mobile/ideas';
 export const MOBILE_ROUTES_PROBE_LINE_PREFIX = '- A probe that fails 8 times in a row pauses for that name';
 
 /** The increment-1 wording of the verdict bullet's tail, replaced in place on update. */
@@ -1231,6 +1239,7 @@ ${MOBILE_PERMISSIONS_LINE(port)}
 ${MOBILE_PROPOSALS_INSIDE_LINE(port)}
 ${MOBILE_SECRETS_LINE(port)}
 ${MOBILE_SECRETS_WRITES_LINE(port)}
+${MOBILE_CONSOLE_PAGES_LINE(port)}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }
@@ -9840,6 +9849,23 @@ setTimeout(() => process.exit(0), 2000);
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added the native Proposals and How I\'m doing inside line');
+    }
+
+    // Native console pages (docs/specs/mobile-native-console-pages.md): one bullet after the Passwords & keys
+    // bullet of an existing Mobile app routes block (a block added below already has it).
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_CONSOLE_PAGES_MARKER)) {
+      const lines = content.split('\n');
+      const writes = lines.findIndex((l) => l.includes(MOBILE_SECRETS_WRITES_MARKER));
+      const at = writes >= 0 ? writes : lines.findIndex((l) => l.includes(MOBILE_SECRETS_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_CONSOLE_PAGES_LINE(port));
+        content = lines.join('\n');
+      } else {
+        // A block without that bullet: append the line rather than skip it.
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_CONSOLE_PAGES_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the native console pages line');
     }
 
     // Mobile app routes (docs/specs/mobile-multi-route.md) — Agent Awareness + Migration Parity.
