@@ -72,7 +72,7 @@ export function isPreDispatchRefusal(code: unknown, body: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.error !== 'string') return false;
   const keys = Object.keys(value).sort().join(',');
   if (code === 500) return keys === 'error' && (value.error === 'origin-display-authority-unavailable'
-    || /^issues-chat-not-configured: topic \d+ belongs to the issues group/.test(value.error));
+    || /^issues-chat-not-configured: topic \d+(?: "[^"\n]*"| \(name unresolved\))? belongs to the issues group/.test(value.error));
   return keys === 'error,message,reason,retryable' && value.error === 'origin-config-unavailable' && value.retryable === true;
 }
 

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "topic-name-beside-id",
+  "sessionId": "81a696e0-037c-4766-86ae-02a2fd45723d",
+  "timestamp": "2026-11-04T22:04:46.883Z",
+  "artifactPath": "upgrades/side-effects/topic-name-beside-id.md",
+  "artifactSha256": "6811338259511832b4ad9cb867f4ea2561ddeac1f3118afaa99131a3183e1884",
+  "coveredFiles": [
+    "tests/e2e/claude-key-alive.test.ts",
+    "upgrades/side-effects/topic-name-beside-id.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "CI-only test portability repair; disposable CLI stub leaves production behavior unchanged.",
+  "eli16Path": "docs/specs/topic-name-beside-id.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/topic-name-beside-id.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -14,6 +14,7 @@
  * the topic. IMMEDIATE never enters that machinery.
  */
 
+import { topicRef } from './shared/topicRef.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'node:crypto';
@@ -925,7 +926,7 @@ export class NotificationBatcher {
     if (!requireDeliverySink(this.sendFn, {
       component: 'NotificationBatcher',
       primary: 'Deliver queued and immediate notifications through the configured messaging sink',
-      reason: `No delivery sink is configured for topic ${topicId}`,
+      reason: `No delivery sink is configured for ${topicRef(topicId)}`,
       impact: 'A notification was not delivered; startup composition or messaging configuration is incomplete',
     })) return false;
 

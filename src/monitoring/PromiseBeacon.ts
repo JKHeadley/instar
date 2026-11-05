@@ -29,6 +29,7 @@
  *  - `sendMessage(topicId, text, { source: 'promise-beacon', isProxy: true })`
  *    is what PresenceProxy's `isSystemOrProxyMessage` filters out.
  */
+import { topicRef } from '../messaging/shared/topicRef.js';
 import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
 import { featureEvidence } from './FeatureEvidenceLog.js';
 import * as fs from 'fs';
@@ -1638,8 +1639,8 @@ export class PromiseBeacon extends EventEmitter {
         .find((item): item is Commitment => !!item && item.topicId === topicId);
     if (!representative) {
       const reason = state.retryingRepresentativeId
-        ? `The frozen aggregate representative ${state.retryingRepresentativeId} no longer resolves on topic ${topicId}`
-        : `No commitment record remains for ${batch.length} durable aggregate item(s) on topic ${topicId}`;
+        ? `The frozen aggregate representative ${state.retryingRepresentativeId} no longer resolves on ${topicRef(topicId)}`
+        : `No commitment record remains for ${batch.length} durable aggregate item(s) on ${topicRef(topicId)}`;
       this.reportAggregateDegradation('durable aggregate delivery', 'retain the batch for operator repair', reason);
       throw new Error(reason);
     }

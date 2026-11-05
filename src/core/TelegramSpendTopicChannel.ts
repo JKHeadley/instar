@@ -23,6 +23,7 @@
 import crypto from 'node:crypto';
 import type { AlertChannel } from './SpendAlertDispatcher.js';
 import type { SpendAlertResolver } from './SpendAlertResolver.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 export interface TelegramSpendTopicChannelDeps {
   resolver: SpendAlertResolver;
@@ -105,7 +106,7 @@ export class TelegramSpendTopicChannel implements AlertChannel {
     const old = this.lastConfiguredId;
     this.lastConfiguredId = configured;
     if (old === undefined || configured === undefined) return; // first observation / unset — nothing to announce
-    const note = `🔀 Spend alerts now route to topic ${configured} (was ${old}). If you didn't change routingSpend.alerts.telegramTopicId, check your config.`;
+    const note = `🔀 Spend alerts now route to ${topicRef(configured)} (was ${topicRef(old)}). If you didn't change routingSpend.alerts.telegramTopicId, check your config.`;
     this.d.audit?.({ channel: this.id, outcome: 'repoint', from: old, to: configured });
     // Both topics, best-effort — the announcement must never block a delivery.
     await Promise.allSettled([this.d.sendToTopic(old, note), this.d.sendToTopic(configured, note)]);

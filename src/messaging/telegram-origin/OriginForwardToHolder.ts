@@ -15,6 +15,7 @@ import { OriginSendPolicyRefusal } from './OriginSendPolicy.js';
 import type { OriginSendPolicyDecision } from './OriginSendPolicy.js';
 export type OriginSendPolicyRefusalDecision = Extract<OriginSendPolicyDecision, { ok: false }>;
 import type { HeldOperationRow } from './StoreTypes.js';
+import { topicRef } from '../shared/topicRef.js';
 import type { OriginAuditRecord } from './StoreTypes.js';
 import { classifyOperationOutcome } from './OriginOperationOutcome.js';
 
@@ -230,6 +231,10 @@ export interface HeldForwardDetail {
   topicId: number;
   chatId: string;
   text: string;
+  /** Preserve the original author and draft time when a holder change creates
+   * a replacement operation outside the original session context. */
+  authoredProducerKind?: string;
+  authoredPreparedAt?: number;
   silent?: boolean;
   formatMode?: string;
   kindMetadata?: Record<string, unknown>;
@@ -240,6 +245,12 @@ export interface HeldForwardDetail {
   ladder: ForwardLadderState;
   /** Set on an operation prepared to REPLACE one whose holder changed (§4.2 supersede). */
   supersedes?: string;
+}
+
+/** History must retain the original author after a holder replacement. */
+export function recoveredForwardProvenance(detail: { authoredProducerKind?: unknown } | null, producerKind?: string | null): 'agent' | 'automation' {
+  const kind = detail?.authoredProducerKind ?? producerKind;
+  return kind === 'session' || kind === 'imported-legacy' ? 'agent' : 'automation';
 }
 
 export interface ForwardInput { topicId: number; chatId: string; text: string; silent?: boolean; formatMode?: string; kindMetadata?: Record<string, unknown> }
@@ -297,7 +308,8 @@ export async function forwardReplyToHolder(deps: ForwardDeps, input: ForwardInpu
   if (!operation) operation = await deps.prepare(lastHolder ?? UNRESOLVED_LEASE_HOLDER, input);
   const now = deps.now();
   const detail: HeldForwardDetail = { kind: 'forward-to-holder', lastAttempt, machineId: lastHolder, topicId: input.topicId, chatId: input.chatId,
-    text: input.text, ...(input.silent === undefined ? {} : { silent: input.silent }), ...(input.formatMode === undefined ? {} : { formatMode: input.formatMode }),
+    text: input.text, authoredProducerKind: operation.record.producerKind, authoredPreparedAt: operation.admission.preparedAt,
+    ...(input.silent === undefined ? {} : { silent: input.silent }), ...(input.formatMode === undefined ? {} : { formatMode: input.formatMode }),
     ...(input.kindMetadata === undefined ? {} : { kindMetadata: input.kindMetadata }), reason: lastReason, at: now, noticeDelivered: false,
     ladder: nextLadderState(undefined, now, delays) };
   const recorded = await deps.hold(operation, detail);
@@ -389,8 +401,11 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     if (answer.state === 'unreachable' || answer.state === 'owned-by-holder') {
       await retain({}); audit({ outcome: answer.state === 'unreachable' ? 'retained-outcome-unknown' : 'retained-owned-by-holder', machineId: detail.machineId }); return 'retained';
     }
-    // Definitely not accepted there: safe to forward again.
+    // Definitely not accepted there. Clear the uncertainty and let the next
+    // recovery tick review current conversation before another dispatch.
+    await retain({ lastAttempt: 'refused' });
     audit({ outcome: 'outcome-unknown-cleared', machineId: detail.machineId });
+    return 'retained';
   }
   const route = classifyLeaseRoute(deps.lease);
   if (route.kind === 'settling') { await retain({ reason: `lease-settling-${route.reason}` }); audit({ outcome: 'retained-settling', reason: route.reason }); return 'retained'; }
@@ -517,7 +532,7 @@ export function heldExpiryItem(row: HeldOperationRow): { id: string; conditionKe
     conditionKey: `telegram-origin-held:${topic}:expired`,
     category: 'telegram-origin',
     priority: 'HIGH',
-    title: `Held reply to topic ${row.destination.topicId ?? '?'} expired`,
+    title: `Held reply to ${topicRef(row.destination.topicId ?? '?')} expired`,
     summary: expiredForwardWording(row),
     sourceContext: 'telegram-origin-forward-to-holder',
   };
@@ -529,6 +544,6 @@ export function expiredForwardWording(row: HeldOperationRow): string {
   const topic = row.destination.topicId ?? 'the topic';
   const hours = Math.max(1, Math.round((row.deadlineAt - row.preparedAt) / 3_600_000));
   return detail?.lastAttempt === 'outcome-unknown' || detail?.lastAttempt === 'local-sent'
-    ? `My reply to topic ${topic} may or may not have been delivered; the sending machine did not confirm within ${hours} h.`
-    : `I could not deliver my reply to topic ${topic} within ${hours} h.`;
+    ? `My reply to ${topicRef(topic)} may or may not have been delivered; the sending machine did not confirm within ${hours} h.`
+    : `I could not deliver my reply to ${topicRef(topic)} within ${hours} h.`;
 }

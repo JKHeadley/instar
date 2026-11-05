@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "topic-name-beside-id",
+  "sessionId": "81a696e0-037c-4766-86ae-02a2fd45723d",
+  "timestamp": "2026-11-04T18:16:39.992Z",
+  "artifactPath": "upgrades/side-effects/topic-name-beside-id.md",
+  "artifactSha256": "cf91d4b9c5f1bf4c3c7e36d31cec516b7306434829be68ed1bcd8aa6c0f804da",
+  "coveredFiles": [
+    "docs/specs/topic-name-beside-id.eli16.md",
+    "src/commands/server.ts",
+    "src/core/SessionDrainRunner.ts",
+    "src/monitoring/machineMaintenance/WorkYieldRegistry.ts",
+    "src/server/AgentServer.ts",
+    "tests/unit/topic-ref-ratchet.test.ts",
+    "upgrades/side-effects/topic-name-beside-id.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible wording repair after main merge; no new decision or gate; the existing topic-name formatter is reused.",
+  "eli16Path": "docs/specs/topic-name-beside-id.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/topic-name-beside-id.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

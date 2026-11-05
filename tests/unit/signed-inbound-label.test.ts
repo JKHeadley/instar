@@ -33,7 +33,7 @@ describe('buildInjectionTag — signedByAgent clause', () => {
     expect(buildInjectionTag(42, 'Topic', undefined, undefined, false, 'echo'))
       .toBe('[telegram:42 "Topic" from agent echo (signed)]');
     expect(buildInjectionTag(42, undefined, undefined, undefined, false, 'echo'))
-      .toBe('[telegram:42 from agent echo (signed)]');
+      .toBe('[telegram:42 (name unresolved) from agent echo (signed)]');
   });
 
   it('composes with the re-delivery marker', () => {
@@ -44,8 +44,8 @@ describe('buildInjectionTag — signedByAgent clause', () => {
   it('is byte-identical to the previous output when no agent is given (ADDITIVE ONLY)', () => {
     expect(buildInjectionTag(42, 'Agent Updates', 'Justin', 12345)).toBe('[telegram:42 "Agent Updates" from Justin (uid:12345)]');
     expect(buildInjectionTag(42, 'Agent Updates')).toBe('[telegram:42 "Agent Updates"]');
-    expect(buildInjectionTag(42, undefined, 'Justin', 12345)).toBe('[telegram:42 from Justin (uid:12345)]');
-    expect(buildInjectionTag(42)).toBe('[telegram:42]');
+    expect(buildInjectionTag(42, undefined, 'Justin', 12345)).toBe('[telegram:42 (name unresolved) from Justin (uid:12345)]');
+    expect(buildInjectionTag(42)).toBe('[telegram:42 (name unresolved)]');
     expect(buildInjectionTag(42, 'T', 'J', 1, false, undefined)).toBe('[telegram:42 "T" from J (uid:1)]');
   });
 
@@ -140,7 +140,7 @@ describe('wiring — the label and the bind-skip sit at the convergence point (s
   });
   it('SessionManager passes the option to BOTH the inline tag and the long-message reference tag', () => {
     expect(sm).toContain('buildInjectionTag(topicId, safeTopic, safeName, telegramUserId, opts?.reDelivered, opts?.signedByAgent)');
-    expect(sm).toContain('buildInjectionTag(topicId, undefined, undefined, undefined, opts?.reDelivered, opts?.signedByAgent)');
+    expect(sm).toContain('buildInjectionTag(topicId, safeTopic, undefined, undefined, opts?.reDelivered, opts?.signedByAgent)');
   });
   it('routes.ts gates the lifeline-side operator bind on the same verdict, after the message is logged', () => {
     const logAt = routes.indexOf('ctx.telegram.logInboundMessage({');
