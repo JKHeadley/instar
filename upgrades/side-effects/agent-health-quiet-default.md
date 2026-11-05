@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-`TelegramAdapter` records Agent Health attention observations and holds Telegram delivery unless the producer sets `needsUser: true`. This covers creation, refresh and reopen paths. `sendToTopic` carries its HTML formatting choice through the standby relay to the holder. The server's holder wiring uses that choice. Tests cover the quiet record, later user need, recent WONT_DO suppression, system topic creation, and formatting relay. Tier 1; the PR adds two integration test files on top of the original patch. One focused failing run and one passing run preceded this correction, with one review iteration.
+`TelegramAdapter` records Agent Health attention observations and holds Telegram delivery unless the producer sets `needsUser: true`. This covers creation, refresh and reopen paths. `sendToTopic` carries its HTML formatting choice through the standby relay to the holder. The server's holder wiring uses that choice. Tests cover the quiet record, later user need, recent WONT_DO suppression, system topic creation, and formatting relay. The desktop helper test cleanup also moves its own temporary stand-ins out of the source tree before deletion, resolving a local verify failure reproducible on main and unrelated PR #2763. Tier 1; the rebased correction adds two integration test files and one unrelated gate-blocking test cleanup to the original patch. One focused failing run and one passing run preceded this correction, with one review iteration.
 
 ## Decision-point inventory
 
@@ -55,7 +55,7 @@ The decision is applied on each machine before its outbound relay. Attention rec
 
 ## 8. Rollback cost
 
-A revert and patch release restores the old posts. Held observations remain in the existing attention store and the added hold audit lines need no migration. Already suppressed Telegram posts are not replayed automatically.
+A revert and patch release restores the old posts. The desktop test cleanup change has no runtime effect and can be reverted independently. Held observations remain in the existing attention store and the added hold audit lines need no migration. Already suppressed Telegram posts are not replayed automatically.
 
 ## Conclusion
 
@@ -67,7 +67,7 @@ The first slice is ready to ship on Echo. It stops the observed lane noise witho
 
 ## Evidence pointers
 
-`tests/unit/attention-single-topic-routing.test.ts`, `tests/unit/telegram-tokenless-relay.test.ts`, `tests/unit/system-topic-single-creator.test.ts`, `tests/integration/agent-health-lane.test.ts`, and `tests/integration/notification-flood-burst-invariant.test.ts`. The two integration files reproduced all four local-verify failures before their expectations were updated and pass together (20/20); targeted unit tests pass (58/58), and full lint passed.
+`tests/unit/attention-single-topic-routing.test.ts`, `tests/unit/telegram-tokenless-relay.test.ts`, `tests/unit/system-topic-single-creator.test.ts`, `tests/integration/agent-health-lane.test.ts`, and `tests/integration/notification-flood-burst-invariant.test.ts`. The two integration files reproduced all four original local-verify failures before their expectations were updated and pass together (20/20); targeted Agent Health unit tests pass (59/59). A second local verify failed two tests in `desktop-locked-proof-fixes.test.ts`, which reproduced on main and unrelated PR #2763; the isolated file now passes (13/13). Full lint passed before this test-only repair and is rerun by the commit gate.
 
 ## Class-Closure Declaration
 
