@@ -1,8 +1,8 @@
-# Ten more fixes to the locked-screen test, from its first real run
+# Thirteen more fixes to the locked-screen test, from its first real run
 
 ## What this is
 
-Instar can show and control a Mac's screen remotely, even while that Mac is locked. To prove the locked-screen part is safe, a test driver on a real Mac Mini opens the same remote-desktop web page a person would use, types the password into it, breaks things on purpose (kills the server, freezes it, pulls the network) and checks that the Mac always ends up locked again. On 5 November 2026 the driver ran for real for the first time, and several of its own mistakes showed up. None of them was a fault in the product. The first, a wait for a hidden button, is already fixed. These are the other ten.
+Instar can show and control a Mac's screen remotely, even while that Mac is locked. To prove the locked-screen part is safe, a test driver on a real Mac Mini opens the same remote-desktop web page a person would use, types the password into it, breaks things on purpose (kills the server, freezes it, pulls the network) and checks that the Mac always ends up locked again. On 5 November 2026 the driver ran for real for the first time, and several of its own mistakes showed up. None of them was a fault in the product. The first, a wait for a hidden button, is already fixed. These are the other thirteen.
 
 ## What went wrong, and what changes
 
@@ -25,6 +25,8 @@ Instar can show and control a Mac's screen remotely, even while that Mac is lock
 **It tried to end a session it did not own.** Some tests end the remote session from outside the page, the way a second device would. The driver did that with a sign-in of its own, and the server refused, correctly: only the sign-in that opened a session may end it. The driver did not notice the refusal and went on to judge a session that was still open. It now ends the session with the page's own sign-in, and treats a refusal as a failed test step.
 
 **It looked for leftovers when there was nothing to leave behind.** After a test, the driver checks that the helper which types the password is gone. One test never sends a password at all and expects the session to stay open, so that helper is rightly still there. The check now only applies when a password was actually sent and its relock duty has finished.
+
+**Three timing mistakes.** One test waits for a ten-minute limit but gave up watching after four and a half minutes. Another is meant to have that limit arrive while the password is being typed, but aimed so late that typing would only have started after the limit, when the password box is already gone. And the check that the owner gets a security alert after a failed relock looked once, immediately, although the alert is sent by a routine that runs every ten seconds; the alert arrived nine seconds later and was missed. All three now use the right times.
 
 ## What stays the same
 

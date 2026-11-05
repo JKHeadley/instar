@@ -4,7 +4,7 @@
 
 ## Summary
 
-Ten faults found in the live run on the Mac Mini on 2026-11-05, once the viewer-wait fix let the run start.
+Thirteen faults found in the live run on the Mac Mini on 2026-11-05, once the viewer-wait fix let the run start.
 
 - **Freezing the server.** Cases 12.1 and 12.6 send SIGSTOP to the proof server. It ran as a tmux pane process, and tmux resumes a stopped pane process at once, so the server never froze. Both cases now run `serve-under-launchd` first and restore tmux in cleanup (`cont-server`, `end-launchd-serve`, `start-server`). `stop-server` now reads the process state half a second after the signal and throws unless it starts with `T`.
 - **Ready after a start.** `start-server` and `serveUnderLaunchd` now call `waitLockStateKnown()` (up to 120 s) before returning, and report `lockStateKnown` in their result.
@@ -16,6 +16,9 @@ Ten faults found in the live run on the Mac Mini on 2026-11-05, once the viewer-
 - **Case 12.5a ends its session.** It now stops the viewer at the `takeover` event (the duty's guard pid changes to the replacement). Before, nothing ended the grant, and an owed duty on a live grant is not due.
 - **Revoke as the right operator.** `viewer()` keeps the operator session the page receives from `/dashboard/unlock`; `revoke` sends that session and throws on a 4xx or 5xx answer. The server's refusal of a foreign session is correct and unchanged.
 - **Leftover-process rule needs a duty.** `processesGone` is left undefined when the case has no duty at all, so the input helper of a live grant is not read as a leftover typist. With a closed duty the rule is unchanged.
+- **Case 12.9 watches long enough.** `timeoutMs: 840_000`, past the 600 s deadline it waits for.
+- **Deadline before Enter.** In `typePassword` the before-enter offset is `min(1.5 s, half the calibrated typing time)`. The after-enter offset is unchanged.
+- **Security item is given time to arrive.** `extraEvidence` polls the attention list for up to 15 s when a sample shows `relock-failed`. It has no unit test (the function shells out to `log show`); the live rerun of 12.18 is its evidence.
 
 ## 1. Over-block
 
@@ -31,9 +34,11 @@ The typing window is short (about 0.7 s for a 20-character password on the Mini)
 
 Changing 12.5a changes what the proof asks of the product, so it is stated here plainly: the spec (docs/specs/desktop-locked-screen.md, "A dead guard" and gate P12) asks for a replacement guard and for the Mac to end locked. It does not ask for a relock while the owner's session is still live. The case as written could only pass if the product locked a Mac out from under a live session. If that stricter behaviour is wanted, it is a spec change, not a test fix.
 
+The deadline offset is measured from when the driver saw the grant open, which trails the server's own start of the 10-minute ceiling by the page's opening delay. If that delay is close to half the typing time, 15.3 can still type too late and will fail honestly with no duty; the rerun shows which.
+
 ## 3. Level-of-abstraction fit
 
-Right layer: all ten are the driver's own assumptions about its target. The page behaviour, the server's start-up and tmux are left as they are.
+Right layer: all thirteen are the driver's own assumptions about its target. The page behaviour, the server's start-up and tmux are left as they are.
 
 ## 4. Signal vs authority compliance
 

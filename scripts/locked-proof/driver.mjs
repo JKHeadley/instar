@@ -302,7 +302,11 @@ export class RealTarget {
     if (c.timing === 'deadline' && this.cal) {
       // Land Enter just after (before-enter case) or just before (after-enter case) the 10-minute ceiling.
       const opened = this.mainOpenedAt ?? this.now();
-      const enterAt = opened + 600_000 + (c.inject[0].at === 'before-enter' ? 1_500 : -1_500);
+      // "Deadline before Enter" needs the ceiling to fall while the password is being typed, so
+      // Enter may trail the ceiling by less than the typing takes. A fixed 1.5 s put the whole
+      // 0.7 s of typing after the ceiling on the Mini, when the page had already closed the box.
+      const typingMs = this.cal.reserveMs + this.cal.perCharMs * this.password.length;
+      const enterAt = opened + 600_000 + (c.inject[0].at === 'before-enter' ? Math.min(1_500, typingMs / 2) : -1_500);
       const startAt = enterAt - this.cal.reserveMs - this.cal.perCharMs * this.password.length;
       await this.sleep(Math.max(0, startAt - this.now()));
     }
@@ -568,9 +572,12 @@ export class RealTarget {
         '--predicate', 'process == "loginwindow"'], { allowFail: true }).split('\n').filter(l => /authenticat/i.test(l)).length,
     };
     try {
-      const list = await this.api(this.a, 'GET', '/attention');
-      const item = (list.items ?? []).find(i => String(i.id).startsWith('agent:desktop-relock') && Date.parse(i.createdAt) >= ev.startedAt);
       const failedAt = ev.samples.find(s => Object.values(s.markers ?? {}).some(m => m.state === 'relock-failed'))?.t;
+      const find = async () => ((await this.api(this.a, 'GET', '/attention')).items ?? [])
+        .find(i => String(i.id).startsWith('agent:desktop-relock') && Date.parse(i.createdAt) >= ev.startedAt);
+      let item = await find();
+      // The owner is told by a 10 s sweep, so a single look right after a failed relock is too early.
+      for (const until = this.now() + 15_000; !item && failedAt && this.now() < until;) { await this.sleep(1_000); item = await find(); }
       out.securityItemRaised = !!item;
       if (item && failedAt) out.securityItemMs = Date.parse(item.createdAt) - failedAt;
     } catch { out.securityItemRaised = false; }

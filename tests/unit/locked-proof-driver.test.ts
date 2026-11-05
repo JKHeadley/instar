@@ -408,6 +408,29 @@ describe('locked-proof launchd kill', () => {
     expect(closed.processesGone).toBe(false);
   });
 
+  it('"deadline before Enter" starts typing before the ceiling and presses Enter after it', async () => {
+    // On the Mini the whole password takes 0.73 s; a fixed 1.5 s offset started typing 0.77 s
+    // after the ceiling, when the page had already closed the box, and nothing was typed.
+    let clock = 0; const slept: number[] = [];
+    const page = { waitForSelector: async () => {}, fill: async () => {}, press: async () => {}, isVisible: async () => true, textContent: async () => '' };
+    const cal = { reserveMs: 38, perCharMs: 34.75 };
+    const target = realTarget({ main: { page }, mainOpenedAt: 0, cal, password: 'a'.repeat(20), now: () => clock, sleep: async (ms: number) => { slept.push(ms); clock += ms; } });
+    const typing = cal.reserveMs + cal.perCharMs * 20;
+    await target.typePassword({ timing: 'deadline', inject: [{ action: 'wait-deadline', at: 'before-enter' }] });
+    expect(slept[0]).toBeLessThan(600_000);
+    expect(slept[0] + typing).toBeGreaterThan(600_000);
+    // "Deadline after Enter" keeps Enter 1.5 s ahead of the ceiling.
+    clock = 0; slept.length = 0;
+    await target.typePassword({ timing: 'deadline', inject: [{ action: 'wait-deadline', at: 'after-enter' }] });
+    expect(slept[0] + typing).toBe(600_000 - 1_500);
+  });
+
+  it('the deadline-recovery case watches past the 10-minute deadline it waits for', () => {
+    const c = CASES.find((x: { id: string }) => x.id === '12.9');
+    expect(c.inject.some((i: { at: string }) => i.at === 'deadline-passed')).toBe(true);
+    expect(c.timeoutMs).toBeGreaterThan(600_000 + 120_000);
+  });
+
   it('a revoke with nothing to revoke fails the case', async () => {
     const target = realTarget({ priorMarkers: {}, readStore: () => ({ markers: {} }) });
     await expect(target.act('revoke')).rejects.toThrow(/no open request/);
