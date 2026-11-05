@@ -304,6 +304,7 @@ Accepted as written, one line each:
 - `principal` in `rotateKeep: 0` records: use an owner id, not personal data.
 - Kill switch re-arm: if set false, it raises an attention item after 30 days.
 - A no from the confirm page stops offers and voids grants but always records `shutdown: none`, and the page says a running service stays on. The route to stop a running service ships before any service is available.
+- A no ends a setup session at once, so a browser window it had open stays open and signed in. The brief tells a session to close each window as soon as it's done, which narrows this but doesn't close it.
 - The fixed-template offer path was listed under rollout step 1 and did not ship with it. It ships in rollout step 4 with the `provider-exhausted` event, the only offer that needs it.
 
 ## Open questions
