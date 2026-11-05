@@ -30,17 +30,19 @@ const CHUNK = 512 * 1024;
 const MAX_TEXT = 4000;
 const MAX_SCAN_BYTES = 32 * 1024 * 1024;
 
-const clip = (s: string): string => (s.length > MAX_TEXT ? `${s.slice(0, MAX_TEXT)}…` : s);
+const clipText = (s: string): string => (s.length > MAX_TEXT ? `${s.slice(0, MAX_TEXT)}…` : s);
 
-function toolLine(name: string, input: unknown): string {
+function toolLine(name: string, input: unknown, clean: (s: string) => string): string {
   const i = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
   const pick = [i.description, i.command, i.file_path, i.path, i.pattern, i.url, i.query, i.prompt].find((v) => typeof v === 'string' && v.trim());
-  const detail = typeof pick === 'string' ? pick.replace(/\s+/g, ' ').trim().slice(0, 200) : '';
+  const detail = typeof pick === 'string' ? clean(pick).replace(/\s+/g, ' ').trim().slice(0, 200) : '';
   return detail ? `${name}: ${detail}` : name;
 }
 
 /** One transcript record → zero or more readable entries (Claude Code or Codex shapes). */
-export function extractEntries(record: unknown, offset: number): TranscriptEntry[] {
+export function extractEntries(record: unknown, offset: number, clean: (s: string) => string = (s) => s): TranscriptEntry[] {
+  // `clean` runs before the clip, so a cut can't leave the start of something it would have removed.
+  const clip = (s: string): string => clipText(clean(s));
   if (!record || typeof record !== 'object') return [];
   const r = record as Record<string, unknown>;
   const at = typeof r.timestamp === 'string' ? r.timestamp : null;
@@ -57,7 +59,7 @@ export function extractEntries(record: unknown, offset: number): TranscriptEntry
     for (const b of content as Array<Record<string, unknown>>) {
       if (!b || typeof b !== 'object') continue;
       if (b.type === 'text' && typeof b.text === 'string' && b.text.trim()) out.push({ offset, role: r.type, text: clip(b.text.trim()), at });
-      else if (b.type === 'tool_use' && typeof b.name === 'string') out.push({ offset, role: 'tool', text: toolLine(b.name, b.input), at });
+      else if (b.type === 'tool_use' && typeof b.name === 'string') out.push({ offset, role: 'tool', text: toolLine(b.name, b.input, clean), at });
     }
     return out;
   }
@@ -70,7 +72,7 @@ export function extractEntries(record: unknown, offset: number): TranscriptEntry
     } else if (p.type === 'function_call' && typeof p.name === 'string') {
       let args: unknown = p.arguments;
       if (typeof args === 'string') { try { args = JSON.parse(args); } catch { /* keep the string */ } }
-      out.push({ offset, role: 'tool', text: toolLine(p.name, args), at });
+      out.push({ offset, role: 'tool', text: toolLine(p.name, args, clean), at });
     }
   }
   return out;
@@ -81,7 +83,7 @@ export function extractEntries(record: unknown, offset: number): TranscriptEntry
  * oldest first. Scans at most MAX_SCAN_BYTES per call; a page that hits that bound
  * returns what it found with `nextBefore` set so the caller can keep going.
  */
-export function readTranscriptPage(filePath: string, opts: { before?: number; limit?: number } = {}): TranscriptPage {
+export function readTranscriptPage(filePath: string, opts: { before?: number; limit?: number; clean?: (s: string) => string } = {}): TranscriptPage {
   const limit = Math.min(Math.max(opts.limit ?? 150, 1), 500);
   const fd = fs.openSync(filePath, 'r');
   try {
@@ -115,7 +117,7 @@ export function readTranscriptPage(filePath: string, opts: { before?: number; li
         if (found.length >= limit) { stoppedAt = lines[i + 1].off; break; }
         let rec: unknown;
         try { rec = JSON.parse(lines[i].text); } catch { continue; }
-        const es = extractEntries(rec, lines[i].off);
+        const es = extractEntries(rec, lines[i].off, opts.clean);
         for (let j = es.length - 1; j >= 0; j--) found.push(es[j]);
       }
       if (stoppedAt !== null) break;

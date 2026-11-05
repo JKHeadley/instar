@@ -21,6 +21,8 @@ import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoute
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
+import { mountMobileSessionControlsRoutes, runSessionAction, type RouteAnswer } from './mobileSessionControlsRoutes.js';
+import { redactDeep, redactForDevice } from './mobileSessionTerminalRoutes.js';
 import { mountMobileConsolePagesRoutes, type SelfRead } from './mobileConsolePagesRoutes.js';
 import { mountMobileHealthRoutes } from './mobileHealthRoutes.js';
 import { mountMobileSecretsRoutes, resolveKeys as resolveMobileKeys, askForSecret, cancelSecretByKey } from './mobileSecretsRoutes.js';
@@ -265,7 +267,7 @@ import {
 import { PlaywrightSeatLease } from '../core/PlaywrightSeatLease.js';
 import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
 import { buildViewTunnelUrl } from './viewTunnelUrl.js';
-import { rateLimiter, OUTBOUND_GATE_REVIEW_BUDGET_MS, resolveFollowMeBudgets, FOLLOWME_SIMPLE_RELAY_FETCH_MS, bearerMatches } from './middleware.js';
+import { rateLimiter, OUTBOUND_GATE_REVIEW_BUDGET_MS, resolveFollowMeBudgets, FOLLOWME_SIMPLE_RELAY_FETCH_MS, bearerMatches, MOBILE_SESSION_ACTION_TIMEOUT_MS, MOBILE_SESSION_MOVE_TIMEOUT_MS } from './middleware.js';
 import { relayHoldHours } from '../threadline/relayVerdict.js';
 import {
   buildPeerDarkSentence,
@@ -11842,7 +11844,9 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: '"before" and "limit" must be whole numbers' }); return;
     }
     try {
-      res.json({ ok: true, ...readTranscriptPage(filePath, { before, limit }) });
+      // `redact=device`: the phone's read. Secrets go before each entry is cut, so no cut can leave part of one.
+      const clean = req.query.redact === 'device' ? (s: string) => redactForDevice(s, [ctx.config.authToken, ctx.config.dashboardPin]) : undefined;
+      res.json({ ok: true, ...readTranscriptPage(filePath, { before, limit, clean }) });
     } catch (err) {
       res.status(500).json({ error: `Could not read the conversation record: ${err instanceof Error ? err.message : String(err)}` });
     }
@@ -38173,7 +38177,42 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Native Permission slips and What I'm allowed to do (docs/specs/mobile-native-permissions.md):
     // trimmed reads (owner phone or bearer; approvals and slips proxied-on-read across peers) and the
     // owner phone's Face ID-confirmed approve, decline and switch, which run the console's own paths.
+    // The session screen's controls (docs/specs/mobile-native-session-controls.md): every control calls the
+    // dashboard's own route, here or on the machine holding the session, so its rules stay in force.
+    const sessionControlCall = async (method: 'GET' | 'POST' | 'DELETE', p: string, body?: unknown, machine?: string | null): Promise<RouteAnswer> => {
+      const init = {
+        method,
+        headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-Request': '1', 'X-Instar-Close-Via': 'mobile-app', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        // Each is inside its own route's budget (middleware.ts MOBILE_SESSION_*_TIMEOUT_MS), so the phone gets a plain answer, not a 408.
+        signal: AbortSignal.timeout(p === '/pool/transfer' ? MOBILE_SESSION_MOVE_TIMEOUT_MS - 13_000 : method === 'GET' ? 12_000 : MOBILE_SESSION_ACTION_TIMEOUT_MS - 5000),
+      };
+      try {
+        let r: globalThis.Response;
+        if (machine && machine !== ctx.meshSelfId) {
+          const peer = (ctx.resolvePeerUrls?.() ?? []).find((x) => x.machineId === machine);
+          if (!peer) return { status: 0, body: null };
+          r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, p, init);
+        } else {
+          r = await fetch(`http://127.0.0.1:${ctx.config.port}${p}`, init);
+        }
+        return { status: r.status, body: await r.json().catch(() => null) }; // @silent-fallback-ok — an unreadable body has no usable shape, and each control words that as a failed read
+      } catch { return { status: 0, body: null }; } // @silent-fallback-ok — status 0 is worded as "couldn't be reached" by each control
+    };
+    mountMobileSessionControlsRoutes(router, {
+      call: sessionControlCall,
+      actions: (req) => mobileActionsState(req, { pairing: () => ctx.mobilePairingService ?? null, config: () => ctx.config }),
+      bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+      selfMachineId: () => ctx.meshSelfId ?? null,
+      nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+      secrets: () => [ctx.config.authToken, ctx.config.dashboardPin],
+    });
     mountMobilePermissionsRoutes(router, {
+      // A route's words can quote a run's goal, so the phone's answer gets the same removal as anything else it reads.
+      sessionAction: async (action) => {
+        const r = await runSessionAction(action, { call: sessionControlCall, selfMachineId: () => ctx.meshSelfId ?? null });
+        return { status: r.status, body: redactDeep(r.body, [ctx.config.authToken, ctx.config.dashboardPin]) };
+      },
       pairing: () => ctx.mobilePairingService ?? null,
       config: () => ctx.config,
       stateDir: ctx.config.stateDir,

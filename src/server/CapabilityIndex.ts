@@ -459,6 +459,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobileSessionControls',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'The Instar iPhone app\'s session screen controls (docs/specs/mobile-native-session-controls.md): GET /mobile/sessions/controls (machine, door, model and why each can or cannot change), GET /mobile/sessions/new-options, GET /mobile/sessions/history (secrets removed), POST /sessions/:name/key (the keys tray and Stop) and POST /sessions/:name/attachments for owner phones; POST /mobile/sessions/door/:topic, /move/:topic, /close/:id, /new and /default, each with Face ID over a single-use challenge behind mobilePairing.permissionActions. Every control runs the dashboard\'s own route, so its rules stay in force. Sessions on another machine go through the machine the phone reached (pool-token /mobile/sessions/relay/:name/* routes), and typing obeys that machine\'s dashboard.poolStream.allowRemoteInput.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/sessions/controls', 'GET /mobile/sessions/new-options', 'GET /mobile/sessions/history', 'POST /sessions/:name/key', 'POST /sessions/:name/attachments', 'POST /mobile/sessions/door/:topic', 'POST /mobile/sessions/move/:topic', 'POST /mobile/sessions/close/:id', 'POST /mobile/sessions/new', 'POST /mobile/sessions/default'],
+    }),
+  },
+  {
     key: 'mobileSecretsWrites',
     // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
     prefixes: [],
