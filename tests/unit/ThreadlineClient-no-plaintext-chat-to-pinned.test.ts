@@ -35,6 +35,7 @@ const CHAT_SENDERS: Record<string, (c: ThreadlineClient, fp: string) => unknown>
 };
 const NOT_CHAT: Record<string, string> = {
   sendAck: 'typed ack: a delivery receipt, stays plaintext by design',
+  sendReceipt: 'typed unread transport receipt, stays plaintext by design',
   sendInviteControlPlaintext: 'invite accept: the inviter holds no key yet (spec §4.3); typed op, not chat',
   sendCredentialToPinned: 'always encrypted to the given pinned key',
   sendPairVerifyReceipt: 'always encrypted to the given pinned key',
@@ -114,11 +115,12 @@ describe('no plaintext chat to an enforce-mode invite peer, by any public send m
     });
   }
 
-  it('acks and invite-control plaintext keep their plaintext envelopes (typed, not chat)', () => {
+  it('acks, unread receipts, and invite-control plaintext keep their plaintext envelopes (typed, not chat)', () => {
     client.setEncryptToResolver(() => peer.key);
     client.sendAck(peer.fp, 'received');
+    client.sendReceipt(peer.fp, 'unread');
     client.sendInviteControlPlaintext(peer.fp, 'pair-invite-accept', { x: 1 });
-    expect(wire.map((e) => (isPlaintext(e) ? plaintextType(e) : 'encrypted'))).toEqual(['ack', 'pair-invite-accept']);
+    expect(wire.map((e) => (isPlaintext(e) ? plaintextType(e) : 'encrypted'))).toEqual(['ack', 'receipt', 'pair-invite-accept']);
   });
 
   it('a non-pinned peer (resolver null) still gets plaintext chat as before', () => {
