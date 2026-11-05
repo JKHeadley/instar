@@ -3334,7 +3334,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
           featureEvidence.record('monitoring.tmuxResilience.asyncHotPath', { kind: 'fired', reason: 'probe-classified-session-dead', context: { session: session.tmuxSession } });
         }
         if (alive === false) {
-          // CAS re-read after the await: an operator kill (or another killer)
+          const lastSample = this.startupTails.get(session.tmuxSession);
+          const knownExitCode = this.terminalExitCodes.get(session.tmuxSession);
+          const exitCode = knownExitCode ?? 0;
+          // Retained Codex panes preserve the terminal error after the process exits.
+          // Read at the death boundary so a later 429 is not missed by startup sampling.
+          const exitTail = session.framework === 'codex-cli'
+            ? (await this.captureOutputMaybeAsync(session.tmuxSession, 60)) || lastSample?.tail || ''
+            : lastSample?.tail || '';
+          const codexRateLimited = session.framework === 'codex-cli'
+            && knownExitCode !== undefined && knownExitCode !== 0
+            && /(?:\b429\b[^\n]*too many requests|too many requests[^\n]*\b429\b)/i.test(exitTail);
+          // CAS re-read after the Codex capture await: an operator kill (or another killer)
           // can land mid-probe, so re-read the live record before mutating it —
           // mirrors terminateSession's status CAS. If it already drifted off
           // 'running', another writer owns the transition; skip this inline
@@ -3366,9 +3377,6 @@ rm()  { "${shimRunner}" rm  "$@"; }
           const uptimeSeconds = fresh.startedAt
             ? Math.max(0, Math.round((Date.now() - new Date(fresh.startedAt).getTime()) / 1000))
             : undefined;
-          const lastSample = this.startupTails.get(session.tmuxSession);
-          const knownExitCode = this.terminalExitCodes.get(session.tmuxSession);
-          const exitCode = knownExitCode ?? 0;
           this.terminalExitCodes.delete(session.tmuxSession);
           // A headless one-shot (`claude -p` / completionMode 'exit') finishes BY exiting, often well
           // inside the startup window. Under `remain-on-exit failed` a failed exit keeps its pane and
@@ -3384,9 +3392,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
           const duringStartup = !finishedHeadless && uptimeSeconds !== undefined && uptimeSeconds * 1000 < STARTUP_TAIL_WINDOW_MS;
           const midWork = exitCode !== 0;
           this.startupTails.delete(session.tmuxSession);
-          fresh.status = 'completed';
+          fresh.status = codexRateLimited ? 'failed' : 'completed';
           fresh.endedAt = new Date().toISOString();
-          fresh.endedReason = duringStartup ? 'process-exited-during-startup' : 'process-exited';
+          fresh.endedReason = codexRateLimited ? 'codex-rate-limited'
+            : duringStartup ? 'process-exited-during-startup' : 'process-exited';
           this.state.saveSession(fresh);
           console.warn(
             `[SessionManager] Session "${fresh.name}" (${fresh.framework ?? 'unknown framework'}) exited on its own` +
@@ -3398,11 +3407,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
             session: fresh,
             reason: fresh.endedReason,
             uptimeSeconds,
-            lastTail: lastSample?.tail,
+            lastTail: exitTail || undefined,
             exitCode,
             midWork,
             outcome: midWork ? 'stopped-mid-work' : 'completed',
           });
+          if (codexRateLimited) this.#emitListenersIsolated('codexRateLimitExit', fresh);
           this.revokeOriginSession(fresh.id);
           this.emit('sessionComplete', fresh);
           // The result is recorded; a job's retained dead pane has no further
