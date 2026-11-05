@@ -1540,6 +1540,9 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     // summaries, owner phones only, with one shared bucket of their own (they read peers).
     { method: 'GET', re: /^\/mobile\/messages$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'phones-messages-reads' },
     { method: 'GET', re: /^\/mobile\/insights$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'phones-messages-reads' },
+    // Native Passwords & keys (docs/specs/mobile-native-secrets.md): a read-only trimmed summary, owner
+    // phones only: names and state, never a value, a length, a token or a Secret Drop link.
+    { method: 'GET', re: /^\/mobile\/secrets$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'secrets-reads' },
     // Native Permission slips and What I'm allowed to do (docs/specs/mobile-native-permissions.md): two
     // read-only trimmed lists, and the owner phone's Face ID-confirmed writes (each route re-checks the
     // feature switch, local TLS, an active owner phone, a configured PIN, the presence key, a single-use
