@@ -48,7 +48,7 @@ function fixture(ownerUid: number | undefined) {
     config: { projectName: 'test', projectDir: dir, stateDir: dir, port: 0, users: [], sessions: {}, scheduler: {}, messaging: [], dashboardPin: '654321' },
     sessionManager: { listRunningSessions: () => running, clearInjectionTracker: () => undefined, spawnInteractiveSession, killSession: (id: string) => { killSession(id); running = []; return true; } },
     state: { getJobState: () => null, getSession: () => null },
-    telegram: { findOrCreateForumTopic, registerTopicSession, getSessionForTopic: (topicId: number) => topicSessions.get(topicId) ?? null, updateAttentionStatus: () => undefined, getOwnerUserId: () => ownerUid, setCallbackApproverResolver: () => undefined, getTopicHistory: () => [] },
+    telegram: { findOrCreateForumTopic, registerTopicSession, getSessionForTopic: (topicId: number) => topicSessions.get(topicId) ?? null, updateAttentionStatus: async () => true, getOwnerUserId: () => ownerUid, setCallbackApproverResolver: () => undefined, getTopicHistory: () => [] },
     recommendedServicesLedger: ledger,
     claimTopicOwnershipOnSpawn: claimOwnership,
     recommendedServicesCatalog: RECOMMENDED_SERVICE_CATALOG.map((r) => (r.id === 'jev' ? { ...r, setupRecipe: 'jev-v1' } : r)),
