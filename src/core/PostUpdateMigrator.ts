@@ -33,6 +33,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
 import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
+import { applyJobMeshGuide, jobCoverageGuide } from './jobMeshAwareness.js';
 import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
@@ -10132,6 +10133,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: documented declared job failure ($INSTAR_JOB_FAILURE_FILE)');
     }
 
+    const coverageGuidance = applyJobMeshGuide(content, jobCoverageGuide(port));
+    if (coverageGuidance !== content) {
+      content = coverageGuidance;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added lease job coverage and catch-up guidance');
+    }
+
     // TIME_CLAIM advisory (operator mandate 2026-06-12, topic 13481) —
     // Migration Parity item 3: an agent whose CLAUDE.md already carries the
     // Outbound advisory section (installed by the block above or by init)
@@ -15493,6 +15501,13 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       if (refreshedLeaseShadow !== appended) {
         appended = refreshedLeaseShadow;
         mirrored++;
+      }
+
+      // Apply after section mirroring: a copied legacy section can already carry
+      // this guidance, so adding it before the copy would duplicate it.
+      if (claudeMd.includes('**Lease job coverage and catch-up**')) {
+        const next = applyJobMeshGuide(appended, jobCoverageGuide(this.config.port));
+        if (next !== appended) { appended = next; mirrored++; }
       }
 
       if (mirrored > 0) {

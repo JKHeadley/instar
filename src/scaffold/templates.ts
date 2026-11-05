@@ -14,6 +14,7 @@ import { poolReadSelectionAwareness } from "../core/poolReadAwareness.js";
 import { peerHomebaseAwareness } from "../core/peerHomebaseAwareness.js";
 import { FEEDBACK_INBOX_TOKEN_SENTENCE } from "../feedback-factory/inbox/inboxAwareness.js";
 import { JOB_DECLARED_FAILURE_AWARENESS } from "../scheduler/jobDeclaredFailure.js";
+import { jobCoverageGuide } from '../core/jobMeshAwareness.js';
 
 // The "Playwright Profile Registry" CLAUDE.md awareness section is authored ONCE in
 // PostUpdateMigrator (the single source of truth shared by new installs here and the
@@ -423,6 +424,7 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 - View: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs\`
 - View the WHOLE POOL (jobs across every machine): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/jobs?scope=pool"\` — merges each online machine's jobs (each tagged with its machineId/machineNickname), tolerant of a dark peer (a \`pool.failed\` entry, never a 500), short-TTL cached. Also carries \`pool.divergences\` — an observe-only flag for a machine that DECLARES jobs but is running 0 locally (or returns 0 jobs while online). Use this when the user asks "what jobs do I have?" / "is a job running anywhere?" on a multi-machine setup — the plain view only shows THIS machine's jobs.
 - Trigger: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs/SLUG/trigger\`
+${jobCoverageGuide(port).capability}
 - **Enabling/disabling a BUILT-IN job — edit \`.instar/jobs/schedule/<slug>.json\`, NOT the \`.md\`.** The \`enabled:\` line in \`.instar/jobs/instar/<slug>.md\` looks authoritative and is NOT: built-in job markdown is regenerated from the shipped template on EVERY update (the same always-overwrite rule as built-in hooks), so an edit there is silently reverted at the next update — the file shows your new value until then, which is the worst kind of wrong. The DURABLE setting is \`enabled\` in \`.instar/jobs/schedule/<slug>.json\`, which the installer explicitly PRESERVES across regeneration and which the loader actually reads. Job definitions load at SERVER START (no hot reload), so a change applies at the next restart — on a machine with a configured restart window, that means the window, not immediately. Custom jobs under \`jobs/user/\` are never touched by any of this.
 ${JOB_DECLARED_FAILURE_AWARENESS}- **Role-guard-at-spawn (WS4.3, ships DARK behind \`multiMachine.seamlessness.ws43RoleGuard\`):** a job marked \`"writesState": true\` in \`.instar/jobs.json\` is STATE-WRITING — it mutates shared/replicated state only the lease-holder may touch. When the flag is on and this machine is a read-only standby (does NOT hold the lease), the scheduler REFUSES to spawn that job at the spawn boundary (recorded as a \`role-guard\` skip) and raises ONE deduped attention item ("Job X could not run on this machine"). This closes the TOCTOU window where a machine awake at boot demotes mid-run while its cron tasks keep firing. The writable owner's own scheduler runs the job, so the refusal re-routes by construction. When the flag is off, or on a single-machine agent (always the lease-holder), the guard is a strict no-op. If the user asks "why didn't job X run on machine Y?" → check the \`role-guard\` skip ledger + the attention item; Y is a read-only standby for that work.
 
@@ -1322,6 +1324,7 @@ I maintain registries that are the source of truth for specific categories. Thes
 | Who do I work with? | \`.instar/USER.md\` |
 | What have I learned? | \`.instar/MEMORY.md\` |
 | What jobs do I have? | \`.instar/jobs.json\` or \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs\` |
+${jobCoverageGuide(port).registry.trimEnd()}
 | Who have I interacted with? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/relationships\` |
 | Did a machine identity rotate / why is a peer unauthorized? | \`GET /identity-recovery\` + \`GET /identity-changes\` — recovery availability, quarantines, unacknowledged epochs, and the attributable ledger; never infer from a generic network error |
 | Which machine was topic N on / where are a run's artifacts? | \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/coherence/journal?topic=N"\` (multi-machine placement + artifact history; 503 = journal not enabled) |
@@ -1383,6 +1386,7 @@ When asked for something I can't do yet, I build it:
 6. **Need to protect state before a risky change?** Create a backup (\`POST /backups\`).
 7. **Need to notify the user?** Use the messaging API.
 8. **Need external API access?** Write a script that calls the API.
+${jobCoverageGuide(port).building}
 
 ### Execution Context — How I Run
 
@@ -1502,6 +1506,7 @@ The GitHub repository is preserved — they can restore later with \`git clone\`
 **I am the user's guide to this system.** Most users will never run a command, read API docs, or explore endpoints. They talk to me. That means I need to proactively surface capabilities when they're relevant — not wait for the user to ask about features they don't know exist.
 
 **Context-triggered actions:**
+${jobCoverageGuide(port).proactive}
 - User mentions a **document, file, or report** → Use the private viewer to render it as a beautiful HTML page they can view on any device. If a tunnel is running, they can access it from their phone. **Always include the link.**
 - User asks to **share something publicly** → Use Telegraph publishing. Warn them it's public. **Always include the link.**
 - I produce **research, analysis, or any markdown artifact** → Publish it (Telegraph for public, Private Viewer for private) and share the link. Research without an accessible link is incomplete delivery.
