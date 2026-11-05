@@ -20,7 +20,7 @@ let seq = 0;
 function ev(op: 'create' | 'place', subject: NodeRef, parent: NodeRef | null = null): GraphEvent {
   seq += 1;
   const base = { schemaVersion: 1 as const, eventId: `evt-${String(seq).padStart(6, '0')}`, subject, authority: 'owner' as const, principal: 'owner', receipt: { kind: 'owner-proof' as const, id: `r${seq}` }, machineId: 'm1', createdAt: `2026-11-05T10:${String(seq % 60).padStart(2, '0')}:00.000Z` };
-  if (op === 'create') return { ...base, op: 'create-effort', projectScope: [] } as GraphEvent;
+  if (op === 'create') return { ...base, op: 'create-effort', projectScope: [], headerId: `hdr-${(subject as EffortRef).id.replace(/-/g, '')}` } as GraphEvent;
   return { ...base, op: 'set-primary-placement', parent, relation: parent ? (parent.kind === 'effort' ? (subject.kind === 'effort' ? 'contains' : 'coordinates') : 'delegates-to') : null, replacesPlacementEventIds: [] } as GraphEvent;
 }
 

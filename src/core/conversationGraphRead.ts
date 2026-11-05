@@ -29,7 +29,10 @@ export interface GraphReadSource {
   verify(event: GraphEvent): boolean;
   /** The flat conversation inventory: exact list id and machine. */
   conversations(): ConversationSource[];
-  /** Effort titles (EffortHeaderStore); null when absent or forgotten. */
+  /**
+   * An effort's title: the runtime resolves the effort's headerId (from the certified create-effort
+   * event) through EffortHeaderStore.titleOf. Null when absent, forgotten or not yet materialized.
+   */
   effortTitle(effort: EffortRef): string | null;
   /** Replication state; every true field becomes a partial reason. Nothing is synthesized complete. */
   replication(): { replicaLag: boolean; eventGap: boolean; evidenceMissing: boolean };

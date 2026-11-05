@@ -60,7 +60,12 @@ const TG_CHAT_RE = /^-?[1-9][0-9]{0,19}$/;
 const SLACK_CHANNEL_RE = /^[CDG][A-Z0-9]{2,30}$/;
 const SLACK_TS_RE = /^\d{10}\.\d{6}$/;
 const EVENT_ID_RE = /^[A-Za-z0-9_-]{8,80}$/;
-const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
+/** Exactly millisecond precision, UTC: string order then equals time order (the reducer relies on it). */
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+/** Identifiers only — no spaces, so prose cannot ride in an immutable core field. */
+const ID_RE = /^[A-Za-z0-9_.:@-]{1,120}$/;
+/** An opaque random header id (EffortHeaderStore.newHeaderId). Never derived from a title. */
+export const HEADER_ID_RE = /^hdr-[A-Za-z0-9_-]{16,64}$/;
 
 function exactKeys(o: Record<string, unknown>, required: string[], optional: string[] = []): boolean {
   const keys = Object.keys(o);
@@ -155,7 +160,8 @@ interface EventBase {
   machineId: string;
   createdAt: string;
 }
-export interface CreateEffortEvent extends EventBase { op: 'create-effort'; projectScope: string[] }
+/** `headerId` is the opaque id of this effort's erasable header (EffortHeaderStore, v3 §7.6). */
+export interface CreateEffortEvent extends EventBase { op: 'create-effort'; projectScope: string[]; headerId: string }
 export interface PlacementEvent extends EventBase {
   op: 'set-primary-placement';
   parent: NodeRef | null;
@@ -196,12 +202,12 @@ export function validateGraphEvent(raw: unknown): GraphEvent | null {
   if (!subject) return null;
   if (typeof e.authority !== 'string' || !Object.prototype.hasOwnProperty.call(AUTHORITY_TIER, e.authority)) return null;
   const authority = e.authority as Authority;
-  if (typeof e.principal !== 'string' || e.principal.length === 0 || e.principal.length > 120) return null;
+  if (typeof e.principal !== 'string' || !ID_RE.test(e.principal)) return null;
   const rc = e.receipt as Record<string, unknown> | null;
   if (!rc || typeof rc !== 'object' || Array.isArray(rc) || !exactKeys(rc, ['kind', 'id'])) return null;
   if (rc.kind !== RECEIPT_FOR[authority]) return null; // the receipt kind must match the claimed tier
-  if (typeof rc.id !== 'string' || rc.id.length === 0 || rc.id.length > 200) return null;
-  if (typeof e.machineId !== 'string' || e.machineId.length === 0 || e.machineId.length > 120) return null;
+  if (typeof rc.id !== 'string' || !ID_RE.test(rc.id)) return null;
+  if (typeof e.machineId !== 'string' || !ID_RE.test(e.machineId)) return null;
   if (typeof e.createdAt !== 'string' || !ISO_RE.test(e.createdAt) || Number.isNaN(Date.parse(e.createdAt))) return null;
   const base: EventBase = {
     schemaVersion: 1, eventId: e.eventId, subject, authority, principal: e.principal,
@@ -211,8 +217,9 @@ export function validateGraphEvent(raw: unknown): GraphEvent | null {
   if (e.op === 'create-effort') {
     if (subject.kind !== 'effort' || authority !== 'owner') return null;
     if (!Array.isArray(e.projectScope) || e.projectScope.length > 32 ||
-      e.projectScope.some((p) => typeof p !== 'string' || p.length === 0 || p.length > 120)) return null;
-    return { ...base, op: 'create-effort', projectScope: [...new Set(e.projectScope as string[])].sort() };
+      e.projectScope.some((p) => typeof p !== 'string' || !ID_RE.test(p))) return null;
+    if (typeof e.headerId !== 'string' || !HEADER_ID_RE.test(e.headerId)) return null;
+    return { ...base, op: 'create-effort', projectScope: [...new Set(e.projectScope as string[])].sort(), headerId: e.headerId };
   }
   if (e.op === 'set-primary-placement') {
     const replaces = idList(e.replacesPlacementEventIds);
@@ -272,7 +279,7 @@ export interface Conflict {
 export interface ReducedGraph {
   /** sha256 over the sorted (eventId, hash) pairs of every event that was eligible to apply. */
   revision: string;
-  efforts: Map<string, { ref: EffortRef; projectScope: string[] }>;
+  efforts: Map<string, { ref: EffortRef; projectScope: string[]; headerId: string }>;
   /** node key -> current primary parent (null = root). Subjects never placed are absent. */
   parentOf: Map<string, NodeRef | null>;
   placementSource: Map<string, { authority: Authority; eventId: string; at: string }>;
@@ -282,6 +289,13 @@ export interface ReducedGraph {
   setAside: Array<{ eventId: string; reason: SetAsideReason }>;
   /** Held or unverified events make any projection built on this graph partial. */
   partial: { eventGap: boolean; evidenceMissing: boolean };
+  /**
+   * Every current head per subject (all tiers, sorted event ids): what a correction must name in
+   * `replacesPlacementEventIds` / `replacesFrontDoorEventIds` to supersede the current state —
+   * including both sides of an owner conflict.
+   */
+  placementHeads: Map<string, string[]>;
+  frontDoorHeads: Map<string, string[]>;
 }
 
 export interface ReduceOptions {
@@ -296,7 +310,7 @@ function order(a: GraphEvent, b: GraphEvent): number {
 /** Resolve one subject's chain of replacing events into a winner, or an owner conflict. */
 function resolveChain<E extends GraphEvent>(
   list: E[], replacesOf: (e: E) => string[], valueOf: (e: E) => NodeRef | null,
-): { winner: E | null; conflictHeads: E[] | null; lastAgreed: E | null; losingHeads: E[] } {
+): { winner: E | null; conflictHeads: E[] | null; lastAgreed: E | null; losingHeads: E[]; heads: E[] } {
   const byId = new Map(list.map((e) => [e.eventId, e]));
   // A replacement edge counts only from an equal-or-higher tier.
   const validReplaces = (e: E) => replacesOf(e).filter((r) => {
@@ -306,7 +320,7 @@ function resolveChain<E extends GraphEvent>(
   const replaced = new Set<string>();
   for (const e of list) for (const r of validReplaces(e)) replaced.add(r);
   const heads = list.filter((e) => !replaced.has(e.eventId)).sort(order);
-  if (heads.length === 0) return { winner: null, conflictHeads: null, lastAgreed: null, losingHeads: [] };
+  if (heads.length === 0) return { winner: null, conflictHeads: null, lastAgreed: null, losingHeads: [], heads };
   const top = Math.max(...heads.map((h) => AUTHORITY_TIER[h.authority]));
   const topHeads = heads.filter((h) => AUTHORITY_TIER[h.authority] === top);
   const values = new Set(topHeads.map((h) => { const v = valueOf(h); return v ? nodeKey(v) : 'null'; }));
@@ -314,7 +328,7 @@ function resolveChain<E extends GraphEvent>(
     const winner = topHeads[topHeads.length - 1];
     // Disagreeing concurrent heads below owner tier: the newest wins, and the losers are reported.
     const losingHeads = values.size === 1 ? [] : topHeads.slice(0, -1);
-    return { winner, conflictHeads: null, lastAgreed: null, losingHeads };
+    return { winner, conflictHeads: null, lastAgreed: null, losingHeads, heads };
   }
   // Incompatible owner heads: last agreed = the newest event every conflicting head descends from.
   const ancestors = (e: E): Set<string> => {
@@ -331,7 +345,7 @@ function resolveChain<E extends GraphEvent>(
   };
   const sets = topHeads.map(ancestors);
   const common = [...sets[0]].filter((id) => sets.every((s) => s.has(id))).map((id) => byId.get(id)!).sort(order);
-  return { winner: null, conflictHeads: topHeads, lastAgreed: common.length ? common[common.length - 1] : null, losingHeads: [] };
+  return { winner: null, conflictHeads: topHeads, lastAgreed: common.length ? common[common.length - 1] : null, losingHeads: [], heads };
 }
 
 function closesCycle(parentOf: Map<string, NodeRef | null>, subjectKey: string, parent: NodeRef | null): boolean {
@@ -400,18 +414,21 @@ export function reduceGraph(events: GraphEvent[], opts: ReduceOptions): ReducedG
   const accepted = [...byId.values()].sort(order);
   const revision = sha256Hex(accepted.map((e) => `${e.eventId}:${hashOf.get(e.eventId)}`).sort().join('\n'));
 
-  const efforts = new Map<string, { ref: EffortRef; projectScope: string[] }>();
+  const efforts = new Map<string, { ref: EffortRef; projectScope: string[]; headerId: string }>();
   for (const e of accepted) {
-    if (e.op === 'create-effort' && !efforts.has(nodeKey(e.subject))) efforts.set(nodeKey(e.subject), { ref: e.subject as EffortRef, projectScope: e.projectScope });
+    if (e.op === 'create-effort' && !efforts.has(nodeKey(e.subject))) efforts.set(nodeKey(e.subject), { ref: e.subject as EffortRef, projectScope: e.projectScope, headerId: e.headerId });
   }
   const conflicts: Conflict[] = [];
 
   // 4. Front doors first (owner-only), so the placement guard can see them.
   const chosenFrontDoor = new Map<string, ConversationRef>();
+  const frontDoorHeads = new Map<string, string[]>();
+  const placementHeads = new Map<string, string[]>();
   const chosenFrontDoorEvent = new Map<string, FrontDoorEvent>(); // effort key -> the deciding event
   const fdByEffort = groupBy(accepted.filter((e): e is FrontDoorEvent => e.op === 'set-front-door'));
   for (const [key, list] of fdByEffort) {
     const r = resolveChain(list, (e) => e.replacesFrontDoorEventIds, (e) => e.frontDoor);
+    frontDoorHeads.set(key, r.heads.map((h) => h.eventId).sort());
     if (r.conflictHeads) {
       conflicts.push({ kind: 'front-door', subject: list[0].subject, heads: r.conflictHeads.map((h) => h.eventId).sort(), lastAgreed: r.lastAgreed?.frontDoor ?? null });
       if (r.lastAgreed?.frontDoor) { chosenFrontDoor.set(key, r.lastAgreed.frontDoor); chosenFrontDoorEvent.set(key, r.lastAgreed); }
@@ -457,6 +474,7 @@ export function reduceGraph(events: GraphEvent[], opts: ReduceOptions): ReducedG
   const plans: Plan[] = [];
   for (const [key, list] of placementsOf) {
     const r = resolveChain(list, (e) => e.replacesPlacementEventIds, (e) => e.parent);
+    placementHeads.set(key, r.heads.map((h) => h.eventId).sort());
     if (r.losingHeads.length > 0) {
       for (const h of r.losingHeads) setAside.push({ eventId: h.eventId, reason: 'concurrent-lower-tier-head' });
       conflicts.push({ kind: 'agent-heads', subject: list[0].subject, heads: [...r.losingHeads, r.winner!].map((h) => h.eventId).sort(), lastAgreed: r.winner!.parent });
@@ -493,7 +511,12 @@ export function reduceGraph(events: GraphEvent[], opts: ReduceOptions): ReducedG
       if (target === null) continue;
     }
     parentOf.set(p.key, target);
-    if (p.event && target === p.event.parent) placementSource.set(p.key, { authority: p.event.authority, eventId: p.event.eventId, at: p.event.createdAt });
+    // Provenance is the event that put the subject where it actually ended up — the winner, or
+    // after a conflict / guard / cycle fallback, the newest accepted placement to that parent.
+    const placedHere = target === null ? null
+      : (p.event && p.event.parent && nodeKey(p.event.parent) === nodeKey(target)) ? p.event
+        : (placementsOf.get(p.key) ?? []).filter((e) => e.parent && nodeKey(e.parent) === nodeKey(target)).sort(order).pop() ?? null;
+    if (placedHere) placementSource.set(p.key, { authority: placedHere.authority, eventId: placedHere.eventId, at: placedHere.createdAt });
   }
 
   // 6. A front door is certified only if its choice passed the guard's eligibility check AND the
@@ -507,7 +530,64 @@ export function reduceGraph(events: GraphEvent[], opts: ReduceOptions): ReducedG
     if (ev) setAside.push({ eventId: ev.eventId, reason: invalidObservation.has(effortKey) ? 'front-door-observation-invalid' : 'front-door-not-coordinated' });
   }
 
-  return { revision, efforts, parentOf, placementSource, frontDoorOf, conflicts, setAside, partial };
+  return { revision, efforts, parentOf, placementSource, frontDoorOf, conflicts, setAside, partial, placementHeads, frontDoorHeads };
+}
+
+// ── Correction support (increment C) ──────────────────────────────────────────────────────
+
+export type MoveIneligibleReason =
+  | 'relation-invalid'          // an effort under a conversation, or a node under itself
+  | 'would-create-cycle'
+  | 'front-door-held'           // the subject is a certified front door: clear or reassign it first
+  | 'not-applied';              // the reducer did not apply it for another reason (e.g. a held predecessor)
+
+export interface MoveEligibility {
+  eligible: boolean;
+  reason?: MoveIneligibleReason;
+  /** For front-door-held: the effort whose front door this is. */
+  frontDoorOf?: EffortRef;
+  /** The heads a set-primary-placement for this subject must name (empty for a first placement). */
+  observedHeads: string[];
+  /** True when the subject currently has an owner conflict; a correction naming observedHeads resolves it. */
+  resolvesConflict: boolean;
+}
+
+/** Contains '.', which EVENT_ID_RE rejects: no real event can carry this id or borrow its verification. */
+const PROBE_ID = 'eligibility.probe';
+
+/**
+ * Whether an OWNER move of `subject` under `parent` (null = unlink) would be accepted, and the heads
+ * the correction must name. It does not re-implement any rule: it appends a hypothetical owner
+ * placement stamped `at` (the createdAt the real correction WILL carry — pass the same value),
+ * naming the current heads, runs the real reducer, and reports what the reducer did with it. A move
+ * that is eligible now can still be refused if the graph changes before it is certified; the
+ * reducer remains the authority.
+ */
+export function moveEligibility(events: GraphEvent[], opts: ReduceOptions, subject: NodeRef, parent: NodeRef | null, at: string): MoveEligibility {
+  const graph = reduceGraph(events, opts);
+  const key = nodeKey(subject);
+  const observedHeads = graph.placementHeads.get(key) ?? [];
+  const resolvesConflict = graph.conflicts.some((c) => c.kind === 'placement' && nodeKey(c.subject) === key);
+  const base = { observedHeads, resolvesConflict };
+  const relation = parent ? relationFor(subject, parent) : null;
+  if (parent !== null && (nodeKey(parent) === key || relation === null)) return { ...base, eligible: false, reason: 'relation-invalid' };
+  if (!ISO_RE.test(at)) throw new Error('moveEligibility: `at` must be the correction\'s createdAt (YYYY-MM-DDTHH:MM:SS.sssZ)');
+  const probe: GraphEvent = {
+    schemaVersion: 1, eventId: PROBE_ID, subject, authority: 'owner', principal: 'eligibility-probe',
+    receipt: { kind: 'owner-proof', id: 'eligibility-probe' }, machineId: 'eligibility-probe',
+    createdAt: at,
+    op: 'set-primary-placement', parent, relation, replacesPlacementEventIds: observedHeads,
+  };
+  const after = reduceGraph([...events, probe], { verify: (e) => e.eventId === PROBE_ID || opts.verify(e) });
+  const aside = after.setAside.find((x) => x.eventId === PROBE_ID);
+  if (aside?.reason === 'front-door-guard') {
+    const effortKey = [...graph.frontDoorOf].find(([, c]) => nodeKey(c) === key)?.[0];
+    return { ...base, eligible: false, reason: 'front-door-held', frontDoorOf: effortKey ? graph.efforts.get(effortKey)?.ref : undefined };
+  }
+  if (aside?.reason === 'placement-would-create-cycle') return { ...base, eligible: false, reason: 'would-create-cycle' };
+  const now = after.parentOf.get(key) ?? null;
+  const landed = (now === null && parent === null) || (now !== null && parent !== null && nodeKey(now) === nodeKey(parent));
+  return landed ? { ...base, eligible: true } : { ...base, eligible: false, reason: 'not-applied' };
 }
 
 // ── Projection ────────────────────────────────────────────────────────────────────────────
@@ -531,6 +611,13 @@ export interface ProjectionItem {
   kind: 'effort' | 'conversation';
   role: 'effort' | 'front-door' | 'worker' | 'unassigned';
   primaryPath: Array<{ ref: NodeRef; title: string }>;
+  /**
+   * Who placed this node under its (visible) parent: 'owner', 'delegation', 'import' or 'inference'
+   * (v3 §5.1 "Why here?"; an inferred placement must never be shown as though accepted) — the
+   * author of the placement that actually holds it there, also after a conflict, guard or cycle
+   * fallback. Absent for a root. A conflict is reported separately (graph.conflicts).
+   */
+  placedBy?: Authority;
   visibleChildCount: number;
   digestVersion: string | null;
   sourceFreshness: string | null;
@@ -642,6 +729,10 @@ export class GraphProjection {
       digestVersion: null,
       sourceFreshness: c?.lastActivity ?? null,
     };
+    if (parentKey !== null) {
+      const src = this.input.graph.placementSource.get(k);
+      if (src) item.placedBy = src.authority;
+    }
     if (c) {
       item.source = { platform: c.ref.platform, conversationId: c.conversationId, title: c.title };
       if (c.machine !== undefined) item.source.machine = c.machine;

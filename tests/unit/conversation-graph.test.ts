@@ -5,11 +5,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  validateNodeRef, encodeRouteRef, decodeRouteRef, nodeKey, validateGraphEvent, reduceGraph, GraphProjection,
+  validateNodeRef, encodeRouteRef, decodeRouteRef, nodeKey, validateGraphEvent, reduceGraph, GraphProjection, moveEligibility,
   type NodeRef, type EffortRef, type ConversationRef, type GraphEvent, type Authority, type ConversationSource,
 } from '../../src/core/conversationGraph.js';
 
 const VERIFY_ALL = { verify: () => true };
+const AT = '2026-11-05T23:59:00.000Z'; // the createdAt a correction will carry
 const effort = (n: number): EffortRef => ({ kind: 'effort', id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}` });
 const tg = (topicId: number, chatId = '-1001234567890'): ConversationRef => ({ kind: 'conversation', platform: 'telegram', chatId, topicId });
 const RECEIPT: Record<Authority, GraphEvent['receipt']['kind']> = { owner: 'owner-proof', delegation: 'dispatch-record', import: 'import-record', inference: 'inference-candidate' };
@@ -34,7 +35,7 @@ function relation(subject: NodeRef, parent: NodeRef | null) {
 function place(subject: NodeRef, parent: NodeRef | null, authority: Authority = 'owner', replaces: string[] = [], extra: { eventId?: string; at?: string } = {}): GraphEvent {
   return { ...base(subject, authority, extra), op: 'set-primary-placement', parent, relation: relation(subject, parent), replacesPlacementEventIds: replaces } as GraphEvent;
 }
-function create(e: EffortRef): GraphEvent { return { ...base(e, 'owner'), op: 'create-effort', projectScope: [] } as GraphEvent; }
+function create(e: EffortRef): GraphEvent { return { ...base(e, 'owner'), op: 'create-effort', projectScope: [], headerId: `hdr-${e.id.replace(/-/g, '')}` } as GraphEvent; }
 function frontDoor(e: EffortRef, conv: ConversationRef | null, observed: string[] = [], replaces: string[] = []): GraphEvent {
   return { ...base(e, 'owner'), op: 'set-front-door', frontDoor: conv, replacesFrontDoorEventIds: replaces, observedPlacementEventIds: observed } as GraphEvent;
 }
@@ -80,6 +81,19 @@ describe('validateGraphEvent', () => {
   it('delegation may only produce delegates-to; create-effort and front door are owner-only', () => {
     expect(validateGraphEvent(place(tg(1), effort(1), 'delegation'))).toBeNull();
     expect(validateGraphEvent({ ...create(effort(1)), authority: 'delegation', receipt: { kind: 'dispatch-record', id: 'x' } })).toBeNull();
+  });
+  it('identifier fields refuse prose (principal, machineId, receipt id, project scope)', () => {
+    const e = place(tg(1), effort(1));
+    expect(validateGraphEvent({ ...e, principal: 'Acme merger plan' })).toBeNull();
+    expect(validateGraphEvent({ ...e, machineId: 'my secret' })).toBeNull();
+    expect(validateGraphEvent({ ...e, receipt: { kind: 'owner-proof', id: 'the plan is x' } })).toBeNull();
+    expect(validateGraphEvent({ ...create(effort(1)), projectScope: ['secret project name'] })).toBeNull();
+  });
+  it('create-effort requires an opaque header id', () => {
+    const c = create(effort(1));
+    expect(validateGraphEvent(c)).toMatchObject({ headerId: (c as { headerId: string }).headerId });
+    expect(validateGraphEvent({ ...c, headerId: undefined })).toBeNull();
+    expect(validateGraphEvent({ ...c, headerId: 'Launch plan' })).toBeNull();
   });
   it('carries no free text field', () => {
     expect(validateGraphEvent({ ...create(effort(1)), title: 'secret' } as unknown)).not.toHaveProperty('title');
@@ -309,6 +323,84 @@ describe('certified means guarded', () => {
   });
 });
 
+describe('heads and move eligibility (increment C support)', () => {
+  it('exposes every current head, including both sides of an owner conflict', () => {
+    const p0 = place(tg(130), effort(1));
+    const a = place(tg(130), effort(2), 'owner', [p0.eventId]);
+    const b = place(tg(130), effort(3), 'owner', [p0.eventId]);
+    const evs = [create(effort(1)), create(effort(2)), create(effort(3)), p0, a, b];
+    const g = reduceGraph(evs, VERIFY_ALL);
+    expect(g.placementHeads.get(nodeKey(tg(130)))).toEqual([a.eventId, b.eventId].sort());
+    const m = moveEligibility(evs, VERIFY_ALL, tg(130), effort(2), AT);
+    expect(m).toMatchObject({ eligible: true, resolvesConflict: true });
+    expect(m.observedHeads).toEqual([a.eventId, b.eventId].sort());
+    const fix = place(tg(130), effort(2), 'owner', m.observedHeads);
+    expect(reduceGraph([...evs, fix], VERIFY_ALL).conflicts).toEqual([]);
+  });
+
+  it('an owner may correct a wrongly inferred placement even if it only cycles through an agent edge', () => {
+    const E1 = effort(1); const E2 = effort(2);
+    const agent = place(E2, E1, 'inference'); // inferred: E2 under E1 — wrong
+    const evs = [create(E1), create(E2), agent];
+    const m = moveEligibility(evs, VERIFY_ALL, E1, E2, AT); // owner: E1 under E2
+    expect(m).toMatchObject({ eligible: true });
+    const g = reduceGraph([...evs, place(E1, E2, 'owner', m.observedHeads)], VERIFY_ALL);
+    expect(parentOf(g, E1)).toEqual(E2);
+  });
+
+  it('agrees with the reducer on invalid relations, owner cycles and held front doors', () => {
+    const E = effort(1);
+    const p = place(tg(140), E);
+    const fd = frontDoor(E, tg(140), [p.eventId]);
+    const w = place(tg(141), tg(140));
+    const w2 = place(tg(142), tg(141));
+    const evs = [create(E), create(effort(2)), p, fd, w, w2];
+    expect(moveEligibility(evs, VERIFY_ALL, E, tg(140), AT).reason).toBe('relation-invalid');
+    expect(moveEligibility(evs, VERIFY_ALL, tg(141), tg(142), AT).reason).toBe('would-create-cycle'); // owner-tier cycle
+    expect(moveEligibility(evs, VERIFY_ALL, tg(140), tg(141), AT).reason).toBe('front-door-held');   // the guard is checked first, as in the reducer
+    expect(moveEligibility(evs, VERIFY_ALL, tg(140), effort(2), AT)).toMatchObject({ eligible: false, reason: 'front-door-held', frontDoorOf: E });
+    expect(moveEligibility(evs, VERIFY_ALL, tg(140), null, AT).reason).toBe('front-door-held');
+    expect(moveEligibility(evs, VERIFY_ALL, tg(141), effort(2), AT)).toMatchObject({ eligible: true, observedHeads: [w.eventId] });
+    expect(moveEligibility(evs, VERIFY_ALL, tg(150), E, AT)).toMatchObject({ eligible: true, observedHeads: [] });
+  });
+});
+
+describe('second review round: timestamps, probe identity, provenance after fallbacks', () => {
+  it('refuses a timestamp without exactly millisecond precision (string order must equal time order)', () => {
+    const e = place(tg(160), effort(1));
+    expect(validateGraphEvent({ ...e, createdAt: '2026-11-05T12:00:00Z' })).toBeNull();
+    expect(validateGraphEvent({ ...e, createdAt: '2026-11-05T12:00:00.5Z' })).toBeNull();
+    expect(validateGraphEvent(e)).not.toBeNull();
+  });
+
+  it('the eligibility probe uses the correction\'s own timestamp, so a future-dated event cannot skew it', () => {
+    const E1 = effort(1); const E2 = effort(2);
+    const future = place(E2, E1, 'owner', [], { at: '2031-01-01T00:00:00.000Z' });
+    const evs = [create(E1), create(E2), future];
+    const m = moveEligibility(evs, VERIFY_ALL, E1, E2, AT);
+    const g = reduceGraph([...evs, { ...place(E1, E2, 'owner', m.observedHeads), createdAt: AT } as GraphEvent], VERIFY_ALL);
+    expect(m.eligible).toBe(parentOf(g, E1) !== undefined && nodeKey(parentOf(g, E1)!) === nodeKey(E2));
+  });
+
+  it('no real event can carry the probe id or borrow its verification', () => {
+    expect(validateGraphEvent({ ...place(tg(161), effort(1)), eventId: 'eligibility.probe' })).toBeNull();
+  });
+
+  it('placedBy names the real author after a guard or cycle fallback, never a made-up agreement', () => {
+    const E = effort(1);
+    const p0 = place(tg(170), E, 'inference');
+    const fd = frontDoor(E, tg(170), [p0.eventId]);
+    const move = place(tg(170), effort(2), 'owner', [p0.eventId]);
+    const g = reduceGraph([create(E), create(effort(2)), p0, fd, move], VERIFY_ALL);
+    expect(g.placementSource.get(nodeKey(tg(170)))?.authority).toBe('inference'); // held by the guard where inference put it
+    const x = place(tg(171), effort(1), 'inference');
+    const y = place(tg(172), tg(171), 'owner');
+    const xCycle = place(tg(171), tg(172), 'owner', [x.eventId]); // would cycle; falls back to the inferred parent
+    const g2 = reduceGraph([create(E), x, y, xCycle], VERIFY_ALL);
+    expect(g2.placementSource.get(nodeKey(tg(171)))?.authority).toBe('inference');
+  });
+});
+
 describe('GraphProjection (filter first)', () => {
   const E = effort(100);
   const S = effort(200);
@@ -353,6 +445,16 @@ describe('GraphProjection (filter first)', () => {
     expect(make(() => true).item(tg(100))?.metadata).toBeUndefined();
     const unverified = new GraphProjection({ graph: reduceGraph(events, { verify: (e) => e.op !== 'set-front-door' }), conversations, effortTitle: titles, mayView: () => true });
     expect(unverified.item(E)?.metadata).toEqual({});
+  });
+
+  it('says who placed each node, so an inferred placement is never shown as accepted (§5.1)', () => {
+    const p = make(() => true);
+    expect(p.item(tg(100))?.placedBy).toBe('owner');
+    expect(p.item(tg(101))?.placedBy).toBe('delegation');
+    expect(p.item(tg(300))?.placedBy).toBeUndefined(); // a root / unassigned
+    const inferred = reduceGraph([...events, place(tg(300), E, 'inference')], VERIFY_ALL);
+    const q = new GraphProjection({ graph: inferred, conversations, effortTitle: titles, mayView: () => true });
+    expect(q.item(tg(300))?.placedBy).toBe('inference');
   });
 
   it('a hidden child is not counted, listed, or searchable', () => {

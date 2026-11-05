@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-header-operations",
+  "sessionId": "c4773de8-715f-445f-8ae8-f1db863b24a3",
+  "timestamp": "2026-11-05T11:42:36.219Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-header-operations.md",
+  "artifactSha256": "79f50fc03263c3ed2adea60d8b6300b07b4c5abd89ba98a5a7c1707961b45265",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/core/EffortHeaderStore.ts",
+    "src/core/conversationGraph.ts",
+    "src/core/conversationGraphRead.ts",
+    "tests/unit/EffortHeaderStore.test.ts",
+    "tests/unit/conversation-graph-read.test.ts",
+    "tests/unit/conversation-graph.test.ts",
+    "upgrades/side-effects/conversation-graph-header-operations.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Erasable header metadata contract and graph authority/correction support; unwired, but contract-shaping for the runtime",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No self-triggered action: a store applied by a caller and pure reducer helpers; no timer, loop, retry, restart, spawn or notification"
+  }
+}

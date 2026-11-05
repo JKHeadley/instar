@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-05T11:43:11.019Z",
+  "slug": "conversation-graph-header-operations",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 441,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/EffortHeaderStore.ts",
+      "src/core/conversationGraph.ts",
+      "src/core/conversationGraphRead.ts"
+    ],
+    "addedLines": 358,
+    "deletedLines": 83
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No self-triggered action: a store applied by a caller and pure reducer helpers; no timer, loop, retry, restart, spawn or notification"
+  },
+  "verdict": "pass"
+}
