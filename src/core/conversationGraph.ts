@@ -535,6 +535,13 @@ export interface ProjectionItem {
   digestVersion: string | null;
   sourceFreshness: string | null;
   source?: { platform: ConversationRef['platform']; conversationId: string | number; title: string; machine?: string | null };
+  /**
+   * Effort items only. `frontDoor` is present ONLY when this machine's reducer certified it (verified
+   * owner choice, guarded, currently coordinated) AND the viewer may see that conversation. It is
+   * local certification, not an all-member commit: while partialReasons includes replica-lag it
+   * must not be presented as committed on every device.
+   */
+  metadata?: { frontDoor?: ConversationRef };
 }
 
 export interface ProjectionInput {
@@ -638,6 +645,10 @@ export class GraphProjection {
     if (c) {
       item.source = { platform: c.ref.platform, conversationId: c.conversationId, title: c.title };
       if (c.machine !== undefined) item.source.machine = c.machine;
+    }
+    if (node.kind === 'effort') {
+      const fd = this.input.graph.frontDoorOf.get(k);
+      item.metadata = fd && this.visible.has(nodeKey(fd)) ? { frontDoor: fd } : {};
     }
     return item;
   }

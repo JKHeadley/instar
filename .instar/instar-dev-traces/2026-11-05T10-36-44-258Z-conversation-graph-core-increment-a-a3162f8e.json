@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-core-increment-a",
+  "sessionId": "c4773de8-715f-445f-8ae8-f1db863b24a3",
+  "timestamp": "2026-11-05T10:36:44.258Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-core-increment-a.md",
+  "artifactSha256": "dd5a45fa0840b67ab100f2309f4c1340e1597c4c3634019e181f826b25272914",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/core/conversationGraph.ts",
+    "tests/unit/conversation-graph.test.ts",
+    "upgrades/side-effects/conversation-graph-core-increment-a.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to the increment-A core: projection metadata on effort items; same state and authority surface",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No self-triggered action: the change adds pure reducer/projection functions and two stores that write only when a caller invokes append/write/forget; there is no timer, loop, retry, restart, spawn or notification, and nothing is wired to call them"
+  }
+}

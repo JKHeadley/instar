@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-05T10:37:04.941Z",
+  "slug": "conversation-graph-core-increment-a",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/conversationGraph.ts"
+    ],
+    "addedLines": 11,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No self-triggered action: the change adds pure reducer/projection functions and two stores that write only when a caller invokes append/write/forget; there is no timer, loop, retry, restart, spawn or notification, and nothing is wired to call them"
+  },
+  "verdict": "pass"
+}

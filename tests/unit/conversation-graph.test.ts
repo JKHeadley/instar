@@ -346,6 +346,15 @@ describe('GraphProjection (filter first)', () => {
     expect(p.item(tg(101))?.primaryPath.map((x) => x.title)).toEqual(['Launch', 'Front door']);
   });
 
+  it('metadata.frontDoor appears on the effort only when certified and visible', () => {
+    expect(make(() => true).item(E)?.metadata).toEqual({ frontDoor: tg(100) });
+    expect(make(not(tg(100))).item(E)?.metadata).toEqual({});
+    expect(make(() => true).item(S)?.metadata).toEqual({});
+    expect(make(() => true).item(tg(100))?.metadata).toBeUndefined();
+    const unverified = new GraphProjection({ graph: reduceGraph(events, { verify: (e) => e.op !== 'set-front-door' }), conversations, effortTitle: titles, mayView: () => true });
+    expect(unverified.item(E)?.metadata).toEqual({});
+  });
+
   it('a hidden child is not counted, listed, or searchable', () => {
     const p = make(not(tg(102)));
     expect(p.item(tg(100))?.visibleChildCount).toBe(1);

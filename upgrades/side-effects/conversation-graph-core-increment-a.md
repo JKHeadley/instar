@@ -8,7 +8,7 @@
 ## Summary of the change
 
 Adds the deterministic core of the Conversations hierarchy from `docs/specs/conversation-effort-hierarchy-v3.md` (§3.1–3.3, §7.2, §7.5), plus that spec and its imported review record. Three new modules, none of them wired into the server, routes, boot, or any existing path:
-`src/core/conversationGraph.ts` (typed `NodeRef`, event validation, the receipt-first reducer, the viewer-filtered projection), `src/core/ConversationGraphStore.ts` (append-only fsynced `conversation-graph/events.jsonl`), and `src/core/EffortHeaderStore.ts` (versioned, erasable effort titles in `conversation-graph/effort-headers.json`). A new state-registry category `conversation-graph` declares both files. Tests: `tests/unit/conversation-graph.test.ts` (39), `ConversationGraphStore.test.ts` (6), `EffortHeaderStore.test.ts` (7) — 52 in all.
+`src/core/conversationGraph.ts` (typed `NodeRef`, event validation, the receipt-first reducer, the viewer-filtered projection), `src/core/ConversationGraphStore.ts` (append-only fsynced `conversation-graph/events.jsonl`), and `src/core/EffortHeaderStore.ts` (versioned, erasable effort titles in `conversation-graph/effort-headers.json`). A new state-registry category `conversation-graph` declares both files. Tests: `tests/unit/conversation-graph.test.ts` (40), `ConversationGraphStore.test.ts` (6), `EffortHeaderStore.test.ts` (7) — 53 in all.
 Tier 2 (risk floor 2: new durable state + authority rules). Size ~1,000 LOC across 7 source/test files plus imported spec docs. Effort: one rewrite after an executable review of the first draft (6b7f81aa2) found six reducer defects, then four second-pass rounds that found and closed nine more (id-collision poisoning before verification, owner corrections held by unverified predecessors, a front-door fallback that dropped the subject, unreported cycles and agent-head losers, a history-based then a time-based front-door guard, a certified-but-unguarded front door, and a temp file that could keep an erased title). Every one has a regression.
 
 ## Decision-point inventory
@@ -16,7 +16,7 @@ Tier 2 (risk floor 2: new durable state + authority rules). Size ~1,000 LOC acro
 - `reduceGraph` authority precedence — **add** — which placement or front-door event decides a subject (owner > delegation > import > inference; a lower tier can never replace a higher head).
 - `reduceGraph` receipt gate — **add** — an event whose authorization receipt the caller cannot verify is set aside and never reduced.
 - `reduceGraph` cycle / front-door guard — **add** — which placement is set aside when a cycle or a move of a certified front door would result. The guard is causal: a `set-front-door` choice names the placement heads it observed (`observedPlacementEventIds`); it is certified only if that observed history puts the conversation directly under the effort and every observed head is an accepted placement of that conversation, and then any placement outside that history that would move it away is refused, whatever its timestamp.
-- `GraphProjection` viewer filter — **add** — which nodes a viewer sees; applied before counts, search, paths and children.
+- `GraphProjection` viewer filter — **add** — which nodes a viewer sees; applied before counts, search, paths and children. Effort items carry `metadata.frontDoor` only when the reducer certified the front door and the viewer may see that conversation; it is local certification, not an all-member commit, and every projection reports `replica-lag` until replication lands.
 - `validateGraphEvent` / `validateNodeRef` — **add** — schema validation for untrusted events and refs.
 
 None of these is reachable from any running path in this change.
@@ -82,11 +82,11 @@ A dark, unwired core that encodes the v3 identity, event, authority and projecti
 **Reviewer:** independent-verifier (Claude Code subagent, fresh context, 2026-11-05; five rounds)
 **Independent read of the artifact: concur**
 
-Round 1 raised a concern (id-collision poisoning before verification, owner corrections held by unverified predecessors, a front-door fallback that dropped the subject, unreported cycles and agent-head losers, store test and temp-file gaps). Rounds 2–4 each found one problem in the fix (a history-based guard, a time-based guard that backdated or late-replicated events could bypass, a certified-but-unguarded front door). All were fixed with regressions. Round 5, verbatim ending: "Concur with the review" — after re-running every reproduction and a 300-permutation determinism check, and correcting three factual errors in this artifact (per-file test counts, a stale evidence count, and the number of unlinks), which are fixed above.
+Round 1 raised a concern (id-collision poisoning before verification, owner corrections held by unverified predecessors, a front-door fallback that dropped the subject, unreported cycles and agent-head losers, store test and temp-file gaps). Rounds 2–4 each found one problem in the fix (a history-based guard, a time-based guard that backdated or late-replicated events could bypass, a certified-but-unguarded front door). All were fixed with regressions. Round 5, verbatim ending: "Concur with the review" — after re-running every reproduction and a 300-permutation determinism check, and correcting three factual errors in this artifact (per-file test counts, a stale evidence count, and the number of unlinks), which are fixed above. Round 6 (the `metadata.frontDoor` follow-up on top of a5190cf2b): "Concur with the review" — it cannot leak a hidden conversation, cannot appear for an uncertified front door, and always agrees with the conversation item's role.
 
 ## Evidence pointers
 
-- `npx vitest run tests/unit/conversation-graph.test.ts tests/unit/ConversationGraphStore.test.ts tests/unit/EffortHeaderStore.test.ts` → 52 passed.
+- `npx vitest run tests/unit/conversation-graph.test.ts tests/unit/ConversationGraphStore.test.ts tests/unit/EffortHeaderStore.test.ts` → 53 passed.
 - `node scripts/run-lint-parallel.mjs` → 51/51 lint steps passed (pre-commit run, 2026-11-05).
 - Spec: `docs/specs/conversation-effort-hierarchy-v3.md` (approved: true; review-convergence imported, see `conversation-effort-hierarchy-provenance.md`).
 
