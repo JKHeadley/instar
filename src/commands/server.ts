@@ -10745,9 +10745,11 @@ export async function startServer(options: StartOptions): Promise<void> {
 
         // Ensure Slack system channels exist
         ensureSlackAttentionChannel(slackAdapter, state).catch(err => {
+          // @silent-fallback-ok: this optional channel setup failure is logged below.
           console.error(`[server] Failed to ensure Slack Attention channel: ${err}`);
         });
         ensureSlackUpdatesChannel(slackAdapter, state).catch(err => {
+          // @silent-fallback-ok: this optional channel setup failure is logged below.
           console.error(`[server] Failed to ensure Slack Updates channel: ${err}`);
         });
 
@@ -13607,9 +13609,27 @@ export async function startServer(options: StartOptions): Promise<void> {
                   return belongs && !m.fromUser && Date.parse(m.timestamp) > sinceMs &&
                     m.provenance !== 'automation' && m.provenance !== 'user' &&
                     (m.provenance === 'agent' || !isSystemOrProxyMessageForMonitor(m.text));
-                } catch { return false; }
+                } catch (err) {
+                  DegradationReporter.getInstance().report({
+                    feature: 'SessionMonitor.hasAgentRepliedSince',
+                    primary: 'parse a persisted message to check whether the agent replied',
+                    fallback: 'skip the malformed message and inspect the remaining history',
+                    reason: `invalid message in ${logPath}: ${err instanceof Error ? err.message : String(err)}`,
+                    impact: 'A recorded reply may be missed during session recovery.',
+                  });
+                  return false;
+                }
               });
-            } catch { return false; }
+            } catch (err) {
+              DegradationReporter.getInstance().report({
+                feature: 'SessionMonitor.hasAgentRepliedSince',
+                primary: 'read persisted conversation history to check whether the agent replied',
+                fallback: 'treat the history as having no recorded reply',
+                reason: `cannot read ${logPath}: ${err instanceof Error ? err.message : String(err)}`,
+                impact: 'A recorded reply may be missed during session recovery.',
+              });
+              return false;
+            }
           },
           getTopicHistory: (topicId, limit) => {
             const slackChId = slackProxyChannelMap.get(topicId);
