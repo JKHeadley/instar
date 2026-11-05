@@ -68,3 +68,9 @@ Second-pass concurrence: the independent reviewer verified the counter producer 
 ## Runnable lifecycle fixture correction (2026-11-05)
 
 The real roundtrip test refused to stage because its source fixture body omitted required agentmd YAML frontmatter. A diagnostic through the real production catalog loader returned complete:false/jobs:[] and the missing-frontmatter problem; adding valid name/description frontmatter returned complete:true with the portable entry. The fixture now verifies real loader admission at construction, and the lifecycle test asserts a complete signed portable advertisement and hex-letter generation before waiting on transfer. No runtime behavior or admission gate changed. The encrypted source export/replay test had passed; the corrected end-to-end case still requires a fresh execution result.
+
+## Agent awareness and migration parity completion (2026-11-05)
+
+The same shared guide machinery now delivers private-transfer instructions to fresh, full, reference-layout, AGENTS and GEMINI agents: dark/preview defaults, exact-root local operator approvals, real preview/approval/revoke/rollback APIs, explicit portability/dependencies, registry and proactive use. The guide forbids collecting a PIN in chat, approving on the operator behalf, or bypassing with git-sync/config copies. A bearer or signed peer bundle is not activation authority. Actual template and migration tests cover both coverage and transfer guidance with custom notes preserved. Independent review concurred; focused and final full verification remain merge gates.
+
+Focused combined coverage/transfer awareness verification passed: 39 real template/migration/reference-layout tests, zero failures. TypeScript noEmit passed. The actual transfer HTTP3, encrypted source and real roundtrip E2E2, and compatibility integration57 had already passed; final full suite still required after this awareness source completion.
