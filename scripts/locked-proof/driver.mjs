@@ -260,13 +260,19 @@ export class RealTarget {
   async viewer(agent) {
     const context = await this.browser.newContext();
     const page = await context.newPage();
+    const v = { agent, context, page, session: null };
+    // The operator session this page is given. A request can only be revoked by the session that
+    // opened it, so an out-of-band revoke has to use the page's session, not one of the driver's own.
+    page.on('response', async r => {
+      if (!r.url().includes('/dashboard/unlock')) return;
+      try { v.session = (await r.json()).operatorSessionToken ?? v.session; } catch { /* not this page's unlock answer */ }
+    });
     await page.goto(`http://127.0.0.1:${agent.port}/dashboard/desktop.html`);
     await page.fill('#pin', agent.pin);
     await page.click('#unlockButton');
     // desktop.js opens the stream by itself when exactly one machine is ready,
     // keeping #request hidden; either outcome means the page is ready.
     await page.waitForSelector(VIEWER_READY, { timeout: 20_000 });
-    const v = { agent, context, page };
     this.viewers.push(v);
     return v;
   }
@@ -487,8 +493,11 @@ export class RealTarget {
       case 'revoke': {
         const requestId = Object.values(this.caseMarkers()).find(m => m.requestId)?.requestId;
         if (!requestId) throw new Error('revoke: this case has no open request to revoke');
-        const session = await this.operatorSession(this.a);
-        return this.api(this.a, 'POST', `/desktop/requests/${encodeURIComponent(requestId)}/revoke`, {}, { 'X-Instar-Operator-Session': session });
+        const session = this.main?.session ?? await this.operatorSession(this.a);
+        const r = await this.api(this.a, 'POST', `/desktop/requests/${encodeURIComponent(requestId)}/revoke`, {}, { 'X-Instar-Operator-Session': session });
+        // A refused revoke ended nothing, so the case would judge a grant that is still open.
+        if (r.status >= 400) throw new Error(`revoke: refused with ${r.status} ${r.error ?? ''}`.trim());
+        return r;
       }
       case 'stop-viewer': await this.main.page.click('#stopButton'); return { clicked: 'stop' };
       case 'leave-unlocked': await this.main.page.click('#leaveUnlockedButton'); return { clicked: 'leave-unlocked' };

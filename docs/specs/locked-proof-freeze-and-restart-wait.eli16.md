@@ -1,8 +1,8 @@
-# Eight more fixes to the locked-screen test, from its first real run
+# Nine more fixes to the locked-screen test, from its first real run
 
 ## What this is
 
-Instar can show and control a Mac's screen remotely, even while that Mac is locked. To prove the locked-screen part is safe, a test driver on a real Mac Mini opens the same remote-desktop web page a person would use, types the password into it, breaks things on purpose (kills the server, freezes it, pulls the network) and checks that the Mac always ends up locked again. On 5 November 2026 the driver ran for real for the first time, and several of its own mistakes showed up. None of them was a fault in the product. The first, a wait for a hidden button, is already fixed. These are the other eight.
+Instar can show and control a Mac's screen remotely, even while that Mac is locked. To prove the locked-screen part is safe, a test driver on a real Mac Mini opens the same remote-desktop web page a person would use, types the password into it, breaks things on purpose (kills the server, freezes it, pulls the network) and checks that the Mac always ends up locked again. On 5 November 2026 the driver ran for real for the first time, and several of its own mistakes showed up. None of them was a fault in the product. The first, a wait for a hidden button, is already fixed. These are the other nine.
 
 ## What went wrong, and what changes
 
@@ -21,6 +21,8 @@ Instar can show and control a Mac's screen remotely, even while that Mac is lock
 **Its "in the middle of typing" tests fired too early.** Some tests break something while the password is being typed. The driver decided typing had started as soon as the helper that does the typing was running, but that helper starts the moment the remote screen opens. So the test broke things before any password had been sent, and there was nothing to check. Typing now means the password has actually been handed over and Enter has not been pressed yet.
 
 **One test waited for something that was never due.** The Mac has a small guard program whose only job is to lock it again when a remote session ends. One test kills that guard while a session is open, and expected the Mac to be locked afterwards. But the test never ended the session. The product did what its design says: it started a new guard within a few seconds and left the Mac open for the person still using it. The test now ends the session once the new guard is in place, and then checks that the Mac locks.
+
+**It tried to end a session it did not own.** Some tests end the remote session from outside the page, the way a second device would. The driver did that with a sign-in of its own, and the server refused, correctly: only the sign-in that opened a session may end it. The driver did not notice the refusal and went on to judge a session that was still open. It now ends the session with the page's own sign-in, and treats a refusal as a failed test step.
 
 ## What stays the same
 

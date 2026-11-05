@@ -385,6 +385,18 @@ describe('locked-proof launchd kill', () => {
     expect(await never.waitLockStateKnown(5_000)).toBe(false);
   });
 
+  it('revokes as the operator who opened the request, and a refused revoke fails the case', async () => {
+    // Live on the Mini the driver revoked with a session of its own and the server answered 403:
+    // only the session that opened a request may end it. The case then judged a grant still open.
+    const sent: Record<string, string>[] = [];
+    const base = { priorMarkers: {}, readStore: () => ({ markers: { k: { state: 'owed', requestId: 'r1' } } }), a: { port: 4098, session: 'drivers-own' } };
+    const ok = realTarget({ ...base, main: { session: 'viewers' }, api: async (_a: unknown, _m: string, _r: string, _b: unknown, headers: Record<string, string>) => { sent.push(headers); return { status: 200, revoked: true }; } });
+    expect(await ok.act('revoke')).toEqual({ status: 200, revoked: true });
+    expect(sent[0]['X-Instar-Operator-Session']).toBe('viewers');
+    const refused = realTarget({ ...base, main: { session: 'viewers' }, api: async () => ({ status: 403, error: 'Desktop revocation unavailable' }) });
+    await expect(refused.act('revoke')).rejects.toThrow(/revoke: refused with 403 Desktop revocation unavailable/);
+  });
+
   it('a revoke with nothing to revoke fails the case', async () => {
     const target = realTarget({ priorMarkers: {}, readStore: () => ({ markers: {} }) });
     await expect(target.act('revoke')).rejects.toThrow(/no open request/);
