@@ -241,6 +241,24 @@ describe('class-review lifecycle authority and retention', () => {
     expect(local.hasFilled('k')).toBe(false); // authorization remains local-only
   });
 
+  it('a list reads peer records in one scan, not once per key, with the same merged answer', () => {
+    const peer = new ClassReviewStore({ dbPath: ':memory:', machineId: 'm2' });
+    for (const key of ['a', 'b', 'c']) peer.ensureShell({ dedupeKey: key, correctionId: key, origin: 'agent-self' });
+    const remote = new Map(['a', 'b', 'c'].map((key) => [key, [classReviewFromOriginRecord(classReviewToOriginRecord(peer.get(key)!, 'm2'))!]]));
+    const local = new ClassReviewStore({ dbPath: ':memory:', machineId: 'm1' });
+    local.ensureShell({ dedupeKey: 'a', correctionId: 'local', origin: 'agent-self' });
+    const perKey = vi.fn((key: string) => remote.get(key) ?? []);
+    local.setRemoteReader({ get: perKey, keys: () => [...remote.keys()] });
+    const slow = local.list();
+    expect(perKey).toHaveBeenCalledTimes(3);
+    perKey.mockClear();
+    const all = vi.fn(() => remote);
+    local.setRemoteReader({ get: perKey, keys: () => [...remote.keys()], all });
+    expect(local.list()).toEqual(slow);
+    expect(all).toHaveBeenCalledOnce();
+    expect(perKey).not.toHaveBeenCalled();
+  });
+
   it('defaults backfill origin downward and never upgrades an existing shell from unauthenticated data', () => {
     const ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 'm1' });
     const store = new ClassReviewStore({ dbPath: ':memory:', machineId: 'm1' });

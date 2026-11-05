@@ -3898,6 +3898,36 @@ function makeJobPortableTransferPoll(f: PressureFixture, sink: ActionSink): { ti
     sink.emitTimesMs.push(now);
   } };
 }
+/**
+ * job-silence-alert — a persistent silent job keeps asking the operator for
+ * attention. A durable last-attempt stamp floors failed sends at one hour;
+ * confirmed deliveries are reminded no more than once per day. The fixture
+ * keeps delivery failing forever, the highest attempt-rate case.
+ */
+const jobSilenceAlert: SelfActionController = {
+  id: 'job-silence-alert',
+  actionVerb: 'silence-notify',
+  models: 'src/scheduler/JobScheduler.ts (raiseContinuityAlert — hourly attempt floor and daily delivered reminder)',
+  modelsPath: 'src/scheduler/JobScheduler.ts',
+  delegatedGiveUp: 'the durable one-hour attempt floor; failed delivery cannot spin inside the five-minute poll',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 48 * 12,
+  tickMs: 5 * 60_000,
+  eternalSentinel: { reason: 'an enabled silent job remains operator-relevant, with a durable one-hour failed-send floor', rateFloorMs: 60 * 60_000 },
+  restartPosture: { pressureSurvives: true, restartUnderPressure(f, sink) { return jobSilenceAlert.makeUnderPressure(f, sink); } },
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const last = f.durableState.get('job-silence-last-attempt') as number | undefined;
+      if (last !== undefined && now - last < 60 * 60_000) return;
+      f.durableState.set('job-silence-last-attempt', now);
+      sink.emit({ verb: 'silence-notify', target: 'silent-job' });
+      sink.emitTimesMs.push(now);
+    } };
+  },
+};
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   jobPortableTransferPoll,
@@ -3906,6 +3936,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   desktopRelockGuardReplacement,
   desktopLockedHelperRespawn,
   sessionPoolStagePromotion,
+  jobSilenceAlert,
   jobSupervisionProviderRetry,
   jobSupervisionCensusRepair,
   throwawayExpiryTeardown,
