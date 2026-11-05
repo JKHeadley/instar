@@ -3905,8 +3905,35 @@ const jobSilenceAlert: SelfActionController = {
   },
 };
 
+/** A retained Codex 429 pane is transitioned from running to failed before
+ * the exit notice is emitted. The persisted status is the settling brake: a
+ * monitor tick or server restart cannot emit a second notice for that run. */
+const codex429ExitNotice: SelfActionController = {
+  id: 'codex-429-exit-notice',
+  actionVerb: 'rate-limit-notify',
+  models: 'src/commands/server.ts (codexRateLimitExit listener, driven by SessionManager terminal status transition)',
+  modelsPath: 'src/commands/server.ts',
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 100,
+  tickMs: 5_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => codex429ExitNotice.makeUnderPressure(f, sink),
+  },
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered += 1;
+      if (f.durableState.get('codex-429-session-status') === 'failed') return;
+      f.durableState.set('codex-429-session-status', 'failed');
+      sink.emit({ verb: 'rate-limit-notify', target: 'codex-session:one' });
+    } };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   linuxBrowserInstallRetry,
+  codex429ExitNotice,
   claudeKeySessionRefresh,
   desktopRelockGuardReplacement,
   desktopLockedHelperRespawn,

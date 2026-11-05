@@ -12124,6 +12124,41 @@ export async function startServer(options: StartOptions): Promise<void> {
         } catch { /* a placement signal must never disturb the monitor loop */ }
       }
     });
+    // A Codex CLI 429 can terminate the process outright. The normal throttle
+    // sentinel only sees live prompts, so report this terminal failure at the
+    // source instead of waiting for an unanswered-message watchdog.
+    /* @self-action-controller: codex-429-exit-notice */
+    sessionManager.on('codexRateLimitExit', (session: import('../core/types.js').Session) => {
+      try {
+        const summary = `Codex session "${session.name}" stopped after a 429 Too Many Requests response. Its work is no longer running. Retry it on another signed-in Codex account or after the limit resets.`;
+        console.error(`[codex-rate-limit-exit] ${summary}`);
+        DegradationReporter.getInstance().report({
+          feature: 'SessionManager.codexRateLimitExit',
+          primary: 'Codex session continues its work',
+          fallback: 'Session marked failed and operator alerted',
+          reason: 'Codex CLI exited on HTTP 429',
+          impact: summary,
+        });
+        if (telegram) {
+          void telegram.createAttentionItem({
+            id: `codex-rate-limit-exit-${session.id}`,
+            title: 'Codex work stopped on a rate limit',
+            summary,
+            category: 'session',
+            priority: 'HIGH',
+            sourceContext: 'codex-rate-limit-exit',
+          }).catch((err: unknown) => console.warn('[codex-rate-limit-exit] attention delivery failed:', err));
+          const topicId = telegram.getTopicForSession(session.tmuxSession);
+          if (topicId != null) {
+            void telegram.sendToTopic(topicId, summary)
+              .catch((err: unknown) => console.warn('[codex-rate-limit-exit] topic notice failed:', err));
+          }
+        }
+      } catch (err) {
+        // An alert fault must never suppress sessionComplete or dead-pane cleanup.
+        console.warn('[codex-rate-limit-exit] alert setup failed:', err);
+      }
+    });
     // The clearing signal: one successful start re-admits the machine.
     sessionManager.on('sessionStartSucceeded', () => {
       try { startFailureTracker.recordStartSuccess(); } catch { /* never disturb a launch */ }
