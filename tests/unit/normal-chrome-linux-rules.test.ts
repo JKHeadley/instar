@@ -20,7 +20,12 @@ def attempt(fn, *a):
         return {'code': r.code, 'message': r.message}
 `;
 function py(body: string): any {
-  const out = execFileSync('python3', ['-c', `${PRELUDE}\nprint(json.dumps(${body}))`], { encoding: 'utf8' });
+  const out = execFileSync('python3', ['-c', `${PRELUDE}\nprint(json.dumps(${body}))`], {
+    encoding: 'utf8',
+    // exec_module would otherwise write src/templates/scripts/browser/__pycache__ into the source
+    // tree, which CI's working-tree check rejects.
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+  });
   return JSON.parse(out);
 }
 const dest = (uri: string, host: string) => py(`attempt(xd.check_secret_destination, ${JSON.stringify(uri)}, ${JSON.stringify(host)})`);
