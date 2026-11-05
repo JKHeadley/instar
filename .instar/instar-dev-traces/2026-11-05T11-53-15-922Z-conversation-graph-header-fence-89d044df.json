@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-header-fence",
+  "sessionId": "c4773de8-715f-445f-8ae8-f1db863b24a3",
+  "timestamp": "2026-11-05T11:53:15.922Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-header-fence.md",
+  "artifactSha256": "34dda1c7d4213ff48e77be3a1c1f581a291bd20f88e5ab469db4ac498bb7d0af",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/core/EffortHeaderStore.ts",
+    "tests/unit/EffortHeaderStore.test.ts",
+    "upgrades/side-effects/conversation-graph-header-fence.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Erasure fence for user text (privacy floor); unwired",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No self-triggered action: methods applied by a caller; no timer, loop, retry, restart, spawn or notification"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-05T11:53:31.958Z",
+  "slug": "conversation-graph-header-fence",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 91,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/EffortHeaderStore.ts"
+    ],
+    "addedLines": 78,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No self-triggered action: methods applied by a caller; no timer, loop, retry, restart, spawn or notification"
+  },
+  "verdict": "pass"
+}

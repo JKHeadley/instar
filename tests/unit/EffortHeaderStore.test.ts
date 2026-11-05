@@ -195,10 +195,69 @@ describe('EffortHeaderStore', () => {
     expect(new EffortHeaderStore(dir, c.decrypt).get(E)).toMatchObject({ forgotten: true });
   });
 
+  it('suppressHeader fences locally at once — before any certified forget — and survives restart and replay', () => {
+    const dir = tmp();
+    const c = custody();
+    const s = new EffortHeaderStore(dir, c.decrypt);
+    const a = set(E, 0, 'Very private plan', c);
+    s.applyCertified(a.op, a.content);
+    const receipt = { kind: 'owner-forget-intent' as const, id: 'intent-001', at: '2026-11-05T12:30:00.000Z' };
+    expect(s.suppressHeader(E, receipt)).toEqual({ fenced: true, erasure: 'pending' });
+    expect(s.titleOf(E)).toBeNull(); // custody still answers; the fence wins
+    const again = new EffortHeaderStore(dir, c.decrypt); // restart
+    expect(again.titleOf(E)).toBeNull();
+    expect(again.get(E)).toMatchObject({ erasure: 'pending', forgotten: false });
+    const late = set(E, 1, 'Very private plan v2', c);
+    expect(again.applyCertified(late.op, late.content)).toEqual({ applied: false, reason: 'erasure-pending' });
+    expect(again.applyCertified(a.op, a.content).applied).toBe(false); // an old certified set replayed
+    expect(again.titleOf(E)).toBeNull();
+    again.applyCertified(makeHeaderOperation('forget-header', E, 1), null);
+    expect(again.get(E)).toMatchObject({ erasure: 'complete', forgotten: true });
+  });
+
+  it('suppressHeader refuses a missing or malformed intent receipt', () => {
+    const s = new EffortHeaderStore(tmp(), custody().decrypt);
+    expect(s.suppressHeader(E, { kind: 'owner-forget-intent', id: 'an id with spaces', at: '2026-11-05T12:30:00.000Z' })).toEqual({ fenced: false, reason: 'invalid' });
+    expect(s.suppressHeader(E, { kind: 'bearer' as unknown as 'owner-forget-intent', id: 'x', at: '2026-11-05T12:30:00.000Z' })).toEqual({ fenced: false, reason: 'invalid' });
+    expect(s.suppressHeader('not-a-header', { kind: 'owner-forget-intent', id: 'x', at: '2026-11-05T12:30:00.000Z' })).toEqual({ fenced: false, reason: 'invalid' });
+  });
+
+  it('a refused operation on a fenced header never alters the cached state', () => {
+    const c = custody();
+    const s = new EffortHeaderStore(tmp(), c.decrypt);
+    const a = set(E, 0, 'Plan', c, 'hop-fence-reuse');
+    s.applyCertified(a.op, a.content);
+    s.suppressHeader(E, { kind: 'owner-forget-intent', id: 'intent-9', at: '2026-11-05T12:40:00.000Z' });
+    for (let i = 0; i < 10; i++) { const r = set(E, 0, 'Plan', c, 'hop-fence-reuse'); s.applyCertified(r.op, r.content); }
+    expect(s.get(E)?.version).toBe(1);
+  });
+
+  it('suppressHeader refuses an impossible date and extra receipt fields', () => {
+    const s = new EffortHeaderStore(tmp(), custody().decrypt);
+    expect(s.suppressHeader(E, { kind: 'owner-forget-intent', id: 'x', at: '2026-13-45T99:99:99.000Z' })).toEqual({ fenced: false, reason: 'invalid' });
+    expect(s.suppressHeader(E, { kind: 'owner-forget-intent', id: 'x', at: '2026-11-05T12:30:00.000Z', extra: 1 } as never)).toEqual({ fenced: false, reason: 'invalid' });
+  });
+
+  it('revalidate is the strict client-side admission check', () => {
+    const c = custody();
+    const s = new EffortHeaderStore(tmp(), c.decrypt);
+    expect(s.revalidate(set(E, 0, 'A', c).op)).toEqual({ ok: true, currentVersion: 0 });
+    expect(s.revalidate(set(E, 2, 'A', c).op)).toEqual({ ok: false, reason: 'future-version', currentVersion: 0 });
+    const a = set(E, 0, 'A', c);
+    s.applyCertified(a.op, a.content);
+    expect(s.revalidate(set(E, 0, 'B', c).op)).toEqual({ ok: false, reason: 'stale-version', currentVersion: 1 });
+    expect(s.revalidate(set(E, 1, 'B', c).op)).toEqual({ ok: true, currentVersion: 1 });
+    expect(s.revalidate(makeHeaderOperation('set-effort-title', E, 1, { title: 'B', opId: a.op.opId }))).toMatchObject({ ok: false, reason: 'opid-reused' });
+    s.suppressHeader(E, { kind: 'owner-forget-intent', id: 'intent-2', at: '2026-11-05T12:31:00.000Z' });
+    expect(s.revalidate(set(E, 1, 'B', c).op)).toEqual({ ok: false, reason: 'erasure-pending', currentVersion: 1 });
+    expect(s.revalidate(makeHeaderOperation('forget-header', E, 1))).toEqual({ ok: true, currentVersion: 1 });
+    expect(s.revalidate({ junk: true } as never)).toMatchObject({ ok: false, reason: 'invalid' });
+  });
+
   it('refuses to start on a file it cannot read, rather than replacing it', () => {
     const dir = tmp();
     fs.mkdirSync(path.join(dir, 'conversation-graph'), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'conversation-graph', 'effort-headers.json'), '{"schemaVersion":3,"headers":{}}');
+    fs.writeFileSync(path.join(dir, 'conversation-graph', 'effort-headers.json'), '{"schemaVersion":4,"headers":{}}');
     expect(() => new EffortHeaderStore(dir, custody().decrypt)).toThrow(/unreadable/);
   });
 

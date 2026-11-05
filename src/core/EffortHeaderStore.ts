@@ -127,16 +127,38 @@ interface OpMeta {
   titleCommitment?: string;
   bundleRef?: SetTitleOperation['bundleRef'];
 }
-interface HeaderRecord { ops: OpMeta[]; forgotten?: true }
-interface Snapshot { schemaVersion: 4; headers: Record<string, HeaderRecord> }
+interface HeaderRecord {
+  ops: OpMeta[];
+  forgotten?: true;
+  /**
+   * A LOCAL erasure fence (§7.6 "immediately suppress local serving"): set when an owner-verified
+   * forget intent is accepted on this machine, before witness or fleet certification. Never lifted:
+   * the certified forget-header later completes it.
+   */
+  fence?: { receiptId: string; at: string };
+}
+/** v5 adds the local erasure fence; an older build refuses a v5 file instead of ignoring the fence. */
+interface Snapshot { schemaVersion: 5; headers: Record<string, HeaderRecord> }
+
+/** The opaque record of an owner-verified forget intent, accepted by the runtime's ingress. */
+export interface ForgetIntentReceipt { kind: 'owner-forget-intent'; id: string; at: string }
+
+export type ErasureState = 'none' | 'pending' | 'complete';
+
+/** Why a pending header operation would be refused if submitted now (revalidation, never a guess). */
+export type HeaderRevalidation =
+  | { ok: true; currentVersion: number }
+  | { ok: false; reason: 'invalid' | 'opid-reused' | 'erasure-pending' | 'forgotten' | 'stale-version' | 'future-version'; currentVersion: number };
 
 export type ApplyResult =
   | { applied: true; local: true }
-  | { applied: false; reason: 'duplicate' | 'opid-conflict' | 'forgotten' | 'commitment-mismatch' | 'invalid' | 'title-required' };
+  | { applied: false; reason: 'duplicate' | 'opid-conflict' | 'forgotten' | 'erasure-pending' | 'commitment-mismatch' | 'invalid' | 'title-required' };
 
 export interface DerivedHeader {
   version: number;
   forgotten: boolean;
+  /** 'pending' once a local fence is set and until the certified forget is applied; then 'complete'. */
+  erasure: ErasureState;
   /** The winning set operation (null if none or forgotten): what titleOf resolves through custody. */
   current: { opId: string; bundleRef: SetTitleOperation['bundleRef']; titleCommitment: string } | null;
   conflicts: string[];
@@ -146,7 +168,7 @@ export interface DerivedHeader {
 export class EffortHeaderStore {
   readonly file: string;
   private readonly dir: string;
-  private snap: Snapshot = { schemaVersion: 4, headers: {} };
+  private snap: Snapshot = { schemaVersion: 5, headers: {} };
   private stamp = '';
 
   constructor(stateDir: string, private readonly decryptor: HeaderDecryptor) {
@@ -162,13 +184,13 @@ export class EffortHeaderStore {
         if (m && !EffortHeaderStore.alive(Number(m[1]))) this.removeTemp(path.join(this.dir, name));
       }
     }
-    if (!fs.existsSync(this.file)) { this.snap = { schemaVersion: 4, headers: {} }; this.stamp = this.currentStamp(); return; }
+    if (!fs.existsSync(this.file)) { this.snap = { schemaVersion: 5, headers: {} }; this.stamp = this.currentStamp(); return; }
     const parsed = JSON.parse(fs.readFileSync(this.file, 'utf8')) as Partial<Snapshot>;
-    if (!parsed || parsed.schemaVersion !== 4 || !parsed.headers || typeof parsed.headers !== 'object') {
+    if (!parsed || parsed.schemaVersion !== 5 || !parsed.headers || typeof parsed.headers !== 'object') {
       // A file this version cannot read is never silently replaced: refuse to start.
       throw new Error(`effort header store unreadable: ${this.file}`);
     }
-    this.snap = { schemaVersion: 4, headers: { ...parsed.headers } };
+    this.snap = { schemaVersion: 5, headers: { ...parsed.headers } };
     this.stamp = this.currentStamp();
   }
 
@@ -187,7 +209,8 @@ export class EffortHeaderStore {
     const op = validateHeaderOperation(raw);
     if (!op) return { applied: false, reason: 'invalid' };
     this.load(); // read-modify-write against the file, never a cached snapshot
-    const rec: HeaderRecord = this.snap.headers[op.headerId] ?? { ops: [] };
+    // A private copy: a refused operation must never alter the cached snapshot.
+    const rec: HeaderRecord = structuredClone(this.snap.headers[op.headerId] ?? { ops: [] });
     const hash = headerOperationHash(op);
     const same = rec.ops.find((x) => x.opId === op.opId);
     if (same) {
@@ -204,10 +227,11 @@ export class EffortHeaderStore {
     }
     if (op.kind === 'forget-header') {
       const next: HeaderRecord = { ops: [...rec.ops, { opId: op.opId, kind: op.kind, baseVersion: op.baseVersion, hash }], forgotten: true };
-      this.persist({ schemaVersion: 4, headers: { ...this.snap.headers, [op.headerId]: next } });
+      this.persist({ schemaVersion: 5, headers: { ...this.snap.headers, [op.headerId]: next } });
       return { applied: true, local: true };
     }
     if (rec.forgotten) return { applied: false, reason: 'forgotten' }; // refused, never recorded
+    if (rec.fence) return { applied: false, reason: 'erasure-pending' }; // a local forget fence: refused, never recorded
     if (!verifies(op, content)) {
       if (content === null || typeof content.title !== 'string' || typeof content.salt !== 'string') return { applied: false, reason: 'title-required' };
       const clean = canonicalTitle(content.title);
@@ -215,7 +239,7 @@ export class EffortHeaderStore {
       return { applied: false, reason: 'commitment-mismatch' };
     }
     const meta: OpMeta = { opId: op.opId, kind: op.kind, baseVersion: op.baseVersion, hash, titleCommitment: op.titleCommitment, bundleRef: op.bundleRef };
-    this.persist({ schemaVersion: 4, headers: { ...this.snap.headers, [op.headerId]: { ops: [...rec.ops, meta] } } });
+    this.persist({ schemaVersion: 5, headers: { ...this.snap.headers, [op.headerId]: { ops: [...rec.ops, meta] } } });
     return { applied: true, local: true };
   }
 
@@ -226,7 +250,7 @@ export class EffortHeaderStore {
     if (!rec) return null;
     if (rec.forgotten) {
       const forgetBase = Math.max(...rec.ops.filter((o) => o.kind === 'forget-header').map((o) => o.baseVersion));
-      return { version: forgetBase + 1, forgotten: true, current: null, conflicts: [], held: [] };
+      return { version: forgetBase + 1, forgotten: true, erasure: 'complete', current: null, conflicts: [], held: [] };
     }
     const sets = rec.ops.filter((o) => o.kind === 'set-effort-title');
     let version = 0;
@@ -243,7 +267,48 @@ export class EffortHeaderStore {
     const current = winner && winner.bundleRef && winner.titleCommitment
       ? { opId: winner.opId, bundleRef: winner.bundleRef, titleCommitment: winner.titleCommitment }
       : null;
-    return { version, forgotten: false, current, conflicts: conflicts.sort(), held };
+    return { version, forgotten: false, erasure: rec.fence ? 'pending' : 'none', current, conflicts: conflicts.sort(), held };
+  }
+
+  /**
+   * Fence a header LOCALLY, at once, when the runtime has verified an owner's forget intent (device
+   * proof / PIN at its ingress) — before any witness, peer or network step. From here on titleOf
+   * returns null and every set for this header is refused, even across a restart or a replay of an
+   * older certified set. Idempotent; the first receipt is kept. The certified forget-header later
+   * completes the erasure; nothing lifts the fence.
+   */
+  suppressHeader(headerId: string, receipt: ForgetIntentReceipt): { fenced: true; erasure: ErasureState } | { fenced: false; reason: 'invalid' } {
+    const r = receipt as unknown as Record<string, unknown> | null;
+    if (!isHeaderId(headerId) || !r || typeof r !== 'object' || !exactKeys(r, ['at', 'id', 'kind']) || r.kind !== 'owner-forget-intent' ||
+      typeof r.id !== 'string' || !ID_RE.test(r.id) || typeof r.at !== 'string' || !ISO_RE.test(r.at) ||
+      Number.isNaN(Date.parse(r.at)) || new Date(r.at).toISOString() !== r.at) return { fenced: false, reason: 'invalid' };
+    this.load();
+    const rec: HeaderRecord = structuredClone(this.snap.headers[headerId] ?? { ops: [] });
+    if (rec.forgotten) return { fenced: true, erasure: 'complete' };
+    if (!rec.fence) this.persist({ schemaVersion: 5, headers: { ...this.snap.headers, [headerId]: { ...rec, fence: { receiptId: receipt.id, at: receipt.at } } } });
+    return { fenced: true, erasure: 'pending' };
+  }
+
+  /**
+   * Client-facing admission for a NOT-YET-SUBMITTED header operation (the runtime's pending queue and
+   * its 409 header-version-conflict): a set must name exactly the current derived version (0 for a
+   * header that does not exist yet), must not reuse an applied opId, and is refused on a fenced or
+   * forgotten header; a forget is always admissible. This is deliberately STRICTER than
+   * applyCertified, which must accept every certified operation (races and future versions included)
+   * so that every member derives the same header. Passing revalidate does not bypass certification.
+   */
+  revalidate(raw: HeaderOperation): HeaderRevalidation {
+    const op = validateHeaderOperation(raw);
+    const h = op ? this.get(op.headerId) : null;
+    const currentVersion = h?.version ?? 0;
+    if (!op) return { ok: false, reason: 'invalid', currentVersion };
+    if (op.kind === 'forget-header') return { ok: true, currentVersion };
+    if ((this.snap.headers[op.headerId]?.ops ?? []).some((o) => o.opId === op.opId)) return { ok: false, reason: 'opid-reused', currentVersion };
+    if (h?.forgotten) return { ok: false, reason: 'forgotten', currentVersion };
+    if (h?.erasure === 'pending') return { ok: false, reason: 'erasure-pending', currentVersion };
+    if (op.baseVersion < currentVersion) return { ok: false, reason: 'stale-version', currentVersion };
+    if (op.baseVersion > currentVersion) return { ok: false, reason: 'future-version', currentVersion };
+    return { ok: true, currentVersion };
   }
 
   /**
@@ -253,7 +318,7 @@ export class EffortHeaderStore {
    */
   titleOf = (headerId: string): string | null => {
     const h = this.get(headerId);
-    if (!h || h.forgotten || !h.current) return null;
+    if (!h || h.forgotten || h.erasure !== 'none' || !h.current) return null;
     const content = this.decryptor(headerId, h.current.bundleRef);
     if (!content || typeof content.title !== 'string' || typeof content.salt !== 'string' || !SALT_RE.test(content.salt)) return null;
     return titleCommitment(content.title, content.salt) === h.current.titleCommitment ? canonicalTitle(content.title) : null;
