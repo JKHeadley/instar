@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "takeover-keeps-lease",
+  "sessionId": "737dfb65-81b1-49d8-a671-62f227cb5bfe",
+  "timestamp": "2026-11-05T13:01:40.156Z",
+  "artifactPath": "upgrades/side-effects/takeover-keeps-lease.md",
+  "artifactSha256": "1445a4893f294225bff4f17b7d8f97f0b2f856972de682a2015c43d9c1e9b948",
+  "coveredFiles": [
+    "src/core/LeaseCoordinator.ts",
+    "src/server/leaseRenewalDependencies.ts",
+    "tests/e2e/app-conversations-lease-renewal.test.ts",
+    "tests/unit/LeaseCoordinator-selfHeal.test.ts",
+    "tests/unit/lease-renewal-app-dependency.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Enrolls an existing timer when an off-by-default switch is on, and throttles one log line. Both sides tested.",
+  "eli16Path": "upgrades/takeover-keeps-lease.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/takeover-keeps-lease.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
