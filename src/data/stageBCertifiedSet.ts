@@ -418,6 +418,10 @@ export const STAGE_B_CERTIFIED_SET = {
     {
       "file": "src/core/upgradeAnnouncement.ts",
       "reason": "Existing outbound release announcement front-matter parser, reached through notification category promotion; does not admit or observe inbound Codex composer deliveries certified by Stage-B."
+    },
+    {
+      "file": "src/core/SigninProfileGuard.ts",
+      "reason": "Stateless Google browser-profile ownership validation and generated native hook text, reached through the shared MCP/registry dependency graph; it does not implement the certified Codex delivery observer, composer, ledger, or recovery protocol. Its browser capability boundary is verified by dedicated unit, HTTP, and installed-hook lifecycle tests."
     }
   ],
   "fingerprint": "f1aacb47b41db1f9385f30b67cd53dfe1febac2ea1e555dbd61f5002ac55512f",

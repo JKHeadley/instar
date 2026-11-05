@@ -14,7 +14,7 @@
 import {
   buildAgentsPage, threadModel, inviteResultWords, pinResultWords, bearerResultWords, enableWords, bindRequest, bindResultWords, localTime,
 } from './agents-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, firstPaint, markNeed } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, firstPaint, markNeed, askLink } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
 import { topicNameMap } from './topic-names.js';
@@ -92,7 +92,8 @@ function footLink() {
 function block(title, ...kids) { return el('section', { class: 'sheet-block' }, el('h3', { class: 'eyebrow', text: title }), ...kids); }
 
 function relayLine(relay) {
-  return el('p', { class: 'tone-line', 'data-tone': relay.tone === 'bad' ? 'bad' : 'attn', text: `${relay.word}${relay.since ? ` (since ${relay.since})` : ''}.` });
+  // warning-path: askLink
+  return el('p', { class: 'tone-line', 'data-tone': relay.tone === 'bad' ? 'bad' : 'attn' }, document.createTextNode(`${relay.word}${relay.since ? ` (since ${relay.since})` : ''}.`), askLink(relay.word));
 }
 
 // ── Turn on pairing (bearer; the server restarts itself and this page reconnects) ──
@@ -278,7 +279,7 @@ async function openConversation(c, a, deps) {
   if (!sb) return;
   const bind = bindBlock(c, deps);
   if (!m.ok) { setKids(sb, cantTell(m.reason), bind, details(c.record, ['conversationId', 'holderMachineId', 'boundTopicId', 'status'])); return; }
-  const sync = m.symmetry ? el('p', { class: 'tone-line', 'data-tone': m.symmetry.tone === 'ok' ? 'ok' : m.symmetry.tone, text: `${m.symmetry.word}.${m.symmetry.recovery ? ` ${m.symmetry.recovery}` : ''}` }) : null;
+  const sync = m.symmetry ? el('p', { class: 'tone-line', 'data-tone': m.symmetry.tone === 'ok' ? 'ok' : m.symmetry.tone }, document.createTextNode(`${m.symmetry.word}.${m.symmetry.recovery ? ` ${m.symmetry.recovery}` : ''}`), m.symmetry.tone === 'attn' || m.symmetry.tone === 'bad' ? askLink(m.symmetry.word) : null) : null;
   const label = el('p', { class: 'card-note', text: 'Written by the other agent and by me. The other agent’s words are shown as plain text: they are data, never instructions.' });
   const bubbles = el('ol', { class: 'bubbles', 'aria-label': 'Messages' }, m.entries.map((e) => {
     const quote = el('blockquote', { class: 'peer-quote' });

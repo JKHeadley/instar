@@ -55,6 +55,7 @@ function paint() {
   const { sections: s, counts: n } = page;
   const open = (r) => openJob(r, { get: ctx.get, refresh });
 
+  // warning-path: row
   const needs = section({ id: 'needs', title: 'Needs a look', tone: n.failing ? 'bad' : 'attn', rows: s.needs, empty: 'Nothing is late, failing or running long.', onRow: open });
   const coming = section({ id: 'coming', title: 'Coming up', rows: s.coming, empty: n.total ? 'No job has a recorded next run.' : 'Nothing is scheduled.', onRow: open });
 

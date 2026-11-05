@@ -187,6 +187,7 @@ export function buildSessions(sessionsRes, { ws = null, now = Date.now(), topicN
     const sub = [machine, running && running !== 'now' ? running : running ? 'just started' : null, duplicate ? 'running on two machines at once' : a.state === 'no-reading' ? null : a.words].filter(Boolean).join(' · ');
     return {
       key: sessionKey(s), title: sessionTitle(s, topicNames), sub, end: a.end, activity: a.state, duplicate, internal: isInternalSession(s),
+      // warning-path: row
       tone: duplicate ? 'bad' : a.state === 'quiet' ? 'attn' : a.state === 'no-reading' ? 'unknown' : null,
       machine, remote: s.remote === true, model: modelWords(s.model),
       session: { tmuxSession: s.tmuxSession, id: s.id, name: s.name, machineId: s.machineId || null, machineNickname: machine, remote: s.remote === true, protected: s.protected, platform: s.platform || 'headless', platformId: s.platformId ?? null, model: s.model || null, type: s.type || (s.jobSlug ? 'job' : 'interactive'), internal: isInternalSession(s), telemetry: s.telemetry || null, startedAt: s.startedAt || null, status: s.status },
@@ -232,14 +233,18 @@ export function sessionsHeadline(m) {
     tail = ` One has been quiet for ${q ? q.end.replace(' min', ' minutes') : 'a while'}.`;
   } else if (quiet > 1) tail = ` ${quiet} have been quiet for 10+ minutes.`;
   else if (running === 0 && m.unanswered.length === 0) tail = m.multi ? ' Machines: all answering.' : '';
+  // warning-path: pageHead
   return { text: lead + tail, tone: duplicate ? 'bad' : quiet ? 'attn' : 'ok' };
 }
 
 /** At most four facts. "Waiting on you" is omitted: sessions do not report it yet. */
 export function sessionsFacts(m) {
   if (!m || !m.ok) return [];
+  // warning-path: pageHead
   const f = [{ n: m.counts.running, label: 'running', tone: null }, { n: m.counts.quiet, label: 'quiet 10+ min', tone: m.counts.quiet ? 'attn' : null }];
+  // warning-path: pageHead
   if (m.counts.duplicate) f.push({ n: m.counts.duplicate, label: 'on two machines', tone: 'bad' });
+  // warning-path: pageHead
   if (m.multi) f.push({ n: `${m.counts.answering} of ${m.counts.machines}`, label: 'machines answering', tone: m.unanswered.length ? 'attn' : null });
   return f;
 }

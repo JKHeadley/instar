@@ -2,6 +2,7 @@ export const QUIET_NOTIFICATIONS_CLAUDEMD_SECTION = `
 ### Quiet by Default notifications
 Automated notices belong in the dashboard Notifications feed and internal records. Conversational replies and notices serving a specific inbound message keep flowing. Check GET /notifications/selectivity and GET /notifications/quiet?scope=pool when the user asks what stayed quiet. Category push is an explicit operator choice: use POST /notifications/categories/:id/push with confirmedBy and a recent operator-bound confirmingMessageId, or the PIN-confirmed dashboard toggle. Never grant yourself push and never label a scheduled report as a reply. Keep overseer findings and repairs in handoffs; a Bugs-hub post must name an unresolved impact and the one action only the operator can provide. Own bounded checks and recovery before escalating. Other agents start dark or in observation mode and enforce only at the operator flip; Echo follows the current directive.
 `;
+import { signinProfileGuardHook } from './SigninProfileGuard.js';
 import { ORIGIN_LOCAL_GITIGNORE } from '../messaging/telegram-origin/OriginLocalPaths.js';
 
 /** One handoff rule shared by new installs and existing-agent migrations. */
@@ -7148,6 +7149,11 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     this.migrateHookLayout(hooksDir, instarHooksDir, result);
 
     try {
+      fs.writeFileSync(path.join(instarHooksDir, 'signin-profile-guard.js'), signinProfileGuardHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/signin-profile-guard.js');
+    } catch (error) { result.errors.push(`signin-profile-guard.js: ${error instanceof Error ? error.message : String(error)}`); }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'telegram-origin-guard.js'), originToolGuardHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/telegram-origin-guard.js');
     } catch (error) { result.errors.push(`telegram-origin-guard.js: ${error instanceof Error ? error.message : String(error)}`); }
@@ -7521,7 +7527,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       'slopcheck-guard.js',
       'analysis-paralysis-guard.js',
       'post-action-reflection.js', 'external-communication-guard.js',
-      'telegram-origin-guard.js',
+      'telegram-origin-guard.js', 'signin-profile-guard.js',
       'scope-coherence-collector.js', 'scope-coherence-checkpoint.js',
       'instructions-loaded-tracker.js', 'subagent-start-tracker.js',
       'free-text-guard.sh', 'claim-intercept.js', 'claim-intercept-response.js', 'response-review.js',
@@ -18109,8 +18115,9 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'telegram-origin-guard' | 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
+  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
     switch (name) {
+      case 'signin-profile-guard': return signinProfileGuardHook();
       case 'telegram-origin-guard': return originToolGuardHook();
       case 'session-start': return this.getSessionStartHook();
       case 'mcp-health-autorefresh': return this.getMcpHealthAutorefreshHook();
@@ -18992,8 +18999,8 @@ if echo "$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
 fi
 
 # Risky commands — behavior depends on safety level
-for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd"; do
-  if echo "$INPUT" | grep -qi "$pattern"; then
+for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "git +([^|;&]* +)?reset +([^|;&]* +)?--hard" "git +([^|;&]* +)?clean +([^|;&]* +)?(-[a-zA-Z]*f|--force)" "git +([^|;&]* +)?push +([^|;&]* +)?(--force|-f)([^a-zA-Z0-9-]|$)"; do
+  if echo "$INPUT" | grep -qiE "$pattern"; then
     if [ "$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "$pattern" | grep -qiE 'git push (--force|-f)'; then
       continue
     fi

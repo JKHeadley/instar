@@ -37,7 +37,7 @@ export async function renderHealth(main, ctx) {
   const quiet = page.quiet.length ? fold(page.quiet.length === 1 ? 'One internal note' : `${page.quiet.length} internal notes`, page.quiet.map((i) => card(i, false))) : null;
   if (quiet && quietOpen) quiet.setAttribute('open', '');
   setKids(main,
-    pageHead({ eyebrow: 'Capacity · Health', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.uptime ? [{ n: page.uptime, label: 'running for' }] : [] }),
+    pageHead({ noAsk: true, eyebrow: 'Capacity · Health', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.uptime ? [{ n: page.uptime, label: 'running for' }] : [] }),
     page.problems.map((i) => markNeed(card(i, true), 'health')),
     page.unsorted.map((i) => card(i, false)),
     quiet,

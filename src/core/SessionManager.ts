@@ -1,3 +1,4 @@
+import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
 /**
  * Session Manager — spawn and monitor Claude Code sessions via tmux.
  *
@@ -4601,6 +4602,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         this.ensurePinnedHomeInteractiveReady(pinnedHome, 'headless pin');
       }
     }
+    assertBrowserMcpProfilesSafe(resolvedCwd, headlessFramework, this.originConfigHome(headlessFramework, headlessSpec.envOverrides), this.config.projectDir);
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(headlessSpec.envOverrides)) {
       frameworkEnvFlags.push('-e', `${k}=${v}`);
@@ -5044,6 +5046,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       this.defaultHomeFirstRunChecked = true;
       this.ensurePinnedHomeInteractiveReady(process.env.CLAUDE_CONFIG_DIR || null, 'default login');
     }
+    assertBrowserMcpProfilesSafe(resolvedCwd, 'claude-code', this.originConfigHome('claude-code', launchSpec.envOverrides), this.config.projectDir);
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(launchSpec.envOverrides)) {
       frameworkEnvFlags.push('-e', `${k}=${v}`);
@@ -7742,6 +7745,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (resumeReopenFailed && effectiveInitialMessage) {
       effectiveInitialMessage = `${RESUME_REOPEN_FAILED_NOTE}\n\n${effectiveInitialMessage}`;
     }
+    assertBrowserMcpProfilesSafe(options?.cwd ?? this.config.projectDir, framework, effectiveConfigHome, this.config.projectDir);
     const { plan: interactiveThreadline, mcpFlags: interactiveMcpFlags, tag: interactiveTransportTag } =
       this.planInteractiveThreadlineMcp(framework, binaryPath, options); // threadline-mcp-local-http D3
     const launchSpec = buildInteractiveLaunch(framework, {

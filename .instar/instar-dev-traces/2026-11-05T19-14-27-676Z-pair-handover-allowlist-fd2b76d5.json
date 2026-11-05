@@ -25,5 +25,10 @@
   "tier": 2,
   "tierReasoning": "Decides who can reach the agent on a joined machine; small and revert-safe, on an already converged and approved spec.",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "A guard pattern; no self-action."
+  }
 }
