@@ -1,3 +1,4 @@
+import { topicRef } from './shared/topicRef.js';
 /**
  * Cold-Start Lifeline Fallback Reply (G1 — "The Agent Is Always Reachable")
  *
@@ -102,9 +103,7 @@ function reasonSentence(reason: ColdStartReason, kind: ColdStartFailureKind): st
  * diagnose. Plain English only — no paths, keys, or endpoints.
  */
 export function buildColdStartDebugMessage(input: ColdStartFallbackInput): string {
-  const topicLabel = input.topicName
-    ? `"${input.topicName}" (#${input.topicId})`
-    : `#${input.topicId}`;
+  const topicLabel = topicRef(input.topicId, input.topicName);
   const reason = classifyColdStartFailure(input.error);
   const where = input.machineLabel ? ` on ${input.machineLabel}` : '';
   const verb = input.kind === 'restart' ? 'restart' : 'start';
@@ -113,7 +112,7 @@ export function buildColdStartDebugMessage(input: ColdStartFallbackInput): strin
       : reason === 'resource-pressure' ? 'the machine was under resource pressure'
         : 'an unexpected start-up error';
   return (
-    `I tried to message topic ${topicLabel}${where} but the session couldn't ${verb} ` +
+    `I tried to message ${topicLabel}${where} but the session couldn't ${verb} ` +
     `(${reasonWord}). Please free up resources and get that topic reachable again.`
   );
 }

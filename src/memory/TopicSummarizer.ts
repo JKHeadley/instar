@@ -14,6 +14,7 @@
  * Haiku tier for cost efficiency — summaries don't need deep reasoning.
  */
 
+import { topicRef } from '../messaging/shared/topicRef.js';
 import type { IntelligenceProvider } from '../core/types.js';
 import type { TopicMemory, TopicMessage } from './TopicMemory.js';
 import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
@@ -211,7 +212,7 @@ export class TopicSummarizer {
     });
 
     if (!summary || summary.trim().length < 10) {
-      throw new Error(`Summary generation returned empty/invalid result for topic ${topicId}`);
+      throw new Error(`Summary generation returned empty/invalid result for ${topicRef(topicId)}`);
     }
 
     // Parse purpose from the response (first line starting with "PURPOSE:")
@@ -253,7 +254,7 @@ export class TopicSummarizer {
         const result = await this.summarize(topic.topicId);
         if (result) results.push(result);
       } catch (err) {
-        console.error(`[TopicSummarizer] Failed to summarize topic ${topic.topicId}: ${err}`);
+        console.error(`[TopicSummarizer] Failed to summarize ${topicRef(topic.topicId)}: ${err}`);
       }
     }
 

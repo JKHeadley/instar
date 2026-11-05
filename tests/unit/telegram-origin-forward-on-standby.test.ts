@@ -436,13 +436,13 @@ describe('item collapse + wording + notice', () => {
     expect(b.conditionKey).toBe(a.conditionKey);
     expect(heldExpiryItem({ ...base, destination: { ...base.destination, topicId: '43' } }).conditionKey).not.toBe(a.conditionKey);
     expect(heldExpiryItem({ ...base, destination: { accountId: '1', chatId: '-1' } as HeldOperationRow['destination'] }).conditionKey).toBe('telegram-origin-held:unknown:expired');
-    expect(a).toMatchObject({ category: 'telegram-origin', priority: 'HIGH', title: 'Held reply to topic 42 expired', summary: 'I could not deliver my reply to topic 42 within 6 h.', sourceContext: 'telegram-origin-forward-to-holder' });
+    expect(a).toMatchObject({ category: 'telegram-origin', priority: 'HIGH', title: 'Held reply to topic 42 (name unresolved) expired', summary: 'I could not deliver my reply to topic 42 (name unresolved) within 6 h.', sourceContext: 'telegram-origin-forward-to-holder' });
   });
   it('expiry wording is honest about what is known', () => {
     const base: HeldOperationRow = { operationId: 'o', originId: 'o', state: 'expired', holdReason: HOLD_REASON_LEASE_NOT_HELD, holdDetail: null, preparedAt: 0, deadlineAt: 6 * 3_600_000,
       executionOwnerMachineId: 'h', destination: { accountId: '1', chatId: '-1', topicId: '42' }, recovery: null, expiryReportedAt: null };
-    expect(expiredForwardWording(base)).toBe('I could not deliver my reply to topic 42 within 6 h.');
-    expect(expiredForwardWording({ ...base, holdDetail: { lastAttempt: 'outcome-unknown' } })).toBe('My reply to topic 42 may or may not have been delivered; the sending machine did not confirm within 6 h.');
+    expect(expiredForwardWording(base)).toBe('I could not deliver my reply to topic 42 (name unresolved) within 6 h.');
+    expect(expiredForwardWording({ ...base, holdDetail: { lastAttempt: 'outcome-unknown' } })).toBe('My reply to topic 42 (name unresolved) may or may not have been delivered; the sending machine did not confirm within 6 h.');
     expect(heldForwardNoticeText('the Mini')).toBe('I have your message; my reply is delayed while it is routed through the Mini.');
   });
 });

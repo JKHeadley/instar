@@ -1,3 +1,4 @@
+import { topicRef, TopicRef } from '../messaging/shared/topicRef.js';
 import crypto from 'node:crypto';
 import pc from 'picocolors';
 import { loadConfig, getInstarVersion } from '../core/Config.js';
@@ -400,7 +401,7 @@ export async function runPostDriveTranscriptAuditCli(options: PostDriveTranscrip
       readTopicHistory: async (topicId, limit) => {
         const data = await fetchJson(`${historyBaseUrl}/telegram/topics/${topicId}/messages?limit=${limit}`, { headers: historyHeaders });
         const messages = (data as { messages?: unknown }).messages;
-        if (!Array.isArray(messages)) throw new Error(`Topic ${topicId} history response did not include messages[]`);
+        if (!Array.isArray(messages)) throw new Error(`${TopicRef(topicId)} history response did not include messages[]`);
         return messages as TranscriptMessage[];
       },
       observeFinding: async (input) => {
@@ -428,7 +429,7 @@ export async function runPostDriveTranscriptAuditCli(options: PostDriveTranscrip
   for (const finding of report.findings) {
     const obs = report.observations.find((o) => o.dedupKey === finding.dedupKey);
     const filed = obs?.filed ? (obs.episodeRecorded === false ? 'deduped' : 'filed') : options.dryRun ? 'dry-run' : 'not filed';
-    process.stdout.write(`\n- [${finding.category}] topic ${finding.topicId} ${filed}\n`);
+    process.stdout.write(`\n- [${finding.category}] ${topicRef(finding.topicId)} ${filed}\n`);
     process.stdout.write(`  ${finding.reason}\n`);
     process.stdout.write(`  evidence: ${finding.frameworkIssue.evidence}\n`);
     process.stdout.write(`  dedupKey: ${finding.dedupKey}\n`);

@@ -21,6 +21,7 @@ import type { CollaborationSurfacer } from './CollaborationSurfacer.js';
 import type { ConversationStore } from './ConversationStore.js';
 import type { CommitmentTracker } from '../monitoring/CommitmentTracker.js';
 import { generateConversationBrief, type BriefDeps } from './openConversationBrief.js';
+import { topicNameFor as verifiedTopicName, topicRef } from '../messaging/shared/topicRef.js';
 
 export type HubCommand =
   | { action: 'open' }
@@ -119,7 +120,7 @@ export async function bindHubConversation(deps: HubBindDeps, args: HubBindArgs):
     if (args.action === 'tie') {
       if (typeof args.targetTopicId === 'number') {
         topicId = args.targetTopicId;
-        topicName = typeof args.targetTopicName === 'string' ? args.targetTopicName : `topic ${topicId}`;
+        topicName = typeof args.targetTopicName === 'string' ? args.targetTopicName : (verifiedTopicName(topicId) ?? topicRef(topicId));
       } else if (typeof args.targetTopicName === 'string' && args.targetTopicName) {
         const t = await telegram.findOrCreateForumTopic(args.targetTopicName, undefined, { origin: 'user' });
         topicId = t.topicId; topicName = t.name;

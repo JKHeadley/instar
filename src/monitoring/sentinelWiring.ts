@@ -20,6 +20,7 @@
  * Spec: docs/specs/silently-stopped-trio.md
  */
 
+import { topicRef } from '../messaging/shared/topicRef.js';
 import type { SocketDisconnectSentinelDeps } from './SocketDisconnectSentinel.js';
 import type {
   ActiveWorkSilenceSentinelDeps,
@@ -434,7 +435,7 @@ export function buildRateLimitRecoveryDeps(s: RateLimitRecoverySurface): {
         ok ? 'recovery-reached' : 'recovery-unreachable',
         sessionName,
         ok
-          ? `resume nudge injected via internal recovery channel${topicId != null ? ` (topic ${topicId})` : ''}`
+          ? `resume nudge injected via internal recovery channel${topicId != null ? ` (${topicRef(topicId)})` : ''}`
           : 'internal injection returned false',
         ['internal-injection'],
       );

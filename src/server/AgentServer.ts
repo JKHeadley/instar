@@ -362,6 +362,7 @@ import {
 import { readAcceptedFallbacks, scopeAcceptedFallbacks } from '../monitoring/guardAcceptedFallbacks.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { DEV_GATED_FEATURES } from '../core/devGatedFeatures.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 export function readMentorConfigFromDisk(
   stateDir: string | undefined,
@@ -6498,7 +6499,7 @@ export class AgentServer {
             durationMs: info.durationMs, width: info.width, height: info.height,
           });
           if (!r.recorded && r.reason !== 'duplicate') {
-            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (topic ${info.topicId}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. The session still received it.`);
+            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (${topicRef(info.topicId)}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. The session still received it.`);
           }
         });
       }

@@ -54,6 +54,7 @@ import { AspAuthorshipJoin, type MessageAuthorship } from '../core/AspAuthorship
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
 import { normalizeInboundThread, inboundTopicId, toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from './telegramTopicSpace.js';
 import { admitItemToHub, attentionPriorityRank, recordHeldHubPost, resolveHubFilterMode, type AttentionHubFilterMode } from './attentionHubPolicy.js';
+import { topicRef } from './shared/topicRef.js';
 import {
   attentionConditionKeyOf, classifyAttentionLifecycle, decideAttentionExpiry, isOpenAttentionStatus, mayReopenInPlace,
   planAttentionSupersessions, resolveAttentionLifecycleConfig,
@@ -1282,7 +1283,7 @@ export class TelegramAdapter implements MessagingAdapter {
         const claimed = linkedTopic !== null;
         if (filterUnclaimed && claimed) continue;
         const status = s.alive ? '\u2705' : '\u274c';
-        const claimTag = claimed ? ` (topic ${linkedTopic})` : ' \u{1f7e1} unclaimed';
+        const claimTag = claimed ? ` (${topicRef(linkedTopic)})` : ' \u{1f7e1} unclaimed';
         lines.push(`${status} ${s.name}${claimTag}`);
       }
       if (lines.length === 0) {
@@ -3962,7 +3963,7 @@ export class TelegramAdapter implements MessagingAdapter {
         if (filterUnclaimed && claimed) continue;
 
         const status = s.alive ? '\u2705' : '\u274c';
-        const claimTag = claimed ? ` (topic ${linkedTopic})` : ' \u{1f7e1} unclaimed';
+        const claimTag = claimed ? ` (${topicRef(linkedTopic)})` : ' \u{1f7e1} unclaimed';
         lines.push(`${status} ${s.name}${claimTag}`);
       }
 
