@@ -479,6 +479,39 @@ describe('locked-proof runner and verdict', () => {
     expect(judge(c, ev).reasons.join(' ')).toContain('expected unlocked');
   });
 
+  it('"typing" waits for a duty: the input helper alone, running since the grant opened, is not typing', async () => {
+    // Live on the Mini the helper was up 3 s into the grant and the server was killed before any
+    // password was sent, so "Node killed mid-typing" judged a run with nothing typed.
+    const c = CASES.find((x: { id: string }) => x.id === '12.2e');
+    class SlowTyping extends FakeTarget {
+      polls = 0;
+      dutyAtKill: boolean | null = null;
+      async openGrant() { this.typist = true; this.guard = 41; return { id: 'r1' }; }
+      async typePassword() { return { sent: false }; }
+      async snapshot() {
+        if (++this.polls === 4) this.markers.k = { state: 'owed', requestId: 'r1', deadlineMs: this.t + 600_000 };
+        return super.snapshot();
+      }
+      async act(action: string) {
+        if (action === 'kill-server') this.dutyAtKill = 'k' in this.markers;
+        return super.act(action);
+      }
+    }
+    const target = new SlowTyping(c);
+    const ev = await runCase(c, target, { pollMs: 50 });
+    expect(target.dutyAtKill).toBe(true);
+    expect(ev.fired.map((f: { action: string }) => f.action)).toEqual(['kill-server']);
+    // And once Enter is pending, the password is no longer being typed.
+    const late = new SlowTyping(c);
+    late.snapshot = async function (this: SlowTyping) {
+      if (++this.polls === 4) this.markers.k = { state: 'owed', requestId: 'r1', deadlineMs: this.t + 600_000, enterPendingAt: this.t };
+      return FakeTarget.prototype.snapshot.call(this);
+    };
+    const missed = await runCase({ ...c, timeoutMs: 2_000 }, late, { pollMs: 50 });
+    expect(late.dutyAtKill).toBe(null);
+    expect(missed.unfired).toEqual(['kill-server at typing']);
+  });
+
   it('a case that throws still resumes and relocks, and fails with the error', async () => {
     const c = CASES.find((x: { id: string }) => x.id === '12.1');
     const target = new FakeTarget(c);

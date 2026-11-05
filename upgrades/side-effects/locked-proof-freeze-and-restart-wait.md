@@ -4,7 +4,7 @@
 
 ## Summary
 
-Six faults found in the live run on the Mac Mini on 2026-11-05, once the viewer-wait fix let the run start.
+Seven faults found in the live run on the Mac Mini on 2026-11-05, once the viewer-wait fix let the run start.
 
 - **Freezing the server.** Cases 12.1 and 12.6 send SIGSTOP to the proof server. It ran as a tmux pane process, and tmux resumes a stopped pane process at once, so the server never froze. Both cases now run `serve-under-launchd` first and restore tmux in cleanup (`cont-server`, `end-launchd-serve`, `start-server`). `stop-server` now reads the process state half a second after the signal and throws unless it starts with `T`.
 - **Ready after a start.** `start-server` and `serveUnderLaunchd` now call `waitLockStateKnown()` (up to 120 s) before returning, and report `lockStateKnown` in their result.
@@ -12,6 +12,7 @@ Six faults found in the live run on the Mac Mini on 2026-11-05, once the viewer-
 - **Lock state from the Mac itself.** `readLockState` now reads IORegistry (`IOConsoleUsers`, `CGSSessionScreenIsLocked` for the proof user's console session) and falls back to the servers only when the proof user has no console session. A server's `/desktop/locked/status` is a cache that only refreshes while a viewer is connected. Each sample also records `serverLockState`.
 - **Both agents after a start.** `start-server` always starts agent A, as before, and also starts agent B when it is not listening; `kill-tmux` takes both down. A first version skipped agent A when its port still had a listener, and after a launchd bootout that left nothing serving (seen live at 12:46 PST: every case after 12.1 failed with a refused connection).
 - **Resuming a process that is gone.** `kill(pid, 'CONT')` on a process that has exited returns `skipped: 'gone'`. STOP and KILL on a process that is gone still throw.
+- **What "typing" means.** The `typing` trigger in `lib.mjs` now needs a duty in state owed with Enter not yet pending, as well as the input helper running. The helper alone runs for the whole grant.
 
 ## 1. Over-block
 
@@ -23,9 +24,11 @@ Six faults found in the live run on the Mac Mini on 2026-11-05, once the viewer-
 
 The IORegistry flag is the console session's lock flag only. The server's classifier also knows states the flag cannot express (policy pending, logged out); those are still read from a server when there is no console session, and stay subject to the stale cache. The cache itself is a product fault filed separately as feedback, not fixed here.
 
+The typing window is short (about 0.7 s for a 20-character password on the Mini) and the driver polls every quarter second, with each sample taking a moment itself. A poll that first sees the duty after Enter is pending never fires the injection, and the case then fails honestly with "injection never fired" instead of judging the wrong moment. Cases 12.2e, 12.9 and 15.9 may need a rerun when that happens.
+
 ## 3. Level-of-abstraction fit
 
-Right layer: all six are the driver's own assumptions about its target. The page behaviour, the server's start-up and tmux are left as they are.
+Right layer: all seven are the driver's own assumptions about its target. The page behaviour, the server's start-up and tmux are left as they are.
 
 ## 4. Signal vs authority compliance
 

@@ -128,7 +128,9 @@ function matchAt(at, snap, ctx) {
   if (at === 'after-create') return markers.length > 0;
   if (at === 'unlocked') return snap.lockState === 'unlocked';
   if (at === 'sent') return ctx.sent === true;
-  if (at === 'typing') return snap.typistRunning === true;
+  // The input helper runs for the whole grant, so "it is running" is true before any password
+  // is sent. Typing means a duty exists for this password and Enter has not been pressed yet.
+  if (at === 'typing') return snap.typistRunning === true && markers.some(m => m.state === 'owed' && typeof m.enterPendingAt !== 'number');
   if (at === 'after-enter') return markers.some(m => typeof m.enterPendingAt === 'number' && snap.now - m.enterPendingAt >= 50);
   if (at === 'before-enter') return ctx.beforeEnterDue !== undefined && snap.now >= ctx.beforeEnterDue;
   return snap.events?.includes(at) === true;

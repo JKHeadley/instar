@@ -1,8 +1,8 @@
-# Six more fixes to the locked-screen test, from its first real run
+# Seven more fixes to the locked-screen test, from its first real run
 
 ## What this is
 
-Instar can show and control a Mac's screen remotely, even while that Mac is locked. To prove the locked-screen part is safe, a test driver on a real Mac Mini opens the same remote-desktop web page a person would use, types the password into it, breaks things on purpose (kills the server, freezes it, pulls the network) and checks that the Mac always ends up locked again. On 5 November 2026 the driver ran for real for the first time, and several of its own mistakes showed up. None of them was a fault in the product. The first, a wait for a hidden button, is already fixed. These are the other six.
+Instar can show and control a Mac's screen remotely, even while that Mac is locked. To prove the locked-screen part is safe, a test driver on a real Mac Mini opens the same remote-desktop web page a person would use, types the password into it, breaks things on purpose (kills the server, freezes it, pulls the network) and checks that the Mac always ends up locked again. On 5 November 2026 the driver ran for real for the first time, and several of its own mistakes showed up. None of them was a fault in the product. The first, a wait for a hidden button, is already fixed. These are the other seven.
 
 ## What went wrong, and what changes
 
@@ -17,6 +17,8 @@ Instar can show and control a Mac's screen remotely, even while that Mac is lock
 **It left one of the two test agents switched off.** One test kills the terminal tool both test agents run in. The driver restarted only the first agent, so the second stayed off for the rest of the run. Restarting now always starts the first agent and also brings back the second if it is off.
 
 **It treated "already gone" as a failure.** While tidying up after a test, the driver tried to wake a process that had already exited, and counted that as an error. Waking something that is gone is now skipped. Freezing or killing something that is gone is still an error, because then the test did not do what it claims.
+
+**Its "in the middle of typing" tests fired too early.** Some tests break something while the password is being typed. The driver decided typing had started as soon as the helper that does the typing was running, but that helper starts the moment the remote screen opens. So the test broke things before any password had been sent, and there was nothing to check. Typing now means the password has actually been handed over and Enter has not been pressed yet.
 
 ## What stays the same
 
