@@ -18,6 +18,7 @@ import { ownerOrBearer, rowKey, singleFlight, POOL_READ_CACHE_MS } from './mobil
 import { cleanText } from './mobilePlansPeopleRoutes.js';
 import { freeText } from './mobileProposalsInsideRoutes.js';
 import { scrubSecrets } from '../monitoring/scrubSecrets.js';
+import { CREDENTIAL_SHAPES } from '../core/credentialShapes.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 export const MOBILE_CONSOLE_PAGES_SCHEMA_VERSION = 1;
@@ -261,16 +262,18 @@ const fileName = (v: unknown): string | null => (typeof v === 'string' && v.leng
  * secret is neither listed nor read, even where the console shows it. Over-hiding a name costs little;
  * an ordinary word like keyboard, tokenizer or author stays visible.
  */
-const SECRET_ANYWHERE = /secret|credential|passw|passphrase|pgpass|netrc|npmrc|pypirc|oauth|cookie|keystore|keychain|keyring|vault|service[-_ ]?account|(api|access|private|signing|ssh|encryption|master)[-_ ]?keys?|id_(rsa|dsa|ecdsa|ed25519)|token(?!i[sz])/;
-const SECRET_WORD = /(^|[^a-z])(auth|keys?|pass|private|env|envrc|pem|p12|pfx|jks|kdbx|ssh|gnupg|aws)([^a-z]|$)/;
+const SECRET_ANYWHERE = /secret(?!ar(?:y|iat))|credential|passw|passphrase|pgpass|netrc|npmrc|pypirc|oauth|cookie|keystore|keychain|keyring|keyfile|keypair|keytab|privkey|vault|wallet|tfstate|kubeconfig|mnemonic|recovery[-_ ]?codes|seed[-_ ]?phrase|service[-_ ]?account|(api|access|private|signing|ssh|encryption|master|session|hmac|jwt|auth|my)[-_ ]?keys?|id_(rsa|dsa|ecdsa|ed25519)|token(?!i[sz][eia])/;
+const SECRET_WORD = /(^|[^a-z])(auth|keys?|pass|pwd|pw|private|env|envrc|pem|p8|p12|pfx|jks|kdbx|ppk|gpg|asc|jwt|bearer|shadow|ssh|gnupg|aws)([^a-z]|$)/;
+const SECRET_EXACT = /^(\.kube|\.docker|hosts\.ya?ml)$/;
 /** Folds what would slip past a match: case, compatibility forms (ſ, fullwidth), accents, invisible marks. */
 const fold = (s: string): string => s.normalize('NFKD').replace(/[\p{M}\p{Cf}]/gu, '').normalize('NFKC');
 export function secretShaped(p: string): boolean {
   return p.split(/[/\\]/).some((part) => {
     const folded = fold(part);
-    // Twice: as one word (toKen), and with camelCase split into words (signingKey, myAuth).
-    return [folded.toLowerCase(), folded.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase()]
-      .some((form) => SECRET_ANYWHERE.test(form) || SECRET_WORD.test(form));
+    // Twice: as one word (toKen), and with camelCase split into words (signingKey, HMACKey).
+    const words = folded.replace(/([a-z0-9])([A-Z])/g, '$1-$2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2');
+    return [folded.toLowerCase(), words.toLowerCase()]
+      .some((form) => SECRET_ANYWHERE.test(form) || SECRET_WORD.test(form) || SECRET_EXACT.test(form));
   });
 }
 
@@ -288,62 +291,98 @@ export function summarizeFolder(r: SelfRead): Rec {
   return { state: 'ok', path: typeof b.path === 'string' ? b.path : '', entries, truncated: b.truncated === true || shown.length > entries.length };
 }
 
-const SECRET_LABEL = String.raw`[A-Za-z0-9_.-]{0,40}(?:secret|token|password|passwd|pwd|passphrase|credential|api[_-]?key|access[_-]?key|private[_-]?key|authorization)[A-Za-z0-9_.-]{0,40}`;
-/** A labelled value: quoted (spaces allowed) or bare, whatever its characters. */
-const LABELLED = new RegExp(String.raw`\b(${SECRET_LABEL}["']?\s{0,8}[:=]\s{0,8})("[^"]*"|'[^']*'|(?:(?:bearer|basic|token)\s+)?[^\s"',;]+)`, 'gi');
+/**
+ * Only prose and source files show their text on the phone. Config, data and log formats hold labelled
+ * values in more shapes than any pattern list can follow, so those are named but not opened here.
+ */
+const TEXT_TYPES = new Set(['md', 'txt', 'rst', 'swift', 'ts', 'tsx', 'js', 'mjs', 'py', 'sh', 'css', 'html']);
+export function showsText(p: string): boolean {
+  const name = fold(p.split(/[/\\]/).pop() ?? '').toLowerCase();
+  const dot = name.lastIndexOf('.');
+  return dot > 0 && TEXT_TYPES.has(name.slice(dot + 1));
+}
+
+const SECRET_LABEL = String.raw`(?:secret|token|password|passwd|passphrase|\bpwd|\bpass|\bpw|credential|api[_ -]?key|access[_ -]?key|private[_ -]?key|authorization)[A-Za-z0-9_.-]{0,80}`;
+/** A label and what follows it: everything after the label on the line goes, whatever shape the value has. */
+const LABELLED = new RegExp(String.raw`(${SECRET_LABEL}["'\\]{0,3}\s{0,8}(?::=|=>|:|=|>|\(\s{0,8}["'${'`'}]))(.*)$`, 'i');
 /** A label with nothing after it: its value is on the next line. */
-const LABEL_ALONE = new RegExp(String.raw`^[\s#/*"'-]{0,8}${SECRET_LABEL}["']?\s{0,8}[:=]?\s{0,8}[|>]?[-+]?\s{0,8}$`, 'i');
+const LABEL_ALONE = new RegExp(String.raw`^[\s#/*"'-]{0,8}${SECRET_LABEL}["']?\s{0,8}$`, 'i');
+const LABEL_AT_END = new RegExp(String.raw`${SECRET_LABEL}["']?\s{0,8}[:=]\s{0,8}[|>]?[-+]?\s{0,8}$`, 'i');
+const SHAPES = CREDENTIAL_SHAPES.map(({ pattern }) => new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`));
 const PEM_BEGIN = /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z0-9 ]{0,10}-----/;
 const PEM_END = /-----END [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z0-9 ]{0,10}-----/;
 const HIDDEN = '[hidden]';
+const KEY_HIDDEN = '[private key hidden]';
 
-/** Key shapes scrubSecrets does not know, each bounded to one line so the cost stays linear. */
 function scrubFileLine(line: string): string {
-  return scrubSecrets(line)
-    .replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}/g, HIDDEN)
-    .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}/g, HIDDEN)
-    .replace(/\bAIza[0-9A-Za-z_-]{30,}/g, HIDDEN)
-    .replace(/\b(?:glpat-|npm_|hf_)[A-Za-z0-9_-]{20,}/g, HIDDEN)
+  let out = scrubSecrets(line);
+  for (const shape of SHAPES) out = out.replace(shape, HIDDEN);
+  return out
     .replace(/\bbearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, `Bearer ${HIDDEN}`)
+    .replace(/--[a-z-]{0,30}(?:password|token|secret|api-key)[= ]\S+/gi, HIDDEN)
     .replace(LABELLED, `$1${HIDDEN}`);
+}
+
+/** Text with its last unbroken run taken off: a token a cut went through never shows, even in part. */
+function dropLastRun(s: string): string {
+  let i = s.length;
+  while (i > 0 && !/\s/.test(s[i - 1])) i--;
+  return s.slice(0, i);
+}
+
+/** Takes private key blocks out of one whole line, however many start and end on it. */
+function stripKeys(line: string, inKey: boolean): { text: string; inKey: boolean; hit: boolean } {
+  let rest = line;
+  let text = '';
+  let state = inKey;
+  let hit = inKey;
+  for (;;) {
+    const m = (state ? PEM_END : PEM_BEGIN).exec(rest);
+    if (!m) return { text: state ? text : text + rest, inKey: state, hit };
+    if (!state) { text += rest.slice(0, m.index) + KEY_HIDDEN; hit = true; }
+    rest = rest.slice(m.index + m[0].length);
+    state = !state;
+  }
 }
 
 const nextTurn = (): Promise<void> => new Promise((done) => { setImmediate(done); });
 
 /**
- * Scrub, then cut. The text is read past each limit by a margin first, so a secret that crosses a cut is
- * still whole when it is scrubbed. Line by line because the scrub costs more on long text, and it gives the
- * server a turn every few lines, so a hostile file cannot hold it. Two things span lines: a private key
- * block, and a label whose value is on the next line.
+ * Scrub, then cut. The text is read past each limit by a margin first, and wherever a window cuts, the last
+ * unbroken run or line is dropped before anything is shown, so a token split by a cut never appears. Line
+ * by line because the scrub costs more on long text, and the server gets a turn every few lines. Two things
+ * span lines: a private key block, and a label whose value is on the next line.
  */
 export async function phoneFileText(content: string): Promise<{ text: string; cut: boolean }> {
+  const window = MAX_FILE_CHARS + SCRUB_MARGIN;
+  const lineWindow = MAX_LINE_CHARS + SCRUB_MARGIN;
   let cut = content.length > MAX_FILE_CHARS;
   const out: string[] = [];
   let inKey = false;
   let valueNext = false;
-  const lines = content.slice(0, MAX_FILE_CHARS + SCRUB_MARGIN).split('\n');
+  const lines = content.slice(0, window).split('\n');
+  if (content.length > window) lines.pop();
   for (let i = 0; i < lines.length; i++) {
     if (i > 0 && i % LINES_PER_TURN === 0) await nextTurn();
-    const whole = lines[i];
+    const stripped = stripKeys(lines[i], inKey);
+    inKey = stripped.inKey;
+    const whole = stripped.text;
+    if (stripped.hit && !whole) continue;
+    if (valueNext && whole.trim()) { valueNext = false; out.push(HIDDEN); continue; }
+    if (LABEL_ALONE.test(whole.slice(0, 200)) || LABEL_AT_END.test(whole.slice(-200))) valueNext = true;
+    const windowCut = whole.length > lineWindow;
     if (whole.length > MAX_LINE_CHARS) cut = true;
-    const line = whole.slice(0, MAX_LINE_CHARS + SCRUB_MARGIN);
-    if (inKey) {
-      if (PEM_END.test(line)) { inKey = false; out.push('[private key hidden]'); }
-      continue;
-    }
-    if (PEM_BEGIN.test(line)) {
-      if (!PEM_END.test(line)) inKey = true;
-      else out.push('[private key hidden]');
-      continue;
-    }
-    if (valueNext && line.trim()) { valueNext = false; out.push(HIDDEN); continue; }
-    if (LABEL_ALONE.test(line)) valueNext = true;
-    const clean = scrubFileLine(line);
-    out.push(clean.length > MAX_LINE_CHARS ? `${clean.slice(0, MAX_LINE_CHARS)}…` : clean);
+    const clean = scrubFileLine(windowCut ? dropLastRun(whole.slice(0, lineWindow)) : whole);
+    if (clean.length > MAX_LINE_CHARS) out.push(`${dropLastRun(clean.slice(0, MAX_LINE_CHARS))}…`);
+    else out.push(windowCut ? `${clean}…` : clean);
   }
-  if (inKey) out.push('[private key hidden]');
-  const text = out.join('\n');
-  return { text: text.slice(0, MAX_FILE_CHARS), cut: cut || text.length > MAX_FILE_CHARS };
+  let text = out.join('\n');
+  if (text.length > MAX_FILE_CHARS) {
+    cut = true;
+    const end = text.lastIndexOf('\n', MAX_FILE_CHARS);
+    text = end > 0 ? text.slice(0, end) : dropLastRun(text.slice(0, MAX_FILE_CHARS));
+  }
+  return { text, cut };
 }
 
 export async function summarizeFile(r: SelfRead): Promise<Rec> {
@@ -447,6 +486,7 @@ export function mountMobileConsolePagesRoutes(router: Router, deps: MobileConsol
     try {
       const real = await allowed(p);
       if (real === null) { res.json({ ...head(), state: 'refused', line: 'This file can’t be shown here.' }); return; }
+      if (!showsText(p) || !showsText(real)) { res.json({ ...head(), state: 'console-only', line: 'Open this one in the console.', path: p }); return; }
       // The viewer reads the path that was judged, not the name that was asked for.
       res.json({ ...head(), ...await summarizeFile(await read(`/api/files/read?path=${encodeURIComponent(real)}`)), path: p });
     } catch (err) {

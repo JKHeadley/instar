@@ -51,6 +51,8 @@ One step past the console for the phone only: a name that says it holds a secret
 
 Each path is judged where it really points. The route resolves it, refuses a target that is missing, outside the project or hidden, drops such links from a folder, and hands the viewer the resolved path, so what is read is what was judged. A hard link can't be told from its target and is judged by its own name.
 
+Text is shown only for prose and source types (md, txt, rst, swift, ts, tsx, js, mjs, py, sh, css, html). Everything else lists by name and answers "Open this one in the console."; both the asked and the resolved name must qualify. Where a window cuts, the last unbroken run or line is dropped before output.
+
 A file is read 2,048 characters past each limit, scrubbed, then cut to 65,536 string characters and 2,000 a line, so a secret crossing a cut is scrubbed whole unless it is longer than the margin. File scrubbing adds key shapes `scrubSecrets` lacks (`sk-ant-`, `sk-proj-`, `github_pat_`, `AIza`), bearer values, labelled values including quoted and `/+` values, whole private key blocks and a value on the line after its label. It runs per line and gives the server a turn every four lines. `editable` is never sent.
 
 ### 3.2 Cost

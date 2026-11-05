@@ -9,3 +9,11 @@ Files gets one extra rule the console doesn't have. Anything whose name says it 
 Yesterday one phone screen froze the server for eleven seconds, so this work measured itself: trimming each page takes a few milliseconds on real data, and the expensive secret scrub only ever sees short pieces of text.
 
 These screens only read. Deciding on an idea, approving a pull request or editing a file stays in the console. If something is wrong, reverting the change takes the screens back to saying "update the agent". There is nothing to decide here.
+
+The phone's read-only Files screen scrubbed secrets out of whatever file it opened. A second review showed that can't be finished: a secret can sit in XML, escaped JSON, PHP arrays, deep YAML and many other forms, and no list of patterns catches them all. So this changes the approach. The phone now shows text only for prose and source files, such as Markdown, plain text, Swift, TypeScript and Python. Config, data and log files still appear in the folder by name, but opening one says "Open this one in the console." and sends no content.
+
+It also fixes the cuts. When a long line or a long file is cut, the last unbroken piece of text before the cut is thrown away, so half a token can't show. Private key blocks are now found across the whole line, even past the cut, and two keys stuck together on one line stay hidden.
+
+Key shapes now live in one list, shared with the outbound message check, with ten new kinds added, plus passwords inside URLs. That means outbound messages are blocked on those new shapes too. The file name filter hides more credential files, understands names like HMACKey, and stops hiding secretary.md and secretariat.md.
+
+Known limits stay written down: a race needing local write access, hard links, and lookalike Unicode letters. There is nothing to decide; reverting the change restores the old behaviour.
