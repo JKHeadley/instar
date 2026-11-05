@@ -93,7 +93,7 @@ export class JobCoverageMonitor {
   start(): void {
     if (this.timer || this.stopped) return;
     const tick = () => { void this.poll().then(() => this.checkPromotionCoverage())
-      .catch(error => console.warn('[job-coverage] tick failed:', error)); };
+      .catch(error => { /* @silent-fallback-ok — the next bounded tick retries; the error is logged */ console.warn('[job-coverage] tick failed:', error); }); };
     this.firstTimer = setTimeout(tick, 2000);
     this.firstTimer.unref?.();
     this.timer = setInterval(tick, 5 * 60_000);
@@ -249,7 +249,7 @@ export class JobCoverageMonitor {
       }
       fs.appendFileSync(this.auditFile, JSON.stringify({ at: new Date(this.options.now?.() ?? Date.now()).toISOString(),
         event, machineId, ...(reason ? { reason: reason.slice(0, 100) } : {}) }) + '\n', { mode: 0o600 });
-    } catch (error) { console.warn('[job-coverage] audit write failed:', error); }
+    } catch (error) { /* @silent-fallback-ok — audit loss is logged; coverage state remains authoritative */ console.warn('[job-coverage] audit write failed:', error); }
   }
   private readAlertState(): { fingerprint: string; at: number; deliveredAt: number | null } | null {
     try {
@@ -259,7 +259,7 @@ export class JobCoverageMonitor {
         return { fingerprint: raw.fingerprint, at: raw.at,
           deliveredAt: typeof raw.deliveredAt === 'number' ? raw.deliveredAt : null };
       }
-    } catch { /* no prior episode is normal */ }
+    } catch { /* @silent-fallback-ok — no prior episode is normal */ }
     return null;
   }
   private writeAlertState(state: { fingerprint: string; at: number; deliveredAt: number | null }): void {
