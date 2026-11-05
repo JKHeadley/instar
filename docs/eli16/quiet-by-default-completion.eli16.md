@@ -12,4 +12,4 @@ Repeated notices coalesce. Opted-in pushes have category and global limits, with
 
 Overseers keep findings and repairs in handoffs. A Bugs-hub escalation must name an unresolved impact and the one action only the operator can take. Stale-session observations feed the existing bounded triage authority instead of asking the person to request an investigation. Ownership recovery and returning-peer pull queues continue to own stranded topics and visibility recovery. Nobody is asked to perform the agent's housekeeping.
 
-The fleet retains the approved observation and operator-flip rollout. Echo's existing directive enables enforcement once, and subsequent explicit rollback choices remain live. No constitution changes are included.
+The fleet retains the approved observation and operator-flip rollout. Echo's existing directive enables enforcement once, and subsequent explicit rollback choices remain live. Existing release announcements explicitly promoted for users keep their existing audience and maturity authority, subject to an explicit category disable and the same push limits. No constitution changes are included.

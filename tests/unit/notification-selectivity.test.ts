@@ -204,3 +204,18 @@ describe('durable conservative soak evidence', () => {
     expect((crashed.status() as any).soakEvidence.replySends).toBe(1); await crashed.close();
   });
 });
+
+
+describe('existing release audience authority', () => {
+  it('honors promoted update announcements without granting routine jobs or unpromoted guides push', async () => {
+    const { root, gate } = setup(); const { hasPromotedUpgradeAnnouncement } = await import('../../src/messaging/notificationCategories.js');
+    const file = path.join(root, 'state', 'pending-upgrade-guide.md'); fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '---\nuser_announcement:\n  - audience: user\n    maturity: stable\n    headline: A usable change\n    body: You can use this now.\n---\n');
+    expect(hasPromotedUpgradeAnnouncement(root, 'overseer-maintenance')).toBe(false);
+    expect(hasPromotedUpgradeAnnouncement(root, 'upgrade-notify')).toBe(true);
+    expect(gate.decide(42, { origin: 'automated', category: 'update-announcement', sourceContext: 'release-upgrade-notify', releaseAudiencePromoted: true }).decision).toBe('deliver-push');
+    expect(gate.decide(42, { origin: 'automated', category: 'update-announcement', sourceContext: 'post-update' }).decision).toBe('record');
+    fs.writeFileSync(file, '---\nuser_announcement:\n  - audience: agent-only\n    maturity: stable\n    headline: Internal change\n    body: Maintenance.\n---\n');
+    expect(hasPromotedUpgradeAnnouncement(root, 'upgrade-notify')).toBe(false);
+  });
+});

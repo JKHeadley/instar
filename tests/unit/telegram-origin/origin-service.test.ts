@@ -38,6 +38,21 @@ async function harness(hidden = false) {
   return { stateDir, store, service, input, network, send, authorize, onHold, spoolEvidence };
 }
 describe('origin service durable delivery', () => {
+  it('preserves the existing release promotion only for a trusted upgrade session', async () => {
+    const h = await harness(); const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));
+    h.service.notificationGate = gate; h.service.notificationJobSession = () => true;
+    h.service.notificationPromotedUpgradeSession = id => id === 'approved-upgrade';
+    const token = await h.service.options.sessions.issue({ sessionId: 'approved-upgrade', harnessId: 'codex-cli', projectDir: h.stateDir });
+    h.service.options.observer.track(h.service.options.sessions.getBinding('approved-upgrade')!);
+    try {
+      await h.service.runWithSessionToken(token, () => h.service.sendBot(h.input, h.network));
+      expect(h.network).toHaveBeenCalledOnce();
+      const rows = (await h.store.listOrigins()).records;
+      expect(JSON.parse(rows[0].record.envelopeJson).notification).toMatchObject({ category: 'update-announcement', releaseAudiencePromoted: true });
+      expect(h.service.runAsAutomation('telegram-server', () => h.service.notificationForCurrentProducer())).not.toHaveProperty('releaseAudiencePromoted');
+    } finally { await gate.close(); }
+  });
+
   it('terminally records quiet automation and replays its receipt after worker restart', async () => {
     const h = await harness();
     const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));

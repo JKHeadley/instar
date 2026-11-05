@@ -1,4 +1,4 @@
-import { LEGACY_NOTIFICATION_GATES } from '../messaging/notificationCategories.js';
+import { hasPromotedUpgradeAnnouncement, LEGACY_NOTIFICATION_GATES } from '../messaging/notificationCategories.js';
 import { readPeerNotifications } from '../server/notificationPoolRead.js';
 import { NotificationPreferences } from '../messaging/NotificationPreferences.js';
 import { notificationStamper, responseNotificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
@@ -8835,6 +8835,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         telegramOriginBoot.runtime.service.notificationGate = selectivityGate;
         telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
         telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
+        telegramOriginBoot.runtime.service.notificationPromotedUpgradeSession = id => hasPromotedUpgradeAnnouncement(config.stateDir, id ? state.getSession(id)?.jobSlug : undefined);
       }
       armHolderForwardWait(telegram);
       _hubNoticeAdapter = telegram;
@@ -8970,6 +8971,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         telegramOriginBoot.runtime.service.notificationGate = selectivityGate;
         telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
         telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
+        telegramOriginBoot.runtime.service.notificationPromotedUpgradeSession = id => hasPromotedUpgradeAnnouncement(config.stateDir, id ? state.getSession(id)?.jobSlug : undefined);
       }
       armHolderForwardWait(telegram);
       _hubNoticeAdapter = telegram;

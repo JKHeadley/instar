@@ -8,7 +8,7 @@ import type { NotificationCategoryId, SignificantClass } from './notificationCat
 
 export interface OutboundEnvelope {
   origin: 'verified-reply' | 'automated'; category: NotificationCategoryId;
-  sourceContext: string; messageKind?: 'reply' | 'automated' | 'unknown'; contextTopicId?: number; localPermit?: string; inboundMessageId?: string; significantClass?: SignificantClass; relayedOrigin?: boolean;
+  sourceContext: string; messageKind?: 'reply' | 'automated' | 'unknown'; contextTopicId?: number; localPermit?: string; inboundMessageId?: string; significantClass?: SignificantClass; relayedOrigin?: boolean; releaseAudiencePromoted?: boolean;
 }
 export interface SelectivityConfig {
   enabled?: boolean; dryRun?: boolean; legacy?: Partial<Record<NotificationCategoryId, boolean>>; push?: { categories?: Partial<Record<NotificationCategoryId, boolean>> };
@@ -144,7 +144,8 @@ export class NotificationSelectivityGate {
       return result('record', 'uncorroborated-conversation', !rows);
     }
     const significant = envelope?.significantClass && SIGNIFICANT_TABLE[category]?.includes(envelope.significantClass);
-    if (!significant && settings.push?.categories?.[category] !== true && settings.legacy?.[category] !== true) return result('record', 'quiet-default');
+    const promotedUpdate = category === 'update-announcement' && envelope?.releaseAudiencePromoted === true && settings.push?.categories?.[category] !== false;
+    if (!significant && !promotedUpdate && settings.push?.categories?.[category] !== true && settings.legacy?.[category] !== true) return result('record', 'quiet-default');
     if (significant) {
       const key = `${category}:${envelope!.significantClass}:${envelope!.sourceContext.slice(0, 160)}`;
       for (const [k, at] of this.episodes) if (this.now() - at >= 21600000) this.episodes.delete(k);
@@ -156,7 +157,7 @@ export class NotificationSelectivityGate {
       if (!this.budget(category, 3)) return result('record', 'push-budget');
       if (!this.budget('*', 10)) return result('record', 'global-budget');
     }
-    return result('deliver-push', significant ? 'significant-class' : 'category-opt-in');
+    return result('deliver-push', significant ? 'significant-class' : promotedUpdate ? 'release-audience-promotion' : 'category-opt-in');
   }
   private flushEvidence(cleanShutdown: boolean): Promise<void> {
     const snapshot = { ...this.evidence, cleanShutdown, checkpointAt: new Date(this.now()).toISOString() };

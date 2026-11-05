@@ -112,6 +112,7 @@ export class TelegramOriginService {
   public notificationTopicId = (_chatId: string | null, topicId: string | null): number => Number(topicId ?? 1);
   public notificationGate: (Pick<NotificationSelectivityGate, 'route' | 'markAnswered'> & { destination?: NotificationSelectivityGate['destination']; close?: () => Promise<void> }) | null = null;
   /** Resolved from the server's session registry, never from caller metadata. */
+  public notificationPromotedUpgradeSession: (sessionId: string | null) => boolean = () => false;
   public notificationJobSession: (sessionId: string | null) => boolean = () => false;
   readonly #scope = new AsyncLocalStorage<OriginScope>();
   readonly #producers = new Map<string, TelegramOriginProducer>();
@@ -376,6 +377,7 @@ export class TelegramOriginService {
     const producer = this.currentProducer();
     let notification = notificationContext.getStore() ?? (producer.producerKind === 'session' && !this.notificationJobSession(producer.sessionId)
       ? verifiedReplyEnvelope('origin-session') : { origin: 'automated' as const, category: categoryForProducer(producer.producerId), sourceContext: producer.producerId });
+    if (producer.producerKind === 'session' && this.notificationPromotedUpgradeSession(producer.sessionId)) return { origin: 'automated', category: 'update-announcement', sourceContext: 'release-upgrade-notify', releaseAudiencePromoted: true };
     if (notification.origin === 'verified-reply' && !isVerifiedReplyEnvelope(notification)) notification = { origin: 'automated', category: 'uncategorized', sourceContext: producer.producerId };
     if (notification.origin === 'automated' && notification.category === 'uncategorized') notification = { ...notification, category: categoryForProducer(producer.producerId) };
     return notification;

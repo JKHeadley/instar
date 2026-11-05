@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { parseUserAnnouncement, userFacingEntries } from '../core/upgradeAnnouncement.js';
 /** Reviewed structural delivery policy. Priority and message text confer no push authority. */
 export const notificationCategories = [
   ['attention-item', 'Attention items'], ['agent-health', 'Agent health'], ['job-status', 'Scheduled job reports'],
@@ -57,4 +60,14 @@ export function categoryForAttention(source: string | undefined, lane?: string):
     'rope-health': 'mesh-alert',
   };
   return source && families[source] || 'attention-item';
+}
+
+/** Existing PA-5 authority: only a real upgrade-notify job and promoted release guide. */
+export function hasPromotedUpgradeAnnouncement(stateDir: string, jobSlug: string | undefined): boolean {
+  if (jobSlug !== 'upgrade-notify') return false;
+  try {
+    const file = path.join(stateDir, 'state', 'pending-upgrade-guide.md');
+    if (fs.statSync(file).size > 256 * 1024) return false;
+    return userFacingEntries(parseUserAnnouncement(fs.readFileSync(file, 'utf8'))).length > 0;
+  } catch { return false; /* @silent-fallback-ok: absent or unreadable promotion never grants push */ }
 }

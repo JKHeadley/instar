@@ -414,6 +414,10 @@ export const STAGE_B_CERTIFIED_SET = {
     {
       "file": "src/messaging/notificationCategories.ts",
       "reason": "Closed outbound Telegram notification category declarations only, reached through the notification gate; no Codex composer or inbound delivery behavior."
+    },
+    {
+      "file": "src/core/upgradeAnnouncement.ts",
+      "reason": "Existing outbound release announcement front-matter parser, reached through notification category promotion; does not admit or observe inbound Codex composer deliveries certified by Stage-B."
     }
   ],
   "fingerprint": "f1aacb47b41db1f9385f30b67cd53dfe1febac2ea1e555dbd61f5002ac55512f",
