@@ -82,3 +82,9 @@ The change is scoped to objectively dead Codex processes and reuses existing job
 ## Repair scope and effort
 
 Tier 1, narrow reversible bug repair. One independent review, deterministic red/green status-race regression, real-tmux reproduction, and targeted lifecycle/convergence verification. No constitution file is changed. No migration or new retry authority.
+
+## tmux portability correction
+
+Peer verification found two failures in the new real-process timing fixture: tmux 3.7 reports `pane_dead=0` until process exit, whereas 3.4 can report `1` when descriptors close. The fixture now synchronizes on a file written after descriptor closure, accepts either documented observation while requiring an unknown exit status, and still requires running state before release followed by one failed 429 result, one notice and pane cleanup. No assertion about Instar outcomes is removed; the deterministic probe test still exercises `pane_dead=1` with an empty status in both modes. Both tmux versions are verified before pushing this correction.
+
+Independent repair review by `/root/lifecycle_review`: concur. The ready file reliably marks descriptor closure; every Instar outcome assertion remains; the deterministic pending-status test is unchanged. No blocking concern.

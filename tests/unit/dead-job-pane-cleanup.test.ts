@@ -113,11 +113,17 @@ describe.skipIf(!realTmux).each([false, true])('dead job pane cleanup (real tmux
   it('waits when tmux closes the pane before the process supplies its nonzero exit', async () => {
     const job = `${base()}-job-pending-status`;
     const release = path.join(root, 'release-exit');
-    start(job, `exec /bin/sh -c 'echo "429 Too Many Requests"; exec 0<&- 1>&- 2>&-; while [ ! -f "${release}" ]; do sleep 0.1; done; exit 1'`,
+    const ready = path.join(root, 'descriptors-closed');
+    start(job, `exec /bin/sh -c 'echo "429 Too Many Requests"; exec 0<&- 1>&- 2>&-; : >"${ready}"; while [ ! -f "${release}" ]; do sleep 0.1; done; exit 1'`,
       { INSTAR_AGENT_HOME: dir, INSTAR_JOB_SLUG: 'bug-fixer' });
     try {
-      for (let i = 0; i < 50 && !paneDead(job); i++) await new Promise((r) => setTimeout(r, 100));
-      expect(tmux('display-message', '-t', `=${job}:`, '-p', '#{pane_dead}||#{pane_dead_status}').stdout.trim()).toBe('1||');
+      for (let i = 0; i < 50 && !fs.existsSync(ready); i++) await new Promise((r) => setTimeout(r, 100));
+      expect(fs.existsSync(ready)).toBe(true);
+      // 3.4 reports pane_dead=1 on fd closure; 3.7 waits for process exit.
+      // Both must preserve the running session while its exit status is unknown.
+      const [dead, status] = tmux('display-message', '-t', `=${job}:`, '-p', '#{pane_dead}||#{pane_dead_status}').stdout.trim().split('||');
+      expect(['0', '1']).toContain(dead);
+      expect(status).toBe('');
       record('pending-status', job, 'bug-fixer');
       state.saveSession({ ...state.getSession('pending-status')!, framework: 'codex-cli' });
       const notices: Session[] = [];
