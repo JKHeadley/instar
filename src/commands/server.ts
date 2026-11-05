@@ -21655,6 +21655,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             get: (dedupeKey) => replicatedPeerStreamReader.loadOriginRecords(CLASS_REVIEW_STORE_KEY, dedupeKey)
               .flatMap((record) => { const parsed = classReviewFromOriginRecord(record); return parsed ? [parsed] : []; }),
             keys: () => replicatedPeerStreamReader.listRecordKeys(CLASS_REVIEW_STORE_KEY),
+            all: () => new Map([...replicatedPeerStreamReader.loadAllOriginRecords(CLASS_REVIEW_STORE_KEY)].map(([key, records]) => [key,
+              records.flatMap((record) => { const parsed = classReviewFromOriginRecord(record); return parsed ? [parsed] : []; })])),
           });
         }
         const classReviewAuditPath = path.join(config.stateDir, 'logs', 'correction-class-review.jsonl');
