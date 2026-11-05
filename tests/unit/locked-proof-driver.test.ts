@@ -350,9 +350,11 @@ describe('locked-proof launchd kill', () => {
     });
     expect(await target.act('start-server')).toEqual({ started: true, ports: [4098, 4097], lockStateKnown: true });
     expect(started).toEqual(['/a', '/b']);
-    expect(await target.act('start-server')).toEqual({ started: true, ports: [], lockStateKnown: true });
+    // Agent A is started even when something still listens on its port: after a launchd bootout
+    // the old server holds the port for a moment, and skipping the start left nothing serving.
+    expect(await target.act('start-server')).toEqual({ started: true, ports: [4098], lockStateKnown: true });
     up.delete(4097);
-    expect((await target.act('start-server')).ports).toEqual([4097]);
+    expect((await target.act('start-server')).ports).toEqual([4098, 4097]);
   });
 
   it('stop-server throws unless the server really stays stopped', async () => {

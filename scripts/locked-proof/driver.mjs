@@ -453,7 +453,9 @@ export class RealTarget {
         // and with B down nothing answers while A is down. Every start leaves both listening.
         const started = [];
         for (const agent of [this.a, this.b]) {
-          if (this.serverPid(agent)) continue;
+          // Agent A is always started: this step follows a kill or a launchd bootout, and a server
+          // that is still shutting down can hold the port for a moment and look alive.
+          if (agent !== this.a && this.serverPid(agent)) continue;
           this.asProof([path.join(this.o.proofInstall, 'node_modules/.bin/instar'), 'server', 'start', '--dir', agent.dir]);
           const until = this.now() + 60_000;
           while (this.now() < until && !this.serverPid(agent)) await this.sleep(1_000);

@@ -6,7 +6,7 @@ Six more faults in the locked-screen proof driver (`scripts/locked-proof/`), fou
 2. After `start-server` or `serve-under-launchd` the driver went straight on while the new server still read the lock state as "unknown", so the final sample read "unknown" and the next case's viewer had no machine to open. Both now wait up to 120 seconds for a known lock state.
 3. `readLockState` returned agent A's "unknown" without asking agent B. An agent that does not know yet is now skipped like one that is down.
 4. The driver took a proof server's `/desktop/locked/status` as the lock state. That value is a cache which only refreshes while a viewer is connected, so it read "unlocked" for a locked Mac and "unknown" after a start, and verdicts could be wrong in both directions. The driver now reads the Mac's own flag from IORegistry (`IOConsoleUsers`, `CGSSessionScreenIsLocked` for the proof user) and asks a server only when the proof user has no console session. Every sample records the servers' reading beside it as `serverLockState`.
-5. Case 12.3 kills the proof user's tmux server, which takes agent B down with agent A, and the driver restarted only A. `start-server` now starts whichever of the two agents is not listening.
+5. Case 12.3 kills the proof user's tmux server, which takes agent B down with agent A, and the driver restarted only A. `start-server` now always starts agent A, as before, and also starts agent B when it is not listening.
 6. `recover()` failed a case when it tried to resume a process that had already exited. Resuming a process that is gone is now skipped; stopping or killing one that is gone still throws.
 
 ## Evidence

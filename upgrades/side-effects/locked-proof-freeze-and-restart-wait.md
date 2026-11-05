@@ -10,7 +10,7 @@ Six faults found in the live run on the Mac Mini on 2026-11-05, once the viewer-
 - **Ready after a start.** `start-server` and `serveUnderLaunchd` now call `waitLockStateKnown()` (up to 120 s) before returning, and report `lockStateKnown` in their result.
 - **Lock state read.** `readLockState` skips an agent that answers `unknown` and asks the other.
 - **Lock state from the Mac itself.** `readLockState` now reads IORegistry (`IOConsoleUsers`, `CGSSessionScreenIsLocked` for the proof user's console session) and falls back to the servers only when the proof user has no console session. A server's `/desktop/locked/status` is a cache that only refreshes while a viewer is connected. Each sample also records `serverLockState`.
-- **Both agents after a start.** `start-server` starts whichever of agent A and agent B is not listening; `kill-tmux` takes both down.
+- **Both agents after a start.** `start-server` always starts agent A, as before, and also starts agent B when it is not listening; `kill-tmux` takes both down. A first version skipped agent A when its port still had a listener, and after a launchd bootout that left nothing serving (seen live at 12:46 PST: every case after 12.1 failed with a refused connection).
 - **Resuming a process that is gone.** `kill(pid, 'CONT')` on a process that has exited returns `skipped: 'gone'`. STOP and KILL on a process that is gone still throw.
 
 ## 1. Over-block

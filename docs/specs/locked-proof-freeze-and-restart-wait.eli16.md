@@ -14,7 +14,7 @@ Instar can show and control a Mac's screen remotely, even while that Mac is lock
 
 **It trusted a reading that could be minutes old.** To decide whether the Mac ended up locked, the driver asked the test server. The server answers from memory, and only refreshes that memory while someone has the remote screen open. So after the screen was closed it could keep saying "unlocked" about a Mac that had been locked for two minutes, and the test failed for a problem that did not exist. It could just as easily have passed a test wrongly. The driver now asks the Mac itself, through the operating system's own record of whether the screen is locked, and writes the server's answer next to it so the difference is visible. The stale answer from the server is a real product bug and has been reported separately.
 
-**It left one of the two test agents switched off.** One test kills the terminal tool both test agents run in. The driver restarted only the first agent, so the second stayed off for the rest of the run. Restarting now brings back whichever agent is off.
+**It left one of the two test agents switched off.** One test kills the terminal tool both test agents run in. The driver restarted only the first agent, so the second stayed off for the rest of the run. Restarting now always starts the first agent and also brings back the second if it is off.
 
 **It treated "already gone" as a failure.** While tidying up after a test, the driver tried to wake a process that had already exited, and counted that as an error. Waking something that is gone is now skipped. Freezing or killing something that is gone is still an error, because then the test did not do what it claims.
 
