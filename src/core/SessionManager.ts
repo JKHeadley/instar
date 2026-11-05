@@ -3334,7 +3334,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
           featureEvidence.record('monitoring.tmuxResilience.asyncHotPath', { kind: 'fired', reason: 'probe-classified-session-dead', context: { session: session.tmuxSession } });
         }
         if (alive === false) {
-          // CAS re-read after the await: an operator kill (or another killer)
+          const lastSample = this.startupTails.get(session.tmuxSession);
+          const knownExitCode = this.terminalExitCodes.get(session.tmuxSession);
+          const exitCode = knownExitCode ?? 0;
+          // Retained Codex panes preserve the terminal error after the process exits.
+          // Read at the death boundary so a later 429 is not missed by startup sampling.
+          const exitTail = session.framework === 'codex-cli'
+            ? (await this.captureOutputMaybeAsync(session.tmuxSession, 60)) || lastSample?.tail || ''
+            : lastSample?.tail || '';
+          const codexRateLimited = session.framework === 'codex-cli'
+            && knownExitCode !== undefined && knownExitCode !== 0
+            && /(?:\b429\b[^\n]*too many requests|too many requests[^\n]*\b429\b)/i.test(exitTail);
+          // CAS re-read after the Codex capture await: an operator kill (or another killer)
           // can land mid-probe, so re-read the live record before mutating it —
           // mirrors terminateSession's status CAS. If it already drifted off
           // 'running', another writer owns the transition; skip this inline
@@ -3366,9 +3377,6 @@ rm()  { "${shimRunner}" rm  "$@"; }
           const uptimeSeconds = fresh.startedAt
             ? Math.max(0, Math.round((Date.now() - new Date(fresh.startedAt).getTime()) / 1000))
             : undefined;
-          const lastSample = this.startupTails.get(session.tmuxSession);
-          const knownExitCode = this.terminalExitCodes.get(session.tmuxSession);
-          const exitCode = knownExitCode ?? 0;
           this.terminalExitCodes.delete(session.tmuxSession);
           // A headless one-shot (`claude -p` / completionMode 'exit') finishes BY exiting, often well
           // inside the startup window. Under `remain-on-exit failed` a failed exit keeps its pane and
@@ -3384,9 +3392,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
           const duringStartup = !finishedHeadless && uptimeSeconds !== undefined && uptimeSeconds * 1000 < STARTUP_TAIL_WINDOW_MS;
           const midWork = exitCode !== 0;
           this.startupTails.delete(session.tmuxSession);
-          fresh.status = 'completed';
+          fresh.status = codexRateLimited ? 'failed' : 'completed';
           fresh.endedAt = new Date().toISOString();
-          fresh.endedReason = duringStartup ? 'process-exited-during-startup' : 'process-exited';
+          fresh.endedReason = codexRateLimited ? 'codex-rate-limited'
+            : duringStartup ? 'process-exited-during-startup' : 'process-exited';
           this.state.saveSession(fresh);
           console.warn(
             `[SessionManager] Session "${fresh.name}" (${fresh.framework ?? 'unknown framework'}) exited on its own` +
@@ -3398,11 +3407,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
             session: fresh,
             reason: fresh.endedReason,
             uptimeSeconds,
-            lastTail: lastSample?.tail,
+            lastTail: exitTail || undefined,
             exitCode,
             midWork,
             outcome: midWork ? 'stopped-mid-work' : 'completed',
           });
+          if (codexRateLimited) this.#emitListenersIsolated('codexRateLimitExit', fresh);
           this.revokeOriginSession(fresh.id);
           this.emit('sessionComplete', fresh);
           // The result is recorded; a job's retained dead pane has no further
@@ -5385,14 +5395,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     try {
       const paneInfo = withSyncOp(() => execFileSync(
         this.config.tmuxPath,
-        ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}'],
+        ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}||#{pane_dead_signal}'],
         { encoding: 'utf-8', timeout: 5000 }
       )).trim();
       const fields = paneInfo.split('||');
       if (fields[2] === '1') {
-        const code = Number(fields[3]);
-        if (Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
-        return false;
+        return this.terminalPaneLiveness(tmuxSession, fields[3], fields[4]) !== false;
       }
       const [paneCmd, startCmd] = fields;
       // Claude Code runs as 'claude' or 'node' process
@@ -5417,6 +5425,20 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // @silent-fallback-ok — pane inspection, assumes alive
       return true;
     }
+  }
+
+  /** tmux may close the pane fd before waitpid publishes an exit status.
+   * An empty status is unknown, never exit zero. A signal is also terminal
+   * evidence, though tmux exposes no numeric exit code for that case. */
+  private terminalPaneLiveness(tmuxSession: string, status?: string, signal?: string): false | 'indeterminate' {
+    if (status?.trim()) {
+      const code = Number(status);
+      if (Number.isFinite(code)) {
+        this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
+        return false;
+      }
+    }
+    return signal?.trim() ? false : 'indeterminate';
   }
 
   /**
@@ -5476,14 +5498,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       try {
         const { stdout } = await execFileAsync(
           this.config.tmuxPath,
-          ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}'],
+          ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}||#{pane_dead_signal}'],
           { timeout: 5000 }
         );
         const fields = stdout.trim().split('||');
         if (fields[2] === '1') {
-          const code = Number(fields[3]);
-          if (Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
-          return false;
+          return this.terminalPaneLiveness(tmuxSession, fields[3], fields[4]);
         }
         return this.classifyPaneCommand(tmuxSession, fields.slice(0, 2).join('||'));
       } catch {
@@ -5509,14 +5529,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       '-t',
       `=${tmuxSession}:`,
       '-p',
-      '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}',
+      '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}||#{pane_dead_signal}',
     ]);
     if (disp.state !== 'success') return true; // unprobeable ⇒ assume alive (preserves the legacy catch)
     const fields = disp.stdout.trim().split('||');
     if (fields[2] === '1') {
-      const code = Number(fields[3]);
-      if (Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
-      return false;
+      return this.terminalPaneLiveness(tmuxSession, fields[3], fields[4]);
     }
     return this.classifyPaneCommand(tmuxSession, fields.slice(0, 2).join('||'));
   }
@@ -9945,7 +9963,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       const [dead, status] = out.split('||');
       if (dead !== '1') return false;
       const code = Number(status);
-      if (Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
+      if (status?.trim() && Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
       return true;
     } catch {
       // @silent-fallback-ok — an unprobeable pane is treated as alive (previous behaviour).

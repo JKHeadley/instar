@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   summarizeIdeas, summarizePace, summarizeDevelopment, summarizeMaturation, summarizeFolder, summarizeFile,
-  phoneFileText, secretShaped, MAX_FILE_CHARS, MAX_LINE_CHARS, MAX_FEATURES,
+  phoneFileText, secretShaped, showsText, MAX_FILE_CHARS, MAX_LINE_CHARS, MAX_FEATURES,
 } from '../../src/server/mobileConsolePagesRoutes.js';
 
 const FAKE_KEY = 'ghp_' + 'Q'.repeat(36);
@@ -169,6 +169,14 @@ describe('files', () => {
     for (const p of ['.instar/keys/a.txt', 'x/my-token.txt', 'secrets', 'vault.json', 'a/private/b']) expect(secretShaped(p)).toBe(true);
     for (const p of ['docs/author.md', 'keyboard.md', 'src/tokenizer.ts', 'tokenization.md', 'notes.md', 'AGENT.md', '']) expect(secretShaped(p), p).toBe(false);
   });
+  it('secretary and secretariat show; more credential names, and runs of capitals, are hidden', () => {
+    for (const p of ['secretary.md', 'Secretary.md', 'secretariat.md', 'monkey.txt']) expect(secretShaped(p), p).toBe(false);
+    for (const p of ['my-secrets.md', 'privkey', 'privkey.txt', 'pwd.txt', 'keyfile.json', 'keypair.json', 'server.ppk', 'krb5.keytab', 'backup.gpg', 'terraform.tfstate', 'wallet.dat', 'recovery-codes.txt', '.kube/config', '.docker/config.json', '.config/gh/hosts.yml', 'HMACKey.txt', 'JWTKey.txt', 'AWSKey.txt', 'tokenissuer.json']) expect(secretShaped(p), p).toBe(true);
+  });
+  it('only prose and source files show text', () => {
+    for (const p of ['a.md', 'docs/A.TXT', 'b.rst', 'c.swift', 'd.ts', 'e.tsx', 'f.js', 'g.mjs', 'h.py', 'i.sh', 'j.css', 'k.html']) expect(showsText(p), p).toBe(true);
+    for (const p of ['a.json', 'b.yaml', 'c.yml', 'd.toml', 'e.xml', 'f.ini', 'g.conf', 'h.env', 'i.log', 'j.jsonl', 'k.sql', 'l.plist', 'Dockerfile', '.md', 'x.md.bak', 'config']) expect(showsText(p), p).toBe(false);
+  });
   it('names without delimiters, well-known credential files, and folded spellings are all hidden', () => {
     for (const p of ['apikey.txt', 'authToken.txt', 'oauth.json', 'tokens2.json', 'ClaudeCredentials.json', 'my secret.txt', 'accesskey', 'keystore', '.netrc', '.npmrc', '.pgpass', 'id_ecdsa', 'service-account.json', 'signingKey.txt', 'pass.txt']) expect(secretShaped(p), p).toBe(true);
     for (const p of ['.instar/Keys/signing.txt', 'toKen.json', 'my-\u017Fecret.txt', 'TOKEN.JSON', '\uFF4B\uFF45\uFF59\uFF53/a.txt', 'to\u200Bken.json', 'keys\\a.txt']) expect(secretShaped(p), p).toBe(true);
@@ -191,12 +199,52 @@ describe('files', () => {
     const pem = (await phoneFileText('a\n-----BEGIN RSA PRIVATE KEY-----\nMIIEbody\nmore\n-----END RSA PRIVATE KEY-----\nz')).text;
     expect(pem).toBe('a\n[private key hidden]\nz');
     expect((await phoneFileText('-----BEGIN OPENSSH PRIVATE KEY-----\nMIIEbody')).text).toBe('[private key hidden]');
-    expect((await phoneFileText('"k": "-----BEGIN PRIVATE KEY-----\\nMII\\n-----END PRIVATE KEY-----"')).text).toBe('[private key hidden]');
+    expect((await phoneFileText('"k": "-----BEGIN PRIVATE KEY-----\\nMII\\n-----END PRIVATE KEY-----"')).text).toBe('"k": "[private key hidden]"');
     for (const label of ['password:', 'api_key =', 'client_secret: |', 'Password']) {
       const { text } = await phoneFileText(`${label}\n\n  hunter2value\nnext line`);
       expect(text, label).not.toContain('hunter2value');
       expect(text, label).toContain('next line');
     }
+  });
+  it('two keys glued on one line, and a key marker past the column cut, stay hidden', async () => {
+    const glued = '-----BEGIN RSA PRIVATE KEY-----\nAAA\n-----END RSA PRIVATE KEY----------BEGIN RSA PRIVATE KEY-----\nFAKEVALUE9\n-----END RSA PRIVATE KEY-----\nafter';
+    const g = (await phoneFileText(glued)).text;
+    expect(g).not.toContain('FAKEVALUE9');
+    expect(g).toContain('after');
+    const late = (await phoneFileText(`${'x'.repeat(MAX_LINE_CHARS + 2058)} -----BEGIN RSA PRIVATE KEY-----\nFAKEVALUE9\n-----END RSA PRIVATE KEY-----`)).text;
+    expect(late).not.toContain('FAKEVALUE9');
+    const label = (await phoneFileText(`${'x'.repeat(MAX_LINE_CHARS + 2058)} password:\nFAKEVALUE9`)).text;
+    expect(label).not.toContain('FAKEVALUE9');
+  });
+  it('when scrubbing shrinks the text, a token at a window cut still never shows, at either limit', async () => {
+    const gh = 'ghp_' + 'Q'.repeat(36);
+    const pem = `-----BEGIN RSA PRIVATE KEY-----\n${(`${'M'.repeat(64)}\n`).repeat(60)}-----END RSA PRIVATE KEY-----\n`;
+    const window = MAX_FILE_CHARS + 2048;
+    for (const keep of [5, 10, 23, 39]) {
+      let s = pem;
+      while (s.length < window - keep - 81) s += `${'p'.repeat(79)}\n`;
+      s += `${'q'.repeat(window - keep - s.length - 1)} ${gh} tail`;
+      expect((await phoneFileText(s)).text, String(keep)).not.toContain(gh.slice(0, keep));
+      const big = 'sk-' + 'Y'.repeat(3000);
+      const w = MAX_LINE_CHARS + 2048;
+      const line = `${big} ${'r'.repeat(w - keep - 1 - big.length - 1)} ${gh} tail`;
+      expect((await phoneFileText(line)).text, String(keep)).not.toContain(gh.slice(0, keep));
+    }
+  });
+  it('every shared key shape is blanked', async () => {
+    const samples = ['sk_live_' + 'e'.repeat(30), 'rk_live_' + 'e'.repeat(30), 'whsec_' + 'e'.repeat(30), `SG.${'f'.repeat(22)}.${'g'.repeat(33)}`, 'ya29.' + 'h'.repeat(30), 'pypi-' + 'i'.repeat(30), 'AGE-SECRET-KEY-' + 'J'.repeat(40), 'gsk_' + 'k'.repeat(30), 'xai-' + 'l'.repeat(30), 'dop_v1_' + 'a'.repeat(40), 'xsk-ant-' + 'm'.repeat(30), 'postgres://u:hunter2@db/x', 'https://' + 'n'.repeat(30) + '@github.com/a'];
+    for (const s of samples) {
+      const { text } = await phoneFileText(`a ${s} b`);
+      expect(text, s).toContain('[hidden]');
+      expect(text, s).not.toContain(s.includes('://') ? (s.includes('hunter2') ? 'hunter2' : 'nnnnnn') : s.slice(-10, -1));
+    }
+  });
+  it('a value after its label goes, in the shapes source files use', async () => {
+    const V = 'FAKEfake0123456789';
+    for (const s of [`const password: string = "${V}";`, `password: str = "${V}"`, `password := "${V}"`, `'password' => '${V}',`, `setPassword("${V}")`, `mysql --password ${V}`, `<password>${V}</password>`, `{\\"api_key\\":\\"${V}\\"}`, `${'a'.repeat(45)}_password=${V}`, `password_${'a'.repeat(45)}=${V}`, `password = correct ${V}`, `export PASSWORD=$'${V}'`, `password = "${V}`]) {
+      expect((await phoneFileText(s)).text, s).not.toContain(V);
+    }
+    expect((await phoneFileText(`${' '.repeat(10)}password:\n${' '.repeat(12)}${V}`)).text).not.toContain(V);
   });
   it('a secret crossing a cut is scrubbed before the cut, at the line limit and the file limit', async () => {
     const key = 'ghp_' + 'Z'.repeat(36);

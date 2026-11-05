@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "slug": "codex-429-dead-pane",
+  "sessionId": "e3347cc4-2c18-46a6-8f89-2b6580ae774a",
+  "timestamp": "2026-11-05T06:25:49.642Z",
+  "artifactPath": "upgrades/side-effects/codex-429-dead-pane.md",
+  "artifactSha256": "a90b38e1d4ef82361cf465e9b4fc01023f17d6b0eb67f602c55ae3867de95b7a",
+  "coveredFiles": [
+    "docs/specs/codex-429-dead-pane.eli16.md",
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/unit/dead-job-pane-cleanup.test.ts",
+    "upgrades/next/codex-429-dead-pane.md",
+    "upgrades/side-effects/codex-429-dead-pane.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Confirmed Codex 429 exit classification and reporting are reversible with a code revert; no schema, credential, or new kill authority is introduced.",
+  "eli16Path": "docs/specs/codex-429-dead-pane.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/codex-429-dead-pane.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The registry model drives the confirmed dead Codex session for N and 2N monitor ticks and across restart; the persisted running-to-failed transition permits one alert per session and prevents repeated emissions."
+    }
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [],
+    "notes": "The session monitor treated every self-exit as completed, and live-prompt rate-limit detection could not observe a Codex process that exited on HTTP 429. Retained tmux panes then obscured the failed work in tmux-based counts."
+  }
+}
