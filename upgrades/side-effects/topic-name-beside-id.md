@@ -137,7 +137,8 @@ assertion expects the unresolved-name wording; and the release note remains unde
 `upgrades/next/` so the release assembler consumes it. All three focused tests pass.
 
 The new GitHub run exposed a runner-specific failure in the existing Claude-key E2E test:
-the test's CLI child loaded Config before key handling, and Config requires the configured
-framework binary. GitHub's runner has no Claude CLI. The test now supplies a disposable
-stub binary on that child process's PATH, so it still exercises the real CLI key path
-without depending on a globally installed provider. Production behavior is unchanged.
+the test's CLI child loaded Config before key handling, and Config required the configured
+framework binary. GitHub's runner has no Claude CLI. Main independently fixed this
+production defect in PR #2719 while this PR was running. The merge retains main's stronger
+test, which runs the CLI with no framework binary on PATH and verifies the key path directly.
+This PR's temporary test stub was dropped during conflict resolution.
