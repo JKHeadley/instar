@@ -81,7 +81,7 @@ export function signinProfileGuardHook(): string {
     if (error.code === 'ENOENT') return;
     deny('signin-profile-registry-unavailable'); return;
   }
-  const canonical = p => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+  const canonical = p => { try { return fs.realpathSync(p); } catch (error) { if (error.code !== 'ENOENT') throw error; return path.resolve(p); } };
   const protectedDirs = profiles.flatMap(p => [p.userDataDir, p.windowsUserDataDir]).filter(Boolean).map(p => canonical(p));
   const paths = [text];
   for (const match of text.matchAll(/(?:^|[\s"'=,([])(\/[^\s"',;)\]]+)/g)) paths.push(canonical(match[1]));

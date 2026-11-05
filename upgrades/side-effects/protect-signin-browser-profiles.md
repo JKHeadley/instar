@@ -4,7 +4,7 @@ Date: 2026-11-05. Author: Echo. Second-pass reviewer: browser_guard_review.
 
 ## Summary of the change
 
-Tier 1, reversible enforcement of an existing safety rule; no credentials or profile data are migrated. Adds registry-based refusal to activation, CDP open, MCP startup/load/registration, and ordinary native browser/shell tools. Installs the hook on init and updates for Claude and Codex. Normal Chrome remains the repair path. Proportion: one independent review round; exact file/LOC count and gate attempts recorded before commit.
+Tier 1, reversible enforcement of an existing safety rule; no credentials or profile data are migrated. Adds registry-based refusal to activation, CDP open, MCP startup/load/registration, and ordinary native browser/shell tools. Installs the hook on init and updates for Claude and Codex. Normal Chrome remains the repair path. Proportion: one independent review round; 20 files / 491 added lines including trace and audit; one initial commit/gate attempt. The full-suite fallback ratchet exposed a permissive canonicalization catch; it now rethrows permission and I/O failures, and treats only a nonexistent directory as lexical. The correction receives its own trace and targeted verification.
 
 ## Decision-point inventory
 
