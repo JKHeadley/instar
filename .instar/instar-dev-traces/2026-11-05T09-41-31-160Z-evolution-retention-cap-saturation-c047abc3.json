@@ -1,0 +1,78 @@
+{
+  "version": 3,
+  "slug": "evolution-retention-cap-saturation",
+  "sessionId": "2d37bcf7-8081-47bb-a9c1-db617693c32a",
+  "timestamp": "2026-11-05T09:41:31.160Z",
+  "artifactPath": "upgrades/side-effects/evolution-retention-cap-saturation.md",
+  "artifactSha256": "d0da7606fc621df95d128cbf559dcaa3eef861b1a71f58fa0df9d4c437cfe885",
+  "specPath": "docs/specs/evolution-retention-cap-saturation.md",
+  "coveredFiles": [
+    "docs/specs/carriers/evolution-retention-cap-saturation.json",
+    "docs/specs/evolution-retention-cap-saturation.eli16.md",
+    "docs/specs/evolution-retention-cap-saturation.md",
+    "docs/specs/reports/evolution-retention-cap-saturation-convergence.md",
+    "src/commands/server.ts",
+    "src/core/EvolutionArchive.ts",
+    "src/core/EvolutionArchiveSync.ts",
+    "src/core/EvolutionManager.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/ReplicatedStoreReconcilerWiring.ts",
+    "src/core/types.ts",
+    "src/scaffold/templates.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/evolution-retention-lifecycle.test.ts",
+    "tests/integration/evolution-retention-api.test.ts",
+    "tests/unit/evolution-action-auto-expiry-ledger.test.ts",
+    "tests/unit/evolution-archive.test.ts",
+    "tests/unit/evolution-manager-action-replication.test.ts",
+    "tests/unit/evolution-manager-learning-replication.test.ts",
+    "tests/unit/evolution-retention-cap.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/self-action-convergence.test.ts",
+    "tests/unit/ws25-evolution-actions-wiring.test.ts",
+    "upgrades/next/evolution-retention-cap-saturation.md",
+    "upgrades/side-effects/evolution-retention-cap-saturation.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Full-content durable memory eviction requires archive custody, stable references, and bounded cross-machine preservation; arithmetic-only correction is unsafe.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 5
+      },
+      {
+        "name": "instar-dev",
+        "outcome": "concurred",
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/evolution-retention-cap-saturation-convergence.md",
+      "iterations": 5,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "A persistently failing archive peer is driven across N and 2N with controller reconstruction. Runtime admission and real async worker must settle at six reserved requests; unreadable or unwritable budget permits zero requests. Durable park is the settling brake."
+    },
+    "component": "EvolutionArchiveSync"
+  }
+}

@@ -22,6 +22,8 @@
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { advanceEvolutionArchiveFailure, evolutionArchiveSyncAttemptDue, EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES } from '../core/EvolutionArchiveSync.js';
+import type { EvolutionArchiveSyncPeer } from '../core/EvolutionArchive.js';
 import { PENDING_MAX_BACKOFF_MS, PENDING_TICK_MS, PENDING_TTL_MS } from '../threadline/requiredAckService.js';
 import { decideSetupRestart, MAX_SETUP_STARTS } from '../recommended/setupRestart.js';
 import { MAX_GUARD_REPLACEMENTS, RESPAWNS_PER_REQUEST, decideGuardReplacement, decideLockedRespawn } from '../core/DesktopLockedController.js';
@@ -865,6 +867,39 @@ const appMediaReplication: SelfActionController = {
     };
   },
 };
+
+/** Full-content archive retry: the actual runtime helper parks the durable peer after six failures. */
+const evolutionArchiveSyncRetry: SelfActionController = {
+  id: 'evolution-archive-sync',
+  actionVerb: 'archive-sync-retry',
+  models: 'src/core/EvolutionArchiveSync.ts (onPeerRecorded uses evolutionArchiveSyncAttemptDue + advanceEvolutionArchiveFailure; durable park after six rejected requests)',
+  modelsPath: 'src/core/EvolutionArchiveSync.ts',
+  boundK: EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES,
+  perTargetBoundK: EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES,
+  ticks: 120,
+  tickMs: 30_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return makeEvolutionArchiveSyncPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) { return makeEvolutionArchiveSyncPressure(f, sink); },
+};
+
+function makeEvolutionArchiveSyncPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const key = 'evolution-archive-sync:peer';
+  return { tick() {
+    sink.considered++;
+    const peer = (f.durableState.get(key) as EvolutionArchiveSyncPeer | undefined) ?? {
+      url: 'https://archive-peer.example', offset: 0, failures: 0, nextAttemptAt: 0, parked: false,
+    };
+    if (!evolutionArchiveSyncAttemptDue(peer, f.clock.nowMs())) return;
+    // Match the runtime's durable reservation-before-network ordering.
+    f.durableState.set(key, advanceEvolutionArchiveFailure(peer, f.clock.nowMs()));
+    sink.emit({ verb: 'archive-sync-retry', target: 'archive-peer' });
+    sink.emitTimesMs.push(f.clock.nowMs());
+    if (!f.targetAlwaysRejects()) f.durableState.set(key, { ...peer, failures: 0, nextAttemptAt: 0, parked: false });
+  } };
+}
 
 const evolutionActionExpirySweep: SelfActionController = {
   id: 'evolution-action-expiry-sweep',
@@ -4037,6 +4072,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   subscriptionReloginRedrive,
   standDownMaintenance,
   evolutionActionExpirySweep,
+  evolutionArchiveSyncRetry,
   appMediaCapacityNotice,
   appMediaReplication,
   spendReconSweep,

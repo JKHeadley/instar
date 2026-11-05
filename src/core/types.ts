@@ -1827,13 +1827,17 @@ export interface EvolutionManagerConfig {
   stateDir: string;
   /** Whether auto-implementation of approved proposals is enabled */
   autoImplement?: boolean;
-  /** Maximum proposals before oldest get archived */
+  /** Stable archive origin identity, supplied by the server machine identity. */
+  archiveOrigin?: string;
+  /** Soft TOTAL retention targets; active work is always exempt. Zero is preserved. */
+  retentionTargets?: { proposals?: number; learnings?: number; gaps?: number; actions?: number };
+  /** @deprecated Use retentionTargets.proposals (soft total target). */
   maxProposals?: number;
-  /** Maximum learning entries before oldest get archived */
+  /** @deprecated Use retentionTargets.learnings (soft total target). */
   maxLearnings?: number;
-  /** Maximum gaps before oldest addressed get archived */
+  /** @deprecated Use retentionTargets.gaps (soft total target). */
   maxGaps?: number;
-  /** Maximum action items before oldest completed get archived */
+  /** @deprecated Use retentionTargets.actions (soft total target). */
   maxActions?: number;
   /** Conservative stale pending-action cleanup. Server defaults are dry-run-first. */
   autoExpiry?: {
