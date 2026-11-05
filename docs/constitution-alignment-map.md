@@ -9,8 +9,8 @@ How the 1.x registry and the 2.0 purpose and rule book compare, rule by rule. A 
 
 | Item | Count |
 |---|---|
-| 1.x articles with a `**Rule.**` line | 96 (92 at #2323, plus TCC from #2194, plus One Constitution, Two Books Aligned from #2708, plus The Person Decides; the Agent Does the Rest from #2734, plus No Feature May Require a Purchased Service from #PR1X) |
-| 2.0 rule rows | 122 (numbers 1 to 122, each once, with instar-2 #189, #190, #191 and #PR2). R121's 1.x pair is #2812, still open, which adds its own rows |
+| 1.x articles with a `**Rule.**` line | 96 (92 at #2323, plus TCC from #2194, plus One Constitution, Two Books Aligned from #2708, plus The Person Decides; the Agent Does the Rest from #2734, plus No Feature May Require a Purchased Service from #2822) |
+| 2.0 rule rows | 122 (numbers 1 to 122, each once, with instar-2 #189, #190, #191 and #192). R121's 1.x pair is #2812, still open, which adds its own rows |
 | Purpose rules | 19, labelled Rule (Rule 5 is labelled Value, so it is not counted); 13 Values |
 
 Map result: **51 aligned, 42 differs, 3 1.x-only**, plus 26 rule rows 2.0-only and 15 purpose rules 2.0-only (4 partial).
@@ -73,7 +73,7 @@ Ranks 1 to 7 are direct text clashes. Ranks 8 to 12 depend on a reading, so trea
 | 2.0 #182: Rule 118 | New rule, one provider is enough | **Yes.** Mirrored by #2380 in #30, not as its own article. |
 | 1.x #2708 and 2.0 #189: One Constitution, and the last rung | New article #94 and R119; #75 and R72 name default-on as the last rung | **Yes, as a pair.** R72 and #75 share the last rung and still differ, as row 75 says. |
 | 1.x #2734 and 2.0 #190: The Person Decides; the Agent Does the Rest | New article #95, a tree node under *Agent Proposes, Operator Approves*, and R120 | **Yes, as a pair.** Same obligation and the same two owed checks. 1.x keeps *Sovereignty*'s "if it's the human's, ask", which is conflict 5 and unchanged here. |
-| 1.x #PR1X and 2.0 #PR2: No Feature May Require a Purchased Service | New article #96, a tree node under *Framework-Agnostic — and Framework-Optimizing*, and R122 | **Yes, as a pair.** Same approved wording in both books. Neither is enforced yet. Row 30 and R118 keep their own difference, unchanged here. |
+| 1.x #2822 and 2.0 #192: No Feature May Require a Purchased Service | New article #96, a tree node under *Framework-Agnostic — and Framework-Optimizing*, and R122 | **Yes, as a pair.** Same approved wording in both books. Neither is enforced yet. Row 30 and R118 keep their own difference, unchanged here. |
 
 Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-doc commits since 2026-10-16, checked on the API with a query that does return older commits.
 
