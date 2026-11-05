@@ -1,13 +1,13 @@
 # Side-Effects Review — Codex 429 dead-pane reporting
 
 **Version / slug:** `codex-429-dead-pane`
-**Date:** 2026-11-04
+**Date:** 2026-11-05
 **Author:** Echo
 **Second-pass reviewer:** independent lifecycle reviewer
 
 ## Summary of the change
 
-Tier 1, eight files and a small reversible lifecycle correction. A retained dead Codex pane with a nonzero exit and explicit HTTP 429 Too Many Requests text becomes a failed session, not a completed one. The existing scheduler records a failed run and releases capacity; the existing dead-job cleanup removes the pane. A one-time exit event feeds a high-priority Attention item, degradation report, and topic notice. One design review round and two test iterations.
+Tier 1, eight files and a small reversible lifecycle correction. A retained dead Codex pane with a nonzero exit and explicit HTTP 429 Too Many Requests text becomes a failed session, not a completed one. The existing scheduler records a failed run and releases capacity; the existing dead-job cleanup removes the pane. A one-time exit event feeds a high-priority Attention item, degradation report, and topic notice. The PR was rebased onto origin/main (version 1.3.1672) in a fresh isolated worktree backed by a fresh clone; remote origin is https://github.com/JKHeadley/instar.git. Rebase preserves both the main-branch and Codex self-action controllers. The repair adds a shared terminal-evidence parser and regression coverage; rollback remains a revert.
 
 ## Decision-point inventory
 
@@ -32,7 +32,7 @@ The tmux probe supplies objective process and exit evidence. SessionManager owns
 
 **Required reference:** [docs/signal-vs-authority.md](../../docs/signal-vs-authority.md)
 
-- [x] No — the terminal signature produces a cause signal at a confirmed dead-process boundary. The objective dead-pane and nonzero-exit evidence determines failure; the string only selects the specific reason and alert wording.
+- [x] No — the terminal signature produces a cause signal at a confirmed dead-process boundary. The terminal result and explicit 429 text together select this scoped failure classification; the text never controls a live process. Other terminal failures retain their existing classification.
 
 ## 4b. Judgment-point check
 
@@ -42,6 +42,7 @@ No static heuristic decides among competing live-session signals. A dead pane an
 
 - **Shadowing:** The live-prompt RateLimitSentinel cannot handle an exited process; this path runs after death.
 - **Double-fire:** The persisted status changes off `running` before the event, so later ticks cannot re-emit it. Scheduler failure alerts may also fire under their existing threshold; their message describes the job, while the new Attention item identifies the immediate cause.
+- **Terminal-status race:** tmux can close its pane fd before waitpid publishes a status. Empty status is unknown, never zero. All three liveness paths wait for a numeric exit status or terminal signal; the separate dead-pane read also refuses to cache an empty status as zero. A real-tmux fixture closes its descriptors and waits on a release file, proving the session remains running until its eventual nonzero result. Signal-terminated panes remain terminal without a numeric status.
 - **Races:** The compare-and-set reread runs after the new awaited terminal capture, so another killer changing status during that probe keeps its verdict.
 - **Feedback loops:** No automatic respawn is triggered, so no retry loop is created.
 
@@ -68,12 +69,16 @@ The change is scoped to objectively dead Codex processes and reuses existing job
 ## Second-pass review
 
 **Reviewer:** independent lifecycle reviewer
-**Independent read of the artifact:** concur after the capture/CAS race test was corrected to exercise a session older than the startup window. The alert event uses the existing per-listener isolation helper.
+**Independent read of the artifact:** original review concurred after the capture/CAS race and listener isolation fixes. Repair review by `/root/lifecycle_review` concurs with the shared terminal-evidence parser, pending-status regression, signal handling, both real-tmux modes, negative cases and repeated-tick bound; final artifact and repaired diff independently reviewed and concurred, with no blocking concerns.
 
 ## Evidence pointers
 
-`tests/unit/dead-job-pane-cleanup.test.ts` uses a private real-tmux socket (8 passing cases, including the race and listener-fault cases); `tests/unit/self-action-convergence.test.ts` passes (520 cases); `npx tsc --noEmit` passes.
+`tests/unit/dead-job-pane-cleanup.test.ts` uses private real-tmux sockets with no host config, in both legacy and bounded async modes. It covers 429 failure after startup, delayed exit status with a real process, clean Codex exits carrying stale error text, other errors/frameworks, repeated ticks, operator-kill races and listener faults. `tests/unit/session-manager-is-session-alive-async-tristate.test.ts` reproduces pending-status failure before the repair in both modes and covers signal exits. The convergence ratchet passes 531 cases. TypeScript passes. Full check results are recorded in the PR description.
 
 ## Class-Closure Declaration (display-only mirror)
 
 `defectClass: unbounded-self-action`, `closure: guard`, `guardEvidence: { enforcementType: ratchet, citation: tests/unit/self-action-convergence.test.ts, howCaught: the registry model drives a sustained dead Codex pane for N and 2N monitor ticks and across reconstruction; the persisted running-to-failed transition permits one notice for that session and stops subsequent emissions }`. `tests/unit/dead-job-pane-cleanup.test.ts` verifies the real status transition and one event.
+
+## Repair scope and effort
+
+Tier 1, narrow reversible bug repair. One independent review, deterministic red/green status-race regression, real-tmux reproduction, and targeted lifecycle/convergence verification. No constitution file is changed. No migration or new retry authority.

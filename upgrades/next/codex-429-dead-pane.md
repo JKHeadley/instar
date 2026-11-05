@@ -2,7 +2,7 @@
 
 ## What Changed
 
-A Codex CLI session that exits with a confirmed `429 Too Many Requests` is recorded as failed, rather than successful. Dead fixer panes are removed from tmux, running capacity is released, and a high-priority Attention alert reports the stopped work. A bound Telegram topic also receives the notice. Job history names the Codex 429 as the failure reason.
+A Codex CLI session that exits with a confirmed `429 Too Many Requests` is recorded as failed, rather than successful. Dead fixer panes are removed from tmux, running capacity is released, and a high-priority Attention alert reports the stopped work. A bound Telegram topic also receives the notice. Job history names the Codex 429 as the failure reason. A missing tmux exit status is kept unknown until the terminal result arrives, preventing the monitor from mistaking the timing gap for success.
 
 ## What to Tell Your User
 
