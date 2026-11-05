@@ -22,6 +22,7 @@ import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } fr
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
 import { mountMobileConsolePagesRoutes, type SelfRead } from './mobileConsolePagesRoutes.js';
+import { mountMobileHealthRoutes } from './mobileHealthRoutes.js';
 import { mountMobileSecretsRoutes, resolveKeys as resolveMobileKeys, askForSecret, cancelSecretByKey } from './mobileSecretsRoutes.js';
 import { mountMobileProposalsInsideRoutes, ACTIVITY_WINDOW, CLAIMS_WINDOW } from './mobileProposalsInsideRoutes.js';
 import { loadAllProposals } from './routes/remediation-proposals.js';
@@ -38115,6 +38116,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         } catch { // @silent-fallback-ok — a path that can't be resolved is refused, the safe side
           return null;
         }
+      },
+      bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    });
+    // What /health means for the person (docs/specs/mobile-health-issues.md): /health stays as it is and is
+    // read over loopback with this server's token, so the sorted answer cannot disagree with it.
+    mountMobileHealthRoutes(router, {
+      readHealth: async () => {
+        const r = await fetch(`http://127.0.0.1:${ctx.config.port}/health`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-Request': '1' },
+          signal: AbortSignal.timeout(12_000),
+        });
+        // @silent-fallback-ok — an unreadable body has no status, and the summary then says it can't name the problem.
+        return { status: r.status, body: await r.json().catch(() => null) };
       },
       bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     });

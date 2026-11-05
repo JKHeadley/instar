@@ -8299,10 +8299,15 @@
           serverDot.style.background = 'var(--accent)';
           serverText.textContent = h.uptimeHuman || 'Healthy';
           serverVital.className = 'vital';
+          serverVital.style.cursor = '';
+          serverVital.onclick = null;
         } else {
           serverDot.style.background = 'var(--orange)';
-          serverText.textContent = 'Degraded';
+          // /health says degraded for internal things too, so this says less and links to what it means.
+          serverText.textContent = 'See health ›';
           serverVital.className = 'vital warn';
+          serverVital.style.cursor = 'pointer';
+          serverVital.onclick = () => { location.href = '/dashboard#/capacity/health'; };
         }
 
         // Sessions

@@ -10,6 +10,7 @@ import { buildApprovals } from './mandates-model.js';
 import { buildPlansPage } from './plans-model.js';
 import { buildRequests } from './secrets-model.js';
 import { spendingNeed } from './costs-model.js';
+import { healthNeedRows } from './health-model.js';
 
 const row = (key, main, sub, href, refs = []) => ({ key: `need:${key}`, main, sub: sub || '', tone: 'attn', refs, action: { kind: 'href', href } });
 
@@ -57,6 +58,9 @@ export const NEED_SOURCES = [
     } },
   { id: 'spending', page: 'capacity/costs', reads: { status: '/routing-spend/enable-status' },
     rows: ({ status }) => { const n = spendingNeed(status); return n ? [row('spending', n.title, n.why, '#/capacity/costs')] : []; } },
+  // Only what affects the person. Internal notes stay on the Health page and never raise this count.
+  { id: 'health', page: 'capacity/health', reads: { issues: '/mobile/health-issues' },
+    rows: ({ issues }) => { const rows = healthNeedRows(issues); return rows === null ? UNREADABLE : rows.map((r) => row(`health:${r.key}`, r.title, r.detail, r.href)); } },
 ];
 
 /**
