@@ -46,3 +46,11 @@ The live PIN-gated rollback route persists a disarm latch, pauses scheduler admi
 ## Second-pass review
 
 Concur with the review. Independent code and integration reviewers found no remaining peer-trust or crash-recovery merge blocker after the final pass. The same-user concurrent leaf replacement race is recorded under Under-block as a local concurrency limitation. Final focused and lint gates remain required before merge.
+
+## Full-suite ratchet repair (2026-11-05)
+
+The first peer full-suite run found two inventory failures. Source export approval and bundle nonce accounting now carry a machine-local write-domain story, with `.instar/state/job-portable-*` excluded from git-sync so one root's consent and staged bytes cannot appear on another. Recipient import approval, revoke, rollback, and rearm are cluster-shared because they can change runnable manifests. The new dependency and integrity fallback comments describe refusal on missing or unreadable inputs; the absent import journal still means an ordinary local job. The write-domain, file-classifier, and silent-fallback tests are queued for fresh verification; the earlier failed run remains recorded. A future live write-admission rollout must preserve standby staging before promotion; that admission mode is currently structurally dark. Independent review concurred with this narrow repair and noted the same future admission consideration.
+
+## Resumed narrow second-pass review (2026-11-05)
+
+Concur with the narrow repair. An independent reviewer checked actual route templates against registry prefixes, verified exclusions cover flat consent/journal files and nested inbox contents, and confirmed annotations preserve fail-closed behavior. No code or security blocker found. Completed current test evidence remains required before merge.

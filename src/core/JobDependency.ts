@@ -19,7 +19,7 @@ export function jobDependencyExists(projectRoot: string, relativePath: string): 
     try {
       const stat = fs.lstatSync(cursor);
       if (stat.isSymbolicLink()) return false;
-    } catch { return false; }
+    } catch { /* @silent-fallback-ok — a missing or unreadable dependency refuses this job */ return false; }
   }
   return true;
 }

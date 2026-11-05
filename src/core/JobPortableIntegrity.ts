@@ -11,7 +11,7 @@ export function verifyImportedPortableJob(stateDir: string, projectDir: string, 
     if (raw.length > 8 * 1024 * 1024) return false;
     journal = JSON.parse(raw);
     if (!journal || typeof journal.jobs !== 'object') return false;
-  } catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT'; }
+  } catch (error) { /* @silent-fallback-ok — absent journal means ordinary local job; other errors refuse */ return (error as NodeJS.ErrnoException).code === 'ENOENT'; }
   const imported = journal.jobs[slug];
   if (!imported) return true;
   if (fs.existsSync(path.join(stateDir, 'state', 'job-portable-pending', `${slug}.json`))
@@ -34,7 +34,7 @@ export function verifyImportedPortableJob(stateDir: string, projectDir: string, 
     portableVerify(stateDir, state);
     portableVerify(projectDir, project);
     return true;
-  } catch { return false; }
+  } catch { /* @silent-fallback-ok — any integrity error refuses the imported job */ return false; }
 }
 
 /** Persist an admission refusal for the coverage alert without exposing paths. */

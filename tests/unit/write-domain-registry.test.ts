@@ -76,6 +76,24 @@ describe('I9 — no machine-local without a convergence story (both axes)', () =
   });
 });
 
+describe('portable job write domains', () => {
+  const reg = buildWriteDomainRegistry({ machineId: 'm_self' });
+
+  it('keeps source approval and replay accounting on the source machine, including standby', () => {
+    for (const route of ['/jobs/portable-bundle', '/jobs/portable/export/:slug/approve', '/jobs/portable/export/:slug/revoke']) {
+      const entry = reg.entryForRoute('POST', route);
+      expect(entry?.domain).toBe('machine-local');
+      expect(entry?.story?.fileLevel).toBe('git-sync-excluded');
+    }
+  });
+
+  it('uses the lease holder for imports and their rollback controls', () => {
+    for (const route of ['/jobs/portable/import/:source/:slug/approve', '/jobs/portable/import/:slug/revoke', '/jobs/portable/rollback', '/jobs/portable/rearm']) {
+      expect(reg.entryForRoute('POST', route)?.domain).toBe('cluster-shared');
+    }
+  });
+});
+
 describe('exact-key kv classification (§9.12 — no prefix matching in wave 1)', () => {
   const reg = buildWriteDomainRegistry({ machineId: 'm_self' });
 

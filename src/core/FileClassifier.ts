@@ -188,6 +188,9 @@ const DEFAULT_GENERATED_PATTERNS = [
   // Classified MACHINE-LOCAL with git-sync-excluded as the file-level arm.
   '.instar/state/job-anomaly-episodes.json',
   '.instar/state/job-triage-state.json',
+  // Portable-job approvals, replay ledger, inbox, and import journal are local to
+  // one exact agent root. Git-sync must not carry consent or staged bundles.
+  '.instar/state/job-portable-*',
 ];
 
 const DEFAULT_SECRET_PATTERNS = [

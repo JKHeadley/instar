@@ -170,6 +170,15 @@ describe('FileClassifier', () => {
       expect(result.strategy).toBe('exclude');
     });
 
+    it.each([
+      '.instar/state/job-portable-export-approval.json',
+      '.instar/state/job-portable-import-journal.json',
+      '.instar/state/job-portable-inbox/bundle.json',
+    ])('keeps portable transfer consent and staging local: %s', relPath => {
+      const result = makeClassifier(tmpDir).classify(path.join(tmpDir, relPath));
+      expect(result.strategy).toBe('exclude');
+    });
+
     it('classifies .min.js as generated', () => {
       const classifier = makeClassifier(tmpDir);
       const result = classifier.classify(path.join(tmpDir, 'vendor/jquery.min.js'));
