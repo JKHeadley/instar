@@ -124,7 +124,8 @@ describe('owner phone: served, trimmed', () => {
   });
 
   it('a local answer read as a peer shows through the merged answer, cleaned and named', async () => {
-    const peerApp = setup();
+    // Its own proposal: the same proposal on two machines is counted once.
+    const peerApp = setup({ proposals: () => ({ state: 'ok', data: [{ ...proposals[0], proposalId: 'prop-peer' }] }) });
     const local = await request(peerApp.app).get('/mobile/inside?scope=local').set('Authorization', 'Bearer tok-1');
     const localP = await request(peerApp.app).get('/mobile/proposals?scope=local').set('Authorization', 'Bearer tok-1');
     const c = setup({ peerInside: async () => [{ machineId: 'm_peer', state: 'ok', data: local.body }], peerProposals: async () => [{ machineId: 'm_peer', state: 'ok', data: localP.body }] });

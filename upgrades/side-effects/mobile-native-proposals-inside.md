@@ -53,3 +53,5 @@ Revert. No data, config or migration to repair; the CLAUDE.md bullet stays harml
 **Independent read of the artifact: minor issues, no blocker**
 
 Each round's findings were applied with tests; see `docs/specs/reports/mobile-native-proposals-inside-convergence.md`. Codex round 6 and the first clean-door read of this artifact raised design points, all fixed. The last clean-door read returned MINOR ISSUES: dismissed and promoted are per-machine sums, the headline ignores overdue and failed-review rows, and peers exchange display words rather than codes. The first two are stated in the spec as deliberate, matching the console. The third fails safe ("can't tell") and is left as it is.
+
+**Test fixture note (2026-11-04):** the integration test used one proposal on both machines, which the later count-once change correctly merges. The peer now has its own proposal. No product code changed.
