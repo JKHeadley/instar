@@ -72,6 +72,20 @@ export function setupGaps(agents) {
 /** The login name owning a pid, or '' when it is gone. */
 export function ownerOf(pid) { return sh('ps', ['-o', 'user=', '-p', String(pid)], { allowFail: true }).trim(); }
 
+/**
+ * Sends one person step and writes down whether it went. A refused send used to
+ * vanish, so a person was never told and the case simply timed out; now the
+ * refusal is in person-steps.jsonl and on stderr for whoever is watching the run.
+ */
+export function recordPersonStep(o, text, send) {
+  const result = o.notifyTopic ? send() : null;
+  const sent = result ? result.status === 0 : false;
+  const row = { at: new Date().toISOString(), text, topic: o.notifyTopic ?? null, sent };
+  fs.appendFileSync(path.join(o.out, 'person-steps.jsonl'), `${JSON.stringify(row)}\n`);
+  if (o.notifyTopic && !sent) process.stderr.write(`[locked-proof] person step NOT delivered to topic ${o.notifyTopic}: ${text}\n`);
+  return row;
+}
+
 /** The proof Mac, the proof user, its two agents and the real viewer page. */
 export class RealTarget {
   constructor(o) {
@@ -363,10 +377,9 @@ export class RealTarget {
 
   async askPerson(text) {
     process.stdout.write(`\n>>> PERSON STEP: ${text}\n\n`);
-    if (this.o.notifyTopic) {
-      sh('bash', [path.join(this.o.agentHome, '.instar/scripts/telegram-reply.sh'), String(this.o.notifyTopic)],
-        { input: `Locked-Mac proof: ${text}`, allowFail: true });
-    }
+    recordPersonStep(this.o, text, () => spawnSync('bash',
+      [path.join(this.o.agentHome, '.instar/scripts/telegram-reply.sh'), String(this.o.notifyTopic)],
+      { encoding: 'utf8', input: `Locked-Mac proof: ${text}`, timeout: 30_000 }));
   }
 
   async extraEvidence(c, ev) {
