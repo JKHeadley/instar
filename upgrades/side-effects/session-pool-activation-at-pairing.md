@@ -49,3 +49,5 @@ This is the feature. Only the bot token moves; broader secret sync stays off. Bo
 ## 8. Rollback
 
 `multiMachine.sessionPool.enabled:false` reads live. Reverting the code leaves plain config.
+
+A failed activation is reported through DegradationReporter as `sessionPool.pairActivation`: the pairing still completes, and the failure no longer sits in a log line only.

@@ -1,8 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
-  POOL_ACTIVATION_KEYS, activatedAtPairing, applyPairActivationKeys, decidePairActivation,
+  POOL_ACTIVATION_KEYS, activatedAtPairing, applyPairActivationKeys, decidePairActivation, finishInviterPairActivation,
 } from '../../src/core/sessionPoolPairActivation.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 import { applyDefaults, getMigrationDefaults } from '../../src/config/ConfigDefaults.js';
 import { openTelegramHandover, sealTelegramHandover, TELEGRAM_HANDOVER_TTL_MS } from '../../src/core/telegramPairHandover.js';
 
@@ -115,5 +120,26 @@ describe('telegram handover', () => {
     const other = crypto.generateKeyPairSync('x25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
     expect(openTelegramHandover({ sealed: sealed(), expected: binding, encryptionPrivateKeyPem: other, now }))
       .toEqual({ ok: false, refusal: 'undecryptable' });
+  });
+});
+
+describe('a pairing whose activation fails', () => {
+  it('still completes, and reports that sharing did not turn on', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-act-'));
+    const stateDir = path.join(dir, 'a-file');
+    fs.writeFileSync(stateDir, 'not a directory');
+    const report = vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => undefined as never);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const out = finishInviterPairActivation({
+        stateDir, decision: { activate: true, reason: 'first-pairing' } as never, telegram: null,
+        pairingSessionId: 'code-1', joinerMachineId: 'm_joiner', joinerEncryptionPublicKey: 'k', now: new Date(NOW),
+      });
+      expect(out).toEqual({ response: {}, restart: false });
+      expect(report).toHaveBeenCalledWith(expect.objectContaining({ feature: 'sessionPool.pairActivation' }));
+    } finally {
+      vi.restoreAllMocks();
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/session-pool-pair-activation.test.ts:cleanup' });
+    }
   });
 });

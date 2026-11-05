@@ -6,6 +6,7 @@
  * pairing response carries only a version, never values, so a response cannot hand a
  * joiner arbitrary config.
  */
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { migrateSecrets } from './SecretMigrator.js';
@@ -142,6 +143,13 @@ export function decideInviterPairActivation(input: {
     return decidePairActivation({ ...input, fileConfig });
   } catch (err) {
     console.warn('[pair] sharing was not turned on; could not read this machine\'s config:', err);
+    DegradationReporter.getInstance().report({
+      feature: 'sessionPool.pairActivation',
+      primary: 'Decide at the first pairing whether to turn sharing on',
+      fallback: 'The pairing completes and sharing stays off',
+      reason: `Could not read this machine's config: ${err instanceof Error ? err.message : String(err)}`,
+      impact: 'The new machine is paired but conversations stay on the first machine until sharing is turned on',
+    });
     return null;
   }
 }
@@ -185,6 +193,13 @@ export function finishInviterPairActivation(input: {
     };
   } catch (err) {
     console.warn('[pair] sharing was not turned on:', err);
+    DegradationReporter.getInstance().report({
+      feature: 'sessionPool.pairActivation',
+      primary: 'Turn sharing on at the first pairing',
+      fallback: 'The pairing completes and sharing stays off',
+      reason: `Activation failed: ${err instanceof Error ? err.message : String(err)}`,
+      impact: 'The new machine is paired but conversations stay on the first machine until sharing is turned on',
+    });
     return { response: {}, restart: false };
   }
 }

@@ -106,7 +106,7 @@ describe('Inbound-queue boot-order fix (engine constructs when configured, indep
     const at = src.indexOf('_drainLocalDeliver = async (dmsg, handover) => {');
     expect(at).toBeGreaterThan(0);
     const drain = src.slice(at, at + 2500);
-    expect(drain).toContain("const poolDark = _sessionPoolStage() === 'dark';");
+    expect(drain).toContain("const poolDark = _sessionPoolStage() === 'dark' && !drainRoutingOnly;");
     expect(drain).toMatch(/poolDark \? \{ action: 'handled-locally', acked: true \} : await _sessionRouter!\.route\(/);
     const fr = src.indexOf('forceReplace: async (msg) => {');
     expect(fr).toBeGreaterThan(0);
