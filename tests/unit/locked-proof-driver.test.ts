@@ -302,6 +302,42 @@ describe('locked-proof launchd kill', () => {
     expect(snap.markers).toEqual({});
   });
 
+  it('a server that does not know the lock state yet is skipped, like one that is down', async () => {
+    const answers: Record<number, unknown> = { 4098: { lockState: 'unknown' }, 4097: { lockState: 'locked-in-session' } };
+    const target = realTarget({ a: { port: 4098 }, b: { port: 4097 }, api: async (agent: { port: number }) => answers[agent.port] });
+    expect(await target.readLockState()).toBe('locked-in-session');
+    answers[4097] = { lockState: 'unknown' };
+    expect(await target.readLockState()).toBe('unknown');
+  });
+
+  it('stop-server throws unless the server really stays stopped', async () => {
+    // tmux resumes a stopped pane process at once: the signal is sent, the server never freezes.
+    const base = { serverPid: () => 321, pids: {}, kill: (pid: number, sig: string) => ({ pid, sig }) };
+    await expect(realTarget({ ...base, procStat: () => 'Ss+' }).act('stop-server')).rejects.toThrow(/did not stay stopped \(state "Ss\+"\).*launchd/);
+    await expect(realTarget({ ...base, procStat: () => '' }).act('stop-server')).rejects.toThrow(/did not stay stopped/);
+    expect(await realTarget({ ...base, procStat: () => 'T+' }).act('stop-server')).toEqual({ pid: 321, sig: 'STOP', stat: 'T+' });
+  });
+
+  it('every case that freezes the server serves it under launchd first, and puts it back in tmux', () => {
+    const freezing = CASES.filter((c: { inject: { action: string }[] }) => c.inject.some(i => i.action === 'stop-server'));
+    expect(freezing.map((c: { id: string }) => c.id)).toEqual(['12.1', '12.6']);
+    for (const c of freezing) {
+      expect(c.before).toEqual(['serve-under-launchd']);
+      expect(c.cleanup.slice(0, 3)).toEqual(['cont-server', 'end-launchd-serve', 'start-server']);
+    }
+  });
+
+  it('waits for a started server to know the lock state, and reports when it never does', async () => {
+    let clock = 0, calls = 0;
+    const timing = { now: () => clock, sleep: async (ms: number) => { clock += ms; } };
+    const learns = realTarget({ ...timing, api: async () => (++calls < 3 ? { lockState: 'unknown' } : { lockState: 'unlocked' }) });
+    expect(await learns.waitLockStateKnown()).toBe(true);
+    expect(calls).toBe(3);
+    clock = 0;
+    const never = realTarget({ ...timing, api: async () => { throw new Error('down'); } });
+    expect(await never.waitLockStateKnown(5_000)).toBe(false);
+  });
+
   it('a revoke with nothing to revoke fails the case', async () => {
     const target = realTarget({ priorMarkers: {}, readStore: () => ({ markers: {} }) });
     await expect(target.act('revoke')).rejects.toThrow(/no open request/);

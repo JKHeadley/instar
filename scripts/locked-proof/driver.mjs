@@ -200,7 +200,9 @@ export class RealTarget {
     for (const agent of [this.a, this.b]) {
       try {
         const st = await this.api(agent, 'GET', '/desktop/locked/status');
-        if (typeof st.lockState === 'string') return st.lockState;
+        // A server reads 'unknown' for about a minute after it starts. Both agents watch the
+        // same Mac, so an agent that does not know yet is skipped like one that is down.
+        if (typeof st.lockState === 'string' && st.lockState !== 'unknown') return st.lockState;
       } catch { /* this agent is down or stopped; try the other */ }
     }
     return 'unknown';
@@ -346,7 +348,7 @@ export class RealTarget {
     sudo(['install', '-o', PROOF_USER, '-m', '644', staged, plist]);
     sudo(['launchctl', 'bootstrap', `gui/${this.uid}`, plist]);
     const pid = await this.waitForServer(true, 90_000);
-    return { label, pid };
+    return { label, pid, lockStateKnown: await this.waitLockStateKnown() };
   }
 
   /**
@@ -379,6 +381,23 @@ export class RealTarget {
     return { removed: label };
   }
 
+  /** `ps` state letters for one pid: a stopped process starts with T. Empty when it is gone. */
+  procStat(pid) { return sh('ps', ['-o', 'stat=', '-p', String(pid)], { allowFail: true }).trim(); }
+
+  /**
+   * Listening is not ready: a freshly started server reads 'unknown' for about a minute, and the
+   * viewer page has no machine to offer until it knows. False after the wait is evidence, not an error.
+   */
+  async waitLockStateKnown(ms = 120_000) {
+    const until = this.now() + ms;
+    while (this.now() < until) {
+      const st = await this.api(this.a, 'GET', '/desktop/locked/status').catch(() => null);
+      if (typeof st?.lockState === 'string' && st.lockState !== 'unknown') return true;
+      await this.sleep(1_000);
+    }
+    return false;
+  }
+
   async waitForServer(up, ms) {
     const until = this.now() + ms;
     while (this.now() < until) {
@@ -394,7 +413,15 @@ export class RealTarget {
   async act(action, { step } = {}) {
     const helper = () => this.processes().filter(p => p.command.includes('instar-desktop-host'));
     switch (action) {
-      case 'stop-server': return this.kill(this.pids.server = this.serverPid(this.a), 'STOP');
+      case 'stop-server': {
+        const r = this.kill(this.pids.server = this.serverPid(this.a), 'STOP');
+        // tmux resumes a stopped pane process at once, so a case that believes it froze the
+        // server would be judging a server that never stopped. Prove the stop held.
+        await this.sleep(500);
+        const stat = r.pid ? this.procStat(r.pid) : '';
+        if (!stat.startsWith('T')) throw new Error(`stop-server: pid ${r.pid} did not stay stopped (state "${stat}"); serve it under launchd first`);
+        return { ...r, stat };
+      }
       case 'cont-server': return this.kill(this.pids.server, 'CONT');
       case 'kill-server': return this.kill(this.serverPid(this.a), 'KILL');
       case 'start-server': {
@@ -402,7 +429,7 @@ export class RealTarget {
         const until = this.now() + 60_000;
         while (this.now() < until && !this.serverPid(this.a)) await this.sleep(1_000);
         if (!this.serverPid(this.a)) throw new Error(`start-server: nothing listening on port ${this.a.port} after 60 s`);
-        return { started: true };
+        return { started: true, lockStateKnown: await this.waitLockStateKnown() };
       }
       case 'kill-tmux': return { out: this.asProof(['tmux', 'kill-server']) };
       case 'serve-under-launchd': return this.serveUnderLaunchd();
