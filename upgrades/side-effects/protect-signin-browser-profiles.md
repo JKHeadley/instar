@@ -20,7 +20,7 @@ Normal Chrome with a full profile path originally matched the word playwright in
 
 ## 2. Under-block
 
-The hook is a cooperative tool boundary, not an OS sandbox. Script inspection is bounded to direct JS/Python entry files up to 256 KiB; malicious wrappers/import chains/computed paths can evade textual inspection. The supported activation, built-in CDP and configured MCP startup/load/registration paths are checked independently. Previously running MCP processes retain their loaded profile binding even if the config changes; enforcement at startup protects new processes and does not retroactively fence a loaded browser. Existing unsafe MCP browsers require controlled offload/refresh through their normal owner. Historical sign-out causation remains unproven; no destructive reproduction on saved profiles is authorized or needed.
+The hook is a cooperative tool boundary, not an OS sandbox. Script inspection is bounded to direct JS/Python entry files up to 256 KiB; malicious wrappers/import chains/computed paths can evade textual inspection. The supported activation, built-in CDP and configured MCP startup/load/registration paths are checked independently. Previously running MCP processes retain their loaded profile binding even if the config changes; enforcement at startup protects new processes and does not retroactively fence a loaded browser. Existing unsafe MCP browsers require controlled offload/refresh through their normal owner. The incident report distinguishes the failed 03:54:52 import from successful 03:55 retries, including the raw Slack sign-in result. Historical sign-out causation remains unproven; no destructive reproduction on saved profiles is authorized or needed.
 
 ## 3. Level-of-abstraction fit
 

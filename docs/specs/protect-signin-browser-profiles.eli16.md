@@ -9,3 +9,5 @@ The installed tool hook is refreshed on updates for Claude and Codex, including 
 The incident record does not prove that automation signed Dawn out. It proves a Playwright launch on the saved profile followed by a signed-out Slack page, without a successful observation immediately before. The later repair accepted the password but rejected one backup code and stopped. That is a failed repair, not a recovered login. No test should destroy another saved login to investigate this one, and no one should claim a repair succeeded without a live account check.
 
 The release records this helper separately from the Codex message-delivery certificate: browser ownership has its own tests, and the delivery code and approved certificate are unchanged.
+
+The raw record distinguishes an initial missing-package failure from the successful retries around 03:55 UTC. The retries reached Slack’s sign-in page; that is evidence of unsafe access and a signed-out result, not proof that the retry caused it.
