@@ -9,9 +9,10 @@ Two independent reads by GPT-6 Astra (a different model family), through the cha
 ## Findings
 - F1, applied (round 1, must-fix, 2.0 text): the Rule 121 check cell made a report over stored statements a duty, which the approved text does not. Removed; in 1.x the report stays described as something the separate build plans.
 - F2, applied (round 1, must-fix, 2.0 text): the 2.0 source note and changelog named a requirement without carrying the words. They now quote the requirement and the approval beside their pointers, as 1.x does.
-- F3, not applied (round 1, note): "matched" could read as proof. The article and the ELI16 keep the one-reader limit; the fuller limits are in the note check.
+- F3, not applied (round 1, note): "matched" could read as proof. The article keeps the one-reader limit; the fuller limits are in the note check.
 - F4, applied (self, lint): first drafts tripped the false-claim check on "enforcement is" and the dangling-reference check on the unmerged spec path. **Applied through** now names the attribution paper trail spec in words and says it is not merged.
+- F5, applied (round 3, must-fix, this report): it said the ELI16 keeps the one-reader limit, which it does not. Corrected here.
 - Round 1 confirmed the rule bodies are byte-identical to the approved draft in both books (591 bytes), that the incident facts and the counts 190 = 118 + 50 + 5 + 17 match their records, and re-counted 96 articles, 121 rules and 51 aligned / 42 differs / 3 1.x-only.
 
 ## Verdict
-Converged: round 1 returned NO on the two findings above, round 2 returned YES with no must-fix. The direction guard waits on the operator's approving review.
+Round 1 returned NO on F1 and F2, round 2 returned YES on the repairs, and round 3, on the final records, returned NO on F5 alone. The result of the read after that correction is on the pull request. The direction guard waits on the operator's approving review.

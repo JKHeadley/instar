@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-A constitution text change, Tier 1: one new article, 2 registry hunks plus the generated hierarchy line, the alignment-map rows, the Interaction family audit and report, and one count assertion. No runtime code. *Attributed Statements Trace to Their Source* joins the Interaction family as a tree node under *Truthful Provenance — Speak Only as Yourself*, which names it back. The rule text is the wording the operator approved [source: telegram 136110/139199 2026-11-05], identical to 2.0 Rule 121. It says plainly that nothing enforces it yet. Proportion: two independent review rounds, the second a narrow recheck of two text repairs; in line with the size.
+A constitution text change, Tier 1: one new article, 2 registry hunks plus the generated hierarchy line, the alignment-map rows, the Interaction family audit and report, and one count assertion. No runtime code. *Attributed Statements Trace to Their Source* joins the Interaction family as a tree node under *Truthful Provenance — Speak Only as Yourself*, which names it back. The rule text is the wording the operator approved [source: telegram 136110/139199 2026-11-05], identical to 2.0 Rule 121. It says plainly that nothing enforces it yet. Proportion: four independent review rounds, the later ones narrow rechecks of text repairs; more than a Tier-1 change usually takes, because each book carries its own records and each round read them.
 
 ## Decision-point inventory
 
@@ -51,7 +51,7 @@ A revert of the text, the map rows, the count assertion and the re-recorded Inte
 
 **Reviewer:** independent cross-family reader, codex-cli on gpt-6-astra, through the charter launcher
 
-Round 1 read both books' diffs, the source messages, the case study and the note check: VERDICT NO, two must-fixes, both in the 2.0 text (a report over stored statements had become a duty the approved wording does not state; the source note named a requirement without its words). Both repaired. Rule bodies byte-identical to the approved draft in both books; incident facts and counts match their records; no enforcement overclaim; placement sound; the `Fails` direction fits the failure-direction defaults. Round 2 rechecked the repairs and the 2.0 anchor: VERDICT YES, 0 must-fix. Concur with the review.
+Round 1 read both books' diffs, the source messages, the case study and the note check: VERDICT NO, two must-fixes, both in the 2.0 text (a report over stored statements had become a duty the approved wording does not state; the source note named a requirement without its words). Both repaired. Rule bodies byte-identical to the approved draft in both books; incident facts and counts match their records; no enforcement overclaim; placement sound; the `Fails` direction fits the failure-direction defaults. Round 2 rechecked the repairs and the 2.0 anchor: VERDICT YES, 0 must-fix. Round 3, on the final records, found one false sentence in the review report (it said the ELI16 keeps the one-reader limit), now corrected. Concur with the review once the correction is read.
 
 ## Counterpart
 

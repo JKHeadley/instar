@@ -7,10 +7,10 @@
   ],
   "findingDisposition": {
     "noUnresolvedDesign": true,
-    "resolvedFindings": 4
+    "resolvedFindings": 5
   },
   "convergenceReport": "docs/specs/reports/attributed-statements-trace-constitution-review-2026-11-05.md",
-  "convergenceSha256": "04324c3a59e4798a1d30cff5e9a79811d184894f88a512741f42fb332e36ada0",
+  "convergenceSha256": "a81c57a80017b4b21b7d1cc4f02233c8efd9d6a5a2f5558aedad255c1069694b",
   "areas": {
     "Interaction": {
       "areaSha256": "c2902dc347d54e1c03d1d9db756679c49236aa000697c9b7c981ce4ff9558d9e",
