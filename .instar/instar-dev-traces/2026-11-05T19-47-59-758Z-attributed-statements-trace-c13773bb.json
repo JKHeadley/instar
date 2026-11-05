@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "attributed-statements-trace",
+  "sessionId": "83ff0005-03a1-47ac-9794-fc5f5dbd69b5",
+  "timestamp": "2026-11-05T19:47:59.758Z",
+  "artifactPath": "upgrades/side-effects/attributed-statements-trace.md",
+  "artifactSha256": "06bc8337fed1941cc3310cf9dac8ab697c9967c5e7282f62429b21c3a47155f6",
+  "coveredFiles": [
+    "docs/constitution-alignment-map.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Fills the PR numbers into the alignment-map rows; no wording change.",
+  "eli16Path": "docs/specs/attributed-statements-trace.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/attributed-statements-trace.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
