@@ -47,11 +47,15 @@ Repo-tracked text; unified. The rule itself names every machine, and the enforci
 
 A revert of the text, the map rows, the count assertion and the re-recorded Interaction audit.
 
+## This pull request carries two rules
+
+*No Feature May Require a Purchased Service* (1.x counterpart of 2.0 Rule 122) is in the same pull request, so one review covers both articles. Its own review is `upgrades/side-effects/no-purchased-service.md`. Together they add articles 96 and 97, the map rows, the Interaction and Building family audits with their reports, and the count assertion. Still no runtime code, and neither article is enforced yet.
+
 ## Second-pass review
 
 **Reviewer:** independent cross-family reader, codex-cli on gpt-6-astra, through the charter launcher
 
-Round 1 read both books' diffs, the source messages, the case study and the note check: VERDICT NO, two must-fixes, both in the 2.0 text (a report over stored statements had become a duty the approved wording does not state; the source note named a requirement without its words). Both repaired. Rule bodies byte-identical to the approved draft in both books; incident facts and counts match their records; no enforcement overclaim; placement sound; the `Fails` direction fits the failure-direction defaults. Round 2 rechecked the repairs and the 2.0 anchor: VERDICT YES, 0 must-fix. Round 3, on the final records, found one false sentence in the review report (it said the ELI16 keeps the one-reader limit), now corrected. Round 4 confirmed that correction and asked that the report's pointer to the pull request be made true, which the pull request body now does. Round 5 records the last read on the pull request.
+Round 1 read both books' diffs, the source messages, the case study and the note check: VERDICT NO, two must-fixes, both in the 2.0 text (a report over stored statements had become a duty the approved wording does not state; the source note named a requirement without its words). Both repaired. Rule bodies byte-identical to the approved draft in both books; incident facts and counts match their records; no enforcement overclaim; placement sound; the `Fails` direction fits the failure-direction defaults. Round 2 rechecked the repairs and the 2.0 anchor: VERDICT YES, 0 must-fix. Round 3, on the final records, found one false sentence in the review report (it said the ELI16 keeps the one-reader limit), now corrected. Round 4 confirmed that correction and asked that the report's pointer to the pull request be made true, which the pull request body now does. Round 5 records the last read of this article alone on the pull request. A read of the combined diff of both articles returned NO on one must-fix in the supporting records (current-change statements still saying 95 to 96, and a note still calling R121's pair open), corrected here; the rule bodies, quotes, counts and enforcement statements passed. The result of the narrow recheck is on the pull request.
 
 ## Counterpart
 
@@ -59,4 +63,4 @@ instar-2 Rule 121 with identical rule text; it is the master and merges first.
 
 ## Test expectations changed
 
-`tests/unit/standards-coverage-ratchet.test.ts`: article count 95 to 96.
+`tests/unit/standards-coverage-ratchet.test.ts`: article count 95 to 97, with the second article.

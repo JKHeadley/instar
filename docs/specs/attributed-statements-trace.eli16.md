@@ -10,4 +10,4 @@ Where it sits: under *Truthful Provenance*, which is about who a delivered messa
 
 What is not true yet: nothing enforces this today, and the article says so. The checks are being built under a separate spec, the attribution paper trail, which is not merged. Until then the rule depends on the agent following it.
 
-No code changes and no runtime behaviour changes here. The only decision for you is whether this should go in as written; your approving review on GitHub is what makes it part of the constitution. The 2.0 change is the master and merges first.
+This pull request also carries a second approved rule, *No Feature May Require a Purchased Service*, explained in `docs/specs/no-purchased-service.eli16.md`, so one review covers both. No code changes and no runtime behaviour changes here. The only decision for you is whether this should go in as written; your approving review on GitHub is what makes it part of the constitution. The 2.0 change is the master and merges first.
