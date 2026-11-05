@@ -40,7 +40,13 @@ describe('owner phone remote file — production wiring', () => {
     const holder = http.createServer((q, r) => {
       seen.push({ url: q.url ?? '', auth: q.headers.authorization });
       r.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': String(file.length), 'x-instar-holder-media': '1' });
-      r.end(file);
+      // Several writes, so the real owner check runs per write on the production path.
+      const step = Math.ceil(file.length / 4);
+      const next = (at: number) => {
+        if (at >= file.length) { r.end(); return; }
+        r.write(file.subarray(at, at + step), () => setTimeout(() => next(at + step), 20));
+      };
+      next(0);
     });
     await new Promise<void>((go) => holder.listen(0, '127.0.0.1', () => go()));
     sockets.push(holder);

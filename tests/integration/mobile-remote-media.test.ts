@@ -3,7 +3,7 @@
  * over two REAL servers on real sockets, with real device signatures, registries, blobs and the
  * production stream. Fake holders appear only where a real server cannot misbehave on demand.
  */
-import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -169,6 +169,48 @@ describe('the owner phone opens a Slack file held by another machine', () => {
     expect(b.hops).toHaveLength(1);
     expect(b.hops[0]).toContain('holderHop=1');
     expect(b.hops[0]).toContain(`ref=${encodeURIComponent(key)}`);
+  });
+
+  it('a phone that leaves during the file open gets no read stream, and the file is closed', async () => {
+    const { a } = await pair();
+    const bytes = jpeg(5_000);
+    const key = await a.held('C0GONE111', bytes);
+    const p = await phone(a);
+    const r = route(sha(bytes), key, 'm_a');
+    const u = new URL(a.url);
+    const open = fs.promises.open.bind(fs.promises);
+    let client: http.ClientRequest | undefined;
+    let close: ReturnType<typeof vi.fn> | undefined;
+    let read: ReturnType<typeof vi.fn> | undefined;
+    const seen = new Promise<void>((done) => {
+      const spy = vi.spyOn(fs.promises, 'open').mockImplementation((async (...args: Parameters<typeof open>) => {
+        spy.mockRestore();
+        const h = await open(...args);
+        const realClose = h.close.bind(h);
+        close = vi.fn(async () => { await realClose(); done(); });
+        read = vi.fn(h.createReadStream.bind(h));
+        Object.assign(h, { close, createReadStream: read });
+        client?.destroy();
+        await new Promise((go) => setTimeout(go, 100));
+        return h;
+      }) as never);
+    });
+    client = http.request({ host: u.hostname, port: u.port, path: r, method: 'GET', headers: signedHeaders(p, r) });
+    client.on('error', () => undefined);
+    client.end();
+    await seen;
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('file requests have their own bucket: they cannot use up the phone\'s chat reads', async () => {
+    const { a } = await pair();
+    const p = await phone(a);
+    const r = route(HASH, 'slack:_:C0NEVERSEEN', 'm_a');
+    let limited = 0;
+    for (let i = 0; i < 125; i++) if ((await phoneGet(a, p, r)).status === 429) limited++;
+    expect(limited).toBe(5);
+    expect((await phoneGet(a, p, '/mobile/people')).status).not.toBe(429);
   });
 
   it('naming this machine serves locally with Range still honored and no dial', async () => {
@@ -430,7 +472,7 @@ describe('the owner phone opens a Slack file held by another machine', () => {
     await new Promise((r) => setTimeout(r, 80));
     const third = await phoneGet(a, p, route(HASH, REF, 'm_b'));
     expect(third.status).toBe(202);
-    expect(third.json).toEqual({ state: 'fetching', retryAfterMs: 2000 });
+    expect(third.json).toEqual({ state: 'fetching', retryAfterMs: 5_000 });
     expect(hung.calls()).toBe(2);
     await Promise.all([one, two]);
     expect((await phoneGet(a, p, route(HASH, REF, 'm_b'))).status).toBe(504);

@@ -10,6 +10,7 @@
  * before the last byte. A phone only ever gets a complete response for a file whose hash matched: the last
  * chunk is held back until the hash is known, so a bad or cut stream ends as a broken connection.
  */
+import { bearerMatches } from './middleware.js';
 import crypto from 'node:crypto';
 import { once } from 'node:events';
 import type { Response as ExpressResponse } from 'express';
@@ -22,6 +23,10 @@ import { poolPeerFetch, PoolPeerAdmissionError, type PoolPeerTarget, type RopeRe
 export const HOLDER_MEDIA_HEADER = 'x-instar-holder-media';
 export const HOLDER_MEDIA_FIRST_BYTE_MS = 15_000;
 export const HOLDER_MEDIA_IDLE_MS = 20_000;
+/** A phone that takes no bytes for this long gives its slot back: a suspended phone must not hold one. */
+export const HOLDER_MEDIA_DRAIN_MS = 60_000;
+/** How long a phone waits when every slot is taken. Four waiting files stay well under the media bucket. */
+export const HOLDER_MEDIA_BUSY_RETRY_MS = 5_000;
 /** 50 MiB in this time needs about 1.4 Mbit/s end to end; a read cut here restarts, with no Range. */
 export const HOLDER_MEDIA_DEADLINE_MS = 300_000;
 export const HOLDER_MEDIA_MAX_IN_FLIGHT = 6;
@@ -51,6 +56,7 @@ export interface HolderMediaDeps {
   deadlineMs?: number;
   maxBytes?: number;
   recheckMs?: number;
+  drainMs?: number;
 }
 
 function reportFailure(reason: string): void {
@@ -101,6 +107,11 @@ function holderFileName(disposition: string | null, mediaType: string): string {
   return safeFileName(m?.[1] ?? 'file', mediaType);
 }
 
+/** The hop's bearer check. A machine with no token of its own accepts no hop. */
+export function holderBearerOk(req: { headers: Record<string, unknown> }, token: string | undefined): boolean {
+  return !!token && bearerMatches(req, token);
+}
+
 export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
   let inFlight = 0;
   const perHolder = new Map<string, number>();
@@ -108,15 +119,20 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
   const recheckMs = deps.recheckMs ?? HOLDER_MEDIA_OWNER_RECHECK_MS;
 
   return async (q, res) => {
-    const peer = deps.peers().find((p) => p.machineId === q.machine);
-    if (!peer) { res.status(409).json({ error: 'wrong-machine', servedBy: deps.selfMachineId(), detail: 'This file belongs to a machine this one does not know.' }); return; }
-    if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: (peer.kind ?? 'last-known-url') as PeerEndpointKind }, deps.allowlist?.()).ok) { failed(res, 502, 'holder-untrusted'); return; }
-    const token = deps.token();
+    // A corrupt registry throws here, and nothing above this handler catches an async rejection.
+    let peer: PoolPeerTarget | undefined;
+    let token: string | undefined;
+    try {
+      peer = deps.peers().find((p) => p.machineId === q.machine);
+      if (!peer) { res.status(409).json({ error: 'wrong-machine', servedBy: deps.selfMachineId(), detail: 'This file belongs to a machine this one does not know.' }); return; }
+      if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: (peer.kind ?? 'last-known-url') as PeerEndpointKind }, deps.allowlist?.()).ok) { failed(res, 502, 'holder-untrusted'); return; }
+      token = deps.token();
+    } catch { failed(res, 503, 'holder-unavailable'); return; } // @silent-fallback-ok — reported by failed(); the phone is told to retry
     if (!token) { failed(res, 503, 'holder-unavailable'); return; }
     const mine = perHolder.get(q.machine) ?? 0;
     // Full is a wait, not a fault: a conversation of photos asks for several at once, and the app
     // already polls this answer.
-    if (inFlight >= HOLDER_MEDIA_MAX_IN_FLIGHT || mine >= HOLDER_MEDIA_MAX_PER_HOLDER) { res.status(202).json({ state: 'fetching', retryAfterMs: 2_000 }); return; }
+    if (inFlight >= HOLDER_MEDIA_MAX_IN_FLIGHT || mine >= HOLDER_MEDIA_MAX_PER_HOLDER) { res.status(202).json({ state: 'fetching', retryAfterMs: HOLDER_MEDIA_BUSY_RETRY_MS }); return; }
     inFlight++;
     perHolder.set(q.machine, mine + 1);
 
@@ -134,10 +150,11 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
     // On a clock, not on arriving bytes: a stalled holder or a phone that stopped reading still
     // gets cut off when the owner check fails.
     let revoked = false;
+    const ownerNow = (): boolean => {
+      try { return q.isCurrent(); } catch { return false; } // @silent-fallback-ok — an owner check that cannot answer refuses
+    };
     const watch = setInterval(() => {
-      let current = false;
-      try { current = q.isCurrent(); } catch { current = false; } // @silent-fallback-ok — an owner check that cannot answer refuses
-      if (revoked || current) return;
+      if (revoked || ownerNow()) return;
       revoked = true;
       abort.abort(new DOMException('owner check failed', 'AbortError'));
     }, recheckMs > 0 ? recheckMs : 50);
@@ -147,7 +164,7 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
     try {
       const path = `/mobile/media/${q.sha256}?ref=${encodeURIComponent(q.ref)}&machine=${encodeURIComponent(q.machine)}&holderHop=1`;
       const ownerFetch: typeof fetch = async (input, init) => {
-        if (!q.isCurrent()) throw new PoolPeerAdmissionError('owner-phone-required');
+        if (!ownerNow()) throw new PoolPeerAdmissionError('owner-phone-required');
         return (deps.fetchImpl ?? fetch)(input, init);
       };
       const r = await poolPeerFetch(deps.record, peer, path, {
@@ -156,7 +173,7 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
       if (r.status >= 300 && r.status < 400) { await r.body?.cancel().catch(() => undefined); failed(res, 502, 'holder-redirected'); return; } // @silent-fallback-ok — releasing a refused body
       if (r.status !== 200) {
         const body = await smallJson(r);
-        if (!q.isCurrent()) { ownerOnly(res); return; }
+        if (!ownerNow()) { ownerOnly(res); return; }
         const code = typeof body?.error === 'string' ? body.error : '';
         if (r.status === 202 && body?.state === 'fetching') {
           const ms = typeof body.retryAfterMs === 'number' && Number.isFinite(body.retryAfterMs) ? Math.min(30_000, Math.max(2_000, body.retryAfterMs)) : 2_000;
@@ -194,26 +211,30 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia {
         started = true;
       };
       const send = async (chunk: Uint8Array) => {
+        // Every write, not only the timer: nothing goes out after the owner check fails.
+        if (!ownerNow()) { revoked = true; abort.abort(new DOMException('owner check failed', 'AbortError')); throw new PoolPeerAdmissionError('owner-phone-required'); }
         if (!started) start();
         if (res.write(chunk)) return;
-        // A slow phone is not a stalled holder: the overall deadline bounds this wait.
-        if (idle) clearTimeout(idle);
+        // A slow phone is not a stalled holder, so it gets its own, longer limit.
+        wait(deps.drainMs ?? HOLDER_MEDIA_DRAIN_MS);
         await once(res, 'drain', { signal: abort.signal });
         wait(deps.idleMs ?? HOLDER_MEDIA_IDLE_MS);
       };
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
+        // An empty chunk is no progress, and must not take the withheld last chunk's place.
+        if (value.byteLength === 0) continue;
         wait(deps.idleMs ?? HOLDER_MEDIA_IDLE_MS);
         total += value.byteLength;
         if (total > maxBytes || (length !== null && total > length)) { abort.abort(); failed(res, 502, 'holder-too-large'); return; }
         hash.update(value);
-        if (!started && !q.isCurrent()) { abort.abort(); ownerOnly(res); return; }
+        if (!started && !ownerNow()) { abort.abort(); ownerOnly(res); return; }
         if (held) await send(held);
         held = value;
       }
       if ((length !== null && total !== length) || hash.digest('hex') !== q.sha256) { failed(res, 502, 'holder-bad-file'); return; }
-      if (!q.isCurrent()) { ownerOnly(res); return; }
+      if (!ownerNow()) { ownerOnly(res); return; }
       if (held) await send(held);
       else if (!started) start();
       res.end();

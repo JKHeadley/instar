@@ -26,3 +26,9 @@ codex-cli gpt-6-astra, two rounds, last verdict MINOR ISSUES. claude-code is a s
 ## Convergence verdict
 
 Stopped at three rounds, the Tier 2 work is bounded by the coordinator's deadline. Round 3's fixes are tested but not re-reviewed. Range stays refused; a cut download restarts.
+
+## Coordinator decisions after convergence
+
+The coordinator accepted the agent bearer on the holder as peer authorization, not phone or human owner proof. The holder's checks stay documented as static, with no claim of containing a compromised near machine. Cache hydration on a missing blob is accepted as a scoped download side effect. Two fixes were required and made: an owner check before every write, and skipping empty chunks, which could otherwise take the withheld chunk's place.
+
+An independent re-read then found no security bypass, and these robustness fixes were made: a registry that throws no longer reaches an uncaught rejection; file requests have their own rate bucket and a 5 s busy retry; a phone that takes no bytes for 60 s gives its slot back; the route timeout now outlasts the stream; a machine with no token accepts no hop; and a phone gone during the file open gets no read stream. The HTTP/1.0 no-length edge is stated as a limit.

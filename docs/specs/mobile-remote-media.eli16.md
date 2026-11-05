@@ -4,7 +4,9 @@ Your phone talks to one machine, but a Slack conversation can live on a differen
 
 This change lets the machine your phone talks to fetch the file from the machine that holds it and pass it along. Only your own phone can do this, and the machine is chosen from the agent's trusted list, never from anything in the request. The holder checks that this exact file belongs to this exact conversation before it sends a byte, so knowing a file's hash gets nobody anything.
 
-The file passes straight through rather than being stored in the middle, with a size limit and time limits. The owner check is repeated before connecting, before the first byte and throughout. If your phone is removed partway, the transfer is cut. The last piece is held back until the whole file's fingerprint matches, so a damaged or incomplete file can never look finished. The phone checks that fingerprint again and keeps nothing if it fails.
+The file passes straight through rather than being stored in the middle, with a size limit and time limits. The owner check is repeated before connecting, before the first byte, before every piece sent and on a timer throughout. Those repeats happen on the machine your phone talks to. The holder checks once at the start, and what it trusts is the agent's own machine credential, which proves a trusted machine, not your phone. So this does not protect you if the machine your phone talks to is itself taken over. If your phone is removed partway, the transfer is cut. The last piece is held back until the whole file's fingerprint matches, so a damaged or incomplete file can never look finished. The phone checks that fingerprint again and keeps nothing if it fails.
+
+If the holder is missing the file, asking for it can start the usual background copy from another machine, under the existing storage and cleanup limits.
 
 Each copy on the phone is stored separately per agent, machine and conversation, so a file allowed in one place is not treated as allowed in another.
 

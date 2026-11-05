@@ -193,7 +193,7 @@ import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairi
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
 import { buildSlackHolderRead } from './mobileSlackHolderProxy.js';
-import { buildMediaHolderStream } from './mobileMediaHolderProxy.js';
+import { buildMediaHolderStream, holderBearerOk } from './mobileMediaHolderProxy.js';
 import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
 import { createMobileMediaRouter } from './mobileMediaRoutes.js';
 import { createMobileSessionRouter } from './mobileSessionRoutes.js';
@@ -219,7 +219,7 @@ import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
 import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
-import { bearerMatches, corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
+import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
@@ -6469,7 +6469,7 @@ export class AgentServer {
         machineId: () => this.appConversations?.deps.machineId() ?? 'local',
         // The owner's phone opens a Slack file from the machine that holds it (mobile-remote-media).
         ownerAdmission: (req) => mobileOwnerDeviceAdmission(this.mobilePairing!, req),
-        bearerOk: (req) => bearerMatches(req, options.config.authToken),
+        bearerOk: (req) => holderBearerOk(req, options.config.authToken),
         holderMedia: buildMediaHolderStream({
           peers: () => routeCtx.resolvePeerUrls?.() ?? [],
           allowlist: () => (options.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,

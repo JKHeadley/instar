@@ -202,7 +202,12 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
       if (!owner) { res.status(403).json({ error: 'owner-only', detail: 'Only the agent\'s owner can open this file from the app.' }); return; }
       if (req.headers.range !== undefined) { res.setHeader('Accept-Ranges', 'none'); res.status(416).json({ error: 'range-unsupported', detail: 'A file on another machine downloads whole.' }); return; }
       if (!deps.holderMedia) { res.status(409).json({ error: 'wrong-machine', servedBy: self ?? null, detail: 'This file belongs to another machine.' }); return; }
-      await deps.holderMedia({ sha256: sha, ref, machine: named, isCurrent: () => owner.isCurrent() }, res);
+      try {
+        await deps.holderMedia({ sha256: sha, ref, machine: named, isCurrent: () => owner.isCurrent() }, res);
+      } catch { // @silent-fallback-ok — nothing above catches an async rejection; the phone is told to retry
+        if (res.headersSent) res.destroy();
+        else res.status(502).json({ error: 'holder-failed', detail: 'The machine that holds this file could not answer. Try again.' });
+      }
       return;
     }
     // The conversation is a live native app conversation (`app:<uuid>`), a Telegram topic
@@ -270,6 +275,8 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
       res.status(206).setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
     }
     res.setHeader('Content-Length', String(end - start + 1));
+    // The phone may have gone during the awaits above, and 'close' will not fire again.
+    if (res.destroyed) { await handle.close(); return; }
     const stream = handle.createReadStream({ start, end, autoClose: true });
     stream.on('error', () => { res.destroy(); });
     res.on('close', () => { stream.destroy(); });

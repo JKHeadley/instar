@@ -6,9 +6,9 @@ parent-principle: "Know Your Principal"
 eli16-overview: "docs/specs/mobile-remote-media.eli16.md"
 approved: true
 approved-by: "echo, assigned by coordinator session for topic 137342 under Justin's approval of Conversations build through deploy (2026-11-05 00:37 and 00:58 PST)"
-review-convergence: "2026-11-05T13:15:21.897Z"
+review-convergence: "2026-11-05T15:13:13.419Z"
 review-iterations: 3
-review-completed-at: "2026-11-05T13:15:21.897Z"
+review-completed-at: "2026-11-05T15:13:13.419Z"
 review-report: "docs/specs/reports/mobile-remote-media-convergence.md"
 cross-model-review: "codex-cli:gpt-6-astra"
 ---
@@ -28,15 +28,19 @@ On the machine that answered the phone, when `machine` names another machine:
 1. Only a `slack:` ref and a valid hash go further; anything else is 404.
 2. `mobileOwnerDeviceAdmission` (from the signature that admitted this request) must answer, else 403 `owner-only` with no dial. An MSP phone or a bearer token never dials.
 3. A `Range` header is refused with 416 `range-unsupported`.
-4. `buildMediaHolderStream`: holder by exact machine id from `resolvePeerUrls` (409 `wrong-machine` if unknown), `isPeerUrlAllowedForCredentials`, at most 6 streams at once and 2 per holder, separate from the history read's slots. When full, it answers the 202 `fetching` wait the app already polls, not a failure.
+4. `buildMediaHolderStream`: holder by exact machine id from `resolvePeerUrls` (409 `wrong-machine` if unknown), `isPeerUrlAllowedForCredentials`, at most 6 streams at once and 2 per holder, separate from the history read's slots. When full, it answers the 202 `fetching` wait the app already polls, with a 5 s retry, not a failure. File downloads count in their own 120-a-minute `media-read` bucket, so waiting files cannot use up chat reads.
 5. `poolPeerFetch` with the agent bearer, `redirect: 'manual'`, GET, carrying `holderHop=1` and the exact ref and machine. `isCurrent()` runs inside the fetch, so before every rope dial.
-6. Limits: 15 s to the first byte, 20 s between holder bytes (paused while a slow phone drains), 300 s overall, `MAX_FILE_BYTES` (50 MiB) whether or not a length was declared.
-7. Bytes stream through with backpressure: one chunk is deliberately withheld, on top of the transport's own bounded buffers, and the file is never held whole. `isCurrent()` is read before the first byte, on a 200 ms timer throughout, whether bytes are moving or not (a stalled holder or a phone that stopped reading included), and again before the last chunk. A failed timer read aborts the holder read and breaks the phone's connection. The last chunk is held until the running sha256 matches the requested hash and any declared length matches, so a bad, short or revoked stream ends as a broken connection and never as a complete response.
+6. Limits: 15 s to the first byte, 20 s between holder bytes, 60 s for a phone that has stopped taking bytes (so a suspended phone gives its slot back), 300 s overall, with the route's own timeout set past that to 330 s, `MAX_FILE_BYTES` (50 MiB) whether or not a length was declared.
+7. Bytes stream through with backpressure: one chunk is deliberately withheld, on top of the transport's own bounded buffers, and the file is never held whole. `isCurrent()` is read before the first byte, immediately before every write to the phone, on a 200 ms timer throughout, whether bytes are moving or not (a stalled holder or a phone that stopped reading included), and again before the last chunk. A check that fails or throws aborts the holder read and breaks the phone's connection. An empty chunk from the holder is skipped: it neither counts as progress for the idle limit nor takes the withheld chunk's place. The last chunk is held until the running sha256 matches the requested hash and any declared length matches, so a bad, short or revoked stream ends as a broken connection and never as a complete response.
 8. Type and file name are recomputed here (`isInlineSafe`, `safeFileName`) and the fixed security headers set; nothing else from the holder passes. Refusals map to fixed codes.
 
-On the holder, `holderHop=1` is honored only for the agent's own bearer (`bearerMatches`), a request naming this machine, and a `slack:` ref. It then runs the ordinary checks: the conversation is held here and this hash is referenced by that exact conversation. It never reaches the remote branch, so a holder cannot forward the request again. When the blob is absent, the ordinary 202 path may start the existing background copy between machines, as any download does. `Range` is refused. The response carries `x-instar-holder-media: 1`; an older holder answers 403 and the phone is told it needs updating.
+On the holder, `holderHop=1` is honored only for the agent's own bearer (`bearerMatches`), a request naming this machine, and a `slack:` ref. It then runs the ordinary checks: the conversation is held here and this hash is referenced by that exact conversation. It never reaches the remote branch, so a holder cannot forward the request again. When the blob is absent, the ordinary path runs `rep.canFetch` and may run `rep.want`, answering 202: this is cache hydration, a scoped side effect of the download under the existing quota, reference and purge controls. The hop is therefore not a pure read, and this design does not promise no replication. `Range` is refused. The response carries `x-instar-holder-media: 1`; an older holder answers 403 and the phone is told it needs updating.
 
-This widens what the agent bearer reaches: before, a bearer could not download from this route; with `holderHop=1` it reads any file a Slack conversation held here references. The holder cannot tell whether an owner phone is behind a hop. The bearer is already the agent's full peer credential, including the Slack history hop.
+This widens what the agent bearer reaches: before, a bearer could not download from this route; with `holderHop=1` it reads any file a Slack conversation held here references. The bearer on the holder is accepted, by coordinator decision, as peer authorization: it proves a trusted agent machine, not a phone or a human owner. The holder cannot tell whether an owner phone is behind a hop. The bearer is already the agent's full peer credential, including the Slack history hop.
+
+The holder's checks are static: they run once at request start and are not re-read before or during the bytes. All live owner gating is on the near machine. A revocation reaches the holder only when the near machine aborts and the response closes. This design makes no claim of containment if the near machine is compromised, and the holder has no independent owner stop.
+
+Limit: when the holder declares no length, the near machine ends the response by chunked encoding. An HTTP/1.0 client has no chunked encoding, so for it the end of a broken stream looks like the end of the file. The app speaks HTTP/1.1 or later and checks the hash itself.
 
 A 403 on a hop reads as `holder-outdated`. It can also mean a stale peer address reached a different machine, so that wording may mislead in that one case.
 
