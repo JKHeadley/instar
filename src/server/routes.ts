@@ -38127,8 +38127,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-Request': '1' },
           signal: AbortSignal.timeout(12_000),
         });
-        // @silent-fallback-ok — an unreadable body has no status, and the summary then says it can't name the problem.
-        return { status: r.status, body: await r.json().catch(() => null) };
+        return { status: r.status, body: await r.json().catch(() => null) }; // @silent-fallback-ok — an unreadable body has no status, so the summary says it can't name the problem
       },
       bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     });

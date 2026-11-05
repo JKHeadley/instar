@@ -3,7 +3,7 @@
 // internal ones stay folded. Every value goes through textContent.
 
 import { buildHealthPage, askHref, timesWord } from './health-model.js';
-import { el, setKids, pageHead, note, cantTell, firstPaint, markNeed } from './ui.js';
+import { el, setKids, pageHead, note, cantTell, firstPaint, markNeed, arrivalScroll } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const wantKey = () => new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
@@ -44,5 +44,5 @@ export async function renderHealth(main, ctx) {
     page.truncated ? note('There are more than I can show here. Ask me for the rest.') : null,
     legacy,
   );
-  if (want) { const n = main.querySelector(`[data-focus-key="h:${CSS.escape(want)}"]`); if (n && n.scrollIntoView) n.scrollIntoView({ block: 'start' }); }
+  if (want) arrivalScroll(main.querySelector(`[data-focus-key="h:${CSS.escape(want)}"]`), { key: `h:${want}` });
 }

@@ -46,3 +46,5 @@ A third read asked for four wording fixes, all made: the relay row, the stop-che
 A fourth read found three wording overclaims, all fixed. Findings had shrunk from design faults to single phrases, so I stopped there. The reviewer did not state concurrence on the final text.
 
 The reviewer confirmed: `/health` shape unchanged, owner and bearer authorization correct, `?ask` only fills a text box, internal rows stay out of Home's count.
+
+**Follow-up from the verify run (2026-11-05):** three test floors caught real slips: a raw scroll on the Health page (now the shared helper), a fallback mark on the wrong line, and a test that named the old legacy Health link.
