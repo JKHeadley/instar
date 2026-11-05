@@ -18143,12 +18143,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // The monitor is created on scheduler-less standby too: the job catalog lives
   // on disk independently of the awake-only scheduler.
-  const coverageIdentityManager = ctx.coordinator?.managers.identityManager;
+  const coverageIdentityManager = ctx.coordinator?.managers?.identityManager;
   const jobCoverageAuthToken = ctx.config.authToken;
   const jobCoverage = coverageIdentityManager && ctx.meshSelfId && jobCoverageAuthToken
     ? new JobCoverageMonitor({
         stateDir: ctx.config.stateDir,
-        jobsFile: ctx.config.scheduler.jobsFile ?? path.join(ctx.config.stateDir, 'jobs.json'),
+        jobsFile: ctx.config.scheduler?.jobsFile ?? path.join(ctx.config.stateDir, 'jobs.json'),
         projectDir: ctx.config.projectDir,
         port: ctx.config.port,
         onCatalogRepair: () => { ctx.scheduler?.refreshJobs(); },
