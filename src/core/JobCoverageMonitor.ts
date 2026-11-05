@@ -11,7 +11,8 @@ import { loadJobsDetailed } from '../scheduler/JobLoader.js';
 import { reconcileLegacyDefaultJobs } from '../scheduler/JobCatalogReconcile.js';
 import { jobDependencyExists } from './JobDependency.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
-import { JobCoverageStore, acceptJobCoverage, assignJobCoverageGeneration, compareJobCoverage, projectJobCoverage, signJobCoverage } from './JobCoverage.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { JobCoverageStore, type JobCoverageEntry, acceptJobCoverage, assignJobCoverageGeneration, compareJobCoverage, projectJobCoverage, signJobCoverage } from './JobCoverage.js';
 
 export interface JobCoverageMonitorOptions {
   stateDir: string;
@@ -25,6 +26,8 @@ export interface JobCoverageMonitorOptions {
   isAwake: () => boolean;
   peerUrls: () => Array<PoolPeerTarget & { kind: PeerEndpointKind }>;
   recordRopeResult?: RopeResultRecorder;
+  onPortableCandidate?: (peer: PoolPeerTarget & { kind: PeerEndpointKind }, job: JobCoverageEntry, generation: string) => Promise<void>;
+  portableGaps?: () => string[];
   alert: (conditionKey: string, title: string, summary: string) => Promise<void>;
   clearAlert?: (conditionKey: string) => void;
   now?: () => number;
@@ -73,6 +76,8 @@ export class JobCoverageMonitor {
   private stopped = false;
   private failures = new Map<string, { count: number; nextEligibleAt: number }>();
   private readonly failureFile: string;
+  private readonly portableCursorFile: string;
+  private portableCursors: Record<string, number> = {};
   private readonly auditFile: string;
   private readonly alertFile: string;
   private reconciled = false;
@@ -81,6 +86,11 @@ export class JobCoverageMonitor {
     this.store = new JobCoverageStore(options.stateDir);
     this.alertFile = path.join(options.stateDir, 'state', 'job-coverage-alert.json');
     this.failureFile = path.join(options.stateDir, 'state', 'job-coverage-poll.json');
+    this.portableCursorFile = path.join(options.stateDir, 'state', 'job-portable-cursors.json');
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.portableCursorFile, 'utf8'));
+      if (parsed.version === 1 && parsed.cursors && typeof parsed.cursors === 'object') this.portableCursors = parsed.cursors;
+    } catch { /* first observation starts at the first portable job */ }
     this.auditFile = path.join(options.stateDir, 'state', 'job-coverage-audit.jsonl');
     this.failures = this.readFailures();
   }
@@ -137,6 +147,28 @@ export class JobCoverageMonitor {
               const payload = acceptJobCoverage(await readBoundedJson(response), id, nonce, publicKey);
               if (!payload) throw new Error('invalid-signed-snapshot');
               this.store.record(payload, new Date(now));
+              if (this.options.onPortableCandidate) {
+                // A bounded transfer attempt follows a verified advertisement; failure is
+                // logged as a portability gap and never reclassifies signed metadata as bad.
+                const candidates = payload.jobs.filter(row => row.portable === true);
+                const start = (this.portableCursors[id] ?? 0) % Math.max(1, candidates.length);
+                const selected = candidates.length > 20
+                  ? Array.from({ length: 20 }, (_, n) => candidates[(start + n) % candidates.length])
+                  : candidates;
+                this.portableCursors[id] = candidates.length ? (start + selected.length) % candidates.length : 0;
+                fs.mkdirSync(path.dirname(this.portableCursorFile), { recursive: true });
+                const cursorTmp = `${this.portableCursorFile}.${process.pid}.tmp`;
+                fs.writeFileSync(cursorTmp, JSON.stringify({ version: 1, cursors: this.portableCursors }), { mode: 0o600 });
+                fs.renameSync(cursorTmp, this.portableCursorFile);
+                for (const job of selected) {
+                  try { await this.options.onPortableCandidate(peer, job, payload.generation); }
+                  catch (error) {
+                    featureEvidence.record('multiMachine.jobDefinitionSync', { kind: 'error',
+                      reason: 'portable transfer unavailable', context: { source: id, slug: job.slug } });
+                    console.warn(`[job-coverage] portable transfer unavailable for ${job.slug}:`, error);
+                  }
+                }
+              }
               this.failures.delete(id);
               this.writeFailures();
               this.audit('peer-observed', id);
@@ -185,7 +217,8 @@ export class JobCoverageMonitor {
       }
     }
     const unknown = registered.filter(([id]) => !observations[id] || observations[id].status !== 'fresh').map(([id]) => id);
-    if (differences.length === 0 && unknown.length === 0 && local.complete) {
+    const portableGaps = this.options.portableGaps?.() ?? [];
+    if (differences.length === 0 && unknown.length === 0 && portableGaps.length === 0 && local.complete) {
       if (fs.existsSync(this.alertFile)) {
         try {
           this.options.clearAlert?.('lease-job-coverage');
@@ -198,6 +231,7 @@ export class JobCoverageMonitor {
     const summary = [
       ...(!local.complete ? ['Local job catalog is incomplete; coverage cannot be proven'] : []),
       ...differences.slice(0, 20).map(d => `${d.slug}: ${d.reason} (seen on ${d.sourceMachineId}${d.stale ? ', stale' : ''})`),
+      ...portableGaps.slice(0, 20),
       ...(unknown.length ? [`Coverage uncertain for ${unknown.length} peer(s): ${unknown.slice(0, 5).join(', ')}`] : []),
     ].join('\n');
     const conditionKey = 'lease-job-coverage';

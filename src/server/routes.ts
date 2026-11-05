@@ -1,3 +1,4 @@
+import { JobPortableSync } from '../core/JobPortableSync.js';
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
 import { registerRecommendedServiceRoutes } from './recommendedServiceRoutes.js';
 import { catalogWithProving } from '../recommended/recipes.js';
@@ -18145,6 +18146,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // on disk independently of the awake-only scheduler.
   const coverageIdentityManager = ctx.coordinator?.managers.identityManager;
   const jobCoverageAuthToken = ctx.config.authToken;
+  const jobPortableSync = ctx.config.multiMachine?.jobDefinitionSync?.enabled
+    && coverageIdentityManager && ctx.meshSelfId && jobCoverageAuthToken
+    ? new JobPortableSync({
+        stateDir: ctx.config.stateDir,
+        projectDir: ctx.config.projectDir,
+        identityManager: coverageIdentityManager,
+        authToken: jobCoverageAuthToken,
+        readOnly: ctx.config.multiMachine?.jobDefinitionSync?.dryRun !== false,
+        recordRopeResult: ctx.recordRopeResult ?? undefined,
+        withAdmissionFence: action => {
+          const scheduler = ctx.scheduler;
+          const wasPaused = scheduler?.getStatus().paused ?? true;
+          scheduler?.pause();
+          try { return action(); }
+          finally {
+            try { scheduler?.refreshJobs(); }
+            finally { if (!wasPaused) scheduler?.resume(); }
+          }
+        },
+      }) : null;
   const jobCoverage = coverageIdentityManager && ctx.meshSelfId && jobCoverageAuthToken
     ? new JobCoverageMonitor({
         stateDir: ctx.config.stateDir,
@@ -18157,6 +18178,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         isAwake: () => ctx.coordinator?.isAwake === true,
         peerUrls: () => ctx.resolvePeerUrls?.() ?? [],
         recordRopeResult: ctx.recordRopeResult ?? undefined,
+        onPortableCandidate: jobPortableSync ? async (peer, job, generation) => { await jobPortableSync.pollPeer(peer, job, generation); } : undefined,
+        portableGaps: jobPortableSync ? () => jobPortableSync.gaps() : undefined,
         clearAlert: conditionKey => { ctx.telegram?.clearAttentionCondition({ conditionKey }, 'Job coverage restored'); },
         alert: async (conditionKey, title, summary) => {
           if (!ctx.telegram) throw new Error('attention-destination-unavailable');
@@ -18179,6 +18202,71 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     };
   }
 
+  router.post('/jobs/portable-bundle', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    try { res.json(jobPortableSync.serve(req.body)); }
+    catch (error) {
+      const reason = error instanceof Error ? error.message : '';
+      res.status(reason === 'rate-limited' ? 429 : 403).json({ error: 'portable-bundle-refused' });
+    }
+  });
+  router.get('/jobs/portable/export/:slug', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    try { res.json(jobPortableSync.previewExport(req.params.slug)); }
+    catch { res.status(409).json({ error: 'portable-export-unavailable' }); }
+  });
+  router.post('/jobs/portable/export/:slug/approve', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    if (!checkMandatePin(req, res)) return;
+    try {
+      const root = req.body?.root;
+      if (typeof root !== 'string') { res.status(400).json({ error: 'root-required' }); return; }
+      const bundle = jobPortableSync.approveExport(req.params.slug, root);
+      res.json({ ok: true, slug: bundle.slug, root: bundle.root });
+    } catch { res.status(409).json({ error: 'portable-export-approval-refused' }); }
+  });
+  router.post('/jobs/portable/export/:slug/revoke', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    if (!checkMandatePin(req, res)) return;
+    try { jobPortableSync.revokeExport(req.params.slug); res.json({ ok: true, slug: req.params.slug }); }
+    catch { res.status(409).json({ error: 'portable-export-revoke-refused' }); }
+  });
+  router.get('/jobs/portable/import/:source/:slug', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    try { res.json(jobPortableSync.previewImport(req.params.source, req.params.slug)); }
+    catch { res.status(404).json({ error: 'portable-import-unavailable' }); }
+  });
+  router.post('/jobs/portable/import/:source/:slug/approve', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    if (ctx.config.multiMachine?.jobDefinitionSync?.dryRun !== false) { res.status(409).json({ error: 'portable-sync-preview-only' }); return; }
+    if (!checkMandatePin(req, res)) return;
+    try {
+      const root = req.body?.root;
+      if (typeof root !== 'string') { res.status(400).json({ error: 'root-required' }); return; }
+      jobPortableSync.approveImport(req.params.source, req.params.slug, root);
+      res.json({ ok: true, slug: req.params.slug, root });
+    } catch { res.status(409).json({ error: 'portable-import-approval-refused' }); }
+  });
+
+  router.post('/jobs/portable/import/:slug/revoke', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    if (!checkMandatePin(req, res)) return;
+    try { jobPortableSync.revokeImport(req.params.slug); res.json({ ok: true, slug: req.params.slug }); }
+    catch { res.status(409).json({ error: 'portable-import-revoke-refused' }); }
+  });
+  router.post('/jobs/portable/rollback', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    if (!checkMandatePin(req, res)) return;
+    try { res.json({ ok: true, quarantined: jobPortableSync.rollbackAll() }); }
+    catch { res.status(409).json({ error: 'portable-rollback-incomplete' }); }
+  });
+
+  router.post('/jobs/portable/rearm', (req, res) => {
+    if (!jobPortableSync) { res.status(503).json({ error: 'portable-sync-unavailable' }); return; }
+    if (!checkMandatePin(req, res)) return;
+    try { jobPortableSync.rearm(); res.json({ ok: true }); }
+    catch { res.status(409).json({ error: 'portable-rearm-refused' }); }
+  });
   router.get('/jobs/coverage-snapshot', (req, res) => {
     const nonce = req.query.nonce;
     if (!jobCoverage) { res.status(503).json({ error: 'job-coverage-unavailable' }); return; }

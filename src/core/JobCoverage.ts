@@ -15,6 +15,7 @@ export interface JobCoverageEntry {
   machines?: string[];
   catchUpPolicy?: 'skip' | 'run-once' | 'ask';
   dependencyCount?: number;
+  portable?: boolean;
 }
 export interface JobCoveragePayload {
   version: 1;
@@ -55,6 +56,7 @@ export function projectJobCoverage(machineId: string, jobs: JobDefinition[], com
     ...(job.machines?.length ? { machines: [...job.machines] } : {}),
     ...(job.catchUpPolicy ? { catchUpPolicy: job.catchUpPolicy } : {}),
     ...(job.requiredPaths?.length ? { dependencyCount: job.requiredPaths.length } : {}),
+    ...(job.portable === true ? { portable: true } : {}),
   })).sort((a, b) => a.slug.localeCompare(b.slug));
   const digest = createHash('sha256').update(JSON.stringify(rows)).digest('hex');
   const generation = `000000000001:${digest}`;
@@ -81,6 +83,7 @@ export function acceptJobCoverage(wire: unknown, expectedMachineId: string, nonc
       || typeof job.schedule !== 'string' || job.schedule.length > 128
       || typeof job.enabled !== 'boolean'
       || (job.dependencyCount !== undefined && (!Number.isSafeInteger(job.dependencyCount) || job.dependencyCount < 0 || job.dependencyCount > 32))
+      || (job.portable !== undefined && typeof job.portable !== 'boolean')
       || (job.catchUpPolicy !== undefined && !['skip', 'run-once', 'ask'].includes(job.catchUpPolicy))
       || (job.machines !== undefined && (!Array.isArray(job.machines)
         || job.machines.length > 16 || job.machines.some(m => typeof m !== 'string' || m.length > 128)))) return null;
@@ -194,7 +197,7 @@ export function compareJobCoverage(
     const first = candidates[0];
     const signature = (row: JobCoverageEntry) => JSON.stringify({ schedule: row.schedule, enabled: row.enabled,
       machines: [...(row.machines ?? [])].sort(), catchUpPolicy: row.catchUpPolicy ?? null,
-      dependencyCount: row.dependencyCount ?? 0 });
+      dependencyCount: row.dependencyCount ?? 0, portable: row.portable === true });
     if (candidates.some(candidate => signature(candidate.row) !== signature(first.row))) {
       out.push({ slug, sourceMachineId: candidates.map(c => c.machineId).join(','), reason: 'conflict',
         observedAt: first.observation.observedAt, stale: candidates.some(c => c.observation.status !== 'fresh') });

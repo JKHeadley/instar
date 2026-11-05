@@ -540,6 +540,8 @@ export interface JobDefinition {
   catchUpPolicy?: 'skip' | 'run-once' | 'ask';
   /** Explicit project-relative prerequisites. Never interpreted as commands. */
   requiredPaths?: string[];
+  /** Source intent to offer this user job for private peer transfer; execution still requires exact-root approval. */
+  portable?: boolean;
   /** Whether this job is currently enabled */
   enabled: boolean;
   /** The skill or prompt to execute */
@@ -2758,6 +2760,8 @@ export interface MeshTransportConfig {
 export interface MultiMachineConfig {
   /** Whether multi-machine is enabled */
   enabled: boolean;
+  /** Private, approved user-job transfer. Dark until paired-machine proof. */
+  jobDefinitionSync?: { enabled?: boolean; dryRun?: boolean };
   /** Whether to auto-promote standby when awake goes silent */
   autoFailover: boolean;
   /** Minutes of silence before auto-failover (default: 15) */

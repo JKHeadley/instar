@@ -1,3 +1,4 @@
+import { verifyImportedPortableJob, recordImportedPortableIntegrityFailure } from '../core/JobPortableIntegrity.js';
 /**
  * Job Scheduler — cron-based job execution engine.
  *
@@ -929,6 +930,17 @@ export class JobScheduler {
       return 'skipped';
     }
 
+    if (!verifyImportedPortableJob(this.stateDir, path.dirname(this.stateDir), slug)) {
+      recordImportedPortableIntegrityFailure(this.stateDir, slug);
+      this.skipLedger.recordSkip(slug, 'disabled');
+      this.state.appendEvent({ type: 'job_skipped',
+        summary: `Job "${slug}" refused — imported files no longer match local approval`,
+        timestamp: new Date().toISOString(),
+        metadata: { slug, reason, gateReason: 'portable-integrity' },
+      });
+      return 'skipped';
+    }
+
     this.refreshAgentMdBodyIfChanged(job);
 
     // job-cost-reduction §5.1 / §8.4: an instar-origin `runner: script` job
@@ -1129,6 +1141,21 @@ export class JobScheduler {
     if (job.gate) {
       if (!await this.runGateAsync(job)) {
         this.scheduleRetry(slug, 'gate');
+        return 'skipped';
+      }
+    }
+
+    if (job.gate) {
+      try { this.refreshJobs(); } catch { return 'skipped'; }
+      const live = this.jobs.find(candidate => candidate.slug === slug);
+      if (!live || !live.enabled || this.paused || JSON.stringify(live) !== JSON.stringify(job)
+        || !verifyImportedPortableJob(this.stateDir, path.dirname(this.stateDir), slug)) {
+        recordImportedPortableIntegrityFailure(this.stateDir, slug);
+        this.skipLedger.recordSkip(slug, 'disabled');
+        this.state.appendEvent({ type: 'job_skipped',
+          summary: `Job "${slug}" refused — definition or approval changed during its gate`,
+          timestamp: new Date().toISOString(), metadata: { slug, reason, gateReason: 'post-gate-definition-changed' },
+        });
         return 'skipped';
       }
     }

@@ -3872,7 +3872,35 @@ function makeJobCoverageAlertRetry(f: PressureFixture, sink: ActionSink): { tick
   } };
 }
 
+/** A portable transfer tick selects at most twenty jobs and cannot overlap. */
+const jobPortableTransferPoll: SelfActionController = {
+  id: 'job-portable-transfer-poll',
+  actionVerb: 'retry-portable-job-batch',
+  models: 'src/core/JobCoverageMonitor.ts (five-minute non-overlapping tick, durable rotating cursor, at most twenty jobs per peer)',
+  modelsPath: 'src/core/JobCoverageMonitor.ts',
+  delegatedGiveUp: 'a revoked or unavailable peer is reported as a coverage gap; a later bounded tick retries',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => makeJobPortableTransferPoll(f, sink) },
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 200,
+  tickMs: 5 * 60_000,
+  eternalSentinel: { reason: 'portable transfer is bounded to one batch per coverage tick', rateFloorMs: 5 * 60_000 },
+  makeUnderPressure: (f, sink) => makeJobPortableTransferPoll(f, sink),
+};
+function makeJobPortableTransferPoll(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered += 1;
+    const now = f.clock.nowMs();
+    const last = f.durableState.get('portable-transfer:last-batch') as number | undefined;
+    if (last !== undefined && now - last < 5 * 60_000) return;
+    f.durableState.set('portable-transfer:last-batch', now);
+    sink.emit({ verb: 'retry-portable-job-batch', target: 'registered-peer' });
+    sink.emitTimesMs.push(now);
+  } };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  jobPortableTransferPoll,
   jobCoverageAlertRetry,
   claudeKeySessionRefresh,
   desktopRelockGuardReplacement,

@@ -29,3 +29,7 @@ The design makes the safety tradeoff explicit: a changed job that has not been a
 
 - Advisory gate findings on repeated reminders and poll brakes are addressed by the existing one-hour alert floor, daily reminder ceiling, five-minute poll and durable per-peer backoff. Implementation tests must prove those bounds.
 - Legacy definitions that cannot migrate safely remain visible as incomplete; they are not silently discarded.
+
+## Implementation review addendum — 2026-11-05
+
+The post-convergence code review tightened the filesystem, admission, and rollback plan without expanding peer authority. Collection now uses a bounded descriptor-relative Python helper and a 64-file bundle cap. A durable pending journal and apply latch withhold interrupted imports. The loader also withholds revoked, disarmed, or changed imported manifests; the scheduler rehashes all imported files immediately before admission and after an asynchronous gate. Emergency script rollback requires a stopped agent; the live route has a PIN-gated admission fence and disarm latch. Code and integration reviewers concurred after five implementation passes. The only residual limit is concurrent writes by another process with the same local project permissions, documented in the side-effects artifact.

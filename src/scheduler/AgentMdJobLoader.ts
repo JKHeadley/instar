@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 /**
  * AgentMdJobLoader — Phase 1a loader-side support for the new agentmd job format.
  *
@@ -165,6 +166,8 @@ export interface PerSlugManifest {
   enabled: boolean;
   catchUpPolicy?: 'skip' | 'run-once' | 'ask';
   requiredPaths?: string[];
+  /** Explicit opt-in to private peer transfer; not execution approval. */
+  portable?: boolean;
   execute: { type: 'skill' | 'prompt' | 'script' | 'agentmd'; value?: string; args?: string };
   // optional pass-throughs preserved as-is
   tags?: string[];
@@ -318,6 +321,48 @@ export function loadAgentMdJobs(
     };
   }
 
+  // Imported jobs require an active journal, matching local approval, and an
+  // unchanged manifest. Interrupted or revoked imports never reach scheduler.
+  const withheld = new Set<string>();
+  const stateDir = path.dirname(jobsRootDir);
+  try {
+    const file = path.join(stateDir, 'state', 'job-portable-import-journal.json');
+    const raw = fs.readFileSync(file, 'utf8');
+    if (raw.length > 8 * 1024 * 1024) throw new Error('portable-journal-oversized');
+    const journal = JSON.parse(raw);
+    if (journal.version !== 1 || !journal.jobs || typeof journal.jobs !== 'object') throw new Error('portable-journal-corrupt');
+    const disarmed = fs.existsSync(path.join(stateDir, 'state', 'job-portable-disarmed.json'));
+    let approvals: Record<string, { root: string }> = {};
+    try {
+      const approvalFile = path.join(stateDir, 'state', 'job-portable-activate-approval.json');
+      const approvalRaw = fs.readFileSync(approvalFile, 'utf8');
+      if (approvalRaw.length > 64 * 1024) throw new Error('portable-approval-oversized');
+      const parsed = JSON.parse(approvalRaw);
+      if (parsed.version !== 1 || !parsed.approvals || typeof parsed.approvals !== 'object')
+        throw new Error('portable-approval-corrupt');
+      approvals = parsed.approvals;
+    } catch { /* no valid approval means imported jobs are withheld */ }
+    for (const [slug, row] of Object.entries(journal.jobs)) {
+      const imported = row as { state?: string; root?: string; manifestHash?: string };
+      if (disarmed || fs.existsSync(path.join(stateDir, 'state', 'job-portable-pending', `${slug}.json`))
+        || imported.state === 'pending' || approvals[slug]?.root !== imported.root) {
+        withheld.add(slug); continue;
+      }
+      try {
+        const manifestPath = path.join(scheduleDir, `${slug}.json`);
+        const bytes = fs.readFileSync(manifestPath);
+        if (bytes.length > 256 * 1024 || createHash('sha256').update(bytes).digest('hex') !== imported.manifestHash)
+          withheld.add(slug);
+      } catch { withheld.add(slug); }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      return { jobs: [], problems: [{ kind: 'unknown', path: scheduleDir,
+        message: 'Portable import journal cannot be verified; per-slug jobs withheld' }], bodyFailures: [] };
+    }
+  }
+  entries = entries.filter(filename => !withheld.has(filename.slice(0, -5)));
+
   // Step 1: read + validate every manifest sequentially. The hand-rolled
   // bounded-concurrency helper above is exported for Phase 1b's async
   // migration; Phase 1a is single-threaded for API parity with the existing
@@ -328,7 +373,8 @@ export function loadAgentMdJobs(
   });
 
   const validManifests: { manifest: PerSlugManifest; sourcePath: string }[] = [];
-  const problems: LoadProblem[] = [];
+  const problems: LoadProblem[] = [...withheld].map(slug => ({ kind: 'unknown', slug,
+    message: `Portable import ${slug} withheld: pending, revoked, disarmed, or changed` }));
 
   for (const r of manifestResults) {
     if (r.problem) problems.push(r.problem);
@@ -778,6 +824,10 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
 
   if (j.catchUpPolicy !== undefined && !['skip', 'run-once', 'ask'].includes(j.catchUpPolicy as string)) {
     throw new Error(`${prefix}: catchUpPolicy must be skip, run-once, or ask`);
+  }
+
+  if (j.portable !== undefined && typeof j.portable !== 'boolean') {
+    throw new Error(`${prefix}: portable must be a boolean`);
   }
 
   if (j.requiredPaths !== undefined && (!Array.isArray(j.requiredPaths) || j.requiredPaths.length > 32
@@ -1451,6 +1501,7 @@ function manifestToJobDefinition(
     enabled: manifest.enabled,
     catchUpPolicy: manifest.catchUpPolicy,
     requiredPaths: manifest.requiredPaths,
+    portable: manifest.portable,
     execute: manifest.execute as JobDefinition['execute'],
     origin: manifest.origin,
     tags: manifest.tags,
