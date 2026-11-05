@@ -264,8 +264,13 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     res.setHeader('Accept-Ranges', hop ? 'none' : 'bytes');
     if (hop) {
       res.setHeader(HOLDER_MEDIA_HEADER, '1');
-      // Runs after the server's own finish handler, which is what starts its keep-alive timer.
-      res.once('finish', () => { req.socket.setTimeout(HOLDER_MEDIA_HOP_SOCKET_MS); });
+      // Runs after the server's own finish handler. A queued pipelined response has taken the socket
+      // by then, and its timeout is not this hop's to change: only a socket no response owns (null,
+      // Node's own marker, and no public equivalent) is idle. A different value leaves the timeout
+      // alone, which at worst is the old 5 s keep-alive.
+      res.once('finish', () => {
+        if ((req.socket as unknown as { _httpMessage?: unknown })._httpMessage === null) req.socket.setTimeout(HOLDER_MEDIA_HOP_SOCKET_MS);
+      });
     }
     let start = 0;
     let end = size - 1;

@@ -7,6 +7,7 @@ import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
@@ -17,7 +18,7 @@ import { authMiddleware, bearerMatches, buildRequestTimeoutOverrides, requestTim
 import type { RopeResultRecorder } from '../../src/server/poolPeerFetch.js';
 import { MobilePairingService, createMobilePairingRouter, deviceAuthenticator, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
 import { createMobileMediaRouter } from '../../src/server/mobileMediaRoutes.js';
-import { HOLDER_MEDIA_HEADER, buildMediaHolderStream } from '../../src/server/mobileMediaHolderProxy.js';
+import { HOLDER_MEDIA_HEADER, HOLDER_MEDIA_HOP_SOCKET_MS, buildMediaHolderStream } from '../../src/server/mobileMediaHolderProxy.js';
 import { mobileOwnerDeviceAdmission } from '../../src/server/mobileOwnerDeviceAdmission.js';
 import { AppConversationService } from '../../src/core/AppConversationService.js';
 import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
@@ -371,6 +372,63 @@ describe('the owner phone opens a Slack file held by another machine', () => {
     expect(a.holder.counts()).toEqual({ runnable: 0, quiet: 1, open: 1, openByHolder: { m_b: 1 } });
     for (const q of stalledPhones.splice(0)) q.destroy();
     await untilEmpty(a);
+  }, 30_000);
+
+  /** One raw connection to a holder, so requests can really be pipelined. */
+  function rawClient(m: Machine) {
+    const u = new URL(m.url);
+    const c = net.connect(Number(u.port), u.hostname);
+    let got = Buffer.alloc(0);
+    c.on('data', (d) => { got = Buffer.concat([got, d]); });
+    c.on('error', () => undefined);
+    cleanups.push(() => { c.destroy(); });
+    const ask = (url: string) => `GET ${url} HTTP/1.1\r\nHost: ${HOST}\r\nAuthorization: Bearer tok-1\r\n\r\n`;
+    const until = async (marker: string) => {
+      const end = Date.now() + 8_000;
+      while (!got.toString('latin1').includes(marker) && Date.now() < end) await pause(10);
+      expect(got.toString('latin1')).toContain(marker);
+    };
+    return { c, ask, until };
+  }
+  const hopRoute = (hash: string, ref: string) => `${route(hash, ref, 'm_b')}&holderHop=1`;
+
+  it('real sockets: a response pipelined behind a hop keeps its own socket timeout', async () => {
+    const { b } = await pair();
+    const bytes = jpeg(2_000);
+    const key = await b.held('C0PIPE111', bytes);
+    let seen: { queued: boolean; timeout: number | undefined } | undefined;
+    b.app.get('/seam-probe', (req, res) => {
+      const queued = res.socket === null;
+      setTimeout(() => { seen = { queued, timeout: req.socket.timeout }; res.json({ probe: 'answered' }); }, 300);
+    });
+    const raw = rawClient(b);
+    raw.c.write(raw.ask(hopRoute(sha(bytes), key)) + raw.ask('/seam-probe'));
+    await raw.until('"probe":"answered"');
+    expect(seen!.queued).toBe(true); // or this was not pipelining
+    expect(seen!.timeout ?? 0).toBe(0);
+  }, 30_000);
+
+  it('real sockets: an idle socket holds on after a hop, and the next request on it gets its own policy back', async () => {
+    const { b } = await pair();
+    const bytes = jpeg(2_000);
+    const key = await b.held('C0SEQ1111', bytes);
+    const sockets: net.Socket[] = [];
+    b.server.on('connection', (s) => { sockets.push(s); });
+    let during: number | undefined = -1;
+    b.app.get('/seam-probe', (req, res) => { during = req.socket.timeout; res.json({ probe: 'answered' }); });
+    const raw = rawClient(b);
+    await new Promise<void>((go) => { raw.c.once('connect', () => go()); });
+    raw.c.write(raw.ask(hopRoute(sha(bytes), key)));
+    await raw.until('200 OK');
+    await pause(150);
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]!.timeout).toBe(HOLDER_MEDIA_HOP_SOCKET_MS);
+    raw.c.write(raw.ask('/seam-probe'));
+    await raw.until('"probe":"answered"');
+    expect(during ?? 0).toBe(0);
+    await pause(50);
+    expect(sockets[0]!.timeout).not.toBe(HOLDER_MEDIA_HOP_SOCKET_MS);
+    expect(sockets[0]!.timeout).toBeGreaterThan(0);
   }, 30_000);
 
   it('real sockets: the holder keeps a hop open past its keep-alive, so a slow phone gets the end of the file', async () => {
