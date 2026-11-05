@@ -47,7 +47,7 @@ export function signinProfileGuardHook(): string {
   try { event = JSON.parse(fs.readFileSync(0, 'utf8')); } catch { deny('invalid-tool-event'); return; }
   const name = String(event.tool_name || event.toolName || '').toLowerCase();
   let input = event.tool_input || event.arguments || {};
-  if (typeof input === 'string') { try { input = JSON.parse(input); } catch {} }
+  if (typeof input === 'string') { try { input = JSON.parse(input); } catch { /* Raw orchestration source is also a supported input shape; inspect the original string. */ } }
   const shell = /(?:^|[._/])(bash|shell|exec_command|shell_command)$/.test(name);
   const orchestrator = /(?:^|[._/])functions[._/]exec$/.test(name);
   const browser = /playwright|puppeteer|selenium|cdp|browser/.test(name);
@@ -66,7 +66,7 @@ export function signinProfileGuardHook(): string {
     const cwd = input.workdir || event.cwd || process.cwd();
     for (const match of text.matchAll(/(?:^|[\s"'])([^\s"';|<>]+\.(?:mjs|cjs|js|py))(?=[\s"';|<>]|$)/g)) {
       const file = path.resolve(cwd, match[1]);
-      try { if (fs.statSync(file).size <= 262144) text += '\n' + fs.readFileSync(file, 'utf8'); } catch {}
+      try { if (fs.statSync(file).size <= 262144) text += '\n' + fs.readFileSync(file, 'utf8'); } catch { /* A command may create its entry file before running it; inline source remains inspected. Unreadable/imported wrappers remain outside this cooperative boundary. */ }
     }
   }
   const automated = browser || /launchPersistentContext|launch_persistent_context|connectOverCDP|connect_over_cdp|(?:from|require|import).*['"](?:playwright|puppeteer|selenium)|(?:npx|exec)\s+(?:@playwright|playwright|puppeteer)|--remote-debugging-(?:port|pipe)|--use-mock-keychain|--password-store=basic/i.test(text);

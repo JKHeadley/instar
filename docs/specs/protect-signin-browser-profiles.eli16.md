@@ -11,3 +11,5 @@ The incident record does not prove that automation signed Dawn out. It proves a 
 The release records this helper separately from the Codex message-delivery certificate: browser ownership has its own tests, and the delivery code and approved certificate are unchanged.
 
 The raw record distinguishes an initial missing-package failure from the successful retries around 03:55 UTC. The retries reached Slack’s sign-in page; that is evidence of unsafe access and a signed-out result, not proof that the retry caused it.
+
+The existing hook-wiring tests also check the complete guard list and preserve custom hooks. Full verification caught those assertions needing the new guard, plus two undocumented parsing catches; the correction keeps those test gates intact.
