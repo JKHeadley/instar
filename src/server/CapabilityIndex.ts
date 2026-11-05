@@ -478,6 +478,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobileConsolePagesScreens',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Native Ideas, Pace, Development, Maturation and Files screens for the Instar iPhone app (docs/specs/mobile-native-console-pages.md): read-only, owner phone or bearer, each built from the console route it mirrors.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/ideas', 'GET /mobile/pace', 'GET /mobile/development', 'GET /mobile/maturation', 'GET /mobile/files', 'GET /mobile/files/read'],
+    }),
+  },
+  {
     key: 'releaseReadiness',
     prefixes: ['/release-readiness'],
     description: 'Release-readiness watchdog (instar-dev / maintainer environments). Surfaces a stalled release as one deduped, age-escalating Attention item. Null on installs with no analyzable instar repo.',

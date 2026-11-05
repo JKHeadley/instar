@@ -19,6 +19,7 @@ import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoute
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { mountMobilePermissionsRoutes } from './mobilePermissionsRoutes.js';
+import { mountMobileConsolePagesRoutes, type SelfRead } from './mobileConsolePagesRoutes.js';
 import { mountMobileSecretsRoutes, resolveKeys as resolveMobileKeys } from './mobileSecretsRoutes.js';
 import { mountMobileProposalsInsideRoutes, ACTIVITY_WINDOW, CLAIMS_WINDOW } from './mobileProposalsInsideRoutes.js';
 import { loadAllProposals } from './routes/remediation-proposals.js';
@@ -37873,6 +37874,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       },
       nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
       topicName: (id) => ctx.telegram?.getTopicName(id),
+      bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    });
+    // Native console pages and the read-only file browser (docs/specs/mobile-native-console-pages.md): each
+    // answer is built from the console route it mirrors, read over this server's own loopback, so a phone
+    // can never see more than the console does.
+    mountMobileConsolePagesRoutes(router, {
+      read: async (path): Promise<SelfRead> => {
+        const r = await fetch(`http://127.0.0.1:${ctx.config.port}${path}`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-Request': '1' },
+          signal: AbortSignal.timeout(12_000),
+        });
+        return { status: r.status, body: await r.json().catch(() => null) };
+      },
       bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     });
     // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): trimmed
