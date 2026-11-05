@@ -18849,7 +18849,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const threadResumeMap = new ThreadResumeMap(config.stateDir, config.stateDir, undefined, undefined, {
       // A thread bound to a claude-code session checks Claude transcripts only;
       // an unknown session name tries every layout (the bounded lookups).
-      frameworkResolver: (sessionName) => state.listSessions().find((s) => s.tmuxSession === sessionName)?.framework,
+      frameworkResolver: (sessionName) => state.findSessionByTmux(sessionName)?.framework,
     });
     // Threadline Phase 1 keystone: the Conversation single-source-of-truth +
     // the warrants-a-reply gate. The gate runs once at the relay inbound funnel
@@ -26651,7 +26651,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             terminateSession: async (sk, reason, opts) => {
               const topicNum = Number(sk);
               const tmux = Number.isFinite(topicNum) ? telegram?.getSessionForTopic(topicNum) : null;
-              const rec = tmux ? state.listSessions().find((s) => s.tmuxSession === tmux) : undefined;
+              const rec = tmux ? state.findSessionByTmux(tmux) : undefined;
               if (!rec) return { terminated: false, skipped: 'no-local-session' };
               return terminateWithAuthority(rec.id, reason, {
                 via: 'ws12-drain',

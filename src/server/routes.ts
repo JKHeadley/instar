@@ -11810,7 +11810,7 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       return;
     }
-    const session = ctx.state.listSessions().find((x) => x.tmuxSession === req.params.name);
+    const session = ctx.state.findSessionByTmux(req.params.name);
     if (!session) { res.status(404).json({ error: `Session "${req.params.name}" is not recorded on this machine` }); return; }
     const filePath = findSessionTranscript(session, ctx);
     if (!filePath) { res.status(404).json({ error: 'This session has no conversation record yet', reason: 'no-transcript' }); return; }
@@ -19746,7 +19746,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       const sessionName = resolveTopicSession(String(topicId));
       const topicSession = sessionName
-        ? ctx.state.listSessions().find((s) => s.tmuxSession === sessionName)
+        ? ctx.state.findSessionByTmux(sessionName)
         : undefined;
       const topicJobSlug = topicSession?.jobSlug;
       if (topicJobSlug && messageKind === undefined) {
@@ -32219,7 +32219,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const boundObservationTopicId = observationBind?.ok ? topicId : undefined;
     const boundSessionName = observationBind?.ok && observationBind.boundBy?.startsWith('session:')
       ? observationBind.boundBy.slice('session:'.length) : undefined;
-    const boundSession = boundSessionName ? ctx.state.listSessions().find((session) => session.tmuxSession === boundSessionName) : undefined;
+    const boundSession = boundSessionName ? ctx.state.findSessionByTmux(boundSessionName) : undefined;
     const observationNow = new Date();
     const sessionSnapshot = boundSession ? {
       state: String(boundSession.status),

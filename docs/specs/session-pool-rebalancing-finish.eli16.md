@@ -38,3 +38,5 @@ machine sends its check through that machine. The first live run showed why: the
 from the wrong place got stuck, and a good move was marked as a failure.
 
 On Linux, one small helper that starts the browser tool looked like the agent running a command, so every session there looked busy forever, even when it was sitting doing nothing. That made a Linux machine fail the proof. It is now recognised as part of the tool. The proof also waits until a session has stayed idle for about 30 seconds, because a session that has only just started looks idle for a moment.
+
+When a conversation came back to a machine it had been on before, the old finished record and the new live one shared a name. Closing by name could pick the finished one, which left the live session running on the machine the conversation had already left. Lookups now pick the live one.

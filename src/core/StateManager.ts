@@ -6,6 +6,7 @@
  * and not require running a DB server.
  */
 
+import { pickSessionByTmux } from './pickSessionByTmux.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Session, JobState, ActivityEvent } from './types.js';
@@ -413,6 +414,17 @@ export class StateManager {
     // Return shallow copies so a caller mutating a result can't corrupt the shared
     // cache; listSessions output is treated as a read-only snapshot by all consumers.
     return filtered.map(s => ({ ...s }));
+  }
+
+  /**
+   * The session a tmux name means now. A name is reused when a conversation comes back to
+   * a machine, so finished records can share it, and `.find` on `listSessions()` returns
+   * whichever file the directory lists first. A running record wins, else the newest.
+   * Found live 2026-11-04: a drain closed a finished record, was told already-completed,
+   * and left the running session behind on the machine the conversation had left.
+   */
+  findSessionByTmux(tmuxSession: string): Session | undefined {
+    return pickSessionByTmux(this.listSessions(), tmuxSession);
   }
 
   /**

@@ -20,6 +20,7 @@
  * spawns (D6), so turning it off never cuts off a session already wired to HTTP.
  */
 
+import { pickSessionByTmux } from '../core/pickSessionByTmux.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -484,7 +485,7 @@ export class ThreadlineMcpHttpService implements ThreadlineMcpSpawnWiring {
 
   private noteCallFailure(sessionName: string | null | undefined, reason: string): void {
     if (!sessionName || sessionName === READINESS_PROBE_SESSION) return;
-    const record = this.sessionRecords()?.find((s) => s.tmuxSession === sessionName);
+    const record = pickSessionByTmux(this.sessionRecords() ?? [], sessionName);
     if (!record || record.threadlineMcpTransport !== 'http') return; // only a wired session
     const framework = record.framework ?? 'unknown';
     const last = this.lastCallFailureReport.get(framework) ?? -Infinity;

@@ -1375,11 +1375,10 @@ export class SessionManager extends EventEmitter {
         store: this.inboundDeliveries,
         hmacKey: this.inboundDeliveryHmacKey,
         resolveRolloutPath: (delivery) => {
-          const session = this.state.listSessions().find((candidate) => candidate.tmuxSession === delivery.incarnation);
+          const session = this.state.findSessionByTmux(delivery.incarnation);
           return session ? this.codexRolloutPathForSession(session) : null;
         },
-        resolveRolloutId: (delivery) => this.state.listSessions()
-          .find((candidate) => candidate.tmuxSession === delivery.incarnation)?.claudeSessionId ?? null,
+        resolveRolloutId: (delivery) => this.state.findSessionByTmux(delivery.incarnation)?.claudeSessionId ?? null,
         bindImportedSuccessor: (delivery) => {
           if (delivery.ownerMachineId !== this.localMachineId()) return false;
           const topicId = Number(delivery.conversationId);
@@ -2184,7 +2183,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (!newName || typeof newName !== 'string') return false;
     const trimmed = newName.trim();
     if (!trimmed) return false;
-    const session = this.state.listSessions().find((s) => s.tmuxSession === tmuxSession);
+    const session = this.state.findSessionByTmux(tmuxSession);
     if (!session) return false;
     if (session.name === trimmed) return false;
     session.name = trimmed;
@@ -9308,7 +9307,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   private injectionIncarnationId(tmuxSession: string): string | null {
     try {
-      return this.state.listSessions().find((s) => s.tmuxSession === tmuxSession)?.claudeSessionId ?? null;
+      return this.state.findSessionByTmux(tmuxSession)?.claudeSessionId ?? null;
     } catch {
       return null; // a state read failure must never turn into a false verdict
     }
