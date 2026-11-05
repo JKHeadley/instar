@@ -42,4 +42,4 @@ Round 2, internal: (1) Medium-high, the remote API-token holder crosses a bounda
 
 ## Convergence verdict
 
-Converged at round 2: the last round's findings were one wording of a residual, two small fixes and one accepted trade. One item needs the operator's knowing acceptance, the remote token holder residual in §4; the off switch restores today's boundary.
+Converged at round 2: the last round's findings were one wording of a residual, two small fixes and one accepted trade. The remote token holder residual in §4 was accepted, with Approve on by default, by the session coordinating this work, which tells the operator; the off switch restores today's boundary.

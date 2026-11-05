@@ -34,7 +34,7 @@ Tier 2: identity and auth admission. Size: about 500 source LOC with awareness, 
 
 - A thief redeems the link before the owner's phone opens it, and the owner taps Approve on an unexpected message without comparing the key. Stated residual in spec §4; the phone shows in Phones and removal is one tap. Number matching would narrow it, at the cost of the plain Approve the operator asked for.
 - A compromised agent session tells the owner to tap Approve on a phone key it holds. Stated residual: social engineering, and no boundary exists to cross, because a process running as the agent's OS user can already write the device registry and read the PIN.
-- A remote holder of the API token, who could never learn the code, can create a waiting phone and needs one owner tap to get an owner phone. This moves a stated boundary (mobile-device-keys §2.2); spec §4 names it for the operator to accept, and the off switch restores the code-only boundary.
+- A remote holder of the API token, who could never learn the code, can create a waiting phone and needs one owner tap to get an owner phone. This moves a stated boundary (mobile-device-keys §2.2); accepted with Approve on by default (spec §4), and the off switch restores the code-only boundary.
 - The owner declines the wrong one of two phones, or the older expires, and the survivor can be tapped. Accepted: closing it sends every honest retry to the code.
 - Two links on two machines on the dashboard path do not trigger the two-waiting rule, because each machine holds its own waits.
 
@@ -72,6 +72,10 @@ Machine-local by design for the credential (spec §6, marker there): a pending p
 ## 8. Rollback cost
 
 `mobilePairing.approve.enabled: false` (read live, no restart) restores today's message, answers and code flow and stops the two-phones notice. One difference stays: tapping Decline still replaces the message text, which is harmless. A revert removes the code. Phones approved stay paired as ordinary active rows. The CLAUDE.md lines would remain after a revert until a forward commit removes them; they would then describe a button that is gone, so a revert needs that one-line migration too.
+
+## Older app builds
+
+Checked against the shipped app (apps/instar-ios, `InstarApp/Pairing.swift`): it reads JSON as loose dictionaries, so new fields are ignored and it never reads `approvedVia`. Its code screen already polls `GET /mobile/device` and moves on when `status` leaves `pending`, so an older app follows an Approve tap too. Read from source only; not driven on a phone.
 
 ## Second-pass review
 
