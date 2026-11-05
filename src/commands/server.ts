@@ -21973,7 +21973,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // A dead sign-in key on a key-only agent: confirmed, told, recovered (spec cloud-key-internal-calls).
     // Wired here, outside the subscription pool block, because these agents may have no pool.
     {
-      const { ClaudeKeyHealth, claudeKeyFingerprint, setActiveClaudeKeyHealth } = await import('../core/ClaudeKeyHealth.js');
+      const { ClaudeKeyHealth, claudeKeyFingerprint, setActiveClaudeKeyHealth, KEY_NOTICE_TEXTS } = await import('../core/ClaudeKeyHealth.js');
+      const { heldMessages, answeredSince, buildKeyRecoveryPrompt, deliverOperatorNotice, operatorSlackIds, slackConversationLines } = await import('../core/claudeKeyRecovery.js');
+      const { deriveRole: deriveOrgRole } = await import('../permissions/SlackPrincipalResolver.js');
+      type KeyConversationLine = import('../core/claudeKeyRecovery.js').ConversationLine;
+      const { SESSION_BACK_NOTICE: keyBackNotice } = await import('../messaging/userNotices.js');
+      const keyNoticeTexts = [...KEY_NOTICE_TEXTS, keyBackNotice];
       const { buildClaudeKeyProbe } = await import('../core/claudeKeyProbe.js');
       const { configuredClaudeOauthKey, setClaudeCallOutcomeListener } = await import('../core/claudeChildAuth.js');
       const keyHealthOn = () => liveConfig.get<unknown>('sessions.claudeKeyHealth.enabled', true) !== false;
@@ -21984,6 +21989,47 @@ export async function startServer(options: StartOptions): Promise<void> {
       // The disk read covers a topic bound after this server booted, as SessionRefresh does.
       const topicForSession = (name: string): number | null =>
         telegram?.getTopicForSession(name) ?? telegram?.resolveTopicForSessionFromDisk?.(name) ?? null;
+      // One conversation's recent lines, platform-neutral. Slack: the ring buffer (it knows which
+      // messages were not addressed to the agent), or Slack itself when the buffer is empty or
+      // `authoritative` is asked for.
+      const keyConversationLines = async (sessionName: string, authoritative = false): Promise<{ lines: KeyConversationLine[]; channel: import('../core/claudeKeyRecovery.js').RecoveryChannel } | null> => {
+        const topicId = topicForSession(sessionName);
+        if (topicId !== null && telegram) {
+          // Server automation (standby notes, notices) is neither a person nor the agent answering.
+          const lines = telegram.getTopicHistory(topicId, 50)
+            .filter((e) => e.fromUser || e.provenance !== 'automation')
+            .map((e) => ({
+              at: Date.parse(e.timestamp), fromAgent: !e.fromUser, who: e.senderName || e.senderUsername || 'someone', text: e.text ?? '',
+            }));
+          return { lines, channel: { platform: 'telegram', topicId } };
+        }
+        const routingKey = _slackAdapter?.getChannelForSession(sessionName) ?? null;
+        if (routingKey === null || !_slackAdapter) return null;
+        const slack = _slackAdapter;
+        const { channelId, threadTs } = slack.parseRoutingKey(routingKey);
+        // A thread session is its thread. A channel session serves the whole channel, threads
+        // included, and replies into the thread its latest message came from.
+        const inConversation = (m: { ts: string; thread_ts?: string }) =>
+          threadTs ? (m.thread_ts === threadTs || m.ts === threadTs) : true;
+        let messages = authoritative ? [] : slack.getChannelMessages(channelId, 200).filter(inConversation);
+        if (messages.length === 0) messages = await slack.recentConversationMessages(routingKey, 50);
+        const lines = slackConversationLines(messages, {
+          botUserId: slack.getBotUserId?.() ?? null,
+          isPerson: (userId) => slack.isAuthorized(userId),
+          isServerPost: (ts) => slack.isServerAutomationPost(channelId, ts),
+        });
+        return { lines, channel: { platform: 'slack', channelId, ...(threadTs ? { threadTs } : {}) } };
+      };
+      // The operator on Slack: authorized people whose profile is an owner or admin (read fresh,
+      // so a profile added after boot counts).
+      const keyOperators = (slack: NonNullable<typeof _slackAdapter>): string[] => {
+        let profiles: Array<{ slackUserId?: string; role: string }> = [];
+        try {
+          profiles = new UserManager(config.stateDir, config.users).listUsers()
+            .map((u) => ({ slackUserId: u.slackUserId, role: deriveOrgRole(u.permissions, u.orgRole) }));
+        } catch (err) { /* @silent-fallback-ok: no profiles means a small authorized list stands in (operatorSlackIds) */ console.warn(`[ClaudeKeyHealth] could not read user profiles: ${err instanceof Error ? err.message : String(err)}`); }
+        return operatorSlackIds(slack.getAuthorizedUserIds(), profiles);
+      };
       const claudeKeyHealth = new ClaudeKeyHealth({
         stateFile: path.join(config.stateDir, 'state', 'claude-key-health.json'),
         currentKey: () => (keyHealthOn() ? configuredClaudeOauthKey() : undefined),
@@ -22003,20 +22049,27 @@ export async function startServer(options: StartOptions): Promise<void> {
           baseUrl: () => config.sessions.anthropicBaseUrl,
         }),
         // Fixed server text straight to the adapters: the model is what is down, and `notify` returns
-        // nothing, so it can't say whether anyone was told.
-        notifyOperator: async (text) => {
-          let delivered = false;
+        // nothing, so it can't say whether anyone was told. Delivered means a person can read it:
+        // a Slack alert channel with none of the agent's people in it reaches nobody (2026-11-04
+        // drill), so then each of them gets a direct message.
+        notifyOperator: (text) => {
           const hubTopicId = state.get<number>('agent-attention-topic') ?? 0;
-          if (telegram && hubTopicId) {
-            try { await telegram.sendToTopic(hubTopicId, text); delivered = true; }
-            catch (err) { /* @silent-fallback-ok: `delivered` stays false, which drives the retry and its capped report */ console.warn(`[ClaudeKeyHealth] Telegram notice failed: ${err instanceof Error ? err.message : String(err)}`); }
-          }
-          const attentionChannel = state.get<string>('slack-attention-channel');
-          if (_slackAdapter && attentionChannel) {
-            try { await _slackAdapter.sendToChannel(attentionChannel, text); delivered = true; }
-            catch (err) { /* @silent-fallback-ok: `delivered` stays false, which drives the retry and its capped report */ console.warn(`[ClaudeKeyHealth] Slack notice failed: ${err instanceof Error ? err.message : String(err)}`); }
-          }
-          return delivered;
+          const slack = _slackAdapter;
+          return deliverOperatorNotice({
+            telegram: telegram && hubTopicId ? async (t) => { await telegram.sendToTopic(hubTopicId, t); } : undefined,
+            slack: slack ? {
+              attentionChannel: state.get<string>('slack-attention-channel') ?? null,
+              readersOf: async (channelId) => {
+                const members = await slack.authorizedMembersOf(channelId);
+                const operators = keyOperators(slack);
+                return operators.length > 0 ? members.filter((id) => operators.includes(id)) : members;
+              },
+              post: async (channelId, t) => { await slack.sendToChannel(channelId, t); },
+              people: () => keyOperators(slack),
+              directMessage: async (userId, t) => { await slack.sendDirectMessage(userId, t); },
+            } : undefined,
+            warn: (m) => console.warn(`[ClaudeKeyHealth] ${m}`),
+          }, text);
         },
         notifyPerson: async (sessionName, text) => {
           const topicId = topicForSession(sessionName);
@@ -22030,6 +22083,19 @@ export async function startServer(options: StartOptions): Promise<void> {
         sessionLaunchFingerprint: (tmuxSession) => {
           const launched = sessionManager.sessionLaunchKey(tmuxSession);
           return launched ? claudeKeyFingerprint(launched) : null;
+        },
+        recoveryPrompt: async (sessionName) => {
+          const convo = await keyConversationLines(sessionName);
+          return convo ? buildKeyRecoveryPrompt(convo.channel, heldMessages(convo.lines, keyNoticeTexts)) : null;
+        },
+        answeredSince: async (sessionName, sinceMs) => {
+          const convo = await keyConversationLines(sessionName);
+          if (!convo) return null;
+          if (answeredSince(convo.lines, sinceMs, keyNoticeTexts)) return true;
+          if (convo.channel.platform !== 'slack') return false;
+          // The ring buffer can miss the agent's own post; Slack itself settles it.
+          const fresh = await keyConversationLines(sessionName, true);
+          return fresh ? answeredSince(fresh.lines, sinceMs, keyNoticeTexts) : null;
         },
         refresh: async (sessionName, prompt) => {
           if (!_sessionRefresh) return { ok: false, reason: 'session refresh not available' };
@@ -29830,7 +29896,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   // §4.1/§4.2 — settle, forward to the holder, ladder, then hold durably.
                   const runtime = telegramOriginBoot.runtime;
                   const outcome = await originForwardMod.forwardReplyToHolder(forwardDeps(runtime),
-                    { topicId, chatId: tg.chatId, text, silent: opts?.silent, formatMode: tg.formatMode, kindMetadata: opts?.kindMetadata });
+                    { topicId, chatId: tg.chatId, text, silent: opts?.silent, formatMode: opts?.formatMode ?? tg.formatMode, kindMetadata: opts?.kindMetadata });
                   if (outcome.kind === 'local') throw new OriginForwardSettledLocallyError();
                   if (outcome.kind === 'sent') return { messageId: outcome.messageId, topicId, destinationStoreConfirmed: true as const };
                   if (!outcome.noticeDelivered && outcome.noticeSuppressed !== 'already-noticed') void raiseHeldItem({ topicId, holder: outcome.holder, operationId: outcome.operationId, lastAttempt: outcome.lastAttempt, reason: outcome.reason });
@@ -29841,7 +29907,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 if (!holder || !url || holder === meshSelfId) throw new TelegramOriginHoldError('origin-credential-owner-unavailable');
                 const { relayOriginBot } = await import('../messaging/telegram-origin/OriginMeshRelay.js');
                 return relayOriginBot({ runtime: telegramOriginBoot.runtime, topicId, text, chatId: tg.chatId,
-                  silent: opts?.silent, formatMode: tg.formatMode, kindMetadata: opts?.kindMetadata,
+                  silent: opts?.silent, formatMode: opts?.formatMode ?? tg.formatMode, kindMetadata: opts?.kindMetadata,
                   send: command => meshClient.send({ machineId: holder, url }, command, 0, { timeoutMs: relayTimeoutMs }) });
               }
               const r = await relayOutbound(topicId, text, opts, {

@@ -29,7 +29,7 @@ The bigger change is what a session can reach. The proven leak came from an ordi
 
 ## What it costs
 
-Outside the owner's private chats, the agent loses its search-based recall and doesn't learn across people. Private folders stay on one machine, so if a conversation moves to another machine it starts with an empty folder, never a wider one. On standard Ubuntu the sandbox needs two packages and one setup step as an administrator; the agent does these itself if it has passwordless sudo.
+Outside the owner's private chats, the agent loses its search-based recall and doesn't learn across people. Private folders stay on one machine, so if a conversation moves to another machine it starts with an empty folder, never a wider one. On standard Ubuntu the sandbox needs two packages and one setup step as an administrator; the agent does these itself if it has passwordless sudo. On Linux the sandbox also has its own network, so the session's replies to the agent's server go through the sandbox's own gateway; without that, a Linux agent with privacy on saved memory but could not answer anyone.
 
 ## What it does not do
 
