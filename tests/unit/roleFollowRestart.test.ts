@@ -12,7 +12,7 @@ describe('decideRoleRestart', () => {
   it('a machine that lost the lease restarts, so its jobs stop', () =>
     expect(decideRoleRestart({ ...base, bootAwake: true, nowAwake: false })).toBe('restart'));
   it('back to the boot role needs no restart', () => expect(decideRoleRestart({ ...base, nowAwake: false })).toBe('same-as-boot'));
-  it('off, named preferred or no peer: never', () => expect(decideRoleRestart({ ...base, applies: false })).toBe('not-applicable'));
+  it('scheduler disabled: never', () => expect(decideRoleRestart({ ...base, applies: false })).toBe('not-applicable'));
   it('a recent role restart holds, so a flapping lease cannot loop', () => {
     expect(decideRoleRestart({ ...base, lastRestartAtMs: base.nowMs - GAP + 1 })).toBe('too-soon');
     expect(decideRoleRestart({ ...base, lastRestartAtMs: base.nowMs - GAP })).toBe('restart');

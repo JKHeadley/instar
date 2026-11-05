@@ -1681,6 +1681,7 @@ export class SlackAdapter implements MessagingAdapter {
         threadTs: threadTs,
         channelId,
         isDM,
+        inboundFilePaths: filePaths,
       },
     };
 
@@ -1795,6 +1796,7 @@ export class SlackAdapter implements MessagingAdapter {
     // Download and process the file
     const ts = `file-${fileId}-${Date.now()}`;
     let cleanText = '';
+    let inboundFilePath: string | null = null;
 
     try {
       const isImage = mimetype.startsWith('image/');
@@ -1802,6 +1804,7 @@ export class SlackAdapter implements MessagingAdapter {
       const destName = `${isImage ? 'photo' : isAudio ? 'voice' : 'file'}-${Date.now()}-${fileId}.${filename.split('.').pop() ?? 'bin'}`;
       const destPath = path.join(this.fileHandler.downloadDir, destName);
       const savedPath = await this.fileHandler.downloadFile(url, destPath);
+      inboundFilePath = savedPath;
       let keptAs: SlackInboundMedia['declaredKind'] = 'file';
 
       if (isImage) {
@@ -1878,6 +1881,7 @@ export class SlackAdapter implements MessagingAdapter {
         ts,
         channelId,
         isDM,
+        inboundFilePaths: inboundFilePath ? [inboundFilePath] : [],
       },
     };
 

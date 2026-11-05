@@ -19,10 +19,10 @@ describe('role restart wiring in server.ts', () => {
     expect(block).toContain('scheduler?.resume()');
   });
   it('a throttled or failed restart is retried', () => expect(block).toContain('setInterval(reconcileRole, 60_000)'));
-  it('applies only with the switch on, no named preferred machine, and a peer', () => {
-    expect(block).toContain('soloCaptainHold?.enabled');
-    expect(block).toContain('preferredAwakeMachineId');
-    expect(block).toContain('!entry.revokedAt');
+  it('follows every scheduler-enabled lease transition, independent of optional self-heal policy', () => {
+    expect(block).toContain('applies: config.scheduler.enabled');
+    expect(block).not.toContain('soloCaptainHold?.enabled');
+    expect(block).not.toContain('preferredAwakeMachineId');
   });
   it('asks for the restart only on the decision', () => expect(block).toMatch(/decision === 'restart'[\s\S]*requestRoleRestart/));
 });

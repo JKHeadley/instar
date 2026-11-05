@@ -136,6 +136,7 @@ describe('respawn collision custody notice', () => {
     const sessionManager = {
       isSessionAlive: () => true,
       requiresCodexGenerationRespawn: () => true,
+      registerMemoryInboundFile: vi.fn(),
       captureOutput: vi.fn(() => { throw new Error('generationless recovery must not classify pane death'); }),
       clearSessionFrameworkCache,
       spawnInteractiveSession,

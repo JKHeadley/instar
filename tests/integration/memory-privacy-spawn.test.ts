@@ -182,12 +182,15 @@ describe('Memory privacy — real spawn path (integration)', () => {
   it('copies an inbound file into the session inbox', async () => {
     await wire();
     await manager.spawnInteractiveSession(undefined, 'chan', { slackChannelId: 'C1' });
-    const dir = path.join(projectDir, '.instar', 'telegram-inbound');
+    const dir = path.join(projectDir, '.instar', 'slack-files');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'long.txt'), 'made-up text');
     const session = manager.listRunningSessions().find((s) => s.name === 'chan')!;
+    manager.registerMemoryInboundFile('slack:C1', path.join(dir, 'long.txt'));
     manager.injectMessage(session.tmuxSession, `[Long message saved to ${path.join(dir, 'long.txt')}]`, { firstParty: { source: 'test' } });
-    expect(fs.readFileSync(path.join(session.memoryScopeDir!, 'inbox', 'long.txt'), 'utf8')).toBe('made-up text');
+    const files = fs.readdirSync(path.join(session.memoryScopeDir!, 'inbox'));
+    expect(files).toHaveLength(1);
+    expect(fs.readFileSync(path.join(session.memoryScopeDir!, 'inbox', files[0]), 'utf8')).toBe('made-up text');
   });
 
   it('ends a session the keep-guards would protect, because it would answer next', async () => {

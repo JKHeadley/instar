@@ -123,7 +123,7 @@ import {
 } from '../scaffold/claudeMdLayout.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
-import { installBuiltinSkills, installBrowserScripts } from '../commands/init.js';
+import { getDefaultJobs, installBuiltinSkills, installBrowserScripts } from '../commands/init.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { recordInstallProvenanceIfAbsent, hasInstallProvenanceRecord } from './ApprenticeshipStallGate.js';
 import { IdentityManager } from '../threadline/client/IdentityManager.js';
@@ -287,6 +287,24 @@ A Telegram, Slack or app topic is the user's conversation. It is never a channel
 - To reply to such a message, send one back the same way to the sender's session.
 - The user topic still gets real progress: "I asked the throughput session to measure X" is a progress update for the user. "Please own X and report slot status" is a message to an agent: send it to that session, never to the topic.
 - **When to use** (PROACTIVE): any time I am about to send a topic message whose reader is another session, job, desk or worker rather than the user.
+`;
+}
+
+/**
+ * Sharing at the first pairing (docs/specs/session-pool-activation-at-pairing.md). SHARED by
+ * `generateClaudeMd` and `migrateClaudeMd`. Content-sniff marker: the heading.
+ */
+export const PAIR_SHARING_CLAUDEMD_MARKER = '### Sharing between my machines starts at the first pairing';
+export function PAIR_SHARING_CLAUDEMD_SECTION(port: number): string {
+  return `
+${PAIR_SHARING_CLAUDEMD_MARKER}
+
+When I pair a second machine for the first time, sharing turns on by itself: both machines get the same settings, the first restarts once, and the bot token reaches the new machine sealed inside the pairing. After the pair has looked healthy for ten minutes, a new conversation can start on either machine. Nothing already running moves.
+- It stays off if the owner has already set anything about sharing, set \`multiMachine.sessionPool.autoActivate\` to false, or uses paid routing. The pairing still works.
+- If the new machine did not receive the token, pair that same machine again.
+- Why it is or is not on: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/session-pool/readiness\`
+- To turn it off: set \`multiMachine.sessionPool.enabled\` to false. It takes effect at once.
+- **When to use** (PROACTIVE): the user asks "why is my second machine idle?", "is sharing on?" or is about to pair a machine.
 `;
 }
 
@@ -2498,6 +2516,7 @@ export class PostUpdateMigrator {
     this.migrateGitignore(result);
     this.migrateBuiltinSkills(result);
     this.migrateBuiltinJobs(result);
+    this.migrateLegacyDefaultJobs(result);
     this.autoMigrateLegacyJobsJson(result);
     this.migrateSkillPortHardcoding(result);
     this.migrateBuildSkillMethodology(result);
@@ -6795,6 +6814,45 @@ if [[ "$ACTIVE" != "true" ]]; then`;
   }
 
   /**
+   * Reconcile legacy default jobs on every update, before a pending jobs.json
+   * migration reads that file. Built-in agentmd jobs are handled separately.
+   * The legacy git-sync default is disabled and never auto-enabled by refresh.
+   */
+  private migrateLegacyDefaultJobs(result: MigrationResult): void {
+    const jobsPath = path.join(this.config.stateDir, 'jobs.json');
+    if (!fs.existsSync(jobsPath)) {
+      result.skipped.push('legacy default jobs: no jobs.json');
+      return;
+    }
+    try {
+      const jobs = JSON.parse(fs.readFileSync(jobsPath, 'utf8')) as unknown;
+      if (!Array.isArray(jobs) || jobs.some(job => !job || typeof job !== 'object' || typeof job.slug !== 'string')) {
+        throw new Error('jobs.json must be an array of jobs with slugs');
+      }
+      const slugs = new Set(jobs.map(job => job.slug));
+      const missing = (getDefaultJobs(this.config.port) as Array<{ slug: string; enabled?: boolean }>)
+        .filter(job => !slugs.has(job.slug));
+      // An update may add shipped defaults, but must not rewrite an existing
+      // legacy body before jobsMigrate can classify and preserve user edits.
+      // A Git remote is never an opt-in to running git-sync.
+      for (const job of missing) {
+        if (job.slug === 'git-sync') job.enabled = false;
+        jobs.push(job);
+      }
+      if (missing.length > 0) {
+        SafeFsExecutor.atomicWriteJsonSync(jobsPath, jobs, {
+          operation: 'PostUpdateMigrator.migrateLegacyDefaultJobs', indent: 2,
+        });
+        result.upgraded.push(`legacy default jobs: ${missing.length} missing job(s) installed`);
+      } else {
+        result.skipped.push('legacy default jobs: already present');
+      }
+    } catch (err) {
+      result.errors.push(`legacy default jobs: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
    * Phase 2 — install/refresh built-in agentmd jobs. Copies the shipped
    * markdown templates into `.instar/jobs/instar/` and writes their
    * per-slug manifests. Honors operator-disabled state (preserves
@@ -8903,6 +8961,11 @@ setTimeout(() => process.exit(0), 2000);
       content += SESSION_HANDOFF_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Talking to my other sessions section');
+    }
+    if (!content.includes(PAIR_SHARING_CLAUDEMD_MARKER)) {
+      content += PAIR_SHARING_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added sharing at the first pairing');
     }
 
     if (!content.includes(JOB_RESULT_SUPERVISION_CLAUDEMD_MARKER)) {

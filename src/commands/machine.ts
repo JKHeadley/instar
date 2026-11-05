@@ -21,6 +21,7 @@ import { installAgentIdentityFromPairing } from '../core/AgentIdentityHandover.j
 import path from 'node:path';
 import pc from 'picocolors';
 import { loadConfig } from '../core/Config.js';
+import { applyJoinerPairActivation, type InviterPairResponse } from '../core/sessionPoolPairActivation.js';
 import { redactUrl, redactUrlsInText } from '../core/redactUrl.js';
 import { resolveJoinDir } from '../utils/joinDir.js';
 import { gitLeaseHasNoRemote, selectLeaseMedium } from '../core/leaseMediumSelection.js';
@@ -634,7 +635,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         agentIdentityEnvelope?: any;
         identityRecoveryBearerToken?: string;
         status?: string;
-      };
+      } & InviterPairResponse;
 
       // The ordinary authToken is intentionally machine-local. Recovery routes
       // use a distinct agent-wide bearer conveyed only inside this
@@ -691,6 +692,36 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
             '\n  Nothing was provisioned. Re-pair with a fresh code; if it repeats, the ' +
             'response is not coming from the machine you think it is.',
         );
+      }
+
+      // ── Turn sharing on, on this side (docs/specs/session-pool-activation-at-pairing.md) ──
+      // Before the server first starts, so the boot finds the keys and the bot token.
+      try {
+        const joined = applyJoinerPairActivation({
+          configPath: configFilePath,
+          stateDir: config.stateDir,
+          response: result,
+          binding: { pairingSessionId: String(options.code), joinerMachineId: identity.machineId },
+          encryptionPrivateKeyPem: (() => {
+            try {
+              return mgr.loadEncryptionKey();
+            } catch {
+              // @silent-fallback-ok: reported below as `no-key`, and the pair stays dark.
+              return null;
+            }
+          })(),
+          now: new Date(),
+        });
+        if (joined.activated) {
+          config = loadConfig(projectDir);
+          console.log(pc.green('  Sharing is on: new conversations can start on either machine once the pair looks healthy.'));
+          if (!['written', 'not-offered', 'kept-existing'].includes(joined.telegram)) {
+            console.log(pc.red(`  The Telegram token did not arrive (${joined.telegram}). This machine cannot answer on Telegram.`) +
+              '\n  Sharing stays off until you pair this machine again.');
+          }
+        }
+      } catch (err) {
+        console.log(pc.red(`  Sharing was not turned on here: ${err instanceof Error ? err.message : String(err)}`));
       }
 
       if (result.machineIdentity) {

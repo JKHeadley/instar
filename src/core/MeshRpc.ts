@@ -280,6 +280,13 @@ export type MeshCommand =
       limit?: number;
     }
   | {
+      // Duplicate check (session-pool-activation-at-pairing, Change 8). Read/observe class:
+      // says only whether this machine holds a live session for one conversation.
+      type: 'session-live-probe';
+      platform: string;
+      platformId: string;
+    }
+  | {
       // Working-set handoff transport (WORKING-SET-HANDOFF-SPEC §3.2).
       // Read/observe class — the FRESH manifest computed per request is the
       // allowlist (own jailed working files only; no generic file-read
@@ -522,6 +529,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'app-media-pull':
     case 'topic-profile-pull':
     case 'topic-history-pull':
+    case 'session-live-probe':
     case 'commitments-sync':
     case 'preferences-sync':
     case 'state-snapshot':

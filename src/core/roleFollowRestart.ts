@@ -1,7 +1,7 @@
 /**
  * A machine whose role changed restarts once, so the normal boot path builds what the new role
  * needs: the scheduler exists only on a machine awake at boot, and nothing else starts or stops
- * it (docs/specs/lease-takeover-role-restart.md). One tested path instead of a second way to
+ * it (docs/specs/lease-scheduler-role-continuity.eli16.md). One tested path instead of a second way to
  * start. A durable timestamp bounds it, so a flapping lease cannot become a restart loop.
  */
 
