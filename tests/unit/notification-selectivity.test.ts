@@ -219,3 +219,38 @@ describe('existing release audience authority', () => {
     expect(hasPromotedUpgradeAnnouncement(root, 'upgrade-notify')).toBe(false);
   });
 });
+
+
+describe('composite spend producer binding', () => {
+  it('keeps the real spend channel category through its root callback and refuses capability borrowing', async () => {
+    const { root, gate: original } = setup(); await original.close();
+    const gate = new NotificationSelectivityGate(root, 'test', () => ({ enabled: true, dryRun: false, push: { categories: { 'spend-alert': true } } }));
+    cleanup.unshift(async () => gate.close());
+    const { notificationStamper, withNotificationEnvelope } = await import('../../src/messaging/notificationStampers.js');
+    const { TelegramSpendTopicChannel } = await import('../../src/core/TelegramSpendTopicChannel.js');
+    const stamp = notificationStamper('src/server/AgentServer.ts', 'spend-alert-dispatcher');
+    expect(() => notificationStamper('src/core/MentorVisibleEcho.ts', 'spend-alert-dispatcher')).toThrow('Unregistered');
+    const adapter = new TelegramAdapter({ token: '123:test', chatId: '-1001' }, root); adapter.selectivity = gate;
+    const network = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, result: { message_id: 123 } }) }); vi.stubGlobal('fetch', network);
+    const channel = new TelegramSpendTopicChannel({ resolver: { resolveTopicId: async () => 42, configuredTopicIdForRepointCheck: () => undefined } as any,
+      lifelineTopicId: () => undefined,
+      sendToTopic: (topic, text) => withNotificationEnvelope(stamp(), async () => { const sent = await adapter.sendToTopic(topic, text); return 'recorded' in sent && sent.recorded ? sent : true; }),
+    });
+    expect(await channel.deliver('The chosen spend report', false)).toBe('sent');
+    expect(network).toHaveBeenCalledOnce();
+    expect(gate.store.list()[0].category).toBe('spend-alert');
+  });
+});
+
+
+describe('effective category choices and bounded authority', () => {
+  it('lets a chosen attention category through the legacy routine hub filter', async () => {
+    const { root, gate: original } = setup(); await original.close();
+    const gate = new NotificationSelectivityGate(root, 'test', () => ({ enabled: true, dryRun: false, push: { categories: { 'attention-item': true } } })); cleanup.unshift(async () => gate.close());
+    const adapter = new TelegramAdapter({ token: '123:test', chatId: '-1001', attentionHubFilter: 'user-impact', systemTopics: { getAttentionTopicId: () => 55 } } as any, root); adapter.selectivity = gate;
+    const network = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, result: { message_id: 123 } }) }); vi.stubGlobal('fetch', network);
+    const item = await adapter.createAttentionItem({ id: 'chosen-routine', title: 'Routine bookkeeping', summary: 'Already recovered', category: 'system', priority: 'LOW' });
+    expect(network).toHaveBeenCalledOnce(); expect(item.hubHeld).not.toBe(true); expect(adapter.attentionHubAdmits(item.id)).toBe(true);
+  });
+
+});

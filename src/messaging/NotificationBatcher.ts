@@ -1,3 +1,4 @@
+import { isQuietReceipt, type QuietReceipt } from './NotificationSelectivityGate.js';
 /**
  * NotificationBatcher - Batches non-critical Telegram notifications into periodic digests.
  *
@@ -149,7 +150,7 @@ export interface BatcherStats {
   originHeldCount: number;
 }
 
-export type SendFunction = (topicId: number, text: string, logicalSendId?: string, origin?: BatcherOrigin) => Promise<{ messageId: number }>;
+export type SendFunction = (topicId: number, text: string, logicalSendId?: string, origin?: BatcherOrigin) => Promise<{ messageId: number } | QuietReceipt>;
 
 const CATEGORY_HEADERS: Record<string, string> = {
   'job-complete': 'JOBS',
@@ -184,6 +185,7 @@ export class NotificationBatcher {
   private summaryQueue: QueuedNotification[] = [];
   private digestQueue: QueuedNotification[] = [];
   private sendFn: SendFunction | null = null;
+  onDelivered: ((topicId: number, at: number) => void) | null = null;
   private supportsLogicalIds = false;
   private frozenBatches = new Map<string, FrozenBatch>();
   private flushTail: Promise<unknown> = Promise.resolve();
@@ -277,7 +279,8 @@ export class NotificationBatcher {
     // the rolling-window limit, ownership, and the brakes. A kill-switch on
     // batching must never become a kill-switch on urgency.
     if (effectiveTier === 'IMMEDIATE') {
-      await this.sendDirect(notification.topicId, notification.message, undefined, origin);
+      const result = await this.sendDirect(notification.topicId, notification.message, undefined, origin);
+      if (result === true) this.observeDelivery(notification.topicId, Date.now());
       return;
     }
 
@@ -348,7 +351,7 @@ export class NotificationBatcher {
 
     // Group by topicId WITHOUT removing from the queue — items for a topic that
     // cannot send stay queued and release themselves at the next opportunity.
-    const byTopic = new Map<number, QueuedNotification[]>();
+    const byTopic = new Map<string, { topicId: number; items: QueuedNotification[] }>();
     const resolved = new Map<string, boolean>();
     const recordedRecoveries = new Set<string>();
     const visitedBatches = new Set<string>();
@@ -389,14 +392,15 @@ export class NotificationBatcher {
         this.expireStaleHolds(item.topicId, [item], now, 'origin-outcome-unresolved');
         continue;
       }
-      const existing = byTopic.get(item.topicId) || [];
-      existing.push(item);
-      byTopic.set(item.topicId, existing);
+      const groupKey = `${item.topicId}:${item.origin?.producerId ?? 'notification-batcher'}`;
+      const group = byTopic.get(groupKey) ?? { topicId: item.topicId, items: [] };
+      group.items.push(item);
+      byTopic.set(groupKey, group);
     }
 
     let sentCount = recoveredCount;
 
-    for (const [topicId, topicItems] of byTopic) {
+    for (const { topicId, items: topicItems } of byTopic.values()) {
       const decision = this.canSendToTopic(topicId, now, tier);
 
       if (decision.verdict !== 'send') {
@@ -430,15 +434,15 @@ export class NotificationBatcher {
     return sentCount;
   }
 
-  private completeFrozenBatch(batch: FrozenBatch, items: QueuedNotification[], now: number): number {
+  private completeFrozenBatch(batch: FrozenBatch, items: QueuedNotification[], now: number, delivered = true): number {
     const queue = batch.tier === 'SUMMARY' ? this.summaryQueue : this.digestQueue;
     for (const item of items) {
       const index = queue.indexOf(item); if (index >= 0) queue.splice(index, 1);
-      this.lastSentContent.set(`${item.topicId}:${item.dedupKey}`, now);
+      if (delivered) this.lastSentContent.set(`${item.topicId}:${item.dedupKey}`, now);
     }
     this.frozenBatches.delete(batch.logicalSendId);
-    this.recordSend(batch.topicId, now);
-    return items.length;
+    if (delivered) this.recordSend(batch.topicId, now);
+    return delivered ? items.length : 0;
   }
 
   private async sendFrozenBatch(batch: FrozenBatch, items: QueuedNotification[], now: number): Promise<number> {
@@ -448,6 +452,7 @@ export class NotificationBatcher {
     if (!this.persistState()) { batch.attempted = attempted; return 0; }
     const delivered = await this.sendDirect(batch.topicId, batch.text, batch.logicalSendId, batch.origin);
     if (delivered === true) return this.completeFrozenBatch(batch, items, now);
+    if (isQuietReceipt(delivered)) { this.audit({ event: 'quiet-recorded', topicId: batch.topicId, reason: delivered.quietId, items: items.length }); return this.completeFrozenBatch(batch, items, now, false); }
     const hold = delivered instanceof TelegramOriginHoldError
       ? { operationId: delivered.operationId, outcome: delivered.outcome, reason: delivered.reason }
       : { operationId: null, outcome: 'outcome-unknown', reason: 'batch-send-outcome-unavailable' };
@@ -560,6 +565,11 @@ export class NotificationBatcher {
     const times = (this.sendTimes.get(topicId) ?? []).filter(t => now - t < WINDOW_MS);
     times.push(now);
     this.sendTimes.set(topicId, times);
+    this.observeDelivery(topicId, now);
+  }
+
+  private observeDelivery(topicId: number, at: number): void {
+    try { this.onDelivered?.(topicId, at); } catch { /* @silent-fallback-ok: derived mobile push must not change delivery outcome */ }
   }
 
   private markHeld(items: QueuedNotification[], now: number): void {
@@ -922,7 +932,7 @@ export class NotificationBatcher {
    * suppression-presence follows DELIVERY rather than intent. Caught by the
    * Phase 5 second-pass review.
    */
-  private async sendDirect(topicId: number, message: string, logicalSendId?: string, origin?: BatcherOrigin): Promise<boolean | TelegramOriginHoldError> {
+  private async sendDirect(topicId: number, message: string, logicalSendId?: string, origin?: BatcherOrigin): Promise<boolean | QuietReceipt | TelegramOriginHoldError> {
     if (!requireDeliverySink(this.sendFn, {
       component: 'NotificationBatcher',
       primary: 'Deliver queued and immediate notifications through the configured messaging sink',
@@ -931,8 +941,8 @@ export class NotificationBatcher {
     })) return false;
 
     try {
-      if (origin) await this.sendFn!(topicId, message, logicalSendId, snapshotBatcherOrigin(origin));
-      else await this.sendFn!(topicId, message, logicalSendId);
+      const result = origin ? await this.sendFn!(topicId, message, logicalSendId, snapshotBatcherOrigin(origin)) : await this.sendFn!(topicId, message, logicalSendId);
+      if (isQuietReceipt(result)) return result;
       return true;
     } catch (err) {
       if (err instanceof TelegramOriginHoldError) return err;

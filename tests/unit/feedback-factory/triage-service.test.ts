@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHarness, decisionRow, setReports, T0, type Harness } from '../../fixtures/feedbackTriageHarness.js';
 import { SELF_HEAL_LADDER_MS } from '../../../src/feedback-factory/triage/FeedbackTriageService.js';
 
@@ -481,6 +481,16 @@ describe('ignoreLiveRecommended (§7)', () => {
 });
 
 describe('action list (§5)', () => {
+  it('records an action list without notified stamps and may surface it on a later day', async () => {
+    h = await createHarness({ approve: false, config: { actionTopicId: 4242 } });
+    const send = vi.fn().mockResolvedValue({ delivered: false, recorded: true, quietId: 'triage-q' });
+    (h.service as any).opts.sendToTopic = send;
+    expect(await h.service.sendActionList()).toMatchObject({ sent: false, recorded: true });
+    expect(h.store.meta('action_list:last_day')).toBeNull();
+    await h.service.sendActionList(); expect(send).toHaveBeenCalledOnce();
+    h.now.value += DAY; expect(await h.service.sendActionList()).toMatchObject({ sent: false, recorded: true }); expect(send).toHaveBeenCalledTimes(2);
+  });
+
   it('lists the authority approval once, never in the quiet window, at most once a day', async () => {
     h = await createHarness({ approve: false });
     h.now.value = Date.UTC(2026, 9, 7, 9, 0); // 02:00 Los Angeles

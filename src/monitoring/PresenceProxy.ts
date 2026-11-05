@@ -110,7 +110,7 @@ export interface PresenceProxyConfig {
     /** The DETERMINISTIC send path (telegram.sendToTopic), which does not
      *  traverse the muzzled reply route. Without it the honest line is
      *  structurally undeliverable to the very topic it is about. */
-    sendDeterministic?: (topicId: number, text: string) => Promise<boolean>;
+    sendDeterministic?: (topicId: number, text: string, inboundMessageId?: string) => Promise<boolean>;
   };
 
   /**
@@ -2291,7 +2291,7 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
         // path bypasses the /telegram/reply duplicate suppression that would
         // otherwise have absorbed the repeats.
         if (this.config.standDown?.hasProxyNotice?.(topicId)) return;
-        const sent = await this.config.standDown?.sendDeterministic?.(topicId, line);
+        const sent = await this.config.standDown?.sendDeterministic?.(topicId, line, this.states.get(topicId)?.inboundMessageId);
         if (sent) this.config.standDown?.claimProxyNotice(topicId);
       } catch {
         /* @silent-fallback-ok — the honest line is courtesy; failing to send it must

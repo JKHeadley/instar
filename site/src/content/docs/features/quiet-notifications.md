@@ -25,6 +25,10 @@ request claiming to be confirmed does not suffice. Preferences are audited and
 queued durably for other machines. Unreachable machines are shown as unknown
 or pending, rather than counted as synchronized.
 
+Confirmed security, data-loss and agent-unavailable incidents have separate
+bounded exceptions. A single failed login or limited account does not establish
+a whole-agent outage. The switches control routine reports.
+
 Opted-in reports have category and overall push limits. Overflow can produce
 one count summary per window. The optional daily digest contains counts and
 category names, without copied message bodies. A promoted release announcement

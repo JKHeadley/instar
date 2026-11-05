@@ -1,3 +1,4 @@
+import type { QuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/core/SpendAlertResolver.ts');
 /**
@@ -55,7 +56,7 @@ export interface SpendAlertResolverDeps {
   /** Create the bounded create-once system topic; returns its id. */
   createTopic: () => Promise<number>;
   /** Deliver one message into a topic; resolves true on CONFIRMED send. */
-  sendToTopic: (topicId: number, text: string) => Promise<boolean>;
+  sendToTopic: (topicId: number, text: string) => Promise<boolean | QuietReceipt>;
   /** The lifeline fallback topic id (always-existing system topic), if resolvable. */
   lifelineTopicId: () => number | undefined;
   /** Scrubbed observability sink (jsonl line per emission/decision). */
@@ -149,7 +150,7 @@ export class SpendAlertResolver {
    * emitted (confirmed) within `reArmMs` is suppressed; the latch only sets on
    * CONFIRMED delivery, so a transient failure stays eligible.
    */
-  async emit(alert: SpendAlert, reArmMs = 24 * 60 * 60 * 1000): Promise<'sent' | 'sent-lifeline' | 'suppressed' | 'failed'> {
+  async emit(alert: SpendAlert, reArmMs = 24 * 60 * 60 * 1000): Promise<'sent' | 'sent-lifeline' | 'quiet-recorded' | 'suppressed' | 'failed'> {
     const last = this.latched.get(alert.dedupeKey);
     if (last !== undefined && this.now() - last < reArmMs) {
       this.d.audit?.({ decision: 'suppressed', dedupeKey: alert.dedupeKey });
@@ -158,7 +159,13 @@ export class SpendAlertResolver {
     const topicId = await this.resolveTopicId();
     if (topicId !== undefined) {
       try {
-        if (await withNotificationEnvelope(stampNotification(), async () => (this.d)!.sendToTopic(topicId, alert.text))) {
+        const result = await withNotificationEnvelope(stampNotification(), async () => (this.d)!.sendToTopic(topicId, alert.text));
+        if (typeof result === 'object' && result.recorded) {
+          this.latched.set(alert.dedupeKey, this.now());
+          this.d.audit?.({ decision: 'quiet-recorded', quietId: result.quietId, kind: alert.kind, dedupeKey: alert.dedupeKey });
+          return 'quiet-recorded';
+        }
+        if (result === true) {
           this.latched.set(alert.dedupeKey, this.now());
           this.d.audit?.({ decision: 'sent', topicId, kind: alert.kind, dedupeKey: alert.dedupeKey });
           return 'sent';
@@ -172,7 +179,13 @@ export class SpendAlertResolver {
     const lifeline = this.d.lifelineTopicId();
     if (lifeline !== undefined) {
       try {
-        if (await withNotificationEnvelope(stampNotification(), async () => (this.d)!.sendToTopic(lifeline, alert.text))) {
+        const result = await withNotificationEnvelope(stampNotification(), async () => (this.d)!.sendToTopic(lifeline, alert.text));
+        if (typeof result === 'object' && result.recorded) {
+          this.latched.set(alert.dedupeKey, this.now());
+          this.d.audit?.({ decision: 'quiet-recorded', quietId: result.quietId, kind: alert.kind, dedupeKey: alert.dedupeKey });
+          return 'quiet-recorded';
+        }
+        if (result === true) {
           this.latched.set(alert.dedupeKey, this.now());
           this.d.audit?.({ decision: 'sent-lifeline', kind: alert.kind, dedupeKey: alert.dedupeKey });
           return 'sent-lifeline';

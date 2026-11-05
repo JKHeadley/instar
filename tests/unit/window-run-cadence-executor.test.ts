@@ -408,3 +408,29 @@ describe('WindowRunCadenceExecutor', () => {
     expect(requested).toEqual(['autonomous:run-w32:1']);
   });
 });
+
+
+describe('quiet cadence outcomes', () => {
+  let project: TempProject;
+  afterEach(() => project?.cleanup());
+  it('advances a recorded synthesis without delivery fields or retry after restart', async () => {
+    project = createTempProject(); let sends = 0;
+    const state = liveness(Array.from({ length: 6 }, (_, i) => work(i + 1, BASE + (i + 1) * 30 * 60_000 - 1000)));
+    const now = BASE + 3 * 60 * 60_000; const store = new WindowRunCadenceStore(project.stateDir);
+    const make = () => new WindowRunCadenceExecutor(store, { now: () => new Date(now).toISOString(), getLiveness: () => state, resolveFirstUnreceiptedTask: () => null,
+      signSynthesis: () => 'producer-signature-1', deliverSynthesis: async () => { sends++; return { delivered: false, recorded: true, quietId: 'report-q' }; } }, { enabled: true, dryRun: false });
+    const first = await make().tick();
+    expect(first?.status).toBe('running'); expect(first?.reports[0]).toMatchObject({ status: 'quiet-recorded', quietId: 'report-q' });
+    expect(first?.reports[0].messageId).toBeUndefined(); expect(first?.reports[0].deliveredAt).toBeUndefined();
+    expect(first?.nextReportDueAt).toBe(new Date(BASE + 6 * 60 * 60_000).toISOString());
+    await make().tick(); expect(sends).toBe(1);
+  });
+  it('persists a quiet failure notice without claiming notified or retrying', async () => {
+    project = createTempProject(); let sends = 0; let now = BASE + 36 * 60_000;
+    const store = new WindowRunCadenceStore(project.stateDir); const state = liveness();
+    const make = () => new WindowRunCadenceExecutor(store, { now: () => new Date(now).toISOString(), getLiveness: () => state, resolveFirstUnreceiptedTask: () => null,
+      notifyFailure: async () => { sends++; return { delivered: false, recorded: true, quietId: 'failure-q' }; } }, { enabled: true, dryRun: false });
+    const result = await make().tick(); expect(result?.failure).toMatchObject({ notified: false, notificationQuietId: 'failure-q', notificationAttemptCount: 1 });
+    expect(result?.failure?.notificationMessageId).toBeUndefined(); now += 3600000; await make().tick(); expect(sends).toBe(1);
+  });
+});

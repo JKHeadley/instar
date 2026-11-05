@@ -5,7 +5,7 @@ import ts from 'typescript';
 const root = process.cwd();
 const errors = [];
 const raw = {};
-const trustedComposition = new Set(['src/commands/server.ts', 'src/server/routes.ts', 'src/server/notificationRoutes.ts', 'src/messaging/TelegramAdapter.ts', 'src/lifeline/TelegramLifeline.ts', 'src/messaging/telegram-origin/OriginDeterministicSend.ts']);
+const trustedComposition = new Set(['src/commands/server.ts', 'src/server/routes.ts', 'src/server/notificationRoutes.ts', 'src/messaging/TelegramAdapter.ts', 'src/lifeline/TelegramLifeline.ts', 'src/messaging/telegram-origin/OriginDeterministicSend.ts', 'src/monitoring/SessionMonitor.ts']);
 const contextReaders = new Set([...trustedComposition, 'src/messaging/NotificationSelectivityGate.ts', 'src/messaging/notificationStampers.ts', 'src/messaging/telegram-origin/TelegramOriginService.ts', 'src/messaging/telegram-origin/OriginBrowserExecutor.ts']);
 function scan(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -44,6 +44,7 @@ function scan(dir) {
           const key = `${rel}#${methodName}`; raw[key] = (raw[key] ?? 0) + 1;
         }
         if (node.expression.getText(ast) === 'responseNotificationStamper' && !['src/commands/server.ts', 'src/messaging/TelegramAdapter.ts', 'src/lifeline/TelegramLifeline.ts'].includes(rel)) fail(node, 'inbound response capability is restricted to explicit command and floor composition');
+        if (node.expression.getText(ast) === 'notificationStamper' && node.arguments.length > 1 && !((rel === 'src/server/AgentServer.ts' && node.arguments[1]?.getText(ast) === "'spend-alert-dispatcher'") || (rel === 'src/commands/server.ts' && node.arguments[1]?.getText(ast) === "'reap-notifier'") || (rel === 'src/messaging/telegramSendSideComposition.ts' && ["'quota-notifier'", "'reap-notifier'"].includes(node.arguments[1]?.getText(ast))))) fail(node, 'named producer capability must be registered to its composition module');
         if (node.expression.getText(ast) === 'notificationStamper' && rel !== 'src/messaging/notificationStampers.ts' && node.arguments[0]?.getText(ast) !== `'${rel}'`) fail(node, 'notification stamper must be bound to its own module');
         if (node.expression.getText(ast) === 'verifiedReplyEnvelope' && !['src/messaging/TelegramAdapter.ts', 'src/commands/server.ts', 'src/server/routes.ts', 'src/server/notificationRoutes.ts', 'src/messaging/NotificationSelectivityGate.ts', 'src/messaging/telegram-origin/TelegramOriginService.ts'].includes(rel)) fail(node, 'verified replies may only be minted by the trusted reply seam');
       }

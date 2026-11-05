@@ -1,5 +1,7 @@
 import { notificationStamper, withNotificationEnvelope } from './notificationStampers.js';
 const stampNotification = notificationStamper('src/messaging/telegramSendSideComposition.ts');
+const stampQuota = notificationStamper('src/messaging/telegramSendSideComposition.ts', 'quota-notifier');
+const stampReap = notificationStamper('src/messaging/telegramSendSideComposition.ts', 'reap-notifier');
 import { bindOriginAutomationTransport } from './telegram-origin/OriginDeterministicSend.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import type { NotificationBatcher } from '../messaging/NotificationBatcher.js';
@@ -65,14 +67,18 @@ export function wireTelegramSendSide(deps: TelegramSendSideDeps): TelegramSendSi
 
   deps.originService?.registerAutomationProducer('notification-batcher');
   deps.notificationBatcher.setSendFunction(async (topicId, text, logicalSendId, origin) => {
+    const send = () => {
+      if (origin?.producerId === 'quota-notifier') return withNotificationEnvelope(stampQuota(), () => deps.telegram.sendToTopic(topicId, text));
+      if (origin?.producerId === 'reap-notifier') return withNotificationEnvelope(stampReap(), () => deps.telegram.sendToTopic(topicId, text));
+      return withNotificationEnvelope(stampNotification(), () => deps.telegram.sendToTopic(topicId, text));
+    };
     if ((logicalSendId || origin) && deps.originService) {
       const body = { text };
       const producerId = origin?.producerId ?? 'notification-batcher';
       deps.originService.registerAutomationProducer(producerId);
       const credential = deps.originService.issueAutomationReply(producerId, topicId, body, origin?.author, logicalSendId);
-      await deps.originService.runWithAutomationReply(credential, topicId, body, () => withNotificationEnvelope(stampNotification(), async () => (deps.telegram)!.sendToTopic(topicId, text)));
-    } else await withNotificationEnvelope(stampNotification(), async () => (deps.telegram)!.sendToTopic(topicId, text));
-    return { messageId: 0 };
+      return deps.originService.runWithAutomationReply(credential, topicId, body, send);
+    } else return send();
   }, { supportsLogicalIds: !!deps.originService });
   deps.notificationBatcher.start();
 

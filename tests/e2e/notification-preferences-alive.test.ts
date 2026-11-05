@@ -21,7 +21,7 @@ describe('notification preferences — production registration', () => {
     fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
     const values = new Map<string, unknown>();
     const liveConfig = { get: <T>(key: string, fallback: T): T => (values.get(key) ?? fallback) as T, set: (key: string, value: unknown) => { values.set(key, value); } };
-    const gate = new NotificationSelectivityGate(stateDir, 'ci-machine', () => ({ enabled: true, dryRun: false }));
+    const gate = new NotificationSelectivityGate(stateDir, 'ci-machine', () => ({ enabled: true, dryRun: false, push: { categories: { 'job-status': liveConfig.get('notifications.selectivity.push.categories.job-status', false), 'spend-alert': liveConfig.get('notifications.selectivity.push.categories.spend-alert', false) } } }));
     gate.preferences = new NotificationPreferences({ root: stateDir, self: () => 'ci-machine', peers: () => [],
       apply: (category, enabled) => liveConfig.set(`notifications.selectivity.push.categories.${category}`, enabled), send: async () => false });
     const telegram = new TelegramAdapter({ token: '123:test', chatId: '-1001' }, stateDir); telegram.selectivity = gate;
@@ -38,8 +38,12 @@ describe('notification preferences — production registration', () => {
       const changed = await auth(request(app).post('/notifications/categories/job-status/push')).set('X-Instar-Operator-Session', unlock.body.operatorSessionToken).send({ enabled: true, confirmedBy: 'dashboard-pin' });
       expect(changed.status).toBe(200);
       expect(liveConfig.get('notifications.selectivity.push.categories.job-status', false)).toBe(true);
+      const spend = await auth(request(app).post('/notifications/categories/spend-alert/push')).set('X-Instar-Operator-Session', unlock.body.operatorSessionToken).send({ enabled: true, confirmedBy: 'dashboard-pin' });
+      expect(spend.status).toBe(200);
       const status = await auth(request(app).get('/notifications/selectivity'));
       expect(status.status).toBe(200);
+      expect(status.body.categories.find((row: { id: string }) => row.id === 'spend-alert').push).toBe(true);
+      expect(status.body.categories.find((row: { id: string }) => row.id === 'job-status').push).toBe(true);
       expect(status.body.categories.find((row: { id: string }) => row.id === 'command-response').configurable).toBe(false);
       const floor = await auth(request(app).post('/notifications/categories/command-response/push')).set('X-Instar-Operator-Session', unlock.body.operatorSessionToken).send({ enabled: false, confirmedBy: 'dashboard-pin' });
       expect(floor.status).toBe(400);

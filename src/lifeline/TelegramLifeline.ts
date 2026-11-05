@@ -1268,10 +1268,11 @@ export class TelegramLifeline {
   private notificationInbound = new Map<number, Map<string, number>>();
   private async processUpdate(update: TelegramUpdate): Promise<void> {
     const msg = update.message;
+    normalizeInboundThread(msg, { mainChatId: this.config.chatId, issuesChatId: this.config.issuesChatId });
     const configured = this.projectConfig.messaging?.find(item => item.type === 'telegram')?.config;
     const authorized = configured?.authorizedUserIds as number[] | undefined;
     if (msg?.from && (!authorized?.length || authorized.includes(msg.from.id))) {
-      const topic = inboundTopicId(String(msg.chat.id), msg.message_thread_id ?? 1, { mainChatId: this.config.chatId, issuesChatId: this.config.issuesChatId });
+      const topic = msg.message_thread_id ?? 1;
       const inbound = this.notificationInbound.get(topic) ?? new Map<string, number>();
       inbound.set(String(msg.message_id), Number.isFinite(msg.date) ? Math.min(Date.now(), msg.date * 1000) : 0); while (inbound.size > 20) inbound.delete(inbound.keys().next().value!);
       this.notificationInbound.set(topic, inbound);

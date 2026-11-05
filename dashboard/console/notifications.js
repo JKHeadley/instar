@@ -1,3 +1,4 @@
+import { renderGlance } from '../glance.js';
 import { el, setKids, pageHead, section, note, askPin, operatorSession } from './ui.js';
 
 async function request(url, options = {}) {
@@ -6,6 +7,14 @@ async function request(url, options = {}) {
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || 'Notifications are unavailable. Try again.');
   return data;
+}
+export function notificationsGlanceSpec(feed, activate = {}) {
+  return { headline: feed.unavailable?.length ? 'Some machines did not answer. Open notices to review what is available.'
+    : feed.unread > 0 ? 'Quiet reports are waiting for you to review.' : 'No unread reports from the machines that answered.',
+    tiles: [
+      { key: 'notices', label: 'Unread notices', value: String(feed.unread), onActivate: activate.notices },
+      { key: 'preferences', label: 'Push choices', value: 'Review', onActivate: activate.preferences },
+    ] };
 }
 /** All server/peer text is rendered as text, including stored HTML and quoted notices. */
 let notificationView = { unread: true, cursors: undefined };
@@ -24,7 +33,8 @@ export async function renderNotifications(main, ctx, view) {
     filter.addEventListener('change', () => renderNotifications(main, ctx, { unread: filter.checked, cursors: undefined }));
     root.append(el('label', { style: 'display:flex;align-items:center;gap:12px;min-height:48px' }, filter, 'Only unread notices'));
     const notices = el('section', {}, el('h2', { text: `${feed.unread} unread notices` }));
-    root.append(notices);
+    const glance = el('section', { class: 'glance-root' });
+    root.append(glance, notices);
     if (feed.unavailable?.length) notices.append(note('Some machines did not answer. Their notices are unknown until they return.'));
     if (!feed.items.length) notices.append(note(notificationView.unread ? 'No unread notices from the machines that answered.' : 'No notices on this page.'));
     for (const item of feed.items) {
@@ -40,8 +50,12 @@ export async function renderNotifications(main, ctx, view) {
     if (feed.hasMore) notices.append(el('button', { class: 'btn-secondary', style: 'min-height:44px', type: 'button', text: 'Older notices', onclick: () => renderNotifications(main, ctx, { unread: notificationView.unread, cursors: feed.nextCursors }) }));
     if (notificationView.cursors) notices.append(el('button', { class: 'btn-secondary', style: 'min-height:44px', type: 'button', text: 'Newest notices', onclick: refresh }));
     if (status.preferences?.pending) notices.append(note(`Your preference is saved here. ${status.preferences.pending} update(s) are waiting for other machines.`));
-    const preferences = el('section', {}, el('h2', { text: 'Choose what reaches you' }));
+    const preferences = el('section', {}, el('h2', { text: 'Choose what reaches you' }), note('Replies and critical recovery notices remain automatic.'));
     root.append(preferences);
+    renderGlance(document, glance, notificationsGlanceSpec(feed, {
+      notices: () => notices.scrollIntoView({ behavior: 'smooth' }),
+      preferences: () => preferences.scrollIntoView({ behavior: 'smooth' }),
+    }));
     for (const category of status.categories.filter(category => category.configurable !== false)) {
       const input = el('input', { type: 'checkbox', 'aria-label': `Push ${category.description.toLowerCase()}`, style: 'width:22px;height:22px' });
       input.checked = category.push;
@@ -57,7 +71,7 @@ export async function renderNotifications(main, ctx, view) {
           await request(`/notifications/categories/${encodeURIComponent(category.id)}/push`, {
             method: 'POST', body: JSON.stringify({ enabled, confirmedBy: 'dashboard-pin' }),
           });
-          feedback.textContent = `${category.description} ${enabled ? 'will be pushed to you' : 'will stay in the feed'}.`;
+          feedback.textContent = `Routine ${category.description.toLowerCase()} ${enabled ? 'will be pushed to you' : 'will stay in the feed'}.`;
         } catch (error) { input.checked = !enabled; feedback.textContent = error.message; }
         finally { input.disabled = false; }
       });

@@ -1,3 +1,4 @@
+import { isQuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/threadline/CollaborationSurfacer.ts');
 /**
@@ -55,6 +56,8 @@ export interface SurfaceInput {
 
 export interface SurfaceResult {
   surfaced: boolean;
+  recorded?: boolean;
+  quietId?: string;
   reason: string;
   topicId?: number;
 }
@@ -117,7 +120,8 @@ export class CollaborationSurfacer {
       const gist = this.readableGist(input.text);
       const peer = this.readablePeer(input.senderName);
       const body = `🧵 ${peer} started a Threadline conversation:\n${gist}\n\n(reply in-thread, or say "open this" to give it its own topic)`;
-      await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(topicId, body, { silent: true }));
+      const receipt = await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(topicId, body, { silent: true }));
+      if (isQuietReceipt(receipt)) { this.trimAndSave(state); return { surfaced: false, recorded: true, quietId: receipt.quietId, reason: 'quiet-recorded', topicId }; }
 
       state.surfaced.push({
         threadId: input.threadId,
@@ -147,7 +151,8 @@ export class CollaborationSurfacer {
       const peer = input.peerName ? this.readablePeer(input.peerName) : undefined;
       const head = peer ? `🧵 ${input.title} — ${peer}` : `🧵 ${input.title}`;
       const body = `${head}\n${this.readableGist(input.body)}`;
-      await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(topicId, body, { silent: true }));
+      const receipt = await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(topicId, body, { silent: true }));
+      if (isQuietReceipt(receipt)) { this.trimAndSave(state); return { surfaced: false, recorded: true, quietId: receipt.quietId, reason: 'quiet-recorded', topicId }; }
       // Persist the hub-topic id if we just created it; status notices are not
       // per-thread-deduped (a status can legitimately recur).
       this.trimAndSave(state);

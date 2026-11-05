@@ -42,6 +42,9 @@ export const PRODUCER_NOTIFICATION_CATEGORIES: Readonly<Record<string, Notificat
   'outbound-advisory': 'advisory-escalation',
   'resume-queue': 'resume-queue-notice',
   'reap-notice-drain': 'reap-notice',
+  'session-monitor': 'reap-notice',
+  'quota-notifier': 'spend-alert',
+  'reap-notifier': 'reap-notice',
 };
 export function categoryForProducer(producerId: string | undefined, jobSlug?: string): NotificationCategoryId {
   return producerId && PRODUCER_NOTIFICATION_CATEGORIES[producerId] || (jobSlug ? 'job-status' : 'uncategorized');

@@ -349,3 +349,10 @@ export function requireTelegramDelivery<T extends { messageId?: number; recorded
   if (typeof result.messageId !== 'number' || result.messageId <= 0) throw new Error('Telegram delivery has no message receipt');
   return result as T & { messageId: number };
 }
+
+/** A quiet receipt confirms durable recording, never platform delivery. */
+export function isQuietReceipt(value: unknown): value is QuietReceipt {
+  if (!value || typeof value !== 'object') return false;
+  const row = value as QuietReceipt;
+  return row.recorded === true && row.delivered === false && typeof row.quietId === 'string';
+}

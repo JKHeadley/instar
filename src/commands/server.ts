@@ -3,6 +3,7 @@ import { readPeerNotifications } from '../server/notificationPoolRead.js';
 import { NotificationPreferences } from '../messaging/NotificationPreferences.js';
 import { notificationStamper, responseNotificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/commands/server.ts');
+const stampReapNotification = notificationStamper('src/commands/server.ts', 'reap-notifier');
 const stampResponse = responseNotificationStamper('src/commands/server.ts');
 import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, notificationContext } from '../messaging/NotificationSelectivityGate.js';
 import type { SelectivityConfig } from '../messaging/NotificationSelectivityGate.js';
@@ -4489,10 +4490,14 @@ export async function startServer(options: StartOptions): Promise<void> {
   notificationBatcher.configureBounds({ stateDir: config.stateDir });
 
   // Mobile push hub-notice hook (docs/specs/mobile-push.md §2.3); reads the live adapter.
-  let _hubNoticeAdapter: { onHubPost?: ((t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => void) | null } | null = null;
+  let _hubNoticeAdapter: { onHubPost?: ((t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => void) | null; selectivity?: NotificationSelectivityGate | null } | null = null;
   const _hubNoticeHook = (t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => _hubNoticeAdapter?.onHubPost?.(t);
   // State reference — set once StateManager is created, used by notify()
   let _notifyState: { get<T>(key: string): T | null | undefined } | null = null;
+
+  notificationBatcher.onDelivered = (topic, at) => {
+    if (topic === (_notifyState?.get<number>('agent-attention-topic') ?? 0)) _hubNoticeHook({ kind: 'notice', dedupeKey: `notice:batch:${topic}:${at}` });
+  };
 
   /**
    * Central notification gateway — ALL non-interactive notifications should go through here.
@@ -4505,19 +4510,16 @@ export async function startServer(options: StartOptions): Promise<void> {
     // messages, a reverted setting, a security event, exhausted quota). Routine
     // automation status is logged instead — never posted to the hub or Slack.
     const hubTopicId = _notifyState?.get<number>('agent-attention-topic') ?? 0;
+    let slackNoticeAdmitted = true;
     if (!topicId || topicId === hubTopicId) {
       const hubDecision = admitNoticeToHub(category, tier, attentionHubFilterMode);
-      if (!hubDecision.admit) {
+      if (!hubDecision.admit) slackNoticeAdmitted = false;
+      if (!hubDecision.admit && !_hubNoticeAdapter?.selectivity?.isEnforcing()) {
         recordHeldHubPost(path.join(config.stateDir, 'logs'), {
           kind: 'notice', reason: hubDecision.reason, category, tier, title: message.split('\n')[0] ?? '',
         });
         return;
       }
-    }
-    // Mobile push (docs/specs/mobile-push.md §2.3): a hub notice the filter admitted.
-    if ((!topicId || topicId === hubTopicId) && hubTopicId) {
-      try { _hubNoticeHook?.({ kind: 'notice', dedupeKey: `notice:${category}`, priority: tier === 'IMMEDIATE' ? 'URGENT' : undefined }); }
-      catch { /* @silent-fallback-ok — push is best-effort and never affects the notice */ }
     }
     // Telegram: via notification batcher
     const resolvedTopicId = topicId ?? hubTopicId;
@@ -4533,7 +4535,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
 
     // Slack: send all notification tiers to attention channel
-    if (_slackAdapter) {
+    if (_slackAdapter && slackNoticeAdmitted) {
       const slackAttentionChannel = _notifyState?.get<string>('slack-attention-channel');
       if (slackAttentionChannel) {
         _slackAdapter.sendToChannel(slackAttentionChannel, message).catch(() => { /* @silent-fallback-ok */ });
@@ -11295,7 +11297,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         store: reapNoticeStore,
         sendToTopic: bindUnknownProducerTelegramSender(telegramOriginBoot?.runtime.service, 'reap-notice-drain', async (topicId, text) => {
           if (!telegram) throw new Error('telegram adapter not available');
-          return withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, text));
+          return withNotificationEnvelope(stampReapNotification(), async () => (telegram)!.sendToTopic(topicId, text));
         }),
         recordNotify: (e) => reapLog.recordNotify(e),
         emitAttention: async (item) => {
@@ -12822,9 +12824,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         const key = `${notice.conversationId}\0${notice.deliveryId}\0${notice.kind}`;
         if (!telegram || !Number.isSafeInteger(topicId) || inboundNoticeInFlight.has(key)) return;
         inboundNoticeInFlight.add(key);
-        void withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId,
+        const inboundMessageId = telegram.selectivity?.latestInbound(topicId) ?? notice.deliveryId;
+        const envelope = { origin: 'automated' as const, category: 'message-loss-notice' as const, sourceContext: 'inbound-delivery-loss', inboundMessageId };
+        void withNotificationEnvelope(envelope, async () => (telegram)!.sendToTopic(topicId,
           'An older message remained stuck while a newer message took over. I permanently retired the older draft so it cannot replay out of order.'))
-          .then(() => { sessionManager.markInboundDeliveryNoticeDelivered(notice); })
+          .then((receipt) => { if (!receipt.recorded) sessionManager.markInboundDeliveryNoticeDelivered(notice); })
           .catch((err) => { console.error(`[codex-lifecycle] Supersession notice delivery failed: ${err instanceof Error ? err.message : String(err)}`); })
           .finally(() => { inboundNoticeInFlight.delete(key); });
       });
@@ -13766,7 +13770,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               return history
                 .filter((m: any) => m.topicId === topicId)
                 .slice(-limit)
-                .map((m: any) => ({ text: m.text, fromUser: m.fromUser, timestamp: m.timestamp }));
+                .map((m: any) => ({ text: m.text, fromUser: m.fromUser, timestamp: m.timestamp, messageId: m.telegramUserId && telegram!.isAuthorizedSender(m.telegramUserId) ? m.messageId : undefined }));
             }
             return [];
           },
@@ -13777,7 +13781,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               await _slackAdapter.sendToChannel(slackChId, text);
               return;
             }
-            if (telegram) await sendDeterministicTelegramNotice(telegram, 'session-monitor', topicId, text);
+            if (telegram) return sendDeterministicTelegramNotice(telegram, 'session-monitor', topicId, text);
           },
           triggerTriage: triageOrchestrator
             ? async (topicId, sessionName, reason) => {
@@ -15076,7 +15080,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // swallowing the "message thread not found" error (incident 2026-06-09:
       // 41 stall escalations black-holed against a dead lifeline topic).
       const sendConsolidated = localTelegram
-        ? (text: string): Promise<boolean> =>
+        ? (text: string) =>
             sendConsolidatedWithSelfHeal(
               localTelegram,
               text,
@@ -17321,8 +17325,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                 return entry ? reg!.hasNotice(entry.sessionName, 'user') : false;
               } catch { return false; /* @silent-fallback-ok — budget unreadable ⇒ line not sent (extra silence beats a loop) */ }
             },
-            sendDeterministic: async (topicId: number, text: string) => {
-              try { await withNotificationEnvelope(stampNotification(), async () => telegram?.sendToTopic(topicId, text)); return true; }
+            sendDeterministic: async (topicId: number, text: string, inboundMessageId?: string) => {
+              const envelope = inboundMessageId ? { origin: 'automated' as const, category: 'presence-standby' as const, sourceContext: 'presence-proxy-standdown', inboundMessageId } : stampNotification();
+              try { const receipt = await withNotificationEnvelope(envelope, async () => telegram?.sendToTopic(topicId, text)); return !!receipt && !receipt.recorded; }
               catch { return false; }
             },
             claimProxyNotice: (topicId: number) => {
@@ -20846,7 +20851,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   senderName,
                   text: textContent,
                   messageType: typeof msgType === 'string' ? msgType : null,
-                }).then((r) => { if (!r.posted) hubSurface(); }, () => hubSurface());
+                }).then((r) => { if (!r.posted && !r.recorded) hubSurface(); }, () => hubSurface());
               } else {
                 hubSurface();
               }
@@ -21210,7 +21215,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             notifyTopic: (topicId, sessionId, text) => {
               stopLog({ kind: 'escalated', sessionName: sessionId, detail: `${topicRef(topicId)}: ${text}` });
               withNotificationEnvelope(stampNotification(), async () => (localTg)!.sendToTopic(Number(topicId), text)).then(
-                () => stopLog({ kind: 'escalation-sent', sessionName: sessionId, detail: topicRef(topicId) }),
+                (receipt) => stopLog({ kind: receipt.recorded ? 'quiet-recorded' : 'escalation-sent', sessionName: sessionId, detail: topicRef(topicId) }),
                 (err: unknown) => stopLog({ kind: 'notify-error', sessionName: sessionId, detail: `${topicRef(topicId)}: ${err instanceof Error ? err.message : String(err)}` }),
               );
             },
@@ -22401,7 +22406,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           const hubTopicId = state.get<number>('agent-attention-topic') ?? 0;
           const slack = _slackAdapter;
           return deliverOperatorNotice({
-            telegram: telegram && hubTopicId ? async (t) => { await withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(hubTopicId, t)); } : undefined,
+            telegram: telegram && hubTopicId ? async (t) => withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(hubTopicId, t)) : undefined,
             slack: slack ? {
               attentionChannel: state.get<string>('slack-attention-channel') ?? null,
               readersOf: async (channelId) => {
@@ -22418,7 +22423,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         notifyPerson: async (sessionName, text) => {
           const topicId = topicForSession(sessionName);
-          if (topicId !== null) { await withNotificationEnvelope(stampNotification(), async () => (telegram!)!.sendToTopic(topicId, text)); return true; }
+          if (topicId !== null) { const inboundMessageId = telegram?.selectivity?.latestInbound(topicId); const envelope = inboundMessageId ? { origin: 'automated' as const, category: 'message-loss-notice' as const, sourceContext: 'claude-key-health-person', inboundMessageId } : stampNotification(); const receipt = await withNotificationEnvelope(envelope, async () => (telegram!)!.sendToTopic(topicId, text)); return receipt.recorded ? receipt : true; }
           const routingKey = _slackAdapter?.getChannelForSession(sessionName) ?? null;
           if (routingKey !== null) { await sendToSlackKey(routingKey, text); return true; }
           return false;

@@ -27,6 +27,8 @@ describe('Notifications operator page', () => {
     expect(button.style.minHeight).toBe('44px');
     expect(main.querySelector('input[aria-label="Push scheduled job reports"]')).not.toBeNull();
     expect(main.querySelector('h1')?.textContent).toBe('Notifications');
+    expect(main.querySelector('.glance-root')?.textContent).toContain('Unread notices');
+    expect(main.querySelector('.glance-root')?.textContent).toContain('Push choices');
   });
   it('marks a notice read at its owner and refreshes the feed', async () => {
     const { main, fetch } = page();

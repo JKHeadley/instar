@@ -8016,10 +8016,11 @@ export function createRoutes(ctx: RouteContext): Router {
   const scopeAccretionRatifier = new ScopeAccretionRatifier({
     store: autonomousRunStore,
     getOperatorUid: (topicId: number) => ctx.topicOperatorStore?.getOperator(topicId)?.uid ?? null,
-    sendToTopic: async (topicId: number, text: string) => {
+    sendToTopic: async (topicId: number, text: string, inboundMessageId?: number) => {
       if (!ctx.telegram) throw new Error('telegram adapter unavailable');
-      const r = await withNotificationEnvelope(stampNotification(), async () => (ctx.telegram)!.sendToTopic(topicId, text));
-      return { messageId: requireTelegramDelivery(r).messageId };
+      const envelope = inboundMessageId !== undefined ? { origin: 'automated' as const, category: 'command-response' as const, sourceContext: 'scope-ratification', inboundMessageId: String(inboundMessageId) } : stampNotification();
+      const r = await withNotificationEnvelope(envelope, async () => (ctx.telegram)!.sendToTopic(topicId, text));
+      return r.recorded ? r : { messageId: requireTelegramDelivery(r).messageId };
     },
     dashboardLink: (topicId: string) =>
       `http://localhost:${ctx.config.port}/dashboard?ratify-deferral=${encodeURIComponent(topicId)}`,

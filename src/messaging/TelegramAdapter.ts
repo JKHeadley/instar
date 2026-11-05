@@ -5149,7 +5149,7 @@ export class TelegramAdapter implements MessagingAdapter {
   }
   private async routeToAttentionHub(item: AttentionItem): Promise<number | null> {
     const decision = admitItemToHub(item, this.attentionHubFilterMode);
-    if (!decision.admit) {
+    if (!decision.admit && !this.selectivity?.categoryPushEnabled(categoryForAttention(item.sourceContext, item.lane))) {
       item.hubHeld = true;
       this.saveAttentionItems();
       recordHeldHubPost(path.join(this.botStateDir, 'logs'), {
@@ -5237,6 +5237,7 @@ export class TelegramAdapter implements MessagingAdapter {
   attentionHubAdmits(itemId: string): boolean {
     const item = this.attentionItems.get(itemId);
     if (!item) return true;
+    if (this.selectivity?.isEnforcing()) return this.selectivity.categoryPushEnabled(categoryForAttention(item.sourceContext, item.lane));
     if (item.lane === 'agent-health' && item.needsUser !== true) return false;
     return admitItemToHub(item, this.attentionHubFilterMode).admit;
   }

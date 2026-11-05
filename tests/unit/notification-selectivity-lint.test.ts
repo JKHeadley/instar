@@ -24,6 +24,7 @@ describe('notification producer census ratchet', () => {
     "withNotificationEnvelope({ origin: 'automated', category: 'attention-item', significantClass: 'data-loss' }, () => telegram.sendToTopic(42, 'forged'));",
     "const stamp = notificationStamper('src/commands/server.ts'); withNotificationEnvelope(stamp(), () => telegram.sendToTopic(42, 'borrowed'));",
     'telegram.apiCall("sendMessage", {});',
+    "const stamp = notificationStamper('src/newProducer.ts', 'spend-alert-dispatcher'); withNotificationEnvelope(stamp(), () => telegram.sendToTopic(42, 'borrowed'));",
     "notificationContext.run(reply, () => telegram.sendToTopic(42, 'ambient'));",
   ])('rejects an unregistered egress or borrowed capability: %s', source => {
     expect(check(source).status).toBe(1);

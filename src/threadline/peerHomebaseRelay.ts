@@ -1,3 +1,4 @@
+import { isQuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/threadline/peerHomebaseRelay.ts');
 /**
@@ -54,8 +55,9 @@ export interface RelayInboundInput {
 }
 
 export type RelayInboundResult =
-  | { posted: true; topicId: number }
-  | { posted: false; reason: 'no-homebase' | 'operator-bound' | 'agent-internal' | 'rate-limited' | 'empty' | 'send-failed'; topicId?: number; retryScheduled?: true };
+  | { posted: true; topicId: number; recorded?: false }
+  | { posted: false; recorded: true; reason: 'quiet-recorded'; quietId: string; topicId: number }
+  | { posted: false; recorded?: false; reason: 'no-homebase' | 'operator-bound' | 'agent-internal' | 'rate-limited' | 'empty' | 'send-failed'; topicId?: number; retryScheduled?: true };
 
 /** A Telegram post carries at most this much of the body; the full text stays in the thread history. */
 export const RELAY_BODY_CAP = 1500;
@@ -172,7 +174,8 @@ export class PeerHomebaseRelay {
 
     const text = formatRelayPost(senderName, body);
     try {
-      await withNotificationEnvelope(stampNotification(), async () => (this.d)!.sendToTopic(topicId, text));
+      const receipt = await withNotificationEnvelope(stampNotification(), async () => (this.d)!.sendToTopic(topicId, text));
+      if (isQuietReceipt(receipt)) return { posted: false, recorded: true, reason: 'quiet-recorded', quietId: receipt.quietId, topicId };
     } catch (err) {
       this.d.log?.(`[homebase-relay] post to topic ${topicId} failed: ${err instanceof Error ? err.message : String(err)}`);
       const retry = judged ? this.scheduleRetry(threadId, topicId, senderName, body, attempt, peers, SEND_RETRY_MS) : false;

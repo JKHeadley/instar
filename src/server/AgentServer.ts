@@ -1,5 +1,6 @@
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/AgentServer.ts');
+const stampSpendNotification = notificationStamper('src/server/AgentServer.ts', 'spend-alert-dispatcher');
 import { requireTelegramDelivery } from '../messaging/NotificationSelectivityGate.js';
 /**
  * Agent Server — HTTP server wrapping Express.
@@ -2551,7 +2552,7 @@ export class AgentServer {
             const channel = new TelegramSpendTopicChannel({
               resolver: this.spendAlertResolver,
               sendToTopic: async (topicId, text) => {
-                const result = await withNotificationEnvelope(stampNotification(), async () => (tgC)!.sendToTopic(topicId, text));
+                const result = await withNotificationEnvelope(stampSpendNotification(), async () => (tgC)!.sendToTopic(topicId, text));
                 return 'recorded' in result && result.recorded ? result : true;
               },
               lifelineTopicId: () => tgC.getLifelineTopicId(),
@@ -3606,7 +3607,7 @@ export class AgentServer {
               raiseAttention: async (item) => {
                 const enqueue = this.telegramAdapter?.createAttentionItem;
                 if (!enqueue) throw new Error('durable attention enqueue unavailable');
-                await enqueue.call(this.telegramAdapter, item);
+                return enqueue.call(this.telegramAdapter, item);
               },
               tunnelUrl: () => options.tunnel?.url ?? null,
               paceTicks: this.queuePaceTickLog(options.config),
@@ -5253,8 +5254,8 @@ export class AgentServer {
           },
           notifyFailure: async (state, message) => {
             if (!options.telegram) return false;
-            await withNotificationEnvelope(stampNotification(), async () => (options.telegram)!.sendToTopic(state.topicId, message, { provenance: 'automation' }));
-            return true;
+            const sent = await withNotificationEnvelope(stampNotification(), async () => (options.telegram)!.sendToTopic(state.topicId, message, { provenance: 'automation' }));
+            return 'recorded' in sent && sent.recorded ? sent : true;
           },
           notificationAlreadyDelivered: (state, marker) => {
             if (!options.telegram) return false;
@@ -5314,12 +5315,12 @@ export class AgentServer {
           deliverSynthesis: async ({ state, text, reportId, dueAt }) => {
             if (!options.telegram) throw new Error('window-run-cadence-telegram-unavailable');
             const result = await withNotificationEnvelope(stampNotification(), async () => (options.telegram)!.sendToTopic(state.topicId, text, { provenance: 'automation' }));
-            return { messageId: requireTelegramDelivery(result).messageId };
+            return 'recorded' in result && result.recorded ? result : { messageId: requireTelegramDelivery(result).messageId };
           },
           notifyFailure: async (state, message) => {
             if (!options.telegram) throw new Error('window-run-cadence-telegram-unavailable');
             const result = await withNotificationEnvelope(stampNotification(), async () => (options.telegram)!.sendToTopic(state.topicId, message, { provenance: 'automation' }));
-            return { messageId: requireTelegramDelivery(result).messageId };
+            return 'recorded' in result && result.recorded ? result : { messageId: requireTelegramDelivery(result).messageId };
           },
           findDeliveredFailureNotification: (topicId, notificationId) => {
             const marker = `W32 cadence failure receipt: ${notificationId}`;
@@ -7726,7 +7727,7 @@ export class AgentServer {
               visibleEcho: {
                 enabled: cfg.visibleEcho !== false,
                 bot: telegramBot
-                  ? { sendToTopic: async (t, txt) => requireTelegramDelivery(await withNotificationEnvelope(stampNotification(), async () => (telegramBot)!.sendToTopic(t, txt))) }
+                  ? { sendToTopic: async (t, txt) => withNotificationEnvelope(stampNotification(), async () => (telegramBot)!.sendToTopic(t, txt)) }
                   : undefined,
                 topicId: resolveMentorDeliveryTopic(cfg),
                 roleTag: '[mentor]',
@@ -8050,7 +8051,7 @@ export class AgentServer {
               const burnAlertDelivery = telegram && typeof (telegram as { sendToTopic?: unknown }).sendToTopic === 'function'
                 && typeof (telegram as { createAttentionItem?: unknown }).createAttentionItem === 'function'
                 ? new BurnAlertDelivery({
-                    sendToTopic: (topicId, text) => withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, text)),
+                    sendToTopic: (topicId, text) => withNotificationEnvelope(stampSpendNotification(), async () => (telegram)!.sendToTopic(topicId, text)),
                     raiseAttention: (item) => telegram.createAttentionItem(item),
                     hasAttentionItem: (id) => telegram.getAttentionItem(id) !== undefined,
                     stateFile: this.config.stateDir
@@ -9001,8 +9002,8 @@ export class AgentServer {
         return t.topicId;
       },
       sendToTopic: async (topicId, text) => {
-        await withNotificationEnvelope(stampNotification(), async () => (tg)!.sendToTopic(topicId, text));
-        return true;
+        const sent = await withNotificationEnvelope(stampSpendNotification(), async () => (tg)!.sendToTopic(topicId, text));
+        return 'recorded' in sent && sent.recorded ? sent : true;
       },
       lifelineTopicId: () => tg.getLifelineTopicId(),
     });

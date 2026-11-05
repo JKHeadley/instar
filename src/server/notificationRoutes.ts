@@ -87,7 +87,7 @@ export function mountNotificationRoutes(router: Router, ctx: RouteContext, verif
       await gate.preferences.set(category, req.body.enabled, surface);
       void gate.preferences.drain();
       if (ctx.liveConfig && ctx.liveConfig.get(`notifications.selectivity.push.categories.${category}`, !req.body.enabled) !== req.body.enabled) throw new Error('Preference write did not persist');
-      if (conversational) await ctx.telegram!.sendToTopic(topicId, `Done — ${category.replaceAll('-', ' ')} ${req.body.enabled ? 'will now be pushed' : 'will stay in the notification feed'}.`, { envelope: verifiedReplyEnvelope('notification-preference-confirm') });
+      if (conversational) await ctx.telegram!.sendToTopic(topicId, `Done — routine ${category.replaceAll('-', ' ')} ${req.body.enabled ? 'will now be pushed' : 'will stay in the notification feed'}.`, { envelope: verifiedReplyEnvelope('notification-preference-confirm') });
       res.json({ ok: true, category, enabled: req.body.enabled });
     } catch { res.status(503).json({ error: 'Could not save the preference. Please retry.' }); }
   });

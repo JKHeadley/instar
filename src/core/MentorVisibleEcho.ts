@@ -1,3 +1,4 @@
+import { isQuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/core/MentorVisibleEcho.ts');
 export const TELEGRAM_TEXT_LIMIT = 4096;
@@ -84,7 +85,8 @@ export async function sendMentorVisibleEcho(body: string, opts: MentorVisibleEch
   let landed = 0;
   for (let i = 0; i < plan.messages.length; i += 1) {
     try {
-      await withNotificationEnvelope(stampNotification(), async () => (opts.bot)!.sendToTopic(opts.topicId!, plan.messages[i]));
+      const result = await withNotificationEnvelope(stampNotification(), async () => (opts.bot)!.sendToTopic(opts.topicId!, plan.messages[i]));
+      if (isQuietReceipt(result)) { log(`[mentor-echo] outcome=quiet-recorded topic=${opts.topicId} quietId=${result.quietId}`); return; }
       landed += 1;
     } catch (err) {
       const reason = `chunk ${i + 1}/${plan.messages.length} failed after ${landed} landed: ${err instanceof Error ? err.message : String(err)}`;

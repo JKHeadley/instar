@@ -1,3 +1,4 @@
+import { categoryForProducer } from '../notificationCategories.js';
 import { notificationContext } from '../NotificationSelectivityGate.js';
 import { notificationStamper, withNotificationEnvelope } from '../notificationStampers.js';
 const stampNotification = notificationStamper('src/messaging/telegram-origin/OriginDeterministicSend.ts');
@@ -26,9 +27,11 @@ export async function withDeterministicOrigin<T>(service: TelegramOriginService 
 export function sendDeterministicTelegramNotice<T>(transport: { sendToTopic(topicId: number, text: string): Promise<T> },
   producerId: DeterministicOriginProducer, topicId: number, text: string): Promise<T> {
   const inbound = notificationContext.getStore();
-  const envelope = producerId === 'cold-start-fallback' && inbound?.inboundMessageId
-    ? { origin: 'automated' as const, category: 'cold-start-fallback' as const, sourceContext: producerId, inboundMessageId: inbound.inboundMessageId }
-    : stampNotification();
+  const floorCategory = producerId === 'cold-start-fallback' ? 'cold-start-fallback' as const
+    : producerId === 'session-monitor' && (inbound?.category === 'message-loss-notice' || inbound?.category === 'presence-standby') ? inbound.category : undefined;
+  const envelope = floorCategory && inbound?.inboundMessageId
+    ? { origin: 'automated' as const, category: floorCategory, sourceContext: producerId, inboundMessageId: inbound.inboundMessageId }
+    : { origin: 'automated' as const, category: categoryForProducer(producerId), sourceContext: producerId };
   return withDeterministicOrigin(transports.get(transport), producerId, () => withNotificationEnvelope(envelope, async () => transport.sendToTopic(topicId, text)));
 }
 /** These producers include copied prose without a native author observation. */

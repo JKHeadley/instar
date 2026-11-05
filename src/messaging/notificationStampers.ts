@@ -38,9 +38,16 @@ export const EMITTER_CATEGORIES = {
   "src/tunnel/TunnelManager.ts": "tunnel-notice"
 } as const satisfies Record<string, NotificationCategoryId>;
 
-export function notificationStamper(moduleId: keyof typeof EMITTER_CATEGORIES): () => OutboundEnvelope {
-  const category = EMITTER_CATEGORIES[moduleId];
-  return () => ({ origin: 'automated', category, sourceContext: moduleId });
+/** A composite root names its producer explicitly instead of inheriting ambient authority. */
+const NAMED_EMITTERS: Partial<Record<keyof typeof EMITTER_CATEGORIES, Partial<Record<'spend-alert-dispatcher' | 'quota-notifier' | 'reap-notifier', NotificationCategoryId>>>> = {
+  'src/server/AgentServer.ts': { 'spend-alert-dispatcher': 'spend-alert' },
+  'src/commands/server.ts': { 'reap-notifier': 'reap-notice' },
+  'src/messaging/telegramSendSideComposition.ts': { 'quota-notifier': 'spend-alert', 'reap-notifier': 'reap-notice' },
+};
+export function notificationStamper(moduleId: keyof typeof EMITTER_CATEGORIES, producerId?: 'spend-alert-dispatcher' | 'quota-notifier' | 'reap-notifier'): () => OutboundEnvelope {
+  const registered = producerId ? NAMED_EMITTERS[moduleId]?.[producerId] : EMITTER_CATEGORIES[moduleId];
+  if (!registered) throw new Error('Unregistered notification producer capability');
+  return () => ({ origin: 'automated', category: registered, sourceContext: producerId ? `${moduleId}#${producerId}` : moduleId });
 }
 
 export function withNotificationEnvelope<T>(envelope: OutboundEnvelope, send: () => T): T {

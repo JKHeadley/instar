@@ -85,6 +85,16 @@ describe('SessionMonitor', () => {
   });
 
   describe('dead session detection', () => {
+    it('does not emit a user-notified event or delivered ledger for a quiet notice', async () => {
+      deps = createMockDeps({ getActiveTopicSessions: () => new Map([[100, 'session-a']]), isSessionAlive: () => false,
+        getTopicHistory: () => [{ text: 'hello', fromUser: true, timestamp: new Date(Date.now() - 300000).toISOString(), messageId: 7 }],
+        sendToTopic: vi.fn().mockResolvedValue({ delivered: false, recorded: true, quietId: 'monitor-q' }) });
+      monitor = new SessionMonitor(deps); const notices = vi.fn(); monitor.on('monitor:user-notified', notices);
+      await monitor.poll(); await monitor.poll();
+      expect(deps.sendToTopic).toHaveBeenCalledOnce(); expect(notices).not.toHaveBeenCalled();
+      expect((monitor as any).deadNotified.size).toBe(0);
+    });
+
     it('detects dead session when user is waiting and triggers triage + notification', async () => {
       const now = Date.now();
       deps = createMockDeps({

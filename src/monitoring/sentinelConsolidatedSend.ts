@@ -1,3 +1,4 @@
+import { isQuietReceipt, type QuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/monitoring/sentinelConsolidatedSend.ts');
 /**
@@ -46,14 +47,14 @@ export async function sendConsolidatedWithSelfHeal(
   tg: ConsolidatedSendTelegram,
   text: string,
   log: (line: string) => void,
-): Promise<boolean> {
+): Promise<boolean | QuietReceipt> {
   const topicId = tg.getLifelineTopicId();
 
   // Fast path: send to the currently-configured lifeline topic.
   if (topicId) {
     try {
-      await withNotificationEnvelope(stampNotification(), async () => (tg)!.sendToTopic(topicId, text));
-      return true;
+      const receipt = await withNotificationEnvelope(stampNotification(), async () => (tg)!.sendToTopic(topicId, text));
+      return isQuietReceipt(receipt) ? receipt : true;
     } catch (err) {
       // De-swallow (the original `catch { return false }` black-holed this).
       const msg = errMsg(err);
@@ -85,8 +86,8 @@ export async function sendConsolidatedWithSelfHeal(
   }
 
   try {
-    await withNotificationEnvelope(stampNotification(), async () => (tg)!.sendToTopic(healed, text));
-    return true;
+    const receipt = await withNotificationEnvelope(stampNotification(), async () => (tg)!.sendToTopic(healed, text));
+    return isQuietReceipt(receipt) ? receipt : true;
   } catch (err) {
     log(`escalation retry to healed lifeline topic ${healed} failed (${errMsg(err)}) — alert NOT delivered`);
     return false;
