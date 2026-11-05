@@ -1208,7 +1208,12 @@ extension InstarDesktopHost {
         defer { IOObjectRelease(root) }
         guard root != 0, let users = IORegistryEntryCreateCFProperty(root, "IOConsoleUsers" as CFString,
             kCFAllocatorDefault, 0)?.takeRetainedValue() as? [[String: Any]] else { return "unreadable" }
-        guard let pid = users.compactMap({ $0["kCGSSessionSecureInputPID"] as? Int32 }).first(where: { $0 > 0 }) else { return "none" }
+        // Only the session on the console counts: a password field in another
+        // account's background session says nothing about this screen. With no
+        // session on the console (the login window) every entry is still read.
+        let onConsole = users.filter { $0["kCGSSessionOnConsoleKey"] as? Bool == true }
+        guard let pid = (onConsole.isEmpty ? users : onConsole)
+            .compactMap({ $0["kCGSSessionSecureInputPID"] as? Int32 }).first(where: { $0 > 0 }) else { return "none" }
         var name = [CChar](repeating: 0, count: 256)
         guard proc_name(pid, &name, 256) > 0 else { return "unreadable" }
         return String(cString: name) == "loginwindow" ? "loginwindow" : "other"
@@ -1340,7 +1345,11 @@ extension InstarDesktopHost {
     }
 
     private static func secureTargetHolds() -> Bool {
-        (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool == true
+        // This helper's own session must be the one on screen: after a user switch
+        // the keystrokes would land on another account's lock screen.
+        let state = CGSessionCopyCurrentDictionary() as? [String: Any]
+        return state?["CGSSessionScreenIsLocked"] as? Bool == true
+            && state?[kCGSessionOnConsoleKey as String] as? Bool == true
             && shieldWindowPresent() && secureInputOwner() == "loginwindow"
     }
 

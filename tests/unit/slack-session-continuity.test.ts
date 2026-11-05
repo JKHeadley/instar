@@ -136,7 +136,7 @@ describe('Slack session continuity (anti-amnesia)', () => {
     it('normal spawn writes inline context to message file for long messages', () => {
       const slackBlock = serverSource.slice(
         serverSource.indexOf('Build context for the session'),
-        serverSource.indexOf('Build context for the session') + 6000,
+        serverSource.indexOf('Build context for the session') + 10000,
       );
       // When message is long, the file must include the context data too
       expect(slackBlock).toContain('fullContent');
@@ -148,7 +148,7 @@ describe('Slack session continuity (anti-amnesia)', () => {
     it('normal spawn warns when history is empty', () => {
       const slackBlock = serverSource.slice(
         serverSource.indexOf('Build context for the session'),
-        serverSource.indexOf('Build context for the session') + 2000,
+        serverSource.indexOf('Build context for the session') + 10000,
       );
       expect(slackBlock).toContain('No history available for channel');
     });

@@ -16,8 +16,8 @@ import {
   type SlackFormatMode,
 } from '../../src/messaging/slack/SlackMrkdwnFormatter.js';
 
-const fmt = (text: string, mode: SlackFormatMode = 'mrkdwn') =>
-  formatForSlack(text, mode).text;
+const fmt = (text: string, mode: SlackFormatMode = 'mrkdwn', nativeReferences: string[] = []) =>
+  formatForSlack(text, mode, nativeReferences).text;
 
 describe('formatForSlack — emphasis', () => {
   it('converts **bold** to *bold*', () => {
@@ -117,9 +117,32 @@ describe('formatForSlack — escaping (Slack specials)', () => {
     expect(out).not.toContain('&amp;amp;');
   });
 
-  it('escapes raw angle-bracket sequences so Slack cannot parse them as entities', () => {
-    // A raw <@U123> in agent GFM output is DATA, not a mention.
-    expect(fmt('mention syntax is <@U123>')).toBe('mention syntax is &lt;@U123&gt;');
+  it('renders agent-authored user, channel, and safe link references', () => {
+    expect(fmt('Thanks <@U0C62ABNDK8>. See <#C1234567890> and <https://example.com/a|docs>.', 'mrkdwn', ['U0C62ABNDK8', 'C1234567890', 'https://example.com/a'])).toBe(
+      'Thanks <@U0C62ABNDK8>. See <#C1234567890> and <https://example.com/a|docs>.',
+    );
+  });
+
+  it('keeps copied untrusted reference syntax inert without explicit author intent', () => {
+    expect(fmt('Thanks <@U0C62ABNDK8>. See <#C1234567890>.')).toBe(
+      'Thanks &lt;@U0C62ABNDK8&gt;. See &lt;#C1234567890&gt;.',
+    );
+  });
+
+  it('activates only specifically authorized targets in a mixed reply', () => {
+    expect(fmt('Hi <@U0C62ABNDK8>; quote: <@U0APWL48281>', 'mrkdwn', ['U0C62ABNDK8'])).toBe(
+      'Hi <@U0C62ABNDK8>; quote: &lt;@U0APWL48281&gt;',
+    );
+  });
+
+  it('keeps broadcast mentions and malformed or unsafe references literal', () => {
+    expect(fmt('<!channel> <!here> <!everyone> <@U123> <javascript:alert(1)|bad>', 'mrkdwn', ['U123', 'javascript:alert(1)'])).toBe(
+      '&lt;!channel&gt; &lt;!here&gt; &lt;!everyone&gt; &lt;@U123&gt; &lt;javascript:alert(1)|bad&gt;',
+    );
+  });
+
+  it('does not activate references inside code', () => {
+    expect(fmt('`<@U0C62ABNDK8>`', 'mrkdwn', ['U0C62ABNDK8'])).toBe('`&lt;@U0C62ABNDK8&gt;`');
   });
 });
 
@@ -305,6 +328,12 @@ describe('formatForSlack — modes and guards', () => {
     const r = formatForSlack(big, 'mrkdwn');
     expect(r.conversionSkipped).toBe(true);
     expect(r.text).toBe(big);
+  });
+
+  it('keeps broadcasts inert even when an oversized send skips conversion', () => {
+    const r = formatForSlack('x'.repeat(MAX_INPUT_LENGTH) + '<!channel>', 'mrkdwn', ['U0C62ABNDK8']);
+    expect(r.conversionSkipped).toBe(true);
+    expect(r.text).toContain('&lt;!channel&gt;');
   });
 
   it('strips NUL bytes and PUA-B sentinels from input (collision defense)', () => {

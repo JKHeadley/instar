@@ -15,11 +15,15 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   PostUpdateMigrator,
   NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION,
   NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1,
+  NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V2,
+  NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V2,
+  NORMAL_CHROME_BROWSER_SKILL_V2_SHA256,
   NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING,
   NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1,
   NORMAL_CHROME_BROWSER_SKILL_MARKER,
@@ -55,7 +59,9 @@ describe('NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION', () => {
     expect(text).toContain('never for reaching actions the page does not offer this account');
     expect(text).toContain('written by PP');
     expect(text).toContain('an agent in WSL is on Windows for this');
-    expect(text).toContain('ACT-138');
+    expect(text).toContain('I always have a browser');
+    expect(text).toContain('GET /browser/state');
+    expect(text).not.toContain('secret-drop-retrieve.mjs'); // the Secret Drop rewrite sniffs that string
     expect(text).toContain('never take focus or send input while the operator is using the machine');
     expect(text).not.toContain('macOS only');
     expect(text.length).toBeLessThan(NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1().length * 2); // a pointer-sized card, not the skill
@@ -177,7 +183,7 @@ describe('PostUpdateMigrator — normal-Chrome browser', () => {
   it('migrateClaudeMd replaces the shipped v1 section in place (the PR 2283 agent), keeping a heading-less block after it', () => {
     fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), `# CLAUDE.md — agent on PR 2283\n${NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1()}\n**A2A cross-route copies are labelled:** one peer can reach me under more than one kind of identity.\n`);
     const r = call(m, 'migrateClaudeMd');
-    expect(r.upgraded).toContain('CLAUDE.md: replaced Normal-Chrome browser section (macOS + Windows)');
+    expect(r.upgraded).toContain('CLAUDE.md: replaced Normal-Chrome browser section (macOS, Windows and Linux)');
     const md = claudeMd();
     expect(count(md, HEADING)).toBe(1);
     expect(md).not.toContain(HEADING_V1);
@@ -189,13 +195,13 @@ describe('PostUpdateMigrator — normal-Chrome browser', () => {
     const edited = NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1().replace('list that folder instead', 'list that folder instead (my edit)');
     fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), `# CLAUDE.md\n${edited}`);
     const r = call(m, 'migrateClaudeMd');
-    expect(r.upgraded.some(u => u.includes('the edited macOS-only section was kept'))).toBe(true);
+    expect(r.upgraded.some(u => u.includes('the edited older section was kept'))).toBe(true);
     expect(claudeMd()).toContain('(my edit)');
     expect(count(claudeMd(), HEADING)).toBe(1);
     // A release revert re-appends the shipped v1; the next upgrade removes it.
     fs.appendFileSync(path.join(projectDir, 'CLAUDE.md'), NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1());
     const again = call(m, 'migrateClaudeMd');
-    expect(again.upgraded).toContain('CLAUDE.md: removed the stale macOS-only Normal-Chrome browser section');
+    expect(again.upgraded).toContain('CLAUDE.md: removed a stale older Normal-Chrome browser section');
     expect(count(claudeMd(), HEADING_V1)).toBe(1); // only the edited copy remains
     expect(claudeMd()).toContain('(my edit)');
   });
@@ -222,14 +228,14 @@ describe('PostUpdateMigrator — normal-Chrome browser', () => {
       fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
       fs.writeFileSync(skillPath(), v1);
       const r = call(m, 'migrateNormalChromeBrowserSkill');
-      expect(r.upgraded).toContain('skills/normal-chrome-browser/SKILL.md (macOS + Windows drivers)');
+      expect(r.upgraded).toContain('skills/normal-chrome-browser/SKILL.md (macOS, Windows and Linux drivers)');
       expect(fs.readFileSync(skillPath(), 'utf-8')).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT);
       expect(fs.existsSync(path.join(path.dirname(skillPath()), 'SKILL.shipped.md'))).toBe(false);
       // Idempotent on the marker.
       expect(call(m, 'migrateNormalChromeBrowserSkill').upgraded).toEqual([]);
       // A CRLF copy of the shipped text is still recognized.
       fs.writeFileSync(skillPath(), v1.replace(/\n/g, '\r\n'));
-      expect(call(m, 'migrateNormalChromeBrowserSkill').upgraded).toContain('skills/normal-chrome-browser/SKILL.md (macOS + Windows drivers)');
+      expect(call(m, 'migrateNormalChromeBrowserSkill').upgraded).toContain('skills/normal-chrome-browser/SKILL.md (macOS, Windows and Linux drivers)');
     });
 
     it('appends the Windows appendix once to an edited copy, keeps the edits, and writes the shipped text beside it', () => {
@@ -237,7 +243,7 @@ describe('PostUpdateMigrator — normal-Chrome browser', () => {
       fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
       fs.writeFileSync(skillPath(), edited);
       const r = call(m, 'migrateNormalChromeBrowserSkill');
-      expect(r.upgraded).toContain('skills/normal-chrome-browser/SKILL.md (appended the Windows driver section; local edits kept; shipped text in SKILL.shipped.md)');
+      expect(r.upgraded).toContain('skills/normal-chrome-browser/SKILL.md (appended the Windows and Linux driver sections; local edits kept; shipped text in SKILL.shipped.md)');
       const after = fs.readFileSync(skillPath(), 'utf-8');
       expect(after.startsWith(edited.trimEnd())).toBe(true);
       expect(after).toContain('fire events that page code listens for'); // the agent's text is never removed
@@ -303,5 +309,83 @@ describe('PostUpdateMigrator — normal-Chrome browser', () => {
     expect(crlf).not.toContain(HEADING_V1);
     expect(crlf).toContain(HEADING);
     expect(crlf.split('\r\n').length).toBeGreaterThan(5);
+  });
+});
+
+describe('the Linux release reaches an existing agent', () => {
+  let dir: string;
+  let migrator: PostUpdateMigrator;
+  const V2 = fs.readFileSync(path.resolve('tests/fixtures/skills/normal-chrome-browser-v2.md'), 'utf8');
+  const run = (name: string) => (migrator as unknown as Record<string, (r: object) => void>)[name];
+  const migrate = (name: string) => { const r = { upgraded: [] as string[], skipped: [] as string[], errors: [] as string[] }; run(name).call(migrator, r); return r; };
+  const skillFile = () => path.join(dir, '.claude/skills/normal-chrome-browser/SKILL.md');
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ncb3-'));
+    fs.mkdirSync(path.join(dir, '.instar'), { recursive: true });
+    fs.mkdirSync(path.dirname(skillFile()), { recursive: true });
+    migrator = new PostUpdateMigrator({ projectDir: dir, stateDir: path.join(dir, '.instar'), port: 4040, hasTelegram: false, projectName: 't' });
+  });
+  afterEach(() => { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'test-cleanup' }); });
+
+  it('pins the v2 hash to the fixture', () => {
+    expect(createHash('sha256').update(V2.replace(/\r\n/g, '\n')).digest('hex')).toBe(NORMAL_CHROME_BROWSER_SKILL_V2_SHA256);
+  });
+
+  it('replaces the shipped v2 skill whole, once', () => {
+    fs.writeFileSync(skillFile(), V2);
+    expect(migrate('migrateNormalChromeBrowserSkill').upgraded).toContain('skills/normal-chrome-browser/SKILL.md (macOS, Windows and Linux drivers)');
+    expect(fs.readFileSync(skillFile(), 'utf8')).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT);
+    expect(migrate('migrateNormalChromeBrowserSkill').upgraded).toEqual([]);
+  });
+
+  it('swaps only the Linux subsection of an edited copy, keeping the edits, CRLF included', () => {
+    for (const eol of ['\n', '\r\n']) {
+      fs.writeFileSync(skillFile(), (V2 + '\nMY LOCAL NOTE\n').replace(/\n/g, eol));
+      migrate('migrateNormalChromeBrowserSkill');
+      const after = fs.readFileSync(skillFile(), 'utf8');
+      expect(after).toContain('MY LOCAL NOTE');
+      expect(after.split(NORMAL_CHROME_BROWSER_SKILL_MARKER).length - 1).toBeGreaterThanOrEqual(1);
+      expect(after).not.toContain('Not built. Say so plainly');
+      expect(eol === '\n' || !/[^\r]\n/.test(after)).toBe(true);
+    }
+  });
+
+  it('replaces the shipped v2 card in place, adds the Registry First row once, and is idempotent', () => {
+    const md = path.join(dir, 'CLAUDE.md');
+    fs.writeFileSync(md, `# CLAUDE.md\n\n| What can I do? | x |\n${NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V2()}\n## After\n`);
+    migrate('migrateClaudeMd');
+    const once = fs.readFileSync(md, 'utf8');
+    expect(once).toContain(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING);
+    expect(once).not.toContain(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V2);
+    expect(once.indexOf(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING)).toBeLessThan(once.indexOf('## After'));
+    expect(once.split('| Can I use a browser?').length - 1).toBe(1);
+    migrate('migrateClaudeMd');
+    expect(fs.readFileSync(md, 'utf8')).toBe(once);
+  });
+
+  it('prints the state in the session-start hook, run for real, and never "no browser"', () => {
+    const hook = (migrator as unknown as { getSessionStartHook(): string }).getSessionStartHook();
+    const block = hook.slice(hook.indexOf('# Browser awareness on a Linux server'), hook.indexOf('# TOPIC CONTEXT (loaded FIRST'));
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'uname'), '#!/bin/bash\necho Linux\n', { mode: 0o755 });
+    const script = path.join(dir, 'block.sh');
+    fs.writeFileSync(script, block.replace(/\$INSTAR_DIR/g, path.join(dir, '.instar')));
+    const stateFile = path.join(dir, '.instar/state/xdrive/provision.json');
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const line = (status: string | null) => {
+      if (status) fs.writeFileSync(stateFile, JSON.stringify({ status })); else SafeFsExecutor.safeRmSync(stateFile, { force: true, operation: 'test-cleanup' });
+      return spawnSync('bash', [script], { encoding: 'utf8', env: { PATH: `${bin}:/usr/bin:/bin` } }).stdout;
+    };
+    const expectedDefault = fs.existsSync('/opt/google/chrome/chrome') ? 'ready' : 'not-built';
+    expect(line(null)).toContain(`State: ${expectedDefault}.`);
+    expect(line('installing')).toContain('State: installing.');
+    expect(line('failed: key')).toContain('State: broken.');
+    expect(line(null)).toContain('GET /browser/state');
+    expect(line('failed: key').toLowerCase()).toContain('neither means no browser');
+    SafeFsExecutor.safeRmSync(path.join(bin, 'uname'), { operation: 'test-cleanup' });
+    fs.writeFileSync(path.join(bin, 'uname'), '#!/bin/bash\necho Darwin\n', { mode: 0o755 });
+    expect(line(null)).toBe('');
   });
 });

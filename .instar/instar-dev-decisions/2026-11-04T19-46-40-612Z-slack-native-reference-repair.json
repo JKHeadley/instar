@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-04T19:46:40.612Z",
+  "slug": "slack-native-reference-repair",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 91,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/messaging/slack/SlackAdapter.ts",
+      "src/messaging/slack/SlackMrkdwnFormatter.ts",
+      "src/messaging/slack/threadHistoryLabel.ts",
+      "src/server/routes.ts",
+      "src/templates/scripts/slack-reply.sh"
+    ],
+    "addedLines": 79,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

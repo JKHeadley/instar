@@ -40,6 +40,12 @@ const BLOCKED_PATH_PREFIXES = new Set([
   // never-served deny, the gitignore entries and the sync classifier.
   ...KEY_MATERIAL_BACKUP_PREFIXES,
   '.instar/secrets/',
+  // Chrome profiles hold session cookies and the Linux driver's state names live processes on one
+  // machine; a restored auto-install file would also start a root install on another machine.
+  'state/playwright-profiles/',
+  'state/xdrive/',
+  '.instar/state/playwright-profiles/',
+  '.instar/state/xdrive/',
   // includeFiles entries resolve RELATIVE TO stateDir (sourcePath = path.join(stateDir,
   // entry)), so the project-relative '.instar/secrets/' spelling above never matched a
   // stateDir-relative 'secrets/…' entry: `includeFiles: ['secrets/passkeys/']` or
