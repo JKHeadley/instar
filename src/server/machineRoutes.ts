@@ -19,6 +19,9 @@ import { Router } from 'express';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { sealIdentityForJoiner, readAgentIdentityForHandover } from '../core/AgentIdentityHandover.js';
+import {
+  decideInviterPairActivation, finishInviterPairActivation, requestPairActivationRestart,
+} from '../core/sessionPoolPairActivation.js';
 import crypto from 'node:crypto';
 import { sign, verify } from '../core/MachineIdentity.js';
 import type { MachineIdentityManager } from '../core/MachineIdentity.js';
@@ -71,6 +74,8 @@ export interface MachineRouteContext {
    */
   stateDir?: string;
   agentName?: string;
+  /** The bot token and chat id for a first pairing's handover; null when there is no Telegram. */
+  getTelegramHandoverSource?: () => { botToken: string; chatId: string } | null;
   /** Callback when this machine should demote to standby */
   onDemote?: () => void;
   /** Callback when this machine should promote to awake */
@@ -615,6 +620,12 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
         recoveryEpoch: authority.recoveryEpoch + 1,
       };
     }
+    // Decided before the joiner is stored, so it does not count itself.
+    const pairActivation = ctx.stateDir ? decideInviterPairActivation({
+      stateDir: ctx.stateDir,
+      otherMachineIds: Object.keys(ctx.identityManager.loadRegistry().machines ?? {}).filter((id) => id !== ctx.localMachineId),
+      joinerMachineId: machineIdentity.machineId,
+    }) : null;
     try {
       ctx.identityManager.storeRemoteIdentity(acceptedMachineIdentity, {
         actor: 'pairing-trust',
@@ -696,13 +707,32 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
       console.warn('[pair] agent-identity handover failed (non-fatal):', err);
     }
 
+    const activation = ctx.stateDir && pairActivation ? finishInviterPairActivation({
+      stateDir: ctx.stateDir,
+      decision: pairActivation,
+      telegram: ctx.getTelegramHandoverSource?.() ?? null,
+      pairingSessionId: String(stored.code),
+      joinerMachineId: machineIdentity.machineId,
+      joinerEncryptionPublicKey: String(ephemeralPublicKey),
+      now: new Date(),
+    }) : null;
+
     res.json({
       status: 'paired',
       machineIdentity: localIdentity,
+      ...(activation?.response ?? {}),
       ...(ctx.getIdentityRecoveryBearerToken?.() ? { identityRecoveryBearerToken: ctx.getIdentityRecoveryBearerToken!() } : {}),
       ...(agentIdentityEnvelope ? { agentIdentityEnvelope } : {}),
       message: 'Paired.',
     });
+    if (activation?.restart && ctx.stateDir) {
+      try {
+        requestPairActivationRestart(ctx.stateDir, new Date());
+      } catch (err) {
+        // @silent-fallback-ok: the keys are written, so the next restart applies them; until then this machine stays dark.
+        console.warn('[pair] could not request a restart; sharing starts at the next one:', err);
+      }
+    }
   });
 
   // Existing pools created before the recovery channel can converge without a
