@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "lease-job-coverage-and-catchup",
+  "sessionId": "42912913-074b-480a-9565-222edcd29edc",
+  "timestamp": "2026-11-05T08:49:43.432Z",
+  "artifactPath": "upgrades/side-effects/lease-job-coverage-and-catchup.md",
+  "artifactSha256": "72536c8893ee6974b13d3499f1094c3bdcee09b1d41a2af5b34989bdf749e805",
+  "specPath": "docs/specs/lease-job-coverage-and-catchup.md",
+  "coveredFiles": [
+    "src/core/JobCoverage.ts",
+    "src/core/JobCoverageMonitor.ts",
+    "src/scheduler/PromotionCatchUpStore.ts",
+    "upgrades/side-effects/lease-job-coverage-and-catchup.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to the approved lease coverage design; explicit fail-closed fallbacks satisfy the full-suite ratchet.",
+  "secondPass": "false",
+  "reviewerConcurred": false
+}

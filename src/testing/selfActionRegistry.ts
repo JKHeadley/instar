@@ -3874,6 +3874,61 @@ function makeRequiredAckPendingRetry(f: PressureFixture, sink: ActionSink): { ti
   };
 }
 
+/** Coverage alert delivery under a permanently failing transport. The on-disk
+ * episode timestamp is the brake and survives reconstruction. */
+const jobCoverageAlertRetry: SelfActionController = {
+  id: 'job-coverage-alert-retry',
+  actionVerb: 'retry-coverage-alert',
+  models: 'src/core/JobCoverageMonitor.ts (durable episode attempts, one-hour failed-send floor and daily delivered reminder)',
+  modelsPath: 'src/core/JobCoverageMonitor.ts',
+  delegatedGiveUp: 'operator recovery closes the episode; unresolved coverage is an eternal health signal with a one-hour minimum retry interval',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => makeJobCoverageAlertRetry(f, sink) },
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 300,
+  tickMs: 5 * 60_000,
+  eternalSentinel: { reason: 'a failing coverage alert retries no more than hourly', rateFloorMs: 60 * 60_000 },
+  makeUnderPressure: (f, sink) => makeJobCoverageAlertRetry(f, sink),
+};
+
+function makeJobCoverageAlertRetry(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered += 1;
+    const now = f.clock.nowMs();
+    const lastAttempt = f.durableState.get('coverage-alert:last-attempt') as number | undefined;
+    if (lastAttempt !== undefined && now - lastAttempt < 60 * 60_000) return;
+    f.durableState.set('coverage-alert:last-attempt', now);
+    sink.emit({ verb: 'retry-coverage-alert', target: 'operator' });
+    sink.emitTimesMs.push(now);
+  } };
+}
+
+/** A portable transfer tick selects at most twenty jobs and cannot overlap. */
+const jobPortableTransferPoll: SelfActionController = {
+  id: 'job-portable-transfer-poll',
+  actionVerb: 'retry-portable-job-batch',
+  models: 'src/core/JobCoverageMonitor.ts (five-minute non-overlapping tick, durable rotating cursor, at most twenty jobs per peer)',
+  modelsPath: 'src/core/JobCoverageMonitor.ts',
+  delegatedGiveUp: 'a revoked or unavailable peer is reported as a coverage gap; a later bounded tick retries',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => makeJobPortableTransferPoll(f, sink) },
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 200,
+  tickMs: 5 * 60_000,
+  eternalSentinel: { reason: 'portable transfer is bounded to one batch per coverage tick', rateFloorMs: 5 * 60_000 },
+  makeUnderPressure: (f, sink) => makeJobPortableTransferPoll(f, sink),
+};
+function makeJobPortableTransferPoll(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered += 1;
+    const now = f.clock.nowMs();
+    const last = f.durableState.get('portable-transfer:last-batch') as number | undefined;
+    if (last !== undefined && now - last < 5 * 60_000) return;
+    f.durableState.set('portable-transfer:last-batch', now);
+    sink.emit({ verb: 'retry-portable-job-batch', target: 'registered-peer' });
+    sink.emitTimesMs.push(now);
+  } };
+}
 /**
  * job-silence-alert — a persistent silent job keeps asking the operator for
  * attention. A durable last-attempt stamp floors failed sends at one hour;
@@ -3932,6 +3987,8 @@ const codex429ExitNotice: SelfActionController = {
 };
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  jobPortableTransferPoll,
+  jobCoverageAlertRetry,
   linuxBrowserInstallRetry,
   codex429ExitNotice,
   claudeKeySessionRefresh,

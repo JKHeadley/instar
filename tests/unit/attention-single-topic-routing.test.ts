@@ -95,6 +95,22 @@ describe('Single-alerts-topic routing (default mode)', () => {
     await expect((adapter as any).editMessageWithRetry(123, 'Prompt answered')).rejects.toBe(failure);
     expect(api).toHaveBeenCalledOnce();
   });
+  it('confirms an attention send and retries an existing item after transport failure', async () => {
+    makeAdapter({ getAttentionHubTopicId: () => 7848 });
+    const rec = installApiStub(adapter);
+    const failedSend = vi.spyOn(adapter, 'sendToTopic').mockRejectedValue(new Error('transport down'));
+    const item = { id: 'lease-coverage-alert', title: 'Scheduled jobs need review',
+      summary: 'A job is missing after takeover', category: 'job' as const,
+      priority: 'HIGH' as const };
+    await expect(adapter.createAttentionItemConfirmed(item)).rejects.toThrow('transport down');
+    expect(adapter.getAttentionItems().some(row => row.id === item.id)).toBe(true);
+    failedSend.mockRestore();
+    const delivered = await adapter.createAttentionItemConfirmed(item);
+    expect(rec.messagesByThread.get(delivered.topicId!)).toHaveLength(1);
+    await adapter.createAttentionItemConfirmed(item);
+    expect(rec.messagesByThread.get(delivered.topicId!)).toHaveLength(2);
+  });
+
   it('keeps origin recovery in the operator hub even with legacy per-item routing enabled', async () => {
     makeAdapter({ attentionRouting: { mode: 'per-item' }, getAttentionHubTopicId: () => 7848 });
     const rec = installApiStub(adapter);

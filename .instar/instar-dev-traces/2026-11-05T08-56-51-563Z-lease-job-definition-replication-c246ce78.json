@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "lease-job-definition-replication",
+  "sessionId": "42912913-074b-480a-9565-222edcd29edc",
+  "timestamp": "2026-11-05T08:56:51.563Z",
+  "artifactPath": "upgrades/side-effects/lease-job-definition-replication.md",
+  "artifactSha256": "6632cc223b8c31f59795a103422faee23922dfcb880bcc830bebdbfbeb8087fe",
+  "specPath": "docs/specs/lease-job-definition-replication.md",
+  "coveredFiles": [
+    "src/core/FileClassifier.ts",
+    "src/core/JobDependency.ts",
+    "src/core/JobPortableIntegrity.ts",
+    "src/core/WriteDomainRegistry.ts",
+    "tests/unit/file-classifier.test.ts",
+    "tests/unit/write-domain-registry.test.ts",
+    "upgrades/side-effects/lease-job-definition-replication.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Security-sensitive file-sync exclusion and write-domain classification for the new private transfer routes.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

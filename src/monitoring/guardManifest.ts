@@ -66,6 +66,12 @@ export interface GuardManifestEntry {
 
 export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
   {
+    key: 'scheduler.jobCoverage', kind: 'code-default', defaultEnabled: true,
+    expectedTickMs: 300_000, process: 'server', expectRuntime: false,
+    component: 'JobCoverageMonitor',
+    description: 'Signed peer job-catalog observation and lease-handoff coverage alert on multi-machine agents.',
+  },
+  {
     key: 'multiMachine.identityReannounce.identityDivergenceMonitor',
     kind: 'config',
     configPath: 'multiMachine.identityReannounce.enabled',

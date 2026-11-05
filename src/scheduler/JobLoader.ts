@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Cron } from 'croner';
 import type { JobDefinition, JobPriority, ModelTier } from '../core/types.js';
+import { validJobDependencyPath } from '../core/JobDependency.js';
 import { loadAgentMdJobs, type AgentMdLoadResult, type LoadProblem } from './AgentMdJobLoader.js';
 
 const VALID_PRIORITIES: JobPriority[] = ['critical', 'high', 'medium', 'low'];
@@ -143,7 +144,7 @@ export interface LoadJobsResult {
 export function loadJobsDetailed(jobsFile: string, opts: LoadJobsOptions = {}): LoadJobsResult {
   const diagnostics: LoadDiagnostic[] = [];
   const emit = makeEmit(opts.quiet === true, diagnostics);
-  const legacyJobs = loadLegacyJobsJson(jobsFile, emit);
+  let legacyJobs = loadLegacyJobsJson(jobsFile, emit);
 
   // Phase 1a: also load per-slug manifests at .instar/jobs/schedule/.
   // The schedule directory lives next to jobs.json (typically .instar/);
@@ -151,6 +152,20 @@ export function loadJobsDetailed(jobsFile: string, opts: LoadJobsOptions = {}): 
   const stateDir = path.dirname(jobsFile);
   const jobsRootDir = path.join(stateDir, 'jobs');
   const scheduleDir = path.join(jobsRootDir, 'schedule');
+  const portableJournalFile = path.join(stateDir, 'state', 'job-portable-import-journal.json');
+  try {
+    const raw = fs.readFileSync(portableJournalFile, 'utf8');
+    if (raw.length > 8 * 1024 * 1024) throw new Error('portable-journal-oversized');
+    const journal = JSON.parse(raw);
+    if (journal.version !== 1 || !journal.jobs || typeof journal.jobs !== 'object') throw new Error('portable-journal-corrupt');
+    // A journal-owned slug is exclusively the per-slug loader's decision.
+    legacyJobs = legacyJobs.filter(job => !journal.jobs[job.slug]);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      emit.warn('Portable import journal could not be verified; legacy jobs withheld');
+      legacyJobs = [];
+    }
+  }
   const agentMdResult = loadAgentMdJobs(scheduleDir, jobsRootDir);
 
   for (const p of agentMdResult.problems) {
@@ -404,6 +419,15 @@ export function validateJob(job: unknown, index?: number): void {
   // Optional args must be a string if present
   if (exec.args !== undefined && typeof exec.args !== 'string') {
     throw new Error(`${prefix}: execute.args must be a string if provided, got ${typeof exec.args}`);
+  }
+
+  if (j.catchUpPolicy !== undefined && !['skip', 'run-once', 'ask'].includes(j.catchUpPolicy as string)) {
+    throw new Error(`${prefix}: \"catchUpPolicy\" must be skip, run-once, or ask`);
+  }
+
+  if (j.requiredPaths !== undefined && (!Array.isArray(j.requiredPaths) || j.requiredPaths.length > 32
+    || j.requiredPaths.some(value => !validJobDependencyPath(value)))) {
+    throw new Error(`${prefix}: requiredPaths must be at most 32 safe project-relative paths`);
   }
 
   // Optional gate must be a string if present

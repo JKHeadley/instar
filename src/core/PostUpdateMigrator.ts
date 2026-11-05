@@ -33,6 +33,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
 import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
+import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
 import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
@@ -10235,6 +10236,19 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: documented declared job failure ($INSTAR_JOB_FAILURE_FILE)');
     }
 
+    const coverageGuidance = applyJobMeshGuide(content, jobCoverageGuide(port));
+    if (coverageGuidance !== content) {
+      content = coverageGuidance;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added lease job coverage and catch-up guidance');
+    }
+    const transferGuidance = applyJobMeshGuide(content, jobTransferGuide(port));
+    if (transferGuidance !== content) {
+      content = transferGuidance;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added private job transfer approval guidance');
+    }
+
     // TIME_CLAIM advisory (operator mandate 2026-06-12, topic 13481) —
     // Migration Parity item 3: an agent whose CLAUDE.md already carries the
     // Outbound advisory section (installed by the block above or by init)
@@ -13953,9 +13967,9 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
     // WS4.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC) — pool-scope jobs awareness.
     // A deployed agent whose CLAUDE.md already carries the Job Scheduler
     // section gets the ?scope=pool bullet inserted after the /jobs View line.
-    // Content-sniff on 'jobs?scope=pool' keeps it idempotent (route-qualified —
-    // a bare `scope=pool` sniff would falsely match other pool-scope routes).
-    if (content.includes('**Job Scheduler**') && !content.includes('jobs?scope=pool')) {
+    // Match this scheduler bullet, not a URL also used by coverage guidance or
+    // registry rows. Those references must not suppress the legacy migration.
+    if (content.includes('**Job Scheduler**') && !content.includes('- View the WHOLE POOL (jobs across every machine):')) {
       const poolBullet = `- View the WHOLE POOL (jobs across every machine): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/jobs?scope=pool"\` — merges each online machine's jobs (each tagged with its machineId/machineNickname), tolerant of a dark peer (a \`pool.failed\` entry, never a 500), short-TTL cached. Also carries \`pool.divergences\` — an observe-only flag for a machine that DECLARES jobs but is running 0 locally (or returns 0 jobs while online). Use this when the user asks "what jobs do I have?" / "is a job running anywhere?" on a multi-machine setup — the plain view only shows THIS machine's jobs.\n`;
       // Anchor after the first /jobs View line within the section; fall back to
       // after the section header line.
@@ -15609,6 +15623,17 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       if (refreshedLeaseShadow !== appended) {
         appended = refreshedLeaseShadow;
         mirrored++;
+      }
+
+      // Apply after section mirroring: a copied legacy section can already carry
+      // this guidance, so adding it before the copy would duplicate it.
+      if (claudeMd.includes('**Lease job coverage and catch-up**')) {
+        const next = applyJobMeshGuide(appended, jobCoverageGuide(this.config.port));
+        if (next !== appended) { appended = next; mirrored++; }
+      }
+      if (claudeMd.includes('**Private job transfer approvals**')) {
+        const next = applyJobMeshGuide(appended, jobTransferGuide(this.config.port));
+        if (next !== appended) { appended = next; mirrored++; }
       }
 
       if (mirrored > 0) {

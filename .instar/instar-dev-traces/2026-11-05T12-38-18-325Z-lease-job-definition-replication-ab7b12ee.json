@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "lease-job-definition-replication",
+  "sessionId": "6e60beaa-e310-4179-aa75-c7985b17f28f",
+  "timestamp": "2026-11-05T12:38:18.325Z",
+  "artifactPath": "upgrades/side-effects/lease-job-definition-replication.md",
+  "artifactSha256": "aae4bf10b47327f680e4e3c19ed9556e8324b59efcdf51ca5a7fdab404474949",
+  "specPath": "docs/specs/lease-job-definition-replication.md",
+  "coveredFiles": [
+    "src/localVerify/FailedFileDiagnosisPeerService.ts",
+    "tests/unit/localVerify/FailedFileDiagnosisPeerService.test.ts",
+    "upgrades/side-effects/lease-job-definition-replication.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Repairs the final-suite-discovered bounded process scan failure without relaxing identity checks, deadlines, or unknown-state refusal.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

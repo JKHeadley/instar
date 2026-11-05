@@ -8387,7 +8387,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         if (decision === 'restart') {
           console.log(pc.yellow(`  [lease] role is now ${coordinator.role}: restarting once so boot builds what it needs`));
-          requestRoleRestart({ stateDir: config.stateDir }, nowAwake);
+          requestRoleRestart({ stateDir: config.stateDir, leaseEpoch: coordinator.getLeaseEpoch(), machineId: coordinator.identity?.machineId }, nowAwake);
         }
       } catch (err) {
         console.warn(`  [lease] role restart check failed: ${err instanceof Error ? err.message : String(err)}`); // @silent-fallback-ok: logged, and the timer below retries
@@ -8426,6 +8426,13 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Wire machine identity for machine-scoped job filtering
       if (coordinator.identity) {
         scheduler.setMachineIdentity(coordinator.identity.machineId, coordinator.identity.name);
+        scheduler.setPromotionLeaseProvider(() => ({
+          leaseEpoch: coordinator.getLeaseEpoch(), machineId: coordinator.identity!.machineId,
+          holdsLease: coordinator.holdsLease(),
+          // The local journal cannot prove what a prior holder launched.
+          // A registry count is not a cross-machine decision witness.
+          runOnceWitness: false,
+        }));
       }
       if (quotaTracker) {
         // Basic binding — QuotaManager will override this once wired
