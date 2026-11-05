@@ -52,6 +52,16 @@ describe('wiring', () => {
   it('the joiner writes before its first boot, and before it records the peer', () => {
     expect(joinFlow.indexOf('applyJoinerPairActivation({')).toBeLessThan(joinFlow.indexOf('mgr.storeRemoteIdentity(result.machineIdentity)'));
   });
+  it('a machine handed Telegram at join gets the reply script before its first boot', () => {
+    const written = joinFlow.indexOf("joined.telegram === 'written'");
+    expect(written).toBeGreaterThan(joinFlow.indexOf('applyJoinerPairActivation({'));
+    expect(joinFlow.indexOf('installTelegramRelayForJoinedMachine(', written)).toBeGreaterThan(written);
+    expect(joinFlow.indexOf('installTelegramRelayForJoinedMachine(', written)).toBeLessThan(joinFlow.indexOf('installAutoStart(config.projectName'));
+  });
+  it('the pairing server hands over who the bot answers, not only the token', () => {
+    const agentServer = fs.readFileSync(path.join(process.cwd(), 'src/server/AgentServer.ts'), 'utf-8');
+    expect(agentServer).toMatch(/botToken: token, chatId: String\(chatId\), authorizedUserIds, ownerUserId: ownerUserId \?\? promptGate\?\.ownerId/);
+  });
   it('the green and the expiry are gated on the marker, and the runner keeps its place', () => {
     expect(server).toMatch(/const pairStartedPool = activatedAtPairing\(config\)/);
     expect(server).toMatch(/\.\.\.\(pairStartedPool \? \{\s*shadowProof:/);

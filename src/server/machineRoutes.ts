@@ -15,6 +15,7 @@
  * Part of Phases 4-5 of the multi-machine spec.
  */
 
+import type { TelegramHandoverPeople } from '../core/telegramPairHandover.js';
 import { Router } from 'express';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
@@ -75,7 +76,7 @@ export interface MachineRouteContext {
   stateDir?: string;
   agentName?: string;
   /** The bot token and chat id for a first pairing's handover; null when there is no Telegram. */
-  getTelegramHandoverSource?: () => { botToken: string; chatId: string } | null;
+  getTelegramHandoverSource?: () => ({ botToken: string; chatId: string } & TelegramHandoverPeople) | null;
   /** Callback when this machine should demote to standby */
   onDemote?: () => void;
   /** Callback when this machine should promote to awake */

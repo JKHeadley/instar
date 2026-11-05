@@ -102,6 +102,28 @@ describe('telegram handover', () => {
     expect(openTelegramHandover({ sealed: sealed(), expected: binding, encryptionPrivateKeyPem: privatePem, now }))
       .toEqual({ ok: true, botToken: 'bot:token', chatId: '-100' });
   });
+  it('carries who the bot answers, and a machine with no list stays without one', () => {
+    const withPeople = sealTelegramHandover({ ...binding, botToken: 'bot:token', chatId: '-100', authorizedUserIds: [123, '456'], ownerUserId: 123, joinerEncryptionPublicKey: publicKey, now });
+    expect(openTelegramHandover({ sealed: withPeople, expected: binding, encryptionPrivateKeyPem: privatePem, now }))
+      .toEqual({ ok: true, botToken: 'bot:token', chatId: '-100', authorizedUserIds: [123, '456'], ownerUserId: 123 });
+    const emptyList = sealTelegramHandover({ ...binding, botToken: 'bot:token', chatId: '-100', authorizedUserIds: [], joinerEncryptionPublicKey: publicKey, now });
+    expect(openTelegramHandover({ sealed: emptyList, expected: binding, encryptionPrivateKeyPem: privatePem, now }))
+      .toEqual({ ok: true, botToken: 'bot:token', chatId: '-100' });
+  });
+  it.each([
+    ['a list that is not a list', { authorizedUserIds: '123' }],
+    ['a list holding something other than ids', { authorizedUserIds: [123, 'everyone'] }],
+    ['an owner that is not an id', { ownerUserId: { id: 1 } }],
+  ])('%s is refused, because no list means everyone', (_label, bad) => {
+    const forged = sealTelegramHandover({ ...binding, botToken: 'bot:token', chatId: '-100', ...(bad as object), joinerEncryptionPublicKey: publicKey, now });
+    expect(openTelegramHandover({ sealed: forged, expected: binding, encryptionPrivateKeyPem: privatePem, now }))
+      .toEqual({ ok: false, refusal: 'malformed' });
+  });
+  it('an unset owner written as null is treated as unset, as the adapter treats it', () => {
+    const sealedNull = sealTelegramHandover({ ...binding, botToken: 'bot:token', chatId: '-100', ownerUserId: null, joinerEncryptionPublicKey: publicKey, now });
+    expect(openTelegramHandover({ sealed: sealedNull, expected: binding, encryptionPrivateKeyPem: privatePem, now }))
+      .toEqual({ ok: true, botToken: 'bot:token', chatId: '-100' });
+  });
   it('the token is not readable in the envelope', () => {
     expect(JSON.stringify(sealed())).not.toContain('bot:token');
   });
@@ -140,6 +162,23 @@ describe('a pairing whose activation fails', () => {
     } finally {
       vi.restoreAllMocks();
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/session-pool-pair-activation.test.ts:cleanup' });
+    }
+  });
+});
+
+describe('the reply script on a joined machine', () => {
+  it('lands in both script folders, runnable', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-relay-'));
+    try {
+      const { installTelegramRelayForJoinedMachine } = await import('../../src/commands/init.js');
+      installTelegramRelayForJoinedMachine(dir, path.join(dir, '.instar'), 4567);
+      for (const p of ['.claude/scripts/telegram-reply.sh', '.instar/scripts/telegram-reply.sh']) {
+        const full = path.join(dir, p);
+        expect(fs.statSync(full).mode & 0o111).not.toBe(0);
+        expect(fs.readFileSync(full, 'utf-8').startsWith('#!')).toBe(true);
+      }
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/session-pool-pair-activation.test.ts:relay' });
     }
   });
 });

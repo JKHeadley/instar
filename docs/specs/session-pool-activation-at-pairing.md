@@ -102,6 +102,10 @@ authenticated. The joiner writes the token to its own secret store, then a Teleg
 to it, all before the server first starts. Only this one secret moves. If the inviter has no Telegram,
 nothing is sent and activation continues.
 
+The sealed payload also carries who the bot answers: the first machine's `authorizedUserIds` and `ownerUserId`. These are not secrets, but they decide who can reach the agent, and an empty list means the Telegram adapter accepts everyone in the chat. So a list that does not parse is refused as `malformed` rather than dropped. A first machine with no list sends none, and the second behaves as the first does. The owner falls back to `promptGate.ownerId`, as the adapter does. Pairing the same machine again fills a list or owner it lacks, leaves any it already has, and requests a restart so a running server uses them. With a third machine a re-pair gets no handover, so the list is set by hand. Found on 2026-11-05 by the fresh-pair test: a joined machine had neither field, and also no reply script.
+
+The joiner writes the reply script to both script folders in the same step, before its first boot. The install step that normally writes it ran before Telegram existed on that machine, and nothing else writes it until the next update.
+
 If opening fails, the joiner still writes the pool keys, writes no Telegram entry and says so plainly. It
 cannot serve, so it hands messages back (#2723), readiness fails and no green is recorded, so the pair
 stays dark. To recover, the owner pairs the same machine again: `decidePairActivation` also returns
