@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-11-05T09:43:18.000Z",
-      "auditRef": "docs/audits/standards-multimachine-pending-witness-2026-11-05.json",
-      "auditSha256": "2726471a9b0d94345c6e620d8614ff25c8a65d8ad9e1b262f12d49f129a6fa2b",
-      "areaSha256": "349c51c497866809e709b4d08bab471b99a74cfe7a9df3bfc21d8bce8b98c8b1",
+      "lastAuditedAt": "2026-11-05T10:14:24.000Z",
+      "auditRef": "docs/audits/standards-multimachine-pending-witness-2026-11-05-r2.json",
+      "auditSha256": "4c1a6ef04473ee609aa7b5f3c50bf1c4133b6bde2f6c16361b4b74428adb063e",
+      "areaSha256": "a17a11c78ae58d7299e58a12bd681ae6ba539ca1476633eb35ccdce508c2f1ef",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40

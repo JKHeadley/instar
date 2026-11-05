@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "standards-multimachine-pending-witness",
+  "sessionId": "c4773de8-715f-445f-8ae8-f1db863b24a3",
+  "timestamp": "2026-11-05T10:24:56.861Z",
+  "artifactPath": "upgrades/side-effects/standards-multimachine-pending-witness.md",
+  "artifactSha256": "5f629fa43ec7c842232bbb66cbc190bc9fd67f3459404950e39628763c3a0a1c",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/standards-multimachine-pending-witness-2026-11-05-r2.json",
+    "docs/specs/reports/standards-multimachine-pending-witness-2026-11-05-r2.md",
+    "docs/standards-registry-area-audits.json",
+    "upgrades/next/standards-multimachine-pending-witness.md",
+    "upgrades/side-effects/standards-multimachine-pending-witness.eli16.md",
+    "upgrades/side-effects/standards-multimachine-pending-witness.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "constitution text only; operator approved the clause (choice A, 2026-11-05 00:37 PST, Echo topic 137342); code-owner review and the direction guard gate merge",
+  "eli16Path": "upgrades/side-effects/standards-multimachine-pending-witness.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/standards-multimachine-pending-witness.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
