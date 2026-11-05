@@ -13,16 +13,20 @@
  * evidence to the helper the fleet will run.
  *
  * Usage:
- *   node scripts/build-locked-proof.mjs [--os-major N] [--n N] [--ref REF] [--out DIR] [--dry-run]
+ *   node scripts/build-locked-proof.mjs [--os-major N] [--n N] [--ref REF] [--out DIR] [--helper-dir NAME] [--dry-run]
  *
  *   --os-major  macOS major to admit (default: this Mac's `sw_vers -productVersion`)
  *   --n         build number for the version suffix (default 1)
  *   --ref       git revision to build (default HEAD; committed content only)
  *   --out       where the scratch tree, .tgz and manifest go (default $TMPDIR/instar-locked-proof)
+ *   --helper-dir  keep the helper in ~/.instar/NAME (desktop-helper-<name>) in this build only. For a proof Mac
+ *               whose macOS permission row at the default folder names an older build: that row can be neither
+ *               seen nor cleared, and a new path has none. The helper source, and so its hash, stays the same.
  *   --dry-run   stop after the rewrite: print the row and the diff, build nothing
  *
  * Output: `<out>/instar-<version>.tgz` and `<out>/locked-proof-manifest-<version>.json`
- * ({ packageVersion, commit, osMajor, helperSourceHash, tgz, tgzSha256, createdAt }).
+ * ({ packageVersion, commit, osMajor, helperSourceHash, helperDir, tgz, tgzSha256, createdAt }).
+ * On a Mac the helper is universal: only a universal helper may take the kept copy.
  * Install only into a throwaway macOS user's own prefix, with auto-update off.
  */
 import { execFileSync } from 'node:child_process';
@@ -31,10 +35,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseOsMajor, proofVersion, rewriteProvenTable } from './lib/locked-proof-build.mjs';
+import { parseOsMajor, proofVersion, rewriteHelperRoot, rewriteProvenTable } from './lib/locked-proof-build.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TABLE_FILE = 'src/core/DesktopProvenVersions.ts';
+const RETENTION_FILE = 'src/core/DesktopHelperRetention.ts';
+const FAT_MAGIC = 0xcafebabe;
 
 function arg(name) {
   const i = process.argv.indexOf(`--${name}`);
@@ -63,6 +69,9 @@ function main() {
   const basePkg = JSON.parse(git(['show', `${commit}:package.json`]));
   const version = proofVersion(basePkg.version, n);
   const rewritten = rewriteProvenTable(committedTable, { osMajor, version });
+  const helperDir = arg('helper-dir');
+  const rewrittenRetention = helperDir === undefined ? null
+    : rewriteHelperRoot(git(['show', `${commit}:${RETENTION_FILE}`]), helperDir);
 
   const tableHashBefore = fs.existsSync(path.join(ROOT, TABLE_FILE))
     ? crypto.createHash('sha256').update(fs.readFileSync(path.join(ROOT, TABLE_FILE))).digest('hex') : null;
@@ -70,6 +79,7 @@ function main() {
   if (dryRun) {
     console.log(`[locked-proof] dry run: ${version} at ${commit.slice(0, 12)} admits macOS ${osMajor}`);
     console.log(rewritten.split('\n').filter(line => line.includes('PROVEN_MACOS_VERSIONS')).join('\n'));
+    if (rewrittenRetention) console.log(rewrittenRetention.split('\n').filter(line => line.includes(helperDir)).join('\n'));
     return;
   }
 
@@ -82,6 +92,7 @@ function main() {
   execFileSync('tar', ['-x', '-C', scratch], { input: archive, maxBuffer: 1 << 30 });
 
   fs.writeFileSync(path.join(scratch, TABLE_FILE), rewritten);
+  if (rewrittenRetention) fs.writeFileSync(path.join(scratch, RETENTION_FILE), rewrittenRetention);
   const pkg = JSON.parse(fs.readFileSync(path.join(scratch, 'package.json'), 'utf8'));
   pkg.version = version;
   fs.writeFileSync(path.join(scratch, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
@@ -95,6 +106,16 @@ function main() {
   delete buildEnv.INSTAR_RELEASE_PRIVATE_KEY_PEM_PATH;
   delete buildEnv.INSTAR_RELEASE_BUILD;
   execFileSync('npm', ['run', 'build'], { cwd: scratch, stdio: 'inherit', env: buildEnv });
+  if (process.platform === 'darwin') {
+    // Retention keeps only a universal helper, and a plain build is thin. Only this native step sees the flag, so
+    // the lock-file signer above still ran without it.
+    execFileSync('node', ['scripts/build-native-desktop-host.mjs'], { cwd: scratch, stdio: 'inherit', env: { ...buildEnv, INSTAR_RELEASE_BUILD: '1' } });
+    const head = Buffer.alloc(4);
+    const handle = fs.openSync(path.join(scratch, 'dist/native/instar-desktop-host'), 'r');
+    fs.readSync(handle, head, 0, 4, 0);
+    fs.closeSync(handle);
+    if (head.readUInt32BE(0) !== FAT_MAGIC) throw new Error('the helper did not come out universal, so it could never be kept');
+  }
   // The symlink must not be packed; npm pack ignores node_modules, but drop it to be sure.
   fs.unlinkSync(path.join(scratch, 'node_modules'));
   const packed = execFileSync('npm', ['pack', '--ignore-scripts', '--pack-destination', out], { cwd: scratch, encoding: 'utf8' })
@@ -103,7 +124,7 @@ function main() {
 
   const helper = JSON.parse(fs.readFileSync(path.join(scratch, 'dist/native/instar-desktop-host.json'), 'utf8'));
   const manifest = {
-    packageVersion: version, commit, osMajor, helperSourceHash: helper.sourceHash,
+    packageVersion: version, commit, osMajor, helperSourceHash: helper.sourceHash, helperDir: helperDir ?? 'desktop-helper',
     tgz, tgzSha256: crypto.createHash('sha256').update(fs.readFileSync(tgz)).digest('hex'),
     createdAt: new Date().toISOString(),
   };
