@@ -153,7 +153,8 @@ One line in the session-pool paragraph of the CLAUDE.md template, with a content
 - **dev-agent-live:** Echo's ring, four machines with replication on, with the live pass line under Testing. The Laptop is out of the ring and only ever receives a nudge.
 - **fleet:** the release that carries it, ungated. Only agents with replication on can act on it, and they are the ones with moves.
 - **graduation criterion:** under 10 s from a landed claim to known on every ring leg, with no refusal for lag on a following move; read from the `multiMachine.sessionPool.moveNudge` evidence rows and the ring's run records, not from a count of nudges sent.
-- **ladder:** multiMachine.sessionPool.stage; no rung of its own, it rides the existing ladder and reports to the same review job.
+- **ladder:** multiMachine.sessionPool.stage
+- **rung:** none of its own: it rides that ladder and reports to the same review job.
 - **dark-window:** none: a hint with no authority, inert until a real move happens with replication on.
 
 ## Open questions
