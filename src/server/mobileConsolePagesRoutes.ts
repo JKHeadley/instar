@@ -30,6 +30,9 @@ export const MAX_PR_ROWS = 15;
 /** The most of a file the phone is sent, and the longest line. Scrubbing runs per line, so the cost stays bounded. */
 export const MAX_FILE_CHARS = 64 * 1024;
 export const MAX_LINE_CHARS = 2000;
+/** Read past each cut by this much before scrubbing, so a secret crossing the cut is still caught. */
+const SCRUB_MARGIN = 2048;
+const LINES_PER_TURN = 4;
 
 type Rec = Record<string, unknown>;
 /** A console route's answer; status 0 means it could not be read at all. */
@@ -37,6 +40,8 @@ export interface SelfRead { status: number; body: unknown }
 export interface MobileConsolePagesDeps {
   /** GET a path on this server with its own token. */
   read: (path: string) => Promise<SelfRead>;
+  /** A project-relative path's real location, project-relative; null when it is missing or outside the project. */
+  resolve: (path: string) => Promise<string | null>;
   bearerOk: (req: Request) => boolean;
   now?: () => number;
 }
@@ -253,10 +258,21 @@ export function summarizeMaturation(r: SelfRead): Rec {
 const fileName = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v.slice(0, 255) : null);
 /**
  * One step past the viewer's own rules, for the phone only: a file or folder whose name says it holds a
- * secret is neither listed nor read, even where the console shows it. Over-hiding a name costs little.
+ * secret is neither listed nor read, even where the console shows it. Over-hiding a name costs little;
+ * an ordinary word like keyboard, tokenizer or author stays visible.
  */
-const SECRET_WORD = /(^|[-_.])(auth|keys?|tokens?|secrets?|credentials?|passwords?|vault|private)([-_.]|$)/i;
-export const secretShaped = (p: string): boolean => p.split('/').some((part) => SECRET_WORD.test(part));
+const SECRET_ANYWHERE = /secret|credential|passw|passphrase|pgpass|netrc|npmrc|pypirc|oauth|cookie|keystore|keychain|keyring|vault|service[-_ ]?account|(api|access|private|signing|ssh|encryption|master)[-_ ]?keys?|id_(rsa|dsa|ecdsa|ed25519)|token(?!i[sz])/;
+const SECRET_WORD = /(^|[^a-z])(auth|keys?|pass|private|env|envrc|pem|p12|pfx|jks|kdbx|ssh|gnupg|aws)([^a-z]|$)/;
+/** Folds what would slip past a match: case, compatibility forms (ſ, fullwidth), accents, invisible marks. */
+const fold = (s: string): string => s.normalize('NFKD').replace(/[\p{M}\p{Cf}]/gu, '').normalize('NFKC');
+export function secretShaped(p: string): boolean {
+  return p.split(/[/\\]/).some((part) => {
+    const folded = fold(part);
+    // Twice: as one word (toKen), and with camelCase split into words (signingKey, myAuth).
+    return [folded.toLowerCase(), folded.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase()]
+      .some((form) => SECRET_ANYWHERE.test(form) || SECRET_WORD.test(form));
+  });
+}
 
 export function summarizeFolder(r: SelfRead): Rec {
   if (r.status === 404 && rec(r.body).error === 'file viewer is disabled') return off('The file viewer is switched off for this agent.');
@@ -272,19 +288,65 @@ export function summarizeFolder(r: SelfRead): Rec {
   return { state: 'ok', path: typeof b.path === 'string' ? b.path : '', entries, truncated: b.truncated === true || shown.length > entries.length };
 }
 
-/** Cut, then scrub line by line: the scrub patterns cost more on long text, and a line is where a secret sits. */
-export function phoneFileText(content: string): { text: string; cut: boolean } {
-  const cut = content.length > MAX_FILE_CHARS;
-  let shortened = false;
-  const lines = content.slice(0, MAX_FILE_CHARS).split('\n').map((line) => {
-    if (line.length <= MAX_LINE_CHARS) return scrubSecrets(line);
-    shortened = true;
-    return `${scrubSecrets(line.slice(0, MAX_LINE_CHARS))}…`;
-  });
-  return { text: lines.join('\n'), cut: cut || shortened };
+const SECRET_LABEL = String.raw`[A-Za-z0-9_.-]{0,40}(?:secret|token|password|passwd|pwd|passphrase|credential|api[_-]?key|access[_-]?key|private[_-]?key|authorization)[A-Za-z0-9_.-]{0,40}`;
+/** A labelled value: quoted (spaces allowed) or bare, whatever its characters. */
+const LABELLED = new RegExp(String.raw`\b(${SECRET_LABEL}["']?\s{0,8}[:=]\s{0,8})("[^"]*"|'[^']*'|(?:(?:bearer|basic|token)\s+)?[^\s"',;]+)`, 'gi');
+/** A label with nothing after it: its value is on the next line. */
+const LABEL_ALONE = new RegExp(String.raw`^[\s#/*"'-]{0,8}${SECRET_LABEL}["']?\s{0,8}[:=]?\s{0,8}[|>]?[-+]?\s{0,8}$`, 'i');
+const PEM_BEGIN = /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z0-9 ]{0,10}-----/;
+const PEM_END = /-----END [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z0-9 ]{0,10}-----/;
+const HIDDEN = '[hidden]';
+
+/** Key shapes scrubSecrets does not know, each bounded to one line so the cost stays linear. */
+function scrubFileLine(line: string): string {
+  return scrubSecrets(line)
+    .replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}/g, HIDDEN)
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}/g, HIDDEN)
+    .replace(/\bAIza[0-9A-Za-z_-]{30,}/g, HIDDEN)
+    .replace(/\b(?:glpat-|npm_|hf_)[A-Za-z0-9_-]{20,}/g, HIDDEN)
+    .replace(/\bbearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, `Bearer ${HIDDEN}`)
+    .replace(LABELLED, `$1${HIDDEN}`);
 }
 
-export function summarizeFile(r: SelfRead): Rec {
+const nextTurn = (): Promise<void> => new Promise((done) => { setImmediate(done); });
+
+/**
+ * Scrub, then cut. The text is read past each limit by a margin first, so a secret that crosses a cut is
+ * still whole when it is scrubbed. Line by line because the scrub costs more on long text, and it gives the
+ * server a turn every few lines, so a hostile file cannot hold it. Two things span lines: a private key
+ * block, and a label whose value is on the next line.
+ */
+export async function phoneFileText(content: string): Promise<{ text: string; cut: boolean }> {
+  let cut = content.length > MAX_FILE_CHARS;
+  const out: string[] = [];
+  let inKey = false;
+  let valueNext = false;
+  const lines = content.slice(0, MAX_FILE_CHARS + SCRUB_MARGIN).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0 && i % LINES_PER_TURN === 0) await nextTurn();
+    const whole = lines[i];
+    if (whole.length > MAX_LINE_CHARS) cut = true;
+    const line = whole.slice(0, MAX_LINE_CHARS + SCRUB_MARGIN);
+    if (inKey) {
+      if (PEM_END.test(line)) { inKey = false; out.push('[private key hidden]'); }
+      continue;
+    }
+    if (PEM_BEGIN.test(line)) {
+      if (!PEM_END.test(line)) inKey = true;
+      else out.push('[private key hidden]');
+      continue;
+    }
+    if (valueNext && line.trim()) { valueNext = false; out.push(HIDDEN); continue; }
+    if (LABEL_ALONE.test(line)) valueNext = true;
+    const clean = scrubFileLine(line);
+    out.push(clean.length > MAX_LINE_CHARS ? `${clean.slice(0, MAX_LINE_CHARS)}…` : clean);
+  }
+  if (inKey) out.push('[private key hidden]');
+  const text = out.join('\n');
+  return { text: text.slice(0, MAX_FILE_CHARS), cut: cut || text.length > MAX_FILE_CHARS };
+}
+
+export async function summarizeFile(r: SelfRead): Promise<Rec> {
   if (r.status === 404 && rec(r.body).error === 'file viewer is disabled') return off('The file viewer is switched off for this agent.');
   if (r.status === 403) return { state: 'refused', line: 'This file can’t be shown here.' };
   if (r.status === 413) return { state: 'too-big', line: 'This file is too big to show.' };
@@ -293,7 +355,7 @@ export function summarizeFile(r: SelfRead): Rec {
   const base = { path: typeof b.path === 'string' ? b.path : '', size: num(b.size), modified: date(b.modified) };
   if (b.binary === true) return { state: 'binary', line: 'This file isn’t text, so it can’t be shown here.', ...base };
   if (typeof b.content !== 'string') return unavailable("Can't read this file right now.");
-  const { text, cut } = phoneFileText(b.content);
+  const { text, cut } = await phoneFileText(b.content);
   return { state: 'ok', ...base, text, cut };
 }
 
@@ -348,13 +410,26 @@ export function mountMobileConsolePagesRoutes(router: Router, deps: MobileConsol
   });
   page('/mobile/maturation', async () => summarizeMaturation(await read('/maturation/board?scope=pool')));
 
+  /** The real path behind a request, or null when the real path may not be shown either. */
+  const allowed = async (p: string): Promise<string | null> => {
+    if (secretShaped(p)) return null;
+    const real = await deps.resolve(p);
+    return real === null || secretShaped(real) ? null : real;
+  };
   router.get('/mobile/files', async (req: Request, res: Response) => {
     if (!guard(req, res)) return;
     const p = pathQuery(req);
     if (p === null) { res.status(400).json({ error: 'bad-path' }); return; }
-    if (secretShaped(p)) { res.json({ ...head(), state: 'refused', line: 'This folder can’t be shown.' }); return; }
     try {
-      res.json({ ...head(), ...summarizeFolder(await read(`/api/files/list${p ? `?path=${encodeURIComponent(p)}` : ''}`)) });
+      const real = p ? await allowed(p) : '';
+      if (real === null) { res.json({ ...head(), state: 'refused', line: 'This folder can’t be shown.' }); return; }
+      const folder = summarizeFolder(await read(`/api/files/list${real ? `?path=${encodeURIComponent(real)}` : ''}`));
+      if (Array.isArray(folder.entries)) {
+        // An entry is judged by where it really points: a link with an innocent name is hidden like its target.
+        const checked = await Promise.all((folder.entries as Array<{ name: string }>).map(async (e) => ((await allowed(real ? `${real}/${e.name}` : e.name)) === null ? null : e)));
+        folder.entries = checked.filter((e) => e !== null);
+      }
+      res.json({ ...head(), ...folder, path: p });
     } catch (err) {
       report('GET /mobile/files', err);
       res.status(500).json({ error: 'console-page-unavailable' });
@@ -364,9 +439,11 @@ export function mountMobileConsolePagesRoutes(router: Router, deps: MobileConsol
     if (!guard(req, res)) return;
     const p = pathQuery(req);
     if (!p) { res.status(400).json({ error: 'bad-path' }); return; }
-    if (secretShaped(p)) { res.json({ ...head(), state: 'refused', line: 'This file can’t be shown here.' }); return; }
     try {
-      res.json({ ...head(), ...summarizeFile(await read(`/api/files/read?path=${encodeURIComponent(p)}`)) });
+      const real = await allowed(p);
+      if (real === null) { res.json({ ...head(), state: 'refused', line: 'This file can’t be shown here.' }); return; }
+      // The viewer reads the path that was judged, not the name that was asked for.
+      res.json({ ...head(), ...await summarizeFile(await read(`/api/files/read?path=${encodeURIComponent(real)}`)), path: p });
     } catch (err) {
       report('GET /mobile/files/read', err);
       res.status(500).json({ error: 'console-page-unavailable' });

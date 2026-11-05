@@ -47,7 +47,11 @@ Development leaves out two console reads on purpose: `/throughput/series` took 1
 
 ### 3.1 Files
 
-One step past the console for the phone only: any path part whose words say it holds a secret (`auth`, `key`, `token`, `secret`, `credential`, `password`, `vault`, `private`) is left out of a folder and refused without a read, because the console lists `.instar/keys`, `codex-auth-backup-*` and `credential-locations.json`. A file is cut to 65,536 string characters, each line to 2,000, and scrubbed line by line. `editable` is never sent. A symlink with an innocent name is judged by the viewer's own resolved-path rules, not by this name check.
+One step past the console for the phone only: a name that says it holds a secret is left out of a folder and refused without a read, because the console lists `.instar/keys`, `codex-auth-backup-*` and `credential-locations.json`. Names are folded first (case, compatibility forms, accents, invisible marks), split at camelCase, and matched both inside words (`apikey`, `authToken`, `.netrc`, `id_ecdsa`) and as delimited words (`auth`, `key`). `keyboard`, `tokenizer` and `author` stay visible.
+
+Each path is judged where it really points. The route resolves it, refuses a target that is missing, outside the project or hidden, drops such links from a folder, and hands the viewer the resolved path, so what is read is what was judged. A hard link can't be told from its target and is judged by its own name.
+
+A file is read 2,048 characters past each limit, scrubbed, then cut to 65,536 string characters and 2,000 a line, so a secret crossing a cut is scrubbed whole unless it is longer than the margin. File scrubbing adds key shapes `scrubSecrets` lacks (`sk-ant-`, `sk-proj-`, `github_pat_`, `AIza`), bearer values, labelled values including quoted and `/+` values, whole private key blocks and a value on the line after its label. It runs per line and gives the server a turn every four lines. `editable` is never sent.
 
 ### 3.2 Cost
 

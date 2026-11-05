@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "memory-privacy-inbound-files",
+  "sessionId": "112bcf77-c6cb-4fa6-ad45-2a02dede2b5f",
+  "timestamp": "2026-11-05T06:21:01.624Z",
+  "artifactPath": "upgrades/side-effects/memory-privacy-inbound-files.md",
+  "artifactSha256": "8f3deb2d24eabf2541d1572245eb0b38c262c085853d208faf5db35065f88f1c",
+  "specPath": "docs/specs/memory-privacy.md",
+  "coveredFiles": [
+    "tests/unit/respawn-collision-notice.test.ts",
+    "tests/unit/spawn-session-silent-start.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Test-fixture alignment for the reviewed privacy-boundary file claim; same approved spec and reviewer conclusion.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

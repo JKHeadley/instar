@@ -18,9 +18,9 @@ import { stripViewSignatures } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
-import { mountMobilePermissionsRoutes } from './mobilePermissionsRoutes.js';
+import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
 import { mountMobileConsolePagesRoutes, type SelfRead } from './mobileConsolePagesRoutes.js';
-import { mountMobileSecretsRoutes, resolveKeys as resolveMobileKeys } from './mobileSecretsRoutes.js';
+import { mountMobileSecretsRoutes, resolveKeys as resolveMobileKeys, askForSecret, cancelSecretByKey } from './mobileSecretsRoutes.js';
 import { mountMobileProposalsInsideRoutes, ACTIVITY_WINDOW, CLAIMS_WINDOW } from './mobileProposalsInsideRoutes.js';
 import { loadAllProposals } from './routes/remediation-proposals.js';
 import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
@@ -37867,6 +37867,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return { state: 'on', pushEnabled: !!ss.pushEnabled, peers: ss.syncTargets() };
       },
       peers: () => peerSummaries('/mobile/secrets?scope=local'),
+      actions: (req) => mobileActionsState(req, { pairing: () => ctx.mobilePairingService ?? null, config: () => ctx.config }),
       offlineMachineIds: () => {
         if (!ctx.meshSelfId) return [];
         const online = new Set([...onlinePeers().map((p) => p.machineId), ctx.meshSelfId]);
@@ -37886,6 +37887,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           signal: AbortSignal.timeout(12_000),
         });
         return { status: r.status, body: await r.json().catch(() => null) };
+      },
+      resolve: async (relative) => {
+        try {
+          const root = await fs.promises.realpath(ctx.config.projectDir);
+          const real = await fs.promises.realpath(path.resolve(root, relative));
+          const inside = path.relative(root, real);
+          return inside === '' || (!inside.startsWith('..') && !path.isAbsolute(inside)) ? inside : null;
+        } catch { return null; } // @silent-fallback-ok — a path that can't be resolved is refused, the safe side
       },
       bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     });
@@ -37973,6 +37982,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return denyAuthorizationRequest(id, reason, { kind: 'owner-phone', deviceId });
       },
       featureDefinition: (id) => (ctx.featureRegistry?.getDefinition(id) as unknown as Record<string, unknown> | undefined) ?? null,
+      // Ask for a key and cancel a request (docs/specs/mobile-native-secrets-writes.md): this machine's
+      // SecretDrop, the same store the console uses. The token never leaves these two calls.
+      requestSecret: (label, note, topicId) => askForSecret(secretDrop, label, note, topicId, Date.now()),
+      cancelSecret: (key) => cancelSecretByKey(secretDrop, key),
       setFeature: async (req, id, to, deviceId, stillAuthorized) => {
         if (!ctx.featureRegistry) return { status: 501, body: { error: 'FeatureRegistry not initialized' } };
         const def = ctx.featureRegistry.getDefinition(id);

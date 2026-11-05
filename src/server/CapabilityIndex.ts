@@ -458,6 +458,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobileSecretsWrites',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Ask for a password or key and cancel a request from the Instar iPhone app (docs/specs/mobile-native-secrets-writes.md): POST /mobile/secrets/requests and POST /mobile/secrets/requests/<key>/cancel. Owner phone only, each confirmed with Face ID over a single-use challenge, behind mobilePairing.permissionActions. The phone never receives the token or the Secret Drop link; the link is collected in the console.',
+    build: () => ({
+      configured: true,
+      endpoints: ['POST /mobile/secrets/requests', 'POST /mobile/secrets/requests/:key/cancel'],
+    }),
+  },
+  {
     key: 'mobilePermissionsScreens',
     // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
     prefixes: [],

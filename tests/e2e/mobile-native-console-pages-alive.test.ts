@@ -52,6 +52,8 @@ async function boot() {
   return { server, stateDir, dir, config };
 }
 
+const stateDir = (dir: string): string => path.join(dir, '.instar');
+
 describe('native console pages — production wiring', () => {
   it('is alive: an owner phone reads the pages and a file', async () => {
     const { server, dir, config: configRef } = await boot();
@@ -97,6 +99,9 @@ describe('native console pages — production wiring', () => {
     fs.mkdirSync(path.join(dir, 'keys'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'keys', 'a.txt'), 'hidden');
     fs.writeFileSync(path.join(dir, '.env'), 'NEVER=1');
+    fs.writeFileSync(path.join(stateDir(dir), 'credential-locations.json'), '{"hidden":"from-phone"}');
+    fs.symlinkSync(path.join(stateDir(dir), 'credential-locations.json'), path.join(dir, 'link.md'));
+    fs.symlinkSync('/etc/hosts', path.join(dir, 'outside.md'));
     const folder = await phone.send('GET', '/mobile/files');
     expect(folder.status).toBe(200);
     expect(folder.body.state).toBe('ok');
@@ -104,6 +109,13 @@ describe('native console pages — production wiring', () => {
     expect(names).toContain('notes.md');
     expect(names).not.toContain('keys');
     expect(names).not.toContain('.env');
+    expect(names).not.toContain('link.md');
+    expect(names).not.toContain('outside.md');
+    for (const p of ['link.md', 'outside.md']) {
+      const refused = await phone.send('GET', `/mobile/files/read?path=${p}`);
+      expect(refused.body.state, p).toBe('refused');
+      expect(JSON.stringify(refused.body)).not.toContain('from-phone');
+    }
     const file = await phone.send('GET', '/mobile/files/read?path=notes.md');
     expect(file.body).toMatchObject({ state: 'ok', text: 'Hello from the disk\n', cut: false });
     expect((await phone.send('GET', '/mobile/files/read?path=keys%2Fa.txt')).body.state).toBe('refused');

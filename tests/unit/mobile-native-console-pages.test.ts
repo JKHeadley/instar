@@ -167,29 +167,70 @@ describe('files', () => {
   });
   it('secretShaped reads each part of a path, and leaves ordinary words alone', () => {
     for (const p of ['.instar/keys/a.txt', 'x/my-token.txt', 'secrets', 'vault.json', 'a/private/b']) expect(secretShaped(p)).toBe(true);
-    for (const p of ['docs/author.md', 'keyboard.md', 'src/tokenizer.ts', '']) expect(secretShaped(p)).toBe(false);
+    for (const p of ['docs/author.md', 'keyboard.md', 'src/tokenizer.ts', 'tokenization.md', 'notes.md', 'AGENT.md', '']) expect(secretShaped(p), p).toBe(false);
   });
-  it('the viewer\'s refusals keep their meaning', () => {
+  it('names without delimiters, well-known credential files, and folded spellings are all hidden', () => {
+    for (const p of ['apikey.txt', 'authToken.txt', 'oauth.json', 'tokens2.json', 'ClaudeCredentials.json', 'my secret.txt', 'accesskey', 'keystore', '.netrc', '.npmrc', '.pgpass', 'id_ecdsa', 'service-account.json', 'signingKey.txt', 'pass.txt']) expect(secretShaped(p), p).toBe(true);
+    for (const p of ['.instar/Keys/signing.txt', 'toKen.json', 'my-\u017Fecret.txt', 'TOKEN.JSON', '\uFF4B\uFF45\uFF59\uFF53/a.txt', 'to\u200Bken.json', 'keys\\a.txt']) expect(secretShaped(p), p).toBe(true);
+  });
+  it('key shapes, labelled values and bearer headers are blanked in file text', async () => {
+    const samples = [
+      'sk-ant-api03-' + 'a'.repeat(30), 'sk-proj-' + 'b'.repeat(30), 'github_pat_' + 'C'.repeat(30), 'AIza' + 'D'.repeat(35),
+      'Authorization: Bearer abc.def/ghi+jkl=', 'curl -H "Bearer abcdefghijkl"', '"secretKey": "value with spaces"',
+      'aws_secret_access_key = wJalr/XUtnFEMI+K7MDENG', 'token=abc/def+ghi', "password: 'hunter2'",
+    ];
+    for (const s of samples) {
+      const { text } = await phoneFileText(`before\n${s}\nafter`);
+      const secret = s.match(/(?:abc\.def|value with|wJalr|abc\/def|hunter2|abcdefghijkl|sk-|github_pat_|AIza).*/)![0];
+      expect(text, s).not.toContain(secret.slice(0, 12));
+      expect(text, s).toContain('before');
+      expect(text, s).toContain('after');
+    }
+  });
+  it('a private key block and a value on the line after its label are hidden', async () => {
+    const pem = (await phoneFileText('a\n-----BEGIN RSA PRIVATE KEY-----\nMIIEbody\nmore\n-----END RSA PRIVATE KEY-----\nz')).text;
+    expect(pem).toBe('a\n[private key hidden]\nz');
+    expect((await phoneFileText('-----BEGIN OPENSSH PRIVATE KEY-----\nMIIEbody')).text).toBe('[private key hidden]');
+    expect((await phoneFileText('"k": "-----BEGIN PRIVATE KEY-----\\nMII\\n-----END PRIVATE KEY-----"')).text).toBe('[private key hidden]');
+    for (const label of ['password:', 'api_key =', 'client_secret: |', 'Password']) {
+      const { text } = await phoneFileText(`${label}\n\n  hunter2value\nnext line`);
+      expect(text, label).not.toContain('hunter2value');
+      expect(text, label).toContain('next line');
+    }
+  });
+  it('a secret crossing a cut is scrubbed before the cut, at the line limit and the file limit', async () => {
+    const key = 'ghp_' + 'Z'.repeat(36);
+    const line = await phoneFileText('x'.repeat(MAX_LINE_CHARS - 10) + ' ' + key);
+    expect(line.text).not.toContain('ghp_');
+    expect(line.text).not.toContain('ZZZZ');
+    expect(line.cut).toBe(true);
+    const filler = Array.from({ length: 40 }, () => 'y'.repeat(1630)).join('\n');
+    const pad = MAX_FILE_CHARS - filler.length - 12;
+    const whole = await phoneFileText(`${filler}\n${'y'.repeat(pad)} ${key} tail`);
+    expect(whole.text).not.toContain('ZZZZ');
+    expect(whole.text.length).toBeLessThanOrEqual(MAX_FILE_CHARS);
+  });
+  it('the viewer\'s refusals keep their meaning', async () => {
     expect(summarizeFolder({ status: 403, body: {} }).state).toBe('refused');
-    expect(summarizeFile({ status: 403, body: {} }).state).toBe('refused');
-    expect(summarizeFile({ status: 413, body: {} }).state).toBe('too-big');
+    expect((await summarizeFile({ status: 403, body: {} })).state).toBe('refused');
+    expect((await summarizeFile({ status: 413, body: {} })).state).toBe('too-big');
     expect(summarizeFolder({ status: 404, body: { error: 'file viewer is disabled' } }).state).toBe('off');
-    expect(summarizeFile({ status: 404, body: { error: 'file viewer is disabled' } }).state).toBe('off');
-    expect(summarizeFile({ status: 404, body: { error: 'nope' } }).state).toBe('unavailable');
-    expect(summarizeFile(ok({ binary: true, path: 'a.png', size: 3 })).state).toBe('binary');
+    expect((await summarizeFile({ status: 404, body: { error: 'file viewer is disabled' } })).state).toBe('off');
+    expect((await summarizeFile({ status: 404, body: { error: 'nope' } })).state).toBe('unavailable');
+    expect((await summarizeFile(ok({ binary: true, path: 'a.png', size: 3 }))).state).toBe('binary');
   });
-  it('a file is scrubbed and never reports editable', () => {
-    const r = summarizeFile(ok({ path: 'a.md', content: `one\nkey ${FAKE_KEY}\n`, size: 9, editable: true })) as any;
+  it('a file is scrubbed and never reports editable', async () => {
+    const r = await summarizeFile(ok({ path: 'a.md', content: `one\nkey ${FAKE_KEY}\n`, size: 9, editable: true })) as any;
     expect(r.text).not.toContain(FAKE_KEY);
     expect(r.cut).toBe(false);
     expect(r.editable).toBeUndefined();
   });
-  it('long text is cut before it is scrubbed, so one huge line cannot stall the server', () => {
+  it('long text is cut before it is scrubbed, so one huge line cannot stall the server', async () => {
     const started = Date.now();
-    const one = phoneFileText('a-'.repeat(300_000));
+    const one = await phoneFileText('a-'.repeat(300_000));
     expect(one.cut).toBe(true);
     expect(one.text.length).toBeLessThanOrEqual(MAX_LINE_CHARS + 1);
-    const many = phoneFileText(Array.from({ length: 100 }, () => 'a-'.repeat(999)).join('\n'));
+    const many = await phoneFileText(Array.from({ length: 100 }, () => 'a-'.repeat(999)).join('\n'));
     expect(many.text.length).toBeLessThanOrEqual(MAX_FILE_CHARS);
     expect(Date.now() - started).toBeLessThan(5_000);
   });

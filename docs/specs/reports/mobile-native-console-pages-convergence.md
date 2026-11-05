@@ -33,6 +33,10 @@ Standards-Conformance Gate: unavailable: the route refuses a spec path outside t
 
 Internal reviewer subagents did not run: this worker cannot spawn them. Round 5's two findings are fixed and unit-tested but no reviewer has re-read them. Live timings are for the console reads and for the trimming functions on saved live answers; the routes themselves can't be timed live until this ships.
 
+## After convergence
+
+An independent review of the PR found five defects in the Files protection, all fixed with tests: name matching, scrub coverage, folding, resolved-path judging and the scrub margin. No reviewer has re-read those fixes.
+
 ## Convergence verdict
 
 Stopped after five rounds; the last said MINOR ISSUES, with no security or auth findings in any round.

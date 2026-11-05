@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
-import { MOBILE_SECRETS_LINE, MOBILE_CONSOLE_PAGES_LINE, MOBILE_CONSOLE_PAGES_MARKER, MOBILE_ROUTES_CLAUDEMD_SECTION, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { MOBILE_SECRETS_WRITES_LINE, MOBILE_CONSOLE_PAGES_LINE, MOBILE_CONSOLE_PAGES_MARKER, MOBILE_ROUTES_CLAUDEMD_SECTION, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const count = (s: string) => s.split(MOBILE_CONSOLE_PAGES_MARKER).length - 1;
@@ -17,7 +17,7 @@ const count = (s: string) => s.split(MOBILE_CONSOLE_PAGES_MARKER).length - 1;
 describe('console pages awareness', () => {
   it('the Mobile app routes block carries the bullet right after the Passwords & keys bullet, with the injected port', () => {
     const lines = MOBILE_ROUTES_CLAUDEMD_SECTION(9999).split('\n');
-    expect(lines[lines.indexOf(MOBILE_SECRETS_LINE(9999)) + 1]).toBe(MOBILE_CONSOLE_PAGES_LINE(9999));
+    expect(lines[lines.indexOf(MOBILE_SECRETS_WRITES_LINE(9999)) + 1]).toBe(MOBILE_CONSOLE_PAGES_LINE(9999));
     expect(MOBILE_CONSOLE_PAGES_LINE(9999)).toContain('http://localhost:9999/mobile/pace');
     expect(MOBILE_CONSOLE_PAGES_LINE(9999)).not.toContain('4042');
   });
@@ -46,7 +46,7 @@ describe('migrateClaudeMd inserts the bullet into an existing Mobile app routes 
     const once = fs.readFileSync(claudeMdPath, 'utf-8');
     expect(count(once)).toBe(1);
     const lines = once.split('\n');
-    expect(lines[lines.indexOf(MOBILE_SECRETS_LINE(4042)) + 1]).toBe(MOBILE_CONSOLE_PAGES_LINE(4042));
+    expect(lines[lines.indexOf(MOBILE_SECRETS_WRITES_LINE(4042)) + 1]).toBe(MOBILE_CONSOLE_PAGES_LINE(4042));
     new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0', port: 4042 } as any).migrate();
     expect(count(fs.readFileSync(claudeMdPath, 'utf-8'))).toBe(1);
   });

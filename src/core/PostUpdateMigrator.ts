@@ -123,7 +123,7 @@ import {
 } from '../scaffold/claudeMdLayout.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
-import { installBuiltinSkills, installBrowserScripts } from '../commands/init.js';
+import { getDefaultJobs, installBuiltinSkills, installBrowserScripts } from '../commands/init.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { recordInstallProvenanceIfAbsent, hasInstallProvenanceRecord } from './ApprenticeshipStallGate.js';
 import { IdentityManager } from '../threadline/client/IdentityManager.js';
@@ -1063,6 +1063,14 @@ export function MOBILE_SECRETS_LINE(port: number): string {
 }
 export const MOBILE_SECRETS_MARKER = 'GET /mobile/secrets';
 /**
+ * Asking for a key and cancelling a request from the phone (docs/specs/mobile-native-secrets-writes.md),
+ * one bullet after the Passwords & keys bullet. Sniff: `POST /mobile/secrets/requests/<key>/cancel`.
+ */
+export function MOBILE_SECRETS_WRITES_LINE(port: number): string {
+  return `- The owner's phone can ask for a password or key (\`POST /mobile/secrets/requests\`) and cancel a waiting request (\`POST /mobile/secrets/requests/<key>/cancel\`) on http://localhost:${port}, each confirmed with Face ID over a single-use challenge, behind \`mobilePairing.permissionActions\`. The phone never gets the token or link: the owner collects the link in the console.`;
+}
+export const MOBILE_SECRETS_WRITES_MARKER = 'POST /mobile/secrets/requests/<key>/cancel';
+/**
  * The native Proposals / How I'm doing inside screens (docs/specs/mobile-native-proposals-inside.md),
  * one bullet in the Mobile app routes block after the permissions bullet. Sniff: `GET /mobile/proposals`.
  */
@@ -1072,7 +1080,7 @@ export function MOBILE_PROPOSALS_INSIDE_LINE(port: number): string {
 export const MOBILE_PROPOSALS_INSIDE_MARKER = 'GET /mobile/proposals';
 /**
  * The native console pages and file browser (docs/specs/mobile-native-console-pages.md), one bullet in the
- * Mobile app routes block after the Passwords & keys bullet. Sniff: `GET /mobile/ideas`.
+ * Mobile app routes block after the Passwords & keys bullets. Sniff: `GET /mobile/ideas`.
  */
 export function MOBILE_CONSOLE_PAGES_LINE(port: number): string {
   return `- The app's native Ideas, Pace, Development, Maturation and Files screens read \`GET /mobile/ideas\`, \`/mobile/pace\`, \`/mobile/development\`, \`/mobile/maturation\`, \`/mobile/files?path=\` and \`/mobile/files/read?path=\` (owner phone or bearer, read-only, each built from the console route it mirrors so a phone never sees more than the console; files whose name says they hold a secret are hidden even where the console shows them). Check one: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/pace\`. **When to use**: the owner asks how queues, shipping or features are doing from the phone, or asks to see a file. Changes stay in the console.`;
@@ -1205,6 +1213,7 @@ ${MOBILE_PHONES_MESSAGES_LINE(port)}
 ${MOBILE_PERMISSIONS_LINE(port)}
 ${MOBILE_PROPOSALS_INSIDE_LINE(port)}
 ${MOBILE_SECRETS_LINE(port)}
+${MOBILE_SECRETS_WRITES_LINE(port)}
 ${MOBILE_CONSOLE_PAGES_LINE(port)}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
@@ -2525,6 +2534,7 @@ export class PostUpdateMigrator {
     this.migrateGitignore(result);
     this.migrateBuiltinSkills(result);
     this.migrateBuiltinJobs(result);
+    this.migrateLegacyDefaultJobs(result);
     this.autoMigrateLegacyJobsJson(result);
     this.migrateSkillPortHardcoding(result);
     this.migrateBuildSkillMethodology(result);
@@ -6822,6 +6832,45 @@ if [[ "$ACTIVE" != "true" ]]; then`;
   }
 
   /**
+   * Reconcile legacy default jobs on every update, before a pending jobs.json
+   * migration reads that file. Built-in agentmd jobs are handled separately.
+   * The legacy git-sync default is disabled and never auto-enabled by refresh.
+   */
+  private migrateLegacyDefaultJobs(result: MigrationResult): void {
+    const jobsPath = path.join(this.config.stateDir, 'jobs.json');
+    if (!fs.existsSync(jobsPath)) {
+      result.skipped.push('legacy default jobs: no jobs.json');
+      return;
+    }
+    try {
+      const jobs = JSON.parse(fs.readFileSync(jobsPath, 'utf8')) as unknown;
+      if (!Array.isArray(jobs) || jobs.some(job => !job || typeof job !== 'object' || typeof job.slug !== 'string')) {
+        throw new Error('jobs.json must be an array of jobs with slugs');
+      }
+      const slugs = new Set(jobs.map(job => job.slug));
+      const missing = (getDefaultJobs(this.config.port) as Array<{ slug: string; enabled?: boolean }>)
+        .filter(job => !slugs.has(job.slug));
+      // An update may add shipped defaults, but must not rewrite an existing
+      // legacy body before jobsMigrate can classify and preserve user edits.
+      // A Git remote is never an opt-in to running git-sync.
+      for (const job of missing) {
+        if (job.slug === 'git-sync') job.enabled = false;
+        jobs.push(job);
+      }
+      if (missing.length > 0) {
+        SafeFsExecutor.atomicWriteJsonSync(jobsPath, jobs, {
+          operation: 'PostUpdateMigrator.migrateLegacyDefaultJobs', indent: 2,
+        });
+        result.upgraded.push(`legacy default jobs: ${missing.length} missing job(s) installed`);
+      } else {
+        result.skipped.push('legacy default jobs: already present');
+      }
+    } catch (err) {
+      result.errors.push(`legacy default jobs: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
    * Phase 2 — install/refresh built-in agentmd jobs. Copies the shipped
    * markdown templates into `.instar/jobs/instar/` and writes their
    * per-slug manifests. Honors operator-disabled state (preserves
@@ -9718,6 +9767,22 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added the native Passwords & keys line');
     }
 
+    // Phone asks and cancels (docs/specs/mobile-native-secrets-writes.md): one bullet after the Passwords &
+    // keys bullet of an existing Mobile app routes block (a block added below already has it).
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_SECRETS_WRITES_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_SECRETS_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_SECRETS_WRITES_LINE(port));
+        content = lines.join('\n');
+      } else {
+        // A block without the Passwords & keys bullet: append the line rather than skip it.
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_SECRETS_WRITES_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the phone ask and cancel line');
+    }
+
     // Native Proposals / How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): one bullet
     // after the permissions bullet of an existing Mobile app routes block (a block added below already has it).
     if (content.includes('Mobile app routes') && !content.includes(MOBILE_PROPOSALS_INSIDE_MARKER)) {
@@ -9738,7 +9803,8 @@ setTimeout(() => process.exit(0), 2000);
     // bullet of an existing Mobile app routes block (a block added below already has it).
     if (content.includes('Mobile app routes') && !content.includes(MOBILE_CONSOLE_PAGES_MARKER)) {
       const lines = content.split('\n');
-      const at = lines.findIndex((l) => l.includes(MOBILE_SECRETS_MARKER));
+      const writes = lines.findIndex((l) => l.includes(MOBILE_SECRETS_WRITES_MARKER));
+      const at = writes >= 0 ? writes : lines.findIndex((l) => l.includes(MOBILE_SECRETS_MARKER));
       if (at >= 0) {
         lines.splice(at + 1, 0, MOBILE_CONSOLE_PAGES_LINE(port));
         content = lines.join('\n');

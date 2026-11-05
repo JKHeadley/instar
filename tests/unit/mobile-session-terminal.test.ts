@@ -79,6 +79,8 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['POST', '/mobile/permissions/challenge'],
       ['POST', '/mobile/permissions/requests/authreq-1/approve'],
       ['POST', '/mobile/permissions/features/git-backup'],
+      ['POST', '/mobile/secrets/requests'],
+      ['POST', '/mobile/secrets/requests/abcdef0123456789/cancel'],
     ];
     const ownerOnly = DEVICE_ALLOWLIST.filter((r) => r.ownerOnly);
     for (const [method, p] of named) expect(ownerOnly.filter((r) => r.method === method && r.re.test(p)), `${method} ${p}`).toHaveLength(1);

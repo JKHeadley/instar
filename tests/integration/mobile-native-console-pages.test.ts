@@ -41,6 +41,7 @@ const ANSWERS: Record<string, { status: number; body: unknown }> = {
 function deps(over: Partial<MobileConsolePagesDeps> = {}): MobileConsolePagesDeps {
   return {
     read: async (p) => { asked.push(p); return ANSWERS[p] ?? { status: 404, body: { error: 'nope' } }; },
+    resolve: async (p) => (p === 'notes.md' ? '.instar/credential-locations.json' : p === 'gone.md' ? null : p),
     bearerOk: (req) => req.headers.authorization === 'Bearer tok-1',
     ...over,
   };
@@ -109,6 +110,26 @@ describe('owner phone', () => {
       expect(r.body.state, p).toBe('refused');
     }
     expect(asked).toEqual([]);
+  });
+
+  it('a link is judged by its target: a hidden or missing target is refused without a read, and a listed link is dropped', async () => {
+    const c = setup();
+    asked.length = 0;
+    for (const p of ['/mobile/files/read?path=notes.md', '/mobile/files/read?path=gone.md', '/mobile/files?path=gone.md']) {
+      expect((await signedGet(c, p)).body.state, p).toBe('refused');
+    }
+    expect(asked).toEqual([]);
+    const listing = setup({ read: async () => ({ status: 200, body: { path: '', entries: [{ name: 'notes.md', type: 'file' }, { name: 'a.md', type: 'file' }] } }) });
+    expect((await signedGet(listing, '/mobile/files')).body.entries.map((e: { name: string }) => e.name)).toEqual(['a.md']);
+  });
+
+  it('the viewer reads the resolved path, not the asked name', async () => {
+    const c = setup({ resolve: async () => 'CLAUDE.md' });
+    asked.length = 0;
+    const r = await signedGet(c, '/mobile/files/read?path=link.md');
+    expect(r.body.state).toBe('ok');
+    expect(r.body.path).toBe('link.md');
+    expect(asked).toEqual(['/api/files/read?path=CLAUDE.md']);
   });
 
   it('a path that is not one string is refused, and read needs a path', async () => {

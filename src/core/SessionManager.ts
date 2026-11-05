@@ -9,7 +9,7 @@
 import type { MemoryPrivacyRecovery } from '../users/MemoryPrivacyRecovery.js';
 import { isCredentialEnvName, CLAUDE_CONFINED_PERMISSION_ARGS } from './credentialEnvNames.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
-import { applyMemorySessionLaunch, buildMemorySessionSettings, moveInboundFilesIntoScope, prepareSessionCurlHome } from './memorySessionPolicy.js';
+import { applyMemorySessionLaunch, buildMemorySessionSettings, memorySessionInboundRoots, moveInboundFilesIntoScope, prepareSessionCurlHome } from './memorySessionPolicy.js';
 import { audienceKey, type MemoryPrivacy, type SessionPlaceInput } from '../users/MemoryPrivacy.js';
 import { isScopedAudience, memoryScopeEnvValue, type MemoryAudience, type MemoryPlace } from '../users/MemoryAudience.js';
 import { execFileSync, execFile } from 'node:child_process';
@@ -1070,6 +1070,7 @@ export class SessionManager extends EventEmitter {
     /** Finds the Slack channel of a session started before places were recorded. */
     slackChannelForSession?: (sessionName: string) => string | null;
   };
+  private memoryInboundClaims = new Map<string, { place: string; dev: number; ino: number; size: number; mtimeMs: number; claimedAt: number }>();
 
   /**
    * Census #5/#6: live credential re-pointing gate. When set AND enabled, a pinned account's
@@ -1858,16 +1859,37 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /** Memory privacy: a scoped session reads its files from its own inbox. */
+  registerMemoryInboundFile(place: string, filePath: string): void {
+    if (!this.memoryPrivacyWiring?.privacy.enabled) return;
+    try {
+      const now = Date.now();
+      for (const [key, claim] of this.memoryInboundClaims) {
+        if (now - claim.claimedAt > 10 * 60_000) this.memoryInboundClaims.delete(key);
+      }
+      const real = fs.realpathSync(filePath);
+      const info = fs.lstatSync(filePath);
+      if (!info.isFile() || info.nlink !== 1) return;
+      this.memoryInboundClaims.set(real, { place, dev: info.dev, ino: info.ino, size: info.size, mtimeMs: info.mtimeMs, claimedAt: now });
+    } catch { /* A missing attachment cannot be claimed. */ }
+  }
+
   private withInboundFilesInScope(tmuxSession: string, text: string): string {
     if (!this.memoryPrivacyWiring) return text;
-    const scopeDir = this.listRunningSessions().find((s) => s.tmuxSession === tmuxSession)?.memoryScopeDir;
+    const session = this.listRunningSessions().find((s) => s.tmuxSession === tmuxSession);
+    const scopeDir = session?.memoryScopeDir;
     if (!scopeDir) return text;
-    const state = path.join(this.config.projectDir, '.instar');
-    return moveInboundFilesIntoScope(text, scopeDir, [
-      path.join(state, 'telegram-inbound'), path.join(state, 'telegram-images'), path.join(state, 'telegram-files'),
-      path.join(state, 'slack-files'), path.join(state, 'imessage', 'attachments'), path.join(state, 'state', 'dashboard-uploads'),
-      '/tmp/instar-slack', '/private/tmp/instar-slack',
-    ]);
+    const place = session.telegramTopicId !== undefined ? `telegram:${session.telegramTopicId}`
+      : session.slackChannelId ? `slack:${session.slackChannelId}` : null;
+    const projectState = path.join(this.config.projectDir, '.instar');
+    const roots = memorySessionInboundRoots(this.config.stateDir ?? projectState);
+    if (this.config.stateDir && this.config.stateDir !== projectState) roots.push(path.join(projectState, 'telegram-inbound'));
+    const staged = moveInboundFilesIntoScope(text, scopeDir, roots, Date.now(), (real, info) => {
+      const claim = this.memoryInboundClaims.get(real);
+      return !!place && claim?.place === place && Date.now() - claim.claimedAt <= 10 * 60_000 && claim.dev === info.dev && claim.ino === info.ino
+        && claim.size === info.size && claim.mtimeMs === info.mtimeMs;
+    });
+    if (staged === text && !/\b(?:file|document|photo|image|attachment)\b/i.test(text)) return staged;
+    return `${staged}\n[File access: If one referenced file fails to open, retry that file once. Then say which file failed and ask the sender to resend it. Do not conclude that other files cannot open in this session.]`;
   }
 
   /** The audience kind a place would get, for callers that shape what they send there. */
@@ -8768,6 +8790,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const filename = `msg-${topicId}-${Date.now()}-${randomUUID().slice(0, 8)}.txt`;
     const filepath = path.join(tmpDir, filename);
     fs.writeFileSync(filepath, taggedText);
+    this.registerMemoryInboundFile(`telegram:${topicId}`, filepath);
 
     // The session sees ONLY this line until it opens the file, so the marker has
     // to ride here too — the observed 2026-08-20 re-deliveries were all long
