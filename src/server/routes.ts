@@ -19,6 +19,8 @@ import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoute
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { mountMobilePermissionsRoutes } from './mobilePermissionsRoutes.js';
+import { mountMobileProposalsInsideRoutes, ACTIVITY_WINDOW, CLAIMS_WINDOW } from './mobileProposalsInsideRoutes.js';
+import { loadAllProposals } from './routes/remediation-proposals.js';
 import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
 import type { AutoExpiryHold } from '../core/types.js';
@@ -37790,6 +37792,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       },
       insights: async () => (ctx.dashboardInsightEngine ? { state: 'ok', data: await ctx.dashboardInsightEngine.getAll({ cachedOnly: true }) } : { state: 'off' }),
       peerInsights: () => peerSummaries('/mobile/insights?scope=local'),
+      offlineMachineIds: () => {
+        if (!ctx.meshSelfId) return [];
+        const online = new Set([...onlinePeers().map((p) => p.machineId), ctx.meshSelfId]);
+        return (ctx.machinePoolRegistry?.getCapacities() ?? []).map((m) => m.machineId).filter((id) => !online.has(id));
+      },
+      nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+      bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    });
+    // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): trimmed
+    // read-only summaries, owner phone or bearer, proxied-on-read across peers.
+    mountMobileProposalsInsideRoutes(router, {
+      proposals: () => ({ state: 'ok', data: loadAllProposals(ctx.config.stateDir) }),
+      peerProposals: () => peerSummaries('/mobile/proposals?scope=local'),
+      activity: async () => {
+        const on = ctx.config.integratedBeing?.enabled !== false;
+        return on && ctx.sharedStateLedger ? { state: 'ok', data: { entries: await ctx.sharedStateLedger.recent({ limit: ACTIVITY_WINDOW }) } } : { state: 'off' };
+      },
+      insights: () => (ctx.failureLedger ? { state: 'ok', data: { insights: ctx.failureLedger.listInsights({ limit: 1000 }) } } : { state: 'off' }),
+      week: () => (ctx.failureLedger ? { state: 'ok', data: ctx.failureLedger.analyze({ sinceMs: Date.now() - 7 * 86400_000 }) } : { state: 'off' }),
+      claims: () => (ctx.completionClaimVerifier ? { state: 'ok', data: ctx.completionClaimVerifier.readAudit(CLAIMS_WINDOW) } : { state: 'off' }),
+      reviews: () => (ctx.classReviewStore ? { state: 'ok', data: { records: ctx.classReviewStore.list({ limit: 20 }), open: ctx.classReviewStore.countOpen() } } : { state: 'off' }),
+      peerInside: () => peerSummaries('/mobile/inside?scope=local'),
       offlineMachineIds: () => {
         if (!ctx.meshSelfId) return [];
         const online = new Set([...onlinePeers().map((p) => p.machineId), ctx.meshSelfId]);
