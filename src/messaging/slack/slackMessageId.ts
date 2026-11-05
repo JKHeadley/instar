@@ -23,6 +23,32 @@
  *
  * Derivation is pure: the same message always yields the same id, which is what
  * keeps `INSERT OR IGNORE` idempotent across restarts and JSONL re-imports.
+ *
+ * ── Relationship to src/core/conversationIdentity.ts ──
+ *
+ * That module is the governed surface for CONVERSATION identity: it mints a
+ * numeric topic/conversation id from a routing key via `sumShiftHash` +
+ * `walkDisplacement`, and `conversation-identity-mint-idiom-ratchet.test.ts`
+ * fails CI on a fourth copy of its negated-absolute-hash mint idiom (the
+ * literal form is in that test; it is deliberately NOT repeated here, because
+ * the ratchet greps source text and cannot tell a comment from code). This
+ * module is deliberately NOT a second copy of that: it is a different axis.
+ *
+ *   conversationIdentity : routing key (channel + thread) -> topic_id   [hash]
+ *   this module          : one message's own ts            -> message_id [time]
+ *
+ * It mints nothing and hashes nothing — no absolute-value negation, no hash and
+ * no collision walk here, because a message id must preserve SEND ORDER (see
+ * reason 2 above) and a hash cannot. A hash would have satisfied the UNIQUE
+ * constraint and moved the data loss into `getMessagesSinceSummary` instead,
+ * which is the harder bug to see. If message ids ever do need minting rather
+ * than deriving, that belongs in the governed module, not here.
+ *
+ * `conversationIdentity.SLACK_THREAD_TS_RE` (`/^\d{10}\.\d{6}$/`) is the
+ * governed shape for a Slack *thread* ts and is intentionally not reused below:
+ * it requires exactly 10 + 6 digits, and this module must also accept a ts with
+ * no fraction or a short one rather than fall back and risk a coarser id. The
+ * stricter form stays the right check for routing keys.
  */
 
 const MICROS_PER_SECOND = 1_000_000;

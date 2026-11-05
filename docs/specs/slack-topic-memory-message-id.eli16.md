@@ -112,6 +112,41 @@ consumer with different needs, so it was deliberately left alone to keep this
 change to one behaviour — but it means presence sees a coarser id than the store
 does.
 
+## Why this wasn't fixed the last time someone found it
+
+This defect was found before, in a round-2 review of PROP-1289, and
+*deliberately left alone*. The reason given: instar already has one governed
+place for turning things into numeric ids — `src/core/conversationIdentity.ts`,
+backed by a spec and by a CI test that fails if its id-minting idiom is copied a
+fourth time. Inventing a new id scheme at the call site would add a rival to the
+very thing that spec exists to consolidate.
+
+That was the right instinct, and it is worth being precise about why this change
+is not the thing it was warning about. There are two different questions here:
+
+| question | answer | how |
+|---|---|---|
+| which conversation is this? | `topic_id` | `conversationIdentity` — a hash of the channel, plus a collision walk |
+| which message is this? | `message_id` | this change — the message's own timestamp |
+
+Only the first is identity *minting*. The second is a straight conversion of
+data the message already carries, and it contains no hash and no collision walk
+at all. So this is not a third scheme competing with the governed one; it is the
+missing half of a different question.
+
+And the objection's core worry — "don't invent a hash" — is precisely the
+constraint this change obeys, for an independent reason it did not have at the
+time: `message_id` is also the **ordering** key. A hash would have been unique,
+passed the constraint, looked fixed, and silently moved the message loss into
+the summariser instead. The old warning pointed at the right danger.
+
+One honest note on how that was checked. The first draft of the new module's
+comment quoted the forbidden idiom while explaining why it isn't used — and the
+CI ratchet failed, because it searches the source text and can't tell a comment
+from code. The comment now names the idiom instead of reproducing it. The
+ratchet was right to fire, and "the ratchet passes" is only worth writing down
+because it was then actually run.
+
 ## What a reader actually needs to decide
 
 Whether the microsecond-integer id is the right shape for `message_id`, given

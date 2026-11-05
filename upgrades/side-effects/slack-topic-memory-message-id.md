@@ -85,6 +85,43 @@ lines below) is the lossy truncation this module exists to avoid reproducing.
 That duplication is now *named* in the new module's doc comment and in §5, which
 is the honest state: two consumers, one correct, one coarse.
 
+**Relationship to the governed identity surface (`src/core/conversationIdentity.ts`).**
+This is the objection on the record: the PROP-1289 round-2 review deliberately
+did NOT fix this defect, reasoning that "inventing an id hash at the call site
+would add a rival scheme beside the one that spec exists to consolidate"
+(`docs/specs/durable-conversation-identity.md`, whose
+`tests/unit/conversation-identity-mint-idiom-ratchet.test.ts` fails CI on a
+fourth copy of its negated-absolute-hash mint idiom). That objection is answered
+rather than ignored, on three counts:
+
+1. **Different axis.** `conversationIdentity` mints a *conversation* id from a
+   routing key (channel + thread), via `sumShiftHash` + `walkDisplacement`.
+   This module derives a *message* id from one message's own `ts`. Both land as
+   integers in the same table, but they answer different questions and only one
+   of them is an identity mint.
+2. **No mint, no hash — measured, not asserted.** The module contains no
+   absolute-value negation, no hash and no collision walk. Verified by running
+   the ratchet itself: `conversation-identity-mint-idiom-ratchet`,
+   `conversation-identity` and this change's own suite pass together, 39 tests.
+   Worth recording *how* that was learned: an earlier draft of this module's doc
+   comment quoted the mint idiom verbatim while explaining why it is not used,
+   and the ratchet failed — it greps source text and cannot tell a comment from
+   code. The prose was rewritten to name the idiom instead of reproducing it.
+   The ratchet was right to fire, and a claim that it passes is only worth
+   anything because it was actually run.
+3. **The objection is the reason for the design.** A hash was the thing to
+   avoid, and §5 gives the independent reason: `message_id` is also an ordering
+   key, so a hash would have satisfied UNIQUE and relocated the loss into
+   `getMessagesSinceSummary` — a harder bug to see than the one being fixed.
+   The review's instinct was right; what this change revisits is the conclusion
+   that followed from it ("therefore do not fix"), because deriving from time is
+   neither minting nor hashing.
+
+If message ids ever need *minting* rather than deriving, that belongs in the
+governed module. `SLACK_THREAD_TS_RE` is deliberately not reused here: it
+requires exactly 10 + 6 digits, which is right for a routing key but would push
+a short-fraction `ts` onto the coarser fallback path.
+
 ## 4. Signal vs authority compliance
 
 **Required reference:** [docs/signal-vs-authority.md](../../docs/signal-vs-authority.md)
