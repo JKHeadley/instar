@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "mobile-slack-holder-proxy",
+  "sessionId": "501849a3-8fc5-483e-b8f2-b09fce0f4d96",
+  "timestamp": "2026-11-05T11:46:31.322Z",
+  "artifactPath": "upgrades/side-effects/mobile-slack-holder-proxy.md",
+  "artifactSha256": "780705efea03ddb4c6422fd34d80fe241d9d95eb29aa70751aded76ced705fc1",
+  "specPath": "docs/specs/mobile-slack-holder-proxy.md",
+  "coveredFiles": [
+    "docs/specs/mobile-slack-holder-proxy.eli16.md",
+    "docs/specs/mobile-slack-holder-proxy.md",
+    "docs/specs/reports/mobile-slack-holder-proxy-convergence.md",
+    "src/server/AgentServer.ts",
+    "src/server/mobileSlackHolderProxy.ts",
+    "src/server/mobileSlackRoutes.ts",
+    "tests/e2e/mobile-slack-holder-proxy-alive.test.ts",
+    "tests/integration/mobile-slack-holder-proxy.test.ts",
+    "tests/unit/mobile-slack-holder-proxy.test.ts",
+    "upgrades/next/mobile-slack-holder-proxy.md",
+    "upgrades/side-effects/mobile-slack-holder-proxy.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Crosses machines with the agent token for private history on a device route.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

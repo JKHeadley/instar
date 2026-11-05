@@ -3097,7 +3097,7 @@ export class JobScheduler {
     const failed = session.status === 'failed' || session.status === 'killed' || declaredFailure !== null;
     const failureError = !failed ? undefined
       : session.status === 'failed' || session.status === 'killed'
-        ? `Session ${session.status} (${session.name})${declaredFailure ? ` — declared failure: ${declaredFailure}` : ''}`
+        ? `Session ${session.status} (${session.name})${session.endedReason === 'codex-rate-limited' ? ' — Codex 429 Too Many Requests' : ''}${declaredFailure ? ` — declared failure: ${declaredFailure}` : ''}`
         : `Declared failure: ${declaredFailure}`;
 
     // Capture session output FIRST — needed for both history and notifications

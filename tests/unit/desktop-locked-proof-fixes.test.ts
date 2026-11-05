@@ -165,6 +165,22 @@ describe('secure-input owner registry path', () => {
     expect(swift).toMatch(/IORegistryEntryFromPath\(kIOMainPortDefault, secureInputRegistryPath\)/);
     expect(swift).toMatch(/IORegistryEntryCreateCFProperty\(root, "IOConsoleUsers" as CFString/);
   });
+
+  it('reads secure input from the session on the console, not any background account', () => {
+    const start = swift.indexOf('static func secureInputOwner()');
+    const body = swift.slice(start, swift.indexOf('\n    }\n', start));
+    expect(body).toContain('$0["kCGSSessionOnConsoleKey"] as? Bool == true');
+    expect(body).toContain('(onConsole.isEmpty ? users : onConsole)');
+    expect(body).not.toContain('users.compactMap');
+  });
+
+  it('types only while this helper\'s own session is the one on screen', () => {
+    const start = swift.indexOf('static func secureTargetHolds()');
+    const body = swift.slice(start, swift.indexOf('\n    }\n', start));
+    expect(body).toContain('state?[kCGSessionOnConsoleKey as String] as? Bool == true');
+    expect(body).toContain('state?["CGSSessionScreenIsLocked"] as? Bool == true');
+    expect(body).toContain('secureInputOwner() == "loginwindow"');
+  });
 });
 
 describe('viewer has words for every password refusal', () => {

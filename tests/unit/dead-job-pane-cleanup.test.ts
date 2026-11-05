@@ -23,7 +23,7 @@ import type { Session } from '../../src/core/types.js';
 const which = spawnSync('which', ['tmux'], { encoding: 'utf-8' });
 const realTmux = which.status === 0 ? which.stdout.trim() : '';
 
-describe.skipIf(!realTmux)('dead job pane cleanup (real tmux, private socket)', () => {
+describe.skipIf(!realTmux).each([false, true])('dead job pane cleanup (real tmux, private socket, async=%s)', (asyncEnabled) => {
   let root: string;
   let dir: string;
   let socket: string;
@@ -32,7 +32,7 @@ describe.skipIf(!realTmux)('dead job pane cleanup (real tmux, private socket)', 
   let manager: SessionManager;
   let tick: () => Promise<void>;
 
-  const tmux = (...args: string[]) => spawnSync(realTmux, ['-L', socket, ...args], { encoding: 'utf-8' });
+  const tmux = (...args: string[]) => spawnSync(realTmux, ['-f', '/dev/null', '-L', socket, ...args], { encoding: 'utf-8' });
   const exists = (name: string) => tmux('has-session', '-t', `=${name}`).status === 0;
   const paneDead = (name: string) => tmux('display-message', '-t', `=${name}:`, '-p', '#{pane_dead}').stdout.trim() === '1';
   const base = () => path.basename(dir);
@@ -47,7 +47,13 @@ describe.skipIf(!realTmux)('dead job pane cleanup (real tmux, private socket)', 
 
   async function waitDead(names: string[]): Promise<void> {
     for (let i = 0; i < 50; i++) {
-      if (names.every(paneDead)) return;
+      // pane_dead can precede waitpid's status; these fixtures need the final
+      // process result. The tri-state suite drives that intermediate race.
+      if (names.every((name) => {
+        const [dead, status, signal] = tmux('display-message', '-t', `=${name}:`, '-p',
+          '#{pane_dead}||#{pane_dead_status}||#{pane_dead_signal}').stdout.trim().split('||');
+        return dead === '1' && Boolean(status || signal);
+      })) return;
       await new Promise((r) => setTimeout(r, 100));
     }
     throw new Error(`panes never died: ${names.filter((n) => !paneDead(n)).join(', ')}`);
@@ -67,18 +73,138 @@ describe.skipIf(!realTmux)('dead job pane cleanup (real tmux, private socket)', 
     fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
     socket = `deadjob-${process.pid}-${Math.floor(Math.random() * 1e6)}`;
     tmuxPath = path.join(root, 'tmux.sh');
-    fs.writeFileSync(tmuxPath, `#!/bin/sh\nexec "${realTmux}" -L "${socket}" "$@"\n`, { mode: 0o755 });
+    fs.writeFileSync(tmuxPath, `#!/bin/sh\nexec "${realTmux}" -f /dev/null -L "${socket}" "$@"\n`, { mode: 0o755 });
     state = new StateManager(path.join(dir, 'state'));
     manager = new SessionManager({
       tmuxPath, claudePath: '/usr/local/bin/claude', projectDir: dir, maxSessions: 5,
       protectedSessions: [], completionPatterns: [], framework: 'claude-code',
-    }, state, { bindMaintenanceTickForTesting: (t) => { tick = t; } });
+    }, state, { tmuxAsyncEnabled: asyncEnabled, bindMaintenanceTickForTesting: (t) => { tick = t; } });
   });
 
   afterEach(() => {
     manager.stopMonitoring();
     tmux('kill-server');
     SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'tests/unit/dead-job-pane-cleanup.test.ts:cleanup' });
+  });
+
+  it('classifies a retained Codex 429 as failed, emits an alert signal, and removes it from running capacity', async () => {
+    const job = `${base()}-job-bug-fixer-429`;
+    start(job, 'echo "exceeded retry limit, last status: 429 Too Many Requests"; exit 1',
+      { INSTAR_AGENT_HOME: dir, INSTAR_JOB_SLUG: 'bug-fixer' });
+    await waitDead([job]);
+    record('codex429', job, 'bug-fixer');
+    state.saveSession({ ...state.getSession('codex429')!, framework: 'codex-cli',
+      startedAt: new Date(Date.now() - 10 * 60_000).toISOString() });
+    const exits: Session[] = [];
+    manager.on('codexRateLimitExit', (session: Session) => exits.push(session));
+
+    await tick();
+
+    expect(state.getSession('codex429')?.status).toBe('failed');
+    await tick();
+    expect(exits).toHaveLength(1);
+    expect(state.getSession('codex429')?.endedReason).toBe('codex-rate-limited');
+    expect(manager.listRunningSessions()).toHaveLength(0);
+    expect(exits).toHaveLength(1);
+    expect(exits[0].id).toBe('codex429');
+    expect(exists(job)).toBe(false);
+  });
+
+  it('waits when tmux closes the pane before the process supplies its nonzero exit', async () => {
+    const job = `${base()}-job-pending-status`;
+    const release = path.join(root, 'release-exit');
+    const ready = path.join(root, 'descriptors-closed');
+    start(job, `exec /bin/sh -c 'echo "429 Too Many Requests"; exec 0<&- 1>&- 2>&-; : >"${ready}"; while [ ! -f "${release}" ]; do sleep 0.1; done; exit 1'`,
+      { INSTAR_AGENT_HOME: dir, INSTAR_JOB_SLUG: 'bug-fixer' });
+    try {
+      for (let i = 0; i < 50 && !fs.existsSync(ready); i++) await new Promise((r) => setTimeout(r, 100));
+      expect(fs.existsSync(ready)).toBe(true);
+      // 3.4 reports pane_dead=1 on fd closure; 3.7 waits for process exit.
+      // Both must preserve the running session while its exit status is unknown.
+      const [dead, status] = tmux('display-message', '-t', `=${job}:`, '-p', '#{pane_dead}||#{pane_dead_status}').stdout.trim().split('||');
+      expect(['0', '1']).toContain(dead);
+      expect(status).toBe('');
+      record('pending-status', job, 'bug-fixer');
+      state.saveSession({ ...state.getSession('pending-status')!, framework: 'codex-cli' });
+      const notices: Session[] = [];
+      manager.on('codexRateLimitExit', (s) => notices.push(s));
+      await tick();
+      expect(state.getSession('pending-status')?.status).toBe('running');
+      expect(notices).toHaveLength(0);
+      fs.writeFileSync(release, 'exit');
+      await waitDead([job]);
+      await tick();
+      await tick();
+      expect(state.getSession('pending-status')).toMatchObject({ status: 'failed', endedReason: 'codex-rate-limited' });
+      expect(notices).toHaveLength(1);
+      expect(exists(job)).toBe(false);
+    } finally { fs.writeFileSync(release, 'exit'); }
+  });
+
+  it.each([
+    ['clean-codex', 'codex-cli', 0, '429 Too Many Requests'],
+    ['other-error', 'codex-cli', 1, 'connection refused'],
+    ['other-framework', 'claude-code', 1, '429 Too Many Requests'],
+  ] as const)('does not emit a Codex rate-limit notice for %s', async (id, framework, exitCode, text) => {
+    const job = `${base()}-job-${id}`;
+    start(job, `echo "${text}"; exit ${exitCode}`, { INSTAR_AGENT_HOME: dir, INSTAR_JOB_SLUG: 'test' });
+    // Keep the clean exit too, so its stale error text is actually captured.
+    tmux('set-option', '-t', `=${job}:`, 'remain-on-exit', 'on');
+    await waitDead([job]);
+    record(id, job, 'test');
+    state.saveSession({ ...state.getSession(id)!, framework });
+    const exits: Session[] = [];
+    manager.on('codexRateLimitExit', (session) => exits.push(session));
+    await tick();
+    expect(state.getSession(id)?.status).toBe('completed');
+    expect(exits).toHaveLength(0);
+    expect(exists(job)).toBe(false);
+  });
+
+  it('keeps an operator kill that races with the Codex terminal capture', async () => {
+    const job = `${base()}-job-racing-codex`;
+    start(job, 'echo "429 Too Many Requests"; exit 1',
+      { INSTAR_AGENT_HOME: dir, INSTAR_JOB_SLUG: 'bug-fixer' });
+    await waitDead([job]);
+    record('racing', job, 'bug-fixer');
+    state.saveSession({ ...state.getSession('racing')!, framework: 'codex-cli',
+      startedAt: new Date(Date.now() - 10 * 60_000).toISOString() });
+    const originalCapture = (manager as any).captureOutputMaybeAsync.bind(manager);
+    let terminalCaptures = 0;
+    (manager as any).captureOutputMaybeAsync = async (...args: unknown[]) => {
+      terminalCaptures++;
+      const tail = await originalCapture(...args);
+      const current = state.getSession('racing')!;
+      state.saveSession({ ...current, status: 'killed', endedReason: 'operator-kill' });
+      return tail;
+    };
+    const completed: Session[] = [];
+    manager.on('sessionComplete', (session: Session) => completed.push(session));
+
+    await tick();
+
+    expect(terminalCaptures).toBe(1);
+    expect(state.getSession('racing')?.status).toBe('killed');
+    expect(state.getSession('racing')?.endedReason).toBe('operator-kill');
+    expect(completed).toHaveLength(0);
+  });
+
+  it('completes cleanup even when a Codex alert listener throws', async () => {
+    const job = `${base()}-job-alert-fault`;
+    start(job, 'echo "429 Too Many Requests"; exit 1',
+      { INSTAR_AGENT_HOME: dir, INSTAR_JOB_SLUG: 'bug-fixer' });
+    await waitDead([job]);
+    record('alert-fault', job, 'bug-fixer');
+    state.saveSession({ ...state.getSession('alert-fault')!, framework: 'codex-cli' });
+    manager.on('codexRateLimitExit', () => { throw new Error('notification backend unavailable'); });
+    const completed: Session[] = [];
+    manager.on('sessionComplete', (session: Session) => completed.push(session));
+
+    await tick();
+
+    expect(state.getSession('alert-fault')?.status).toBe('failed');
+    expect(completed).toHaveLength(1);
+    expect(exists(job)).toBe(false);
   });
 
   it('a job that exits non-zero is marked completed and its dead tmux session removed; an interactive one keeps its pane', async () => {

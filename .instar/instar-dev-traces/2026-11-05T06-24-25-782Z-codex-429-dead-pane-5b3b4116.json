@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "codex-429-dead-pane",
+  "sessionId": "e3347cc4-2c18-46a6-8f89-2b6580ae774a",
+  "timestamp": "2026-11-05T06:24:25.782Z",
+  "artifactPath": "upgrades/side-effects/codex-429-dead-pane.md",
+  "artifactSha256": "e43ed3b81f3727e7e214f100781b0f8bd477c7675812d38858573bec00e23234",
+  "coveredFiles": [
+    "docs/specs/codex-429-dead-pane.eli16.md",
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "src/scheduler/JobScheduler.ts",
+    "tests/unit/dead-job-pane-cleanup.test.ts",
+    "upgrades/next/codex-429-dead-pane.md",
+    "upgrades/side-effects/codex-429-dead-pane.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Confirmed Codex 429 exit classification and reporting are reversible with a code revert; no schema, credential, or new kill authority is introduced.",
+  "eli16Path": "docs/specs/codex-429-dead-pane.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/codex-429-dead-pane.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

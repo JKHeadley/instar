@@ -1543,6 +1543,14 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     // Native Passwords & keys (docs/specs/mobile-native-secrets.md): a read-only trimmed summary, owner
     // phones only: names and state, never a value, a length, a token or a Secret Drop link.
     { method: 'GET', re: /^\/mobile\/secrets$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'secrets-reads' },
+    // Native console pages and the read-only file browser (docs/specs/mobile-native-console-pages.md): owner
+    // phones only, one shared bucket of their own. Each answer mirrors a console route, read on this machine.
+    { method: 'GET', re: /^\/mobile\/ideas$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'console-pages-reads' },
+    { method: 'GET', re: /^\/mobile\/pace$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'console-pages-reads' },
+    { method: 'GET', re: /^\/mobile\/development$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'console-pages-reads' },
+    { method: 'GET', re: /^\/mobile\/maturation$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'console-pages-reads' },
+    { method: 'GET', re: /^\/mobile\/files$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'console-files-reads' },
+    { method: 'GET', re: /^\/mobile\/files\/read$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'console-files-reads' },
     // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): read-only
     // trimmed summaries, owner phones only, with one shared bucket of their own (they read peers).
     { method: 'GET', re: /^\/mobile\/proposals$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'proposals-inside-reads' },

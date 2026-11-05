@@ -26,6 +26,8 @@ export interface CodexNativeModelCanaryResult {
 const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 const quote = (value: string) => JSON.stringify(value);
+// Codex 0.166 is 256.5 MiB. The cap only bounds the streamed hash, so it sits well above the real binary.
+const MAX_CLI_BYTES = 512 * 1024 * 1024;
 class CanaryFailure extends Error { constructor(readonly category: string) { super(category); } }
 
 /** Resolve the installed official npm shim without executing it or loading its
@@ -120,7 +122,7 @@ export async function runCodexNativeModelCanary(options: {
   try {
     await access('/usr/bin/sandbox-exec');
     const cli = await realpath(options.cliPath), info = await stat(cli);
-    if (!info.isFile() || info.size > 256 * 1024 * 1024 || info.size < 4) throw new CanaryFailure('native-model-canary-cli-unavailable');
+    if (!info.isFile() || info.size > MAX_CLI_BYTES || info.size < 4) throw new CanaryFailure('native-model-canary-cli-unavailable');
     const hash = createHash('sha256'); for await (const chunk of createReadStream(cli)) { check(); hash.update(chunk); }
     result.cliDigest = hash.digest('hex');
     let parser: Buffer;
@@ -145,6 +147,8 @@ export async function runCodexNativeModelCanary(options: {
       `(allow process-exec (literal ${quote(cli)}) (literal ${quote(await realpath(process.execPath))}))\n` +
       `(allow signal (target same-sandbox))\n(allow process-info*)\n(allow sysctl-read)\n(allow mach-lookup)\n` +
       `(deny mach-lookup (global-name "com.apple.securityd") (global-name "com.apple.SecurityServer"))\n` +
+      // Codex 0.166 synchronizes managed preferences before thread/start; cfprefsd hands them over read-only shared memory.
+      `(allow ipc-posix-shm-read-data (ipc-posix-name-prefix "apple.cfprefs."))\n` +
       `(allow network-outbound (remote ip "localhost:${provider.port}"))\n` +
       `(allow network* (local unix-socket (subpath ${quote(root)})) (remote unix-socket (subpath ${quote(root)})))\n`, { mode: 0o600 });
     // Actual kernel sabotage controls, before the CLI receives any prompt.

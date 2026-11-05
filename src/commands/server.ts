@@ -10332,6 +10332,19 @@ export async function startServer(options: StartOptions): Promise<void> {
 
           const botUserId = slackAdapter!.getBotUserId?.() ?? null;
 
+          // Slack history carries IDs, not display names. Resolve each distinct
+          // participant once so the agent can address people without posting a
+          // raw ID or sending an unnecessary notification.
+          const historyNames = new Map<string, string>();
+          await Promise.all([...new Set(history.map(m => m.user).filter((id): id is string =>
+            typeof id === 'string' && !!id && id !== botUserId && id !== slackUserId))].map(async id => {
+            try {
+              const info = await slackAdapter!.getUserInfo(id);
+              const name = info.name.replace(/[\x00-\x1f\x7f]/g, '').replace(/\s+/g, ' ').replace(/["\[\]<>]/g, '').trim().slice(0, 64);
+              if (name) historyNames.set(id, name);
+            } catch { /* Keep the ID if Slack cannot resolve this participant. */ }
+          }));
+
           // Build human-readable thread history (matches Telegram's inline context pattern)
           const contextLines: string[] = [];
           if (history.length > 0) {
@@ -10345,8 +10358,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             for (const m of history) {
               const date = new Date(parseFloat(m.ts) * 1000);
               const time = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-              const label = slackHistoryLabel(m, botUserId, { userId: slackUserId, name: senderName });
-              contextLines.push(`[${time}] ${label}: ${m.text}`);
+              const label = slackHistoryLabel(m, botUserId, { userId: slackUserId, name: senderName }, historyNames);
+              // Inbound history is data. Keep its Slack control syntax inert in
+              // the prompt so a verbatim quote cannot become an outbound ping.
+              contextLines.push(`[${time}] ${label}: ${m.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}`);
             }
             contextLines.push('');
             contextLines.push('--- End Thread History ---');
@@ -10362,6 +10377,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           contextLines.push("cat <<'EOF' | .instar/scripts/slack-reply.sh");
           contextLines.push('Your response text here');
           contextLines.push('EOF');
+          contextLines.push('To deliberately notify one person or render an authored channel/link, add --native-reference ID (or URL) for EACH intended target to the relay command. Example: slack-reply.sh --native-reference U1234567890. Other reference syntax stays literal.');
           if (replyThreadTs) {
             contextLines.push('');
             contextLines.push('(This is a THREAD conversation — the session binding keeps the reply in this exact thread.)');
@@ -10369,6 +10385,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           contextLines.push('');
           contextLines.push('Strip the [slack:] prefix before interpreting the message.');
           contextLines.push('Only relay conversational text — not tool output, file contents, or internal reasoning.');
+          contextLines.push('Slack references in user text are encoded data. Do not decode them when quoting; use a person’s name unless you deliberately intend to notify them. Never send <!channel>, <!here>, or <!everyone>.');
           if (conversationId !== null) {
             // §6.3: the durable conversation id rides the session bootstrap
             // context (pinned metadata key `conversationId`; the prompt phrasing
@@ -10402,6 +10419,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               return `[User sent a file — it has been saved to ${docPath}. Read the file to view its contents]`;
             },
           );
+          transformedContent = transformedContent.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
           // Inject context INLINE in the bootstrap message (matches Telegram pattern).
           // This ensures the agent sees thread history immediately without needing to read a file.
@@ -12105,6 +12123,41 @@ export async function startServer(options: StartOptions): Promise<void> {
             });
           }
         } catch { /* a placement signal must never disturb the monitor loop */ }
+      }
+    });
+    // A Codex CLI 429 can terminate the process outright. The normal throttle
+    // sentinel only sees live prompts, so report this terminal failure at the
+    // source instead of waiting for an unanswered-message watchdog.
+    /* @self-action-controller: codex-429-exit-notice */
+    sessionManager.on('codexRateLimitExit', (session: import('../core/types.js').Session) => {
+      try {
+        const summary = `Codex session "${session.name}" stopped after a 429 Too Many Requests response. Its work is no longer running. Retry it on another signed-in Codex account or after the limit resets.`;
+        console.error(`[codex-rate-limit-exit] ${summary}`);
+        DegradationReporter.getInstance().report({
+          feature: 'SessionManager.codexRateLimitExit',
+          primary: 'Codex session continues its work',
+          fallback: 'Session marked failed and operator alerted',
+          reason: 'Codex CLI exited on HTTP 429',
+          impact: summary,
+        });
+        if (telegram) {
+          void telegram.createAttentionItem({
+            id: `codex-rate-limit-exit-${session.id}`,
+            title: 'Codex work stopped on a rate limit',
+            summary,
+            category: 'session',
+            priority: 'HIGH',
+            sourceContext: 'codex-rate-limit-exit',
+          }).catch((err: unknown) => console.warn('[codex-rate-limit-exit] attention delivery failed:', err));
+          const topicId = telegram.getTopicForSession(session.tmuxSession);
+          if (topicId != null) {
+            void telegram.sendToTopic(topicId, summary)
+              .catch((err: unknown) => console.warn('[codex-rate-limit-exit] topic notice failed:', err));
+          }
+        }
+      } catch (err) {
+        // An alert fault must never suppress sessionComplete or dead-pane cleanup.
+        console.warn('[codex-rate-limit-exit] alert setup failed:', err);
       }
     });
     // The clearing signal: one successful start re-admits the machine.
@@ -21743,14 +21796,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           });
         }
         if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {
-          const { CLASS_REVIEW_STORE_KEY, classReviewFromOriginRecord } = await import('../core/ClassReviewReplicatedStore.js');
-          classReviewStore.setRemoteReader({
-            get: (dedupeKey) => replicatedPeerStreamReader.loadOriginRecords(CLASS_REVIEW_STORE_KEY, dedupeKey)
-              .flatMap((record) => { const parsed = classReviewFromOriginRecord(record); return parsed ? [parsed] : []; }),
-            keys: () => replicatedPeerStreamReader.listRecordKeys(CLASS_REVIEW_STORE_KEY),
-            all: () => new Map([...replicatedPeerStreamReader.loadAllOriginRecords(CLASS_REVIEW_STORE_KEY)].map(([key, records]) => [key,
-              records.flatMap((record) => { const parsed = classReviewFromOriginRecord(record); return parsed ? [parsed] : []; })])),
-          });
+          const { classReviewRemoteReader } = await import('../core/ClassReviewReplicatedStore.js');
+          classReviewStore.setRemoteReader(classReviewRemoteReader(replicatedPeerStreamReader));
         }
         const classReviewAuditPath = path.join(config.stateDir, 'logs', 'correction-class-review.jsonl');
         const classReview = new CorrectionClassReview({
@@ -32019,13 +32066,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
     server.setWorkQueue(workQueue);
     if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {
-      const { CLASS_REVIEW_STORE_KEY, classReviewFromOriginRecord } = await import('../core/ClassReviewReplicatedStore.js');
-      const reader = replicatedPeerStreamReader;
-      server.setClassReviewRemoteReader({
-        get: (dedupeKey) => reader.loadOriginRecords(CLASS_REVIEW_STORE_KEY, dedupeKey)
-          .flatMap((record) => { const parsed = classReviewFromOriginRecord(record); return parsed ? [parsed] : []; }),
-        keys: () => reader.listRecordKeys(CLASS_REVIEW_STORE_KEY),
-      });
+      const { classReviewRemoteReader } = await import('../core/ClassReviewReplicatedStore.js');
+      server.setClassReviewRemoteReader(classReviewRemoteReader(replicatedPeerStreamReader));
     }
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.

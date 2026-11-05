@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "locked-proof-console-filter",
+  "sessionId": "cb49c680-a563-476a-971b-9fbab9d01c8e",
+  "timestamp": "2026-11-05T08:19:48.667Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-console-filter.md",
+  "artifactSha256": "633424bbe25842e214b41c06829a2be93abeb55cbd8ccebeacaa2298f21410a5",
+  "coveredFiles": [
+    "docs/specs/locked-proof-console-filter.eli16.md",
+    "scripts/locked-proof/driver.mjs",
+    "scripts/locked-proof/lib.mjs",
+    "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+    "tests/unit/desktop-locked-proof-fixes.test.ts",
+    "tests/unit/locked-proof-driver.test.ts",
+    "upgrades/next/locked-proof-console-filter.md",
+    "upgrades/side-effects/locked-proof-console-filter.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small dark helper fix plus proof rig changes, fully undone by a revert; the locked feature is off for everyone.",
+  "eli16Path": "docs/specs/locked-proof-console-filter.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-console-filter.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

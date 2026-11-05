@@ -67,6 +67,15 @@ describe('SlackAdapter → formatter wiring integrity', () => {
     expect(calls[0].params.text).toBe('*bold* and <https://example.com|docs>');
   });
 
+  it('activates a person reference only on an explicit send option', async () => {
+    const { adapter, calls } = makeAdapter();
+    await adapter.sendToChannel('C123', 'Thanks <@U0C62ABNDK8>');
+    await adapter.sendToChannel('C123', 'Thanks <@U0C62ABNDK8>', { nativeReferences: ['U0C62ABNDK8'] });
+    expect(calls[0].params.text).toBe('Thanks &lt;@U0C62ABNDK8&gt;');
+    expect(calls[1].params.text).toBe('Thanks <@U0C62ABNDK8>');
+    expect(calls[1].params).not.toHaveProperty('_nativeReferences');
+  });
+
   it('send() (OutgoingMessage path) formats each chunk', async () => {
     const { adapter, calls } = makeAdapter();
     await adapter.send({

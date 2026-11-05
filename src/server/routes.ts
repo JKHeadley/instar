@@ -20,6 +20,7 @@ import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoute
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
+import { mountMobileConsolePagesRoutes, type SelfRead } from './mobileConsolePagesRoutes.js';
 import { mountMobileSecretsRoutes, resolveKeys as resolveMobileKeys, askForSecret, cancelSecretByKey } from './mobileSecretsRoutes.js';
 import { mountMobileProposalsInsideRoutes, ACTIVITY_WINDOW, CLAIMS_WINDOW } from './mobileProposalsInsideRoutes.js';
 import { loadAllProposals } from './routes/remediation-proposals.js';
@@ -21728,9 +21729,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // The labels are outgoing content: the deterministic credential wall sees them too (§5).
         if (originFooter && detectOutboundCredential(originFooter).detected) originFooter = '';
       } catch { originFooter = ''; } // @silent-fallback-ok — the footer is presentation; it never fails the send
+      const nativeReferences = fromSession && Array.isArray(metadata?.nativeReferences)
+        ? metadata.nativeReferences.filter((v: unknown): v is string => typeof v === 'string' && v.length <= 2048).slice(0, 16)
+        : [];
       const ts = await sendWithAdapterTimeout(
         () => SlackOriginLedger.runInScope({ evidence: replyOrigin, channel: scopeChannel, threadTs: scopeThread },
-          () => ctx.slack!.sendToChannel(channelId, text, { thread_ts, formatMode, ...(originFooter ? { originFooter } : {}) })),
+          () => ctx.slack!.sendToChannel(channelId, text, { thread_ts, formatMode, nativeReferences, ...(originFooter ? { originFooter } : {}) })),
         SLACK_ADAPTER_SEND_TIMEOUT_MS,
       );
 
@@ -21800,8 +21804,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // authority (slack-session-reply-relay §Authority and source binding).
   router.post('/slack/session-reply', async (req, res) => {
     const bodyKeys = Object.keys(req.body ?? {}).sort();
-    if (bodyKeys.some(key => key !== 'conversationId' && key !== 'text')) {
-      res.status(400).json({ error: 'spawned Slack session body permits only conversationId and text' });
+    if (bodyKeys.some(key => key !== 'conversationId' && key !== 'text' && key !== 'nativeReferences')) {
+      res.status(400).json({ error: 'spawned Slack session body permits only conversationId, text, and nativeReferences' });
       return;
     }
     if ('channelId' in (req.body ?? {}) || 'thread_ts' in (req.body ?? {}) || 'threadTs' in (req.body ?? {})) {
@@ -21838,6 +21842,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     (req.params as Record<string, string>).channelId = target.channelId;
     req.body.thread_ts = target.threadTs ?? undefined;
+    if (Array.isArray(req.body.nativeReferences)) req.body.metadata = { nativeReferences: req.body.nativeReferences };
     await handleSlackReply(req, res);
   });
 
@@ -37946,6 +37951,30 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       },
       nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
       topicName: (id) => ctx.telegram?.getTopicName(id),
+      bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    });
+    // Native console pages and the read-only file browser (docs/specs/mobile-native-console-pages.md): each
+    // answer is built from the console route it mirrors, read over this server's own loopback, so a phone
+    // can never see more than the console does.
+    mountMobileConsolePagesRoutes(router, {
+      read: async (path): Promise<SelfRead> => {
+        const r = await fetch(`http://127.0.0.1:${ctx.config.port}${path}`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-Request': '1' },
+          signal: AbortSignal.timeout(12_000),
+        });
+        // @silent-fallback-ok — an unreadable body has no usable shape, and each page shows that as "can't read this".
+        return { status: r.status, body: await r.json().catch(() => null) };
+      },
+      resolve: async (relative) => {
+        try {
+          const root = await fs.promises.realpath(ctx.config.projectDir);
+          const real = await fs.promises.realpath(path.resolve(root, relative));
+          const inside = path.relative(root, real);
+          return inside === '' || (!inside.startsWith('..') && !path.isAbsolute(inside)) ? inside : null;
+        } catch { // @silent-fallback-ok — a path that can't be resolved is refused, the safe side
+          return null;
+        }
+      },
       bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     });
     // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): trimmed
