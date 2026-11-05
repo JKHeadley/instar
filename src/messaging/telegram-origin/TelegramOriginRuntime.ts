@@ -627,8 +627,12 @@ export class TelegramOriginRuntime {
   private async allowQueuedRecovery(operation: OriginPreparedBotOperation,
     row?: import('./StoreTypes.js').HeldOperationRow,
     knownAudit?: import('./StoreTypes.js').OriginAuditRecord): Promise<boolean> {
+    const originalKind = typeof row?.holdDetail?.authoredProducerKind === 'string'
+      ? row.holdDetail.authoredProducerKind : operation.record.producerKind;
+    const originalPreparedAt = typeof row?.holdDetail?.authoredPreparedAt === 'number' && Number.isFinite(row.holdDetail.authoredPreparedAt)
+      ? row.holdDetail.authoredPreparedAt : operation.admission.preparedAt;
     if (!this.options.reviewQueuedReply || operation.record.destination.topicId === null ||
-      (operation.record.producerKind !== 'session' && operation.record.producerKind !== 'imported-legacy')) return true;
+      (originalKind !== 'session' && originalKind !== 'imported-legacy')) return true;
     const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson);
     if (request.method !== 'sendMessage') return true;
     const audit = knownAudit ?? await this.store.getOperation(operation.record.operationId);
@@ -643,7 +647,7 @@ export class TelegramOriginRuntime {
     if (lastAttempt === 'outcome-unknown' || lastAttempt === 'local-sent') return true;
     const review = await this.options.reviewQueuedReply({ operationId: operation.record.operationId,
       chatId: operation.record.destination.chatId,
-      topicId: Number(operation.record.destination.topicId), preparedAt: operation.admission.preparedAt });
+      topicId: Number(operation.record.destination.topicId), preparedAt: originalPreparedAt });
     if (review === 'hold') return false;
     if (review === 'retire') {
       if (await this.store.recordOperationState({ operationId: operation.record.operationId, state: 'suppressed' })) {

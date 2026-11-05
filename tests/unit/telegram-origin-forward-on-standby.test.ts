@@ -14,6 +14,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import {
   classifyLeaseRoute, decideHolderForward, settleLeaseRoute, forwardReplyToHolder, recoverForwardedHold, submitOriginToHolder, nextLadderState, FORWARD_SETTLE_TIMEOUT_MS,
   HeldForwardItemCollapser, heldExpiryItem, heldExpiryItemId, expiredForwardWording, heldForwardNoticeText, HOLD_REASON_LEASE_NOT_HELD, UNRESOLVED_LEASE_HOLDER,
+  recoveredForwardProvenance,
 } from '../../src/messaging/telegram-origin/OriginForwardToHolder.js';
 import type { ForwardDeps, ForwardLeaseView, HolderSubmitResult, HeldForwardDetail } from '../../src/messaging/telegram-origin/OriginForwardToHolder.js';
 import type { OriginPreparedBotOperation } from '../../src/messaging/telegram-origin/TelegramOriginService.js';
@@ -154,6 +155,14 @@ describe('forwardReplyToHolder — settle, ONE attempt, then the durable hold', 
     expect(h.prepare).toHaveBeenCalledTimes(1);
     expect((h.hold.mock.calls[0] as unknown as [unknown, HeldForwardDetail])[1].ladder).toEqual({ attempts: 0, nextAt: h.c.now() + 10_000 });
   });
+  it('records the original session and draft time in a held forward', async () => {
+    const h = deps(clock());
+    h.prepare.mockResolvedValue({ record: { ...fakeOperation('holder').record, producerKind: 'session' },
+      admission: { preparedAt: 1234 } } as never);
+    h.submit.mockResolvedValue({ ok: false, reason: 'not-lease-holder', outcome: 'held', retryable: true });
+    await forwardReplyToHolder(h.d, input);
+    expect(h.hold.mock.calls[0][1]).toMatchObject({ authoredProducerKind: 'session', authoredPreparedAt: 1234 });
+  });
   it('an unreachable holder holds durably with lease-not-held, sends the notice through the holder and reports noticeDelivered', async () => {
     const h = deps(clock());
     h.submit.mockResolvedValue({ ok: false, reason: 'origin-peer-unreachable', outcome: 'held', retryable: true });
@@ -243,6 +252,14 @@ describe('recoverForwardedHold — re-forward the SAME operation, supersede on a
     expect(h.supersede.mock.calls[0][2]).toMatchObject({ supersedes: 'op-1', machineId: 'holder-2', ladder: { attempts: 1, nextAt: 20_005 } });
     expect(h.resolve).toHaveBeenCalledWith('op-new', 'holder-2', '{}');
     expect(h.rehold).toHaveBeenCalledWith('op-new', expect.objectContaining({ lastAttempt: 'outcome-unknown' }));
+  });
+  it('a holder replacement carries the original author and draft time', async () => {
+    const h = rdeps({ lease: lease({ leaseHolder: () => 'holder-2' }) });
+    await recoverForwardedHold(h.d, row({ authoredProducerKind: 'session', authoredPreparedAt: 1234 }), fakeOperation('holder', 'op-1'));
+    expect(h.supersede.mock.calls[0][2]).toMatchObject({ authoredProducerKind: 'session', authoredPreparedAt: 1234 });
+    expect(recoveredForwardProvenance({ authoredProducerKind: 'session' }, 'server-automation')).toBe('agent');
+    expect(recoveredForwardProvenance({ authoredProducerKind: 'imported-legacy' }, 'server-automation')).toBe('agent');
+    expect(recoveredForwardProvenance(null, 'server-automation')).toBe('automation');
   });
   it('a holder send with a refused standby receipt stays outcome-unknown and is checked before retry', async () => {
     const h = rdeps(); h.resolve.mockResolvedValue(false);

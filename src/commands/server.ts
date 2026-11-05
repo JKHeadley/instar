@@ -29991,7 +29991,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                 supersede: (operationId, next, detail) => runtime.store.supersedeWithAdmission({ operationId, admission: next.admission,
                   holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> }),
                 sendLocal: async detail => {
-                  const sent = await telegram.sendToTopic(detail.topicId, detail.text, { silent: detail.silent, kindMetadata: detail.kindMetadata, provenance: 'automation' });
+                  const sent = await telegram.sendToTopic(detail.topicId, detail.text, { silent: detail.silent, kindMetadata: detail.kindMetadata,
+                    provenance: originForwardMod.recoveredForwardProvenance(detail, row.producerKind) });
                   return { messageId: sent.messageId };
                 },
               }, row, operation);
@@ -30002,7 +30003,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   // Telegram id may fill that gap; this never sends a second copy.
                   const recovered = await originForwardMod.confirmedRecoveredForward(row, id => runtime.store.getOperation(id)).catch(() => null);
                   if (recovered) telegram.recordRecoveredOutbound(recovered.topicId, recovered.text, recovered.messageId,
-                    row.producerKind === 'session' ? 'agent' : 'automation');
+                    originForwardMod.recoveredForwardProvenance(row.holdDetail, row.producerKind));
                 }
                 if (outcome === 'sent' || outcome === 'resolved' || outcome === 'settled') await clearHeldItemIfResolved(row.destination.topicId);
                 return outcome;

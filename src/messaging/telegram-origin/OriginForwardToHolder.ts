@@ -231,6 +231,10 @@ export interface HeldForwardDetail {
   topicId: number;
   chatId: string;
   text: string;
+  /** Preserve the original author and draft time when a holder change creates
+   * a replacement operation outside the original session context. */
+  authoredProducerKind?: string;
+  authoredPreparedAt?: number;
   silent?: boolean;
   formatMode?: string;
   kindMetadata?: Record<string, unknown>;
@@ -241,6 +245,12 @@ export interface HeldForwardDetail {
   ladder: ForwardLadderState;
   /** Set on an operation prepared to REPLACE one whose holder changed (§4.2 supersede). */
   supersedes?: string;
+}
+
+/** History must retain the original author after a holder replacement. */
+export function recoveredForwardProvenance(detail: { authoredProducerKind?: unknown } | null, producerKind?: string | null): 'agent' | 'automation' {
+  const kind = detail?.authoredProducerKind ?? producerKind;
+  return kind === 'session' || kind === 'imported-legacy' ? 'agent' : 'automation';
 }
 
 export interface ForwardInput { topicId: number; chatId: string; text: string; silent?: boolean; formatMode?: string; kindMetadata?: Record<string, unknown> }
@@ -298,7 +308,8 @@ export async function forwardReplyToHolder(deps: ForwardDeps, input: ForwardInpu
   if (!operation) operation = await deps.prepare(lastHolder ?? UNRESOLVED_LEASE_HOLDER, input);
   const now = deps.now();
   const detail: HeldForwardDetail = { kind: 'forward-to-holder', lastAttempt, machineId: lastHolder, topicId: input.topicId, chatId: input.chatId,
-    text: input.text, ...(input.silent === undefined ? {} : { silent: input.silent }), ...(input.formatMode === undefined ? {} : { formatMode: input.formatMode }),
+    text: input.text, authoredProducerKind: operation.record.producerKind, authoredPreparedAt: operation.admission.preparedAt,
+    ...(input.silent === undefined ? {} : { silent: input.silent }), ...(input.formatMode === undefined ? {} : { formatMode: input.formatMode }),
     ...(input.kindMetadata === undefined ? {} : { kindMetadata: input.kindMetadata }), reason: lastReason, at: now, noticeDelivered: false,
     ladder: nextLadderState(undefined, now, delays) };
   const recorded = await deps.hold(operation, detail);

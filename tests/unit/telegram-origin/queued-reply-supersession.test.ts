@@ -72,4 +72,22 @@ describe('queued reply supersession', () => {
     expect(reviewQueuedReply).toHaveBeenCalledOnce();
     expect(recordOperationState).toHaveBeenCalledWith({ operationId: 'old-reply', state: 'suppressed' });
   });
+
+  it('checks a replacement forward against the original session draft time', async () => {
+    const reviewQueuedReply = vi.fn(async () => 'retire' as const);
+    const recordOperationState = vi.fn(async () => true);
+    const runtime = Object.create(TelegramOriginRuntime.prototype) as TelegramOriginRuntime;
+    Object.assign(runtime, { options: { reviewQueuedReply }, store: { recordOperationState } });
+    const operation = { record: { operationId: 'replacement', producerKind: 'server-automation', destination: {
+      chatId: '-100123', topicId: '42' } }, admission: { preparedAt: prepared + 60_000, children: [{ materializations: [
+      { requestJson: JSON.stringify({ method: 'sendMessage' }) },
+    ] }] } } as never;
+    const row = { holdDetail: { lastAttempt: 'refused', authoredProducerKind: 'session', authoredPreparedAt: prepared } } as never;
+    const audit = { operation: { state: 'held' }, children: [], attempts: [] } as never;
+    const gate = (runtime as unknown as { allowQueuedRecovery: (
+      operation: unknown, row: unknown, audit: unknown) => Promise<boolean> }).allowQueuedRecovery.bind(runtime);
+    expect(await gate(operation, row, audit)).toBe(false);
+    expect(reviewQueuedReply).toHaveBeenCalledWith(expect.objectContaining({ preparedAt: prepared }));
+    expect(recordOperationState).toHaveBeenCalledWith({ operationId: 'replacement', state: 'suppressed' });
+  });
 });

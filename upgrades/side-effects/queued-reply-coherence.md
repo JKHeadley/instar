@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-The Telegram origin recovery tick and forward retry ladder check local and pooled topic history before sending an unaccepted saved session reply. A newer user or agent message retires the old operation through the existing durable `suppressed` transition. Incomplete pool coverage holds the reply for a later review. Automated notices do not count. A forwarded unknown outcome first reconciles at the former holder; definite nonacceptance clears the uncertainty and waits for a new chronology review before another dispatch. Topic-name lookup stops sending a temporary dot and relies on captured names or fallback labels. The changed decision points are in `TelegramOriginRuntime`, `OriginForwardToHolder`, the server's history callback, and `TelegramAdapter.resolveTopicName`. This is a narrow runtime repair with focused unit and integration tests; the competing PR #2775 changes inbound failover reconciliation and is not touched.
+The Telegram origin recovery tick and forward retry ladder check local and pooled topic history before sending an unaccepted saved session reply. A newer user or agent message retires the old operation through the existing durable `suppressed` transition. Incomplete pool coverage holds the reply for a later review. Automated notices do not count. A forwarded unknown outcome first reconciles at the former holder; definite nonacceptance clears the uncertainty and waits for a new chronology review before another dispatch. A holder replacement carries the original session label and draft time in the durable hold, so it receives the same review. Topic-name lookup stops sending a temporary dot and relies on captured names or fallback labels. The changed decision points are in `TelegramOriginRuntime`, `OriginForwardToHolder`, the server's history callback, and `TelegramAdapter.resolveTopicName`. This is a narrow runtime repair with focused unit and integration tests; the competing PR #2775 changes inbound failover reconciliation and is not touched.
 
 ## Decision-point inventory
 
@@ -40,6 +40,7 @@ No static heuristic is added at a competing-signals judgment point. The decision
 - **Shadowing:** the check runs only in origin recovery and the forward retry ladder, before the existing send-policy and transport path. It cannot suppress a first-attempt interactive reply.
 - **Double-fire:** `recordOperationState('suppressed')` is terminal and transactional; later ticks do not recover that operation.
 - **Races:** the store refuses suppression if an operation is already claimed, accepted, or partially delivered. A refused transition is not treated as successful retirement. A forwarded unknown or local send marker is reconciled or held, never suppressed as definite non-delivery.
+- **Holder replacement:** a newly prepared replacement may be labeled server automation because recovery has no live session scope. The durable hold preserves the original session label and draft time, which the shared gate uses for every later attempt. The recovered message also uses that original label when recorded in topic history, so it can supersede a later queued reply.
 - **Feedback loops:** automated delivery notices are excluded from the chronology signal, so they cannot retire the reply they report.
 
 ## 6. External surfaces
@@ -65,7 +66,7 @@ The check addresses the concrete late App and Baton replies before transport, an
 ## Second-pass review
 
 **Reviewer:** independent review agent
-**Independent read of the artifact:** Concur with the review. The reviewer found that the forwarded recovery branch and the five-second ladder initially bypassed the chronology gate. Both now use the shared gate. Uncertain forwards reconcile first; after definite nonacceptance they wait for the next chronology review. The reviewer confirmed the historical unknown attempt does not bypass that review and identified no further code concern. The pool roster limitation remains documented above.
+**Independent read of the artifact:** Concur with the review. The first pass found that the forwarded recovery branch and the five-second ladder initially bypassed the chronology gate. Both now use the shared gate. Uncertain forwards reconcile first; after definite nonacceptance they wait for the next chronology review. The reviewer confirmed the historical unknown attempt does not bypass that review. The reviewer then found that a holder replacement could lose its original author in topic history; the recovered history paths now use the preserved author. The final pass checked capture, supersede carry, both retry paths, and history provenance and found no remaining author or time loss. The pool roster limitation remains documented above.
 
 ## Evidence pointers
 
