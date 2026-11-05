@@ -30,6 +30,9 @@ export const GRANT_CEILING_MS = 600_000;
  *   now             immediately after the grant opened
  * `final` is what the Mac must end as: locked | left-unlocked | unlocked-accepted-risk.
  */
+// 12.5a ends the session once the replacement guard has taken the duty over. While a grant is
+// live and its server alive, an owed duty stays owed and the Mac stays open for the person using
+// it, so without that step the case could only time out with the Mac unlocked.
 export const CASES = [
   // ── P12: crash tests ──
   { id: '12.1', gate: 'P12', title: 'Node suspended with descriptors open', password: true, before: ['serve-under-launchd'], inject: [{ action: 'stop-server', at: 'marker:owed' }], cleanup: ['cont-server', 'end-launchd-serve', 'start-server'], final: 'locked', markerEnd: ['relocked'] },
@@ -40,7 +43,7 @@ export const CASES = [
   { id: '12.2e', gate: 'P12', title: 'Node killed mid-typing', password: true, inject: [{ action: 'kill-server', at: 'typing' }], then: ['start-server'], final: 'locked' },
   { id: '12.3', gate: 'P12', title: 'tmux killed', password: true, inject: [{ action: 'kill-tmux', at: 'marker:owed' }], then: ['start-server'], final: 'locked' },
   { id: '12.4', gate: 'P12', title: 'launchd kill of the server', password: true, before: ['serve-under-launchd'], inject: [{ action: 'launchd-kill', at: 'guard-acked' }], then: ['end-launchd-serve', 'start-server'], final: 'locked' },
-  { id: '12.5a', gate: 'P12', title: 'Guard killed in owed', password: true, inject: [{ action: 'kill-guard', at: 'marker:owed' }], final: 'locked', markerEnd: ['relocked'], guardReplaced: true },
+  { id: '12.5a', gate: 'P12', title: 'Guard killed in owed', password: true, inject: [{ action: 'kill-guard', at: 'marker:owed' }, { action: 'stop-viewer', at: 'takeover' }], final: 'locked', markerEnd: ['relocked'], guardReplaced: true },
   { id: '12.5b', gate: 'P12', title: 'Guard killed in executing', password: true, inject: [{ action: 'stop-viewer', at: 'sent' }, { action: 'kill-guard', at: 'marker:executing' }], final: 'locked', markerEnd: ['relocked'], guardReplaced: true },
   { id: '12.5c', gate: 'P12', title: 'Guard killed in watching', password: true, inject: [{ action: 'stop-viewer', at: 'sent' }, { action: 'kill-guard', at: 'marker:watching' }], final: 'locked', markerEnd: ['relocked'], guardReplaced: true },
   { id: '12.6', gate: 'P12', title: 'Suspended Node with an unreaped helper and guard', password: true, before: ['serve-under-launchd'], inject: [{ action: 'stop-server', at: 'marker:owed' }, { action: 'kill-helper', at: 'marker:owed' }], cleanup: ['cont-server', 'end-launchd-serve', 'start-server'], final: 'locked' },

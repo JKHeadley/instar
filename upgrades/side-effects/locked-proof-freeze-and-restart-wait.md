@@ -4,7 +4,7 @@
 
 ## Summary
 
-Seven faults found in the live run on the Mac Mini on 2026-11-05, once the viewer-wait fix let the run start.
+Eight faults found in the live run on the Mac Mini on 2026-11-05, once the viewer-wait fix let the run start.
 
 - **Freezing the server.** Cases 12.1 and 12.6 send SIGSTOP to the proof server. It ran as a tmux pane process, and tmux resumes a stopped pane process at once, so the server never froze. Both cases now run `serve-under-launchd` first and restore tmux in cleanup (`cont-server`, `end-launchd-serve`, `start-server`). `stop-server` now reads the process state half a second after the signal and throws unless it starts with `T`.
 - **Ready after a start.** `start-server` and `serveUnderLaunchd` now call `waitLockStateKnown()` (up to 120 s) before returning, and report `lockStateKnown` in their result.
@@ -13,6 +13,7 @@ Seven faults found in the live run on the Mac Mini on 2026-11-05, once the viewe
 - **Both agents after a start.** `start-server` always starts agent A, as before, and also starts agent B when it is not listening; `kill-tmux` takes both down. A first version skipped agent A when its port still had a listener, and after a launchd bootout that left nothing serving (seen live at 12:46 PST: every case after 12.1 failed with a refused connection).
 - **Resuming a process that is gone.** `kill(pid, 'CONT')` on a process that has exited returns `skipped: 'gone'`. STOP and KILL on a process that is gone still throw.
 - **What "typing" means.** The `typing` trigger in `lib.mjs` now needs a duty in state owed with Enter not yet pending, as well as the input helper running. The helper alone runs for the whole grant.
+- **Case 12.5a ends its session.** It now stops the viewer at the `takeover` event (the duty's guard pid changes to the replacement). Before, nothing ended the grant, and an owed duty on a live grant is not due.
 
 ## 1. Over-block
 
@@ -26,9 +27,11 @@ The IORegistry flag is the console session's lock flag only. The server's classi
 
 The typing window is short (about 0.7 s for a 20-character password on the Mini) and the driver polls every quarter second, with each sample taking a moment itself. A poll that first sees the duty after Enter is pending never fires the injection, and the case then fails honestly with "injection never fired" instead of judging the wrong moment. Cases 12.2e, 12.9 and 15.9 may need a rerun when that happens.
 
+Changing 12.5a changes what the proof asks of the product, so it is stated here plainly: the spec (docs/specs/desktop-locked-screen.md, "A dead guard" and gate P12) asks for a replacement guard and for the Mac to end locked. It does not ask for a relock while the owner's session is still live. The case as written could only pass if the product locked a Mac out from under a live session. If that stricter behaviour is wanted, it is a spec change, not a test fix.
+
 ## 3. Level-of-abstraction fit
 
-Right layer: all seven are the driver's own assumptions about its target. The page behaviour, the server's start-up and tmux are left as they are.
+Right layer: all eight are the driver's own assumptions about its target. The page behaviour, the server's start-up and tmux are left as they are.
 
 ## 4. Signal vs authority compliance
 

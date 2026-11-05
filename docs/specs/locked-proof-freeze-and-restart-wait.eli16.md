@@ -1,8 +1,8 @@
-# Seven more fixes to the locked-screen test, from its first real run
+# Eight more fixes to the locked-screen test, from its first real run
 
 ## What this is
 
-Instar can show and control a Mac's screen remotely, even while that Mac is locked. To prove the locked-screen part is safe, a test driver on a real Mac Mini opens the same remote-desktop web page a person would use, types the password into it, breaks things on purpose (kills the server, freezes it, pulls the network) and checks that the Mac always ends up locked again. On 5 November 2026 the driver ran for real for the first time, and several of its own mistakes showed up. None of them was a fault in the product. The first, a wait for a hidden button, is already fixed. These are the other seven.
+Instar can show and control a Mac's screen remotely, even while that Mac is locked. To prove the locked-screen part is safe, a test driver on a real Mac Mini opens the same remote-desktop web page a person would use, types the password into it, breaks things on purpose (kills the server, freezes it, pulls the network) and checks that the Mac always ends up locked again. On 5 November 2026 the driver ran for real for the first time, and several of its own mistakes showed up. None of them was a fault in the product. The first, a wait for a hidden button, is already fixed. These are the other eight.
 
 ## What went wrong, and what changes
 
@@ -20,10 +20,12 @@ Instar can show and control a Mac's screen remotely, even while that Mac is lock
 
 **Its "in the middle of typing" tests fired too early.** Some tests break something while the password is being typed. The driver decided typing had started as soon as the helper that does the typing was running, but that helper starts the moment the remote screen opens. So the test broke things before any password had been sent, and there was nothing to check. Typing now means the password has actually been handed over and Enter has not been pressed yet.
 
+**One test waited for something that was never due.** The Mac has a small guard program whose only job is to lock it again when a remote session ends. One test kills that guard while a session is open, and expected the Mac to be locked afterwards. But the test never ended the session. The product did what its design says: it started a new guard within a few seconds and left the Mac open for the person still using it. The test now ends the session once the new guard is in place, and then checks that the Mac locks.
+
 ## What stays the same
 
 The product is unchanged: the web page, the server and the safety guard all behaved correctly. Once the freeze test was fixed, it passed: the guard noticed the frozen server and relocked the Mac. Nothing here reaches any running agent; it only affects the proof tool run by hand on the test Mac.
 
 ## What you need to decide
 
-Nothing. These are fixes to test tooling that a revert fully undoes, each with a unit test so the mistake cannot quietly come back.
+One thing to be aware of rather than decide: the last fix above changes what a test asks for. If you want the Mac to lock straight away whenever its guard dies, even with a session open, that is a change to the product's design, and it is not what the current design or this test says. These are fixes to test tooling that a revert fully undoes, each with a unit test so the mistake cannot quietly come back.

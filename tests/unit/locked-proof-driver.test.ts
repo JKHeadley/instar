@@ -512,6 +512,15 @@ describe('locked-proof runner and verdict', () => {
     expect(missed.unfired).toEqual(['kill-server at typing']);
   });
 
+  it('guard killed in owed: the case ends the session after the replacement guard takes over', () => {
+    // A live grant with a live server keeps an owed duty owed and the Mac open; the server's job
+    // is to replace the guard. Only ending the session can show the Mac ending locked.
+    const c = CASES.find((x: { id: string }) => x.id === '12.5a');
+    expect(c.inject).toEqual([{ action: 'kill-guard', at: 'marker:owed' }, { action: 'stop-viewer', at: 'takeover' }]);
+    expect(c.guardReplaced).toBe(true);
+    expect(c.markerEnd).toEqual(['relocked']);
+  });
+
   it('a case that throws still resumes and relocks, and fails with the error', async () => {
     const c = CASES.find((x: { id: string }) => x.id === '12.1');
     const target = new FakeTarget(c);
