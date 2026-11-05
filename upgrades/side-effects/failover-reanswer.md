@@ -4,7 +4,7 @@
 **Date:** `2026-11-04`
 **Author:** `Echo`
 **Second-pass reviewer:** independent reviewer agent
-**Tier and effort:** Tier 1, a reversible incident fix across 13 source, test, and documentation files (roughly 350 added lines). One independent review pass and one planned commit/gate attempt. The loopback repair route is restricted to an already answered row, with an exact reply and an audit record.
+**Tier and effort:** Tier 1, a reversible incident fix across 16 source, test, and documentation files (roughly 350 added lines). One independent review pass and one planned commit/gate attempt. The loopback repair route is restricted to an already answered row, with an exact reply and an audit record.
 
 ## Summary of the change
 
@@ -15,7 +15,7 @@ The forwarded owner claims the router's original inbound key, so a genuine reply
 - Forwarded owner claim: modified; the owner links its reply to the original inbound key.
 - Stuck recovery: modified; pooled reply evidence or uncertain history holds a row until an exact owner marker or verified reconciliation arrives.
 - New session context: modified; pool history and incompleteness warning are supplied on transfer.
-- Maintainer reconciliation: added; an exact reviewed reply can settle a legacy processing row.
+- Maintainer reconciliation: added; an exact reviewed reply can settle a legacy processing row. Its machine-local write domain is declared with a per-machine ledger and audit story.
 
 ## 1. Over-block
 
@@ -27,7 +27,7 @@ A generic later outbound message in the same topic can look like reply evidence 
 
 ## 3. Level-of-abstraction fit
 
-The ledger owns message completion; recovery owns replay. Pooled history is evidence supplied to the existing recovery decision, not a separate dispatch decision. The session context layer owns the warning presented to the agent.
+The ledger owns message completion; recovery owns replay. WriteDomainRegistry classifies the new repair route as machine-local because it settles this machine's own inbound row and audit file. Pooled history is evidence supplied to the existing recovery decision, not a separate dispatch decision. The session context layer owns the warning presented to the agent.
 
 ## 4. Signal vs authority compliance
 
