@@ -18172,10 +18172,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const onCoverageRoleChange = (_from: string, to: string) => {
       if (to === 'awake') void jobCoverage.checkPromotionCoverage();
     };
-    ctx.coordinator?.on('roleChange', onCoverageRoleChange);
+    ctx.coordinator?.on?.('roleChange', onCoverageRoleChange);
     ctx.jobCoverageStop = () => {
       jobCoverage.stop();
-      ctx.coordinator?.off('roleChange', onCoverageRoleChange);
+      ctx.coordinator?.off?.('roleChange', onCoverageRoleChange);
     };
   }
 

@@ -56,3 +56,5 @@ Fixture review confirmed auth lives in AgentServer middleware, so the integratio
 ## Full-integration startup repair (2026-11-05)
 
 Full integration found route construction assumed scheduler settings and coordinator manager dependencies existed. Coverage now falls back to the standard on-disk jobs catalog when scheduler settings are absent, and remains unavailable without crashing unrelated routes when identity-manager dependencies are absent. Added both boundary cases to the real HTTP integration tests. Independent second-pass review concurred: configured behavior is unchanged, unavailable dependencies grant no coverage or execution authority. Fresh full-suite evidence remains required.
+
+The same full integration run also exposed identity-capable coordinator adapters without EventEmitter methods. Role listener registration and cleanup now use optional method calls; real coordinators retain the same event subscription. A third boundary test verifies signed coverage remains alive and cleanup is safe without those adapter methods. Independent review concurred.
