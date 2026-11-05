@@ -1,6 +1,8 @@
 /**
  * What a degraded /health answer means for the person (docs/specs/mobile-health-issues.md).
  *
+ * Governed by: *Every Warning Has a Path* (docs/STANDARDS-REGISTRY.md).
+ *
  * /health says "degraded" if any one thing is off, and it must keep saying so: scripts, peers and the
  * lifeline read that word. Most of what sets it is internal and already handled. This module sorts each
  * reason into one of three impacts from a declared table, so the app and the console can say "Degraded"

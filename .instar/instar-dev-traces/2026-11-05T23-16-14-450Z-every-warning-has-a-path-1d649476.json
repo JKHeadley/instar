@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "every-warning-has-a-path",
+  "sessionId": "ae0d2305-6c8f-443a-a23d-9c020ecac27c",
+  "timestamp": "2026-11-05T23:16:14.450Z",
+  "artifactPath": "upgrades/side-effects/every-warning-has-a-path.md",
+  "artifactSha256": "8af336ee54005b1ae44352434761ca1b86af25ad2546fa643bf400178598514a",
+  "specPath": "docs/specs/every-warning-has-a-path.md",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/every-warning-has-a-path-interaction-family-2026-11-05.json",
+    "docs/constitution-alignment-map.md",
+    "docs/specs/every-warning-has-a-path.eli16.md",
+    "docs/specs/every-warning-has-a-path.md",
+    "docs/specs/reports/every-warning-has-a-path-constitution-review-2026-11-05.md",
+    "docs/standards-registry-area-audits.json",
+    "src/monitoring/healthIssues.ts",
+    "tests/unit/standards-coverage-ratchet.test.ts",
+    "upgrades/side-effects/every-warning-has-a-path.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A constitution text change the operator approved",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Constitution text; no code."
+  }
+}

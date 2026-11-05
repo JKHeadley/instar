@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-05T23:15:39.534Z",
+  "slug": "every-warning-has-a-path",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/healthIssues.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Constitution text; no code."
+  },
+  "verdict": "pass"
+}

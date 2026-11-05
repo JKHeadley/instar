@@ -12,10 +12,10 @@
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-11-04T16:46:00.000Z",
-      "auditRef": "docs/audits/person-decides-counterpart-interaction-family-2026-11-04.json",
-      "auditSha256": "180d72742802f4691a19c2ee2b3beac9ae3d1cbff9abc66184dd1d55ef7cce8a",
-      "areaSha256": "bdb754ca783fad7c1f436a6eb80f4d5887ad3e557465074e34653b1f5ad63bbd",
+      "lastAuditedAt": "2026-11-05T23:14:00.000Z",
+      "auditRef": "docs/audits/every-warning-has-a-path-interaction-family-2026-11-05.json",
+      "auditSha256": "f664f85344d7abcff2ac826e165f186e7f96829f1c52ed735fab5211dbf9f845",
+      "areaSha256": "99581ddc672ea6f13302ac203b66a66fa446059baf45870f9e6c3a6f5c599c2a",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13

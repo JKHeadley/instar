@@ -9,11 +9,11 @@ How the 1.x registry and the 2.0 purpose and rule book compare, rule by rule. A 
 
 | Item | Count |
 |---|---|
-| 1.x articles with a `**Rule.**` line | 95 (92 at #2323, plus TCC from #2194, plus One Constitution, Two Books Aligned from #2708, plus The Person Decides; the Agent Does the Rest from #2734) |
-| 2.0 rule rows | 120 (numbers 1 to 120, each once, with instar-2 #189 and #190) |
+| 1.x articles with a `**Rule.**` line | 96 (92 at #2323, plus TCC from #2194, plus One Constitution, Two Books Aligned from #2708, plus The Person Decides; the Agent Does the Rest from #2734, plus Every Warning Has a Path from this change) |
+| 2.0 rule rows | 122 (numbers 1 to 122, each once, with instar-2 #189, #190, #191 and the Rule 122 pair of this change) |
 | Purpose rules | 19, labelled Rule (Rule 5 is labelled Value, so it is not counted); 13 Values |
 
-Map result: **50 aligned, 42 differs, 3 1.x-only**, plus 26 rule rows 2.0-only and 15 purpose rules 2.0-only (4 partial).
+Map result: **51 aligned, 42 differs, 3 1.x-only**, plus 26 rule rows 2.0-only and 15 purpose rules 2.0-only (4 partial).
 
 Of the differs rows: 8 `CONFLICT`, 10 `CONFLICT?` (a conflict on one reading, unsure), 15 `1x-extra`, 3 `2.0-extra`, 2 `both-extra`, 4 `minor`.
 
@@ -73,6 +73,7 @@ Ranks 1 to 7 are direct text clashes. Ranks 8 to 12 depend on a reading, so trea
 | 2.0 #182: Rule 118 | New rule, one provider is enough | **Yes.** Mirrored by #2380 in #30, not as its own article. |
 | 1.x #2708 and 2.0 #189: One Constitution, and the last rung | New article #94 and R119; #75 and R72 name default-on as the last rung | **Yes, as a pair.** R72 and #75 share the last rung and still differ, as row 75 says. |
 | 1.x #2734 and 2.0 #190: The Person Decides; the Agent Does the Rest | New article #95, a tree node under *Agent Proposes, Operator Approves*, and R120 | **Yes, as a pair.** Same obligation and the same two owed checks. 1.x keeps *Sovereignty*'s "if it's the human's, ask", which is conflict 5 and unchanged here. |
+| 1.x and 2.0 Rule 122 pair: Every Warning Has a Path | New article, a tree node under *Operator-Surface Quality*, and R122 | **Yes, as a pair.** Same approved wording in both books. 1.x has its checks; 2.0 names its check as owed. |
 
 Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-doc commits since 2026-10-16, checked on the API with a query that does return older commits.
 
@@ -177,6 +178,7 @@ Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-do
 | 93 | Telegram Message Origin Is Mandatory; Its Display Is Optional | NONE | 1.x-only | — | Proposed amendment. Nearest is R89 and part 8 attributable reply facts. Widened to every platform by #2682. See conflict 6. | — |
 | 94 | One Constitution, Two Books Aligned | 119 | aligned | — | — | — |
 | 95 | The Person Decides; the Agent Does the Rest | 120 | aligned | — | — | — |
+| 96 | Every Warning Has a Path | 122 | aligned | — | — | — |
 
 ## 6. 2.0 rule rows with no 1.x article
 

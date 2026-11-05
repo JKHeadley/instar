@@ -1,0 +1,5 @@
+Justin has said many times that anything telling you something is wrong must also give you a way to act on it. On November 5 he approved that as a written rule, and this puts his exact words into the rulebook. It says a warning must take you to the exact thing, offer the fix when there is one, and let you ask the agent about it. It also says a word like "Degraded" only shows when it is true for you, that small internal notes stay out of the way and never add to a count, and that "I don't know" must never look like "all is well".
+
+The checks already exist, so this is not only a promise. A test fails any new dashboard warning that doesn't say how you act on it, and the phone app has the same test in its own project. Those checks prove the path exists, not that it is a good one, and the article says that plainly.
+
+The 1.x rulebook and the 2.0 rule book have to stay together, so 2.0 gets the same words as Rule 122, and that one merges first. Nothing changes at runtime here; this only records the rule and points at the checks that enforce it. Justin's approval on GitHub is what makes it part of the constitution.
