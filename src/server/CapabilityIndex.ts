@@ -448,6 +448,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobileSecretsScreen',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Native Passwords & keys screen for the Instar iPhone app (docs/specs/mobile-native-secrets.md): GET /mobile/secrets (what\'s waiting on each machine that answers, this machine\'s key names, vault and sync state; names only, never a value, length, token or Secret Drop link; owner phone or bearer).',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/secrets'],
+    }),
+  },
+  {
     key: 'mobilePermissionsScreens',
     // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
     prefixes: [],

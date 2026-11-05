@@ -19,6 +19,7 @@ import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoute
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { mountMobilePermissionsRoutes } from './mobilePermissionsRoutes.js';
+import { mountMobileSecretsRoutes, resolveKeys as resolveMobileKeys } from './mobileSecretsRoutes.js';
 import { mountMobileProposalsInsideRoutes, ACTIVITY_WINDOW, CLAIMS_WINDOW } from './mobileProposalsInsideRoutes.js';
 import { loadAllProposals } from './routes/remediation-proposals.js';
 import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
@@ -37799,6 +37800,38 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return (ctx.machinePoolRegistry?.getCapacities() ?? []).map((m) => m.machineId).filter((id) => !online.has(id));
       },
       nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+      bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+    });
+    // Native Passwords & keys (docs/specs/mobile-native-secrets.md): names and state only, owner phone or
+    // bearer; waiting requests proxied-on-read across peers, key names this machine's. No value, length,
+    // token or Secret Drop link leaves this route.
+    mountMobileSecretsRoutes(router, {
+      pending: () => secretDrop.listPending(),
+      keys: async () => {
+        const configPath = path.join(ctx.config.projectDir, '.instar', 'config.json');
+        return resolveMobileKeys({
+          inventoryOn: resolveDevAgentGate(readSelfKnowledgeFlags(configPath).enabled, ctx.config),
+          inventory: async () => {
+            const { BootSelfKnowledge, DEFAULT_MAX_BYTES } = await import('../core/BootSelfKnowledge.js');
+            return new BootSelfKnowledge({ stateDir: ctx.config.stateDir, configPath }).sessionContext(DEFAULT_MAX_BYTES, { full: true });
+          },
+          sync: ctx.secretSync,
+        });
+      },
+      vaultBroken: () => !!ctx.secretSync?.enabled && ctx.secretSync.vaultStatus?.().status === 'decrypt-failed',
+      sync: () => {
+        const ss = ctx.secretSync;
+        if (!ss?.enabled) return { state: 'off' };
+        return { state: 'on', pushEnabled: !!ss.pushEnabled, peers: ss.syncTargets() };
+      },
+      peers: () => peerSummaries('/mobile/secrets?scope=local'),
+      offlineMachineIds: () => {
+        if (!ctx.meshSelfId) return [];
+        const online = new Set([...onlinePeers().map((p) => p.machineId), ctx.meshSelfId]);
+        return (ctx.machinePoolRegistry?.getCapacities() ?? []).map((m) => m.machineId).filter((id) => !online.has(id));
+      },
+      nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+      topicName: (id) => ctx.telegram?.getTopicName(id),
       bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     });
     // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): trimmed

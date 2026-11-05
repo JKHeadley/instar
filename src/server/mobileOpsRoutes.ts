@@ -46,9 +46,13 @@ const iso = (v: unknown): string | null => {
   return Number.isFinite(t) ? new Date(t).toISOString() : null;
 };
 
+const SCRUB_MARGIN = 2048;
+
 /** Free text for the phone: secrets scrubbed, whitespace folded, length capped. */
 export function phoneText(v: unknown, max: number): string | null {
-  const s = str(v);
+  // Cut before scrubbing: a scrub pattern is quadratic on long text, and a peer's answer can be long.
+  // The margin keeps a secret that crosses the shown length whole enough to be caught.
+  const s = str(v)?.slice(0, max + SCRUB_MARGIN);
   if (!s) return null;
   const clean = scrubSecrets(s).replace(/\s+/g, ' ').trim();
   if (!clean) return null;
