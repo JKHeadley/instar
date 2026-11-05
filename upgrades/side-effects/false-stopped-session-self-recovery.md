@@ -72,10 +72,16 @@ Revert the code and ship a patch. No data migration is needed; existing ledgers 
 
 The source fix addresses the recorded Indra split between a failed registered resume and a separately named successful fallback. Watcher guards cover both ordering windows, short replies, thread keys, and foreign ownership. The independent review concurs. Live canary verification and post-update Indra observation remain required before claiming the production outcome.
 
+**Node 26 Slack transport coexistence (PR #2760 canary):** The disposable canary exposed a pre-existing package/runtime mismatch: Node 26 global `fetch` rejected the `undici` package Agent with `UND_ERR_INVALID_ARG invalid onError method`, so Socket Mode could not initialize. The Slack client now pairs the package `undici.fetch` with that package Agent, keeping its per-client pool, rate-limit retry, and transport reset behavior. Direct Slack demo `auth.test` and `apps.connections.open` succeeded with the same pairing. This affects the Slack HTTP transport, not the stopped-session decision logic. Rollback is a source revert; no state migration is involved.
+
 ## Second-pass review
 
 **Reviewer:** `/root/second_pass`
 **Independent read of the artifact:** Concur with the review. The reviewer first identified thread routing gaps in monitor and recovery history, context-exhaustion notices on live sessions, and an old notice ledger blocking self-recovery. A second pass found raw channel/thread mixing and missing cold thread replies; a third found that one cached reply could hide earlier thread history. Each concern was fixed with regression coverage. The reviewer re-read the final paths and found no remaining concrete blocker. A follow-up review identified the adapter and triage notice paths; those were fixed and the reviewer concurred with the extension. A final one-voice review concurred with keeping nurse escalation failures silent for the monitor to handle.
+
+**Main-branch coexistence second pass (PR #2760 local verify repair):** Concur with the review. Independent reviewer checked the restored UsageWallRescue wiring and quota detection alongside the stopped-session paths, thread history helper, and this artifact.
+
+**Node 26 Slack transport second pass:** Concur with the review. Independent reviewer confirmed that package `fetch` and `Agent` share one undici version and that the JSON, Retry-After, failure counter, and scoped pool reset paths remain intact.
 
 ## Evidence pointers
 
