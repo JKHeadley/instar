@@ -68,6 +68,7 @@ const PENDING_BASELINE = [
   'ExternalHogClassifier',
   'LLMSanitizer',
   'WarrantsReplyGate',
+  'AttributionJudge', // parses closed own|relayed|unclear + faithful verdicts; 2026-11-05
   'HubIntentClassifier', // parses a closed hub-intent verdict (intent open/tie/null + targetTopicId enum + confidence); 2026-07-04
 
   'InputGuard',

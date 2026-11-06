@@ -54,7 +54,7 @@ import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { packageInstallCommand } from '../core/packageInstall.js';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
-import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS, INSTAR_WILDCARD_PRETOOLUSE_HOOKS, ensureInstarWildcardPreToolUseHooks, type SettingsMatcherEntry } from '../core/instarSettingsHooks.js';
+import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS, INSTAR_WILDCARD_PRETOOLUSE_HOOKS, ensureInstarWildcardPreToolUseHooks, ensureInstarWritePreToolUseHooks, INSTAR_WRITE_PRETOOLUSE_HOOKS, INSTAR_WRITE_PRETOOLUSE_MATCHER, type SettingsMatcherEntry } from '../core/instarSettingsHooks.js';
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
@@ -3800,6 +3800,23 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       tags: ['cat:evolution', 'role:worker', 'exec:prompt', 'pair:evolution-overdue-check'],
     },
     {
+      slug: 'attribution-review',
+      name: 'Attribution Review',
+      description: 'Works through the attribution report: fixes notes that credit someone without a source. Each fix is a normal edit that passes the write gate. Runs only while attribution is in enforce mode and the report holds something.',
+      schedule: '0 9 * * *',
+      priority: 'low',
+      expectedDurationMinutes: 15,
+      model: 'sonnet',
+      enabled: true,
+      // Zero-token gate. The route answers 503 where the feature is dark, so this job is inert on the fleet.
+      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/attribution/status | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('mode')=='enforce' and d.get('sessionLine') else 1)" 2>/dev/null`,
+      execute: {
+        type: 'prompt',
+        value: `Work through the attribution report.\n\nAUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')")}"\ncurl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/attribution/status\n\nFor each item in report.unsourced and report.falseCitations, open the note and fix it with a normal edit, which passes the same write gate. If a listed suggestion really is the source, read it first, then quote the exact words with its marker. Otherwise remove the credit and label it, for example: X. An earlier note credited this to Name; source unknown. [source unknown]. Never write a marker you did not read, and never credit a person to get past a refusal. report.notFoundOnLiveMachines and report.cannotCheckNow need no edit unless the note is also wrong: a machine may be down. Stop after 20 fixes. Do not message anyone.`,
+      },
+      tags: ['cat:maintenance', 'role:worker', 'exec:prompt'],
+    },
+    {
       slug: 'dashboard-link-refresh',
       name: 'Dashboard Link Refresh',
       description: 'Refresh the pinned dashboard link in Telegram so it never goes stale.',
@@ -4609,6 +4626,10 @@ fi
   // Shadow-mode by default; enforcement is controlled server-side.
   fs.writeFileSync(path.join(hooksDir, 'stop-gate-router.js'), migrator.getHookContent('stop-gate-router'), { mode: 0o755 });
 
+  // Attribution write gate — PreToolUse on Write|Edit|MultiEdit. Thin: the decision is server-side, and
+  // the route answers 503 on an agent where the feature is dark, so the hook passes.
+  fs.writeFileSync(path.join(hooksDir, 'attribution-gate.js'), migrator.getHookContent('attribution-gate'), { mode: 0o755 });
+
   // Verify-Before-Done observer — structural client-side TurnEvidence, always
   // installed; fleet-dark/dev-dry-run gating occurs inside the hook + route.
   fs.writeFileSync(path.join(hooksDir, 'completion-claim-observe.js'), migrator.getHookContent('completion-claim-observe'), { mode: 0o755 });
@@ -5329,6 +5350,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
       { matcher: 'Bash', hooks: instarBashHooks },
       { matcher: 'mcp__.*', hooks: instarMcpHooks },
       { matcher: '*', hooks: instarWildcardHooks },
+      { matcher: INSTAR_WRITE_PRETOOLUSE_MATCHER, hooks: INSTAR_WRITE_PRETOOLUSE_HOOKS.map((h) => ({ ...h })) },
     ];
   } else {
     const preToolUse = hooks.PreToolUse as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
@@ -5366,6 +5388,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
     // existing-agent migrator calls — so the two paths cannot drift (an anti-drift
     // test asserts both consume it).
     ensureInstarWildcardPreToolUseHooks(preToolUse as SettingsMatcherEntry[]);
+    ensureInstarWritePreToolUseHooks(preToolUse as SettingsMatcherEntry[]);
   }
 
   // SessionStart: identity injection on all lifecycle events

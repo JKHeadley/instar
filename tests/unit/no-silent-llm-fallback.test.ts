@@ -110,6 +110,28 @@ function hasMarker(rel: string): boolean {
   return MARKERS.some((m) => content.includes(m));
 }
 
+/**
+ * Stated exceptions: a `gating: true` call that, with no model after failover, passes instead of failing
+ * closed. Not "reviewed advisory": the call does gate, so it swaps providers first. Each one must report the
+ * degradation, and is listed here with its reason so the exception stays visible.
+ */
+const STATED_FAIL_OPEN_EXCEPTIONS: Record<string, { reportedFrom: string; reason: string }> = {
+  'core/attribution/AttributionJudge.ts': {
+    reportedFrom: 'core/attribution/attributionRuntime.ts',
+    reason: 'docs/specs/attribution-paper-trail.md section 4: with no model after failover the write passes as `unchecked`, exact facts recorded, reported and counted on /attribution/status, because failing closed would block every memory write during an outage, a far worse harm than a claim the daily audit re-checks',
+  },
+};
+
+describe('stated fail-open exceptions', () => {
+  for (const [file, exception] of Object.entries(STATED_FAIL_OPEN_EXCEPTIONS)) {
+    it(`${file} swaps providers first and reports what it lets through`, () => {
+      expect(readFileSync(path.join(SRC, file), 'utf8')).toContain('gating: true');
+      expect(readFileSync(path.join(SRC, exception.reportedFrom), 'utf8')).toContain('DegradationReporter');
+      expect(exception.reason.length).toBeGreaterThan(40);
+    });
+  }
+});
+
 describe('no-silent-llm-fallback — every LLM-gating callsite is swap/fail-closed/reported or reviewed-advisory', () => {
   it('every LLM callsite carries a safety marker OR is reviewed-advisory (no new silent fallback)', () => {
     const files = llmCallsiteFiles();

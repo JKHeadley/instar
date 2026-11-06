@@ -630,6 +630,7 @@ import type { UnifiedTrustSystem } from '../threadline/UnifiedTrustWiring.js';
 import { DEFAULT_RELAY_URL } from '../threadline/constants.js';
 import { ThreadlineNicknames } from '../threadline/ThreadlineNicknames.js';
 import { resolvePeerFingerprint, resolvePeerFingerprintByName } from '../threadline/peerFingerprint.js';
+import { createAttributionRoutes } from './attributionRoutes.js';
 import {
   backupLogLine,
   checkFingerprintHealth,
@@ -1103,6 +1104,8 @@ export interface MobileInboundTrust {
 }
 
 export interface RouteContext {
+  /** Attribution paper trail; absent/null when dark. docs/specs/attribution-paper-trail.md */
+  attribution?: import('../core/attribution/attributionRuntime.js').AttributionRuntime | null;
   /** Stops the lease coverage peer poller when AgentServer shuts down. */
   jobCoverageStop?: (() => void) | null;
   /** Installed by createRoutes: feeds a device-authenticated app message through
@@ -4600,6 +4603,17 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       }
 
+      // attribution-paper-trail section 5: B23. Advisory, only in `enforce`, only for a sender that
+      // can react. SIGNAL ONLY, and marker checks have their own sub-budget inside the route budget.
+      if (ctx.attribution?.enabled && ctx.attribution.mode === 'enforce' && options.liveArtefactSignals === true && (options.messageKind ?? 'reply') === 'reply' && options.noReactionPossible !== true) {
+        try {
+          signals.attributionSources = await ctx.attribution.sourcesSignal(text, (recentMessages?.length ?? 0) > 0);
+        } catch {
+          // @silent-fallback-ok — detector errors never override the authority; the signal reads unmeasured.
+          signals.attributionSources = { status: 'unmeasured', conversationContext: (recentMessages?.length ?? 0) > 0, markers: [] };
+        }
+      }
+
       if (!options.allowDuplicate && ctx.outboundDedupGate && recentOutbound.length > 0) {
         try {
           const dupResult = ctx.outboundDedupGate.check({ text, recent: recentOutbound });
@@ -5041,6 +5055,22 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!decision.ok) {
       res.status(decision.status).json(decision.body);
       return true;
+    }
+    // Send-side record (attribution-paper-trail section 5): after delivery, in the background, never
+    // blocking a send. The route answering 2xx is what says the message went out.
+    if (ctx.attribution?.enabled) {
+      const attribution = ctx.attribution;
+      res.once('finish', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          let recentConversation: string | undefined;
+          try {
+            recentConversation = options.topicId && ctx.topicMemory
+              ? ctx.topicMemory.getRecentMessages(options.topicId, 10).map((m) => `${m.fromUser ? 'user' : 'agent'}: ${m.text}`).join('\n')
+              : undefined;
+          } catch { /* @silent-fallback-ok — with no recent messages the recap exemption simply does not apply */ }
+          attribution.recordInBackground(text, { surface: 'send', path: `${channel}:${options.topicId ?? ''}`, recentConversation });
+        }
+      });
     }
     return false;
   }
@@ -7303,6 +7333,8 @@ export function createRoutes(ctx: RouteContext): Router {
     'contradicts', 'part_of', 'used_in', 'knows_about', 'caused', 'verified_by',
   ]);
 
+  router.use(createAttributionRoutes(() => ctx.attribution));
+
   router.post('/semantic/remember', (req, res) => {
     if (!ctx.semanticMemory) { res.status(503).json({ error: 'Semantic memory not enabled' }); return; }
     const { type, name, content, confidence, source, sourceSession, tags, domain, expiresAt } = req.body;
@@ -7318,6 +7350,7 @@ export function createRoutes(ctx: RouteContext): Router {
         lastVerified: new Date().toISOString(),
         source, sourceSession, tags: tags || [], domain, expiresAt,
       });
+      ctx.attribution?.recordInBackground(String(content), { surface: 'memory-route', path: '/semantic/remember' });
       res.json({ id });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to remember' });
@@ -29682,6 +29715,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Spec § Producers line 228 — LearnSkill kinds are message|session;
     // externalReferences carry feedback/commit refs that the caller routes
     // through the appropriate downstream producer.
+    ctx.attribution?.recordInBackground(`${title}\n${description}`, { surface: 'memory-route', path: '/evolution/learnings' });
     res.status(201).json({
       ...learning,
       soulNudge,
@@ -29903,6 +29937,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       title, description, priority, commitTo, dueBy, source, tags: stampedTags,
       ...(normalizedOptOutReason ? { followThroughOptOutReason: normalizedOptOutReason } : {}),
     });
+    ctx.attribution?.recordInBackground(`${title}\n${description}`, { surface: 'memory-route', path: '/evolution/actions' });
     res.status(201).json({ ...action, classReviewAdmission: { wouldRefuse: admission.wouldRefuse, reason: admission.reason } });
   });
 
@@ -41931,6 +41966,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
     }
+
+    // attribution-paper-trail section 5: alongside the send, never before it, because the reply wait
+    // leaves little margin. Findings ride the `advisory` field; it never holds a peer message. Installed
+    // before the commitment nudge, so that nudge writes first and this one joins it rather than hiding it.
+    try {
+      const attributionCheck = ctx.attribution?.checkAlongside(message);
+      if (attributionCheck) {
+        const origJson = res.json.bind(res);
+        (res as unknown as { json: (b: unknown) => unknown }).json = (body: unknown) => {
+          const advisory = attributionCheck.settled();
+          if (advisory && body && typeof body === 'object' && (body as { success?: boolean }).success) {
+            const existing = (body as { advisory?: string }).advisory;
+            (body as { advisory?: string }).advisory = existing ? `${existing} ${advisory}` : advisory;
+          }
+          return origJson(body as Record<string, unknown>);
+        };
+      }
+    } catch { /* @silent-fallback-ok — advisory only, never affects the send */ }
 
     // Commitment-class advisory nudge (FD-10) — SIGNAL ONLY, never blocks, fails
     // open to no-nudge. Surfaced as `advisory` on the success response so the
