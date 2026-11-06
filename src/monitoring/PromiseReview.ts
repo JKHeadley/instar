@@ -329,14 +329,20 @@ export class PromiseReview {
         try {
           root = fs.realpathSync(this.deps.projectDir);
           target = fs.realpathSync(path.join(root, ref.ref));
-        } catch { return false; }
+        } catch {
+          // @silent-fallback-ok — a path that does not resolve is not proof; the closure is refused, which is visible in the result and the audit
+          return false;
+        }
         if (!target.startsWith(root + path.sep)) return false;
         const rel = path.relative(root, target).split(path.sep);
         if (rel[0] === '.git' || rel[0] === '.instar') return false;
         try {
           const st = fs.statSync(target);
           return !Number.isFinite(createdMs) || st.mtimeMs > createdMs;
-        } catch { return false; }
+        } catch {
+          // @silent-fallback-ok — an unreadable file is not proof; the closure is refused, visible in the result and the audit
+          return false;
+        }
       }
       case 'commit': {
         if (!SHA_RE.test(ref.ref)) return false;
@@ -350,6 +356,7 @@ export class PromiseReview {
           if (!Number.isFinite(ct)) return false;
           return !Number.isFinite(createdMs) || ct >= createdMs - CLOCK_SLACK_MS;
         } catch {
+          // @silent-fallback-ok — recorded as evidenceRefResolved:false on the row and the audit line.
           // Not in THIS repo (the work may live in another repository), a
           // timeout, or no git: uncheckable here, stored as unresolved. Only a
           // commit that exists and PRE-DATES the promise is refused.

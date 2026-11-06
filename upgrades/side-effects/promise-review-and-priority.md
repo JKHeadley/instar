@@ -104,3 +104,13 @@ Ship, live on the development agent with closures shadowed, dark on the fleet. T
 - tests/integration/promise-review-routes.test.ts
 - tests/e2e/promise-review-lifecycle.test.ts
 - Echo's 2026-11-06 backlog pass: 735 → 197 pending (logs/promise-backlog-pass-2026-11-06.jsonl in Echo's home)
+
+## Addendum — Local Verify fixes (2026-11-06)
+
+The first Local Verify run on head eda906b6a failed four unit tests. Each failure was diagnosed from its actual assertion and fixed:
+- **write-domain ratchet:** the two new mutating routes had no declaration. They are now classified `cluster-shared` in `WriteDomainRegistry`, matching the other commitment mutations.
+- **template agent-id lint:** three local API calls in the job template lacked `X-Instar-AgentId`. They now send it.
+- **dark-gate golden line map:** the 13-line `promiseReview` defaults block shifted two hand-authored rows. The map was updated by hand, as that test requires.
+- **no-silent-fallbacks ratchet:** three catch blocks in the evidence checks were not annotated. Each outcome is already visible in the result and the audit, so they now carry `@silent-fallback-ok`.
+
+A local full unit run also showed a timing-dependent test of mine: it compared two separately computed `Date.now()` values for equality. That test now uses one instant. No runtime behaviour changed. The fixes do not change the decision-point inventory above.

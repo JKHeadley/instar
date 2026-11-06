@@ -196,7 +196,8 @@ describe('apply — the floor', () => {
     const same = await review.apply('n1', [{ id: a.id, action: 'archive', kind: 'obsolete', reason: 'the run it was for ended' }]);
     expect(same.results[0].refusal).toBe('closure-needs-assessed-priority');
     // it is due again within the next 6 h run, not a week later
-    await t.mutate(a.id, (c) => ({ ...c, lastReviewedAt: new Date(Date.now() - 7 * 3_600_000).toISOString(), prioritySetAt: new Date(Date.now() - 7 * 3_600_000).toISOString() }));
+    const sevenHoursAgo = new Date(Date.now() - 7 * 3_600_000).toISOString(); // ONE instant: the follow-up test compares them for equality
+    await t.mutate(a.id, (c) => ({ ...c, lastReviewedAt: sevenHoursAgo, prioritySetAt: sevenHoursAgo }));
     expect(review.queue().items.map((r) => r.id)).toContain(a.id);
     const next = await review.apply('n2', [{ id: a.id, action: 'archive', kind: 'obsolete', reason: 'the run it was for ended' }]);
     expect(next.results[0].outcome).toBe('applied');
