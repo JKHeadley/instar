@@ -8,7 +8,7 @@
 import {
   failure, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, combineNeeds, machineNames,
 } from './home-model.js';
-import { GROUPS, legacyHref, icon, tabHref, LEGACY_DASHBOARD } from './nav-model.js';
+import { GROUPS, legacyHref, icon, tabHref, LEGACY_DASHBOARD, isPhoneMode, pagePath } from './nav-model.js';
 import { fillPartial } from './home-model.js';
 import { NEED_SOURCES, surfacedNeeds } from './needs-model.js';
 import { renderPromises, topicLink } from './promises.js';
@@ -54,6 +54,10 @@ let homeChatId = null;
 // The agent-wide Attention topic, where every attention item is posted.
 let attentionTopicId = null;
 let homeRun = null;
+// Phone mode (?phone=1, or phone=1 in the hash's query): the Instar app shows one
+// page in its own frame, so the console draws no top bar, nav or Legacy link.
+// Sticky for this page load: once on, every hash change stays in phone mode.
+let phone = false;
 
 // ── tiny DOM helpers ──────────────────────────────────────────────────────
 function el(tag, attrs = {}, ...kids) {
@@ -222,6 +226,13 @@ function navItems(active) {
 }
 
 function renderShell(active) {
+  if (phone) {
+    // Only the page: the app's own frame holds the title bar and navigation.
+    const main = el('main', { class: 'main', id: 'main' });
+    document.body.replaceChildren(el('div', { class: 'app app-phone' }, previewBanner(), main));
+    applyTheme(document.documentElement.getAttribute('data-theme') || readTheme());
+    return main;
+  }
   const legacyChip = el('a', { class: 'chip chip-legacy', href: LEGACY_DASHBOARD, text: 'Legacy' });
   const brand = el('a', { class: 'brand', href: '#/home' },
     el('img', { src: '/dashboard/logo.png', alt: '' }),
@@ -623,7 +634,7 @@ function renderGroup(main, g) {
       el('div', { class: 'tiles tiles-hood' }, g.hood.map((t) => tile({ ...t, icon: 'wrench' }))),
     );
   }
-  parts.push(footNote());
+  if (!phone) parts.push(footNote());
   main.replaceChildren(...parts);
 }
 
@@ -660,31 +671,50 @@ const NATIVE = {
   'settings/files': renderFiles,
 };
 
+// Pages that exist only in phone mode: the Work page's Pace card, on its own.
+const PHONE_ONLY = {
+  'work/pace': (main, { get: read }) => {
+    const old = main.querySelector('.pace-card');
+    const note = main.querySelector('.pace-missing') || el('p', { class: 'card-line pace-missing', hidden: true, text: 'Pace is not available on this agent right now.' });
+    // A refresh keeps the card on screen and swaps in the new one once it has loaded.
+    const card = paceCard(read, {
+      onMissing: () => { if (!old) note.hidden = false; },
+      onShown: () => { note.hidden = true; if (old && old.isConnected) old.replaceWith(card); },
+    });
+    if (!old) main.replaceChildren(el('section', { class: 'group-head' }, el('h1', { text: 'Pace' })), card, note);
+  },
+};
+
 function route() {
   if (homeRun) { homeRun.active = false; for (const p of Object.values(homeRun.pending)) if (p && p !== true) clearTimeout(p); homeRun = null; }
   closeSheet();
   newArrival();
-  const path = (location.hash.replace(/^#\/?/, '') || 'home').split('?')[0];
+  if (!phone && isPhoneMode('', location.hash)) phone = true;
+  document.documentElement.toggleAttribute('data-phone', phone);
+  const hashPath = (location.hash.replace(/^#\/?/, '') || 'home').split('?')[0];
+  const path = pagePath(hashPath, phone);
+  const pages = phone ? { ...NATIVE, ...PHONE_ONLY } : NATIVE;
   const id = path.split('/')[0];
   const group = GROUPS.find((g) => g.id === id);
   const active = group ? group.id : 'home';
   const main = renderShell(active);
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
-  if (NATIVE[path]) {
-    NATIVE[path](main, { get, post, getCommitments });
+  if (pages[path]) {
+    pages[path](main, { get, post, getCommitments });
     // Pages refresh in place every 30 s while visible, never over an open sheet or an
     // interaction in progress, and one at a time: a slow read cannot paint over a newer one.
     let refreshing = false;
     refreshTimer = setInterval(() => {
-      if (refreshing || document.visibilityState !== 'visible' || sheetIsOpen() || refreshHeld(main) || (location.hash.replace(/^#\/?/, '').split('?')[0]) !== path) return;
+      if (refreshing || document.visibilityState !== 'visible' || sheetIsOpen() || refreshHeld(main) || (location.hash.replace(/^#\/?/, '').split('?')[0]) !== hashPath) return;
       refreshing = true;
-      Promise.resolve().then(() => NATIVE[path](main, { get, post, getCommitments })).catch(() => { /* @silent-fallback-ok: a failed refresh keeps the page on screen; the next tick tries again */ }).finally(() => { refreshing = false; });
+      Promise.resolve().then(() => pages[path](main, { get, post, getCommitments })).catch(() => { /* @silent-fallback-ok: a failed refresh keeps the page on screen; the next tick tries again */ }).finally(() => { refreshing = false; });
     }, REFRESH_MS);
   } else if (group) renderGroup(main, group); else renderHome(main);
   window.scrollTo(0, 0);
 }
 
 async function start() {
+  phone = phone || isPhoneMode(location.search, location.hash);
   if (!location.hash) history.replaceState(null, '', '#/home');
   window.removeEventListener('hashchange', route);
   window.addEventListener('hashchange', route);

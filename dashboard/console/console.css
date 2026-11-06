@@ -920,7 +920,7 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .files-access { margin-top: var(--s-2); border: 1px solid var(--hairline); border-radius: var(--r-lg); }
 .files-unsaved .sheet-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-2); }
 .files-viewer { min-width: 0; }
-.files-head { position: sticky; top: 56px; z-index: 5; display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) 0; background: color-mix(in srgb, var(--surface-solid) 92%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--hairline); }
+.files-head { position: sticky; top: var(--topbar-h, 56px); z-index: 5; display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) 0; background: color-mix(in srgb, var(--surface-solid) 92%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--hairline); }
 .files-back { min-width: 44px; min-height: 44px; font-size: 22px; }
 .files-more { min-width: 44px; min-height: 44px; font-size: 18px; margin-left: auto; }
 .files-title { min-width: 0; flex: 1; display: flex; flex-direction: column; }
@@ -1049,7 +1049,7 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
   .main:has(> .sessions-page.has-open) { max-width: 1680px; padding-top: var(--s-6); padding-bottom: var(--s-6); }
   .sessions-page.has-open { grid-template-columns: minmax(280px, 340px) 1fr; }
   .sessions-page.has-open .sess-list .page-title { font-size: 28px; }
-  .sessions-page.has-open .sess-view { top: calc(56px + var(--s-4)); height: calc(100dvh - 56px - var(--preview-h, 0px) - var(--s-6) - var(--s-4)); }
+  .sessions-page.has-open .sess-view { top: calc(var(--topbar-h, 56px) + var(--s-4)); height: calc(100dvh - var(--topbar-h, 56px) - var(--preview-h, 0px) - var(--s-6) - var(--s-4)); }
   .app:has(> .preview-banner) { --preview-h: 37px; }
   .sessions-page.has-open .sess-open { height: 100%; min-height: 0; }
   .sessions-page.has-open .sess-term-wrap { min-height: 0; }
@@ -1192,3 +1192,16 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .health-choice-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1); }
 .health-choice-label { font-size: 13px; color: var(--text-faint); }
 .health-choices .btn-small { height: 44px; }
+
+/* ── Phone mode (?phone=1) ─────────────────────────────────────────────────
+   The Instar iPhone app shows one page inside its own frame: no top bar and no
+   nav are drawn (console.js), so nothing reserves room for them. The page sits
+   under the app's own title bar, so the top gap is small plus the safe area. */
+:root[data-phone] { --nav-total: var(--safe-b); --topbar-h: 0px; }
+:root[data-phone] .app { grid-template-columns: 1fr; }
+:root[data-phone] .main {
+  padding: calc(env(safe-area-inset-top, 0px) + var(--s-3))
+           calc(env(safe-area-inset-right, 0px) + var(--s-4))
+           calc(var(--safe-b) + var(--s-6))
+           calc(env(safe-area-inset-left, 0px) + var(--s-4));
+}
