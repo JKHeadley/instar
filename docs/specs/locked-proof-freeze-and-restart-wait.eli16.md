@@ -1,8 +1,8 @@
-# Six more fixes to the locked-screen test, from its first real run
+# Thirteen more fixes to the locked-screen test, from its first real run
 
 ## What this is
 
-Instar can show and control a Mac's screen remotely, even while that Mac is locked. To prove the locked-screen part is safe, a test driver on a real Mac Mini opens the same remote-desktop web page a person would use, types the password into it, breaks things on purpose (kills the server, freezes it, pulls the network) and checks that the Mac always ends up locked again. On 5 November 2026 the driver ran for real for the first time, and several of its own mistakes showed up. None of them was a fault in the product. The first, a wait for a hidden button, is already fixed. These are the other six.
+Instar can show and control a Mac's screen remotely, even while that Mac is locked. To prove the locked-screen part is safe, a test driver on a real Mac Mini opens the same remote-desktop web page a person would use, types the password into it, breaks things on purpose (kills the server, freezes it, pulls the network) and checks that the Mac always ends up locked again. On 5 November 2026 the driver ran for real for the first time, and several of its own mistakes showed up. None of them was a fault in the product. The first, a wait for a hidden button, is already fixed. These are the other thirteen.
 
 ## What went wrong, and what changes
 
@@ -18,10 +18,40 @@ Instar can show and control a Mac's screen remotely, even while that Mac is lock
 
 **It treated "already gone" as a failure.** While tidying up after a test, the driver tried to wake a process that had already exited, and counted that as an error. Waking something that is gone is now skipped. Freezing or killing something that is gone is still an error, because then the test did not do what it claims.
 
+**Its "in the middle of typing" tests fired too early.** Some tests break something while the password is being typed. The driver decided typing had started as soon as the helper that does the typing was running, but that helper starts the moment the remote screen opens. So the test broke things before any password had been sent, and there was nothing to check. Typing now means the password has actually been handed over and Enter has not been pressed yet.
+
+**One test waited for something that was never due.** The Mac has a small guard program whose only job is to lock it again when a remote session ends. One test kills that guard while a session is open, and expected the Mac to be locked afterwards. But the test never ended the session. The product did what its design says: it started a new guard within a few seconds and left the Mac open for the person still using it. The test now ends the session once the new guard is in place, and then checks that the Mac locks.
+
+**It tried to end a session it did not own.** Some tests end the remote session from outside the page, the way a second device would. The driver did that with a sign-in of its own, and the server refused, correctly: only the sign-in that opened a session may end it. The driver did not notice the refusal and went on to judge a session that was still open. It now ends the session with the page's own sign-in, and treats a refusal as a failed test step.
+
+**It looked for leftovers when there was nothing to leave behind.** After a test, the driver checks that the helper which types the password is gone. One test never sends a password at all and expects the session to stay open, so that helper is rightly still there. The check now only applies when a password was actually sent and its relock duty has finished.
+
+**Three timing mistakes.** One test waits for a ten-minute limit but gave up watching after four and a half minutes. Another is meant to have that limit arrive while the password is being typed, but aimed so late that typing would only have started after the limit, when the password box is already gone. And the check that the owner gets a security alert after a failed relock looked once, immediately, although the alert is sent by a routine that runs every ten seconds; the alert arrived nine seconds later and was missed. All three now use the right times.
+
+**One gap in the notes.** When a typed password got no clear answer, the driver wrote down only that nothing happened. It now also writes down what the page said on screen while it waited, so a later reader can tell why.
+
+**One test checked for tidying-up at the wrong moment.** If typing is interrupted half-way, part of a password can be left in the Mac's password box. The design is that the next session clears the box before anything else can be typed, and until then keeps a note that the box is unclean. The test expected the note to be gone at the end of the interrupted session, which the design never promised. It now opens a next session and checks the box is cleared there.
+
+**One test left running the very thing that fixes the problem it creates.** A test freezes the typing helper and the guard, waits ten minutes, and expects a second agent to have to clean up. But the first agent's server was still running, and its job is to notice a frozen guard and start a new one, which it did within ten seconds. So there was never anything for the second agent to clean up. The test now freezes that server as well.
+
+**One message it did not recognise.** When the Mac's lock screen is not ready to take a password, the page says so in plain words. The driver did not know that sentence and wrote down "no answer". It now records it as the refusal it is.
+
+**Its clock was half a second off.** Two tests have to type the password at an exact moment around the ten-minute limit. The driver measured that limit from when it saw the session open, but the server starts its clock about half a second earlier, which is enough to miss. The server tells the page exactly when the session ends, so the driver now uses that time.
+
+**A step of mine did not tidy up after itself.** The new "open a next session" step ended that session by clicking Stop, and did not notice when the click did not go through, so its helper was still running when the test finished. It now checks, says whether a normal click worked, and ends the session for certain.
+
+**And then a fifth of a second.** With the right clock, the test that needs the ten-minute limit to arrive in the middle of typing still started a little too late: the limit arrived just before the first letter. It now starts a fifth of a second sooner. This test aims at a gap a few tenths of a second wide, so it can still miss now and then, and when it does it says so and is run again. The unit test that pins this timing is updated to match.
+
+**The lock screen blinks.** A few seconds after the Mac locks, or after its screen wakes, the lock screen stops accepting secure typing for about half a second and then starts again. A password that arrives in that half second is turned away with "lock screen is not ready, try again". That is the product being careful, and a person would just try again. The driver now tries again too, up to twice, and writes down how often it had to.
+
+**Two wrong turns of mine.** I first thought the screen being asleep caused those refusals, and had the driver nudge the Mac awake at the start of each test, then just before each session. Measuring showed that was not the cause and made it worse, so both nudges are gone; one remains before the two tests that type at the ten-minute mark. Separately, the check for leftover helpers now looks only at the helpers a relock duty actually recorded.
+
+**Finished helpers that had not been tidied away.** When a program exits, its parent program is meant to note that and clear it from the list. In the test that freezes the test server on purpose, the server cannot do that, so its finished helpers stayed in the process list as empty entries (the system calls them zombies) after they had done their job and the Mac was locked. The driver saw those entries and reported that the helpers were "still running". They were not; nothing was running. The driver now ignores such entries and records them separately in the evidence instead.
+
 ## What stays the same
 
 The product is unchanged: the web page, the server and the safety guard all behaved correctly. Once the freeze test was fixed, it passed: the guard noticed the frozen server and relocked the Mac. Nothing here reaches any running agent; it only affects the proof tool run by hand on the test Mac.
 
 ## What you need to decide
 
-Nothing. These are fixes to test tooling that a revert fully undoes, each with a unit test so the mistake cannot quietly come back.
+One thing to be aware of rather than decide: the last fix above changes what a test asks for. If you want the Mac to lock straight away whenever its guard dies, even with a session open, that is a change to the product's design, and it is not what the current design or this test says. These are fixes to test tooling that a revert fully undoes, each with a unit test so the mistake cannot quietly come back.
