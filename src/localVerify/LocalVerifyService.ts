@@ -48,7 +48,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
-import { readPlannedRestartVerifyState, VERIFY_RESTART_HOLD_MS } from '../core/PlannedRestartVerifyGuard.js';
+import { PEER_RESTART_HOLD_MS, peerHoldPath, plannedRestartBypassesHolds, readPlannedRestartVerifyState, VERIFY_RESTART_HOLD_MS } from '../core/PlannedRestartVerifyGuard.js';
 import { executionKey, recordKey, validateRecord, isValidPr, isValidSha, MAIN_VERIFY_PR, type LocalVerifyRecord } from './record.js';
 import { PreflightReplayStore, replayKey, type PreflightReplay } from './preflightReplay.js';
 import { FailedFileDiagnosisCoordinator } from './FailedFileDiagnosisCoordinator.js';
@@ -690,6 +690,13 @@ export class LocalVerifyService {
   private leaseView: { holdsLease(): boolean; leaseEpoch(): number | null; holderMachineId(): string | null } | null = null;
   private readonly peerHealth = new Map<string, PeerHealth>();
   private readonly remotePolledAt = new Map<string, number>();
+  /** Coordinator: last SUCCESSFUL peer contact per attempt, seeded at accept. `remotePolledAt` records tries, not successes. */
+  private readonly remoteLastOkAt = new Map<string, number>();
+  /** Starts true so a heartbeat left by an earlier process is removed once, then idle ticks do no file I/O. */
+  private peerHoldFilePresent = true;
+  private peerHoldWriteFailed = false;
+  /** Attempts already reported as holding the current planned restart. */
+  private readonly peerHoldsAudited = new Map<string, { pr: number; sentAt: number; requestedAt: number | null }>();
   private dispatching: QueueEntry | null = null;
   private dispatchScheduled = false;
   private dispatchRunning = false;
@@ -1818,7 +1825,9 @@ export class LocalVerifyService {
           this.audit({ event: 'peer-dispatch-unanswered', pr: entry.pr, peer: peer.machineId, attemptId: marker.attemptId });
         } else if (ans.ok) {
           marker.state = 'accepted';
+          this.remoteLastOkAt.set(marker.attemptId, this.now()); // the accept was a successful round trip
           this.audit({ event: 'peer-dispatch-accepted', pr: entry.pr, peer: peer.machineId, attemptId: marker.attemptId });
+          this.writePeerHold(); // a restart requested before the next tick must already see this attempt
         } else if (ans.reason === 'peer-busy') {
           // Backpressure, not a failure: the attempt does not count and the breaker is untouched.
           entry.remote = undefined;
@@ -1854,6 +1863,8 @@ export class LocalVerifyService {
     if (!m) return;
     entry.remote = undefined;
     this.remotePolledAt.delete(m.attemptId);
+    this.remoteLastOkAt.delete(m.attemptId);
+    this.endPeerHold(m.attemptId, 'abandoned');
     this.audit({ event: 'peer-attempt-abandoned', pr: entry.pr, peer: m.machineId, attemptId: m.attemptId, reason });
     const peer = this.configuredPeers().find((p) => p.machineId === m.machineId);
     if (o.cancel && peer && this.peerClient) void this.peerClient.cancel(peer, m.attemptId).catch(() => undefined);
@@ -1885,6 +1896,7 @@ export class LocalVerifyService {
         this.remotePolledAt.set(m.attemptId, now);
         const res = await this.peerClient.result(peer, m.attemptId).catch(() => null);
         if (entry.remote !== m) continue; // changed while we waited
+        if (res && res.state !== 'unknown') this.remoteLastOkAt.set(m.attemptId, this.now());
         if (!this.queue.includes(entry)) {
           this.abandonRemote(entry, 'entry-no-longer-queued', { failure: false, cancel: true });
           continue;
@@ -1927,12 +1939,15 @@ export class LocalVerifyService {
         noteSuccess(h);
         entry.remote = undefined;
         this.remotePolledAt.delete(m.attemptId);
+        this.remoteLastOkAt.delete(m.attemptId);
+        this.endPeerHold(m.attemptId, 'imported');
         const i = this.queue.indexOf(entry);
         if (i >= 0) this.queue.splice(i, 1);
         this.audit({ event: 'peer-imported', pr: entry.pr, peer: peer.machineId, attemptId: m.attemptId, outcome: res.record.outcome });
         const imported = this.complete(res.record, 'peer');
         if (imported) this.noteFlaky(imported);
         this.persistQueue();
+        this.writePeerHold(); // the restart this attempt held need not wait for the next tick
       }
     } finally {
       this.pollRunning = false;
@@ -1954,9 +1969,11 @@ export class LocalVerifyService {
 
   /** Periodic driver: orphan unblock, starvation signal, start the next run. */
   async tick(): Promise<void> {
+    // Before any await: a slow reap or peer poll must not delay the heartbeat restarts read.
+    this.notePause();
+    this.writePeerHold();
     if (this.blockedBy) await this.reapOrphan();
     if (this.verifierHold) this.recheckVerifierHold();
-    this.notePause();
     this.checkStarved();
     this.health.noteUnverifiedAge(this.mainObs.oldestUnverifiedAt);
     if (!this.cfg.peerOnly) await this.pollPeers().catch((e) => this.audit({ event: 'peer-poll-error', detail: e instanceof Error ? e.message : String(e) }));
@@ -1965,6 +1982,76 @@ export class LocalVerifyService {
     await this.failedFileDiagnosisPeer?.tick();
     this.pump();
     if (!this.cfg.peerOnly) await this.failedFileDiagnosis?.tick([...this.index.values()]);
+  }
+
+  /**
+   * Coordinator: publish which accepted peer attempts a planned restart should wait for. The restart
+   * consumers run in other processes and can read only files; only this process knows the live lease
+   * and each peer's last answer. Attempts drop out on any failed condition, so a failed write or an
+   * unreachable peer falls back to restarting exactly as if there were no peer work.
+   */
+  private writePeerHold(): void {
+    const now = this.now();
+    const reserved = this.queue.filter((e) => e.remote);
+    const lease = reserved.length > 0 ? this.leaseState() : null;
+    const attempts = reserved.flatMap((e) => {
+      const m = e.remote!;
+      const lastPollOkAt = this.remoteLastOkAt.get(m.attemptId);
+      return lease?.holds && lease.epoch === m.leaseEpoch && m.state === 'accepted'
+        && lastPollOkAt !== undefined && now - lastPollOkAt <= 2 * PEER_LIMITS.pollMs
+        ? [{ attemptId: m.attemptId, pr: e.pr, sentAt: m.sentAt, lastPollOkAt }] : [];
+    });
+    try {
+      if (attempts.length > 0) {
+        SafeFsExecutor.atomicWriteJsonSync(peerHoldPath(this.cfg.stateDir), { v: 1, writtenAt: now, leaseEpoch: lease!.epoch, attempts },
+          { operation: 'local-verify:peer-hold', mode: 0o600 });
+        this.peerHoldFilePresent = true;
+      } else if (this.peerHoldFilePresent) {
+        SafeFsExecutor.safeRmSync(peerHoldPath(this.cfg.stateDir), { force: true, operation: 'local-verify:peer-hold-clear' });
+        this.peerHoldFilePresent = false;
+      }
+      this.peerHoldWriteFailed = false;
+    } catch (e) {
+      // @silent-fallback-ok: no fresh heartbeat means no peer hold; the restart proceeds as before this feature.
+      if (!this.peerHoldWriteFailed) this.audit({ event: 'peer-hold-write-failed', detail: e instanceof Error ? e.message.slice(0, 200) : String(e) });
+      this.peerHoldWriteFailed = true;
+    }
+    this.auditPeerHolds(attempts, now);
+  }
+
+  /** The audit trail for a restart that waited on peer work: once per attempt per pending request. */
+  private auditPeerHolds(attempts: ReadonlyArray<{ attemptId: string; pr: number; sentAt: number }>, now: number): void {
+    if (attempts.length === 0 && this.peerHoldsAudited.size === 0) return;
+    const restart = readPlannedRestartVerifyState(this.cfg.stateDir, now);
+    for (const [attemptId, held] of [...this.peerHoldsAudited]) {
+      const pastBound = now >= held.sentAt + PEER_RESTART_HOLD_MS;
+      if (!restart.pending) { if (pastBound) this.endPeerHold(attemptId, 'bound-reached'); else this.peerHoldsAudited.delete(attemptId); continue; }
+      // Checked before the request identity: the bypass writer stamps a new requestedAt.
+      if (plannedRestartBypassesHolds(this.cfg.stateDir)) { this.endPeerHold(attemptId, 'bypass'); continue; }
+      if (restart.pendingSinceMs !== held.requestedAt) { this.peerHoldsAudited.delete(attemptId); continue; }
+      if (pastBound) this.endPeerHold(attemptId, 'bound-reached');
+      else if (!attempts.some((a) => a.attemptId === attemptId) && this.remoteEpochCurrent(attemptId)) this.endPeerHold(attemptId, 'no-longer-qualifies');
+    }
+    if (!restart.pending || !restart.hold) return;
+    for (const a of attempts) {
+      const bound = a.sentAt + PEER_RESTART_HOLD_MS;
+      if (this.peerHoldsAudited.has(a.attemptId) || bound <= now) continue;
+      this.peerHoldsAudited.set(a.attemptId, { pr: a.pr, sentAt: a.sentAt, requestedAt: restart.pendingSinceMs });
+      this.audit({ event: 'restart-held-for-peer', attemptId: a.attemptId, pr: a.pr, boundAt: new Date(bound).toISOString() });
+    }
+  }
+
+  /** A lease change is reported as `abandoned` by the poll that follows; only a peer gone quiet under the current lease is reported here. */
+  private remoteEpochCurrent(attemptId: string): boolean {
+    const lease = this.leaseState();
+    return lease.holds && this.queue.some((e) => e.remote?.attemptId === attemptId && e.remote.leaseEpoch === lease.epoch);
+  }
+
+  private endPeerHold(attemptId: string, reason: 'imported' | 'abandoned' | 'bound-reached' | 'bypass' | 'no-longer-qualifies'): void {
+    const held = this.peerHoldsAudited.get(attemptId);
+    if (!held) return;
+    this.peerHoldsAudited.delete(attemptId);
+    this.audit({ event: 'restart-peer-hold-ended', attemptId, pr: held.pr, reason });
   }
 
   /** Bounded reclamation when terminal keys fill the store; unknown PR state retains proof. */
