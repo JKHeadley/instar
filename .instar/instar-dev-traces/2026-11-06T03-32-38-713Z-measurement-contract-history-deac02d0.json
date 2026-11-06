@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "slug": "measurement-contract-history",
+  "sessionId": "30384209-0957-44f8-9037-d33d452ffbc6",
+  "timestamp": "2026-11-06T03:32:38.713Z",
+  "artifactPath": "upgrades/side-effects/measurement-contract-history.md",
+  "artifactSha256": "283ebf492dfab4bdf34623f6a2acd87027b112d48a25cb66a618cc201abefe93",
+  "coveredFiles": [
+    "dashboard/console/measurement-trend.js",
+    "docs/specs/measurement-contract-history.eli16.md",
+    "docs/specs/measurement-contract-history.md",
+    "src/monitoring/BlockerLifecycleLedger.ts",
+    "src/monitoring/BlockerLifecycleService.ts",
+    "src/monitoring/MeasurementContractVersion.ts",
+    "src/monitoring/MeasurementTrend.ts",
+    "tests/integration/maturation-outcome-route.test.ts",
+    "tests/unit/MeasurementContractVersion.test.ts",
+    "tests/unit/measurement-trend-view.test.ts",
+    "upgrades/next/measurement-contract-history.md",
+    "upgrades/side-effects/measurement-contract-history.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive bounded metadata sidecars in existing measure-only ledger; no existing table rewrite or fleet configuration migration. Revert ignores unused tables. Conservative advisory ready retraction only; no service or activation authority. Closed local/peer read/display extension.",
+  "eli16Path": "docs/specs/measurement-contract-history.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/measurement-contract-history.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

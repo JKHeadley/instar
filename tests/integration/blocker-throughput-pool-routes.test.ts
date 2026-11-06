@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
+import { projectMaturationOutcome } from '../../src/monitoring/MaturationOutcome.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 
 const AUTH = 'throughput-pool-test';
@@ -118,6 +119,46 @@ describe('blocker throughput pool schema honesty', () => {
       .get('/blocker-lifecycle/trend?scope=pool').set('Authorization', `Bearer ${AUTH}`);
     expect(response.body).toMatchObject({ poolComplete: false,
       failures: [{ machineId: 'peer-a', reason: 'unsupported-maturation' }] });
+  });
+
+  const outcomePeer = () => {
+    const now = Date.now(); const at = now - 60_000;
+    const metric = { id: 'quality', source: 'feature-summary' as const, sourceRef: 'ladder.quality.abc', direction: 'at-most' as const, threshold: 0.05, minSamples: 20 };
+    const contract = { cadenceHours: 6, evidenceMaxAgeHours: 12, metrics: [metric], outcome: {
+      statement: 'Fewer wrong decisions', owner: 'decision-owner', method: 'Recorded outcomes', version: 'v1', outcomeMetricIds: ['quality'], qualityMetricIds: ['quality'],
+      baseline: { origin: 'peer-a', points: [{ id: 'quality', observedAtMs: at, descriptorVersion: 1, value: 0.2, samples: 40 }] },
+    } };
+    const evidence = projectMaturationOutcome(contract, 'peer-a', 'one', now, (_id, time) => ({ origin: 'peer-a', featureId: 'one', metricId: 'quality', source: metric.source, sourceRef: metric.sourceRef,
+      observedAtMs: time ?? now, descriptorVersion: 1, value: time === undefined ? 0.1 : 0.2, samples: 40 }));
+    return { schemaVersion: 2, origins: [{ machineId: 'peer-a', factors: [latencySummary('request-to-persist', 'best-effort'), latencySummary('clear-latency', 'reconcilable'), countSummary], counters,
+      maturation: { eligible: 1, evaluated: 0, missedDue: 1, byStatus: { ready: 0, hold: 0, 'stale-evidence': 0, 'insufficient-evidence': 0, 'missing-contract': 0, 'invalid-contract': 0, 'missed-cadence': 0 }, features: [],
+        outcomeContracts: { scope: 'current-d7-subjects', subjects: 1, declared: 1, missing: 0, invalid: 0 }, outcomeDetail: { featureId: 'one', subjectKnown: true, evidence } } }] };
+  };
+
+  it('preserves scoped baseline evidence and declared-contract counts through the existing pool read', async () => {
+    const res = await request(app(outcomePeer())).get('/blocker-lifecycle/summary?scope=pool&feature=one').set('Authorization', `Bearer ${AUTH}`);
+    expect(res.body.poolComplete).toBe(true);
+    expect(res.body.origins[1].maturation).toMatchObject({ outcomeContracts: { declared: 1 }, outcomeDetail: { featureId: 'one', evidence: { state: 'verified', metrics: [{ delta: -0.1, criterion: { met: false } }] } } });
+  });
+
+  it('reports old-peer detail as unavailable on explicit requests without breaking the default read', async () => {
+    const peer = outcomePeer(); delete (peer.origins[0].maturation as Record<string, unknown>).outcomeDetail;
+    const server = app(peer);
+    expect((await request(server).get('/blocker-lifecycle/summary?scope=pool').set('Authorization', `Bearer ${AUTH}`)).body.poolComplete).toBe(true);
+    const res = await request(server).get('/blocker-lifecycle/summary?scope=pool&feature=one').set('Authorization', `Bearer ${AUTH}`);
+    expect(res.body.poolComplete).toBe(false);
+    expect(res.body.failures[0].reason).toBe('unsupported-outcome-detail');
+  });
+
+  it('rejects contradictory peer arithmetic and never serves detail from the ordinary pool cache', async () => {
+    const peer = outcomePeer(); const server = app(peer);
+    const first = await request(server).get('/blocker-lifecycle/summary?scope=pool&feature=one').set('Authorization', `Bearer ${AUTH}`);
+    expect(first.body.poolComplete).toBe(true);
+    const bad = structuredClone(peer); bad.origins[0].maturation.outcomeDetail.evidence.metrics[0].delta = 0.99;
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(bad), { status: 200 }));
+    const second = await request(server).get('/blocker-lifecycle/summary?scope=pool&feature=one').set('Authorization', `Bearer ${AUTH}`);
+    expect(second.body.poolComplete).toBe(false);
+    expect(second.body.failures[0].reason).toBe('unsupported-maturation');
   });
 
   it('reports a schema-v1 peer unsupported without coercing a zero origin', async () => {
