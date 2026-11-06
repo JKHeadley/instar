@@ -22,6 +22,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { UnexpectedError } from '../../../errors.js';
+import { guardChildStdin } from '../../../../core/pipeErrorGuard.js';
 import { PI_CLI_ID } from '../errors.js';
 import { buildPiChildEnv } from './piSpawn.js';
 
@@ -124,6 +125,7 @@ export class PiRpcClient {
 
   private constructor(child: ChildProcess) {
     this.child = child;
+    guardChildStdin(child.stdin, 'pi-rpc');
     const splitter = createStrictLfSplitter((line) => this.onLine(line));
     child.stdout!.setEncoding('utf8');
     child.stdout!.on('data', (chunk: string) => splitter.push(chunk));

@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "slug": "epipe-crash-false-gone",
+  "sessionId": "b2e08e3a-63ef-459a-8580-3efd892e8a6e",
+  "timestamp": "2026-11-06T16:45:56.073Z",
+  "artifactPath": "upgrades/side-effects/epipe-crash-false-gone.md",
+  "artifactSha256": "36ce5372458d1442bacd417754c845e7caf9698f0e93dc0768e8761de4b2cf69",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/ClaudeCliIntelligenceProvider.ts",
+    "src/core/LinuxDesktopHost.ts",
+    "src/core/PlainChromeReloginBrowser.ts",
+    "src/core/pipeErrorGuard.ts",
+    "src/core/uncaughtExceptionPolicy.ts",
+    "src/lifeline/ServerSupervisor.ts",
+    "src/messaging/telegram-origin/OriginCodexModelCanary.ts",
+    "src/monitoring/guardManifest.ts",
+    "src/providers/adapters/openai-codex/observability/codexLiveRateLimitReader.ts",
+    "src/providers/adapters/pi-cli/transport/rpcClient.ts",
+    "tests/e2e/closed-pipe-process-survival.test.ts",
+    "tests/unit/pipeErrorGuard.test.ts",
+    "tests/unit/supervisor-tmux-probe-unknown.test.ts",
+    "tests/unit/uncaughtExceptionPolicy.test.ts",
+    "upgrades/next/epipe-crash-false-gone.md",
+    "upgrades/side-effects/epipe-crash-false-gone.eli16.md",
+    "upgrades/side-effects/epipe-crash-false-gone.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix: a plain revert fully undoes it; no state, config or data change. It reduces restart and crash authority rather than adding any.",
+  "eli16Path": "upgrades/side-effects/epipe-crash-false-gone.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/epipe-crash-false-gone.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "isServerSessionAlive has always caught every has-session error as false. Fix A (missing session overrides grace) made that a direct restart order on a 10-second tick. A host refusing spawns is a likely but unproven trigger."
+  }
+}
