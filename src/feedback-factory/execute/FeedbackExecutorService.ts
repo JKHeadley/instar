@@ -30,7 +30,7 @@ import { governor } from '../../monitoring/selfaction/governor.js';
 import type { DerivedTarget } from '../../monitoring/selfaction/types.js';
 import { FeedbackExecuteStore, OPEN_PR_STATES, type ExecutionRow, type ExecutionState } from './FeedbackExecuteStore.js';
 import {
-  CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, CONFINED_RELATED_TIMEOUT_MS, commandFailureTail, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL, PREVIOUS_REVIEW_FILE,
+  GITHUB_OUTAGE_NOTICE_MS, CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, CONFINED_RELATED_TIMEOUT_MS, commandFailureTail, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL, PREVIOUS_REVIEW_FILE,
   MERGE_ARMED_DEADLINE_MS, MERGE_RETRY_DELAY_MS, SANDBOX_RUNTIME_VERSION, VERIFY_QUIET_MS, WORKSPACE_DISK_CAP_BYTES,
   buildClaudeSandboxSettings, buildSandboxRuntimeSettings, clampProbeDetail, confinedCacheEnv, confinedEnv, effectiveLatchUntil, pathSlug, publishFork, safeSlug, type ConfinementPaths, type ExecuteLiveConfig,
 } from './executePolicy.js';
@@ -481,6 +481,7 @@ export class FeedbackExecutorService {
     this.pruneScratch();
     const avail = await this.refreshAvailability();
     if (avail.reason === 'not-canonical-owner') { out.result = 'degraded'; out.reason = avail.reason; return; }
+    if (avail.reason !== 'github-unavailable' && this.metaJson('exec:github_outage')) this.setMeta(epoch, 'exec:github_outage', null);
     // Stop paths first: no refusal below may skip them.
     const acted = await this.runStopPaths(epoch, avail.slug);
     if (AUTHORITY_WITHDRAWN_REASONS.has(avail.reason)) await this.disarmAll(avail.reason === 'disabled' ? 'executor-disabled' : `executor-${avail.reason}`);
@@ -488,7 +489,10 @@ export class FeedbackExecutorService {
       out.reason = avail.reason;
       return;
     }
-    if (avail.reason === 'github-unavailable') { out.result = 'degraded'; out.reason = avail.reason; return; }
+    if (avail.reason === 'github-unavailable') {
+      await this.noteGithubOutage(epoch);
+      out.result = 'degraded'; out.reason = avail.reason; return;
+    }
     const slug = avail.slug!;
     const approver = avail.approver!;
     // Live attempts: lease, disk cap, finished sessions.
@@ -869,6 +873,21 @@ export class FeedbackExecutorService {
       summary: 'The sandbox check before a feedback fix attempt did not hold, so no attempts will start.',
       description: `Failed checks: ${probes.filter((p) => !p.ok).map((p) => p.probe).join(', ') || 'unknown'}. The executor runs the check again in ${Math.round(retryInMs / HOUR_MS)} hour(s), then waits longer after each further failure (up to a day); a pass resumes fix attempts. Triage is unaffected.`,
       category: 'monitoring', priority: 'HIGH', sourceContext: 'feedback-execute:profile-unenforceable',
+    });
+  }
+
+  /** Fixes stop without any failed attempt during a GitHub outage, so the outage itself must be reported. */
+  private async noteGithubOutage(epoch: number): Promise<void> {
+    const outage = this.metaJson<{ since: number; notified?: boolean }>('exec:github_outage') ?? { since: this.now() };
+    const due = !outage.notified && this.now() - outage.since >= GITHUB_OUTAGE_NOTICE_MS;
+    this.setMeta(epoch, 'exec:github_outage', { since: outage.since, notified: outage.notified === true || due });
+    if (!due) return;
+    await this.attention({
+      id: `feedback-execute:github-unavailable:${outage.since}`,
+      title: 'Feedback fixes have stopped: no GitHub access',
+      summary: `Feedback fix attempts have been unable to reach GitHub for about ${Math.round((this.now() - outage.since) / HOUR_MS)} hours, so no new fixes are starting. Reports are still being collected and sorted. It resumes by itself when access returns.`,
+      description: `The executor last had working GitHub access before ${new Date(outage.since).toISOString()} and rechecks on every run. Check the agent's saved GitHub credential first: a replaced token is the usual cause. The executor status shows this as github-unavailable.`,
+      category: 'monitoring', priority: 'HIGH', sourceContext: 'feedback-execute:github-unavailable',
     });
   }
 

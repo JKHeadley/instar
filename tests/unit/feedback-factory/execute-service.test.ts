@@ -513,6 +513,31 @@ describe('verification and publication', () => {
     expect(h.execStore.latestFor(id2)!.state).toBe('pr-open');
   });
 
+  it('a lasting GitHub outage is reported once per outage, and a short one stays quiet', async () => {
+    h = await createExecHarness();
+    const notices = () => h.attentionExec.filter((a) => a.id.startsWith('feedback-execute:github-unavailable'));
+    const info = h.repo.info;
+    h.repo.info = null;
+    await h.exec.tick();
+    h.now.value += 2 * 60 * 60_000 - 1;
+    await h.exec.tick();
+    expect(notices()).toHaveLength(0);
+    h.now.value += 1;
+    expect((await h.exec.tick()).reason).toBe('github-unavailable');
+    await h.exec.tick();
+    expect(notices()).toHaveLength(1);
+    expect(notices()[0].summary).toContain('no new fixes are starting');
+    // Access returns: a later outage is a new one with its own full wait.
+    h.repo.info = info;
+    await h.exec.tick();
+    h.repo.info = null;
+    await h.exec.tick();
+    expect(notices()).toHaveLength(1);
+    h.now.value += 2 * 60 * 60_000;
+    await h.exec.tick();
+    expect(new Set(notices().map((a) => a.id)).size).toBe(2);
+  });
+
   it('a check stopped by its time limit keeps its reason and records which check it was', async () => {
     h = await createExecHarness();
     const { initiativeId } = await startOne();
