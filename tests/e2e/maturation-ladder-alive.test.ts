@@ -58,6 +58,20 @@ describe('maturation ladder — production wiring', () => {
     expect(typeof d.setConfig).toBe('function');
   });
 
+  it('lists the features the 2026-11-05 review found on no ladder, with a real state', async () => {
+    const { server } = await boot(true);
+    const res = await request(server.getApp()).get('/maturation/ladder');
+    expect(res.status).toBe(200);
+    const byId = new Map((res.body.features as Array<{ id: string; rung: string; state: string }>).map(f => [f.id, f]));
+    for (const id of ['intelligence.selfActionGovernor', 'benchmarkDivergence', 'intelligence.jevJobCompletionAudit', 'sessions.dynamicMcp',
+      'feedbackFactory.receiverPersistence', 'monitoring.collaborationRedrive', 'monitoring.principalCoherence', 'responseReview']) {
+      expect(byId.get(id), id).toBeDefined();
+    }
+    for (const id of ['gitBackup', 'monitoring.reportExternalProcesses', 'monitoring.staleBackstop']) {
+      expect(byId.get(id)).toMatchObject({ rung: 'fleet', state: 'at-final' });
+    }
+  });
+
   it('the board carries a ladder owner source', async () => {
     const { server } = await boot(true);
     const res = await request(server.getApp()).get('/maturation/board');

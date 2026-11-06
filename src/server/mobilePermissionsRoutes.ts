@@ -36,6 +36,7 @@ import { arrivedOverLocalTls } from '../core/desktopTransport.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 import type { InstarConfig } from '../core/types.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { FLOOR_ACTION_LABELS } from '../core/AuthorizationRequestStore.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -286,6 +287,7 @@ export class PermissionActionAudit {
       fs.appendFileSync(this.file, JSON.stringify({ at: new Date(this.now()).toISOString(), ...row }) + '\n', { mode: 0o600 });
     } catch (err) {
       // @silent-fallback-ok — not silent: reported through DegradationReporter; the audit never fails the request
+      featureEvidence.record('mobilePairing.permissionActions', { kind: 'error', reason: 'audit row not written', context: { event: row.event } });
       report('MobilePermissions.audit', 'the phone permission audit row is written', 'the action still runs and its own records (mandate audit, feature events) are written', err);
     }
   }
@@ -726,6 +728,8 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     const ok = r.status >= 200 && r.status < 300;
     // A request's signed target is `new`; its one-way key ties the row to the request it made.
     const madeKey = rec(r.body).key;
+    // The action kind only: a target can name a secret path.
+    if (ok) featureEvidence.record('mobilePairing.permissionActions', { kind: 'fired', reason: event, context: { action: action.kind } });
     audit.record({ event: ok ? event : 'refused', deviceId: g.deviceId, personId: g.personId, action: action.kind, target: action.target, ...(action.kind === 'request-secret' && typeof madeKey === 'string' ? { requestKey: madeKey } : {}), ...(action.kind === 'set-feature' ? { value: action.value } : {}), status: r.status, ...(ok ? {} : { reason: errorCode(r.body) }) });
     res.status(r.status).json(r.body);
   };

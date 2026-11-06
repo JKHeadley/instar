@@ -625,4 +625,27 @@ if (warnings.length > 0) {
   console.log('');
 }
 
+// Class-closure evidence for the maturation ladder. A record, never a gate: the
+// lint runs report-only in CI, where no agent can hear it, so the machine that
+// pushes reports it. Runs only after the gate passed, and any failure is ignored.
+if (!process.env.VITEST && process.env.INSTAR_AUTH_TOKEN) {
+  try {
+    const { spawnSync } = await import('node:child_process');
+    const git = (args) => spawnSync('git', args, { cwd: ROOT, encoding: 'utf-8', timeout: 5000 }).stdout?.trim();
+    const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+    const base = git(['merge-base', 'origin/main', 'HEAD']);
+    if (base && branch && branch !== 'main' && branch !== 'HEAD') {
+      // The written bar counts fixes, so a feature that happens to touch a skill is not a miss.
+      const subjects = git(['log', '--format=%s', `${base}..HEAD`]) ?? '';
+      const isFix = /^fix\//.test(branch) || /^fix(\(|:)/m.test(subjects);
+      spawnSync(process.execPath, [path.join(ROOT, 'scripts/class-closure-lint.mjs'), '--report-evidence'], {
+        cwd: ROOT,
+        stdio: 'ignore',
+        timeout: 15000,
+        env: { ...process.env, BASE_SHA: base, HEAD_SHA: git(['rev-parse', 'HEAD']), CLASS_CLOSURE_PR_KEY: branch, CLASS_CLOSURE_IS_FIX: isFix ? '1' : '0' },
+      });
+    }
+  } catch { /* evidence must never stop a push */ }
+}
+
 // If we get here, gate passed — print nothing (let the test suite output take over)

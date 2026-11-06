@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-06T11:24:44.426Z",
+  "slug": "ladder-register-off-features",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 13,
+  "loc": 192,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/class-closure-lint.mjs",
+      "scripts/pre-push-gate.js",
+      "src/core/SessionManager.ts",
+      "src/data/feature-ladders.json",
+      "src/monitoring/MaturationLadder.ts",
+      "src/monitoring/MaturationLadderService.ts",
+      "src/monitoring/selfaction/governor.ts",
+      "src/server/AgentServer.ts",
+      "src/server/memorySessionGuard.ts",
+      "src/server/middleware.ts",
+      "src/server/mobilePermissionsRoutes.ts",
+      "src/users/MemoryInboundTracker.ts",
+      "src/users/MemoryPrivacy.ts"
+    ],
+    "addedLines": 178,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
