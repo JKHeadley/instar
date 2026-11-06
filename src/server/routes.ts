@@ -251,6 +251,7 @@ import { MEDIA_PATH_WAIT_MS } from '../core/AppMediaReplicator.js';
 import { isNeverServed } from './fileRoutes.js';
 import { isMobileMediaEnabled } from './mobilePairingRoutes.js';
 import { mountMobileOpsRoutes, machineKey } from './mobileOpsRoutes.js';
+import { mountOwnerPresenceRoutes, mountPhoneSessionBinding } from './mobileOwnerPresenceRoutes.js';
 import { joinTelegramHistory, withTelegramMediaForDevice } from './mobileConversationRoutes.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
 import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
@@ -1156,6 +1157,10 @@ export interface RouteContext {
   config: InstarConfig;
   /** Verifies a short-lived proof minted only after a successful dashboard PIN unlock. */
   verifyDashboardOperatorSession?: (token: string | undefined) => boolean;
+  /** The desktop routes' session check ONLY: a dashboard operator session or a phone desktop session (mobile-owner-presence-pin §2.1). */
+  verifyDesktopOperatorSession?: (token: string | undefined) => boolean;
+  /** Desktop-only sessions the owner's phone mints with Face ID. */
+  phoneDesktopSessions?: import('./PhoneDesktopSessionStore.js').PhoneDesktopSessionStore;
   telegramOrigin?: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime | null;
   /** Machine identity recovery authority/read surfaces. Absent keeps routes
    * honest (503) on single-machine or feature-dark installs. */
@@ -13634,6 +13639,12 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   // ── Native operator remote desktop (explicit dev-agent opt-in) ─────────────
+  // The desktop routes' session check (mobile-owner-presence-pin §2.1). A server without phone sessions
+  // (or a test context built before them) checks the dashboard operator session exactly as before.
+  const verifyDesktopSession = (token: string | undefined): boolean =>
+    (ctx.verifyDesktopOperatorSession ?? ctx.verifyDashboardOperatorSession)?.(token) === true;
+  // A phone desktop session is honoured only from the phone that minted it (mobile-owner-presence-pin §2.1).
+  if (ctx.phoneDesktopSessions) mountPhoneSessionBinding(router, ctx.phoneDesktopSessions);
   const desktopOperatorSession = (req: ExpressRequest): string =>
     typeof req.headers['x-instar-operator-session'] === 'string' ? req.headers['x-instar-operator-session'] : '';
   const desktopTransport = (req: ExpressRequest, res: ExpressResponse): boolean => {
@@ -13724,7 +13735,7 @@ export function createRoutes(ctx: RouteContext): Router {
     },
     frontActive: () => !!ctx.desktopMeshBroker,
     targetKey: id => ctx.desktopTargetSigningKey?.(id) ?? null,
-    verifySession: token => ctx.verifyDashboardOperatorSession?.(token) === true,
+    verifySession: token => verifyDesktopSession(token) === true,
     transportAllowed: req => req.secure || isLoopbackPeer(req.socket.remoteAddress),
   }));
   // ── Locked-screen access. Off everywhere by default. The enable refuses any
@@ -13764,6 +13775,7 @@ export function createRoutes(ctx: RouteContext): Router {
     res.setHeader('Cache-Control', 'no-store');
     if (!desktopTransport(req, res) || !desktopIntent(req, res)) return;
     const session = desktopOperatorSession(req);
+    // Locked-screen access stays a browser/PIN decision: a phone desktop session never switches it on (spec §2.1).
     if (!ctx.verifyDashboardOperatorSession?.(session)) { res.status(403).json({ error: 'Dashboard operator session required' }); return; }
     const patch = lockedPatch((req.body ?? {}) as Record<string, unknown>);
     if (!patch) { res.status(400).json({ error: 'No valid setting' }); return; }
@@ -13798,7 +13810,7 @@ export function createRoutes(ctx: RouteContext): Router {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
     if (!desktopTransport(req, res)) return;
-    if (!ctx.verifyDashboardOperatorSession?.(desktopOperatorSession(req))) {
+    if (!verifyDesktopSession(desktopOperatorSession(req))) {
       res.status(403).json({ error: 'Dashboard operator session required' }); return;
     }
     const target = ctx.directDesktopAccess.targetInfo();
@@ -13837,7 +13849,7 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!desktopTransport(req, res)) return;
     if (!desktopIntent(req, res)) return;
     const session = desktopOperatorSession(req);
-    if (!ctx.verifyDashboardOperatorSession?.(session)) {
+    if (!verifyDesktopSession(session)) {
       res.status(403).json({ error: 'Dashboard operator session required' }); return;
     }
     const topicId = Number(req.body?.topicId);
@@ -13910,7 +13922,7 @@ export function createRoutes(ctx: RouteContext): Router {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
     if (!desktopTransport(req, res)) return;
-    if (!ctx.verifyDashboardOperatorSession?.(desktopOperatorSession(req))) {
+    if (!verifyDesktopSession(desktopOperatorSession(req))) {
       res.status(403).json({ error: 'Dashboard operator session required' }); return;
     }
     if (ctx.desktopMeshBroker?.hasRequest(req.params.id)) {
@@ -13925,7 +13937,7 @@ export function createRoutes(ctx: RouteContext): Router {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
     if (!desktopTransport(req, res)) return;
-    if (!ctx.verifyDashboardOperatorSession?.(desktopOperatorSession(req))) {
+    if (!verifyDesktopSession(desktopOperatorSession(req))) {
       res.status(403).json({ error: 'Dashboard operator session required' }); return;
     }
     if (ctx.desktopMeshBroker?.hasRequest(req.params.id)) {
@@ -38584,6 +38596,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
       secrets: () => [ctx.config.authToken, ctx.config.dashboardPin],
     });
+    // Remote Desktop with Face ID and the PIN page (docs/specs/mobile-owner-presence-pin.md). Its sessions
+    // live in AgentServer, beside the dashboard's, so a PIN change ends both.
+    if (ctx.phoneDesktopSessions) {
+      mountOwnerPresenceRoutes(router, {
+        pairing: () => ctx.mobilePairingService ?? null,
+        config: () => ctx.config,
+        phoneSessions: ctx.phoneDesktopSessions,
+        // A PIN change since the last check must clear old sessions BEFORE this one is issued, not after.
+        syncPinVersion: () => { ctx.verifyDashboardOperatorSession?.(undefined); },
+        machineName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null)
+          ?? verifiedEntityName('self', os.hostname().replace(/\.local$/i, '').replace(/[-_]+/g, ' ').trim()),
+      });
+    }
     mountMobilePermissionsRoutes(router, {
       // A route's words can quote a run's goal, so the phone's answer gets the same removal as anything else it reads.
       sessionAction: async (action) => {

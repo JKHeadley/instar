@@ -49,7 +49,7 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
     expect(DEVICE_ALLOWLIST.some((r) => r.method !== 'GET' && r.re.test('/sessions/a/output'))).toBe(false);
     expect(DEVICE_ALLOWLIST.some((r) => r.method !== 'POST' && r.re.test('/sessions/a/input'))).toBe(false);
   });
-  it('the owner-only rules are exactly this named set (session screen + capacity, ops, plans and people, messages and insights, and permissions screens)', () => {
+  it('the owner-only rules are exactly this named set (session screen + capacity, ops, plans and people, messages and insights, permissions screens, and Remote Desktop with Face ID)', () => {
     // Each owner-only rule, named by one request it admits. A new owner-only route adds its line here.
     const named: Array<[string, string]> = [
       ['GET', '/sessions/a/output'],
@@ -101,6 +101,20 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/mobile/introducer'],
       ['POST', '/mobile/introductions/challenge'],
       ['POST', '/mobile/introductions'],
+      // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4).
+      ['POST', '/mobile/desktop-unlock/challenge'],
+      ['POST', '/mobile/desktop-unlock'],
+      ['POST', '/mobile/dashboard-pin/challenge'],
+      ['POST', '/mobile/dashboard-pin/reveal'],
+      // The desktop calls the app makes after a Face ID unlock (§2.2).
+      ['GET', '/desktop/targets'],
+      ['GET', '/desktop/setup'],
+      ['GET', '/desktop/setup/m_0123abcd'],
+      ['POST', '/desktop/setup/m_0123abcd'],
+      ['POST', '/desktop/requests'],
+      ['GET', '/desktop/requests/00000000-0000-4000-8000-000000000000'],
+      ['GET', '/desktop/requests/00000000-0000-4000-8000-000000000000/cursor'],
+      ['POST', '/desktop/requests/00000000-0000-4000-8000-000000000000/ticket'],
     ];
     const ownerOnly = DEVICE_ALLOWLIST.filter((r) => r.ownerOnly);
     for (const [method, p] of named) expect(ownerOnly.filter((r) => r.method === method && r.re.test(p)), `${method} ${p}`).toHaveLength(1);
