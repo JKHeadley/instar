@@ -1,0 +1,11 @@
+# Change any conversation's engine: plain overview (part 1 of 3)
+
+On the phone and the dashboard you can switch a session's engine (Claude Code, Codex and so on) and its model. Until now that worked only for Telegram conversations. A conversation in the Instar app or in Slack said "Engine and machine can be changed for Telegram conversations". Justin asked for every conversation to be able to switch engines and machines. This is the first of three parts: switching the engine and model for every conversation. The second gives every session a conversation, and the third lets app conversations move between machines.
+
+Three things kept switching Telegram-only. First, only Telegram sessions read the engine you chose when they started; app and Slack sessions always started on the agent's default, so a choice saved for them was never used. Second, when you switched, only a Telegram session was restarted; for the others, the parts that find the running session, restart it and tell you what changed all assumed a Telegram topic number. Third, the safety check on who may switch a conversation only knew about Telegram topics, so app and Slack switches from the dashboard or phone were refused.
+
+This part fixes all three. Every kind of conversation starts on its chosen engine and model. A switch restarts the session at once on the new engine, keeping the conversation, and says so in the conversation. An app conversation's restart rebuilds the session from the conversation's recent history, the same way a new message does, without inventing a message. The dashboard and the owner's phone can switch app and Slack conversations; a conversation that belongs to a support person is refused from the owner's side, so nobody else's conversation is changed silently. A switch is only reported as done when the restarted session actually shows up on the new model.
+
+Moving between machines stays Telegram-only until the third part. Doing it for app conversations first needs those conversations to have one clear owner machine, or two machines could answer the same conversation.
+
+What you need to decide: nothing.
