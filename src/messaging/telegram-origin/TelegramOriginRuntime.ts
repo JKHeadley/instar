@@ -168,7 +168,12 @@ export class TelegramOriginRuntime {
       onHold: ({ operationId, reason, producerKind, operationKind, destination }) => {
         if (producerKind === 'session' && operationKind === 'sendMessage' && reason !== 'lease-not-held' && reason !== 'destination-not-authorized' && reason !== 'original-operation-unresolved') {
           const uncertain = reason === 'transport-acceptance-unknown' || reason === 'response-without-correlated-receipt' || reason === 'partial-platform-receipt';
-          Promise.resolve(options.onSessionDeliveryHeld?.({ source: 'live', operationId, reason, chatId: destination.chatId,
+          // Only an originating session's first send owns a live notice.
+          // Recovery and holder-side mesh submissions can report the same old
+          // session record; their durable provenance is not a new conversation.
+          const source = this.service.isFirstSendRunning(operationId) && this.service.hasProducerContext()
+            && this.service.currentProducer().producerKind === 'session' ? 'live' : 'scan';
+          Promise.resolve(options.onSessionDeliveryHeld?.({ source, operationId, reason, chatId: destination.chatId,
             threadId: destination.topicId === null ? null : Number(destination.topicId), state: uncertain ? 'outcome-unknown' : 'held', uncertain }))
             .catch(error => console.warn('[telegram-origin] session delivery notice unavailable',
               error instanceof Error ? error.name : 'unknown-error'));

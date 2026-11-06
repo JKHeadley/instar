@@ -58,7 +58,7 @@ async function boot(onSessionDeliveryHeld?: import('../../src/messaging/telegram
   return { runtime, policy, network, send, lifecycle: lifecycle! };
 }
 describe('Telegram origin initialization and outage lifecycle', () => {
-  it('reconciles scanned session failures without sending another notice, while preserving live reporting', async () => {
+  it.each(['unknown-outcome', 'admission-unavailable'] as const)('reconciles historical %s without another notice, while preserving live reporting', async failure => {
     const events: Array<'live' | 'scan'> = [];
     let telegram!: TelegramAdapter;
     const sendNotice = vi.fn(async () => new Response('{}'));
@@ -70,8 +70,10 @@ describe('Telegram origin initialization and outage lifecycle', () => {
     const hubSend = vi.spyOn(telegram, 'sendToTopic').mockResolvedValue({ messageId: 1, topicId: 7848 });
     const token = await h.lifecycle.issue({ sessionId: 'failed-live-session', harnessId: 'codex-cli', projectDir: temporaryState() });
     h.network.mockRejectedValue(new Error('connection lost after dispatch'));
+    if (failure === 'admission-unavailable') vi.spyOn(h.runtime.store, 'admit').mockRejectedValue(new Error('fixture admission unavailable'));
     try {
-      await expect(h.runtime.service.runWithSessionToken(token, () => h.send())).rejects.toMatchObject({ outcome: 'outcome-unknown' });
+      await expect(h.runtime.service.runWithSessionToken(token, () => h.send())).rejects.toMatchObject(failure === 'unknown-outcome'
+        ? { outcome: 'outcome-unknown' } : { reason: 'execution-admission-unavailable' });
       await vi.waitFor(() => expect(sendNotice).toHaveBeenCalledOnce());
       expect(events).toEqual(['live']);
       hubSend.mockClear(); sendNotice.mockClear();
@@ -79,6 +81,11 @@ describe('Telegram origin initialization and outage lifecycle', () => {
       await vi.waitFor(() => expect(events).toContain('scan'));
       expect(sendNotice).not.toHaveBeenCalled(); expect(hubSend).not.toHaveBeenCalled();
       expect(h.network).toHaveBeenCalledOnce();
+      const attempted = JSON.parse(h.network.mock.calls[0][1].body as string);
+      // Admission failure retains the existing once-per-outage recording
+      // alert at the operator hub; it must not become a topic reply.
+      expect(Number(attempted.message_thread_id)).toBe(failure === 'unknown-outcome' ? 42 : 7848);
+      if (failure === 'admission-unavailable') expect(attempted.text).toContain(RECORDING_OUTAGE_TEXT);
     } finally { await telegram.stop(); }
   });
 

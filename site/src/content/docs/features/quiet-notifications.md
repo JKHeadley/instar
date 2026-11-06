@@ -14,6 +14,19 @@ Text and media you send from an authenticated mobile conversation still copy
 to Telegram. These copies preserve the waiting reply; they do not count as an
 agent answer. Automated media follows the same quiet policy as automated text.
 
+## Historical delivery records
+
+The background reply-delivery scan updates durable **Attention** records without
+posting interruption notices to old conversations or the Attention hub. This
+record-only behavior also applies to background recovery retries and reporting
+on a machine that holds the delivery credential. It remains quiet when the
+general notification gate is disabled or observing.
+
+An original send made by a live local session keeps its existing failure-notice
+path. Original replies keep their existing recovery and ambiguity safeguards.
+When Telegram confirms an original reply, its delivery record closes locally;
+the record does not claim that a separate explanation was sent.
+
 ## Read and choose
 
 Open the dashboard **Notifications** page to see unread notices. Select **Mark

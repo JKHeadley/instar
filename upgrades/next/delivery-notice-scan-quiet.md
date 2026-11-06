@@ -1,7 +1,7 @@
 # Keep historical reply-delivery scans quiet
 
 ## What Changed
-Historical undelivered-reply scans now reconcile durable Attention records without posting per-reply notices to old topics or the Attention hub. Live send failures retain their existing notice path. Accepted originals close their record without claiming that a separate explanation was delivered. Feedback fb-f348f8e4-15f.
+Historical undelivered-reply scans now reconcile durable Attention records without posting per-reply notices to old topics or the Attention hub. Original local session send failures retain their existing notice path. Background recovery retries and credential-holder reporting are also record-only. Accepted originals close their record without claiming that a separate explanation was delivered. Feedback fb-f348f8e4-15f.
 
 ## What to Tell Your User
 Old reply-delivery records no longer fill quiet topics with interruption notices. Their delivery status remains available in Attention.
