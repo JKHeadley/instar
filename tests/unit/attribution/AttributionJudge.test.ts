@@ -77,3 +77,40 @@ describe('chunkForJudge', () => {
     expect(chunks.join('').replace(/\n/g, '').length).toBe(MAX_INPUT_CHARS - 10 + 100 + MAX_INPUT_CHARS * 2);
   });
 });
+
+describe('the tier and the rules the 2026-11-06 replay forced', () => {
+  const options = (evaluate: ReturnType<typeof vi.fn>) => (evaluate.mock.calls[0] as unknown[])[1] as { model?: string };
+  const promptOf = (evaluate: ReturnType<typeof vi.fn>) => (evaluate.mock.calls[0] as unknown[])[0] as string;
+  const signals = { markerParsed: true, dateMatches: true, quoteInRecord: true, outcome: 'found', strength: 'verified' };
+
+  it('every model call is on the balanced tier: fast missed false credits and refused true quotes', async () => {
+    const extract = judgeReturning('{"claims":[]}');
+    await extract.judge.extract('Justin said so.', 'note');
+    expect(options(extract.evaluate).model).toBe('balanced');
+    const support = judgeReturning('{"ownWords":"own","faithful":true,"why":"x"}');
+    await support.judge.support('claim', 'record', signals);
+    expect(options(support.evaluate).model).toBe('balanced');
+  });
+
+  it('tells the judge what a verified record proves, and keeps scope out of ownWords', async () => {
+    const { judge, evaluate } = judgeReturning('{"ownWords":"own","faithful":true,"why":"x"}');
+    await judge.support('claim', 'record', signals);
+    const prompt = promptOf(evaluate);
+    expect(prompt).toContain('On a verified record, a plain message IS "own"');
+    expect(prompt).toContain('Any doubt about scope, permanence or wording belongs in faithful');
+    expect(prompt).toContain('claims no scope of its own');
+    expect(prompt).toContain('dropping a condition, a negation or a limit makes it not faithful');
+  });
+
+  it('a pasted block on a verified record can still be relayed', async () => {
+    const { judge, evaluate } = judgeReturning('{"ownWords":"relayed","faithful":true,"why":"a pasted review"}');
+    expect(await judge.support('claim', 'record', signals)).toMatchObject({ ownWords: 'relayed' });
+    expect(promptOf(evaluate)).toContain('a pasted review, a quoted reply or a forwarded block');
+  });
+
+  it('disowning an earlier credit is not a credit', async () => {
+    const { judge, evaluate } = judgeReturning('{"claims":[]}');
+    await judge.extract('An earlier note credited this to Justin; source unknown.', 'note');
+    expect(promptOf(evaluate)).toContain('saying that an earlier note credited someone while disowning that credit');
+  });
+});

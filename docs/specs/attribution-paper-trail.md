@@ -112,7 +112,7 @@ Rotation at 50k rows into gzipped archives that are kept, never deleted (Archivi
 
 ### 4. AttributionJudge (`src/core/attribution/AttributionJudge.ts`)
 
-`ctx.intelligence` on the fast tier, as a `gating` call, with text and log rows in an untrusted-data envelope. Provider failure uses the router's normal failover. No new purchase: it is the agent's own subscription.
+`ctx.intelligence` on the balanced tier (the fast tier failed the 2026-11-06 replay on both Codex and Claude), as a `gating` call, with text and log rows in an untrusted-data envelope. Provider failure uses the router's normal failover. No new purchase: it is the agent's own subscription.
 
 **Its own queue and budgets.** A dedicated `LlmQueue` instance, as the metered verifier in `AgentServer.ts` has, so it cannot be aborted by interactive callers or consume the shared background share. Budgets are per use and persisted to `<state>/attribution/budget.json`, so a restart does not reset them: write gate 200 a day, audit 40 a run, send record 300 a day. Echo sends 225 to 943 non-user messages a day, so the send record runs only when a cheap prefilter sees a known person's name or a credit word (said, told, rule, asked, agreed). That filter only saves money and it can miss. `/attribution/status` reports what it skipped and the misses the audit's sample finds, as an estimate. Over budget means `unchecked`, counted.
 

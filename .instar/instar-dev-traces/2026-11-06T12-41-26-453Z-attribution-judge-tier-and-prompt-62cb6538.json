@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "attribution-judge-tier-and-prompt",
+  "sessionId": "738adb65-513e-4ef1-87cc-95c3e41b0fd3",
+  "timestamp": "2026-11-06T12:41:26.453Z",
+  "artifactPath": "upgrades/side-effects/attribution-judge-tier-and-prompt.md",
+  "artifactSha256": "e3a9de7a3bb15c7df54edecb28b8d9035f55d96611ff5b31167a07735f00b2c1",
+  "coveredFiles": [
+    "docs/specs/attribution-paper-trail.md",
+    "src/core/attribution/AttributionJudge.ts",
+    "tests/unit/attribution/AttributionJudge.test.ts",
+    "upgrades/next/attribution-judge-tier-and-prompt.md",
+    "upgrades/side-effects/attribution-judge-tier-and-prompt.eli16.md",
+    "upgrades/side-effects/attribution-judge-tier-and-prompt.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A prompt and tier change on a feature dark for the fleet and record-only on Echo; a plain revert undoes it",
+  "eli16Path": "upgrades/side-effects/attribution-judge-tier-and-prompt.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/attribution-judge-tier-and-prompt.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "prompt-parser-contract-drift",
+    "closure": "gap",
+    "gapItem": "ACT-605",
+    "component": "AttributionJudge"
+  }
+}

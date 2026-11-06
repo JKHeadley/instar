@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-06T12:41:50.939Z",
+  "slug": "attribution-judge-tier-and-prompt",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/attribution/AttributionJudge.ts"
+    ],
+    "addedLines": 8,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "prompt-parser-contract-drift",
+    "closure": "gap",
+    "gapItem": "ACT-605",
+    "component": "AttributionJudge"
+  },
+  "verdict": "pass"
+}
