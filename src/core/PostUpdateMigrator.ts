@@ -1103,8 +1103,8 @@ export function MOBILE_SECRETS_WRITES_LINE(port: number): string {
 }
 export const MOBILE_SECRETS_WRITES_MARKER = 'POST /mobile/secrets/requests/<key>/cancel';
 /**
- * The session screen's controls (docs/specs/mobile-native-session-controls.md), one bullet after the phone
- * ask-and-cancel bullet. Sniff: `GET /mobile/sessions/controls`.
+ * The session screen's controls (docs/specs/mobile-native-session-controls.md), one bullet after the owner
+ * health reading bullet. Sniff: `GET /mobile/sessions/controls`.
  */
 export function MOBILE_SESSION_CONTROLS_LINE(port: number): string {
   return `- The app's session screen has the dashboard's controls: a menu reading \`GET /mobile/sessions/controls\` on http://localhost:${port} (machine, door, model, what each can do and why not), keys and Stop (\`POST /sessions/<name>/key\`), attaching a file (\`POST /sessions/<name>/attachments\`), History (\`GET /mobile/sessions/history\`), and sessions on other machines through the machine the phone reached. Switching door and model, moving to another machine, closing, starting a session and setting the default for new topics each take Face ID (\`POST /mobile/sessions/door/<topic>\`, \`/move/<topic>\`, \`/close/<id>\`, \`/new\`, \`/default\`, behind \`mobilePairing.permissionActions\`) and run the dashboard's own routes, so their rules and refusals stay. When the operator asks "why can't I change this from my phone?", read the same answer: the menu's \`door.reason\`, \`move.reason\` and \`actions.reason\`.`;
@@ -1264,9 +1264,9 @@ ${MOBILE_PERMISSIONS_LINE(port)}
 ${MOBILE_PROPOSALS_INSIDE_LINE(port)}
 ${MOBILE_SECRETS_LINE(port)}
 ${MOBILE_SECRETS_WRITES_LINE(port)}
-${MOBILE_SESSION_CONTROLS_LINE(port)}
 ${MOBILE_CONSOLE_PAGES_LINE(port)}
 ${MOBILE_HEALTH_ISSUES_LINE(port)}
+${MOBILE_SESSION_CONTROLS_LINE(port)}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }
@@ -9888,21 +9888,6 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added the phone ask and cancel line');
     }
 
-    // The session screen's controls (docs/specs/mobile-native-session-controls.md): one bullet after the
-    // phone ask-and-cancel bullet of an existing Mobile app routes block (a block added below already has it).
-    if (content.includes('Mobile app routes') && !content.includes(MOBILE_SESSION_CONTROLS_MARKER)) {
-      const lines = content.split('\n');
-      const at = lines.findIndex((l) => l.includes(MOBILE_SECRETS_WRITES_MARKER));
-      if (at >= 0) {
-        lines.splice(at + 1, 0, MOBILE_SESSION_CONTROLS_LINE(port));
-        content = lines.join('\n');
-      } else {
-        // A block without that bullet: append the line rather than skip it.
-        content = `${content.replace(/\n*$/, '\n')}${MOBILE_SESSION_CONTROLS_LINE(port)}\n`;
-      }
-      patched = true;
-      result.upgraded.push('CLAUDE.md: added the session screen controls line');
-    }
 
     // Native Proposals / How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): one bullet
     // after the permissions bullet of an existing Mobile app routes block (a block added below already has it).
@@ -9951,6 +9936,22 @@ setTimeout(() => process.exit(0), 2000);
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added the owner health reading line');
+    }
+
+    // The session screen's controls (docs/specs/mobile-native-session-controls.md): one bullet after the
+    // owner health reading bullet of an existing Mobile app routes block (a block added below already has it).
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_SESSION_CONTROLS_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_HEALTH_ISSUES_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_SESSION_CONTROLS_LINE(port));
+        content = lines.join('\n');
+      } else {
+        // A block without that bullet: append the line rather than skip it.
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_SESSION_CONTROLS_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the session screen controls line');
     }
 
     // Mobile app routes (docs/specs/mobile-multi-route.md) — Agent Awareness + Migration Parity.

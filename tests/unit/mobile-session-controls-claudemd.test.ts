@@ -2,22 +2,22 @@
 /**
  * Agent Awareness + Migration Parity for the session screen's controls
  * (docs/specs/mobile-native-session-controls.md): new agents get the bullet in the Mobile app routes
- * block; existing agents get it inserted after the phone ask-and-cancel bullet, once.
+ * block; existing agents get it inserted after the phone health reading bullet, once.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
-import { MOBILE_SECRETS_WRITES_LINE, MOBILE_SESSION_CONTROLS_LINE, MOBILE_SESSION_CONTROLS_MARKER, MOBILE_ROUTES_CLAUDEMD_SECTION, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { MOBILE_HEALTH_ISSUES_LINE, MOBILE_SESSION_CONTROLS_LINE, MOBILE_SESSION_CONTROLS_MARKER, MOBILE_ROUTES_CLAUDEMD_SECTION, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const count = (s: string) => s.split(MOBILE_SESSION_CONTROLS_MARKER).length - 1;
 
 describe('session controls awareness', () => {
-  it('the Mobile app routes block carries the bullet right after the ask-and-cancel bullet, with the injected port', () => {
+  it('the Mobile app routes block carries the bullet right after the health reading bullet, with the injected port', () => {
     const lines = MOBILE_ROUTES_CLAUDEMD_SECTION(9999).split('\n');
-    expect(lines[lines.indexOf(MOBILE_SECRETS_WRITES_LINE(9999)) + 1]).toBe(MOBILE_SESSION_CONTROLS_LINE(9999));
+    expect(lines[lines.indexOf(MOBILE_HEALTH_ISSUES_LINE(9999)) + 1]).toBe(MOBILE_SESSION_CONTROLS_LINE(9999));
     expect(MOBILE_SESSION_CONTROLS_LINE(9999)).toContain('localhost:9999');
     expect(MOBILE_SESSION_CONTROLS_LINE(9999)).not.toContain('4042');
   });
@@ -37,7 +37,7 @@ describe('migrateClaudeMd inserts the bullet into an existing Mobile app routes 
   });
   afterEach(() => { SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/mobile-session-controls-claudemd.test.ts' }); });
 
-  it('an existing block without the bullet gets it after the ask-and-cancel bullet, once across two runs', () => {
+  it('an existing block without the bullet gets it after the health reading bullet, once across two runs', () => {
     const old = MOBILE_ROUTES_CLAUDEMD_SECTION(4042).split('\n').filter((l) => l !== MOBILE_SESSION_CONTROLS_LINE(4042)).join('\n');
     fs.writeFileSync(claudeMdPath, `# CLAUDE.md\n${old}`);
     expect(count(fs.readFileSync(claudeMdPath, 'utf-8'))).toBe(0);
@@ -45,7 +45,7 @@ describe('migrateClaudeMd inserts the bullet into an existing Mobile app routes 
     const once = fs.readFileSync(claudeMdPath, 'utf-8');
     expect(count(once)).toBe(1);
     const lines = once.split('\n');
-    expect(lines[lines.indexOf(MOBILE_SECRETS_WRITES_LINE(4042)) + 1]).toBe(MOBILE_SESSION_CONTROLS_LINE(4042));
+    expect(lines[lines.indexOf(MOBILE_HEALTH_ISSUES_LINE(4042)) + 1]).toBe(MOBILE_SESSION_CONTROLS_LINE(4042));
     new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0', port: 4042 } as any).migrate();
     expect(count(fs.readFileSync(claudeMdPath, 'utf-8'))).toBe(1);
   });
