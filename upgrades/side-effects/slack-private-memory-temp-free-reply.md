@@ -1,6 +1,6 @@
 # Side-effects: Slack replies inside private memory
 
-Tier 1, SMALL: a reversible serialization correction plus migration hash and regression tests. One independent review round requested; commit/gate attempts recorded in the build summary. Live owner recovery uncovered this after PRs #2744 and #2752: Bash 3.2's here-string cannot create its temporary file under the existing privacy sandbox, so the agent computes an answer but cannot relay it.
+Tier 1, SMALL: a reversible serialization correction plus migration hash and regression tests. Independent review concurred; a second targeted review covers the verification fixture repair. Commit/gate attempts are recorded in the build summary. Live owner recovery uncovered this after PRs #2744 and #2752: Bash 3.2's here-string cannot create its temporary file under the existing privacy sandbox, so the agent computes an answer but cannot relay it.
 
 ## Decision-point inventory
 No judgment or blocking authority added or changed. Slack's session binding, authorization, privacy boundary, outbound review, delivery id and retry outcomes pass through unchanged.
@@ -43,3 +43,9 @@ Real macOS sandbox regression: both channel and bound replies fail on the old sc
 
 ## Second-pass review
 Reviewer relay_review independently read the final diff, exact historical fixture/hash, migration wiring, tests, and this artifact: concur. No blocking correctness, privacy, or rollout concerns. Real Slack and full remote verification remain acceptance gates.
+
+
+## Full-verification fixture repair
+The first official full run executed 59,193 unit tests and found one failure in lint-blocking-decisions-declared.test.ts. Its mutation probe wrote zz-undeclared-test.py into the real source tree, then SourceTreeGuard refused to remove it; isolation retry saw the dirty file and failed its initial clean assertion. This blocks a reliable full verdict. The test now checks the actual tree read-only, then copies the real lint, manifest and template population to a temporary fixture for the adversarial probe. SafeFsExecutor removes that fixture; no guard permission changes or source-tree cleanup exception is added. This also removes the parallel-test race in which another lint could observe the injected file. The Slack runtime bytes and completed live acceptance are unchanged.
+
+Independent reviewer relay_review concurs with the fixture repair: the copied lint uses its own fixture root, the exact real manifest/population are copied, no source marker or git metadata is copied, and the positive/negative lint contract remains intact. Full verification must restart from a clean checkout.
