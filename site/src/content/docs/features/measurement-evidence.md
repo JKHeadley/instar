@@ -9,6 +9,14 @@ Measurement explains what an effort intends to change and what evidence supports
 
 The independent inventory view compares existing feature, decision, job, effort and capability registries with their declared measurements. `MeasurementCoverage` owns this read projection, rather than creating another registry. A missing link, invalid contract, stale evidence, ambiguous subject or unavailable inventory stays visible. Source completeness means the inventories answered; it does not mean every useful outcome has been measured.
 
+Work-item counts include initiative records and records from `CommitmentTracker`.
+Several records can describe the same work; this is not a count of unique
+improvement efforts. Commitment identifiers retain their source origin and
+status, without sharing conversation excerpts. These records currently have no
+measurement-subject link and cannot borrow an initiative's proof. Adding a source
+changes the census denominator; it is not itself evidence of improvement or
+regression.
+
 `MeasurementSubject` binds generic measurements to their declared subject and origin. Generic effort and job plans use the existing initiative owner. A capability uses its existing inventory identity; decision-quality plans use the existing canonical decision grades. Identical names on different subjects do not make their evidence interchangeable. Parent links come from existing initiative, accounting and ladder composition relationships. A parent's good result cannot supply missing component evidence.
 
 ## Read an outcome
