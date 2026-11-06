@@ -1,8 +1,22 @@
 import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
 import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
+const NEW_JOB_REPORT_LINE = '2. **Need periodic checks?** Create a job in `.instar/jobs.json`.';
+const NEW_JOB_REPORT_ASK = ' If it reports to the user, ask whether they want to see its reports; otherwise they stay quiet.';
+const SCHEDULER_REPORT_CHOICE_HEADING = "## Who sees this job's reports";
+/** Kept identical to the section in skills/instar-scheduler/SKILL.md (pinned by a unit test). */
+const SCHEDULER_REPORT_CHOICE_SECTION = `${SCHEDULER_REPORT_CHOICE_HEADING}
+
+Job reports are quiet by default: they go to the dashboard Notifications feed, not to chat. Adding a job needs no permission, and this question is only about who sees its reports: when you create a job that reports to the user, ask them whether they want to see them. Do not hold up the job for the answer; no answer means quiet.
+
+On a yes, record it with \`POST /notifications/jobs/<slug>/push\`, sending \`{"enabled": true, "confirmedBy": "operator-conversational-confirm", "topicId": <topic>, "confirmingMessageId": "<their message id>"}\`. Find the id with \`GET /telegram/topics/<topic>/messages\`; it must be their message from the last 15 minutes. Reports the job sends to that topic then arrive there, so make sure the job's prompt names it. Everything else from the job, including the scheduler's own summary and failure notices, arrives in the Attention topic. The user can also tick the job on the dashboard Notifications page, and all its reports then arrive in the Attention topic. Never turn this on without their yes: their word is the permission, and the server only checks that they spoke recently. While Quiet by Default is only observing, nothing changes yet: every report still arrives where it was addressed. Other jobs stay quiet. \`GET /notifications/selectivity\` lists each job's choice, and \`decided: false\` means nobody has asked yet.
+
+Check that the job really sends a report. A job on the default \`on-alert\` notify mode says nothing after a good run unless its own prompt sends one.
+`;
+/** The per-job choice, shared by new installs and the migration that patches an existing section. */
+export const QUIET_JOB_CHOICE_SENTENCE = 'One job at a time: when a job I create reports to the user, I ask whether they want to see its reports, and on a yes I use POST /notifications/jobs/:slug/push with the same proof. No answer means quiet.';
 export const QUIET_NOTIFICATIONS_CLAUDEMD_SECTION = `
 ### Quiet by Default notifications
-Automated notices belong in the dashboard Notifications feed and internal records. Conversational replies and notices serving a specific inbound message keep flowing. Check GET /notifications/selectivity and GET /notifications/quiet?scope=pool when the user asks what stayed quiet. Category push is an explicit operator choice: use POST /notifications/categories/:id/push with confirmedBy and a recent operator-bound confirmingMessageId, or the PIN-confirmed dashboard toggle. Never grant yourself push and never label a scheduled report as a reply. Keep overseer findings and repairs in handoffs; a Bugs-hub post must name an unresolved impact and the one action only the operator can provide. Own bounded checks and recovery before escalating. Other agents start dark or in observation mode and enforce only at the operator flip; Echo follows the current directive.
+Automated notices belong in the dashboard Notifications feed and internal records. Conversational replies and notices serving a specific inbound message keep flowing. Check GET /notifications/selectivity and GET /notifications/quiet?scope=pool when the user asks what stayed quiet. Category push is an explicit operator choice: use POST /notifications/categories/:id/push with confirmedBy and a recent operator-bound confirmingMessageId, or the PIN-confirmed dashboard toggle. ${QUIET_JOB_CHOICE_SENTENCE} Never grant yourself push and never label a scheduled report as a reply. Keep overseer findings and repairs in handoffs; a Bugs-hub post must name an unresolved impact and the one action only the operator can provide. Own bounded checks and recovery before escalating. Other agents start dark or in observation mode and enforce only at the operator flip; Echo follows the current directive.
 `;
 import { signinProfileGuardHook } from './SigninProfileGuard.js';
 import { ORIGIN_LOCAL_GITIGNORE } from '../messaging/telegram-origin/OriginLocalPaths.js';
@@ -2637,6 +2651,7 @@ export class PostUpdateMigrator {
     this.migrateLegacyDefaultJobs(result);
     this.autoMigrateLegacyJobsJson(result);
     this.migrateSkillPortHardcoding(result);
+    this.migrateSchedulerSkillReportChoice(result);
     this.migrateBuildSkillMethodology(result);
     this.migrateSubscriptionSigninByHand(result);
     this.migrateSubscriptionSigninAgentRun(result);
@@ -5872,6 +5887,28 @@ export class PostUpdateMigrator {
    * Scoped: only touches skills from the installBuiltinSkills set — custom
    * skills are never modified.
    */
+  /**
+   * installBuiltinSkills never overwrites, so an installed instar-scheduler
+   * skill would never learn about the per-job report choice. Inserts one
+   * section; every other line of the file is left as the agent has it.
+   */
+  private migrateSchedulerSkillReportChoice(result: MigrationResult): void {
+    const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'instar-scheduler', 'SKILL.md');
+    if (!fs.existsSync(skillFile)) return;
+    try {
+      const original = fs.readFileSync(skillFile, 'utf8');
+      if (original.includes(SCHEDULER_REPORT_CHOICE_HEADING)) return;
+      const anchor = '## Default Jobs (Ships with Instar)';
+      const updated = original.includes(anchor)
+        ? original.replace(anchor, `${SCHEDULER_REPORT_CHOICE_SECTION}\n---\n\n${anchor}`)
+        : `${original.trimEnd()}\n\n${SCHEDULER_REPORT_CHOICE_SECTION}`;
+      fs.writeFileSync(skillFile, updated);
+      result.upgraded.push('skills/instar-scheduler/SKILL.md (per-job report choice)');
+    } catch (err) {
+      result.errors.push(`skills/instar-scheduler/SKILL.md report choice migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateSkillPortHardcoding(result: MigrationResult): void {
     const defaultSkills = [
       'evolve', 'learn', 'gaps', 'commit-action', 'feedback',
@@ -8734,6 +8771,18 @@ setTimeout(() => process.exit(0), 2000);
       content += recoveryAwareness(this.config.port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added server-down recovery setup and proof awareness');
+    }
+    if (!content.includes('/notifications/jobs/:slug/push')) {
+      const anchor = 'or the PIN-confirmed dashboard toggle.';
+      if (content.includes(anchor)) content = content.replace(anchor, `${anchor} ${QUIET_JOB_CHOICE_SENTENCE}`);
+      else content = content.replace('### Quiet by Default notifications\n', `### Quiet by Default notifications\n${QUIET_JOB_CHOICE_SENTENCE}\n`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the per-job report choice');
+    }
+    if (content.includes(NEW_JOB_REPORT_LINE) && !content.includes(NEW_JOB_REPORT_ASK)) {
+      content = content.replace(NEW_JOB_REPORT_LINE, NEW_JOB_REPORT_LINE + NEW_JOB_REPORT_ASK);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: new jobs offer the report choice');
     }
     const port = this.config.port;
     const oldThreadlineStatus = 'This capability is **installed and ready** but **not yet enabled**. I will only connect when you say so.';

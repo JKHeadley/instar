@@ -1,13 +1,13 @@
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { observeRecoveryPeer } from '../recovery/RecoveryPoolHealth.js';
-import { hasPromotedUpgradeAnnouncement, LEGACY_NOTIFICATION_GATES } from '../messaging/notificationCategories.js';
+import { hasPromotedUpgradeAnnouncement, LEGACY_NOTIFICATION_GATES, scheduledJobSlug } from '../messaging/notificationCategories.js';
 import { readPeerNotifications } from '../server/notificationPoolRead.js';
 import { NotificationPreferences } from '../messaging/NotificationPreferences.js';
 import { notificationStamper, responseNotificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/commands/server.ts');
 const stampReapNotification = notificationStamper('src/commands/server.ts', 'reap-notifier');
 const stampResponse = responseNotificationStamper('src/commands/server.ts');
-import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, notificationContext } from '../messaging/NotificationSelectivityGate.js';
+import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, verifiedJobEnvelope, notificationContext } from '../messaging/NotificationSelectivityGate.js';
 import type { SelectivityConfig } from '../messaging/NotificationSelectivityGate.js';
 /**
  * Governed by: Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS (docs/STANDARDS-REGISTRY.md) —
@@ -85,6 +85,7 @@ import { chunkLiteralForTmux, buildLiteralSendArgs } from '../core/tmuxLiteralSe
 import { parseStandardsRegistry } from '../core/StandardsRegistryParser.js';
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath, detectClaudePath, readConfiguredAnthropicKey } from '../core/Config.js';
 import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
+import { guardProcessStdio } from '../core/pipeErrorGuard.js';
 import { planInboundLossNotices } from '../core/inboundLossRouting.js';
 import { heartbeatFreshEnoughToRerecord } from '../core/MachineHeartbeat.js';
 import { slackRespawnBootstrapIds } from '../core/slackRefreshBinding.js';
@@ -4642,6 +4643,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Set up file logging for observability
     setupServerLog(config.stateDir);
+    guardProcessStdio();
 
     // ── Fork-bomb prevention P2 — single-instance lock (forkbomb-prevention-simple §P2) ──
     // Refuse to start a DUPLICATE server instance of this agent on this host
@@ -7128,13 +7130,19 @@ export async function startServer(options: StartOptions): Promise<void> {
       root: config.stateDir, self: () => _meshSelfId ?? 'local',
       peers: () => (_resolvePeerUrls?.() ?? []).map(peer => peer.machineId),
       read: category => liveConfig.get<boolean>(`notifications.selectivity.push.categories.${category}`, false),
-      onMassChange: async () => { await telegram?.createAttentionItem({ id: 'notification-preference-churn', title: 'Notification preferences changed for several categories', summary: 'Review the current choices in the dashboard Notifications page.', category: 'system', priority: 'NORMAL', sourceContext: 'selectivity-preference-churn' }); },
+      onMassChange: async () => { await telegram?.createAttentionItem({ id: 'notification-preference-churn', title: 'Notification preferences changed several times', summary: 'Review the current choices in the dashboard Notifications page.', category: 'system', priority: 'NORMAL', sourceContext: 'selectivity-preference-churn' }); },
       apply: (category, enabled) => {
         liveConfig.set(`notifications.selectivity.push.categories.${category}`, enabled);
         const legacy = LEGACY_NOTIFICATION_GATES[category as keyof typeof LEGACY_NOTIFICATION_GATES];
         if (legacy) liveConfig.set(legacy, enabled);
         if (category === 'selectivity-digest') liveConfig.set('notifications.selectivity.digest.enabled', enabled);
         if (liveConfig.get(`notifications.selectivity.push.categories.${category}`, !enabled) !== enabled) throw new Error('Notification preference was not saved');
+      },
+      readJob: slug => liveConfig.get<boolean>(`notifications.selectivity.push.jobs.${slug}`, false),
+      applyJob: (slug, enabled, topicId) => {
+        liveConfig.set(`notifications.selectivity.push.jobs.${slug}`, enabled);
+        liveConfig.set(`notifications.selectivity.push.jobTopics.${slug}`, enabled ? topicId ?? null : null);
+        if (liveConfig.get(`notifications.selectivity.push.jobs.${slug}`, !enabled) !== enabled) throw new Error('Notification preference was not saved');
       },
       send: async (peer, intent) => {
         const result = await _identityMeshSend?.(peer, { type: 'notification-preference', intent }, 2000);
@@ -7146,59 +7154,25 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { bootTelegramOrigin } = await import('../messaging/telegram-origin/TelegramOriginBoot.js')
         .catch(error => { releaseOriginLeaseRenewal(); throw error; });
       telegramOriginBoot = await bootTelegramOrigin({ config, notificationGate: selectivityGate, token: typeof originBotToken === 'string' && originBotToken ? originBotToken : undefined,
-        onRecoveredMessage: entry => {
-          telegram?.logRecoveredOriginMessage(entry);
-          // A late acceptance is reported by the durable exception scan. Only
-          // an on-time acceptance can close the held Attention item here.
-          if (entry.acceptedAt - entry.preparedAt >= 300_000) return;
-          const attentionId = `telegram-origin-held-reply:${entry.operationId}`;
-          if (telegram?.clearAttentionCondition({ id: attentionId }, `Telegram accepted recovered message ${entry.messageId}.`).closed === 0) {
-            void telegram?.updateAttentionStatus(attentionId, 'DONE', { silent: true,
-              closedBy: 'cause-cleared', resolution: `Telegram accepted recovered message ${entry.messageId}.` });
-          }
+        onRecoveredMessage: async entry => {
+          if (!telegram) return;
+          const { recordRecoveredSessionDelivery } = await import('../messaging/telegram-origin/SessionDeliveryReporter.js');
+          recordRecoveredSessionDelivery(entry, telegram);
         },
         onSessionDeliveryHeld: async entry => {
           if (!telegram || !entry.chatId) return;
-          const { sessionDeliveryNotice, lateRecoveredReplyNotice } = await import('../messaging/telegram-origin/SessionDeliveryNotice.js');
+          const { reportSessionDelivery } = await import('../messaging/telegram-origin/SessionDeliveryReporter.js');
           const topicId = entry.chatId === String((originTelegramConfig.config as { issuesChatId?: unknown }).issuesChatId)
             ? 10_000_000_000 + (entry.threadId ?? 1) : entry.threadId;
-          const late = entry.state === 'accepted' && entry.preparedAt !== undefined && entry.acceptedAt !== null && entry.acceptedAt !== undefined
-            ? lateRecoveredReplyNotice(entry.preparedAt, entry.acceptedAt, entry.outOfOrder) : null;
-          const attentionId = `telegram-origin-held-reply:${entry.operationId}`;
-          const previous = telegram.getAttentionItem(attentionId);
-          if (entry.state === 'accepted' && !late) {
-            if (previous && previous.status !== 'DONE') await telegram.updateAttentionStatus(attentionId, 'DONE', { silent: true,
-              closedBy: 'cause-cleared', resolution: 'Telegram accepted the original reply.' });
-            return;
-          }
-          const copy = entry.state === 'accepted'
-            ? { summary: 'An earlier reply was confirmed after a delay and may be out of order with newer answers.', topicText: late! }
-            : sessionDeliveryNotice(entry.state ?? 'held', entry.uncertain);
-          if (entry.state === 'accepted' && previous?.status === 'DONE' && previous.summary === copy.summary) return;
-          await telegram.upsertAttentionItem({ id: attentionId,
-            category: 'telegram-origin', priority: 'HIGH', title: 'A reply needs delivery attention',
-            sourceContext: 'telegram-origin-session-hold', summary: copy.summary,
-            description: `Original reply to ${topicRef(topicId)}; delivery state ${entry.state ?? 'held'}.` });
-          if (topicId === null) return;
-          // A stable logical send id lets the origin outbox answer a repeated
-          // notice with its original receipt, including after a server restart.
-          // A held/uncertain notice is retried by the next durable scan.
-          if (!telegramOriginBoot) throw new Error('origin notice sender not ready');
-          const { postOriginAutomationReply } = await import('../messaging/telegram-origin/OriginAutomationReply.js');
-          const noticeState = entry.state === 'accepted' ? 'late'
-            : entry.uncertain || entry.state === 'outcome-unknown' ? 'uncertain'
-              : entry.state === 'expired' || entry.state === 'known-failed' ? 'failed' : 'delayed';
-          const response = await postOriginAutomationReply({ service: telegramOriginBoot.runtime.service,
-            port: config.port, authToken: config.authToken ?? '', producerId: 'reply-delivery-notice',
-            topicId, body: { text: copy.topicText, metadata: { messageKind: 'health-alert' } },
-            logicalSendId: `reply-delivery-notice:${entry.operationId}:${noticeState}` });
-          if (response.status !== 200) throw new Error(`origin notice not confirmed: HTTP ${response.status}`);
-          if (entry.state === 'accepted') {
-            if (telegram.clearAttentionCondition({ id: attentionId }, 'The late reply and its explanation reached the conversation.').closed === 0) {
-              await telegram.updateAttentionStatus(attentionId, 'DONE', { silent: true,
-                closedBy: 'cause-cleared', resolution: 'The late reply and its explanation reached the conversation.' });
-            }
-          }
+          await reportSessionDelivery(entry, topicId, { telegram,
+            sendNotice: async (destination, text, logicalSendId) => {
+              if (!telegramOriginBoot) throw new Error('origin notice sender not ready');
+              const { postOriginAutomationReply } = await import('../messaging/telegram-origin/OriginAutomationReply.js');
+              return postOriginAutomationReply({ service: telegramOriginBoot.runtime.service,
+                port: config.port, authToken: config.authToken ?? '', producerId: 'reply-delivery-notice',
+                topicId: destination, body: { text, metadata: { messageKind: 'health-alert' } }, logicalSendId });
+            },
+          });
         },
         noticeOwner: typeof originBotToken === 'string' && !!originBotToken && !lifelineOwnsTelegramPoll(config.stateDir, originBotToken) && options.telegram !== false,
         holdsLease: () => coordinator.holdsLease(),
@@ -8862,6 +8836,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         telegramOriginBoot.runtime.service.notificationGate = selectivityGate;
         telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
         telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
+        telegramOriginBoot.runtime.service.notificationJobSlug = id => id ? scheduledJobSlug(state.getSession(id)) : undefined;
         telegramOriginBoot.runtime.service.notificationPromotedUpgradeSession = id => hasPromotedUpgradeAnnouncement(config.stateDir, id ? state.getSession(id)?.jobSlug : undefined);
       }
       armHolderForwardWait(telegram);
@@ -8998,6 +8973,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         telegramOriginBoot.runtime.service.notificationGate = selectivityGate;
         telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
         telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
+        telegramOriginBoot.runtime.service.notificationJobSlug = id => id ? scheduledJobSlug(state.getSession(id)) : undefined;
         telegramOriginBoot.runtime.service.notificationPromotedUpgradeSession = id => hasPromotedUpgradeAnnouncement(config.stateDir, id ? state.getSession(id)?.jobSlug : undefined);
       }
       armHolderForwardWait(telegram);
@@ -12993,7 +12969,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     sessionManager.on('injectionReplyDetected', (info: { topicId: number; sessionName: string; text: string; injectedAt: number }) => {
       if (!telegram) return;
       console.log(`[injectionReplyDetected] Surfacing Gemini final pane reply from "${info.sessionName}" to topic ${info.topicId}`);
-      withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(info.topicId, info.text, { envelope: state.findSessionByTmux(info.sessionName)?.jobSlug ? { origin: 'automated', category: 'job-status', sourceContext: 'pane-job-result' } : verifiedReplyEnvelope('observed-pane-reply') })).catch((err: Error) => {
+      const paneSession = state.findSessionByTmux(info.sessionName);
+      const paneJobSlug = scheduledJobSlug(paneSession);
+      withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(info.topicId, info.text, { envelope: paneJobSlug ? verifiedJobEnvelope(paneJobSlug) : paneSession?.jobSlug ? { origin: 'automated', category: 'job-status', sourceContext: 'pane-job-result' } : verifiedReplyEnvelope('observed-pane-reply') })).catch((err: Error) => {
         console.error(`[injectionReplyDetected] Failed to send reply for topic ${info.topicId}:`, err.message);
       });
     });

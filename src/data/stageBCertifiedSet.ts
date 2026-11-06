@@ -24,6 +24,10 @@ export const STAGE_B_CERTIFIED_SET = {
   ],
   "excluded": [
     {
+      "file": "src/core/pipeErrorGuard.ts",
+      "reason": "Stream error listener reached through the excluded ClaudeCliIntelligenceProvider; it only stops a closed pipe becoming an uncaught exception, and has no part in the certified Codex Stage-B delivery path."
+    },
+    {
       "file": "src/core/claudeChildAuth.ts",
       "reason": "Claude-only helper that passes the sign-in key to claude children; a Codex launch never reads it, so it cannot change the behaviour the Stage-B evidence certifies."
     },

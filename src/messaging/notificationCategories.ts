@@ -26,6 +26,25 @@ export function isNotificationCategory(value: unknown): value is NotificationCat
   return notificationCategories.some(([id]) => id === value);
 }
 
+/** The job slug rule, minus names that would address an object's own shape. */
+export function isNotificationJobSlug(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
+}
+/** The scheduler's own mark: a jobSlug alone can be supplied by anyone who spawns a session. */
+export function scheduledJobSlug(session: { jobSlug?: string; triggeredBy?: string } | null | undefined): string | undefined {
+  return session?.jobSlug && session.triggeredBy?.startsWith('scheduler:') ? session.jobSlug : undefined;
+}
+/** Advice carried by job creation. It informs the agent; the choice stays the operator's. */
+export function jobReportChoice(slug: string, state: { enforcing: boolean; categoryPush: boolean }) {
+  const route = `POST /notifications/jobs/${slug}/push`;
+  const ask = `If this job reports to the user, ask whether they want to see its reports. On a yes, send ${route} with enabled true, confirmedBy "operator-conversational-confirm", the topicId, and the id of their message (GET /telegram/topics/TOPIC/messages) as confirmingMessageId. No answer means quiet. Never grant this yourself.`;
+  if (state.categoryPush) return { default: 'quiet' as const, effective: 'pushed-by-category' as const, route,
+    agentAction: `All scheduled job reports are currently pushed, so "${slug}" will reach the user. Tell them so, and offer to change that if they want only some jobs.` };
+  if (!state.enforcing) return { default: 'quiet' as const, effective: 'delivered-while-observing' as const, route,
+    agentAction: `Quiet by Default is only observing here, so reports from "${slug}" still reach the user for now. ${ask}` };
+  return { default: 'quiet' as const, effective: 'quiet' as const, route, agentAction: `Reports from "${slug}" stay in the Notifications feed. ${ask}` };
+}
+
 /** Existing default-false delivery switches remain the same operator choice. */
 export const LEGACY_NOTIFICATION_GATES = {
   'sentinel-escalation': 'monitoring.sentinelTelegramEscalation',

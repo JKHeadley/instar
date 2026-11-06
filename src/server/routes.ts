@@ -7,6 +7,7 @@ import { categoryForProducer } from '../messaging/notificationCategories.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/routes.ts');
 import { mountNotificationRoutes } from './notificationRoutes.js';
+import { jobReportChoice } from '../messaging/notificationCategories.js';
 import { verifiedReplyEnvelope, requireTelegramDelivery } from '../messaging/NotificationSelectivityGate.js';
 import { JobPortableSync } from '../core/JobPortableSync.js';
 import { validMaturationOutcomeDetail } from '../monitoring/MaturationOutcome.js';
@@ -18828,6 +18829,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // Bump manifestVersion before write.
       const nextVersion = (typeof manifest.manifestVersion === 'number' ? manifest.manifestVersion : 0) + 1;
       const finalManifest = { ...manifest, slug, manifestVersion: nextVersion };
+      const created = !fs.existsSync(manifestPath);
 
       const { atomicSaveAgentMdJob } = await import('../scheduler/AgentMdAtomicSave.js');
       const result = atomicSaveAgentMdJob({
@@ -18841,7 +18843,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
 
-      res.json({ ok: true, manifestVersion: nextVersion });
+      res.json({ ok: true, manifestVersion: nextVersion, ...(created && ctx.telegram?.selectivity ? { reportChoice: jobReportChoice(slug, { enforcing: ctx.telegram.selectivity.isEnforcing(), categoryPush: ctx.telegram.selectivity.categoryPushEnabled('job-status') }) } : {}) });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }

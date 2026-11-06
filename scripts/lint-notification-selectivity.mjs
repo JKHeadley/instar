@@ -34,7 +34,7 @@ function scan(dir) {
         const method = ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : '';
         if (node.expression.getText(ast) === 'withNotificationEnvelope' && !trustedComposition.has(rel)) {
           const stamp = node.arguments[0];
-          if (!stamp || !ts.isCallExpression(stamp) || !(boundStampers.has(stamp.expression.getText(ast)) || (admittedMobileMirror(node) && stamp.expression.getText(ast) === 'verifiedInboundMirrorEnvelope'))) fail(node, 'producer envelopes must use their module-bound stamper; category/reply borrowing is forbidden');
+          if (!stamp || !ts.isCallExpression(stamp) || !(boundStampers.has(stamp.expression.getText(ast)) || (admittedMobileMirror(node) && stamp.expression.getText(ast) === 'verifiedInboundMirrorEnvelope') || (rel === 'src/scheduler/JobScheduler.ts' && stamp.expression.getText(ast) === 'verifiedJobEnvelope'))) fail(node, 'producer envelopes must use their module-bound stamper; category/reply borrowing is forbidden');
         }
         if (node.expression.getText(ast).startsWith('notificationContext.') && !contextReaders.has(rel)) fail(node, 'ambient notification capability is restricted to reviewed composition seams');
         if (method === 'sendToTopic' || method === 'sendMediaToTopic') {
@@ -53,6 +53,7 @@ function scan(dir) {
         if (node.expression.getText(ast) === 'notificationStamper' && node.arguments.length > 1 && !((rel === 'src/server/AgentServer.ts' && node.arguments[1]?.getText(ast) === "'spend-alert-dispatcher'") || (rel === 'src/commands/server.ts' && node.arguments[1]?.getText(ast) === "'reap-notifier'") || (rel === 'src/messaging/telegramSendSideComposition.ts' && ["'quota-notifier'", "'reap-notifier'"].includes(node.arguments[1]?.getText(ast))))) fail(node, 'named producer capability must be registered to its composition module');
         if (node.expression.getText(ast) === 'notificationStamper' && rel !== 'src/messaging/notificationStampers.ts' && node.arguments[0]?.getText(ast) !== `'${rel}'`) fail(node, 'notification stamper must be bound to its own module');
         if (node.expression.getText(ast) === 'verifiedInboundMirrorEnvelope' && !admittedMobileMirror(node)) fail(node, 'inbound mirror capability is restricted to the admitted device chat handler');
+        if (node.expression.getText(ast) === 'verifiedJobEnvelope' && !['src/commands/server.ts', 'src/scheduler/JobScheduler.ts', 'src/messaging/NotificationSelectivityGate.ts', 'src/messaging/telegram-origin/TelegramOriginService.ts'].includes(rel)) fail(node, 'verified job identity may only be minted where the job itself is known');
         if (node.expression.getText(ast) === 'verifiedReplyEnvelope' && !['src/messaging/TelegramAdapter.ts', 'src/commands/server.ts', 'src/server/routes.ts', 'src/server/notificationRoutes.ts', 'src/messaging/NotificationSelectivityGate.ts', 'src/messaging/telegram-origin/TelegramOriginService.ts'].includes(rel)) fail(node, 'verified replies may only be minted by the trusted reply seam');
       }
       ts.forEachChild(node, visit);

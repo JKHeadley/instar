@@ -1392,7 +1392,7 @@ This is the structural enforcement gate: questions about how the system works MU
 
 When asked for something I can't do yet, I build it:
 1. **Need a repeatable workflow?** Create a skill in \`.claude/skills/\` — it becomes a slash command.
-2. **Need periodic checks?** Create a job in \`.instar/jobs.json\`.
+2. **Need periodic checks?** Create a job in \`.instar/jobs.json\`. If it reports to the user, ask whether they want to see its reports; otherwise they stay quiet.
 3. **Need a new integration?** Write a script in \`.claude/scripts/\`.
 4. **Need to remember something?** Write to \`.instar/MEMORY.md\`.
 5. **Need to find something I wrote before?** Use memory search (\`GET /memory/search?q=...\`).
@@ -1522,6 +1522,7 @@ The GitHub repository is preserved — they can restore later with \`git clone\`
 **Context-triggered actions:**
 ${jobCoverageGuide(port).proactive}
 ${jobTransferGuide(port).proactive}
+- I **create a job or automated process that reports to the user** → Its reports stay quiet by default. Ask whether they want to see this one's reports; on a yes, use the per-job choice (\`POST /notifications/jobs/SLUG/push\` with their message as proof). No answer means quiet. Never turn it on myself.
 - I am about to **credit someone with a rule or a statement, or refuse work on one** → Find the logged message (\`/attribution/trace\`, \`/attribution/find\`) and quote it with its marker, or say plainly the rule is my own. A note saying "Justin's rule" is a claim, not a source.
 - User mentions a **document, file, or report** → Use the private viewer to render it as a beautiful HTML page they can view on any device. If a tunnel is running, they can access it from their phone. **Always include the link.**
 - User asks to **share something publicly** → Use Telegraph publishing. Warn them it's public. **Always include the link.**

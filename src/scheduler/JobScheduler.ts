@@ -1,4 +1,4 @@
-import { isQuietReceipt } from '../messaging/NotificationSelectivityGate.js';
+import { isQuietReceipt, verifiedJobEnvelope } from '../messaging/NotificationSelectivityGate.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/scheduler/JobScheduler.ts');
 import { verifyImportedPortableJob, recordImportedPortableIntegrityFailure } from '../core/JobPortableIntegrity.js';
@@ -3426,7 +3426,7 @@ export class JobScheduler {
     // Send to the job's dedicated topic if available, otherwise fall back to generic messenger
     if (this.telegram && job.topicId) {
       try {
-        await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(job.topicId!, summary));
+        await withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram)!.sendToTopic(job.topicId!, summary));
       } catch (err) {
         console.error(`[scheduler] Failed to send to job topic ${job.topicId}: ${err}`);
         // The original outbox retains custody, including uncertain acceptance.
@@ -3441,7 +3441,7 @@ export class JobScheduler {
           );
           job.topicId = newTopic.topicId;
           this.saveJobTopicMapping(job.slug, newTopic.topicId);
-          await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(newTopic.topicId, summary));
+          await withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram)!.sendToTopic(newTopic.topicId, summary));
         } catch (recreateErr) {
           console.error(`[scheduler] Failed to recreate topic for ${job.slug}: ${recreateErr}`);
         }
@@ -3743,7 +3743,7 @@ export class JobScheduler {
 
       const noticeTopic = job.topicId ?? this.state.get<number>('agent-attention-topic');
       const send = this.telegram && noticeTopic
-        ? () => withNotificationEnvelope(stampNotification(), async () => (this.telegram!)!.sendToTopic(noticeTopic, alertText))
+        ? () => withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram!)!.sendToTopic(noticeTopic, alertText))
         : !this.telegram && this.messenger
           ? () => this.messenger!.send({ userId: 'system', content: alertText })
           : null;
@@ -3831,7 +3831,7 @@ export class JobScheduler {
     const topicId = job.topicId ?? this.state.get<number>('agent-attention-topic');
     const message = `Scheduled job ${job.name} is not running as expected: ${detail}. Check its gate, machine scope and last successful run.`;
     const send = this.telegram && topicId
-      ? () => withNotificationEnvelope(stampNotification(), async () => (this.telegram!)!.sendToTopic(topicId!, message))
+      ? () => withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram!)!.sendToTopic(topicId!, message))
       : !this.telegram && this.messenger
         ? () => this.messenger!.send({ userId: 'system', content: message })
         : null;

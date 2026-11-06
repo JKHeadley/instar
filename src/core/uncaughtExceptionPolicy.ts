@@ -72,6 +72,14 @@ const NON_FATAL_UNCAUGHT_PATTERNS = [
   'ENOTFOUND',
   'EAI_AGAIN',
   'socket hang up',
+  // A write to a pipe or socket whose reader has gone: a child that exited before
+  // reading its stdin, or the `tee` behind the server's stderr. Same class as
+  // ECONNRESET above: only that one write failed. Two of these crashed the Studio
+  // server on 2026-11-06. Known writers are guarded at the source (pipeErrorGuard);
+  // this is the backstop. Its first-seen stack names a writer that failed at once; a
+  // queued write fails later and its stack may show only node internals.
+  // ANCHORED to the libuv message so it stays this one failure.
+  'write EPIPE',
 ];
 
 /**
@@ -167,7 +175,10 @@ export function handleProcessLevelError(
     return 'recovered';
   }
 
-  console.error(`[FATAL] Uncaught ${label} — closing databases before crash: ${message}`);
+  // The stack is the only record of where a fatal error came from: the process is
+  // about to exit, and without it the 2026-11-06 crashes named no source.
+  const fatalStack = err instanceof Error && err.stack ? `\n${err.stack}` : '';
+  console.error(`[FATAL] Uncaught ${label} — closing databases before crash: ${message}${fatalStack}`);
   // Close ALL registered SQLite handles before the crash exit so it doesn't
   // compound into a "mutex lock failed" SIGABRT. onFatalCleanup is best-effort.
   try { opts.onFatalCleanup(); } catch { /* best effort */ }

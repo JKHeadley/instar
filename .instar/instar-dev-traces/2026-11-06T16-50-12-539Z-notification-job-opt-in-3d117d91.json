@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "slug": "notification-job-opt-in",
+  "sessionId": "e617fee0-3f2e-4879-9f91-d9255470ea18",
+  "timestamp": "2026-11-06T16:50:12.539Z",
+  "artifactPath": "upgrades/side-effects/notification-job-opt-in.md",
+  "artifactSha256": "af5c2bd5a7724c759d3e535be0a7e9dac0d503cecea4b7b96fd1f2df2a124582",
+  "coveredFiles": [
+    "dashboard/console/notifications.js",
+    "docs/specs/notification-job-opt-in.eli16.md",
+    "docs/specs/notification-job-opt-in.md",
+    "docs/specs/reports/notification-job-opt-in-convergence.md",
+    "scripts/lint-notification-selectivity.mjs",
+    "skills/instar-scheduler/SKILL.md",
+    "src/commands/job.ts",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/messaging/NotificationPreferences.ts",
+    "src/messaging/NotificationSelectivityGate.ts",
+    "src/messaging/notificationCategories.ts",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "src/scaffold/templates.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/server/notificationPoolRead.ts",
+    "src/server/notificationRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/notification-preferences-alive.test.ts",
+    "tests/integration/notification-selectivity-gate.test.ts",
+    "tests/unit/PostUpdateMigrator-jobReportChoice.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/notification-job-opt-in.test.ts",
+    "tests/unit/notification-selectivity-routes.test.ts",
+    "tests/unit/telegram-origin/origin-service.test.ts",
+    "upgrades/next/notification-job-opt-in.md",
+    "upgrades/side-effects/notification-job-opt-in.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A revert fully undoes it: config keys and preference rows go inert and the default is unchanged. Top of Tier 1 because it widens a delivery gate, so it still took a converged spec and a second pass.",
+  "eli16Path": "docs/specs/notification-job-opt-in.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/notification-job-opt-in.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}
