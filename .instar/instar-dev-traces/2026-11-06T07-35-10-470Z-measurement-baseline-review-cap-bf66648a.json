@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "measurement-baseline-review-cap",
+  "sessionId": "30384209-0957-44f8-9037-d33d452ffbc6",
+  "timestamp": "2026-11-06T07:35:10.470Z",
+  "artifactPath": "upgrades/side-effects/measurement-baseline-review-cap.md",
+  "artifactSha256": "4428ae5ab912f00629ac7ddb5ff1e7a2f46228a340bfabad72a6e660fb5c073b",
+  "coveredFiles": [
+    "docs/specs/feature-outcome-baseline-capture.eli16.md",
+    "docs/specs/feature-outcome-baseline-capture.md",
+    "docs/specs/measurement-evidence-floor.eli16.md",
+    "docs/specs/measurement-evidence-floor.md",
+    "docs/specs/reports/feature-outcome-baseline-capture-convergence.md",
+    "docs/specs/reports/feature-outcome-baseline-capture-round6-codex.json",
+    "docs/specs/reports/measurement-evidence-floor-claude-round6.json",
+    "docs/specs/reports/measurement-evidence-floor-convergence.md",
+    "upgrades/side-effects/measurement-baseline-review-cap.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Publish unapproved Tier2 design and failed cap6 safety review only. No implementation, control activation, convergence or approval tag.",
+  "eli16Path": "docs/specs/measurement-evidence-floor.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/measurement-baseline-review-cap.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

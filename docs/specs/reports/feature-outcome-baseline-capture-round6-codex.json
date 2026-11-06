@@ -1,0 +1,16 @@
+{
+  "status": "ok",
+  "framework": "codex-cli",
+  "model": "gpt-6-astra",
+  "verdict": "SERIOUS ISSUES",
+  "findings": [
+    {
+      "reviewer": "cross-model:codex-cli:gpt-6-astra",
+      "verdict": "SERIOUS ISSUES",
+      "body": "**Verdict: SERIOUS ISSUES**\n\nReviewed only the supplied text and source; no runtime behavior was measured.\n\n- **DESIGN \u2014 \u201cExplicit capture and authoring\u201d / \u201cFloor integration\u201d: capture time does not establish pre-intervention status.** The spec requires genuine pre-intervention proof, but its publication checks cover revision, origin, rung/policy and descriptors\u2014not whether the measured population was already exposed to the feature. A genuine snapshot collected after activation could therefore receive baseline status. **Resolution:** define and persist intervention/exposure boundaries and require the descriptor\u2019s measurement window/population to satisfy the authored baseline method. Explicitly distinguish post-start rebaselines from original pre-intervention evidence; test activation during asynchronous capture.\n\n- **DESIGN \u2014 \u201cMulti-machine posture,\u201d dropped-origin exclusion: the supplied implementation contradicts the required failure behavior.** The spec says preservation failure must retain bytes while the dropped origin remains excluded. However, `DroppedOriginRegistry.load()` in `RollbackUnmerge.ts` catches corrupt JSON and returns an empty dropped set. `ReplicatedStoreReader.read()` then includes any loaded origin absent from that set. Thus preserved bytes can become live union content again after registry corruption and restart. This does **not** establish that a managed move would pass its other checks. **Resolution:** represent unreadable exclusion state as unknown and suppress affected foreign participation until repaired; test corruption following failed preservation and restart.\n\n- **DESIGN \u2014 \u201cExplicit capture and authoring\u201d: concurrency requirements lack a publication serialization boundary.** The spec requires rechecking revision/hash after asynchronous reads and tests concurrent captures, but explicitly serializes only retained-capacity accounting. It does not say whether checking the initiative revision and replacing its contract form one atomic operation. Two captures can otherwise pass the same check and overwrite each other; post-write verification cannot undo lost ownership history. The InitiativeTracker writer implementation is not supplied, so existing protection cannot be verified. **Resolution:** require compare-and-swap on revision plus old contract hash, or an initiative-scoped serialized publication operation, including initial capture and rebaseline.\n\nThe deterministic proof checks are appropriate under the supplied **Signal vs Authority** hard-invariant exception; adding an LLM to validate hashes, membership or sample counts would not improve this design."
+    }
+  ],
+  "flag": "cross-model-review: codex-cli:gpt-6-astra",
+  "crossFamily": true,
+  "promptTruncated": false
+}
