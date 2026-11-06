@@ -265,6 +265,40 @@ export class BlockerLifecycleLedger {
     } catch { /* @silent-fallback-ok — empty evidence fails maturation closed as insufficient evidence */ return []; }
   }
 
+  /** Bounded exact-subject history; null is a read failure, never zero data. */
+  maturationMetricHistory(origin: string, featureId: string, metricId: string, sinceMs: number) {
+    if (!this.db) return null;
+    try {
+      const args = [origin, featureId, metricId, Math.round(sinceMs)];
+      const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM maturation_metric_observations
+        WHERE origin=? AND feature_id=? AND metric_id=? AND observed_at_ms>=?`).get(...args) as { n: number }).n;
+      const rows = this.db.prepare(`SELECT origin,feature_id AS featureId,metric_id AS metricId,source,
+        source_ref AS sourceRef,observed_at_ms AS observedAtMs,value,samples,descriptor_version AS descriptorVersion
+        FROM maturation_metric_observations WHERE origin=? AND feature_id=? AND metric_id=? AND observed_at_ms>=?
+        ORDER BY observed_at_ms DESC,source,source_ref,descriptor_version LIMIT 96`).all(...args) as MaturationMetricObservation[];
+      const ambiguousTimes = (this.db.prepare(`SELECT observed_at_ms AS at FROM maturation_metric_observations
+        WHERE origin=? AND feature_id=? AND metric_id=? AND observed_at_ms>=?
+        GROUP BY observed_at_ms HAVING COUNT(*)>1 ORDER BY observed_at_ms DESC LIMIT 96`).all(...args) as Array<{ at: number }>).map(r => r.at);
+      return { total, rows, ambiguousTimes };
+    } catch { /* @silent-fallback-ok — null history is an explicit unavailable read */ return null; }
+  }
+
+  maturationEvaluationHistory(origin: string, featureId: string, sinceMs: number) {
+    if (!this.db) return null;
+    try {
+      const args = [origin, featureId, Math.round(sinceMs)];
+      const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM maturation_evaluations
+        WHERE origin=? AND feature_id=? AND due_slot_ms>=?`).get(...args) as { n: number }).n;
+      const rows = this.db.prepare(`SELECT origin,feature_id AS featureId,rung,due_slot_ms AS dueSlotMs,
+        evaluated_at_ms AS evaluatedAtMs,status,passing_metrics AS passingMetrics,total_metrics AS totalMetrics,
+        min_normalized_margin AS minNormalizedMargin,contract_hash AS contractHash,
+        newest_evidence_at_ms AS newestEvidenceAtMs,additional_missed_slots AS additionalMissedSlots
+        FROM maturation_evaluations WHERE origin=? AND feature_id=? AND due_slot_ms>=?
+        ORDER BY due_slot_ms DESC,evaluated_at_ms DESC,contract_hash LIMIT 128`).all(...args) as MaturationEvaluationRecord[];
+      return { total, rows };
+    } catch { /* @silent-fallback-ok — null history is an explicit unavailable read */ return null; }
+  }
+
   recordMaturationEvaluation(record: MaturationEvaluationRecord): boolean {
     if (!this.db) return false;
     try {

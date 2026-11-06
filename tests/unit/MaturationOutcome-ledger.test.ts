@@ -28,7 +28,20 @@ describe('exact recorded baseline proof', () => {
     expect(l.recordMaturationObservation({ ...baseline, observedAtMs: now, value: 0.1 })).toBe(true);
     const evidence = projectMaturationOutcome(contract, 'm1', 'one', now, (id, time) => l.maturationObservation('m1', 'one', id, time));
     expect(evidence.state).toBe('verified');
+    expect(l.maturationMetricHistory('m1', 'one', 'quality', 0)).toMatchObject({ total: 2, rows: [{ observedAtMs: now }, { observedAtMs: at }] });
     expect(evidence.metrics[0]).toMatchObject({ delta: -0.1, criterion: { met: false } });
+  });
+
+  it('bounds display history while retaining exact totals and versioned stored rows', () => {
+    const l = make();
+    for (let i=0;i<130;i++) {
+      l.recordMaturationObservation({ ...baseline, observedAtMs: now-i*1000, descriptorVersion: i<5?2:1 });
+      l.recordMaturationEvaluation({ origin:'m1',featureId:'one',rung:'live',dueSlotMs:now-i*6*3600000,evaluatedAtMs:now-i*6*3600000,status:'ready',contractHash:'a'.repeat(64),passingMetrics:1,totalMetrics:1,minNormalizedMargin:0,newestEvidenceAtMs:now-i*6*3600000 });
+    }
+    const history=l.maturationMetricHistory('m1','one','quality',0)!;
+    expect(history.total).toBe(130); expect(history.rows).toHaveLength(96); expect(history.rows[0].descriptorVersion).toBe(2);
+    const evals=l.maturationEvaluationHistory('m1','one',0)!;expect(evals.total).toBe(130);expect(evals.rows).toHaveLength(128);
+    l.close();expect(l.maturationMetricHistory('m1','one','quality',0)).toBeNull();
   });
 
   it('refuses ambiguous exact and latest rows rather than picking a flattering source', () => {

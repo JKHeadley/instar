@@ -82,6 +82,16 @@ async function readyService(over: Parameters<typeof make>[0] = {}) {
 }
 const moveBody = (over: Record<string, unknown> = {}) => ({ id: 'monitoring.x', target: 'dev-agent-live' as const, reason: 'numbers held and both readers agree', from: { 'monitoring.x.dryRun': true }, opinions: [{ family: 'claude', verdict: 'promote' }], ...over });
 
+it('measurement contracts use fresh live rung selection rather than the UI cache', () => {
+  const { svc, state } = make();
+  expect(svc.features()[0].next).toBe('dev-agent-live');
+  state.config = { developmentAgent: true, monitoring: { x: { dryRun: false } } };
+  expect(svc.features()[0].next).toBe('dev-agent-live');
+  expect(svc.measurementContracts()?.get('monitoring-x')).toEqual({ contract: contractForRung(fleetRung as LadderRung), overridesInitiative: true });
+  state.config = { developmentAgent: false };
+  expect(svc.measurementContracts()?.get('monitoring-x')?.overridesInitiative).toBe(false);
+});
+
 describe('the registry', () => {
   it('a bad file is reported, and nothing is raised or moved', () => {
     const { svc } = make({ entries: [{ id: 'bad' }] });

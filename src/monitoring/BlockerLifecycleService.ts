@@ -4,7 +4,8 @@ import type { Initiative, MaturationEvaluationContract } from '../core/Initiativ
 import type { InitiativeTracker } from '../core/InitiativeTracker.js';
 import { BlockerLifecycleLedger, percentile, type BlockerFactor, type BlockerMetricRecord, type MaturationEvaluationRecord, type MaturationEvaluationStatus, type MaturationMetricObservation } from './BlockerLifecycleLedger.js';
 import { DegradationReporter } from './DegradationReporter.js';
-import { parseMaturationOutcome, projectMaturationOutcome } from './MaturationOutcome.js';
+import { parseMaturationOutcome, projectMaturationOutcome, validMaturationPolicy } from './MaturationOutcome.js';
+import { measurementTrend } from './MeasurementTrend.js';
 
 type FailureReason = 'insufficient-days' | 'insufficient-samples' | 'zero-denominator';
 
@@ -79,6 +80,8 @@ export class BlockerLifecycleService {
   }
 
   available(): boolean { return this.ledger.available(); }
+
+  measurementOrigin(): string { return this.origin; }
 
   /** Register a read-only projection from an existing feature's counters onto
    * D7. This adds no state owner: the feature remains authoritative and D7
@@ -312,6 +315,17 @@ export class BlockerLifecycleService {
     return { featureId, subjectKnown: this.maturationInitiatives.some(i => i.id === featureId),
       evidence: projectMaturationOutcome(contract, this.origin, featureId, this.now(),
         (metricId, at) => this.ledger.maturationObservation(this.origin, featureId, metricId, at)) };
+  }
+
+  /** Bounded read only: exact owner contract, retained numbers and version boundaries. */
+  maturationTrendForContract(featureId: string, contract: MaturationEvaluationContract, windowDays: number) {
+    if (!validMaturationPolicy(contract) || !Number.isInteger(windowDays) || windowDays < 7 || windowDays > 90) return null;
+    const now = this.now(); const since = now - windowDays * 86_400_000;
+    const proof = this.maturationOutcomeForContract(featureId, contract);
+    return measurementTrend({ origin: this.origin, subjectId: featureId, subjectKnown: proof.subjectKnown,
+      now, windowDays, contract, contractHash: this.contractHash(contract), evidence: proof.evidence,
+      evaluations: this.ledger.maturationEvaluationHistory(this.origin, featureId, since),
+      observations: new Map(contract.metrics.map(m => [m.id, this.ledger.maturationMetricHistory(this.origin, featureId, m.id, since)])) });
   }
 
   private maturationSummary(sinceMs: number, outcomeFeatureId?: string): Record<string, unknown> {

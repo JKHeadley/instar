@@ -1,10 +1,11 @@
 // Coverage is a read of existing inventories, never an improvement verdict.
 import { el, askLink } from './ui.js';
+import { measurementDetail } from './measurement-trend.js';
 import { humanName } from './maturation-board-model.js';
 const KINDS = { feature: 'Features', decision: 'AI decisions', job: 'Scheduled jobs', effort: 'Work items', capability: 'Model capabilities' };
-const STATES = { corroborated: 'Recorded comparison available', 'missing-contract': 'Outcome or baseline not recorded', 'invalid-contract': 'Measurement needs repair', 'not-linked': 'No measurement linked', stale: 'Evidence is too old', unavailable: 'Evidence cannot be read', 'insufficient-samples': 'Too few samples', incompatible: 'Evidence does not match', ambiguous: 'Several measurement links need review', inactive: 'Contract retained; evaluation inactive' };
+const STATES = { corroborated: 'Recorded comparison available', 'missing-contract': 'Outcome or baseline not recorded', 'invalid-contract': 'Measurement needs repair', 'not-linked': 'No measurement linked', stale: 'Evidence is too old', unavailable: 'Evidence cannot be read', 'insufficient-samples': 'Too few samples', incompatible: 'Evidence does not match', ambiguous: 'Several measurement links need review', inactive: 'Contract retained; not in the latest evaluation' };
 const name = row => humanName({ id: row.id, title: row.title === row.id ? null : row.title });
-export function coveragePanel(data) {
+export function coveragePanel(data, api = null) {
   if (!data || data.schema !== 'measurement-coverage-pool/1') return el('section', { class: 'mb-coverage' },
     el('h2', { text: 'Measurement coverage' }), el('p', { text: 'Coverage cannot be read right now. The feature review below is a separate source.' }), askLink('Measurement coverage cannot be read.'));
   const origins = data.origins || [];
@@ -39,6 +40,19 @@ export function coveragePanel(data) {
           return el('div', {}, el('p', { class: 'mb-hint', text: parent ? `Part of ${name(parent)}. Its parent's evidence is separate.` : 'Parent work item is outside this read.' }),
             parent && displayedKeys.has(rowKey(parent)) ? el('button', { type: 'button', class: 'mb-link', text: `Show parent: ${name(parent)}`, onclick: () => show(rowKey(parent)) }) : null); }),
         el('details', {}, el('summary', { text: 'Source details' }), el('p', { text: `Recorded declaration: ${row.declaration}. Sources: ${row.sources.join(', ')}. Machine: ${row.origin}.` })));
+      if (api && row.subjects.length === 1) {
+        const content = el('div', { 'aria-live': 'polite', tabindex: '-1' });
+        const button = el('button', { type: 'button', class: 'mb-link', text: 'Show measurements', onclick: async () => {
+          button.disabled = true; content.replaceChildren(el('p', { text: 'Reading measurements…' }));
+          try {
+            const answer = await api.get(`/maturation/board?part=measurement&subject=${encodeURIComponent(row.subjects[0])}&machine=${encodeURIComponent(row.origin)}`, 12000);
+            content.replaceChildren(measurementDetail(answer.ok ? answer.data : null));
+            content.scrollIntoView?.({ block: 'start' }); content.focus({ preventScroll: true });
+          } catch { content.replaceChildren(measurementDetail(null)); }
+          button.disabled = false;
+        } });
+        item.append(button, content);
+      }
       rendered.set(rowKey(row), item); list.append(item);
     }
     if (count > Math.min(rows.length, 200)) list.append(el('p', { text: `${count - Math.min(rows.length, 200)} additional entries are included in the count but not shown here.` }));

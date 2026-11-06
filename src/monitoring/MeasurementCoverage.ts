@@ -106,20 +106,22 @@ export function measurementCoverage(origin: string, now: number, members: Covera
 /** Bounded schema check for origin-local pool reads; never certifies semantics. */
 export function validMeasurementCoverage(raw: unknown, origin: string, now: number): raw is MeasurementCoverage {
   const object = (v: unknown): v is Record<string, unknown> => Boolean(v && typeof v === 'object' && !Array.isArray(v));
+  const closed = (v: Record<string,unknown>, fields: string[]) => Object.keys(v).every(k => fields.includes(k));
   const text = (v: unknown, n: number): v is string => typeof v === 'string' && v.length > 0 && v.length <= n && !/[\u0000-\u001f\u007f]/.test(v);
   const count = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0 && (v as number) <= 1_000_000;
-  if (!object(raw) || Buffer.byteLength(JSON.stringify(raw)) > 128 * 1024 || raw.schema !== 'measurement-coverage/1' || raw.origin !== origin ||
+  if (!object(raw) || !closed(raw,['schema','advisory','authority','origin','generatedAt','sourcesComplete','denominator','sources','counts','rows','omittedRows']) || Buffer.byteLength(JSON.stringify(raw)) > 128 * 1024 || raw.schema !== 'measurement-coverage/1' || raw.origin !== origin ||
       raw.advisory !== true || raw.authority !== 'none' || raw.denominator !== 'existing-registry-entries-by-kind' ||
       typeof raw.sourcesComplete !== 'boolean' || !text(raw.generatedAt, 40) || !Number.isFinite(Date.parse(raw.generatedAt)) ||
       Date.parse(raw.generatedAt) > now + 5000 || now - Date.parse(raw.generatedAt) > 120_000 ||
       !Array.isArray(raw.sources) || raw.sources.length > 16 || !object(raw.counts) || !count(raw.omittedRows) ||
       !Array.isArray(raw.rows) || raw.rows.length > 2048) return false;
-  if (!raw.sources.every(s => object(s) && text(s.name, 80) && typeof s.ok === 'boolean' && (s.reason === undefined || text(s.reason, 120))) ||
+  if (!raw.sources.every(s => object(s) && closed(s,['name','ok','reason']) && text(s.name, 80) && typeof s.ok === 'boolean' && (s.reason === undefined || text(s.reason, 120))) ||
       raw.sourcesComplete !== (raw.sources.length > 0 && raw.sources.every(s => (s as CoverageSource).ok))) return false;
+  if (!closed(raw.counts,[...COVERAGE_KINDS])) return false;
   let total = 0;
   for (const kind of COVERAGE_KINDS) {
     const group = raw.counts[kind];
-    if (!object(group) || !count(group.total) || !object(group.states) ||
+    if (!object(group) || !closed(group,['total','states']) || !count(group.total) || !object(group.states) || !closed(group.states,[...COVERAGE_STATES]) ||
         !COVERAGE_STATES.every(s => count((group.states as Record<string, unknown>)[s])) ||
         COVERAGE_STATES.reduce((n, s) => n + (group.states as Record<string, number>)[s], 0) !== group.total) return false;
     total += group.total;
@@ -128,12 +130,12 @@ export function validMeasurementCoverage(raw: unknown, origin: string, now: numb
   const seen = new Set<string>();
   const shown = new Map<string, number>();
   for (const row of raw.rows) {
-    if (!object(row) || !COVERAGE_KINDS.includes(row.kind as CoverageKind) || !COVERAGE_STATES.includes(row.state as CoverageState) ||
+    if (!object(row) || !closed(row,['kind','id','title','sources','subjects','parentId','parents','posture','state','declaration']) || !COVERAGE_KINDS.includes(row.kind as CoverageKind) || !COVERAGE_STATES.includes(row.state as CoverageState) ||
         !text(row.id, 512) || !text(row.title, 160) || !['declared', 'missing', 'invalid', 'unknown', 'not-linked', 'ambiguous'].includes(String(row.declaration)) ||
         !Array.isArray(row.sources) || !row.sources.length || row.sources.length > 16 || !row.sources.every(s => text(s, 80)) ||
         !Array.isArray(row.subjects) || row.subjects.length > 512 || !row.subjects.every(s => text(s, 128)) ||
         (row.parentId !== undefined && !text(row.parentId, 128)) || (row.posture !== undefined && !text(row.posture, 160))) return false;
-    if (row.parents !== undefined && (!Array.isArray(row.parents) || row.parents.length > 512 || !row.parents.every(p => object(p) && COVERAGE_KINDS.includes(p.kind as CoverageKind) && text(p.id, 512) && ['initiative-parent', 'accounting-owner', 'ladder-composition'].includes(String(p.source))))) return false;
+    if (row.parents !== undefined && (!Array.isArray(row.parents) || row.parents.length > 512 || !row.parents.every(p => object(p) && closed(p,['kind','id','source']) && COVERAGE_KINDS.includes(p.kind as CoverageKind) && text(p.id, 512) && ['initiative-parent', 'accounting-owner', 'ladder-composition'].includes(String(p.source))))) return false;
     if (new Set(row.subjects).size !== row.subjects.length) return false;
     if (row.subjects.length === 0 && (row.state !== 'not-linked' || row.declaration !== 'not-linked')) return false;
     if (row.subjects.length > 1 && (row.state !== 'ambiguous' || row.declaration !== 'ambiguous')) return false;

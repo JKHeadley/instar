@@ -4,7 +4,6 @@ import { DEV_GATED_FEATURES } from '../core/devGatedFeatures.js';
 import type { Initiative, MaturationEvaluationContract } from '../core/InitiativeTracker.js';
 import { PROVENANCE_COVERAGE } from '../data/provenanceCoverage.js';
 import { GUARD_MANIFEST } from '../monitoring/guardManifest.js';
-import { contractForRung } from '../monitoring/MaturationLadder.js';
 import type { MaturationLadderService } from '../monitoring/MaturationLadderService.js';
 import { parseMaturationOutcome } from '../monitoring/MaturationOutcome.js';
 import { measurementCoverage, type CoverageDeclaration, type CoverageMember, type CoverageParent, type CoverageProof, type CoverageSource } from '../monitoring/MeasurementCoverage.js';
@@ -12,10 +11,11 @@ import type { RouteContext } from './routes.js';
 
 export type MeasurementCoverageContext = Pick<RouteContext, 'config' | 'meshSelfId' | 'scheduler' | 'initiativeTracker' | 'blockerLifecycleService' | 'featureRegistry' | 'capabilityRegistry'>
   & { maturationLadder?: () => MaturationLadderService | null };
+export const measurementOrigin = (ctx: MeasurementCoverageContext): string => ctx.meshSelfId ?? ctx.blockerLifecycleService?.measurementOrigin() ?? 'unknown-origin';
 const normalize = (path: string) => path.replace(/\.(enabled|dryRun)$/, '');
 const bounded = (text: string) => text.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 160);
 
-export function readMeasurementCoverage(ctx: MeasurementCoverageContext, now = Date.now()) {
+function collectMeasurementInputs(ctx: MeasurementCoverageContext, now = Date.now()) {
   const members: CoverageMember[] = [];
   const sources: CoverageSource[] = [];
   const subjects = new Map<string, { contract?: MaturationEvaluationContract; error?: string }>();
@@ -70,7 +70,8 @@ export function readMeasurementCoverage(ctx: MeasurementCoverageContext, now = D
   read('ladder-owner', () => {
     const ladder = ctx.maturationLadder?.();
     if (!ladder || ladder.error) throw Error('unavailable');
-    const views = new Map(ladder.features().map(f => [f.id, f]));
+    const contracts = ladder.measurementContracts();
+    if (!contracts) throw Error('unavailable');
     const entries = new Map(ladder.entries.map(e => [e.id, e]));
     for (const entry of ladder.entries) {
       const key = entry.flag?.path ?? entry.id;
@@ -80,9 +81,8 @@ export function readMeasurementCoverage(ctx: MeasurementCoverageContext, now = D
         const parent = entries.get(entry.composedInto);
         addParent(key, { kind: 'feature', id: normalize(parent?.flag?.path ?? entry.composedInto), source: 'ladder-composition' });
       }
-      const view = views.get(entry.id);
-      const rung = view?.next ? entry.rungs[view.next] : entry.rungs.fleet;
-      if (rung && entry.disposition === 'ladder' && (view?.next || !subjects.has(entry.subject))) subjects.set(entry.subject, { contract: contractForRung(rung) });
+      const retained = contracts.get(entry.subject);
+      if (retained && (retained.overridesInitiative || !subjects.has(entry.subject))) subjects.set(entry.subject, { contract: retained.contract });
     }
   });
   read('local-model-capability-projection', () => {
@@ -101,8 +101,19 @@ export function readMeasurementCoverage(ctx: MeasurementCoverageContext, now = D
     const parents = featureParents.get(member.id);
     if (parents) member.parents = [...new Map(parents.map(p => [`${p.kind}:${p.id}:${p.source}`, p])).values()];
   }
+  return { members, sources, subjects, d7, evidenceAvailable };
+}
+
+/** Exact current retained owner, using the same precedence as coverage. */
+export function readMeasurementOwner(ctx: MeasurementCoverageContext, id: string, now = Date.now()) {
+  const state = collectMeasurementInputs(ctx, now);
+  return { owner: state.subjects.get(id) ?? null, sources: state.sources };
+}
+
+export function readMeasurementCoverage(ctx: MeasurementCoverageContext, now = Date.now()) {
+  const { members, sources, subjects, d7, evidenceAvailable } = collectMeasurementInputs(ctx, now);
   let corroborationReads = 0;
-  return measurementCoverage(ctx.meshSelfId ?? 'unknown-origin', now, members, sources, id => {
+  return measurementCoverage(measurementOrigin(ctx), now, members, sources, id => {
     const owner = subjects.get(id);
     let declaration: CoverageDeclaration = 'unknown';
     if (owner?.error) declaration = 'invalid';

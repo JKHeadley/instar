@@ -47,7 +47,8 @@ import {
   type SourceStatus,
 } from '../monitoring/MaturationBoard.js';
 import type { RouteContext } from './routes.js';
-import { readMeasurementCoverage } from './measurementCoverageRead.js';
+import { readMeasurementDetail, validMeasurementRead } from './measurementDetailRead.js';
+import { measurementOrigin, readMeasurementCoverage } from './measurementCoverageRead.js';
 import { validMeasurementCoverage, type MeasurementCoverage } from '../monitoring/MeasurementCoverage.js';
 
 export const DEFAULT_REVIEWS_DIR = 'docs/research/feature-maturation/reviews';
@@ -502,6 +503,32 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
     const part = typeof req.query.part === 'string' ? req.query.part : 'board';
     const now = Date.now();
     if (part === 'probe') { res.json({ schema: BOARD_SCHEMA, part: 'probe', enabled: true }); return; }
+    if (part === 'measurement') {
+      const subject = req.query.subject;
+      const selfOrigin = measurementOrigin(ctx);
+      const machine = req.query.machine ?? selfOrigin;
+      const windowDays = Number(req.query.windowDays ?? 90);
+      if (typeof subject !== 'string' || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(subject) ||
+          typeof machine !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(machine) || !Number.isInteger(windowDays) || windowDays<7 || windowDays>90) {
+        res.status(400).json({error:'invalid-measurement-query'}); return;
+      }
+      if (machine === selfOrigin) { res.json(readMeasurementDetail(ctx,subject,windowDays,now)); return; }
+      if (!poolLimiter(now)) { res.status(429).json({error:'rate-limited'}); return; }
+      const peer = (ctx.resolvePeerUrls?.() ?? []).find(p => p.machineId === machine);
+      if (!peer) { res.status(503).json({error:'measurement-origin-unavailable'}); return; }
+      try {
+        if (!isPeerUrlAllowedForCredentials({url:peer.url,kind:peer.kind},(ctx.config.multiMachine as {peerUrlAllowlist?:string[]}|undefined)?.peerUrlAllowlist).ok) throw Error('peer-refused');
+        const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined,peer,`/maturation/board?part=measurement&subject=${subject}&windowDays=${windowDays}`,{
+          headers:{Authorization:`Bearer ${ctx.config.authToken}`},redirect:'manual',signal:AbortSignal.timeout(REVIEW_TIMEOUT_MS),
+        });
+        if (!response.ok) throw Error('peer-unavailable');
+        const text = await response.text(); if(Buffer.byteLength(text)>128*1024) throw Error('peer-too-large');
+        const body:unknown=JSON.parse(text);
+        if(!validMeasurementRead(body,machine,subject,windowDays,now)) throw Error('unsupported-or-invalid');
+        res.json(body);
+      } catch { res.status(503).json({error:'measurement-origin-unavailable-or-unsupported'}); }
+      return;
+    }
     if (part === 'coverage') {
       const local = readMeasurementCoverage(ctx, now);
       if (scope === 'local') { res.json(local); return; }

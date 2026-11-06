@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { Initiative, RolloutStage } from '../core/InitiativeTracker.js';
+import type { Initiative, RolloutStage, MaturationEvaluationContract } from '../core/InitiativeTracker.js';
 import { maybeRotateJsonlSegment } from '../utils/jsonl-rotation.js';
 import { readJsonlQueries, RAN_FRESH_DAYS, type JsonlQuery } from './LadderEvidenceReader.js';
 import {
@@ -407,6 +407,23 @@ export class MaturationLadderService {
   }
 
   // ── Views ────────────────────────────────────────────────────────────────
+
+  /** Exact retained contracts for measurement reads. Unlike features(), this
+   * never uses the UI view cache to choose the live rung's contract. */
+  measurementContracts(): Map<string, { contract: MaturationEvaluationContract | undefined; overridesInitiative: boolean }> | null {
+    if (!this.registry) return null;
+    const live = this.deps.readLiveConfig();
+    if (live === null) return null;
+    const out = new Map<string, { contract: MaturationEvaluationContract | undefined; overridesInitiative: boolean }>();
+    for (const entry of this.entries) {
+      if (entry.disposition !== 'ladder') continue;
+      const { rung, target } = this.rungsOf(entry, live);
+      const definition = entry.rungs[target ?? 'fleet'];
+      out.set(entry.subject, { contract: definition ? contractForRung(definition) : undefined,
+        overridesInitiative: Boolean(target && rung !== 'dark' && definition) });
+    }
+    return out;
+  }
 
   private heldReason(live: Record<string, unknown> | null, entry: LadderEntry): string | null {
     const holds = readPath(live, 'maturation.ladder.holds') as Record<string, unknown> | undefined;

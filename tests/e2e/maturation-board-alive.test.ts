@@ -71,6 +71,8 @@ describe('maturation board — production wiring', () => {
     expect(coverage.body.counts.feature.total).toBeGreaterThan(0);
     expect(coverage.body.counts.decision.total).toBeGreaterThan(0);
     expect(coverage.body.sources).toContainEqual(expect.objectContaining({ name: 'loaded-scheduler-jobs', ok: false }));
+    const script=await request(server.getApp()).get('/dashboard/console/measurement-trend.js');
+    expect(script.status).toBe(200);expect(script.text).toContain('export function measurementDetail');
   });
 
   it('is off on a fleet agent: 503', async () => {

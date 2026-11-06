@@ -54,6 +54,7 @@ describe('coverage pool validation', () => {
     const { validMeasurementCoverage } = await import('../../src/monitoring/MeasurementCoverage.js');
     const v = measurementCoverage('m1', now, [item('feature', 'x')], [{ name: 'owner', ok: true }], () => null);
     expect(validMeasurementCoverage(v, 'm1', now)).toBe(true);
+    expect(validMeasurementCoverage({ ...v, contextFull: 'private metadata' }, 'm1', now)).toBe(false);
     expect(validMeasurementCoverage(v, 'other', now)).toBe(false);
     expect(validMeasurementCoverage(v, 'm1', now + 121000)).toBe(false);
     expect(validMeasurementCoverage(v, 'm1', now - 6000)).toBe(false);

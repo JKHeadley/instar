@@ -108,7 +108,7 @@ describe('GET /maturation/board', () => {
     const child = { id: 'child-flag', title: 'Component', subject: 'child-subject', disposition: 'composed', composedInto: 'parent-flag', flag: { path: 'childFeature.enabled' }, rungs: {} };
     const ctx = ctxFor(fx, { initiativeTracker: { list: () => [{ id: 'child-task', title: 'Task', status: 'active', rollout: { flagPath: 'ownedFeature.enabled' }, rolloutAccounting: { ownerFeatureId: 'parent-task' } }] },
       config: { developmentAgent: true, ownedFeature: { enabled: true } },
-      maturationLadder: () => ({ error: null, entries: [parent, child], features: () => [{ id: 'parent-flag', next: null }, { id: 'child-flag', next: null }] }),
+      maturationLadder: () => ({ error: null, entries: [parent, child], measurementContracts: () => new Map(), features: () => [{ id: 'parent-flag', next: null }, { id: 'child-flag', next: null }] }),
     });
     const res = await request(appFor(ctx)).get('/maturation/board?part=coverage');
     expect(res.body.rows.find((r: { id: string }) => r.id === 'childFeature')).toMatchObject({ parents: [{ kind: 'feature', id: 'parentFeature', source: 'ladder-composition' }] });
@@ -130,6 +130,19 @@ describe('GET /maturation/board', () => {
     const unsupported = await request(app).get('/maturation/board?scope=pool&part=coverage');
     expect(unsupported.body.poolComplete).toBe(false);
     expect(unsupported.body.failed).toContainEqual({ machineId: 'm_peer', reason: 'unavailable-or-unsupported' });
+  });
+
+  it('measurement detail queries select one known origin and refuse foreign or unsupported replies', async () => {
+    let shape='valid';let calls=0;
+    const peer=express().get('/maturation/board',(_req,res)=>{calls++;res.json(shape==='old'?{schema:'maturation-board/1'}:{schema:'measurement-read/1',advisory:true,authority:'none',origin:shape==='foreign'?'another':'m_peer',subjectId:'one',generatedAt:new Date().toISOString(),windowDays:90,state:'missing-contract',detail:null,sources:[]});});
+    const server=http.createServer(peer);servers.push(server);await new Promise<void>(r=>server.listen(0,'127.0.0.1',()=>r()));
+    const url=`http://127.0.0.1:${(server.address() as {port:number}).port}`;
+    const app=appFor(ctxFor(fx,{resolvePeerUrls:()=>[{machineId:'m_peer',url,kind:'lan'},{machineId:'m_other',url:'http://127.0.0.1:1',kind:'lan'}]}));
+    const response=await request(app).get('/maturation/board?part=measurement&subject=one&machine=m_peer');
+    expect(response.status).toBe(200);expect(response.body.state).toBe('missing-contract');expect(calls).toBe(1);
+    shape='old';expect((await request(app).get('/maturation/board?part=measurement&subject=one&machine=m_peer')).status).toBe(503);
+    shape='foreign';expect((await request(app).get('/maturation/board?part=measurement&subject=one&machine=m_peer')).status).toBe(503);
+    expect((await request(app).get('/maturation/board?part=measurement&subject=one&machine=http://evil')).status).toBe(400);
   });
 
   it('builds a local board from review files and live owners', async () => {

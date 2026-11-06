@@ -119,7 +119,7 @@ function draw(main, board, nav, pace = null) {
     return el('section', { class: 'mb-group' }, head, body);
   }).filter(Boolean);
 
-  setKids(main, hero, coveragePanel(lastCoverage), glance, tools,
+  setKids(main, hero, coveragePanel(lastCoverage, ladderApi), glance, tools,
     sections.length ? el('div', { class: 'mb-groups' }, sections) : el('p', { class: 'mb-sub', text: 'Nothing matches.' }),
     sourcesNote(board));
 

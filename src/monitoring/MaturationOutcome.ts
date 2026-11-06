@@ -58,19 +58,23 @@ export function parseMaturationOutcome(raw: unknown, metricIds: readonly string[
 export type OutcomeEvidenceState = 'verified' | 'unavailable' | 'mismatch' | 'foreign-origin' | 'future' | 'stale' | 'before-baseline' | 'insufficient-samples';
 export type ReadMaturationObservation = (metricId: string, observedAtMs?: number) => MaturationMetricObservation | null;
 
+/** Structural policy validation shared by read projections; dynamic ladder refs remain valid. */
+export function validMaturationPolicy(contract: MaturationEvaluationContract | undefined): boolean {
+  if (!contract) return false;
+  return !(!integer(contract.cadenceHours, 6) || contract.cadenceHours > 168 || contract.cadenceHours % 6 !== 0 ||
+      !integer(contract.evidenceMaxAgeHours, contract.cadenceHours) || contract.evidenceMaxAgeHours > Math.min(168, contract.cadenceHours * 2) ||
+      !Array.isArray(contract.metrics) || contract.metrics.length < 1 || contract.metrics.length > 16 ||
+      contract.metrics.some(m => !m || typeof m.id !== 'string' || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(m.id) ||
+        !['blocker-summary', 'blocker-trend', 'feature-summary'].includes(m.source) || !text(m.sourceRef, 128) ||
+        !['at-least', 'at-most'].includes(m.direction) || !Number.isFinite(m.threshold) || !integer(m.minSamples, 1) || m.minSamples > 100_000)) && new Set(contract.metrics.map(m => m.id)).size === contract.metrics.length;
+}
+
 /** Uses exact baseline and latest-overall current reads. It never falls back
  * to an older, more flattering matching row after a source/version change. */
 export function projectMaturationOutcome(contract: MaturationEvaluationContract | undefined, origin: string,
   featureId: string, now: number, read: ReadMaturationObservation) {
   if (contract?.outcome === undefined) return { state: 'missing-contract' as const, metrics: [] };
-  if (!integer(contract.cadenceHours, 6) || contract.cadenceHours > 168 || contract.cadenceHours % 6 !== 0 ||
-      !integer(contract.evidenceMaxAgeHours, contract.cadenceHours) || contract.evidenceMaxAgeHours > Math.min(168, contract.cadenceHours * 2) ||
-      !Array.isArray(contract.metrics) || contract.metrics.length < 1 || contract.metrics.length > 16 ||
-      contract.metrics.some(m => !m || typeof m.id !== 'string' || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(m.id) ||
-        !['blocker-summary', 'blocker-trend', 'feature-summary'].includes(m.source) || !text(m.sourceRef, 128) ||
-        !['at-least', 'at-most'].includes(m.direction) || !Number.isFinite(m.threshold) || !integer(m.minSamples, 1) || m.minSamples > 100_000)) {
-    return { state: 'invalid-contract' as const, metrics: [] };
-  }
+  if (!validMaturationPolicy(contract)) return { state: 'invalid-contract' as const, metrics: [] };
   const outcome = parseMaturationOutcome(contract.outcome, contract.metrics.map(m => m.id));
   if (!outcome) return { state: 'invalid-contract' as const, metrics: [] };
   const rows = contract.metrics.map(metric => {

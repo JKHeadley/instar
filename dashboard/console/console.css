@@ -1195,3 +1195,15 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .mb-coverage summary { cursor: pointer; padding: 6px 0; }
 .mb-coverage-row { border-top: 1px solid var(--hairline); margin-top: 10px; padding-top: 10px; }
 .mb-coverage-row p { margin: 4px 0; }
+
+.mb-measurement-detail { padding-top: 12px; }
+.mb-measurement-metric { border-top: 1px solid var(--hairline); margin-top: 16px; padding-top: 12px; }
+.mb-measurement-metric h4 { margin: 0; font-size: 17px; }
+.mb-measurement-chart { margin: 12px 0; width: 100%; }
+.mb-measurement-chart svg { display: block; width: 100%; max-width: 600px; height: auto; }
+.mb-measurement-chart figcaption { color: var(--text-muted); font-size: 13px; }
+
+.mb-measurement-detail h3 { margin: 0 0 8px; font-size: 18px; }
+.mb-measurement-detail p { margin: 8px 0; }
+.mb-measurement-detail nav { display: flex; flex-direction: column; align-items: flex-start; }
+.mb-measurement-detail nav button { text-align: left; white-space: normal; }
