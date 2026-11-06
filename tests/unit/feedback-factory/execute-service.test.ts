@@ -513,6 +513,21 @@ describe('verification and publication', () => {
     expect(h.execStore.latestFor(id2)!.state).toBe('pr-open');
   });
 
+  it('a check stopped by its time limit keeps its reason and records which check it was', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    h.runScript.fn = (cmd) => (cmd.command === 'npm run lint' && /-gate$/.test(cmd.cwd)
+      ? { exitCode: 124, stdout: 'still linting', stderr: '', timedOut: true }
+      : null);
+    finishSessions(h);
+    await h.exec.tick();
+    expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'limit:command-wall-clock' });
+    const last = h.exec.summary().lastCheckFailure as { reason: string; detail: string };
+    expect(last.reason).toBe('limit:command-wall-clock');
+    expect(last.detail).toContain('during the lint check');
+    expect(last.detail).toContain('still linting');
+  });
+
   it('a failed check run records its OWN output, so the failure is diagnosable after the clones are gone', async () => {
     h = await createExecHarness();
     const { initiativeId } = await startOne();

@@ -1160,6 +1160,12 @@ export class FeedbackExecutorService {
       reason,
       ...(r ? { detail: `${reason}${commandFailureTail(r, { perStream: PROBE_TAIL_CHARS })}` } : {}),
     });
+    /** A run stopped by a limit keeps the same reason and also names which check it stopped. */
+    const limited = (stage: string, r: { timedOut: boolean; outputCapped: boolean; stdout: string; stderr: string }) => ({
+      ok: false as const,
+      reason: limit(r)!,
+      detail: `${limit(r)!} during the ${stage} check${commandFailureTail(r, { perStream: PROBE_TAIL_CHARS })}`,
+    });
     /** A fresh trusted clone at the base SHA with `entries` applied and node_modules linked by trusted code. */
     const freshClone = async (dir: string, entries: ChangeEntry[]) => {
       removeAttemptTree(dir, this.trashRoot(), 'feedback-execute stale check clone');
@@ -1172,7 +1178,7 @@ export class FeedbackExecutorService {
       // (a) base check: a throwaway clone at the base SHA with only the tests/ changes copied in.
       await freshClone(p.baseClone, testEntries(changeSet));
       const base = await run(p.baseClone, 'base', testCmd);
-      if (limit(base)) return { ok: false, reason: limit(base)! };
+      if (limit(base)) return limited('base', base);
       const imports = relativeImports(testEntries(changeSet).map((e) => ({ path: e.path, text: e.bytes?.toString('utf8') ?? '' })));
       const verdict = classifyBaseFailure(`${base.stdout}\n${base.stderr}`, base.exitCode, sourcePaths(changeSet), imports);
       if (!verdict.ok) return failed(`base-check:${verdict.reason}`, base);
@@ -1180,7 +1186,7 @@ export class FeedbackExecutorService {
       // own workspace, whose node_modules link and files the session controlled).
       await freshClone(p.headClone, changeSet.entries);
       const head = await run(p.headClone, 'head', testCmd);
-      if (limit(head)) return { ok: false, reason: limit(head)! };
+      if (limit(head)) return limited('head', head);
       if (head.exitCode !== 0) return failed('head-check:test-fails-at-head', head);
       if (vitestPassedTestCount(`${head.stdout}\n${head.stderr}`) === 0) return failed('head-check:test-not-run-at-head', head);
       if (!diskOk(p.headClone)) return { ok: false, reason: 'limit:workspace-disk' };
@@ -1189,13 +1195,13 @@ export class FeedbackExecutorService {
       // runs only the base tooling), then the unit tests related to the changed sources.
       await freshClone(p.gateClone, changeSet.entries);
       const lint = await run(p.gateClone, 'lint', cfg.lintCommand);
-      if (limit(lint)) return { ok: false, reason: limit(lint)! };
+      if (limit(lint)) return limited('lint', lint);
       if (lint.exitCode !== 0) return failed('gate:lint', lint);
       const sources = sourcePaths(changeSet).filter((s) => /\.[cm]?[jt]sx?$/.test(s));
       if (sources.length > 0) {
         // './' prefix: a changed file can never be read as a command-line option.
         const related = await run(p.gateClone, 'related', `./node_modules/.bin/vitest related --run --no-cache ${sources.map((s) => shq(`./${s}`)).join(' ')}`, CONFINED_RELATED_TIMEOUT_MS);
-        if (limit(related)) return { ok: false, reason: limit(related)! };
+        if (limit(related)) return limited('related-tests', related);
         if (related.exitCode !== 0) return failed('gate:related-tests', related);
       }
     } finally {
