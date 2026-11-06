@@ -92,13 +92,13 @@ describe('TelegramAdapter — API edge cases', () => {
 
     it('retries without parse_mode on 400 error', () => {
       // The send method should catch 400 errors and retry without parse_mode
-      expect(source).toContain("(400)");
-      expect(source).toContain('delete params.parse_mode');
+      expect(source).toContain("this.apiCall('sendMessage', params)");
+      expect(source).toContain("...params, parse_mode: 'Markdown'");
     });
 
     it('sendToTopic also has markdown fallback', () => {
       // sendToTopic tries with Markdown first, catches and retries without
-      const sendToTopicSection = source.slice(source.indexOf('async sendToTopic'));
+      const sendToTopicSection = source.slice(source.indexOf('private async sendToTopicDelivered'));
       const nextMethod = sendToTopicSection.indexOf('async ', 10);
       const methodBody = sendToTopicSection.slice(0, nextMethod > 0 ? nextMethod : undefined);
 

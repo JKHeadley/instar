@@ -43,6 +43,7 @@ export interface DevGatedFeature {
 }
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
+  { name: 'notificationSelectivity', configPath: 'notifications.selectivity.enabled', description: 'Observe automated notification dispositions on development agents; fleet remains dark until operator enable.', justification: 'Structural provenance only, dry-run by default, reply floors preserved. Echo enforcement is explicitly authorized by the current operator directive; other agents retain the approved staged flip.' },
   {
     name: 'scriptRunners',
     configPath: 'jobs.scriptRunners.enabled',
@@ -966,6 +967,7 @@ export interface DarkGateExclusion {
 }
 
 export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
+  { configPath: 'notifications.selectivity.digest.enabled', category: 'optional-integration', reason: 'A daily digest is an explicit operator notification preference, never an automatic development-agent opt-in.' },
   // ── destructive — kills/deletes on a heuristic; off + dry-run for EVERYONE ──
   {
     configPath: 'monitoring.sessionReaper.enabled',

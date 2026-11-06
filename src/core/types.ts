@@ -6299,6 +6299,7 @@ export interface ResolvedAutonomyState {
 }
 
 export interface NotificationPreferences {
+  selectivity?: import('../messaging/NotificationSelectivityGate.js').SelectivityConfig;
   /** How evolution notifications are batched */
   evolutionDigest?: 'immediate' | 'hourly' | 'daily';
   /** Whether to surface trust elevation suggestions */

@@ -1,3 +1,4 @@
+import { renderNotifications } from './notifications.js';
 // Instar console — shell, auth, routing, Home rendering.
 // Spec: docs/specs/console-makeover.md. Home is read-only; the Promises page
 // can close or resume a promise through its existing bearer-protected routes.
@@ -662,6 +663,7 @@ const NATIVE = {
   'capacity/accounts': renderAccounts,
   'capacity/costs': renderCosts,
   'people/messages': renderMessages,
+  'people/notifications': renderNotifications,
   'people/agents': renderAgents,
   'people/mandates': renderMandates,
   'people/secrets': renderSecrets,

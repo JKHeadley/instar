@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/feedback-factory/triage/buildFeedbackTriage.ts');
 /**
  * Production construction of feedback triage (docs/specs/feedback-triage-and-execution.md).
  * Called from AgentServer inside the operated-drain block, so triage shares the drain's
@@ -74,7 +76,7 @@ export function buildFeedbackTriage(input: {
   codexLiveUsageReader: ((opts?: { codexHome?: string; subscriptionOnly?: boolean; timeoutMs?: number; signal?: AbortSignal }) => Promise<CodexUsageSnapshot | null>) | null;
   subscriptionPool: SubscriptionPool | null;
   telegram: { sendToTopic: (topicId: number, text: string, opts?: { provenance?: 'automation' }) => Promise<unknown> } | null;
-  raiseAttention: (item: AttentionInput) => Promise<void>;
+  raiseAttention: (item: AttentionInput) => Promise<unknown>;
   tunnelUrl: () => string | null;
   /** Queue pace tick-row sink (writes only while queuePace resolves enabled). */
   paceTicks?: FeedbackTriageServiceOptions['paceTicks'];
@@ -151,7 +153,7 @@ export function buildFeedbackTriage(input: {
   });
 
   const telegram = input.telegram;
-  const sendToTopic = input.overrides?.sendToTopic ?? (telegram ? async (topicId: number, text: string) => { await telegram.sendToTopic(topicId, text, { provenance: 'automation' }); } : undefined);
+  const sendToTopic = input.overrides?.sendToTopic ?? (telegram ? async (topicId: number, text: string) => { return withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, text, { provenance: 'automation' })); } : undefined);
 
   const service = new FeedbackTriageService({
     drainStore: input.drainStore,

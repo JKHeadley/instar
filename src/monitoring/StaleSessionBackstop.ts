@@ -72,6 +72,8 @@ export interface StaleBackstopDeps {
   probeLiveness: (tmuxSessions: string[]) => Promise<LivenessBatch> | LivenessBatch;
   snapshot: (session: Session) => ProgressSnapshot;
   raiseAttention: AttentionPoster;
+  /** Existing recovery authority owns diagnosis/treatment; at most once per stale episode. */
+  selfHeal?: (session: Session) => Promise<{ resolved: boolean; evidence: string }>;
   /** Flag/unflag a session as long-`indeterminate` for the spawn absolute-cap exclusion. */
   setLongIndeterminate?: (sessionId: string, isLong: boolean) => void;
   /**
@@ -299,14 +301,17 @@ export class StaleSessionBackstop {
     // ONE "🩺 Agent Health" topic and never spawns topic-after-topic. The store
     // `id` still carries the episode seq (each episode is recorded), while
     // `healthKey` is stable per session so the lane suppresses duplicate re-posts.
+    const recovery = await this.deps.selfHeal?.(session);
+    if (recovery?.resolved) return;
     await this.deps.raiseAttention({
       id: `stale-${session.id}-${o.episodeSeq}`,
       healthKey: `stale-${session.id}`,
+      contextTopicIds: /^topic-\d+$/.test(session.name) ? [Number(session.name.slice(6))] : undefined,
       lane: 'agent-health',
       title: `Heads-up on the "${display}" session`,
       summary:
         `It hasn't shown visible progress in a while (${detail}), so it might be stuck — but it's still `
-        + `running and nothing's been killed. Reply "check ${display}" and I'll look, or ignore this if you know it's fine.`,
+        + `running. I checked its liveness and progress signals and will keep the recovery loop. ${recovery?.evidence ?? 'The next probe will check it again.'}`,
       category: 'degradation',
       priority: 'NORMAL',
     });

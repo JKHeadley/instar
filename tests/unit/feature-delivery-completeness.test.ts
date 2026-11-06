@@ -124,6 +124,7 @@ describe('Feature Delivery Completeness', () => {
     // When you add a new CLAUDE.md section to templates.ts, add a key phrase here.
     // The test will verify it exists in both files. If it's only in one, CI fails.
     const featureSections = [
+      '### Quiet by Default notifications', // shared template/migrator operational awareness, including confirmed preferences
       '### Who can answer my Telegram buttons', // ACT-115: owner checks fail closed
       '**Memory privacy**', // memory-privacy spec: audience by place
       'An update never turns it on', // memory-privacy spec: opt-in for existing agents

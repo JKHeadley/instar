@@ -1,3 +1,4 @@
+import { QuietRecordedError } from '../NotificationSelectivityGate.js';
 /* @self-action-controller: telegram-origin-forward-ladder */
 // a2a-single-agent-identity §4 (ACT-058) — a reply from a machine that does not
 // hold the serving lease is FORWARDED to the lease holder; a forward that fails
@@ -188,6 +189,10 @@ export async function submitOriginToHolder(input: {
   catch { return { ok: false, reason: 'origin-relay-acceptance-unknown', outcome: 'outcome-unknown', retryable: false }; }
   const response = result.result as { ok?: boolean; messageId?: number; originId?: string; originReceiptConfirmed?: boolean; reason?: string;
     outcome?: string; retryable?: boolean; deliveryMachineId?: string; operationId?: string; policyRefusal?: OriginSendPolicyDecision } | undefined;
+  if (result.ok && response?.ok && response.originId === input.operation.record.originId &&
+    (response as unknown as { recorded?: boolean }).recorded === true && typeof (response as unknown as { quietId?: string }).quietId === 'string') {
+    throw new QuietRecordedError({ delivered: false, recorded: true, quietId: (response as unknown as { quietId: string }).quietId });
+  }
   const policyRefusal = response?.policyRefusal;
   if (policyRefusal && policyRefusal.ok === false) {
     return { ok: false, reason: response?.reason ?? 'send-policy-refused', outcome: 'held', retryable: false, policyRefusal };

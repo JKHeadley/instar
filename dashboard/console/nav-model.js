@@ -62,6 +62,7 @@ export const GROUPS = [
     question: 'Who is talking to whom, and with what permission?',
     tabs: [
       { id: 'threadline', label: 'Other agents', icon: 'chat', desc: 'Who is waiting on you, whether each agent I work with is actually there, pairing new ones, and our conversations.' },
+      { id: 'notifications', label: 'Notifications', icon: 'chat', desc: 'Quiet reports and the categories you want pushed to you.' },
       { id: 'origins', label: 'Messages to you', icon: 'chat', desc: 'Who wrote each message I sent you, and the who-wrote-this footer.' },
       { id: 'mandates', label: 'Permission slips', icon: 'stamp', desc: 'What you have let agents do together, who is waiting for your approval, and every allow and refusal.' },
       { id: 'phones', label: 'Phones', icon: 'phone', desc: 'Pair the Instar iPhone app: approve a waiting phone, or read its code, after your PIN (when there is no Telegram), and the phones already paired.' },
@@ -113,6 +114,7 @@ export const NATIVE_PAGES = {
   'llm-activity': '#/capacity/costs',
   'routing-map': '#/capacity/costs',
   origins: '#/people/messages',
+  notifications: '#/people/notifications',
   threadline: '#/people/agents',
   mandates: '#/people/mandates',
   secrets: '#/people/secrets',

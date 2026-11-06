@@ -408,6 +408,26 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "LLM-provider plumbing reached through a dynamic import in a certified module; shared across every internal LLM feature and certified by its own suites — binding it would re-freeze releases on unrelated provider churn"
     },
     {
+      "file": "src/messaging/NotificationPreferences.ts",
+      "reason": "Confirmed Telegram notification preference replication, reached through the notification gate; it cannot change Codex composer admission, inbound delivery observation, or recovery acknowledgment certified by Stage-B."
+    },
+    {
+      "file": "src/messaging/NotificationSelectivityGate.ts",
+      "reason": "Outbound Telegram notification routing only, reached through excluded TelegramAdapter; it does not admit, observe, or acknowledge inbound Codex composer deliveries covered by the Stage-B canary."
+    },
+    {
+      "file": "src/messaging/QuietNotificationStore.ts",
+      "reason": "Local outbound Telegram quiet-feed persistence only, reached through the notification gate; it has no effect on the certified inbound Codex delivery state machine."
+    },
+    {
+      "file": "src/messaging/notificationCategories.ts",
+      "reason": "Closed outbound Telegram notification category declarations only, reached through the notification gate; no Codex composer or inbound delivery behavior."
+    },
+    {
+      "file": "src/core/upgradeAnnouncement.ts",
+      "reason": "Existing outbound release announcement front-matter parser, reached through notification category promotion; does not admit or observe inbound Codex composer deliveries certified by Stage-B."
+    },
+    {
       "file": "src/core/SigninProfileGuard.ts",
       "reason": "Stateless Google browser-profile ownership validation and generated native hook text, reached through the shared MCP/registry dependency graph; it does not implement the certified Codex delivery observer, composer, ledger, or recovery protocol. Its browser capability boundary is verified by dedicated unit, HTTP, and installed-hook lifecycle tests."
     }

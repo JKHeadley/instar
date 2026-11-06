@@ -1,3 +1,4 @@
+import { QuietRecordedError } from '../NotificationSelectivityGate.js';
 import { validOriginAdmission } from './OriginAdmissionSeal.js';
 import { canonicalOrigin, wireDigest } from './CanonicalOrigin.js';
 import { verifyOriginAttestation } from './OriginAttestation.js';
@@ -148,6 +149,7 @@ export async function handleOriginMesh(options: {
     return { ok: true, originId: record.originId, messageId: body.result?.message_id, originReceiptConfirmed: true,
       deliveryMachineId: runtime.options.identity.originMachineId, forwardedFromMachine: record.originMachineId };
   } catch (error) {
+    if (error instanceof QuietRecordedError) return { ok: true, originId: record.originId, ...error.receipt, deliveryMachineId: runtime.options.identity.originMachineId };
     if (error instanceof OriginSendPolicyRefusal) return { ok: false, reason: error.reason, outcome: 'held',
       operationId: record.operationId, policyRefusal: error.decision };
     // Telegram accepted it; only the receipt write failed. Answering a refusal

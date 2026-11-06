@@ -63,6 +63,7 @@ const DEFAULT_CONFIG: Required<StrandedTopicSentinelConfig> = {
 
 /** The raise/update payload for the aggregated attention item. */
 export interface StrandAttentionItem {
+  contextTopicIds?: number[];
   id: string;
   title: string;
   summary: string;
@@ -243,6 +244,7 @@ export class StrandedTopicSentinel extends EventEmitter {
 
     const item: StrandAttentionItem = {
       id: `stranded-topic:${owner}:${windowId}`,
+      contextTopicIds: topics.map(topic => /^telegram:(\d+)$/.exec(topic.sessionKey)).filter((match): match is RegExpExecArray => match !== null).map(match => Number(match[1])),
       title: `Inbound stranded on ${nick} (${topics.length} topic${topics.length === 1 ? '' : 's'})`,
       summary: `Topics owned by ${nick} (${reasonText}) — inbound can't reach a servable machine.`,
       description:

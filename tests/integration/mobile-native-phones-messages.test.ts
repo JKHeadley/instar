@@ -259,7 +259,7 @@ describe('wiring: the real origin runtime through createRoutes', () => {
     expect((lite.activation as { state: unknown }).state).toBe((full.activation as { state: unknown }).state);
     const app = express(); app.use(express.json());
     app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer agent-test') { res.sendStatus(401); return; } next(); });
-    app.use(createRoutes({ config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo', messaging: [] },
+    app.use(createRoutes({ state: { getSession: () => undefined }, config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo', messaging: [] },
       telegramOrigin: runtime, verifyDashboardOperatorSession: (proof: string) => proof === 'operator-test', sessionManager: { clearInjectionTracker: () => undefined } } as never));
     const phone = await request(app).get('/mobile/messages').set('Authorization', 'Bearer agent-test');
     expect(phone.status).toBe(200);
