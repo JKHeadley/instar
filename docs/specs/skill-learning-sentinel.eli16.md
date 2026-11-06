@@ -52,3 +52,6 @@ has gone blind.
 each coding framework) was designed in May but the step that fills it on existing agents never shipped, and the
 log of skill uses was writing broken rows. Both repairs are slice 0 of this work. And the correction sentinel
 (how you like things) has to be switched on on my development agent for the trial, which I did today.
+
+**Tracked.** The approval and the first build step are one tracked promise (CMT-042), so the May postponement this
+spec closes is linked to a dated owner rather than left in prose.
