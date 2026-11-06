@@ -44,6 +44,7 @@ import type {
   WaitJson,
 } from '../tasks/task-flow-types.js';
 import { TaskFlowError } from '../tasks/task-flow-types.js';
+import type { MaturationOutcomeContract } from '../monitoring/MaturationOutcome.js';
 
 export type InitiativePhaseStatus = 'pending' | 'in-progress' | 'done' | 'blocked';
 
@@ -93,6 +94,8 @@ export interface MaturationEvaluationContract {
   cadenceHours: number;
   evidenceMaxAgeHours: number;
   metrics: MaturationMetricContract[];
+  /** Optional recorded outcome/baseline evidence; never a promotion authority. */
+  outcome?: MaturationOutcomeContract;
 }
 
 export type MaturationLadderRung = 'test-agent-live' | 'dev-agent-live' | 'fleet';
@@ -128,6 +131,8 @@ export interface RolloutInfo {
   /** D7: bounded numeric contract evaluated on the shared blocker-lifecycle
    * metrics substrate. Evaluation is advisory and never advances this track. */
   maturationEvaluation?: MaturationEvaluationContract;
+  /** Preserve malformed declared measurement metadata instead of calling it absent. */
+  maturationContractError?: RolloutAccountingInfo['maturationContractError'];
   /** Near-silent edge dedupe: last time a needs-user line was surfaced for this track. */
   lastDigestNotifiedAt?: string;
 }

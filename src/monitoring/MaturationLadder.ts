@@ -14,6 +14,7 @@
 
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import type { MaturationEvaluationContract } from '../core/InitiativeTracker.js';
+import { parseMaturationOutcome, type MaturationOutcomeContract } from './MaturationOutcome.js';
 
 export const LADDERS_SCHEMA = 'feature-ladders/1';
 export const LADDER_RESPONSE_SCHEMA = 'maturation-ladder/1';
@@ -61,6 +62,7 @@ export interface LadderRung {
   soakDays: number;
   advance: RungAdvance;
   metrics: LadderMetric[];
+  outcome?: MaturationOutcomeContract;
 }
 
 export interface LadderPreference { decidedBy: string; reason: string; decidedAt: string; ref: string }
@@ -216,6 +218,7 @@ function rungError(raw: unknown, flagPath: string | null): string | null {
   // Enough to judge: it must show it ran AND how it did.
   if (!roles.has('ran')) return 'needs-a-ran-metric';
   if (!judgeRoleFromOwnBehaviour) return 'needs-a-quality-or-harm-metric';
+  if (r.outcome !== undefined && !parseMaturationOutcome(r.outcome, [...ids])) return 'outcome';
   return null;
 }
 
@@ -410,6 +413,7 @@ export function contractForRung(rung: LadderRung): MaturationEvaluationContract 
       threshold: m.threshold,
       minSamples: m.minSamples,
     })),
+    ...(rung.outcome ? { outcome: rung.outcome } : {}),
   };
 }
 

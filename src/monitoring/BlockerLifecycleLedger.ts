@@ -235,6 +235,25 @@ export class BlockerLifecycleLedger {
     } catch { /* @silent-fallback-ok — false makes the failed observation write explicit to the caller */ return false; }
   }
 
+  /** Exact baseline, or latest overall metric observation. This indexed read
+   * cannot lose a baseline to the global recent-observations row limit. */
+  maturationObservation(origin: string, featureId: string, metricId: string, observedAtMs?: number): MaturationMetricObservation | null {
+    if (!this.db) return null;
+    try {
+      const exact = observedAtMs !== undefined;
+      const rows = this.db.prepare(`SELECT origin,feature_id AS featureId,metric_id AS metricId,source,
+        source_ref AS sourceRef,observed_at_ms AS observedAtMs,value,samples,
+        descriptor_version AS descriptorVersion,benchmark_ref AS benchmarkRef
+        FROM maturation_metric_observations WHERE origin=? AND feature_id=? AND metric_id=?
+        ${exact ? 'AND observed_at_ms=?' : ''} ORDER BY observed_at_ms DESC LIMIT 2`)
+        .all(...(exact ? [origin, featureId, metricId, observedAtMs] : [origin, featureId, metricId])) as MaturationMetricObservation[];
+      // Different source refs can legally share a metric/time. Do not select
+      // whichever row SQLite returns first as proof of an unambiguous value.
+      if (rows[1] && rows[1].observedAtMs === rows[0].observedAtMs) return null;
+      return rows[0] ?? null;
+    } catch { /* @silent-fallback-ok — unavailable baseline/current proof is explicit in outcome evidence */ return null; }
+  }
+
   maturationObservations(origin: string, sinceMs: number): MaturationMetricObservation[] {
     if (!this.db) return [];
     try {

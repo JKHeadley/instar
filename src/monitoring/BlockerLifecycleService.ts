@@ -4,6 +4,7 @@ import type { Initiative, MaturationEvaluationContract } from '../core/Initiativ
 import type { InitiativeTracker } from '../core/InitiativeTracker.js';
 import { BlockerLifecycleLedger, percentile, type BlockerFactor, type BlockerMetricRecord, type MaturationEvaluationRecord, type MaturationEvaluationStatus, type MaturationMetricObservation } from './BlockerLifecycleLedger.js';
 import { DegradationReporter } from './DegradationReporter.js';
+import { parseMaturationOutcome, projectMaturationOutcome } from './MaturationOutcome.js';
 
 type FailureReason = 'insufficient-days' | 'insufficient-samples' | 'zero-denominator';
 
@@ -125,13 +126,13 @@ export class BlockerLifecycleService {
     }
   }
 
-  localSummary(sinceHours: number): Record<string, unknown> {
+  localSummary(sinceHours: number, outcomeFeatureId?: string): Record<string, unknown> {
     const sinceMs = this.now() - sinceHours * 3_600_000;
     return {
       machineId: this.origin,
       factors: (['request-to-persist', 'clear-latency'] as const).map(f => this.factorSummary(f, sinceMs))
         .concat(this.completionSummary(sinceMs, sinceHours)),
-      maturation: this.maturationSummary(sinceMs),
+      maturation: this.maturationSummary(sinceMs, outcomeFeatureId),
       counters: { ...this.ledger.counters(), ...this.derivedCounters(sinceMs), breakerOpen: this.now() < this.breakerUntil },
     };
   }
@@ -203,9 +204,9 @@ export class BlockerLifecycleService {
       }
       if (!contract) {
         if (this.ledger.recordMaturationEvaluation({ origin: this.origin, featureId: initiative.id,
-          rung, dueSlotMs, evaluatedAtMs: now, status: initiative.rolloutAccounting?.maturationContractError ? 'invalid-contract' : 'missing-contract',
+          rung, dueSlotMs, evaluatedAtMs: now, status: (initiative.rolloutAccounting?.maturationContractError ?? initiative.rollout?.maturationContractError) ? 'invalid-contract' : 'missing-contract',
           passingMetrics: 0, totalMetrics: 0, minNormalizedMargin: null,
-          contractHash: initiative.rolloutAccounting?.maturationContractError ?? 'missing', newestEvidenceAtMs: null })) inserted++;
+          contractHash: initiative.rolloutAccounting?.maturationContractError ?? initiative.rollout?.maturationContractError ?? 'missing', newestEvidenceAtMs: null })) inserted++;
         continue;
       }
       const oldestAllowed = now - contract.evidenceMaxAgeHours * 3_600_000;
@@ -295,7 +296,17 @@ export class BlockerLifecycleService {
     }
   }
 
-  private maturationSummary(sinceMs: number): Record<string, unknown> {
+  /** Evidence for one existing subject, from the same ledger and contract D7 uses. */
+  maturationOutcome(featureId: string) {
+    const subject = this.maturationInitiatives.find(i => i.id === featureId);
+    const contract = subject?.rolloutAccounting?.maturationEvaluation ?? subject?.rollout?.maturationEvaluation;
+    return { featureId, subjectKnown: Boolean(subject), evidence: (subject?.rolloutAccounting?.maturationContractError ?? subject?.rollout?.maturationContractError)
+      ? { state: 'invalid-contract' as const, metrics: [] }
+      : projectMaturationOutcome(contract, this.origin, featureId,
+        this.now(), (metricId, at) => this.ledger.maturationObservation(this.origin, featureId, metricId, at)) };
+  }
+
+  private maturationSummary(sinceMs: number, outcomeFeatureId?: string): Record<string, unknown> {
     const rows = this.ledger.maturationEvaluations(this.origin, sinceMs);
     const latest = new Map<string, MaturationEvaluationRecord>();
     for (const row of rows) latest.set(row.featureId, row);
@@ -326,8 +337,19 @@ export class BlockerLifecycleService {
     for (const row of accounting) accountingCounts[row.disposition]++;
     const eligibleCount = this.maturationInitiatives.length;
     const legacyEligible = Math.max(0, eligibleCount - accountingCounts.active - accountingCounts.composed);
+    // This is declared-contract coverage of D7's subjects, not universal
+    // inventory coverage and not a count of verified baselines.
+    const outcomeContracts = { scope: 'current-d7-subjects', subjects: eligibleCount, declared: 0, missing: 0, invalid: 0 };
+    for (const subject of this.maturationInitiatives) {
+      const contract = subject.rolloutAccounting?.maturationEvaluation ?? subject.rollout?.maturationEvaluation;
+      if (subject.rolloutAccounting?.maturationContractError ?? subject.rollout?.maturationContractError) outcomeContracts.invalid++;
+      else if (contract?.outcome === undefined) outcomeContracts.missing++;
+      else if (parseMaturationOutcome(contract.outcome, contract.metrics.map(m => m.id))) outcomeContracts.declared++;
+      else outcomeContracts.invalid++;
+    }
     return { eligible: eligibleCount, evaluated: latest.size,
-      missedDue: Math.max(0, eligibleCount - latest.size), byStatus, features, accountingCounts, legacyEligible, accounting };
+      missedDue: Math.max(0, eligibleCount - latest.size), byStatus, features, accountingCounts, legacyEligible, accounting,
+      outcomeContracts, ...(outcomeFeatureId ? { outcomeDetail: this.maturationOutcome(outcomeFeatureId) } : {}) };
   }
 
   private maturationTrend(sinceMs: number): Record<string, unknown> {

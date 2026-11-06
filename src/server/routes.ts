@@ -1,4 +1,5 @@
 import { JobPortableSync } from '../core/JobPortableSync.js';
+import { validMaturationOutcomeDetail } from '../monitoring/MaturationOutcome.js';
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
 import { registerRecommendedServiceRoutes } from './recommendedServiceRoutes.js';
 import { catalogWithProving } from '../recommended/recipes.js';
@@ -35343,7 +35344,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (seen.size !== 3) return null;
     return out;
   };
-  const sanitizeMaturation = (kind: 'summary' | 'trend', raw: unknown): Record<string, unknown> | null => {
+  const sanitizeMaturation = (kind: 'summary' | 'trend', raw: unknown, expectedOrigin: string): Record<string, unknown> | null => {
     if (!raw || typeof raw !== 'object') return null;
     const m = raw as Record<string, unknown>;
     if (kind === 'summary') {
@@ -35411,8 +35412,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (dispositions.some(k => actualCounts[k as keyof typeof actualCounts] !== accountingCounts![k]) ||
             m.eligible !== actualCounts.active + actualCounts.composed + (m.legacyEligible as number)) return null;
       }
+      let outcomeContracts: Record<string, unknown> | undefined;
+      if (m.outcomeContracts !== undefined) {
+        if (!m.outcomeContracts || typeof m.outcomeContracts !== 'object' || Array.isArray(m.outcomeContracts)) return null;
+        const o = m.outcomeContracts as Record<string, unknown>;
+        if (o.scope !== 'current-d7-subjects' || !['subjects', 'declared', 'missing', 'invalid'].every(k => Number.isSafeInteger(o[k]) && (o[k] as number) >= 0) ||
+            o.subjects !== m.eligible || o.subjects !== (o.declared as number) + (o.missing as number) + (o.invalid as number)) return null;
+        outcomeContracts = { scope: o.scope, subjects: o.subjects, declared: o.declared, missing: o.missing, invalid: o.invalid };
+      }
+      if (m.outcomeDetail !== undefined && !validMaturationOutcomeDetail(m.outcomeDetail, expectedOrigin)) return null;
       return { eligible: m.eligible, evaluated: m.evaluated, missedDue: m.missedDue,
         byStatus: Object.fromEntries(statuses.map(k => [k, byStatus[k] ?? 0])), features,
+        ...(outcomeContracts ? { outcomeContracts } : {}),
+        ...(m.outcomeDetail !== undefined ? { outcomeDetail: m.outcomeDetail } : {}),
         ...(accountingCounts ? { accountingCounts: Object.fromEntries(dispositions.map(k => [k, accountingCounts![k]])),
           legacyEligible: m.legacyEligible, accounting } : {}) };
     }
@@ -35422,7 +35434,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   const blockerPoolRead = async (kind: 'summary' | 'trend', query: string, local: Record<string, unknown>) => {
     const cacheKey = `${kind}?${query}`;
     const cached = blockerPoolCache.get(cacheKey);
-    if (cached && Date.now() - cached.at < 60_000) return cached.value;
+    // A verified outcome can cross its freshness deadline within the ordinary
+    // pool cache window. Detail queries re-read and validate the actual proof.
+    if (cached && Date.now() - cached.at < 60_000 && !new URLSearchParams(query).has('feature')) return cached.value;
     const peers = (ctx.resolvePeerUrls?.() ?? []).slice(0, 16);
     const origins: unknown[] = [local];
     const failures: Array<{ machineId: string; reason: string }> = [];
@@ -35454,7 +35468,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           if (!origin || typeof origin !== 'object') { failures.push({ machineId: p.machineId, reason: 'invalid-body' }); return; }
           const candidate = origin as Record<string, unknown>;
           const factors = sanitizeBlockerFactors(kind, candidate.factors);
-          const maturation = sanitizeMaturation(kind, candidate.maturation);
+          const requestedFeature = new URLSearchParams(query).get('feature');
+          if (kind === 'summary' && requestedFeature) {
+            const detail = (candidate.maturation as Record<string, unknown> | undefined)?.outcomeDetail as Record<string, unknown> | undefined;
+            if (!detail) { failures.push({ machineId: p.machineId, reason: 'unsupported-outcome-detail' }); return; }
+            if (detail.featureId !== requestedFeature) { failures.push({ machineId: p.machineId, reason: 'invalid-outcome-subject' }); return; }
+          }
+          const maturation = sanitizeMaturation(kind, candidate.maturation, p.machineId);
           const counters = kind === 'summary' ? sanitizeBlockerCounters(candidate.counters) : null;
           if (!maturation) {
             failures.push({ machineId: p.machineId, reason: 'unsupported-maturation' }); return;
@@ -35475,7 +35495,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }));
     }
     const value = { origins, failures, poolComplete: failures.length === 0 };
-    blockerPoolCache.set(cacheKey, { at: Date.now(), value });
+    if (!new URLSearchParams(query).has('feature')) blockerPoolCache.set(cacheKey, { at: Date.now(), value });
     return value;
   };
 
@@ -35483,11 +35503,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (!ctx.blockerLifecycleService?.available()) { res.status(503).json({ error: 'blocker-lifecycle-unavailable' }); return; }
     const sinceHours = Number(req.query.sinceHours ?? 24);
     const scope = String(req.query.scope ?? 'local');
-    if (!Number.isFinite(sinceHours) || sinceHours < 1 || sinceHours > 168 || !['local', 'pool'].includes(scope)) {
+    const feature = req.query.feature;
+    if (!Number.isFinite(sinceHours) || sinceHours < 1 || sinceHours > 168 || !['local', 'pool'].includes(scope) ||
+        (feature !== undefined && (typeof feature !== 'string' || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(feature)))) {
       res.status(400).json({ error: 'invalid-blocker-lifecycle-query' }); return;
     }
-    const local = ctx.blockerLifecycleService.localSummary(sinceHours);
-    const pool = scope === 'pool' ? await blockerPoolRead('summary', `sinceHours=${sinceHours}`, local)
+    const local = ctx.blockerLifecycleService.localSummary(sinceHours, feature as string | undefined);
+    const pool = scope === 'pool' ? await blockerPoolRead('summary', `sinceHours=${sinceHours}${feature ? `&feature=${feature}` : ''}`, local)
       : { origins: [local], failures: [], poolComplete: true };
     res.json({ schemaVersion: 2, scope, ...pool, generatedAt: new Date().toISOString() });
   });

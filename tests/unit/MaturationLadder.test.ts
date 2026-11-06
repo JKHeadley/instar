@@ -22,6 +22,20 @@ function entry(over: Record<string, unknown> = {}): LadderEntry {
 }
 
 describe('parseLadderRegistry', () => {
+  it('carries optional outcome metadata through dynamic ladder refs without changing legacy contracts', () => {
+    const outcome = { statement: 'Fewer harmful decisions', owner: 'decision-owner', method: 'Recorded outcomes', version: 'v1',
+      outcomeMetricIds: ['harm'], qualityMetricIds: ['harm'], baseline: { origin: 'm1', points: [
+        { id: 'ran', observedAtMs: 1_000, descriptorVersion: 1, value: 10, samples: 10 },
+        { id: 'harm', observedAtMs: 1_000, descriptorVersion: 1, value: 0.1, samples: 50 },
+      ] } };
+    const e = entry({ rungs: { fleet: { ...rung, outcome } } });
+    expect(contractForRung(e.rungs.fleet!).outcome).toEqual(outcome);
+    expect(contractForRung(e.rungs.fleet!).metrics[0].sourceRef).toMatch(/^ladder\./);
+    expect(contractForRung(rung)).not.toHaveProperty('outcome');
+    const bad = parse(raw({ rungs: { fleet: { ...rung, outcome: { ...outcome, qualityMetricIds: ['unknown'] } } } }));
+    expect(bad.ok === false && bad.reason).toContain('outcome');
+  });
+
   it('accepts a complete entry and derives a D7-safe subject', () => {
     const e = entry();
     expect(e.subject).toBe('monitoring-x');

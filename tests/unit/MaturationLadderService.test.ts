@@ -62,6 +62,17 @@ const readyRows = (now: number, days = 10) => Array.from({ length: days * 4 + 1 
 const fired = (now: number, n = 3) => Array.from({ length: n }, (_, i) => ({ at: new Date(now - (i + 1) * DAY).toISOString(), kind: 'fired' }));
 const auditLines = (dir: string) => fs.readFileSync(path.join(dir, 'logs/maturation-advances.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
 
+it('clears stale scanner errors when the validated ladder becomes the contract owner', () => {
+  const { svc } = make();
+  const base = { id: 'monitoring-x', title: 'X', rollout: { flagPath: 'monitoring.x', stage: 'dry-run', maturationContractError: 'invalid-shape' },
+    rolloutAccounting: { disposition: 'active', sourcePrNumber: 7, rung: 'test-agent-live', maturationContractError: 'invalid-shape' } } as Initiative;
+  const subject = svc.subjects([base]).find(i => i.id === base.id)!;
+  expect(subject.rollout?.maturationEvaluation).toEqual(contractForRung(devRung as LadderRung));
+  expect(subject.rollout?.maturationContractError).toBeUndefined();
+  expect(subject.rolloutAccounting?.maturationContractError).toBeUndefined();
+  expect(base.rollout?.maturationContractError).toBe('invalid-shape');
+});
+
 async function readyService(over: Parameters<typeof make>[0] = {}) {
   const now = 100 * DAY;
   const ctx = make({ now, d7Rows: readyRows(now), ...over });

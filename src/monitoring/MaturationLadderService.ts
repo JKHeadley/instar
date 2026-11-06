@@ -396,8 +396,8 @@ export class MaturationLadderService {
       if (existing) {
         byId.set(entry.subject, {
           ...existing,
-          ...(existing.rollout ? { rollout: { ...existing.rollout, maturationEvaluation: contract } } : { rollout: { flagPath: entry.flag?.path ?? entry.id, stage, maturationEvaluation: contract } }),
-          ...(existing.rolloutAccounting ? { rolloutAccounting: { ...existing.rolloutAccounting, maturationEvaluation: contract } } : {}),
+          ...(existing.rollout ? { rollout: { ...existing.rollout, maturationEvaluation: contract, maturationContractError: undefined } } : { rollout: { flagPath: entry.flag?.path ?? entry.id, stage, maturationEvaluation: contract } }),
+          ...(existing.rolloutAccounting ? { rolloutAccounting: { ...existing.rolloutAccounting, maturationEvaluation: contract, maturationContractError: undefined } } : {}),
         });
       } else {
         extra.push({ id: entry.subject, title: entry.title, rollout: { flagPath: entry.flag?.path ?? entry.id, stage, maturationEvaluation: contract } } as unknown as Initiative);
