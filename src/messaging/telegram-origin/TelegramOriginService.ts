@@ -157,6 +157,13 @@ export class TelegramOriginService {
       harnessName: author.harness.value ? harnessNames[author.harness.value] ?? author.harness.value : null });
     return this.#scope.run({ producer, operations: [] }, fn);
   }
+  private automationLogicalKey(producerId:string,topicId:number,logicalSendId:string):string {
+    return originDigest({producerId,topicId,logicalSendId,machineId:this.options.identity.originMachineId,agentId:this.options.identity.agentId});
+  }
+  /** Read-only identity of the first durable operation in this fixed logical send. */
+  automationOperationId(producerId:string,topicId:number,logicalSendId:string):string {
+    return originDigest({key:this.automationLogicalKey(producerId,topicId,logicalSendId),ordinal:0});
+  }
   /** Private in-process mint. HTTP callers cannot register producers or choose
    * author evidence. The one-use token binds the entire submitted request and
    * destination, expires in 30 seconds, and stores only its hash in memory. */
@@ -172,8 +179,7 @@ export class TelegramOriginService {
     const bodyDigest = originDigest(JSON.parse(JSON.stringify(body)));
     this.#automationCredentials.set(createHash('sha256').update(token).digest('hex'), {
       producer, bodyDigest, topicId, expiresAt: this.#now() + 30_000,
-      ...(logicalSendId ? { logicalSendKey: originDigest({ producerId, topicId, logicalSendId,
-        machineId: this.options.identity.originMachineId, agentId: this.options.identity.agentId }) } : {}) });
+      ...(logicalSendId ? { logicalSendKey: this.automationLogicalKey(producerId,topicId,logicalSendId) } : {}) });
     return token;
   }
   runWithAutomationReply<T>(token: string, topicId: number, body: Record<string, unknown>, fn: () => T): T {

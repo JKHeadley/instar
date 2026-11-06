@@ -1,3 +1,5 @@
+import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
+import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
 export const QUIET_NOTIFICATIONS_CLAUDEMD_SECTION = `
 ### Quiet by Default notifications
 Automated notices belong in the dashboard Notifications feed and internal records. Conversational replies and notices serving a specific inbound message keep flowing. Check GET /notifications/selectivity and GET /notifications/quiet?scope=pool when the user asks what stayed quiet. Category push is an explicit operator choice: use POST /notifications/categories/:id/push with confirmedBy and a recent operator-bound confirmingMessageId, or the PIN-confirmed dashboard toggle. Never grant yourself push and never label a scheduled report as a reply. Keep overseer findings and repairs in handoffs; a Bugs-hub post must name an unresolved impact and the one action only the operator can provide. Own bounded checks and recovery before escalating. Other agents start dark or in observation mode and enforce only at the operator flip; Echo follows the current directive.
@@ -4394,7 +4396,9 @@ export class PostUpdateMigrator {
       return;
     }
     try {
-      installBootWrapper(this.config.projectDir);
+      if(fs.existsSync(path.join(this.config.stateDir,'recovery','host.json'))){
+        if(!installAutoStart(this.config.projectName,this.config.projectDir,this.config.hasTelegram,{noStart:true}))throw new Error('Owned recovery bootstrap update refused');
+      }else installBootWrapper(this.config.projectDir);
       result.upgraded.push('boot-wrapper ABI-check: regenerated instar-boot.cjs with ABI-aware node self-heal + version-managed node candidates');
     } catch (err) {
       result.errors.push(`boot-wrapper ABI-check regen: ${err instanceof Error ? err.message : String(err)}`);
@@ -4845,8 +4849,12 @@ export class PostUpdateMigrator {
       return;
     }
     try {
-      fs.writeFileSync(`${plistPath}.bak-${Date.now()}`, content, 'utf-8');
-      fs.writeFileSync(plistPath, next, 'utf-8');
+      const recoveryUpdate=beginRecoveryAutostartUpdate(this.config.projectDir,plistPath,next);
+      try {
+        fs.writeFileSync(`${plistPath}.bak-${Date.now()}`, content, 'utf-8');
+        fs.writeFileSync(plistPath, next, 'utf-8');
+        recoveryUpdate?.commit();
+      } catch(error) {recoveryUpdate?.rollback();throw error;}
       const raised = found.filter((v) => v < LAUNCHD_PROCESS_CEILING_FLOOR).join('/');
       result.upgraded.push(
         `launchd process ceiling: raised ${raised} → ${LAUNCHD_PROCESS_CEILING_FLOOR} (applies at next restart)`,
@@ -8721,6 +8729,11 @@ setTimeout(() => process.exit(0), 2000);
       content += QUIET_NOTIFICATIONS_CLAUDEMD_SECTION;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Quiet by Default notifications');
+    }
+    if (!content.includes('### Server-down remote recovery')) {
+      content += recoveryAwareness(this.config.port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added server-down recovery setup and proof awareness');
     }
     const port = this.config.port;
     const oldThreadlineStatus = 'This capability is **installed and ready** but **not yet enabled**. I will only connect when you say so.';
@@ -15764,6 +15777,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // will guess. Mirrored like every agent-facing capability.
       '### Mesh Self-Healing: stale-owner release + lease hand-back',
       '### Cold-Start Lifeline Fallback',
+      '### Server-down remote recovery',
       // Durable Conversation Identity: framework-agnostic HTTP surface — a
       // Codex/Gemini agent seeing a negative topicId must know it is a minted
       // conversation id resolvable at GET /conversations/:id, or it will guess.
