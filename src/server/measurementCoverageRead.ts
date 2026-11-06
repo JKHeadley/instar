@@ -23,6 +23,7 @@ function collectMeasurementInputs(ctx: MeasurementCoverageContext, now = Date.no
   const subjects = new Map<string, { contract?: MaturationEvaluationContract; error?: string; targetState?: MeasurementTargetState }>();
   const bindings: Array<{id:string;target:MeasurementSubject}> = [];
   const ownerCollisions = new Set<string>();
+  const genericOwners = new Set<string>();
   const featureParents = new Map<string, CoverageParent[]>();
   const addParent = (flag: string, parent: CoverageParent) => { const key = normalize(flag); featureParents.set(key, [...(featureParents.get(key) ?? []), parent]); };
   const featureLinks = new Map<string, Set<string>>();
@@ -62,6 +63,7 @@ function collectMeasurementInputs(ctx: MeasurementCoverageContext, now = Date.no
     if (!ctx.initiativeTracker) throw Error('unavailable');
     for (const i of ctx.initiativeTracker.list() as Initiative[]) {
       const generic = i.measurement !== undefined;
+      if (generic) genericOwners.add(i.id);
       const featureContract=i.rolloutAccounting?.maturationEvaluation??i.rollout?.maturationEvaluation;
       subjects.set(i.id, generic ? { contract: !i.rollout && !i.rolloutAccounting && validGenericMeasurement(i.measurement,i.id) ? i.measurement : undefined,
         ...(!validGenericMeasurement(i.measurement,i.id) || i.rollout || i.rolloutAccounting ? {error:'invalid-measurement-contract'} : {}) }
@@ -91,7 +93,7 @@ function collectMeasurementInputs(ctx: MeasurementCoverageContext, now = Date.no
         addParent(key, { kind: 'feature', id: normalize(parent?.flag?.path ?? entry.composedInto), source: 'ladder-composition' });
       }
       const retained = contracts.get(entry.subject);
-      if (bindings.some(b=>b.id===entry.subject)) { ownerCollisions.add(entry.subject); subjects.set(entry.subject,{...subjects.get(entry.subject),error:'measurement-owner-collision'}); }
+      if (genericOwners.has(entry.subject)) { ownerCollisions.add(entry.subject); subjects.set(entry.subject,{...subjects.get(entry.subject),error:'measurement-owner-collision'}); }
       else if (retained && (retained.overridesInitiative || !subjects.has(entry.subject))) subjects.set(entry.subject, { contract: retained.contract });
     }
   });

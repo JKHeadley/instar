@@ -13,6 +13,7 @@ import { BlockerLifecycleLedger } from '../../src/monitoring/BlockerLifecycleLed
 import { FeatureMetricsLedger } from '../../src/monitoring/FeatureMetricsLedger.js';
 import type { BlockerLifecycleService } from '../../src/monitoring/BlockerLifecycleService.js';
 import { measurementSourceRef,type GenericMeasurementContract } from '../../src/monitoring/MeasurementSubject.js';
+import { subjectFromId } from '../../src/monitoring/MaturationLadder.js';
 import { PROVENANCE_COVERAGE } from '../../src/data/provenanceCoverage.js';
 import { validMeasurementRead } from '../../src/server/measurementDetailRead.js';
 import { StateManager } from '../../src/core/StateManager.js';
@@ -24,12 +25,13 @@ import type { InstarConfig } from '../../src/core/types.js';
 const servers: AgentServer[] = [];
 const dirs: string[] = [];
 
-async function boot(developmentAgent: boolean, measurement=false) {
+async function boot(developmentAgent: boolean, measurement=false, retainedOwner?: { id: string; liveConfig: Record<string, unknown> }) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'mb-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
   for (const d of ['state/sessions', 'state/jobs', 'logs']) fs.mkdirSync(path.join(stateDir, d), { recursive: true });
-  fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
+  fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify(retainedOwner?.liveConfig ?? {}));
+  if (retainedOwner) fs.writeFileSync(path.join(stateDir, 'initiatives.json'), JSON.stringify({ initiatives: [{ id: retainedOwner.id, title: 'Malformed retained owner', kind: 'task', schemaVersion: 1, status: 'active', measurement: {}, phases: [] }] }));
   const reviews = path.join(dir, 'docs/research/feature-maturation/reviews');
   fs.mkdirSync(reviews, { recursive: true });
   const date = new Date().toISOString().slice(0, 10);
@@ -100,6 +102,15 @@ describe('maturation board — production wiring', () => {
       const invalid=await request(server.getApp()).patch('/initiatives/whole-quality').send({rollout:{flagPath:'one.enabled',stage:'live'}});expect(invalid.status).toBe(400);expect(initiatives.get('whole-quality')!.measurement).toBeDefined();
       const cleared=await request(server.getApp()).patch('/initiatives/whole-quality').send({measurement:null});expect(cleared.status).toBe(200);expect(initiatives.get('whole-quality')!.measurement).toBeUndefined();
     }finally{observations.close();grades.close();}
+  });
+
+  it('keeps a malformed retained generic owner invalid through the real ladder and measurement route', async () => {
+    const id = subjectFromId('apprenticeship.stallCoverageGate');
+    const { server } = await boot(true, true, { id, liveConfig: { apprenticeship: { stallCoverageGate: true } } });
+    const response = await request(server.getApp()).get(`/maturation/board?part=measurement&subject=${id}&machine=mb-e2e`);
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ state: 'invalid-contract', subjectId: id, detail: null });
+    expect(response.body.sources).toContainEqual(expect.objectContaining({ name: 'ladder-owner', ok: true }));
   });
 
   it('is off on a fleet agent: 503', async () => {

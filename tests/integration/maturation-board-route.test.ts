@@ -6,6 +6,7 @@ import express from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createMaturationBoardRoutes, resolveReviewsDir } from '../../src/server/maturationBoardRoutes.js';
+import { readMeasurementOwner } from '../../src/server/measurementCoverageRead.js';
 import { measurementCoverage } from '../../src/monitoring/MeasurementCoverage.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -101,6 +102,17 @@ describe('GET /maturation/board', () => {
     expect(res.body.rows.find((r: { id: string }) => r.id === 'brandNew')).toMatchObject({ declaration: 'declared', state: 'inactive' });
     const multiple = await request(make([graduated, { ...graduated, id: 'other' }])).get('/maturation/board?part=coverage');
     expect(multiple.body.rows.find((r: { id: string }) => r.id === 'brandNew')).toMatchObject({ declaration: 'ambiguous', state: 'ambiguous', subjects: ['graduated', 'other'] });
+  });
+
+  it.each([{}, null, { subject: { kind: 'invalid', key: 'job' } }])('retains a malformed generic owner collision before ladder precedence: %j', measurement => {
+    const entry = { id: 'collision', subject: 'collision', title: 'Collision', disposition: 'ladder', rungs: {} };
+    const ladderContract = { cadenceHours: 6, evidenceMaxAgeHours: 12, metrics: [] };
+    const ctx = ctxFor(fx, {
+      initiativeTracker: { list: () => [{ id: 'collision', title: 'Invalid owner', status: 'active', measurement }] },
+      maturationLadder: () => ({ error: null, entries: [entry], measurementContracts: () => new Map([['collision', { contract: ladderContract, overridesInitiative: true }]]) }),
+    });
+    expect(readMeasurementOwner(ctx, 'collision').owner).toMatchObject({ error: 'measurement-owner-collision' });
+    expect(readMeasurementOwner(ctx, 'collision').owner?.contract).toBeUndefined();
   });
 
   it('preserves accounting ownership and ladder composition without borrowing parent evidence', async () => {

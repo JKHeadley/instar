@@ -39,3 +39,5 @@ Missing-baseline claim/promotion enforcement, full deployment and user intelligi
 
 <!-- tracked: CMT-001 -->
 
+
+Owner declarations are retained before validating their optional target binding. Even malformed generic metadata reserves its initiative owner identity, so a same-id ladder cannot overwrite the visible error or lend it a feature contract. Three malformed-owner cases are reproduced through the actual independent collector. Existing ladder parsing already rejects duplicate subject identities, with a direct parser regression test. This is a correction to the existing measurement read, with no new promotion authority.
