@@ -100,6 +100,14 @@ Safe to ship. It removes a false kill path and a crash path, and every real-deat
 
 ## Second-pass review (if required)
 
+**Reviewer:** independent general-purpose Claude subagent started by builder session echo-echo-2868-land, 2026-11-06, reviewing head 2a10b53be. It did not write this change.
+
+**Verdict: concurs, no blocking concerns.** Covers the three unit test files and `tests/e2e/closed-pipe-process-survival.test.ts`, including its `describe.skipIf(!DIST_BUILT)`.
+
+**The added skip is justified, though not needed.** The verifier and CI both build before e2e and a failed build stops the run, so dist is present in gated runs. Counts suggest it did not fire on this head (e2e passed rose by 3, skipped unchanged at 29; inferred, no per-file report kept). `tests/e2e/slack-containment-process-survival.test.ts` uses the same pattern. Remaining hole: if `pipeErrorGuard.ts` or the policy file is renamed, the build still passes and this e2e file skips with nothing flagging it.
+
+**Non-blocking concerns it recorded:** no test in this PR drives an unknown probe plus failing health past the threshold into `handleUnhealthy` (correct by reading only); the five GONE lines cited here undercount the day; the delay bound is nearer 11-15 minutes than 10, and the legacy planned-restart path has no time bound with a stale flag file and a wedged tmux; `fs.writeSync` EPIPE stays fatal, the conservative direction. The e2e config and a live server were not run by the reviewer.
+
 **Independent read of the artifact: concern, resolved.** An independent reviewer read every caller of `isServerSessionAlive` and found no wedge and no dead server left unrestarted forever. Guard rethrow, stdio handling and the regex against live tmux 3.7c wording all concur. Concerns raised and resolved here: the 60-second claim was only the best case (bounds now in section 1); the gone path logged nothing (it now logs tmux's words, and the summary is softened); "names the writer" overreached (reworded); the evidence line credited the wrong test (fixed); the e2e stderr scenario could pass on the policy alone (it now asserts the guard's report).
 
 ## Evidence pointers
