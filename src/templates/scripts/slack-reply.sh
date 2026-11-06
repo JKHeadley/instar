@@ -112,8 +112,9 @@ fi
 
 PORT="${PORT:-4042}"
 
-# JSON-escape the message
-ESCAPED=$(python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))" <<< "$MESSAGE" 2>/dev/null)
+# JSON-escape through a pipe: Bash here-strings need a temporary file that
+# private-memory sessions cannot create. Keep the same trailing newline.
+ESCAPED=$(printf '%s\n' "$MESSAGE" | python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))" 2>/dev/null)
 # Fallback to basic bash escaping if python unavailable
 if [ -z "$ESCAPED" ]; then
   ESCAPED="\"$(echo "$MESSAGE" | sed 's/\\/\\\\/g; s/"/\\"/g')\""
