@@ -15,6 +15,7 @@ path until its script is enabled.
 |-----|------|-------|---------|
 | `health-check` | `*/5 * * * *` (every 5 min) | Haiku | Verify infrastructure health |
 | `commitment-detection` | `*/5 * * * *` (every 5 min) | Haiku | Detect new commitments in the recent conversation flow |
+| `promise-review` | `23 */6 * * *` (every 6h at minute 23) | Sonnet | Review up to 30 due promises, retain or prioritize uncertain work, and propose evidence-backed closures through the server. Gated by `commitments.promiseReview`; closures use shadow mode until graduation. Never sends messages. |
 | `commitment-checkin-reminder` | `*/5 * * * *` (every 5 min) | — (no LLM) | Post one reminder for each commitment whose check-in date has arrived. Ships disabled. |
 | `reflection-trigger` | `0 */4 * * *` (every 4h) | Opus | Reflect on recent work and surface insights |
 | `evolution-overdue-check` | `0 */4 * * *` (every 4h) | Haiku | Surface overdue commitments and stalled action items |

@@ -52,3 +52,5 @@ The two disappearing-proof race tests failed before repair and passed afterward.
 Second-pass repair review: review_usage_fix — Concur with the review. Independently checked both Tier 1 paths, disappearing-evidence regressions, captured banner support, summary ownership guidance, and both convergence controllers. No remaining blocking concern identified.
 
 The full-source silent-fallback ratchet reproduced 495 catches against its 494 ceiling. The added transcript parse catch now explicitly documents its intentional unknown-evidence result; no threshold was raised and no runtime behavior changed.
+
+Blocking CI repair: documented the existing promise-review job in the jobs reference and evolution guide. Job coverage was 83% against the unchanged 85% floor; documenting its actual schedule, proof checks, gate and no-message behavior clears that floor. Documentation-only; no runtime or operator-action changes.

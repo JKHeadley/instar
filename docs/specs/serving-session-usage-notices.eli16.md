@@ -11,3 +11,5 @@ The change adjusts evidence and notice bookkeeping. It does not restart sessions
 The repair on current main preserves the real Claude banner that starts with a tool-result connector: the same symbol can appear on a helper error, so the symbol alone cannot identify whose limit it is. The serving transcript still decides ownership. If that proof disappears before delivery, the warning is withheld. Ordinary AI summaries are instructed to leave usage diagnoses to this verified warning path.
 
 Malformed transcript records are treated as unknown evidence and cannot authorize a warning.
+
+Full CI also exposed missing documentation for the existing promise-review job on main. Its schedule, evidence checks, rollout gate, and no-messaging behavior are now described in the jobs reference and evolution guide so the documentation check passes without lowering its required coverage.
