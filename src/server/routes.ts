@@ -23840,7 +23840,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // single-machine view on installs where the pool registry isn't wired (dark).
   // The /pool view, shared with the phone's GET /mobile/machines (mobile-native-ops-screens).
   function recoveryPoolView(){
-    const membership=Object.fromEntries((ctx.coordinator?.managers.identityManager?.getActiveMachines()??[]).map(row=>[row.machineId,Date.parse(row.entry.pairedAt)]));
+    const membership=Object.fromEntries((ctx.coordinator?.managers?.identityManager?.getActiveMachines()??[]).map(row=>[row.machineId,Date.parse(row.entry.pairedAt)]));
     return recoveryPoolHealth(ctx.meshSelfId??null,(ctx.listPoolMachines?.()??[]).map(p=>p.machineId),Date.now(),membership);
   }
   function poolView(): Record<string, unknown> {

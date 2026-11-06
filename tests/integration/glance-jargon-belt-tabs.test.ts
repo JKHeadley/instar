@@ -95,6 +95,9 @@ describe('Machines glance (integration — real /pool)', () => {
     const pool = await res.json();
     expect(pool.enabled).toBe(true);
     expect(pool.machines.length).toBe(2);
+    // Optional recovery identity is not wired in this ordinary pool fixture.
+    // Keep the pool alive while refusing to infer recovery readiness.
+    expect(pool.serverDownRecovery).toMatchObject({scope:'pool',ready:false});
 
     const base = buildMachinesGlance(pool, null);
     expect(validateGlanceSpec(base).ok).toBe(true);

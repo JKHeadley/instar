@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -33,7 +33,12 @@ describe('recovery control plane in the actual Threadline HTTP server',()=> {
     return {raw,headers:{'x-device-id':deviceId,'x-device-time':time,'x-device-signature':sig}};
   };
   const grant=(machineId:string,publicKey:string,source:string,sshPublicKey:string,relayPublicKey:string,sequence=1)=>({action:'grant',agentId:'throwaway',machineId,publicKey,sequence,principals:[{machineId:source,pairingEpoch:1,generation:1,sshPublicKey,relayPublicKey}]});
-  const control=(machineId:string,key:string,action:string,body:unknown)=>signRecovery({domain:'instar-recovery-control-request-v1',agentId:'throwaway',machineId,action,body,nonce:crypto.randomBytes(32).toString('hex'),issuedAt:Date.now(),expiresAt:Date.now()+30_000},key);
+  const control=(machineId:string,key:string,action:string,body:unknown)=>{
+    // The protocol caps the signed lifetime at exactly 30s. Capture once: a
+    // millisecond tick between two Date.now() calls otherwise signs 30,001ms.
+    const issuedAt=Date.now();
+    return signRecovery({domain:'instar-recovery-control-request-v1',agentId:'throwaway',machineId,action,body,nonce:crypto.randomBytes(32).toString('hex'),issuedAt,expiresAt:issuedAt+30_000},key);
+  };
   it('never accepts a bearer token as an owner grant',async()=> {
     const r=await post('/v1/recovery/owner',grant('a',a.publicKey,'b',sb.publicKey,b.publicKey),{Authorization:'Bearer test'});expect(r.status).toBe(403);
   });
@@ -43,6 +48,16 @@ describe('recovery control plane in the actual Threadline HTTP server',()=> {
     }
     const r=await post('/v1/recovery/checkpoint',control('b',b.privateKey,'checkpoint',{challenge:'f'.repeat(64)}));
     expect(r.status).toBe(200);const body=await r.json();expect(body.checkpoint.payload.targetMachineId).toBe('b');expect(body.checkpoint.payload.principals[0].machineId).toBe('a');
+  });
+  it('captures one timestamp and refuses a signed request over the exact freshness bound',async()=>{
+    let time=Date.now();const clock=vi.spyOn(Date,'now').mockImplementation(()=>time++);
+    let request:ReturnType<typeof control>;
+    try{request=control('b',b.privateKey,'poll',{});}finally{clock.mockRestore();}
+    expect(request.payload.expiresAt-request.payload.issuedAt).toBe(30_000);
+    const valid=await post('/v1/recovery/poll',request);expect(valid.status,await valid.text()).toBe(200);
+    const overlong=signRecovery({...request.payload,nonce:crypto.randomBytes(32).toString('hex'),expiresAt:request.payload.issuedAt+30_001},b.privateKey);
+    const response=await post('/v1/recovery/poll',overlong);
+    expect(response.status).toBe(403);expect(await response.json()).toEqual({error:'recovery-control-authentication-refused'});
   });
   it('routes opaque frames to the target, acknowledges delivery and rejects replays',async()=> {
     const req=control('a',a.privateKey,'send',{to:'b',id:'frame-1',payload:'opaque-signed-operation'});
@@ -56,10 +71,10 @@ describe('recovery control plane in the actual Threadline HTTP server',()=> {
     for(let index=0;index<80;index++){
       for(const [from,key,to]of [['a',a.privateKey,'b'],['b',b.privateKey,'a']] as const){
         const id=`stream-${from}-${index}`,payload='opaque-'+id+'x'.repeat(1000);
-        const queued=await post('/v1/recovery/send',control(from,key,'send',{to,id,payload}));expect(queued.status).toBe(200);
+        const queued=await post('/v1/recovery/send',control(from,key,'send',{to,id,payload}));expect(queued.status,await queued.text()).toBe(200);
         const receiverKey=to==='a'?a.privateKey:b.privateKey;
         if(index%10===0){const frames=await(await post('/v1/recovery/poll',control(to,receiverKey,'poll',{}))).json();expect(frames.frames.some((frame:any)=>frame.id===id)).toBe(true);}
-        expect((await post('/v1/recovery/ack',control(to,receiverKey,'ack',{id}))).status).toBe(200);
+        const ack=await post('/v1/recovery/ack',control(to,receiverKey,'ack',{id}));expect(ack.status,await ack.text()).toBe(200);
       }
     }
     const pending=relay.registry.recoveryRead('mail:throwaway') as any[],acknowledged=relay.registry.recoveryRead('mail-acks:throwaway') as any[];
@@ -135,7 +150,7 @@ describe('recovery phone commissioning and current owner revocation',()=>{
   beforeAll(async()=>{dir=fs.mkdtempSync(path.join(os.tmpdir(),'recovery-phone-'));await start();});
   afterAll(async()=>{await relay.stop();SafeFsExecutor.safeRmSync(dir,{recursive:true,force:true,operation:'recovery-phone.test:cleanup'});});
   const signed=async(route:string,action:unknown)=>{const raw=JSON.stringify(action),time=String(Date.now());const sig=derSignature(crypto.sign('sha256',Buffer.from(canonicalString(deviceId,'recovery.invalid','POST',route,time,Buffer.from(raw))),{key:phone.privateKey,dsaEncoding:'ieee-p1363'}));return fetch(base+route,{method:'POST',headers:{'Content-Type':'application/json','x-device-id':deviceId,'x-device-time':time,'x-device-signature':sig},body:raw});};
-  it('serves a CSP-bound phone console without including host credentials',async()=>{const r=await fetch(base+'/v1/recovery/phone');expect(r.status).toBe(200);expect(r.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");const html=await r.text();expect(html).toContain('non-exportable');expect(html).not.toContain(token);expect(html).not.toContain(signer.privateKey);});
+  it('serves a CSP-bound phone console without including host credentials',async()=>{const r=await fetch(base+'/v1/recovery/phone');expect(r.status).toBe(200);expect(r.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");const html=await r.text();expect(html).toContain('Your private signing key stays on this phone.');expect(html).not.toContain(token);expect(html).not.toContain(signer.privateKey);});
   it('requires possession of the one-use enrollment token and phone signing key',async()=>{const body={agentId:'phone-test',deviceId,publicKey,token};const unsigned=await fetch(base+'/v1/recovery/owner-enroll',{method:'POST',body:JSON.stringify(body)});expect(unsigned.status).toBe(403);expect((await signed('/v1/recovery/owner-enroll',{...body,token:'incorrect'})).status).toBe(403);expect((await signed('/v1/recovery/owner-enroll',body)).status).toBe(200);await relay.stop();await start();expect((await signed('/v1/recovery/owner-enroll',body)).status).toBe(403);});
   it('persists owner revocation and never resurrects it from boot enrollment config',async()=>{expect((await signed('/v1/recovery/owner',{agentId:'phone-test',action:'inspect',machineId:'target'})).status).toBe(200);expect((await signed('/v1/recovery/owner',{agentId:'phone-test',action:'revoke-owner'})).status).toBe(200);await relay.stop();await start();expect((await signed('/v1/recovery/owner',{agentId:'phone-test',action:'inspect',machineId:'target'})).status).toBe(403);expect((await signed('/v1/recovery/owner-enroll',{agentId:'phone-test',deviceId,publicKey,token})).status).toBe(403);});
   it('replaces a lost phone only with a new release-certified generation and fresh host capability',async()=>{
