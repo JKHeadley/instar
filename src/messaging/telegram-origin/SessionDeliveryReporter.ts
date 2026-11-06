@@ -32,3 +32,13 @@ export async function reportSessionDelivery(entry: DeliveryEvent, topicId: numbe
   const response = await deps.sendNotice(topicId, copy.topicText, `reply-delivery-notice:${entry.operationId}:${noticeState}`);
   if (response.status !== 200) throw new Error(`origin notice not confirmed: HTTP ${response.status}`);
 }
+
+/** A receipt confirms the original reply, independently of notice delivery. */
+export function recordRecoveredSessionDelivery(
+  entry: Parameters<NonNullable<TelegramOriginRuntimeOptions['onRecoveredMessage']>>[0],
+  telegram: Pick<TelegramAdapter, 'logRecoveredOriginMessage' | 'clearAttentionCondition'>,
+): void {
+  telegram.logRecoveredOriginMessage(entry);
+  telegram.clearAttentionCondition({ id: `telegram-origin-held-reply:${entry.operationId}` },
+    `Telegram accepted recovered message ${entry.messageId}.`, { reconcile: true });
+}

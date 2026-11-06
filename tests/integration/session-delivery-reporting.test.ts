@@ -5,7 +5,7 @@ import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { NotificationSelectivityGate } from '../../src/messaging/NotificationSelectivityGate.js';
-import { reportSessionDelivery } from '../../src/messaging/telegram-origin/SessionDeliveryReporter.js';
+import { reportSessionDelivery, recordRecoveredSessionDelivery } from '../../src/messaging/telegram-origin/SessionDeliveryReporter.js';
 
 const roots: string[] = [];
 const adapters: TelegramAdapter[] = [];
@@ -74,6 +74,21 @@ describe('historical delivery reconciliation stays off Telegram', () => {
     expect(item.closedBy).toBe('cause-cleared');
     expect(h.send).not.toHaveBeenCalled(); expect(api).not.toHaveBeenCalled();
     expect(h.sendNotice).not.toHaveBeenCalled();
+  });
+  it.each([120_000, 360_000])('records a recovered receipt after %sms with no legacy status egress', async delay => {
+    const h = fixture();
+    await reportSessionDelivery(held(1), 2, h);
+    const item = h.telegram.getAttentionItem('telegram-origin-held-reply:original-1')!;
+    const legacy = h.telegram as unknown as { attentionItemToTopic: Map<string, number>; config: { attentionLifecycle?: { enabled: boolean } }; apiCall: () => Promise<unknown> };
+    legacy.attentionItemToTopic.set(item.id, 99);
+    legacy.config.attentionLifecycle = { enabled: false };
+    const api = vi.spyOn(legacy, 'apiCall').mockRejectedValue(new Error('Unexpected recovered-status egress'));
+    const now = Date.now();
+    recordRecoveredSessionDelivery({ operationId: 'original-1', chatId: '-100123', threadId: 2,
+      messageId: 7, text: 'The recovered original answer', preparedAt: now - delay, acceptedAt: now, producerKind: 'session' }, h.telegram);
+    expect(item).toMatchObject({ status: 'DONE', closedBy: 'cause-cleared', resolution: 'Telegram accepted recovered message 7.' });
+    expect(h.telegram.getTopicHistory(2, 10)).toEqual(expect.arrayContaining([expect.objectContaining({ text: 'The recovered original answer' })]));
+    expect(h.send).not.toHaveBeenCalled(); expect(api).not.toHaveBeenCalled(); expect(h.sendNotice).not.toHaveBeenCalled();
   });
   it('preserves sticky attention records when reconciling an accepted original', async () => {
     const h = fixture();

@@ -7144,16 +7144,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { bootTelegramOrigin } = await import('../messaging/telegram-origin/TelegramOriginBoot.js')
         .catch(error => { releaseOriginLeaseRenewal(); throw error; });
       telegramOriginBoot = await bootTelegramOrigin({ config, notificationGate: selectivityGate, token: typeof originBotToken === 'string' && originBotToken ? originBotToken : undefined,
-        onRecoveredMessage: entry => {
-          telegram?.logRecoveredOriginMessage(entry);
-          // A late acceptance is reported by the durable exception scan. Only
-          // an on-time acceptance can close the held Attention item here.
-          if (entry.acceptedAt - entry.preparedAt >= 300_000) return;
-          const attentionId = `telegram-origin-held-reply:${entry.operationId}`;
-          if (telegram?.clearAttentionCondition({ id: attentionId }, `Telegram accepted recovered message ${entry.messageId}.`).closed === 0) {
-            void telegram?.updateAttentionStatus(attentionId, 'DONE', { silent: true,
-              closedBy: 'cause-cleared', resolution: `Telegram accepted recovered message ${entry.messageId}.` });
-          }
+        onRecoveredMessage: async entry => {
+          if (!telegram) return;
+          const { recordRecoveredSessionDelivery } = await import('../messaging/telegram-origin/SessionDeliveryReporter.js');
+          recordRecoveredSessionDelivery(entry, telegram);
         },
         onSessionDeliveryHeld: async entry => {
           if (!telegram || !entry.chatId) return;
