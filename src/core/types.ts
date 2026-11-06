@@ -2665,7 +2665,12 @@ export interface LeaseSelfHealConfig {
    * self-fence stays armed otherwise. DARK + opt-in; no-op when no preferred
    * machine is set. Spec: docs/specs/multi-transport-mesh-comms.md.
    */
-  soloCaptainHold?: { enabled?: boolean };
+  /**
+   * `requireLastingLink`, `pairRole` and `pairedWith` are written only at a first pairing. Until a machine has
+   * proved a connection to its peer that survives a restart, the inviter serves as it always did
+   * and the joiner never takes the lease (session-pool-takeover-at-pairing).
+   */
+  soloCaptainHold?: { enabled?: boolean; requireLastingLink?: boolean; pairRole?: 'inviter' | 'joiner'; pairedWith?: string };
   /**
    * U4.4 (docs/specs/u4-4-lease-handback.md) — the reconciler for the F4
    * preference: after a failover, the serving lease is handed BACK to the
