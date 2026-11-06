@@ -284,7 +284,7 @@ export class HealthChoiceStore {
 
   private tryFlush(): void {
     if (!this.dirty || this.readError) return;
-    try { this.save(); } catch (err) { this.opts.onError?.('write', err); }
+    try { this.save(); } catch (err) { this.opts.onError?.('write', err); } // @silent-fallback-ok — onError is the server's DegradationReporter report
   }
 
   private audit(event: string, row: HealthChoiceRow): void {
@@ -292,6 +292,7 @@ export class HealthChoiceStore {
       fs.mkdirSync(path.dirname(this.auditFile), { recursive: true });
       fs.appendFileSync(this.auditFile, `${JSON.stringify({ at: new Date(this.now()).toISOString(), event, key: row.key, mode: row.mode, until: row.until, by: row.by, origin: row.origin })}\n`, { mode: 0o600 });
     } catch (err) {
+      // @silent-fallback-ok — onError is the server's DegradationReporter report
       this.opts.onError?.('audit', err);
     }
   }

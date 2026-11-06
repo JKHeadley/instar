@@ -60,3 +60,5 @@ One security-and-adversarial round by an independent reviewer, which read the co
 Accepted and written down, not fixed: the peer route uses the shared bearer rather than machine signatures, so a session could post to it. It could equally use the choice route, so signing that one route adds nothing while the bearer can choose at all. Rows from a peer now say only "another of this agent's machines". One hidden problem can mask a further reason `/health` can't name: it reads "Running, with one thing you've hidden", never healthy, the same limit any showing row has. With the remediator on (off by default), its own notices about a hidden problem still reach the person.
 
 Proportion: one review round, as set. It found design defects and they were fixed in place; the changes are narrow and covered by tests, so no second round was run.
+
+Two catch blocks in the store report through `onError`, which the server wires to DegradationReporter. The silent-fallback check cannot follow a callback, so each carries its `@silent-fallback-ok` marker with that reason.
