@@ -302,6 +302,89 @@ describe('locked-proof launchd kill', () => {
     expect(snap.markers).toEqual({});
   });
 
+  it('a server that does not know the lock state yet is skipped, like one that is down', async () => {
+    const answers: Record<number, unknown> = { 4098: { lockState: 'unknown' }, 4097: { lockState: 'locked-in-session' } };
+    const target = realTarget({ a: { port: 4098 }, b: { port: 4097 }, api: async (agent: { port: number }) => answers[agent.port] });
+    expect(await target.serverLockState()).toBe('locked-in-session');
+    answers[4097] = { lockState: 'unknown' };
+    expect(await target.serverLockState()).toBe('unknown');
+  });
+
+  it('the lock state is the Mac\'s own flag, whatever a server\'s cached reading says', async () => {
+    // A server's status is a cache that only refreshes while a viewer is connected: on the Mini
+    // it read "unlocked" for a whole relock watch while the Mac was locked.
+    const stale = { a: { port: 4098 }, b: { port: 4097 }, api: async () => ({ lockState: 'unlocked' }) };
+    expect(await realTarget({ ...stale, consoleLock: () => 'locked' }).readLockState()).toBe('locked-in-session');
+    expect(await realTarget({ ...stale, api: async () => ({ lockState: 'locked-in-session' }), consoleLock: () => 'open' }).readLockState()).toBe('unlocked');
+    // With no console session for the proof user, only a server can say which state it is.
+    expect(await realTarget({ ...stale, api: async () => ({ lockState: 'logged-out' }), consoleLock: () => 'none' }).readLockState()).toBe('logged-out');
+  });
+
+  it('a sample keeps the servers\' reading beside the truth', async () => {
+    const target = realTarget({
+      events: new Set<string>(), store: '/nonexistent', consoleOwner: () => 'someone-else', processes: () => [], pids: {}, priorMarkers: {},
+      readStore: () => ({ markers: {} }), consoleLock: () => 'locked', a: { port: 4098 }, b: { port: 4097 }, api: async () => ({ lockState: 'unlocked' }),
+    });
+    const snap = await target.snapshot();
+    expect(snap.lockState).toBe('locked-in-session');
+    expect(snap.serverLockState).toBe('unlocked');
+  });
+
+  it('resuming a process that already exited is not an error; stopping or killing nothing is', () => {
+    const gone = 999_999; // above the macOS pid ceiling, so no process can hold it
+    const target = realTarget({ stopped: new Set([gone]) });
+    expect(target.kill(gone, 'CONT')).toEqual({ pid: gone, sig: 'CONT', skipped: 'gone' });
+    expect(target.stopped.has(gone)).toBe(false);
+    expect(() => target.kill(gone, 'STOP')).toThrow(/refusing to signal/);
+    expect(() => target.kill(gone, 'KILL')).toThrow(/refusing to signal/);
+  });
+
+  it('start-server leaves both agents listening: kill-tmux takes agent B down with agent A', async () => {
+    const up = new Set<number>();
+    const started: string[] = [];
+    const target = realTarget({
+      a: { port: 4098, dir: '/a' }, b: { port: 4097, dir: '/b' }, o: { proofInstall: '/install' },
+      serverPid: (agent: { port: number }) => (up.has(agent.port) ? 1 : null),
+      asProof: (args: string[]) => { started.push(args[args.length - 1]); up.add(args[args.length - 1] === '/a' ? 4098 : 4097); },
+      waitLockStateKnown: async () => true,
+    });
+    expect(await target.act('start-server')).toEqual({ started: true, ports: [4098, 4097], lockStateKnown: true });
+    expect(started).toEqual(['/a', '/b']);
+    // Agent A is started even when something still listens on its port: after a launchd bootout
+    // the old server holds the port for a moment, and skipping the start left nothing serving.
+    expect(await target.act('start-server')).toEqual({ started: true, ports: [4098], lockStateKnown: true });
+    up.delete(4097);
+    expect((await target.act('start-server')).ports).toEqual([4098, 4097]);
+  });
+
+  it('stop-server throws unless the server really stays stopped', async () => {
+    // tmux resumes a stopped pane process at once: the signal is sent, the server never freezes.
+    const base = { serverPid: () => 321, pids: {}, kill: (pid: number, sig: string) => ({ pid, sig }) };
+    await expect(realTarget({ ...base, procStat: () => 'Ss+' }).act('stop-server')).rejects.toThrow(/did not stay stopped \(state "Ss\+"\).*launchd/);
+    await expect(realTarget({ ...base, procStat: () => '' }).act('stop-server')).rejects.toThrow(/did not stay stopped/);
+    expect(await realTarget({ ...base, procStat: () => 'T+' }).act('stop-server')).toEqual({ pid: 321, sig: 'STOP', stat: 'T+' });
+  });
+
+  it('every case that freezes the server serves it under launchd first, and puts it back in tmux', () => {
+    const freezing = CASES.filter((c: { inject: { action: string }[] }) => c.inject.some(i => i.action === 'stop-server'));
+    expect(freezing.map((c: { id: string }) => c.id)).toEqual(['12.1', '12.6']);
+    for (const c of freezing) {
+      expect(c.before).toEqual(['serve-under-launchd']);
+      expect(c.cleanup.slice(0, 3)).toEqual(['cont-server', 'end-launchd-serve', 'start-server']);
+    }
+  });
+
+  it('waits for a started server to know the lock state, and reports when it never does', async () => {
+    let clock = 0, calls = 0;
+    const timing = { now: () => clock, sleep: async (ms: number) => { clock += ms; } };
+    const learns = realTarget({ ...timing, api: async () => (++calls < 3 ? { lockState: 'unknown' } : { lockState: 'unlocked' }) });
+    expect(await learns.waitLockStateKnown()).toBe(true);
+    expect(calls).toBe(3);
+    clock = 0;
+    const never = realTarget({ ...timing, api: async () => { throw new Error('down'); } });
+    expect(await never.waitLockStateKnown(5_000)).toBe(false);
+  });
+
   it('a revoke with nothing to revoke fails the case', async () => {
     const target = realTarget({ priorMarkers: {}, readStore: () => ({ markers: {} }) });
     await expect(target.act('revoke')).rejects.toThrow(/no open request/);

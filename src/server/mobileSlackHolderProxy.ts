@@ -10,7 +10,7 @@
  */
 import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from './peerUrlGuard.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
-import { poolPeerFetch, type PoolPeerTarget, type RopeResultRecorder } from './poolPeerFetch.js';
+import { poolPeerFetch, PoolPeerAdmissionError, type PoolPeerTarget, type RopeResultRecorder } from './poolPeerFetch.js';
 
 export const HOLDER_READ_TIMEOUT_MS = 8_000;
 export const HOLDER_READ_MAX_BYTES = 4 * 1024 * 1024;
@@ -92,9 +92,13 @@ export function buildSlackHolderRead(deps: HolderReadDeps): HolderRead {
     try {
       const before = q.before === null ? '' : `&before=${encodeURIComponent(q.before)}`;
       const path = `/mobile/chat/slack/${q.id}/messages?machine=${encodeURIComponent(q.machine)}&limit=${q.limit}&deviceView=1${before}`;
+      const ownerFetch: typeof fetch = async (input, init) => {
+        if (!q.stillOwner()) throw new PoolPeerAdmissionError('owner-phone-required');
+        return (deps.fetchImpl ?? fetch)(input, init);
+      };
       const r = await poolPeerFetch(deps.record, peer, path, {
         headers: { Authorization: `Bearer ${token}` }, redirect: 'manual', signal: AbortSignal.timeout(deps.timeoutMs ?? HOLDER_READ_TIMEOUT_MS),
-      }, deps.fetchImpl ?? fetch);
+      }, ownerFetch);
       if (r.status >= 300 && r.status < 400) { await r.body?.cancel().catch(() => undefined); return failed(502, 'holder-redirected'); } // @silent-fallback-ok — releasing a refused redirect's body
       const text = await boundedText(r, deps.maxBytes ?? HOLDER_READ_MAX_BYTES);
       if (text === null) return failed(502, 'holder-too-large');
@@ -111,8 +115,10 @@ export function buildSlackHolderRead(deps: HolderReadDeps): HolderRead {
       if (!body || body.conversationId !== q.id || !Array.isArray(body.messages)) return failed(502, 'holder-bad-answer');
       if (body.deviceView !== true) return failed(502, 'holder-outdated', 'The machine that holds this Slack conversation needs updating before the phone can read it.');
       const { deviceView: _shape, ...answer } = body;
+      if (!q.stillOwner()) return { status: 403, body: { error: 'owner-only', detail: 'Only the agent\'s owner can use Slack from the app.' } };
       return { status: 200, body: answer };
     } catch (err) {
+      if (err instanceof PoolPeerAdmissionError) return { status: 403, body: { error: 'owner-only', detail: 'Only the agent\'s owner can use Slack from the app.' } };
       const name = (err as { name?: string } | null)?.name;
       return failed(name === 'TimeoutError' || name === 'AbortError' ? 504 : 502, name === 'TimeoutError' || name === 'AbortError' ? 'holder-timeout' : 'holder-unreachable'); // @silent-fallback-ok — the failure is the answer the phone gets
     } finally {

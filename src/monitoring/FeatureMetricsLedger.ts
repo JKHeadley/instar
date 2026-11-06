@@ -185,6 +185,13 @@ export const FEATURE_RELIABILITY_MINIMUM_CALLS = 20;
 export const FEATURE_RELIABILITY_DEGRADED_ERROR_RATE = 0.2;
 export const FEATURE_RELIABILITY_FAILING_ERROR_RATE = 0.5;
 
+/** The same snapshot without the components the person chose to stop counting (docs/specs/health-quick-actions.md). */
+export function withoutComponents(summary: FeatureReliabilitySummary, ignored: (feature: string) => boolean): FeatureReliabilitySummary {
+  const components = summary.components.filter((c) => !ignored(c.feature));
+  if (components.length === summary.components.length) return summary;
+  return { ...summary, components, status: components.some((c) => c.status === 'failing') ? 'failing' : components.length > 0 ? 'degraded' : 'ok' };
+}
+
 /**
  * Component-level reliability snapshot. The aggregate is deliberately not an
  * input: a high-volume healthy feature must never dilute a broken component.

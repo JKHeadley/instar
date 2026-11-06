@@ -1207,3 +1207,8 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .mb-measurement-detail p { margin: 8px 0; }
 .mb-measurement-detail nav { display: flex; flex-direction: column; align-items: flex-start; }
 .mb-measurement-detail nav button { text-align: left; white-space: normal; }
+/* Quick actions on a health problem: wraps on a phone, every target 44px high. */
+.health-choices { margin-top: var(--s-2); padding-top: var(--s-2); border-top: 1px solid var(--hairline); display: flex; flex-direction: column; gap: var(--s-1); }
+.health-choice-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1); }
+.health-choice-label { font-size: 13px; color: var(--text-faint); }
+.health-choices .btn-small { height: 44px; }

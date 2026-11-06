@@ -191,10 +191,12 @@ import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, reso
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
-import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled } from './mobilePairingRoutes.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
 import { buildSlackHolderRead } from './mobileSlackHolderProxy.js';
+import { buildMediaHolderStream, holderBearerOk } from './mobileMediaHolderProxy.js';
+import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
 import { createMobileMediaRouter } from './mobileMediaRoutes.js';
 import { createMobileSessionRouter } from './mobileSessionRoutes.js';
 import { createMobileSessionTerminalRouter, peerRowsMatch, PEER_LOOKUP_MAX, PEER_LOOKUP_TIMEOUT_MS, type PeerLookup } from './mobileSessionTerminalRoutes.js';
@@ -1724,9 +1726,12 @@ export class AgentServer {
           feature: what, primary: 'record the phone device state', fallback: 'the request was refused or a pending pairing was cancelled',
           reason: err instanceof Error ? err.message : String(err), impact: 'A phone pairing step failed and must be retried.',
         }),
-      ownerDM: async (text, declineData) => {
+      ownerDM: async (text, declineData, approveData) => {
         if (!options.telegram) return null;
-        return options.telegram.sendOwnerDMWithButton(text, declineData ? { text: 'Decline', data: declineData } : null);
+        return options.telegram.sendOwnerDMWithButton(text, [
+          ...(approveData ? [{ text: 'Approve', data: approveData }] : []),
+          ...(declineData ? [{ text: 'Decline', data: declineData }] : []),
+        ]);
       },
       // Without a Telegram owner, pairing codes are confirmed on the dashboard (mobile-native-conversations §4.4).
       telegramOwnerPresent: () => !!options.telegram?.getOwnerUserId?.(),
@@ -1787,6 +1792,11 @@ export class AgentServer {
       mp.push.start();
       if (options.telegram) {
         options.telegram.mobileDeclineHandler = (nonce) => mp.declineByNonce(nonce);
+        options.telegram.mobileApproveHandler = (nonce) => {
+          const outcome = mp.approveByNonce(nonce);
+          return outcome === 'approved' ? { outcome, text: '' }
+            : { outcome: outcome === 'ended' ? 'ended' : 'other', text: outcome === 'ended' ? 'This pairing has already ended.' : APPROVE_REFUSAL[outcome].detail };
+        };
         options.telegram.mobileInboundScan = (text) => mp.scanInbound(text);
         options.telegram.onHubPost = (t) => mp.push?.onHubPost(t);
       }
@@ -2054,7 +2064,7 @@ export class AgentServer {
     }).multiMachine?.accountFollowMe?.remoteScrapeTimeoutMs;
     this.app.use(requestTimeout(
       options.config.requestTimeoutMs,
-      buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs, followMeRemoteScrapeTimeoutMs }),
+      buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs, followMeRemoteScrapeTimeoutMs, defaultTimeoutMs: options.config.requestTimeoutMs }),
     ));
 
     // ── Token Ledger ──────────────────────────────────────────────────
@@ -6474,6 +6484,17 @@ export class AgentServer {
       const slackRegistry = options.slack ? routeCtx.conversationRegistry ?? null : null;
       this.app.use(createMobileMediaRouter({
         pairing: this.mobilePairing, service: this.appConversations, mediaEnabled: isMobileMediaEnabled(options.config),
+        machineId: () => this.appConversations?.deps.machineId() ?? 'local',
+        // The owner's phone opens a Slack file from the machine that holds it (mobile-remote-media).
+        ownerAdmission: (req) => mobileOwnerDeviceAdmission(this.mobilePairing!, req),
+        bearerOk: (req) => holderBearerOk(req, options.config.authToken),
+        holderMedia: buildMediaHolderStream({
+          peers: () => routeCtx.resolvePeerUrls?.() ?? [],
+          allowlist: () => (options.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,
+          token: () => options.config.authToken,
+          selfMachineId: () => this.appConversations?.deps.machineId() ?? 'local',
+          record: routeCtx.recordRopeResult ?? undefined,
+        }),
         // A Slack file downloads only through the machine whose registry minted the conversation (§4.9).
         // Same gate as the Slack history route: nothing is served until the owner's Slack id is set.
         ...(slackRegistry ? { slackHeld: (key: string) => slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, key) } : {}),

@@ -91,6 +91,11 @@ export interface LadderEntry {
   start?: { set: Record<string, string | number | boolean> };
   /** The setting is read at boot, so a move needs a restart to take effect. */
   restartNeeded?: boolean;
+  /**
+   * The shipped code switches it on for every machine and no longer reads its
+   * setting, so the setting cannot say its rung. `ref` names the change.
+   */
+  shippedOn?: { ref: string };
   tracking: { state: 'measured' | 'needed'; plan: string };
   rungs: Partial<Record<TargetRung, LadderRung>>;
 }
@@ -255,6 +260,13 @@ export function parseLadderRegistry(text: string): LadderParseResult {
     subjects.add(subject);
     if (e.rare !== undefined && typeof e.rare !== 'boolean') return { ok: false, reason: `${at}.rare` };
     if (e.restartNeeded !== undefined && typeof e.restartNeeded !== 'boolean') return { ok: false, reason: `${at}.restartNeeded` };
+    if (e.shippedOn !== undefined) {
+      const so = e.shippedOn as Record<string, unknown> | null;
+      if (!so || typeof so !== 'object' || Array.isArray(so) || !isText(so.ref, 200)) return { ok: false, reason: `${at}.shippedOn` };
+      // On in code is the default-on end: only a default-on ladder can be there, and there is nothing left to start.
+      if (e.disposition !== 'ladder' || e.final !== 'default-on') return { ok: false, reason: `${at}.shippedOn-needs-a-default-on-ladder` };
+      if (e.start !== undefined) return { ok: false, reason: `${at}.shippedOn-has-nothing-to-start` };
+    }
     if (e.flag !== null) {
       const f = e.flag as Record<string, unknown> | undefined;
       if (!f || typeof f !== 'object' || typeof f.path !== 'string' || !/^[A-Za-z][A-Za-z0-9.]{0,200}$/.test(f.path)) return { ok: false, reason: `${at}.flag` };
@@ -320,6 +332,7 @@ export function parseLadderRegistry(text: string): LadderParseResult {
       ...(e.rare ? { rare: true } : {}),
       ...(e.start ? { start: e.start as LadderEntry['start'] } : {}),
       ...(e.restartNeeded ? { restartNeeded: true } : {}),
+      ...(e.shippedOn ? { shippedOn: { ref: (e.shippedOn as { ref: string }).ref } } : {}),
       tracking: { state: t.state as 'measured' | 'needed', plan: t.plan as string },
       rungs: rungs as LadderEntry['rungs'],
     });
@@ -366,6 +379,7 @@ function readFlag(entry: LadderEntry, root: unknown, gateConfig: { developmentAg
 /**
  * The rung comes from what is shipped and what runs here, never from a label.
  * The shipped default alone decides `fleet`; a shipped dry-run is not fleet.
+ * A feature the code switches on regardless of its setting (`shippedOn`) is fleet.
  */
 export function deriveLadderRung(
   entry: LadderEntry,
@@ -373,6 +387,8 @@ export function deriveLadderRung(
   shippedDefaults: unknown,
 ): { rung: ObservedRung; flagMissing: boolean } {
   if (!entry.flag) return { rung: 'dark', flagMissing: true };
+  // The code turns it on everywhere and ignores the setting, so the setting cannot say otherwise.
+  if (entry.shippedOn) return { rung: 'fleet', flagMissing: false };
   const shippedRaw = readPath(shippedDefaults, entry.flag.path);
   const liveRaw = readPath(liveConfig, entry.flag.path);
   const flagMissing = shippedRaw === undefined && liveRaw === undefined

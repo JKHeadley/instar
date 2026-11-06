@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "lifeline-409-poll-deadlock",
+  "sessionId": "70617f5f-4d21-4359-9b3d-447af4aa9677",
+  "timestamp": "2026-11-06T00:16:43.967Z",
+  "artifactPath": "upgrades/side-effects/lifeline-409-poll-deadlock.md",
+  "artifactSha256": "c924cc6d5334305b308edf99272911fc1f3a56288882c5cc9f22a501063c2310",
+  "coveredFiles": [
+    "docs/specs/lifeline-409-poll-deadlock.eli16.md",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/lifeline/pollDecision.ts",
+    "tests/unit/lifeline-poll-start.test.ts",
+    "tests/unit/pollDecision.test.ts",
+    "upgrades/next/lifeline-409-poll-deadlock.md",
+    "upgrades/side-effects/lifeline-409-poll-deadlock.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix in the lifeline poll-start input; no config, state or migration; a revert fully undoes it",
+  "eli16Path": "docs/specs/lifeline-409-poll-deadlock.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lifeline-409-poll-deadlock.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

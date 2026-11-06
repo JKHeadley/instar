@@ -1,10 +1,11 @@
 /**
  * phones.js — the dashboard's Phones card (docs/specs/mobile-native-conversations.md §4.4).
  *
- * On an agent with no Telegram owner, a phone that opens a pairing link waits for a 6-digit
- * code that is shown HERE, only after a PIN unlock (the server refuses the code to anything but a
- * dashboard operator session). The operator types the code into the Instar app, or taps
- * "Not my phone" to decline. Below that, the paired phones on this machine, each revocable.
+ * On an agent with no Telegram owner, a phone that opens a pairing link waits here, shown only
+ * after a PIN unlock (the server refuses it to anything but a dashboard operator session). The
+ * operator taps Approve (docs/specs/mobile-pairing-approve.md §3.3), or types the code shown into
+ * the Instar app, or taps "Not my phone" to decline. Below that, the paired phones on this
+ * machine, each revocable.
  *
  * Every dynamic value reaches the DOM through textContent; nothing is rendered as HTML. The code
  * lives only in the server's memory and in this page while it is open; nothing is stored.
@@ -25,7 +26,7 @@ function personText(d) {
  */
 export function phonesGlanceSpec({ waiting = null, paired = null, locked = false } = {}, activate = {}) {
   const headline = locked ? 'Unlock with your PIN to see a phone that is waiting to pair.'
-    : waiting > 0 ? `${waiting === 1 ? 'A phone is' : `${waiting} phones are`} waiting to pair. Open Waiting to see the code.`
+    : waiting > 0 ? `${waiting === 1 ? 'A phone is' : `${waiting} phones are`} waiting to pair. Open Waiting to approve or decline.`
     : 'No phone is waiting to pair.';
   return { headline, tiles: [
     { key: 'waiting', label: 'Waiting to pair', value: waiting === null ? 'Unknown' : String(waiting), tone: waiting > 0 ? 'warn' : undefined, onActivate: activate.waiting },
@@ -85,9 +86,22 @@ export function mountPhonesPanel(root, { request, unlock, now = () => Date.now()
     for (const a of list) {
       const card = make('div', undefined, approvals); card.className = 'phone-approval';
       make('p', `${a.deviceName || 'A phone'}${a.label ? ` (${a.label})` : ''}${personText(a)} is waiting · ${minutesLeft(a.expiresAt, now())}`, card);
-      if (a.fingerprint) make('p', `Phone key: ${a.fingerprint}. The app shows the same key; check they match.`, card);
+      const canApprove = a.canApprove === true;
+      if (canApprove) {
+        make('p', a.fingerprint ? `Phone key: ${a.fingerprint}. Approve only if you are pairing this phone right now and the key matches the one the app shows.` : 'Approve only if you are pairing this phone right now.', card);
+        const approve = make('button', 'Approve this phone', card);
+        approve.onclick = async () => {
+          approve.disabled = true;
+          try {
+            const r = await request(`/mobile/pairing-approvals/${encodeURIComponent(a.deviceId)}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+            const answer = await r.json().catch(() => ({}));
+            notice.textContent = r.ok ? `Approved. That phone is paired. If the app still shows a code box, type ${prettyCode(a.code)} to finish.` : (typeof answer.detail === 'string' ? answer.detail : 'Could not approve. Refresh and try again.');
+          } catch { notice.textContent = 'Could not reach the agent.'; }
+          await refresh();
+        };
+      } else if (a.fingerprint) make('p', `Phone key: ${a.fingerprint}. The app shows the same key; check they match.`, card);
       const code = make('p', prettyCode(a.code), card); code.className = 'phone-code'; code.setAttribute('aria-label', 'Confirmation code');
-      make('p', 'Type this code into the Instar app on that phone. Never send it to anyone, including me.', card);
+      make('p', canApprove ? 'If the app asks for a code instead, type this one. Never send it to anyone, including me.' : 'Type this code into the Instar app on that phone. Never send it to anyone, including me.', card);
       const decline = make('button', 'Not my phone — decline', card);
       decline.onclick = async () => {
         decline.disabled = true;

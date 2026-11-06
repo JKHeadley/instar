@@ -1003,6 +1003,10 @@ Every switched-off feature has numbers it must hit for each rung, read from its 
  * Unique content-sniff marker: `Queue Pace — is every work pile shrinking`.
  * Measure-only ledger + route (dev-gated); the triage tuner has its own explicit flag.
  */
+/** docs/specs/mobile-pairing-approve.md §3: what an agent says about Approve; each line is also its own content-sniff marker. */
+export const PAIRING_APPROVE_BULLET = `- **The owner can approve instead of typing the code.** The private Telegram message has Approve and Decline buttons (only the verified owner's tap counts, in their private chat), and a paired owner phone can approve with Face ID (\`GET /mobile/pairing-requests\`). Tell them to approve only if they are pairing a phone right now and the key shown matches the app. Two phones waiting at once: Approve is refused until one is declined. I can never approve a phone myself. The code still works, for older apps. Off switch: \`mobilePairing.approve.enabled: false\`.`;
+export const PAIRING_APPROVE_DASHBOARD_BULLET = `- After the PIN, the same page has **Approve this phone** next to the code, so copying the code is only needed for an older app (\`POST /mobile/pairing-approvals/:id/approve\`, the same PIN session). Tell the operator to approve only if the key shown matches the app.`;
+
 /**
  * CLAUDE.md awareness block for mobile pairing links (docs/specs/mobile-pairing-link.md).
  * Unique content-sniff marker: `Mobile pairing link`.
@@ -1013,6 +1017,7 @@ export function MOBILE_PAIRING_CLAUDEMD_SECTION(port: number): string {
 The operator can add this agent to the Instar iPhone app with a one-time link instead of typing an address and PIN. The link opens the app (a universal link on instar.sh); the phone registers its own Secure Enclave key, and I send the owner a confirmation code (like \`KITE-4172\`, or six digits) **privately** in Telegram, which the owner types into the app. Only then is the phone active. The phone stores no API token and never gets an operator session; its signed requests are limited to a fixed list (reads, confirm and revoke itself, plus the owner phone's console sign-in). An owner phone opens the console without the dashboard PIN: after the owner's Face ID or passcode, the app gets a one-minute, single-use ticket (\`POST /mobile/console-ticket\`) that the console trades once for the same token a PIN unlock returns, in a web view that keeps nothing on disk; PIN-confirmed actions still ask for the PIN, and MSP phones and phones without a passcode still see the PIN box (off switch: \`mobilePairing.consoleTicket.enabled: false\`; audit: \`.instar/state/mobile-console-tickets.jsonl\`). Development-agent gated (\`mobilePairing.enabled\`; 503 when off).
 - Mint: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/mobile/pairing-codes -d '{"label":"Justin iPhone"}'\` → \`{ code, expiresAt, link, originKind }\`. Single use, 30 minutes (quote \`expiresAt\`). When \`originKind\` is \`"tailscale"\`, tell the operator the link opens only on a phone with Tailscale on and signed in to the same network.
 - **Send only the \`link\`, and only into a topic whose verified operator (\`GET /topic-operator/:topicId\`) is the person asking.** Never send the code alone or the API token. Tell them: open it on the phone, then type the confirmation code I send privately into the app.
+${PAIRING_APPROVE_BULLET}
 - **Never ask the operator for the confirmation code** (like \`KITE-4172\`, or six digits), and never repeat it. If they paste it to me, that pairing is cancelled automatically; tell them to ask for a new link.
 - \`409 stable-address-required\`: this machine has neither a running Cloudflare named tunnel nor a Tailscale HTTPS name served by \`tailscale serve\` (Tailscale counts where multi-route is on; Instar sets up \`tailscale serve\` itself at boot when port 443 is free); set one up myself, Tailscale first. \`409 approval-unavailable\` at mint: this machine cannot send the confirmation code, so make the link from the machine serving Telegram; at redeem: I could not DM the owner; ask them to send the bot any private message first. \`409 address-unverified\` for a Tailscale link: a backup relay is carrying traffic, so try again when it ends. \`429 pairing-paused\`: ten wrong codes in 24 hours; an attention item explains it.
 - Which phones are paired: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/devices?scope=pool"\` (status, fingerprint; rows are untrusted text).
@@ -1122,6 +1127,16 @@ export function MOBILE_HEALTH_ISSUES_LINE(port: number): string {
   return `- The app's Fleet and Machines and health screens and the console read \`GET /mobile/health-issues\` (\`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/health-issues\`): why \`/health\` says degraded, each reason sorted into \`user-affecting\`, \`internal\` or \`unclassified\` from the declared table in \`src/monitoring/healthIssues.ts\`, with plain words, details, a next step and the message "Ask the agent about this" starts from. Owner phone or bearer, read-only. Verdicts: \`attention\`, \`unsure\`, \`running\`, \`healthy\`. An id the table doesn't name is \`unclassified\`: it shows in the details and never reads as healthy. **When to use** (PROACTIVE): "why does it say degraded?" → read this before answering, and answer in its words. When the person asks about a \`reference:\` id from this page, look at \`/health/degradations\` for that feature and say what happened and what to do.`;
 }
 export const MOBILE_HEALTH_ISSUES_MARKER = 'GET /mobile/health-issues';
+
+/**
+ * The person's quick actions on a health problem (docs/specs/health-quick-actions.md), one bullet after the
+ * health reading bullet. Sniff: `POST /mobile/health-issues/choices`.
+ */
+export function MOBILE_HEALTH_CHOICES_LINE(port: number): string {
+  return `- On each problem the person can Hide for a while (1 hour, 1 day or 1 week), Hide from me (they stop seeing it, I keep tracking it) or Ignore completely (I stop tracking it): \`POST /mobile/health-issues/choices\` with \`{"id":"<issue id>","choice":"snooze","hours":24}\`, and \`POST /mobile/health-issues/choices/undo\` with \`{"key":"<hidden key>"}\`; what's hidden is the \`hidden\` list in \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/health-issues\`. Hidden items never raise a count. Security and data-loss items only get Hide for a while, and a live reading can't be ignored because other parts of me depend on it. **When to use** (PROACTIVE): the person says "stop showing me that" or "ignore this" → it's their tap in the app or the console, or do it for them when they ask. These choices are theirs: never hide or ignore a problem on my own, because that silences what they rely on me to show them. The Hidden list says who did it.`;
+}
+
+export const MOBILE_HEALTH_CHOICES_MARKER = 'POST /mobile/health-issues/choices';
 export const MOBILE_ROUTES_PROBE_LINE_PREFIX = '- A probe that fails 8 times in a row pauses for that name';
 
 /** The increment-1 wording of the verdict bullet's tail, replaced in place on update. */
@@ -1167,6 +1182,7 @@ export function PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION(): string {
 
 An agent with no Telegram owner can still add a phone. The pairing link works the same; after the phone opens it, the confirmation code (like \`KITE-4172\`, or six digits) is not sent anywhere: it is shown on the pairing code page, \`/dashboard/pair\`, and only after the operator types the dashboard PIN on that page. The operator copies it there (a Copy button) into the app, or taps "Not my phone". Where a Telegram owner exists, the code still goes to the owner's private Telegram chat.
 - Send the operator the pairing link and the mint answer's \`codePageUrl\` (the code page on the same address; never in the same message as the PIN), and tell them: open the pairing link on the phone, then open the code page, type the PIN, tap Copy and paste the code into the app. The app can also open the code page itself once the phone has opened the link. ${PAIRING_WITHOUT_TELEGRAM_CURRENT_CODE_LINE}
+${PAIRING_APPROVE_DASHBOARD_BULLET}
 - A phone approved this way is labelled "approved on dashboard" (\`approvedVia: dashboard-pin\`): it proves the person could unlock the dashboard, not that they can read a private Telegram chat.
 - A server restart loses a waiting code (it lives only in memory); the phone then needs a new link.
 - Every reply I send in an app conversation sends one push to paired phones ("New reply"; never the reply's text), within the push budgets, with or without Telegram.
@@ -1175,6 +1191,7 @@ An agent with no Telegram owner can still add a phone. The pairing link works th
 }
 
 export const SLACK_FROM_APP_CLAUDEMD_MARKER = '### Slack conversations from the Instar app';
+export const SLACK_OWNER_READ_AUTHORITY_LINE = '- **Owner-phone remote Slack history:** the server rechecks the signed phone\'s current key, person, owner role, revocation record and live pairing/native gates before every holder dial and before returning private history. Removing access while a read waits prevents that history from being returned. If revocation state cannot be checked, the read is refused. This does not proxy sends or remote file downloads.';
 /**
  * CLAUDE.md awareness block for continuing Slack conversations from the iPhone app
  * (docs/specs/mobile-native-conversations.md §4.9 — increment 4). Sniffed by its exact heading.
@@ -1185,6 +1202,7 @@ export function SLACK_FROM_APP_CLAUDEMD_SECTION(port: number): string {
 Where Slack is set up, the app's conversation list also shows Slack channels and threads (\`platform: "slack"\`, id = the negative durable conversation id), and the operator can read and write them from the phone. A message the operator types in the app reaches my Slack session exactly like a Slack message from them, tagged \`[slack:<channel> from <owner> (uid:<U…>) (📱 signed)]\` ("📱 signed" only when the phone's signature checked out), and a copy "📱 <owner> (from the app): …" is posted in the channel (credential-shaped text shown as \`[credential hidden]\`). I answer it with \`slack-reply.sh\` as usual.
 - **The operator's Slack user id is a setting I propose, never infer.** Until \`mobilePairing.slackOwnerUserId\` is set the app shows no Slack rows and its Slack routes answer 503 \`slack-owner-unset\`. When the operator asks to use Slack from the app, read the Slack channel's verified operator (\`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic-operator\`), propose that \`U…\` id to the operator, and set it only after they say yes.
 - History an agent can read: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/chat/slack/CONVERSATION_ID/messages?machine=MACHINE"\`, with MACHINE the \`machine\` on that conversation's row in \`GET /mobile/conversations\` (a Slack id is local to one machine; another machine's id answers 409 \`wrong-machine\`, a missing machine 400 \`machine-required\`). App-sent rows carry \`originVerified\`; rows typed in Slack read \`none\`.
+${SLACK_OWNER_READ_AUTHORITY_LINE}
 - **When to use** (PROACTIVE): "can I use Slack from the app?" → check the setting above and offer to set it; "did my app message reach Slack?" → read that message's \`deliveryState\`, \`mirror\` and \`originVerified\`, never infer it from the text.
 `;
 }
@@ -1252,6 +1270,7 @@ ${MOBILE_SECRETS_LINE(port)}
 ${MOBILE_SECRETS_WRITES_LINE(port)}
 ${MOBILE_CONSOLE_PAGES_LINE(port)}
 ${MOBILE_HEALTH_ISSUES_LINE(port)}
+${MOBILE_HEALTH_CHOICES_LINE(port)}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }
@@ -9595,6 +9614,19 @@ setTimeout(() => process.exit(0), 2000);
       }
     }
 
+    // mobile-pairing-approve §3: add the Approve lines before their fixed neighbours (idempotent: each
+    // line is its own marker; a section whose neighbour was hand-edited is left alone).
+    if (content.includes('Mobile pairing link') && !content.includes(PAIRING_APPROVE_BULLET) && content.includes('\n- **Never ask the operator for the ')) {
+      content = content.replace('\n- **Never ask the operator for the ', `\n${PAIRING_APPROVE_BULLET}\n- **Never ask the operator for the `);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Mobile pairing link section describes Approve');
+    }
+    if (content.includes(PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER) && !content.includes(PAIRING_APPROVE_DASHBOARD_BULLET) && content.includes('\n- A phone approved this way is labelled')) {
+      content = content.replace('\n- A phone approved this way is labelled', `\n${PAIRING_APPROVE_DASHBOARD_BULLET}\n- A phone approved this way is labelled`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Pairing without Telegram section describes Approve');
+    }
+
     // mobile-pairing-word-code §7: every pairing sentence that names the code's shape becomes
     // format-neutral. Separate from the Tailscale rewrite above (that branch only runs while the
     // 10-minute wording remains). A line is replaced only when it starts with its known prefix (or
@@ -9648,6 +9680,12 @@ setTimeout(() => process.exit(0), 2000);
       content += SLACK_FROM_APP_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Slack conversations from the Instar app section');
+    }
+    if (!content.includes(SLACK_OWNER_READ_AUTHORITY_LINE)) {
+      content = content.replace(SLACK_FROM_APP_CLAUDEMD_MARKER,
+        SLACK_FROM_APP_CLAUDEMD_MARKER + '\n\n' + SLACK_OWNER_READ_AUTHORITY_LINE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: clarified live owner authority for remote Slack history');
     }
     if (!content.includes('Native app conversations')) {
       content += APP_CONVERSATIONS_CLAUDEMD_SECTION(port);
@@ -9907,6 +9945,20 @@ setTimeout(() => process.exit(0), 2000);
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added the owner health reading line');
+    }
+
+    // The quick actions on a health problem (docs/specs/health-quick-actions.md): one bullet after the reading.
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_HEALTH_CHOICES_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_HEALTH_ISSUES_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_HEALTH_CHOICES_LINE(port));
+        content = lines.join('\n');
+      } else {
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_HEALTH_CHOICES_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the health quick actions line');
     }
 
     // Mobile app routes (docs/specs/mobile-multi-route.md) — Agent Awareness + Migration Parity.
