@@ -1,3 +1,5 @@
+import { slackSessionMetadata, slackSessionMetadataAllowed } from './slackSessionMetadata.js';
+import type { SourceChannel } from '../core/attribution/marker.js';
 import { categoryForProducer } from '../messaging/notificationCategories.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/routes.ts');
@@ -4318,6 +4320,8 @@ export function createRoutes(ctx: RouteContext): Router {
     channel: string,
     options: {
       topicId?: number;
+      /** A non-Telegram conversation (Slack channel, app key, JID, recipient). Feeds B23's recap test. */
+      attributionConversation?: string;
       allowDebugText?: boolean;
       allowDuplicate?: boolean;
       allowLocalhostLink?: boolean;
@@ -4613,6 +4617,16 @@ export function createRoutes(ctx: RouteContext): Router {
         } catch {
           // Non-fatal — authority runs without context
         }
+      }
+
+      // Only Telegram has a topic id, so every other channel reads its own log. Without this the
+      // crediting half of B23 is unmeasured there and can never fire (live test 2026-11-06, Slack).
+      // Limited to `enforce`, so no other agent's tone review sees a different context.
+      if (!recentMessages && options.attributionConversation && ctx.attribution?.enabled && ctx.attribution.mode === 'enforce') {
+        try {
+          const turns = ctx.attribution.recentConversation(channel as SourceChannel, options.attributionConversation);
+          if (turns.length > 0) recentMessages = turns;
+        } catch { /* @silent-fallback-ok — with no recent turns B23's crediting test stays unmeasured, as it was. */ }
       }
 
       // attribution-paper-trail section 5: B23. Advisory, only in `enforce`, only for a sender that
@@ -5023,6 +5037,8 @@ export function createRoutes(ctx: RouteContext): Router {
     res: import('express').Response,
     options: {
       topicId?: number;
+      /** A non-Telegram conversation (Slack channel, app key, JID, recipient). Feeds B23's recap test. */
+      attributionConversation?: string;
       allowDebugText?: boolean;
       allowDuplicate?: boolean;
       allowLocalhostLink?: boolean;
@@ -5078,7 +5094,9 @@ export function createRoutes(ctx: RouteContext): Router {
           try {
             recentConversation = options.topicId && ctx.topicMemory
               ? ctx.topicMemory.getRecentMessages(options.topicId, 10).map((m) => `${m.fromUser ? 'user' : 'agent'}: ${m.text}`).join('\n')
-              : undefined;
+              : options.attributionConversation
+                ? attribution.recentConversation(channel as SourceChannel, options.attributionConversation).map((m) => `${m.role}: ${m.text}`).join('\n')
+                : undefined;
           } catch { /* @silent-fallback-ok — with no recent messages the recap exemption simply does not apply */ }
           attribution.recordInBackground(text, { surface: 'send', path: `${channel}:${options.topicId ?? ''}`, recentConversation });
         }
@@ -21896,6 +21914,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     if (
       await checkOutboundMessage(text, 'slack', res, {
+        attributionConversation: String(channelId),
         allowDebugText: metadata?.allowDebugText === true,
         allowDuplicate: metadata?.allowDuplicate === true,
         // Channel parity: the override/compliance evidence path is not a
@@ -22019,8 +22038,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // authority (slack-session-reply-relay §Authority and source binding).
   router.post('/slack/session-reply', async (req, res) => {
     const bodyKeys = Object.keys(req.body ?? {}).sort();
-    if (bodyKeys.some(key => key !== 'conversationId' && key !== 'text' && key !== 'nativeReferences')) {
-      res.status(400).json({ error: 'spawned Slack session body permits only conversationId, text, and nativeReferences' });
+    if (bodyKeys.some(key => key !== 'conversationId' && key !== 'text' && key !== 'nativeReferences' && key !== 'metadata')
+      || !slackSessionMetadataAllowed(req.body?.metadata)) {
+      res.status(400).json({ error: 'spawned Slack session body permits only conversationId, text, nativeReferences, and a tone reaction in metadata' });
       return;
     }
     if ('channelId' in (req.body ?? {}) || 'thread_ts' in (req.body ?? {}) || 'threadTs' in (req.body ?? {})) {
@@ -22057,7 +22077,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     (req.params as Record<string, string>).channelId = target.channelId;
     req.body.thread_ts = target.threadTs ?? undefined;
-    if (Array.isArray(req.body.nativeReferences)) req.body.metadata = { nativeReferences: req.body.nativeReferences };
+    req.body.metadata = slackSessionMetadata(req.body as Record<string, unknown>);
     await handleSlackReply(req, res);
   });
 
@@ -22171,7 +22191,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ? req.body.metadata as Record<string, unknown> : undefined;
     // With no caption, the file names are what the operator reads: they go through the same check.
     const outboundText = text.trim() ? text : (preparedFiles?.snapshots ?? []).map(s => s.filename).join('\n');
-    if (outboundText.trim() && await checkOutboundMessage(outboundText, 'app', res, { ...toneAdvisoryMetadata(replyMetadata) })) {
+    if (outboundText.trim() && await checkOutboundMessage(outboundText, 'app', res, { attributionConversation: key, ...toneAdvisoryMetadata(replyMetadata) })) {
       if (preparedFiles) discardPrepared(app.media, preparedFiles);
       return;
     }
@@ -26454,6 +26474,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     if (
       await checkOutboundMessage(text, 'whatsapp', res, {
+        attributionConversation: String(jid),
         allowDebugText: metadata?.allowDebugText === true,
         allowDuplicate: metadata?.allowDuplicate === true,
         // Channel parity for the advisory migration — an override path that
@@ -26518,6 +26539,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (typeof text === 'string' && text.length > 0) {
       if (
         await checkOutboundMessage(text, 'imessage', res, {
+          attributionConversation: decodeURIComponent(recipient),
           allowDebugText: imessageMetadata?.allowDebugText === true,
           allowDuplicate: imessageMetadata?.allowDuplicate === true,
           ...toneAdvisoryMetadata(imessageMetadata),

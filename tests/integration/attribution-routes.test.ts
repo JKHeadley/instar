@@ -287,6 +287,39 @@ describe('B23 through checkOutboundMessage', () => {
     expect(h.sent).toHaveLength(1);
   }, 15_000);
 
+  describe('every channel feeds the recap test (live test 2026-11-06: Slack could never hold a credit)', () => {
+    async function slackAgent(mode: 'record' | 'enforce') {
+      const agent = makeAgent();
+      fs.writeFileSync(path.join(agent.stateDir, 'slack-messages.jsonl'), `${JSON.stringify({ channelId: 'C0123ABCD', messageId: '1', text: 'what next?', fromUser: true })}\n`);
+      const sent: string[] = [];
+      const prompts: string[] = [];
+      const provider = { evaluate: vi.fn(async (prompt: string) => { prompts.push(prompt); return JSON.stringify(mode === 'enforce' && prompt.includes('conversationContext=true') ? NUDGE : PASS); }) } as unknown as IntelligenceProvider;
+      const { url } = await serve(agent, {
+        attribution: runtimeFor(agent, async () => claims([]), {}, mode),
+        messagingToneGate: new MessagingToneGate(provider),
+        slack: { sendToChannel: async (_c: string, text: string) => { sent.push(text); return String(sent.length); }, inboundThreadFor: () => undefined },
+      });
+      return { url, sent, prompts };
+    }
+
+    it('a Slack reply in enforce reaches the gate with the conversation, and is held', async () => {
+      const h = await slackAgent('enforce');
+      const r = await postJson(`${h.url}/slack/reply/C0123ABCD`, { text: 'Justin never wants that.' });
+      expect(h.prompts[0]).toContain('conversationContext=true');
+      expect(r.status).toBe(422);
+      expect(r.body.error).toBe('tone-gate-advisory');
+      expect(h.sent).toEqual([]);
+    });
+
+    it('in record the tone review sees no new context', async () => {
+      const h = await slackAgent('record');
+      const r = await postJson(`${h.url}/slack/reply/C0123ABCD`, { text: 'Justin never wants that.' });
+      expect(r.status).toBe(200);
+      expect(h.prompts.join('')).not.toContain('what next?');
+      expect(h.prompts.join('')).not.toContain('conversationContext');
+    });
+  });
+
   it('a reasoned ack delivers it, unchanged', async () => {
     const h = await start((p) => (p.includes('B23') ? NUDGE : PASS), 'enforce');
     const r = await h.reply('That is my own rule, so no.', { toneAdvisoryAck: 'B23_UNSOURCED_ATTRIBUTION', toneAdvisoryAckReason: 'The rule is my own and the message says so.' });
