@@ -1,3 +1,4 @@
+import { resolvedToApplied, type LaunchExpectation } from '../core/TopicProfileOrchestrator.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -93,6 +94,7 @@ export function resolveTopicSpawnProfile(input: {
   framework?: import('../core/intelligenceProviderFactory.js').IntelligenceFramework;
   model?: string;
   applied: import('../core/TopicProfileOrchestrator.js').AppliedProfile | null;
+  launchExpectation?: LaunchExpectation;
 } {
   const passthrough = { framework: input.requestedFramework, model: input.requestedModel, applied: null };
   if (!input.resolver || input.topicId === undefined) return passthrough;
@@ -114,6 +116,17 @@ export function resolveTopicSpawnProfile(input: {
   return {
     framework,
     model,
+    ...(input.requestedFramework !== undefined || input.requestedModel !== undefined ? {
+      launchExpectation: {
+        baseline: resolvedToApplied(resolved),
+        expected: {
+          ...resolvedToApplied(resolved),
+          framework,
+          model: useProfileModel && resolved.modelTier ? null : (model ?? null),
+          modelTier: useProfileModel ? (resolved.modelTier ?? null) : null,
+        },
+      },
+    } : {}),
     applied: {
       framework,
       model: input.requestedModel !== undefined

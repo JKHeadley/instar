@@ -452,12 +452,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - name: Ensure tmux
-        run: |
-          if ! command -v tmux >/dev/null 2>&1; then
-            timeout --kill-after=10s 180s sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 update
-            timeout --kill-after=10s 180s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y tmux
-          fi
-          tmux -V
+        run: bash .github/scripts/setup-ci-tmux.sh
       - run: npm ci
       # vitest shard syntax: --shard=<index>/<total>. Each runner executes a
       # deterministic disjoint slice of the test files; union is the full suite.
@@ -492,12 +487,7 @@ jobs:
           node-version: 20
           cache: npm
       - name: Ensure tmux
-        run: |
-          if ! command -v tmux >/dev/null 2>&1; then
-            timeout --kill-after=10s 180s sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 update
-            timeout --kill-after=10s 180s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y tmux
-          fi
-          tmux -V
+        run: bash .github/scripts/setup-ci-tmux.sh
       - run: npm ci
       - run: npm run test:integration
       - name: Working-tree integrity check
@@ -526,12 +516,7 @@ jobs:
           node-version: 20
           cache: npm
       - name: Ensure tmux
-        run: |
-          if ! command -v tmux >/dev/null 2>&1; then
-            timeout --kill-after=10s 180s sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 update
-            timeout --kill-after=10s 180s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y tmux
-          fi
-          tmux -V
+        run: bash .github/scripts/setup-ci-tmux.sh
       - run: npm ci
       # E2E subprocesses exercise the compiled CLI and registry in this checkout.
       # The separate build job has its own filesystem and cannot supply dist/.

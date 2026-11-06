@@ -288,6 +288,8 @@ export interface TopicProfileOrchestratorDeps {
   getConfig: () => OrchestratorConfig;
   /** Platform-routed disclosure to the topic's owning conversation (§10.5). */
   disclose: (topicKey: string, text: string, meta: DisclosureMeta) => void;
+  /** Existing one-voice authority; automated reconciliation only, never operator replies. */
+  canDiscloseReconciliation?: (topicKey: string) => boolean;
   /** Structured audit sink → logs/topic-profile-changes.jsonl (§10.3). */
   audit: (event: Record<string, unknown>) => void;
   /** Durable orchestrator side-state (lastApplied / suppressions / trips). */
@@ -336,6 +338,8 @@ interface PendingSlot {
   /** Busy-abort re-arm state — tick() retries these (§8 real carrier). */
   deferred: boolean;
   deferredReason?: string;
+  /** Boot-reconcile notice may await the existing speaker election. */
+  reconciliation?: boolean;
   /** Set by an in-flight 'unconfirmed' outcome — never guess again (§14). */
   forceNoInFlight: boolean;
   /** Disclosed-once dedupe for the defer notices (per pending change). */
@@ -344,8 +348,20 @@ interface PendingSlot {
   switchNowOverride: boolean;
 }
 
+/** Explicit direct-spawn choices override the unchanged topic baseline for this session. */
+export interface LaunchExpectation {
+  baseline: AppliedProfile;
+  expected: AppliedProfile;
+}
+
 interface DurableSideState {
-  lastApplied: Record<string, { profile: AppliedProfile; at: string }>;
+  lastApplied: Record<string, {
+    profile: AppliedProfile;
+    at: string;
+    launchExpectation?: LaunchExpectation & { pinRevision: string };
+  }>;
+  /** One reconciliation disclosure per unresolved profile mismatch, across boots. */
+  reconciliationNotices?: Record<string, string>;
   /** topicKey → ISO until — mid-framework-switch resume-save suppression. */
   suppressions: Record<string, string>;
   /** §10.4 cooldown-confirm memory: the profile that just tripped. */
@@ -640,6 +656,8 @@ export class TopicProfileOrchestrator {
       throw err;
     }
 
+    if (result.changed) this.clearLaunchExpectation(key);
+
     if (!result.changed) {
       return { outcome: 'no-change', reply: 'already set — no change needed' };
     }
@@ -749,6 +767,7 @@ export class TopicProfileOrchestrator {
     const key = String(topicKey);
     const cfg = this.cfg();
     if (!cfg.enabled || cfg.dryRun) return;
+    this.clearLaunchExpectation(key);
     const slot = this.pendingSlots.get(key);
     // Capture the live characteristics at burst start so a net-unchanged burst
     // closes the loop with the "was:" rendering (§8 debounce contract).
@@ -941,6 +960,7 @@ export class TopicProfileOrchestrator {
       return;
     }
 
+    if (slot?.reconciliation) this.discloseReconciliation(key);
     const state = this.sessionState(key, session);
     // §14 unconfirmed-attempt choreography: after an in-flight swap returned
     // 'unconfirmed' we never guess again — reclassify with the in-flight row
@@ -1147,7 +1167,10 @@ export class TopicProfileOrchestrator {
     slot.deferred = true;
     slot.deferredReason = reason;
     const t = text();
-    if (t && !slot.disclosedDefer.has(reason)) {
+    // Boot reconciliation already explained the pending application. Retries
+    // keep the idle/protection checks, without a second mid-task notice.
+    const systemOnly = slot.origins.size === 1 && slot.origins.has('system');
+    if (t && !(systemOnly && reason === 'busy') && !slot.disclosedDefer.has(reason)) {
       slot.disclosedDefer.add(reason);
       const seq = ++this.auditSeq;
       this.deps.disclose(key, this.stamp(t, seq), { allowDuplicate: true, auditSeq: seq });
@@ -1325,9 +1348,9 @@ export class TopicProfileOrchestrator {
    * resets the breaker counter, clears any suppression, and registers the
    * codex fence window for same-cwd serialization.
    */
-  recordSpawnSuccess(topicKey: number | string, applied: AppliedProfile, opts: { cwd?: string } = {}): void {
+  recordSpawnSuccess(topicKey: number | string, applied: AppliedProfile, opts: { cwd?: string; launchExpectation?: LaunchExpectation } = {}): void {
     const key = String(topicKey);
-    this.recordApplied(key, applied);
+    this.recordApplied(key, applied, opts.launchExpectation);
     void this.deps.store.resetBreaker(key).catch(() => {});
     this.clearSuppression(key);
     if (applied.framework === 'codex-cli' && opts.cwd) {
@@ -1445,6 +1468,7 @@ export class TopicProfileOrchestrator {
   tick(): void {
     this.checkDryRunFlip();
     for (const [key, slot] of this.pendingSlots) {
+      if (slot.reconciliation) this.discloseReconciliation(key);
       if (slot.deferred && slot.timer === null && !this.activeRespawnTopics.has(key)) {
         slot.deferred = false;
         this.enqueueRespawn({
@@ -1489,6 +1513,10 @@ export class TopicProfileOrchestrator {
       }
     }
 
+    const notices = this.durable.reconciliationNotices ??= {};
+    for (const key of Object.keys(notices)) {
+      if (!liveKeys.has(key)) delete notices[key];
+    }
     const divergent: string[] = [];
     for (const { topicKey } of live) {
       const resolved = this.deps.resolveProfile(topicKey);
@@ -1502,10 +1530,24 @@ export class TopicProfileOrchestrator {
         this.audit_({ type: 'boot-sweep-unknown-applied', topic: topicKey });
         continue;
       }
+      // Defaults choose the NEXT session; they are not a pending operator
+      // instruction to replace an already-running session. Legacy direct
+      // spawns recorded their explicit choice without a baseline. In the
+      // absence of a topic pin, default drift is not failed application.
+      const topicConfigured = Object.values(resolved.sources).some((source) =>
+        source === 'config-default' || source === 'topicProfiles-config-default');
+      if (this.pinRevision(topicKey) === 'unset' && !topicConfigured) {
+        delete notices[topicKey];
+        this.audit_({ type: 'boot-sweep-default-only', topic: topicKey });
+        continue;
+      }
       if (!this.matchesExpectedLive(topicKey, lastApplied, resolved)) {
         divergent.push(topicKey);
+      } else {
+        delete notices[topicKey];
       }
     }
+    this.saveDurable();
 
     for (const topicKey of divergent) {
       if (cfg.enabled && !cfg.dryRun) {
@@ -1514,20 +1556,29 @@ export class TopicProfileOrchestrator {
           preBurst: null,
           origin: 'system',
         });
-        const seq = ++this.auditSeq;
-        this.deps.disclose(
-          topicKey,
-          this.stamp(
-            PROFILE_REAPPLY_NOTICE,
-            seq,
-          ),
-          { allowDuplicate: true, auditSeq: seq },
-        );
-        this.audit_({ type: 'boot-sweep-armed', topic: topicKey, seq });
+        const slot = this.pendingSlots.get(topicKey);
+        if (slot) slot.reconciliation = true;
+        this.discloseReconciliation(topicKey);
+        this.audit_({ type: 'boot-sweep-armed', topic: topicKey });
       } else {
         this.audit_({ type: 'boot-sweep-divergence-observed', topic: topicKey, regime: 'gated' });
       }
     }
+  }
+
+  private discloseReconciliation(topicKey: string): void {
+    const resolved = this.deps.resolveProfile(topicKey);
+    const applied = this.durable.lastApplied[topicKey]?.profile ?? null;
+    if (!applied || this.matchesExpectedLive(topicKey, applied, resolved)) return;
+    // A temporary no-speaker verdict must not consume the durable receipt.
+    // The existing pending-slot cadence retries it while the mismatch remains.
+    if (this.deps.canDiscloseReconciliation?.(topicKey) === false) return;
+    const notices = this.durable.reconciliationNotices ??= {};
+    const fingerprint = JSON.stringify([applied, resolvedToApplied(resolved), this.pinRevision(topicKey)]);
+    if (!claimReconciliationNotice(notices, topicKey, fingerprint)) return;
+    this.saveDurable();
+    const seq = ++this.auditSeq;
+    this.deps.disclose(topicKey, this.stamp(PROFILE_REAPPLY_NOTICE, seq), { allowDuplicate: true, auditSeq: seq });
   }
 
   /**
@@ -1770,6 +1821,10 @@ export class TopicProfileOrchestrator {
     if (!lastApplied) return false;
     const base = resolvedToApplied(resolved);
     if (appliedEquals(lastApplied, base)) return true;
+    const launch = this.durable.lastApplied[key]?.launchExpectation;
+    if (launch && launch.pinRevision === this.pinRevision(key)
+      && appliedEquals(launch.baseline, base)
+      && appliedEquals(lastApplied, launch.expected)) return true;
     const marker = this.deps.escalation.activeMarker(key);
     if (marker) {
       const overlay: AppliedProfile = { ...base, model: marker.model, modelTier: null };
@@ -1784,8 +1839,28 @@ export class TopicProfileOrchestrator {
     return PROFILE_AXES.every((f) => (a[f] ?? null) === (b[f] ?? null));
   }
 
-  private recordApplied(key: string, applied: AppliedProfile): void {
-    this.durable.lastApplied[key] = { profile: applied, at: new Date(this.now()).toISOString() };
+  private clearLaunchExpectation(key: string): void {
+    const record = this.durable.lastApplied[key];
+    if (record?.launchExpectation) {
+      delete record.launchExpectation;
+      this.saveDurable();
+    }
+  }
+
+  private pinRevision(key: string): string {
+    const pin = this.deps.store.resolve(key);
+    return pin && PROFILE_AXES.some((axis) => pin[axis] != null) ? profileKeyOf(pin) : 'unset';
+  }
+
+  private recordApplied(key: string, applied: AppliedProfile, launchExpectation?: LaunchExpectation): void {
+    this.durable.lastApplied[key] = {
+      profile: applied,
+      at: new Date(this.now()).toISOString(),
+      ...(launchExpectation ? { launchExpectation: { ...launchExpectation, pinRevision: this.pinRevision(key) } } : {}),
+    };
+    if (this.matchesExpectedLive(key, applied, this.deps.resolveProfile(key))) {
+      delete this.durable.reconciliationNotices?.[key];
+    }
     this.saveDurable();
   }
 
@@ -1807,6 +1882,7 @@ export class TopicProfileOrchestrator {
         const parsed = JSON.parse(fs.readFileSync(this.deps.stateFilePath, 'utf-8')) as Partial<DurableSideState>;
         this.durable = {
           lastApplied: parsed.lastApplied && typeof parsed.lastApplied === 'object' ? parsed.lastApplied : {},
+          reconciliationNotices: parsed.reconciliationNotices && typeof parsed.reconciliationNotices === 'object' ? parsed.reconciliationNotices : {},
           suppressions: parsed.suppressions && typeof parsed.suppressions === 'object' ? parsed.suppressions : {},
           breakerTrips: parsed.breakerTrips && typeof parsed.breakerTrips === 'object' ? parsed.breakerTrips : {},
         };
@@ -1969,4 +2045,11 @@ async function withTimeout(p: Promise<void>, ms: number, onTimeout: () => void):
   const result = await Promise.race([p.then(() => 'done' as const), timeout]);
   if (timer) clearTimeout(timer);
   if (result === 'timeout') onTimeout();
+}
+
+/** Episode brake shared with the sustained-pressure/restart convergence ratchet. */
+export function claimReconciliationNotice(notices: Record<string, string>, topicKey: string, fingerprint: string): boolean {
+  if (notices[topicKey] === fingerprint) return false;
+  notices[topicKey] = fingerprint;
+  return true;
 }

@@ -148,7 +148,7 @@ describe('Topic profile × direct spawn E2E lifecycle', () => {
     rebooted.bootReconcileSweep();
     await new Promise((r) => setTimeout(r, 100));
     rebooted.dispose();
-    expect(rec.disclosures.join('\n')).not.toContain("wasn't applied");
+    expect(rec.disclosures).toEqual([]);
     expect(rec.kills).toEqual([]);
     expect(rec.spawns).toEqual([]);
   });
@@ -169,4 +169,63 @@ describe('Topic profile × direct spawn E2E lifecycle', () => {
     expect(rec.kills).toEqual([]);
     expect(rec.audits.some((a) => a.type === 'boot-sweep-unknown-applied' && a.topic === '777')).toBe(true);
   });
+  it.each([false, true])('an explicit Codex launch choice stays quiet across repeated server restarts (existing pin: %s)', async (pinned) => {
+    const topic = 10000002038;
+    await store.mutate(String(topic), { framework: null, model: null, updatedBy: 'api-token' });
+    if (pinned) await store.mutate(String(topic), { framework: 'claude-code', model: 'claude-opus-5-5', updatedBy: 'api-token' });
+    const res = await request(server.getApp())
+      .post('/sessions/spawn').set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ name: 'chosen-codex', prompt: 'Fix notices.', topicId: topic,
+        framework: 'codex-cli', model: 'gpt-6-sol' });
+    expect(res.status).toBe(201);
+    expect(sm._lastSpawnArgs?.model).toBe('gpt-6-sol');
+    for (let boot = 0; boot < 3; boot++) {
+      const rec = newRecorder();
+      rec.sessions.set(String(topic), res.body.tmuxSession);
+      const deps = makeOrchestratorDeps({ store, resolveProfile: (k) => resolver.resolve(k), stateFilePath: orchStatePath, rec });
+      deps.sessions.readIdle = () => 'busy';
+      const rebooted = new TopicProfileOrchestrator(deps);
+      rebooted.bootReconcileSweep();
+      await new Promise((r) => setTimeout(r, 80));
+      rebooted.tick();
+      await new Promise((r) => setTimeout(r, 30));
+      rebooted.dispose();
+      expect(rec.disclosures).toEqual([]);
+      expect(rec.kills).toEqual([]);
+    }
+    // Launch preference is session-scoped: a later pin still takes effect.
+    await store.mutate(String(topic), { framework: 'claude-code', model: pinned ? 'claude-fable-5' : null, updatedBy: 'api-token' });
+    const rec = newRecorder();
+    rec.sessions.set(String(topic), res.body.tmuxSession);
+    const changed = new TopicProfileOrchestrator(makeOrchestratorDeps({ store, resolveProfile: (k) => resolver.resolve(k), stateFilePath: orchStatePath, rec }));
+    changed.bootReconcileSweep();
+    await new Promise((r) => setTimeout(r, 100));
+    changed.dispose();
+    expect(rec.disclosures.join(' ')).toContain("didn't take effect");
+    expect(rec.spawns).toHaveLength(1);
+  });
+
+  it('a real busy mismatch reports once, without a mid-task twin, across server restarts', async () => {
+    const topic = '10000002039';
+    orch.recordSpawnSuccess(topic, { framework: 'claude-code', model: null, modelTier: null, thinkingMode: null, effort: null });
+    await store.mutate(topic, { model: 'claude-fable-5', updatedBy: 'api-token' });
+    const notices: string[] = [];
+    for (let boot = 0; boot < 3; boot++) {
+      const rec = newRecorder();
+      rec.sessions.set(topic, 'busy-session');
+      const deps = makeOrchestratorDeps({ store, resolveProfile: (k) => resolver.resolve(k), stateFilePath: orchStatePath, rec });
+      deps.sessions.readIdle = () => 'busy';
+      const rebooted = new TopicProfileOrchestrator(deps);
+      rebooted.bootReconcileSweep();
+      await new Promise((r) => setTimeout(r, 80));
+      rebooted.tick();
+      await new Promise((r) => setTimeout(r, 30));
+      rebooted.dispose();
+      notices.push(...rec.disclosures);
+      expect(rec.kills).toEqual([]);
+    }
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain("didn't take effect");
+  });
+
 });
