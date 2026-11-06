@@ -13,9 +13,42 @@ const FRAMEWORK_WORDS = { 'claude-code': 'Claude', 'codex-cli': 'Codex', 'gemini
 
 export function frameworkName(f) { return FRAMEWORK_WORDS[f] || f || 'Other'; }
 
-/** A cell's state in words, from the pool row (and its repair episode, when any). */
-export function cellState(row, episode) {
+/** The one blocker that is a decision only the operator can make (which accounts live on this machine). */
+const OPERATOR_BLOCKERS = new Set(['device-limit-benched']);
+
+// A wrong login can correct itself on a later poll; after a day it has stopped doing that.
+export const WRONG_LOGIN_SETTLE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A slot proven to hold another account's login: 'sign-in' is an owner re-login (the login is gone
+ * here), 'settling' may still correct itself, and 'stuck' will not without a new sign-in.
+ */
+function wrongLogin(row, now) {
+  if (row.identityDrifted !== true) return null;
+  const drift = row.identityDrift || {};
+  if (drift.actualAccountId === 'missing-local-login' || drift.repairState === 'owner-relogin-required') return { kind: 'sign-in' };
+  const at = Date.parse(drift.detectedAt);
+  const settling = drift.repairState === 'repairing' || (Number.isFinite(at) && now - at < WRONG_LOGIN_SETTLE_MS);
+  return { kind: settling ? 'settling' : 'stuck', who: verifiedDisplayName(drift.actualEmail, drift.actualAccountId) || null };
+}
+
+/**
+ * A cell's state in words, from the pool row, its repair episode and its repair blocker (when any).
+ * `waiting` means a warning with nothing only the operator can do: it is shown, but it is not "needs you".
+ */
+export function cellState(row, episode, blocker, now = Date.now()) {
   if (episode && ['approved', 'starting', 'running', 'in-progress', 'navigating', 'awaiting-code'].includes(episode.state)) return { state: 'working', label: 'signing in' };
+  const wrong = wrongLogin(row, now);
+  if (wrong && wrong.kind === 'settling') return { state: 'waiting', label: "holds another account's login; checking if it corrects itself" };
+  // warning-path: row
+  if (wrong && wrong.kind === 'stuck') return { state: 'attn', label: wrong.who ? `holds ${wrong.who}'s login` : "holds another account's login", wrongLogin: true, wrongLoginWho: wrong.who };
+  // warning-path: row
+  if (wrong) return { state: 'attn', label: 'needs sign-in' };
+  if (NEEDS_SIGN_IN.has(row.status) && blocker && !OPERATOR_BLOCKERS.has(blocker.reason)) {
+    return blocker.reason === 'no-open-incident'
+      ? { state: 'waiting', label: 'sign-in not confirmed; still checking' }
+      : { state: 'waiting', label: "automatic repair can't start yet" };
+  }
   // warning-path: row
   if (NEEDS_SIGN_IN.has(row.status)) return { state: 'attn', label: 'needs sign-in' };
   if (row.status === 'active' && row.loginCheck === 'ok') return { state: 'ok', label: 'signed in' };
@@ -51,7 +84,7 @@ export function resetWords(ts, now = Date.now()) {
  * Build the page. episodes: /subscription-relogin?scope=pool episodes (optional).
  * Returns { ok, needs, accounts, headline, sub, facts, partial }.
  */
-export function buildAccountsPage(res, now = Date.now(), { episodes = [], inUse = null, names: extraNames = {} } = {}) {
+export function buildAccountsPage(res, now = Date.now(), { episodes = [], blockers = [], inUse = null, names: extraNames = {} } = {}) {
   if (!res.ok) return { ok: false, reason: `Couldn't read accounts: ${res.reason}.` };
   if (res.data && res.data.enabled === false) return { ok: false, reason: 'The account pool is not set up on this agent.' };
   const rows = Array.isArray(res.data && res.data.accounts) ? res.data.accounts : null;
@@ -70,7 +103,8 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], inUse 
     if (g.name === 'Account name unavailable') g.name = verifiedDisplayName(r.nickname, r.id) || email || g.name;
     if (!g.email && email) g.email = email;
     const ep = epFor(r.id, r.machineId);
-    g.cells.push({ machineId: r.machineId, machine: verifiedDisplayName(r.machineNickname, r.machineId) || 'Machine name unavailable', ...cellState(r, ep), episode: ep, row: r });
+    const blocker = blockers.find((b) => b && b.accountId === r.id && b.machineId === r.machineId) || null;
+    g.cells.push({ machineId: r.machineId, machine: verifiedDisplayName(r.machineNickname, r.machineId) || 'Machine name unavailable', ...cellState(r, ep, blocker, now), episode: ep, row: r });
     const at = Date.parse(r.lastQuota && r.lastQuota.measuredAt);
     if (r.lastQuota && Number.isFinite(at) && at > g.readingAt) { g.reading = r.lastQuota; g.readingAt = at; }
     byId.set(r.id, g);
@@ -109,18 +143,20 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], inUse 
   for (const a of accounts) for (const c of a.cells) {
     if (c.state !== 'attn' || !c.actionable) continue;
     const ep = c.episode;
-    const repairable = ep && (ep.state === 'suggested' || ep.state === 'failed');
+    const repairable = !c.wrongLogin && ep && (ep.state === 'suggested' || ep.state === 'failed');
     needs.push({
       key: `${a.id}::${c.machineId}`, accountId: a.id, machineId: c.machineId, machine: c.machine,
       title: `Sign in ${frameworkName(a.framework)} (${a.email || a.name}) on ${c.machine}`,
       label: `${frameworkName(a.framework)} · ${a.email || a.name}`,
-      sub: !c.actionable ? 'A unique account and machine name are needed before you can act here.' : repairable ? (ep.state === 'failed' ? 'The last automatic repair stopped safely; you can try again.' : 'An automatic repair is ready to run.') : 'Its sign-in has expired.',
+      sub: !c.actionable ? 'A unique account and machine name are needed before you can act here.' : c.wrongLogin ? `This slot holds ${c.wrongLoginWho || "another account"}'s login, so this account can't run on ${c.machine}.` : repairable ? (ep.state === 'failed' ? 'The last automatic repair stopped safely; you can try again.' : 'An automatic repair is ready to run.') : 'Its sign-in has expired.',
       actionable: c.actionable,
       action: repairable ? (ep.state === 'failed' ? 'retry' : 'approve') : 'start',
       episodeId: ep ? ep.id : null,
       remote: Boolean(c.row.remote),
     });
   }
+  const waiting = accounts.reduce((n, a) => n + a.cells.filter((c) => c.state === 'waiting').length, 0);
+  const waitingLine = waiting ? `${waiting === 1 ? '1 sign-in is' : `${waiting} sign-ins are`} unconfirmed or waiting on automatic repair; nothing for you to do yet.` : '';
   const usable = accounts.filter((a) => a.cells.some((c) => c.state === 'ok')).length;
   const busiest = accounts.filter((a) => a.tight).sort((a, b) => b.tight.pct - a.tight.pct)[0];
   // warning-path: row
@@ -143,5 +179,5 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], inUse 
   for (const [k, v] of Object.entries(extraNames || {})) if (!machineNames[k]) machineNames[k] = verifiedDisplayName(v, k);
   const partial = failed.length ? `No answer from ${failed.map((f) => verifiedDisplayName(f.nickname, f.machineId) || verifiedDisplayName(f.machineNickname, f.machineId) || machineNames[f.machineId] || 'a machine with no name yet').join(', ')}; its accounts may be out of date.` : null;
   // warning-path: pageHead
-  return { ok: true, needs, accounts, headline, sub: near.length ? `${near.map((a) => a.name).join(', ')} ${near.length === 1 ? 'is' : 'are'} at 90% or more of a limit.` : '', facts, partial, tone: needs.length ? 'attn' : 'ok' };
+  return { ok: true, needs, accounts, headline, sub: [near.length ? `${near.map((a) => a.name).join(', ')} ${near.length === 1 ? 'is' : 'are'} at 90% or more of a limit.` : '', waitingLine].filter(Boolean).join(' '), facts, partial, tone: needs.length ? 'attn' : 'ok' };
 }

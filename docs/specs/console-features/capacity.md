@@ -41,6 +41,7 @@ Why these merges:
   different time windows (24 h, 7 d, daily grain). LLM activity promises "what it cost" and never
   shows it (`index.html:3733`). One view with one time control and a named source on every
   number fixes all of that.
+- **"Needs you" means an action only the operator can take.** An unconfirmed sign-in, or a repair blocked by something the agent owns, is shown but not counted. A wrong login in a slot counts after a day; a login gone from the machine and a device-limit stop always count.
 - **Accounts stays on its own.** It is the action-heavy screen (sign-in repair, setup, approve),
   and money is a different decision from allowance. The cost view links to it for "covered by
   your subscription".

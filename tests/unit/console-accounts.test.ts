@@ -34,6 +34,48 @@ describe('accounts page model', () => {
     const q = buildAccountsPage(ok({ accounts: [row({ status: 'needs-reauth' })] }), NOW);
     expect(q.needs[0].action).toBe('start');
   });
+  it('an unconfirmed or blocked sign-in is shown but is not "needs you"', () => {
+    const noIncident = buildAccountsPage(ok({ accounts: [row({ status: 'needs-reauth', loginCheck: 'unavailable' })] }), NOW, {
+      blockers: [{ accountId: 'luna', machineId: 'm1', reason: 'no-open-incident' }],
+      episodes: [{ id: 'old', accountId: 'luna', machineId: 'm1', state: 'failed', updatedAt: iso(-90000) }] });
+    expect(noIncident.needs).toHaveLength(0);
+    expect(noIncident.headline).not.toContain('needs you');
+    expect(noIncident.accounts[0].cells[0]).toMatchObject({ state: 'waiting', label: 'sign-in not confirmed; still checking' });
+    expect(noIncident.sub).toContain('nothing for you to do yet');
+    const blocked = buildAccountsPage(ok({ accounts: [row({ status: 'needs-reauth' })] }), NOW, { blockers: [{ accountId: 'luna', machineId: 'm1', reason: 'profile-unresolved' }] });
+    expect(blocked.needs).toHaveLength(0);
+    expect(blocked.accounts[0].cells[0].label).toBe("automatic repair can't start yet");
+  });
+  it('a blocker for another machine, or a device-limit decision, stays needs-you', () => {
+    const other = buildAccountsPage(ok({ accounts: [row({ status: 'needs-reauth' })] }), NOW, { blockers: [{ accountId: 'luna', machineId: 'm2', reason: 'no-open-incident' }] });
+    expect(other.needs).toHaveLength(1);
+    const device = buildAccountsPage(ok({ accounts: [row({ status: 'needs-reauth' })] }), NOW, { blockers: [{ accountId: 'luna', machineId: 'm1', reason: 'device-limit-benched' }] });
+    expect(device.needs).toHaveLength(1);
+  });
+  it('a slot stuck on another login is a needs-you item even though the account reads active', () => {
+    const p = buildAccountsPage(ok({ accounts: [row({ identityDrifted: true, loginCheck: 'unavailable',
+      identityDrift: { actualAccountId: 'sagemind-echo', actualEmail: 'echo@x.io', repairState: 'planned', detectedAt: iso(-60 * 24 * 10) } })] }), NOW, {
+      episodes: [{ id: 'old', accountId: 'luna', machineId: 'm1', state: 'failed', updatedAt: iso(-90000) }] });
+    expect(p.headline).toBe('1 sign-in needs you.');
+    expect(p.needs[0]).toMatchObject({ action: 'start', episodeId: 'old' });
+    expect(p.needs[0].sub).toContain("holds echo@x.io's login");
+  });
+  it('a fresh or repairing wrong login may correct itself, so it is shown but not counted', () => {
+    const drift = (over: Record<string, unknown>) => buildAccountsPage(ok({ accounts: [row({ identityDrifted: true,
+      identityDrift: { actualAccountId: 'sagemind-echo', actualEmail: 'echo@x.io', repairState: 'planned', ...over } })] }), NOW);
+    expect(drift({ detectedAt: iso(-30) }).needs).toHaveLength(0);
+    expect(drift({ detectedAt: iso(-30) }).accounts[0].cells[0].state).toBe('waiting');
+    expect(drift({ detectedAt: iso(-60 * 24 * 10), repairState: 'repairing' }).needs).toHaveLength(0);
+    // An undated drift cannot be called fresh.
+    expect(drift({}).needs).toHaveLength(1);
+  });
+  it('a login gone from this machine needs the owner, whatever the account status says', () => {
+    const gone = buildAccountsPage(ok({ accounts: [row({ identityDrifted: true, identityDrift: { actualAccountId: 'missing-local-login', detectedAt: iso(-1) } })] }), NOW);
+    expect(gone.needs).toHaveLength(1);
+    expect(gone.accounts[0].cells[0].label).toBe('needs sign-in');
+    const owner = buildAccountsPage(ok({ accounts: [row({ identityDrifted: true, identityDrift: { actualAccountId: 'x', repairState: 'owner-relogin-required', detectedAt: iso(-1) } })] }), NOW);
+    expect(owner.needs).toHaveLength(1);
+  });
   it('withholds sign-in actions when account or machine names cannot identify one target', () => {
     const unnamed = buildAccountsPage(ok({ accounts: [row({ id: 'acct1', nickname: 'acct1', email: null, status: 'needs-reauth' })] }), NOW);
     expect(unnamed.needs).toHaveLength(0);
