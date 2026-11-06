@@ -578,6 +578,10 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     fileLevel: 'git-sync-excluded',
     note: 'class-review rows live in a machine-local SQLite/WAL store under the .instar sync exclusion; own-origin shells/outcomes converge through the class-review-record replicated store and remote terminal state remains advisory',
   };
+  reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/corrections/', domain: 'machine-local', story: {
+    logical: 'ws2x-replicated', onSharedGitSyncedPath: true, fileLevel: 'git-sync-excluded',
+    note: 'Failure-case context and immutable episodes extend correction-ledger.db; failure-callout-chunk journal snapshots replicate through the existing peer streams. Pool summaries omit forensic detail; complete replica detail is marked stale and read-only. CAS mutations remain on the origin writer.',
+  } });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/class-reviews/', domain: 'machine-local', story: classReviewStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/class-reviews/', domain: 'machine-local', story: classReviewStory });
   reg.add({
