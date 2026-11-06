@@ -27,13 +27,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
-import { generateAgentToken, deleteAgentToken } from '../../src/messaging/AgentTokenManager.js';
+import { randomUUID } from 'node:crypto';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const PROJECT_NAME = 'sessions-listing-hygiene-test';
 let AUTH = '';
 
 interface CtxOpts {
+  presentation?: Partial<RouteContext>;
   sessions?: Array<Record<string, unknown>>;
   meshSelfId?: string | null;
   nicknames?: Record<string, string>;
@@ -82,6 +83,7 @@ function buildCtx(tmpDir: string, opts: CtxOpts = {}): RouteContext {
     publisher: null, viewer: null, tunnel: null, evolution: null, watchdog: null,
     triageNurse: null, topicMemory: null, discoveryEvaluator: null, startTime: new Date(),
     mentorRunner: null, currentInboundByTopic: new Map(),
+    ...opts.presentation,
   } as unknown as RouteContext;
 }
 
@@ -113,11 +115,10 @@ describe('GET /sessions — listing hygiene', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-listing-hygiene-'));
-    AUTH = generateAgentToken(PROJECT_NAME);
+    AUTH = randomUUID();
   });
 
   afterEach(async () => {
-    deleteAgentToken(PROJECT_NAME);
     if (peerServer) { await new Promise((r) => peerServer!.close(r)); peerServer = null; }
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'test-cleanup' });
   });
@@ -142,6 +143,57 @@ describe('GET /sessions — listing hygiene', () => {
     sess({ status: 'failed', name: 'failed-task' }),
     sess({ status: 'killed', name: 'killed-task' }),
   ];
+
+  it('names a retained Telegram conversation from disk after a stale adapter loses its title and binding', async () => {
+    const stateDir = path.join(tmpDir, '.instar');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'topic-session-registry.json'), JSON.stringify({
+      topicToSession: { 134088: 'replacement' }, topicToName: { 134088: 'Instar App' },
+    }));
+    const row = sess({ name: 'echo-topic-134088', tmuxSession: 'old', telegramTopicId: 134088 });
+    const app = mount(tmpDir, { sessions: [row], topicBySession: {} });
+    const res = await request(app).get('/sessions').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body[0]).toMatchObject({ name: 'Instar App', platformName: 'Instar App', platform: 'telegram' });
+    // A subsequent rename is read on the next list, without restarting an adapter.
+    fs.writeFileSync(path.join(stateDir, 'topic-session-registry.json'), JSON.stringify({ topicToName: { 134088: 'Instar App renamed' } }));
+    expect((await request(app).get('/sessions').set(auth())).body[0].name).toBe('Instar App renamed');
+  });
+
+  it('names app, Slack, and job sessions from their owning records', async () => {
+    const app = mount(tmpDir, { sessions: [
+      sess({ name: 'topic--1', telegramTopicId: -1 }),
+      sess({ name: 'topic--2', telegramTopicId: -2 }),
+      sess({ name: 'job-health-123', jobSlug: 'health' }),
+    ], presentation: {
+      conversationRegistry: { resolve: (id: number) => id === -1
+        ? { platform: 'app', conversationKey: 'app:key' }
+        : { platform: 'slack', channelId: 'C123456789', label: 'Engineering' } } as never,
+      appConversations: { store: { getConversation: () => ({ title: 'Phone conversation' }) } } as never,
+      scheduler: { getJobs: () => [{ slug: 'health', name: 'Health check' }] } as never,
+    } });
+    const res = await request(app).get('/sessions').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.map((s: { name: string }) => s.name)).toEqual(['Phone conversation', 'Engineering', 'Health check']);
+    expect(res.body.map((s: { platform: string }) => s.platform)).toEqual(['app', 'slack', 'headless']);
+  });
+
+  it('pool preserves a peer title without platformName and names a stale peer from the local catalog', async () => {
+    const stateDir = path.join(tmpDir, '.instar');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'topic-session-registry.json'), JSON.stringify({ topicToName: { 42: 'Catalog conversation' } }));
+    const url = await listenLegacyPeer([
+      sess({ name: 'Peer conversation', platform: 'telegram', platformId: 43, platformName: 'Conversation name unavailable' }),
+      sess({ name: 'Conversation name unavailable', platform: 'telegram', platformId: 42 }),
+      sess({ name: 'App on another machine', platform: 'app', platformId: 'app:remote' }),
+    ]);
+    const app = mount(tmpDir, { peers: [{ machineId: 'peer', url }] });
+    const res = await request(app).get('/sessions?scope=pool').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.sessions.map((s: { name: string }) => s.name)).toEqual(['Peer conversation', 'Catalog conversation', 'App on another machine']);
+    expect(res.body.sessions[2].platform).toBe('app');
+    expect(res.body.sessions[0].platformName).toBeUndefined();
+  });
 
   it('DEFAULT: returns ACTIVE sessions only (finished runs excluded)', async () => {
     const app = mount(tmpDir, { sessions: REGISTRY() });

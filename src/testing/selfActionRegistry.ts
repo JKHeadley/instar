@@ -22,6 +22,7 @@
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { nextAuditAfterFailure } from '../core/attribution/AttributionAudit.js';
 import { advanceEvolutionArchiveFailure, evolutionArchiveSyncAttemptDue, EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES } from '../core/EvolutionArchiveSync.js';
 import type { EvolutionArchiveSyncPeer } from '../core/EvolutionArchive.js';
 import { PENDING_MAX_BACKOFF_MS, PENDING_TICK_MS, PENDING_TTL_MS } from '../threadline/requiredAckService.js';
@@ -327,6 +328,35 @@ const LINUX_BROWSER_FACTS: MachineFacts = { platform: 'linux', wsl: false, arch:
 
 /** linux-browser-install-retry: every attempt fails and the machine stays up, so the hourly check keeps
  * asking. The real decision paces it at 1 h, 6 h, 24 h, then stops for good until an operator says yes. */
+/** attribution-audit-retry: a daily report whose model stays down. It settles to one try a day, for good. */
+const attributionAuditRetry: SelfActionController = {
+  id: 'attribution-audit-retry',
+  actionVerb: 'retry',
+  models: 'src/core/attribution/AttributionAudit.ts (finishRun — nextAuditAfterFailure, breaker after 3 failed runs)',
+  modelsPath: 'src/core/attribution/AttributionAudit.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The failure count, next run and breaker are on disk in audit-state.json, so a restart resumes the same schedule.' },
+  boundK: 33,
+  perTargetBoundK: 33,
+  ticks: 24 * 30,
+  tickMs: 60 * 60_000,
+  eternalSentinel: { reason: 'A daily report keeps trying once a day with its breaker open, so the report comes back on its own when the model does.', rateFloorMs: 12 * 60 * 60_000 },
+  delegatedGiveUp: 'The audit budget of 40 model calls a run and the 24h breaker',
+  makeUnderPressure(f, sink) {
+    let failures = 0;
+    let nextRunAt = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (now < nextRunAt) return;
+        sink.emit({ verb: 'retry', target: 'attribution-audit' });
+        failures += 1;
+        nextRunAt = nextAuditAfterFailure(failures, now).nextRunAt;
+      },
+    };
+  },
+};
+
 const linuxBrowserInstallRetry: SelfActionController = {
   id: 'linux-browser-install-retry',
   actionVerb: 'retry',
@@ -2331,33 +2361,33 @@ const agentIdentityCoherenceDetector: SelfActionController = {
  * the lease holder: ONE attempt inside the reply request, then a durable hold
  * whose quick ladder retries from the 5 s boot tick at +10 s and +20 s (the
  * ladder state lives in the held row's `holdDetail.ladder`, restart-surviving),
- * then the EXISTING 15-minute `reserveRecoveryAttempt` schedule until the
- * operation's 6 h deadline expires it (`expireOperation`, reported once). Under
- * a holder that always refuses, one held reply therefore costs at most
- * 1 + 2 + 24 = 27 forward attempts, horizon-independent: past the deadline the
+ * then the EXISTING `reserveRecoveryAttempt` schedule (+30 s, +1 m, +2 m, +5 m,
+ * then every 15 minutes) until the operation's 6 h deadline expires it
+ * (`expireOperation`, reported once). Under a holder that always refuses, one
+ * held reply therefore costs at most 1 + 2 + 28 = 31 forward attempts, horizon-independent: past the deadline the
  * row is `expired` and nothing fires again. Real source:
  * src/messaging/telegram-origin/OriginForwardToHolder.ts (nextLadderState,
  * recoverForwardedHold) + TelegramOriginRuntime.runForwardLadder/recoverHeld.
  */
 const telegramOriginForwardLadder: SelfActionController = {
   id: 'telegram-origin-forward-ladder', actionVerb: 'retry-forward-to-holder',
-  models: 'OriginForwardToHolder.nextLadderState (two quick steps, +10 s/+20 s, persisted in holdDetail.ladder) then OriginStoreBackend.reserveRecoveryAttempt (15-min interval) until expireOperation at the 6 h deadline.',
+  models: 'OriginForwardToHolder.nextLadderState (two quick steps, +10 s/+20 s, persisted in holdDetail.ladder) then OriginStoreBackend.reserveRecoveryAttempt (30 s, 1 m, 2 m, 5 m, then 15-min intervals) until expireOperation at the 6 h deadline.',
   modelsPath: 'src/messaging/telegram-origin/OriginForwardToHolder.ts',
-  boundK: 27, perTargetBoundK: 27, ticks: 6_000, tickMs: 5_000, // 8h20m horizon > the 6 h deadline
+  boundK: 31, perTargetBoundK: 31, ticks: 6_000, tickMs: 5_000, // 8h20m horizon > the 6 h deadline
   restartPosture: { pressureSurvives: true, restartUnderPressure: makeTelegramOriginForwardLadderPressure },
   makeUnderPressure: makeTelegramOriginForwardLadderPressure,
 };
 function makeTelegramOriginForwardLadderPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
-  const LADDER_DELAYS_MS = [10_000, 20_000], SCHEDULE_MS = 15 * 60_000, DEADLINE_MS = 6 * 60 * 60_000;
+  const LADDER_DELAYS_MS = [10_000, 20_000], SCHEDULE_MS = [30_000, 60_000, 2 * 60_000, 5 * 60_000], SCHEDULE_TAIL_MS = 15 * 60_000, DEADLINE_MS = 6 * 60 * 60_000;
   return { tick() {
     sink.considered++;
     if (!f.targetAlwaysRejects()) return;
     const now = f.clock.nowMs();
     // The held row (durable): prepared at the first pressured tick; `ladder` + `nextAttemptAt` persist across reconstruction.
-    let row = f.durableState.get('origin-forward:row') as { preparedAt: number; ladderAttempts: number; nextAt: number | null; state: 'held' | 'expired' } | undefined;
+    let row = f.durableState.get('origin-forward:row') as { preparedAt: number; ladderAttempts: number; reservations: number; nextAt: number | null; state: 'held' | 'expired' } | undefined;
     if (!row) {
       sink.emit({ verb: 'retry-forward-to-holder', target: 'op-1' }); // the one in-request attempt
-      row = { preparedAt: now, ladderAttempts: 0, nextAt: now + LADDER_DELAYS_MS[0], state: 'held' };
+      row = { preparedAt: now, ladderAttempts: 0, reservations: 0, nextAt: now + LADDER_DELAYS_MS[0], state: 'held' };
       f.durableState.set('origin-forward:row', row); return;
     }
     if (row.state === 'expired') return;
@@ -2366,8 +2396,8 @@ function makeTelegramOriginForwardLadderPressure(f: PressureFixture, sink: Actio
     sink.emit({ verb: 'retry-forward-to-holder', target: 'op-1' });
     if (row.ladderAttempts < LADDER_DELAYS_MS.length) {
       row.ladderAttempts += 1; // nextLadderState
-      row.nextAt = row.ladderAttempts < LADDER_DELAYS_MS.length ? now + LADDER_DELAYS_MS[row.ladderAttempts] : now + SCHEDULE_MS; // exhausted → the 15-min schedule
-    } else row.nextAt = now + SCHEDULE_MS; // reserveRecoveryAttempt
+      row.nextAt = row.ladderAttempts < LADDER_DELAYS_MS.length ? now + LADDER_DELAYS_MS[row.ladderAttempts] : now; // exhausted → the first reservation has no schedule row to wait on
+    } else { row.nextAt = now + (SCHEDULE_MS[row.reservations] ?? SCHEDULE_TAIL_MS); row.reservations += 1; } // reserveRecoveryAttempt
     f.durableState.set('origin-forward:row', row);
   } };
 }
@@ -4022,6 +4052,7 @@ const codex429ExitNotice: SelfActionController = {
 };
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  attributionAuditRetry,
   jobPortableTransferPoll,
   jobCoverageAlertRetry,
   linuxBrowserInstallRetry,

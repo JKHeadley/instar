@@ -1,0 +1,34 @@
+{
+  "version": 3,
+  "slug": "slack-private-memory-temp-free-reply",
+  "sessionId": "57aa44f8-768a-4c85-8f1c-9c5fab2c872e",
+  "timestamp": "2026-11-06T05:54:01.965Z",
+  "artifactPath": "upgrades/side-effects/slack-private-memory-temp-free-reply.md",
+  "artifactSha256": "c0b423d0fc674091ba7e027813fbd7229575106d0d87ca9b6a3aae6d3b7db1ae",
+  "coveredFiles": [
+    "tests/unit/lint-blocking-decisions-declared.test.ts",
+    "upgrades/side-effects/slack-private-memory-temp-free-reply.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test isolation repair required by full verification: copied adversarial fixture, read-only actual tree, no production guard change.",
+  "eli16Path": "upgrades/eli16/slack-private-memory-temp-free-reply.md",
+  "sideEffectsPath": "upgrades/side-effects/slack-private-memory-temp-free-reply.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "relay_review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

@@ -44,7 +44,7 @@ import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { registryMirrorPaths } from './standardsRegistryPath.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
-import { ensureInstarBashPreToolUseHooks, ensureInstarWildcardPreToolUseHooks, type SettingsMatcherEntry } from './instarSettingsHooks.js';
+import { ensureInstarBashPreToolUseHooks, ensureInstarWildcardPreToolUseHooks, ensureInstarWritePreToolUseHooks, type SettingsMatcherEntry } from './instarSettingsHooks.js';
 import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotlightExclusion, ensureClaudeTranscriptSpotlightExclusion, ensureAgentDataSpotlightExclusion } from './InstarWorktreeManager.js';
 import { classifyTccProtectedPath, describeTccProtectedPath } from './TccProtectedPathGuard.js';
 import { fileURLToPath } from 'node:url';
@@ -826,6 +826,19 @@ export const TONE_ADVISORY_FLAG_POSITION_CLAUDEMD_SECTION = `- **How to send the
   \`\`\`
   Use \`--tone-complied <RULE>\` instead of \`--tone-ack\`/\`--tone-reason\` when you agreed and revised. A flag in the wrong position is now REFUSED (it used to be sent to the user as literal text with its effect silently dropped, which is exactly how a correct check once got graded \`wrong\`). If such a token is genuinely part of your message, pipe the text on stdin — the check only inspects arguments.`;
 
+export const ATTRIBUTION_CLAUDEMD_SECTION = `## Attribution paper trail (who said this, and how did it change?)
+
+Anything I credit to a person, in my memory, notes, rules or messages, either points at the logged message it came from or says plainly that it has no source. A note that said "Justin corrected me" with no pointer can harden over months into "his standing rule" and refuse real work on words he never said; this is what stops that.
+
+- **Sourced:** the person's exact words in quotes, then a marker on the same line: \`Name: "exact words" [source: telegram 102965/123160 2026-10-08]\`. The format is \`[source: <channel> <conversation>/<message> <YYYY-MM-DD>]\`, the date being the record's UTC date; channels are telegram, slack, imessage, whatsapp, app, threadline.
+- **Unsourced:** \`[source unknown]\`, or \`[my inference]\` for my own conclusion. **A label removes the credit; it does not decorate it.** \`Name's standing rule: X [source unknown]\` still credits them and is refused. \`X. An earlier note credited this to Name; source unknown. [source unknown]\` passes.
+- **Who said this?** (Registry First) \`curl -H "Authorization: Bearer $AUTH" "http://localhost:\${port}/attribution/trace?q=<words>"\` (or \`?claim=<id>\`, \`?channel=&conversation=&message=&date=\`) → the origin record, then every wording in order, across my machines, with a \`failed\` list. \`GET /attribution/resolve?marker=<marker>\` checks one citation; \`GET /attribution/find?person=&claim=\` suggests sources and never writes one.
+- **Outcomes stay distinct:** \`found\`, \`pinned-copy\` (no longer in the log), \`not-found\` (not on any live machine, never "false"), \`unverifiable\` (older than a log, or in a declared gap), \`unreachable\` (a machine did not answer), \`removed\` (the person deleted it).
+- **The write gate:** a PreToolUse hook checks changed lines in my memory folder, MEMORY.md, USER.md, AGENT.md, \`.claude/rules\` and my part of CLAUDE.md. A refusal shows the failing lines and the two honest ways through. On any error or timeout it passes, counted.
+- **Status:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:\${port}/attribution/status\` → mode, budgets, hook timeouts, \`unchecked\` counts, judge error rate, and the daily report. Zero refusals with a healthy count means it is working; check the counts before reading silence as success. 503 means the feature is dark on this agent; say so. \`POST /attribution/audit\` runs the report now.
+- **Modes:** \`record\` (the default where it is live) refuses nothing, and its verdicts measure what enforcement would hold. \`enforce\` refuses note writes and turns on the send nudge \`B23_UNSOURCED_ATTRIBUTION\`, which also catches a refusal resting on an unsourced rule whether or not it names anyone ("that's a standing rule, so no"). React to that nudge like any other: revise with \`--tone-complied B23_UNSOURCED_ATTRIBUTION\`, or \`--tone-ack\` with the reason; if the rule is mine, say so.
+- **The daily report writes nothing to any note.** Fixing one is a normal edit that passes the same check. **When to use** (PROACTIVE): before I say "you told me", "your rule" or "we agreed", or refuse work on a rule, I find the source or say it is my own. When someone asks "did I say that?" or "where did that rule come from?", I run the trace and show the chain.`;
+
 export const SURFACE_REFERRAL_CLAUDEMD_SECTION = `**Sending the operator to a page: link, words, and look first.** A message that sends the operator to a dashboard, console or app page carries a direct link and the exact words they will see there in quotes, and I load that link at their screen size (1280x728 and 390x844) and read the first screen before sending. The outbound gate nudges (\`B22_SURFACE_REFERRAL\`) until that holds: after loading the page, resend with \`--tone-complied B22_SURFACE_REFERRAL\` (its flags go before the topic id). If it cannot be loaded from here, override with \`--tone-ack\` and the reason. Anything that needs the operator also belongs on the first screen of its page and in Home's count, through \`dashboard/console/needs-model.js\`.`;
 export const TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION = `**File-path feedback is always a NUDGE, never a wall; most other checks become nudges under the advisory migration.** B2_FILE_PATH is advisory on every agent (operator decision 2026-09-03): file paths are sometimes necessary and acceptable, so the check may suggest clearer wording but must accept an explicit override even when decision-quality recording is unavailable. For the other eligible judgment rules, \`toneGate.advisoryMigration\` remains dev-gated live / fleet-dark. A nudge returns \`422 tone-gate-advisory\` with \`notSent: true\` and a \`decisionRef\` when available — the message is handed back to YOU, not dropped. Two ways forward, and **both are recorded when the evidence seam is available**:
 - **You agree** → revise and re-send with \`metadata.toneAdvisoryComplied: "<RULE>"\` + \`metadata.toneAdvisoryDecisionRef: "<decisionRef>"\` → the check is graded \`right\`.
@@ -1003,6 +1016,10 @@ Every switched-off feature has numbers it must hit for each rung, read from its 
  * Unique content-sniff marker: `Queue Pace — is every work pile shrinking`.
  * Measure-only ledger + route (dev-gated); the triage tuner has its own explicit flag.
  */
+/** docs/specs/mobile-pairing-approve.md §3: what an agent says about Approve; each line is also its own content-sniff marker. */
+export const PAIRING_APPROVE_BULLET = `- **The owner can approve instead of typing the code.** The private Telegram message has Approve and Decline buttons (only the verified owner's tap counts, in their private chat), and a paired owner phone can approve with Face ID (\`GET /mobile/pairing-requests\`). Tell them to approve only if they are pairing a phone right now and the key shown matches the app. Two phones waiting at once: Approve is refused until one is declined. I can never approve a phone myself. The code still works, for older apps. Off switch: \`mobilePairing.approve.enabled: false\`.`;
+export const PAIRING_APPROVE_DASHBOARD_BULLET = `- After the PIN, the same page has **Approve this phone** next to the code, so copying the code is only needed for an older app (\`POST /mobile/pairing-approvals/:id/approve\`, the same PIN session). Tell the operator to approve only if the key shown matches the app.`;
+
 /**
  * CLAUDE.md awareness block for mobile pairing links (docs/specs/mobile-pairing-link.md).
  * Unique content-sniff marker: `Mobile pairing link`.
@@ -1013,6 +1030,7 @@ export function MOBILE_PAIRING_CLAUDEMD_SECTION(port: number): string {
 The operator can add this agent to the Instar iPhone app with a one-time link instead of typing an address and PIN. The link opens the app (a universal link on instar.sh); the phone registers its own Secure Enclave key, and I send the owner a confirmation code (like \`KITE-4172\`, or six digits) **privately** in Telegram, which the owner types into the app. Only then is the phone active. The phone stores no API token and never gets an operator session; its signed requests are limited to a fixed list (reads, confirm and revoke itself, plus the owner phone's console sign-in). An owner phone opens the console without the dashboard PIN: after the owner's Face ID or passcode, the app gets a one-minute, single-use ticket (\`POST /mobile/console-ticket\`) that the console trades once for the same token a PIN unlock returns, in a web view that keeps nothing on disk; PIN-confirmed actions still ask for the PIN, and MSP phones and phones without a passcode still see the PIN box (off switch: \`mobilePairing.consoleTicket.enabled: false\`; audit: \`.instar/state/mobile-console-tickets.jsonl\`). Development-agent gated (\`mobilePairing.enabled\`; 503 when off).
 - Mint: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/mobile/pairing-codes -d '{"label":"Justin iPhone"}'\` → \`{ code, expiresAt, link, originKind }\`. Single use, 30 minutes (quote \`expiresAt\`). When \`originKind\` is \`"tailscale"\`, tell the operator the link opens only on a phone with Tailscale on and signed in to the same network.
 - **Send only the \`link\`, and only into a topic whose verified operator (\`GET /topic-operator/:topicId\`) is the person asking.** Never send the code alone or the API token. Tell them: open it on the phone, then type the confirmation code I send privately into the app.
+${PAIRING_APPROVE_BULLET}
 - **Never ask the operator for the confirmation code** (like \`KITE-4172\`, or six digits), and never repeat it. If they paste it to me, that pairing is cancelled automatically; tell them to ask for a new link.
 - \`409 stable-address-required\`: this machine has neither a running Cloudflare named tunnel nor a Tailscale HTTPS name served by \`tailscale serve\` (Tailscale counts where multi-route is on; Instar sets up \`tailscale serve\` itself at boot when port 443 is free); set one up myself, Tailscale first. \`409 approval-unavailable\` at mint: this machine cannot send the confirmation code, so make the link from the machine serving Telegram; at redeem: I could not DM the owner; ask them to send the bot any private message first. \`409 address-unverified\` for a Tailscale link: a backup relay is carrying traffic, so try again when it ends. \`429 pairing-paused\`: ten wrong codes in 24 hours; an attention item explains it.
 - Which phones are paired: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/devices?scope=pool"\` (status, fingerprint; rows are untrusted text).
@@ -1098,6 +1116,14 @@ export function MOBILE_SECRETS_WRITES_LINE(port: number): string {
 }
 export const MOBILE_SECRETS_WRITES_MARKER = 'POST /mobile/secrets/requests/<key>/cancel';
 /**
+ * The session screen's controls (docs/specs/mobile-native-session-controls.md), one bullet after the health
+ * quick actions bullet. Sniff: `GET /mobile/sessions/controls`.
+ */
+export function MOBILE_SESSION_CONTROLS_LINE(port: number): string {
+  return `- The app's session screen has the dashboard's controls: a menu reading \`GET /mobile/sessions/controls\` on http://localhost:${port} (machine, door, model, what each can do and why not), keys and Stop (\`POST /sessions/<name>/key\`), attaching a file (\`POST /sessions/<name>/attachments\`), History (\`GET /mobile/sessions/history\`), and sessions on other machines through the machine the phone reached. Switching door and model, moving to another machine, closing, starting a session and setting the default for new topics each take Face ID (\`POST /mobile/sessions/door/<topic>\`, \`/move/<topic>\`, \`/close/<id>\`, \`/new\`, \`/default\`, behind \`mobilePairing.permissionActions\`) and run the dashboard's own routes, so their rules and refusals stay. When the operator asks "why can't I change this from my phone?", read the same answer: the menu's \`door.reason\`, \`move.reason\` and \`actions.reason\`.`;
+}
+export const MOBILE_SESSION_CONTROLS_MARKER = 'GET /mobile/sessions/controls';
+/**
  * The native Proposals / How I'm doing inside screens (docs/specs/mobile-native-proposals-inside.md),
  * one bullet in the Mobile app routes block after the permissions bullet. Sniff: `GET /mobile/proposals`.
  */
@@ -1122,6 +1148,16 @@ export function MOBILE_HEALTH_ISSUES_LINE(port: number): string {
   return `- The app's Fleet and Machines and health screens and the console read \`GET /mobile/health-issues\` (\`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/health-issues\`): why \`/health\` says degraded, each reason sorted into \`user-affecting\`, \`internal\` or \`unclassified\` from the declared table in \`src/monitoring/healthIssues.ts\`, with plain words, details, a next step and the message "Ask the agent about this" starts from. Owner phone or bearer, read-only. Verdicts: \`attention\`, \`unsure\`, \`running\`, \`healthy\`. An id the table doesn't name is \`unclassified\`: it shows in the details and never reads as healthy. **When to use** (PROACTIVE): "why does it say degraded?" → read this before answering, and answer in its words. When the person asks about a \`reference:\` id from this page, look at \`/health/degradations\` for that feature and say what happened and what to do.`;
 }
 export const MOBILE_HEALTH_ISSUES_MARKER = 'GET /mobile/health-issues';
+
+/**
+ * The person's quick actions on a health problem (docs/specs/health-quick-actions.md), one bullet after the
+ * health reading bullet. Sniff: `POST /mobile/health-issues/choices`.
+ */
+export function MOBILE_HEALTH_CHOICES_LINE(port: number): string {
+  return `- On each problem the person can Hide for a while (1 hour, 1 day or 1 week), Hide from me (they stop seeing it, I keep tracking it) or Ignore completely (I stop tracking it): \`POST /mobile/health-issues/choices\` with \`{"id":"<issue id>","choice":"snooze","hours":24}\`, and \`POST /mobile/health-issues/choices/undo\` with \`{"key":"<hidden key>"}\`; what's hidden is the \`hidden\` list in \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/health-issues\`. Hidden items never raise a count. Security and data-loss items only get Hide for a while, and a live reading can't be ignored because other parts of me depend on it. **When to use** (PROACTIVE): the person says "stop showing me that" or "ignore this" → it's their tap in the app or the console, or do it for them when they ask. These choices are theirs: never hide or ignore a problem on my own, because that silences what they rely on me to show them. The Hidden list says who did it.`;
+}
+
+export const MOBILE_HEALTH_CHOICES_MARKER = 'POST /mobile/health-issues/choices';
 export const MOBILE_ROUTES_PROBE_LINE_PREFIX = '- A probe that fails 8 times in a row pauses for that name';
 
 /** The increment-1 wording of the verdict bullet's tail, replaced in place on update. */
@@ -1167,6 +1203,7 @@ export function PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION(): string {
 
 An agent with no Telegram owner can still add a phone. The pairing link works the same; after the phone opens it, the confirmation code (like \`KITE-4172\`, or six digits) is not sent anywhere: it is shown on the pairing code page, \`/dashboard/pair\`, and only after the operator types the dashboard PIN on that page. The operator copies it there (a Copy button) into the app, or taps "Not my phone". Where a Telegram owner exists, the code still goes to the owner's private Telegram chat.
 - Send the operator the pairing link and the mint answer's \`codePageUrl\` (the code page on the same address; never in the same message as the PIN), and tell them: open the pairing link on the phone, then open the code page, type the PIN, tap Copy and paste the code into the app. The app can also open the code page itself once the phone has opened the link. ${PAIRING_WITHOUT_TELEGRAM_CURRENT_CODE_LINE}
+${PAIRING_APPROVE_DASHBOARD_BULLET}
 - A phone approved this way is labelled "approved on dashboard" (\`approvedVia: dashboard-pin\`): it proves the person could unlock the dashboard, not that they can read a private Telegram chat.
 - A server restart loses a waiting code (it lives only in memory); the phone then needs a new link.
 - Every reply I send in an app conversation sends one push to paired phones ("New reply"; never the reply's text), within the push budgets, with or without Telegram.
@@ -1175,6 +1212,7 @@ An agent with no Telegram owner can still add a phone. The pairing link works th
 }
 
 export const SLACK_FROM_APP_CLAUDEMD_MARKER = '### Slack conversations from the Instar app';
+export const SLACK_OWNER_READ_AUTHORITY_LINE = '- **Owner-phone remote Slack history:** the server rechecks the signed phone\'s current key, person, owner role, revocation record and live pairing/native gates before every holder dial and before returning private history. Removing access while a read waits prevents that history from being returned. If revocation state cannot be checked, the read is refused. This does not proxy sends or remote file downloads.';
 /**
  * CLAUDE.md awareness block for continuing Slack conversations from the iPhone app
  * (docs/specs/mobile-native-conversations.md §4.9 — increment 4). Sniffed by its exact heading.
@@ -1185,6 +1223,7 @@ export function SLACK_FROM_APP_CLAUDEMD_SECTION(port: number): string {
 Where Slack is set up, the app's conversation list also shows Slack channels and threads (\`platform: "slack"\`, id = the negative durable conversation id), and the operator can read and write them from the phone. A message the operator types in the app reaches my Slack session exactly like a Slack message from them, tagged \`[slack:<channel> from <owner> (uid:<U…>) (📱 signed)]\` ("📱 signed" only when the phone's signature checked out), and a copy "📱 <owner> (from the app): …" is posted in the channel (credential-shaped text shown as \`[credential hidden]\`). I answer it with \`slack-reply.sh\` as usual.
 - **The operator's Slack user id is a setting I propose, never infer.** Until \`mobilePairing.slackOwnerUserId\` is set the app shows no Slack rows and its Slack routes answer 503 \`slack-owner-unset\`. When the operator asks to use Slack from the app, read the Slack channel's verified operator (\`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic-operator\`), propose that \`U…\` id to the operator, and set it only after they say yes.
 - History an agent can read: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/chat/slack/CONVERSATION_ID/messages?machine=MACHINE"\`, with MACHINE the \`machine\` on that conversation's row in \`GET /mobile/conversations\` (a Slack id is local to one machine; another machine's id answers 409 \`wrong-machine\`, a missing machine 400 \`machine-required\`). App-sent rows carry \`originVerified\`; rows typed in Slack read \`none\`.
+${SLACK_OWNER_READ_AUTHORITY_LINE}
 - **When to use** (PROACTIVE): "can I use Slack from the app?" → check the setting above and offer to set it; "did my app message reach Slack?" → read that message's \`deliveryState\`, \`mirror\` and \`originVerified\`, never infer it from the text.
 `;
 }
@@ -1252,6 +1291,8 @@ ${MOBILE_SECRETS_LINE(port)}
 ${MOBILE_SECRETS_WRITES_LINE(port)}
 ${MOBILE_CONSOLE_PAGES_LINE(port)}
 ${MOBILE_HEALTH_ISSUES_LINE(port)}
+${MOBILE_HEALTH_CHOICES_LINE(port)}
+${MOBILE_SESSION_CONTROLS_LINE(port)}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }
@@ -7388,6 +7429,13 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     }
 
     try {
+      fs.writeFileSync(path.join(instarHooksDir, 'attribution-gate.js'), this.getAttributionGateHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/attribution-gate.js (attribution write gate)');
+    } catch (err) {
+      result.errors.push(`attribution-gate.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'stop-gate-router.js'), this.getStopGateRouterHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/stop-gate-router.js (unjustified Stop gate router)');
     } catch (err) {
@@ -7528,6 +7576,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       'instructions-loaded-tracker.js', 'subagent-start-tracker.js',
       'free-text-guard.sh', 'claim-intercept.js', 'claim-intercept-response.js', 'response-review.js',
       'stop-gate-router.js',
+      'attribution-gate.js',
       'auto-approve-permissions.js',
     ];
 
@@ -9221,6 +9270,13 @@ setTimeout(() => process.exit(0), 2000);
     // Tone-gate advisory migration (operator approval 2026-07-19, topic 33368) —
     // operator-needs-first-screen §6: the B22 nudge needs its reaction flag known, or an agent
     // reads the nudge as a wall. Content-sniffed for idempotency.
+    // Attribution paper trail: Agent Awareness + Migration Parity. Content-sniffed for idempotency.
+    if (!content.includes('## Attribution paper trail')) {
+      content += `\n${ATTRIBUTION_CLAUDEMD_SECTION.replace(/\$\{port\}/g, String(port))}\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the attribution paper trail');
+    }
+
     if (!content.includes('Sending the operator to a page: link, words, and look first')) {
       content += `\n${SURFACE_REFERRAL_CLAUDEMD_SECTION}\n`;
       patched = true;
@@ -9595,6 +9651,19 @@ setTimeout(() => process.exit(0), 2000);
       }
     }
 
+    // mobile-pairing-approve §3: add the Approve lines before their fixed neighbours (idempotent: each
+    // line is its own marker; a section whose neighbour was hand-edited is left alone).
+    if (content.includes('Mobile pairing link') && !content.includes(PAIRING_APPROVE_BULLET) && content.includes('\n- **Never ask the operator for the ')) {
+      content = content.replace('\n- **Never ask the operator for the ', `\n${PAIRING_APPROVE_BULLET}\n- **Never ask the operator for the `);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Mobile pairing link section describes Approve');
+    }
+    if (content.includes(PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER) && !content.includes(PAIRING_APPROVE_DASHBOARD_BULLET) && content.includes('\n- A phone approved this way is labelled')) {
+      content = content.replace('\n- A phone approved this way is labelled', `\n${PAIRING_APPROVE_DASHBOARD_BULLET}\n- A phone approved this way is labelled`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Pairing without Telegram section describes Approve');
+    }
+
     // mobile-pairing-word-code §7: every pairing sentence that names the code's shape becomes
     // format-neutral. Separate from the Tailscale rewrite above (that branch only runs while the
     // 10-minute wording remains). A line is replaced only when it starts with its known prefix (or
@@ -9648,6 +9717,12 @@ setTimeout(() => process.exit(0), 2000);
       content += SLACK_FROM_APP_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Slack conversations from the Instar app section');
+    }
+    if (!content.includes(SLACK_OWNER_READ_AUTHORITY_LINE)) {
+      content = content.replace(SLACK_FROM_APP_CLAUDEMD_MARKER,
+        SLACK_FROM_APP_CLAUDEMD_MARKER + '\n\n' + SLACK_OWNER_READ_AUTHORITY_LINE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: clarified live owner authority for remote Slack history');
     }
     if (!content.includes('Native app conversations')) {
       content += APP_CONVERSATIONS_CLAUDEMD_SECTION(port);
@@ -9860,6 +9935,7 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added the phone ask and cancel line');
     }
 
+
     // Native Proposals / How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): one bullet
     // after the permissions bullet of an existing Mobile app routes block (a block added below already has it).
     if (content.includes('Mobile app routes') && !content.includes(MOBILE_PROPOSALS_INSIDE_MARKER)) {
@@ -9907,6 +9983,36 @@ setTimeout(() => process.exit(0), 2000);
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added the owner health reading line');
+    }
+
+    // The quick actions on a health problem (docs/specs/health-quick-actions.md): one bullet after the reading.
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_HEALTH_CHOICES_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_HEALTH_ISSUES_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_HEALTH_CHOICES_LINE(port));
+        content = lines.join('\n');
+      } else {
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_HEALTH_CHOICES_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the health quick actions line');
+    }
+
+    // The session screen's controls (docs/specs/mobile-native-session-controls.md): one bullet after the
+    // health quick actions bullet of an existing Mobile app routes block (a block added below already has it).
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_SESSION_CONTROLS_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_HEALTH_CHOICES_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_SESSION_CONTROLS_LINE(port));
+        content = lines.join('\n');
+      } else {
+        // A block without that bullet: append the line rather than skip it.
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_SESSION_CONTROLS_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the session screen controls line');
     }
 
     // Mobile app routes (docs/specs/mobile-multi-route.md) — Agent Awareness + Migration Parity.
@@ -16277,6 +16383,17 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       }
     }
 
+    // The attribution write gate (docs/specs/attribution-paper-trail.md). Same shared function init.ts
+    // calls. It restricts nobody by arriving: the route answers 503 while the feature is dark, `record`
+    // refuses nothing, and `enforce` is opt-in.
+    {
+      const added = ensureInstarWritePreToolUseHooks(preToolUse as SettingsMatcherEntry[]);
+      if (added.length > 0) {
+        patched = true;
+        for (const fname of added) result.upgraded.push(`.claude/settings.json: added PreToolUse Write|Edit|MultiEdit ${fname} hook`);
+      }
+    }
+
     // Ensure PreToolUse Bash slopcheck-guard hook exists (cherry-pick 2026-05-23).
     // Existing agents only get new Bash-matcher hooks through an explicit ensure
     // block here — there is no wholesale settings-template refresh on migration.
@@ -18105,7 +18222,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
+  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'attribution-gate' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
     switch (name) {
       case 'signin-profile-guard': return signinProfileGuardHook();
       case 'telegram-origin-guard': return originToolGuardHook();
@@ -18127,6 +18244,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       case 'telegram-topic-context': return this.getTelegramTopicContextHook();
       case 'response-review': return this.getResponseReviewHook();
       case 'stop-gate-router': return this.getStopGateRouterHook();
+      case 'attribution-gate': return this.getAttributionGateHook();
       case 'auto-approve-permissions': return this.getAutoApprovePermissionsHook();
       case 'skill-usage-telemetry': return this.getSkillUsageTelemetryHook();
       case 'build-stop-hook': return this.getBuildStopHook();
@@ -18475,7 +18593,27 @@ except Exception:
 fi
 
 MEM_PORT="\$PORT"; MEM_TOKEN="\$TOKEN"; MEM_EVENT="\$EVENT"
-${this.jevMemoryPickerHookStep()}# AUTO-LEARNED PREFERENCES injection — Correction & Preference Learning Sentinel
+${this.jevMemoryPickerHookStep()}# ATTRIBUTION BACKLOG — the daily report needs a reader. One line, only when the report holds
+# something. Fail-open: route 503 (feature dark) / unreachable / empty → silent skip.
+if [ -n "\$PORT" ] && [ -n "\$TOKEN" ]; then
+  ATTRIBUTION_LINE=\$(curl -sf --max-time 2 -H "Authorization: Bearer \$TOKEN" \\
+    "http://localhost:\${PORT}/attribution/status" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    line = json.load(sys.stdin).get('sessionLine')
+    if line:
+        print(line)
+except Exception:
+    pass
+" 2>/dev/null)
+  if [ -n "\$ATTRIBUTION_LINE" ]; then
+    echo ""
+    echo "\$ATTRIBUTION_LINE"
+    echo ""
+  fi
+fi
+
+# AUTO-LEARNED PREFERENCES injection — Correction & Preference Learning Sentinel
 # (Slice 1a). Fetches /preferences/session-context and injects the structured
 # block of preferences the correction loop has learned about this user, so the
 # agent reasons with them from message one. SIGNAL-ONLY — these are preferences,
@@ -22810,6 +22948,95 @@ if (!reviewEnabled) {
   }
 })();
 
+`;
+  }
+
+  private getAttributionGateHook(): string {
+    const port = this.config.port;
+    return `#!/usr/bin/env node
+// Attribution write gate (docs/specs/attribution-paper-trail.md).
+//
+// Thin client on the stop-gate-router pattern: the decision stays server-side. It exits at once for
+// any other tool or for a file out of scope (matched after realpath, since the memory folder is a
+// link; the server checks the scope again), and otherwise asks POST /attribution/check. In record
+// mode the server answers at once and this does not wait. On any error, timeout or 503 it passes:
+// only a server verdict that says blocked stops a write. Exit 2 is how Claude Code and Codex both
+// read a refusal, and the reason on stderr is what the agent sees.
+//
+// ESM-SAFE: dynamic import inside an async IIFE, so this runs in CJS and ESM host packages alike.
+
+(async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+  let raw = '';
+  for await (const chunk of process.stdin) raw += chunk;
+  const input = JSON.parse(raw);
+  const tool = String(input.tool_name || '').replace(/^functions\\./, '');
+  if (!['Write', 'Edit', 'MultiEdit', 'apply_patch'].includes(tool)) process.exit(0);
+  const toolInput = input.tool_input || {};
+
+  const paths = [];
+  if (typeof toolInput.file_path === 'string') paths.push(toolInput.file_path);
+  const patch = typeof toolInput.input === 'string' ? toolInput.input
+    : typeof toolInput.patch === 'string' ? toolInput.patch
+    : typeof toolInput.command === 'string' ? toolInput.command
+    : Array.isArray(toolInput.command) ? toolInput.command.join('\\n') : '';
+  for (const match of patch.matchAll(/^\\*\\*\\* (?:Add|Update) File: (.+)$/gm)) paths.push(match[1].trim());
+  if (paths.length === 0) process.exit(0);
+
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  let serverPort = ${port};
+  let authToken = process.env.INSTAR_AUTH_TOKEN || '';
+  let extraPaths = [];
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(projectDir, '.instar', 'config.json'), 'utf-8'));
+    serverPort = cfg.port || ${port};
+    if (!authToken && typeof cfg.authToken === 'string') authToken = cfg.authToken;
+    if (cfg.attribution && cfg.attribution.enabled === false) process.exit(0);
+    if (cfg.attribution && Array.isArray(cfg.attribution.paths)) extraPaths = cfg.attribution.paths.filter((p) => typeof p === 'string');
+  } catch {}
+
+  function real(target) {
+    const rest = [];
+    let current = path.resolve(projectDir, target);
+    for (;;) {
+      try { return path.join(fs.realpathSync(current), ...rest); } catch {}
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(projectDir, target);
+      rest.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+  const memorySegment = path.resolve(projectDir).replace(/[/.]/g, '-');
+  const roots = ['.instar/agent-memory', '.claude/rules', ...extraPaths.filter((p) => p.endsWith('/'))].map(real);
+  const files = ['.instar/MEMORY.md', '.instar/USER.md', '.instar/AGENT.md', 'CLAUDE.md', ...extraPaths.filter((p) => !p.endsWith('/'))].map(real);
+  const inScope = paths.some((target) => {
+    const resolved = real(target);
+    if (files.includes(resolved) || roots.some((root) => resolved === root || resolved.startsWith(root + path.sep))) return true;
+    const parts = resolved.split(path.sep);
+    const at = parts.indexOf('projects');
+    return at >= 0 && parts[at + 1] === memorySegment && parts[at + 2] === 'memory';
+  });
+  if (!inScope) process.exit(0);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  const response = await fetch('http://127.0.0.1:' + serverPort + '/attribution/check', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+    body: JSON.stringify({ toolName: tool, toolInput }),
+    signal: controller.signal,
+  });
+  clearTimeout(timer);
+  if (!response.ok) process.exit(0);
+  const answer = await response.json();
+  if (answer && answer.blocked === true) {
+    process.stderr.write(String(answer.reason || 'The attribution check refused this write.') + '\\n');
+    process.exit(2);
+  }
+  process.exit(0);
+})().catch(() => process.exit(0));
 `;
   }
 

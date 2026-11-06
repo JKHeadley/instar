@@ -210,6 +210,10 @@ export interface ProvenanceCoverageEntry {
 // string (the census is the single source of truth).
 // ───────────────────────────────────────────────────────────────────────────
 
+/** Attribution judge — does this text credit a person, and do the logged words support it?
+ * (AttributionJudge; docs/specs/attribution-paper-trail.md section 4). */
+export const DP_ATTRIBUTION_JUDGE = 'attribution-judge';
+
 /** External-hog kill/leave decision point — the classifier verdict inside the
  * scan-tick decision loop (ExternalHogScanTick; spec §5.3 first customer). */
 export const DP_EXTERNAL_HOG_KILL_LEAVE = 'external-hog-kill-leave';
@@ -454,6 +458,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'Cross-family second opinion for the triage never-ignore floor; it runs on a dedicated per-framework provider outside the shared router (so the seam cannot mint its row yet). Its verdicts are recorded triage-side as floor outcomes and medium-strength grades; router enrollment is queued in the uniform-provenance backlog.',
+  },
+  {
+    decisionPoint: DP_ATTRIBUTION_JUDGE,
+    component: 'AttributionJudge',
+    status: 'wired',
+    volumeClass: 'budget:500',
+    contentClass: 'content-bearing',
+    reason:
+      'Rules on what a note or message credits to a person. Provenance stores only hashes and bounds of the text; the claim text lives in the feature\'s own scrubbed ledger.',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The shadow step compares verdicts against a labelled set by hand; an outcome rule needs those labels first (docs/specs/attribution-paper-trail.md, maturation plan).',
   },
   {
     decisionPoint: DP_GOAL_PRIORITY_EXTRACT,

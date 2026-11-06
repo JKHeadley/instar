@@ -1,41 +1,44 @@
-/** The blocking-decision lint's population includes Python, so a new .py template cannot go undeclared. */
+/** The blocking-decision lint includes Python; mutation probes must not dirty the source tree. */
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-const roots: string[] = [];
+const ROOT = path.resolve('.');
+const LINT = 'scripts/lint-blocking-decisions-declared.mjs';
+const fixtures: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'test-cleanup' });
+  for (const fixture of fixtures.splice(0)) {
+    SafeFsExecutor.safeRmSync(fixture, { recursive: true, force: true, operation: 'blocking-decision-fixture:cleanup' });
+  }
 });
 
-describe('lint-blocking-decisions-declared', () => {
-  it('passes on the actual tree and refuses an undeclared .py file in an isolated population', () => {
-    const run = (script: string) => spawnSync(process.execPath, [script], { encoding: 'utf8' });
-    expect(run(path.resolve('scripts/lint-blocking-decisions-declared.mjs')).status).toBe(0);
+function lint(root: string) {
+  return spawnSync(process.execPath, [path.join(root, LINT)], { cwd: root, encoding: 'utf8' });
+}
 
-    // The lint derives ROOT from its own location. Copy its exact implementation
-    // into a disposable tree rather than injecting a file into the real checkout.
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'blocking-lint-'));
-    roots.push(root);
-    fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
-    fs.mkdirSync(path.join(root, 'src/templates/scripts'), { recursive: true });
-    const script = path.join(root, 'scripts/lint-blocking-decisions-declared.mjs');
-    fs.copyFileSync(path.resolve('scripts/lint-blocking-decisions-declared.mjs'), script);
-    const content = 'print("declared")\n';
-    fs.writeFileSync(path.join(root, 'src/templates/scripts/declared.py'), content);
-    fs.writeFileSync(path.join(root, 'scripts/blocking-decision-surfaces-baseline.json'), JSON.stringify({
-      blockingCeiling: 0, blocking: [], nonBlocking: [{ path: 'src/templates/scripts/declared.py', reason: 'Controlled non-blocking fixture', sha256: createHash('sha256').update(content).digest('hex') }],
-    }));
-    expect(run(script).status).toBe(0);
-    fs.writeFileSync(path.join(root, 'src/templates/scripts/zz-undeclared-test.py'), 'print("x")\n');
-    const refused = run(script);
+describe('lint-blocking-decisions-declared', () => {
+  it('passes on the real source tree without modifying it', () => {
+    const result = lint(ROOT);
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+  });
+
+  it('refuses an undeclared .py file in an isolated copy of the real population', () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'blocking-decision-fixture-'));
+    fixtures.push(fixture);
+    fs.mkdirSync(path.join(fixture, 'scripts'), { recursive: true });
+    fs.mkdirSync(path.join(fixture, 'src'), { recursive: true });
+    for (const file of [LINT, 'scripts/blocking-decision-surfaces-baseline.json']) {
+      fs.copyFileSync(path.join(ROOT, file), path.join(fixture, file));
+    }
+    fs.cpSync(path.join(ROOT, 'src/templates'), path.join(fixture, 'src/templates'), { recursive: true });
+    const clean = lint(fixture);
+    expect(clean.status, clean.stdout + clean.stderr).toBe(0);
+    fs.writeFileSync(path.join(fixture, 'src/templates/scripts/zz-undeclared-test.py'), 'print("x")\n');
+    const refused = lint(fixture);
     expect(refused.status).not.toBe(0);
-    expect(refused.stdout + refused.stderr).toContain('UNDECLARED src/templates/scripts/zz-undeclared-test.py');
-    // Exercise the real-tree check again: the negative fixture never polluted it.
-    expect(run(path.resolve('scripts/lint-blocking-decisions-declared.mjs')).status).toBe(0);
+    expect(refused.stdout + refused.stderr).toContain('zz-undeclared-test.py');
   });
 });

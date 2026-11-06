@@ -23,6 +23,16 @@ const user = (text: string, i: number) => ({ type: 'user', timestamp: `2026-11-0
 const asst = (text: string) => ({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }, { type: 'tool_use', name: 'Bash', input: { command: 'ls -la', description: 'List files' } }] } });
 
 describe('extractEntries', () => {
+  it('removes before it cuts, so a secret straddling the cut leaves nothing', () => {
+    const secret = 'super-secret-value';
+    const text = `${'x'.repeat(3990)}${secret}`;
+    const clean = (s: string) => s.split(secret).join('[redacted]');
+    const [e] = extractEntries(asst(text), 0, clean);
+    expect(e!.text).not.toContain('super-secre');
+    expect(e!.text).toContain('[redacted]');
+    const [tool] = extractEntries({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: `echo ${secret}` } }] } }, 0, clean);
+    expect(tool!.text).toBe('Bash: echo [redacted]');
+  });
   it('reads Claude text and tool calls, and skips meta, sidechain and tool results', () => {
     expect(extractEntries(asst('hello'), 7)).toEqual([
       { offset: 7, role: 'assistant', text: 'hello', at: null },

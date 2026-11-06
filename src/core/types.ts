@@ -882,6 +882,16 @@ export interface JobSchedulerConfig {
 
 // ── User Management ─────────────────────────────────────────────────
 
+/** Attribution paper trail settings (docs/specs/attribution-paper-trail.md section 6). */
+export interface AttributionConfig {
+  enabled?: boolean;
+  mode?: 'record' | 'enforce';
+  /** Extra notes in scope, confined to roots under the agent home. Lanes are opt-in here. */
+  paths?: string[];
+  /** Date ranges whose records are known to be missing. A ref inside one is `unverifiable`. */
+  recordGaps?: Array<{ from: string; to: string }>;
+}
+
 export interface UserProfile {
   id: string;
   name: string;
@@ -3634,6 +3644,12 @@ export interface InstarConfig {
   /** Memory privacy (docs/specs/memory-privacy.md). On only when `enabled` is true. */
   memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacyConfig;
   /**
+   * Attribution paper trail (docs/specs/attribution-paper-trail.md). `enabled` is omitted so
+   * resolveDevAgentGate decides: live on a development agent, dark on the fleet. `mode` defaults to
+   * `record`, which never refuses anything; `enforce` is opt-in for every existing agent.
+   */
+  attribution?: AttributionConfig;
+  /**
    * message-origin-all-platforms §5: the agent-wide origin display bits for an agent with no
    * enabled Telegram entry (with one, the Telegram entry's messageOrigin.display is the setting),
    * and the operator exception for the Slack recording refusal (§3). Absent ⇒ shown, fail-closed.
@@ -4022,6 +4038,8 @@ export interface InstarConfig {
      * `enabled` omitted ⇒ on wherever mobile pairing is on. Read live.
      */
     consoleTicket?: { enabled?: boolean };
+    /** Approve a waiting phone without a code (docs/specs/mobile-pairing-approve.md). Omitted ⇒ on wherever pairing is on; `false` keeps only the code. Read live. */
+    approve?: { enabled?: boolean };
     /**
      * Face ID-confirmed permission writes from the owner's phone (docs/specs/mobile-native-permissions.md).
      * `enabled` omitted ⇒ live on a development agent, dark on the fleet (DEV_GATED_FEATURES). Read live.

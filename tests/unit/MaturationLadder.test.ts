@@ -244,3 +244,67 @@ describe('dry-run the code knows about but the defaults do not', () => {
     expect(deriveLadderRung(p, { developmentAgent: true, monitoring: { xDryRun: false } }, {}).rung).toBe('dev-agent-live');
   });
 });
+
+describe('activity alone cannot advance a feature that does the wrong thing', () => {
+  const now = 100 * DAY;
+  const read = (metric: LadderMetric, value: number | null, samples: number): MetricReading => ({ metric, value, samples, newestAt: null });
+  const gradedWrong: LadderMetric = { id: 'graded-wrong-rate', role: 'quality', source: 'jsonl-log',
+    ref: { file: 'logs/feature-evidence.jsonl', where: { featureId: 'monitoring.x', kind: 'outcome', outcome: 'wrong' }, of: { featureId: 'monitoring.x', kind: 'outcome' }, value: 'ratio', dedupe: 'gradesEventId' },
+    direction: 'at-most', threshold: 0.05, minSamples: 5, windowDays: 30 };
+  const devRung = { soakDays: 3, advance: { kind: 'config' as const, set: { 'monitoring.x.dryRun': false } }, metrics: [ranMetric, harmMetric, gradedWrong] };
+  const e = entry({ flag: { path: 'monitoring.x', dryRunDefault: true }, rungs: { 'dev-agent-live': devRung, fleet: rung } });
+  const ready = Array.from({ length: 33 }, (_, i) => ({ status: 'ready', dueSlotMs: now - i * DAY / 4, contractHash: 'h' }));
+  const base = { entry: e, rung: 'dry-run' as const, target: 'dev-agent-live' as const, afterMove: [], evaluations: ready, contractHash: 'h', now, lastMoveAt: null, heldReason: null };
+
+  it('passing ran + error-rate with every graded decision wrong holds, never ready-to-advance', () => {
+    const r = computeLadderState({ ...base, readings: [read(ranMetric, 173, 173), read(harmMetric, 0, 173), read(gradedWrong, 1, 5)] });
+    expect(r.state).toBe('hold');
+    expect(r.metrics.find(m => m.id === 'graded-wrong-rate')?.pass).toBe(false);
+  });
+  it('too few grades keeps it collecting; enough right grades lets it advance', () => {
+    expect(computeLadderState({ ...base, readings: [read(ranMetric, 173, 173), read(harmMetric, 0, 173), read(gradedWrong, 0, 4)] }).state).toBe('collecting');
+    expect(computeLadderState({ ...base, readings: [read(ranMetric, 173, 173), read(harmMetric, 0, 173), read(gradedWrong, 0, 5)] }).state).toBe('ready-to-advance');
+  });
+});
+
+describe('a feature the code switches on regardless of its setting', () => {
+  const ref = 'PR #2788: on in code for every machine';
+  it('reads as fleet whatever the config says, and so sits at its final rung', () => {
+    const e = entry({ shippedOn: { ref } });
+    expect(e.shippedOn).toEqual({ ref });
+    expect(deriveLadderRung(e, { monitoring: { x: { enabled: false } } }, {})).toEqual({ rung: 'fleet', flagMissing: false });
+    expect(nextRung(e, 'fleet')).toBeNull();
+  });
+  it('is only allowed on a default-on ladder with nothing left to start', () => {
+    const bad = parse(raw({ shippedOn: {} }));
+    expect(bad.ok === false && bad.reason).toContain('shippedOn');
+    const pref = parse(raw({ shippedOn: { ref }, final: 'default-off-by-preference', rungs: { 'dev-agent-live': rung },
+      preference: { decidedBy: 'operator', reason: 'r', decidedAt: '2026-11-03', ref: 'topic 1' } }));
+    expect(pref.ok === false && pref.reason).toContain('shippedOn-needs-a-default-on-ladder');
+    const start = parse(raw({ shippedOn: { ref }, start: { set: { 'monitoring.x.enabled': true } } }));
+    expect(start.ok === false && start.reason).toContain('shippedOn-has-nothing-to-start');
+  });
+});
+
+describe('the shipped registry (maturation review 2026-11-05)', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const text = fs.readFileSync(path.resolve(__dirname, '../../src/data/feature-ladders.json'), 'utf-8');
+  const parsed = parseLadderRegistry(text);
+  if (!parsed.ok) throw new Error(parsed.reason);
+  const byId = (id: string) => parsed.registry.entries.find(x => x.id === id)!;
+
+  for (const id of ['monitoring.crashLoopPauser', 'threadline.relayUnknownSenderTrust']) {
+    it(`${id}: every rung carries a graded-wrong quality bar (at most 5%, at least 5 graded)`, () => {
+      for (const r of Object.values(byId(id).rungs)) {
+        const m = r!.metrics.find(x => x.id === 'graded-wrong-rate');
+        expect(m).toMatchObject({ role: 'quality', direction: 'at-most', threshold: 0.05, minSamples: 5 });
+        expect(m!.ref).toMatchObject({ where: { featureId: id, kind: 'outcome', outcome: 'wrong' }, of: { featureId: id, kind: 'outcome' }, value: 'ratio' });
+      }
+    });
+  }
+  it('monitoring.autonomousHeartbeat reads as fleet, not dark, with its setting absent', () => {
+    const e = byId('monitoring.autonomousHeartbeat');
+    expect(deriveLadderRung(e, {}, {}).rung).toBe('fleet');
+  });
+});

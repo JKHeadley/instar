@@ -23,7 +23,7 @@ import {
   type SlackAdapterLike, type SlackAppConversation,
 } from '../../src/server/mobileSlackRoutes.js';
 import { mergeConversationPages } from '../../src/server/mobileConversationRoutes.js';
-import { PostUpdateMigrator, SLACK_FROM_APP_CLAUDEMD_MARKER, SLACK_FROM_APP_CLAUDEMD_SECTION } from '../../src/core/PostUpdateMigrator.js';
+import { PostUpdateMigrator, SLACK_FROM_APP_CLAUDEMD_MARKER, SLACK_FROM_APP_CLAUDEMD_SECTION, SLACK_OWNER_READ_AUTHORITY_LINE } from '../../src/core/PostUpdateMigrator.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { AppConversationService } from '../../src/core/AppConversationService.js';
 import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
@@ -261,6 +261,24 @@ describe('boot recovery of an interrupted Slack send (crash between persist and 
 });
 
 describe('agent awareness migration', () => {
+  it('refreshes installed owner-history guidance once without replacing custom text', () => {
+    const dir = tmp('slack-owner-read-mig-');
+    const stateDir = path.join(dir, '.instar');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const file = path.join(dir, 'CLAUDE.md');
+    fs.writeFileSync(file, '# Agent\n' + SLACK_FROM_APP_CLAUDEMD_MARKER + '\nCustom operator instruction.\n');
+    const m = new PostUpdateMigrator({ projectDir: dir, stateDir, port: 4321, hasTelegram: false, projectName: 'x' } as never);
+    const run = () => (m as unknown as { migrateClaudeMd(r: unknown): void })
+      .migrateClaudeMd({ upgraded: [], errors: [], skipped: [] });
+    run();
+    const once = fs.readFileSync(file, 'utf8');
+    run();
+    expect(fs.readFileSync(file, 'utf8')).toBe(once);
+    expect(once.split(SLACK_OWNER_READ_AUTHORITY_LINE)).toHaveLength(2);
+    expect(once).toContain('Custom operator instruction.');
+    expect(SLACK_FROM_APP_CLAUDEMD_SECTION(4321)).toContain(SLACK_OWNER_READ_AUTHORITY_LINE);
+  });
+
   it('adds the Slack-from-the-app section once', () => {
     const dir = tmp('slackmig-');
     const stateDir = path.join(dir, '.instar');
