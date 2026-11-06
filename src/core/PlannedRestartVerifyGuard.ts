@@ -14,6 +14,10 @@ export const VERIFY_RESTART_HOLD_MS = 3 * 60 * 60_000;
 export const PLANNED_RESTART_DELIVERY_MS = VERIFY_RESTART_HOLD_MS + 60 * 60_000;
 const PRE_SPAWN_HOLD_MS = 30_000;
 const FUTURE_CLOCK_SKEW_MS = 5_000;
+/** An accepted peer attempt holds until sentAt + this: 20 min plus one poll to import (414-attempt audit, spec). */
+export const PEER_RESTART_HOLD_MS = 21 * 60_000;
+/** The verifier ticks every 30 s; three missed ticks means it is not speaking for its attempts. */
+export const PEER_HOLD_HEARTBEAT_MAX_AGE_MS = 90_000;
 
 export interface PlannedRestartFlag {
   requestedAt?: string;
@@ -33,6 +37,7 @@ export interface PlannedRestartVerifyState {
 }
 
 const deferredMarkerPath = (stateDir: string) => path.join(stateDir, 'state', 'restart-local-verify-deferred.json');
+export const peerHoldPath = (stateDir: string) => path.join(stateDir, 'state', 'local-verify', 'peer-hold.json');
 const requestKey = (request: PlannedRestartFlag) => crypto.createHash('sha256').update(JSON.stringify(request)).digest('hex');
 
 function processExists(pid: number): boolean {
@@ -62,25 +67,74 @@ export function plannedRestartVerifyState(
   // Both the request and the child marker must be recent. Otherwise a stale
   // request could keep deferring behind a succession of fresh children.
   if (pendingSinceMs === null || now - pendingSinceMs >= VERIFY_RESTART_HOLD_MS) return fallback;
+  const localUntil = localVerifyHoldUntil(stateDir, now, pidExists);
+  const peerUntil = peerAttemptHoldUntil(stateDir, now);
+  if (localUntil === null && peerUntil === null) return fallback;
+  // A local child alone keeps its own bound. Once a peer attempt is involved the later bound
+  // wins, and a peer hold never reaches past the request's own three-hour ceiling.
+  const holdUntilMs = peerUntil === null
+    ? localUntil!
+    : Math.min(Math.max(localUntil ?? 0, peerUntil), pendingSinceMs + VERIFY_RESTART_HOLD_MS);
+  return { pending: true, pendingSinceMs, hold: true, holdUntilMs };
+}
+
+/** When a live local verify child stops holding a restart; null = no live-run hold. */
+function localVerifyHoldUntil(stateDir: string, now: number, pidExists: (pid: number) => boolean): number | null {
   let marker: Record<string, unknown>;
   try {
     marker = JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'local-verify', 'inflight.json'), 'utf8')) as Record<string, unknown>;
   } catch {
     // @silent-fallback-ok — no readable in-flight marker means no live-run hold.
-    return fallback;
+    return null;
   }
-  if (!marker || typeof marker !== 'object') return fallback;
+  if (!marker || typeof marker !== 'object') return null;
   const startedAt = marker.startedAt;
-  if (typeof startedAt !== 'number' || !Number.isFinite(startedAt) || startedAt > now + FUTURE_CLOCK_SKEW_MS) return fallback;
+  if (typeof startedAt !== 'number' || !Number.isFinite(startedAt) || startedAt > now + FUTURE_CLOCK_SKEW_MS) return null;
   const age = Math.max(0, now - startedAt);
-  if (age >= VERIFY_RESTART_HOLD_MS || typeof marker.attemptToken !== 'string' || !marker.attemptToken) return fallback;
+  if (age >= VERIFY_RESTART_HOLD_MS || typeof marker.attemptToken !== 'string' || !marker.attemptToken) return null;
   const pid = marker.pid;
   const alive = pid === null
     ? age < PRE_SPAWN_HOLD_MS
     : typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 && pidExists(pid);
-  return alive
-    ? { pending: true, pendingSinceMs, hold: true, holdUntilMs: startedAt + VERIFY_RESTART_HOLD_MS }
-    : fallback;
+  return alive ? startedAt + VERIFY_RESTART_HOLD_MS : null;
+}
+
+/**
+ * When the verifier's heartbeat stops holding a restart for its accepted peer attempts; null = no
+ * peer hold. A missing, unreadable, stale, future or malformed heartbeat never defers: the restart
+ * then proceeds exactly as it would without peer work.
+ */
+function peerAttemptHoldUntil(stateDir: string, now: number): number | null {
+  let beat: { v?: unknown; writtenAt?: unknown; attempts?: unknown };
+  try {
+    beat = JSON.parse(fs.readFileSync(peerHoldPath(stateDir), 'utf8')) as typeof beat;
+  } catch {
+    // @silent-fallback-ok — no readable heartbeat means no peer hold.
+    return null;
+  }
+  if (!beat || typeof beat !== 'object' || beat.v !== 1 || !Array.isArray(beat.attempts)) return null;
+  const writtenAt = beat.writtenAt;
+  if (typeof writtenAt !== 'number' || !Number.isFinite(writtenAt) || writtenAt > now + FUTURE_CLOCK_SKEW_MS) return null;
+  if (now - writtenAt > PEER_HOLD_HEARTBEAT_MAX_AGE_MS) return null;
+  let until: number | null = null;
+  for (const attempt of beat.attempts as Array<{ sentAt?: unknown } | null>) {
+    const sentAt = attempt?.sentAt;
+    if (typeof sentAt !== 'number' || !Number.isFinite(sentAt) || sentAt > now + FUTURE_CLOCK_SKEW_MS) continue;
+    const bound = sentAt + PEER_RESTART_HOLD_MS;
+    if (bound > now && (until === null || bound > until)) until = bound;
+  }
+  return until;
+}
+
+/** The pending request's explicit hold bypass (operator force, or the updater's ceiling); false when there is no request. */
+export function plannedRestartBypassesHolds(stateDir: string): boolean {
+  try {
+    const request = JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'restart-requested.json'), 'utf8')) as PlannedRestartFlag;
+    return request?.plannedRestart === true && request.bypassHolds === true;
+  } catch {
+    // @silent-fallback-ok — absent or unreadable flag means no bypass to report.
+    return false;
+  }
 }
 
 /** The verifier uses this to leave the slot free for a pending restart. */
