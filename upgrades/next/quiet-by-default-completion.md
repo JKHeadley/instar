@@ -6,7 +6,7 @@ Routine automated messages now enter the dashboard Notifications feed unless the
 
 ## What to Tell Your User
 
-Automated reports stay in Notifications. Choose any categories you want pushed from the dashboard; changing them requires your PIN. Normal conversations continue as usual. Other agents retain the staged operator-flip rollout; Echo follows its existing enforcement directive.
+Automated reports stay in Notifications. Choose any categories you want pushed from the dashboard; changing them requires your PIN. Normal conversations continue as usual, including text and media sent from your phone. Those copies do not clear a waiting reply. Other agents retain the staged operator-flip rollout; Echo follows its existing enforcement directive.
 
 ## Summary of New Capabilities
 

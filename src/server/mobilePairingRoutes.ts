@@ -1,3 +1,4 @@
+import { verifiedInboundMirrorEnvelope, isQuietReceipt, QuietRecordedError } from '../messaging/NotificationSelectivityGate.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/mobilePairingRoutes.ts');
 /**
@@ -1591,21 +1592,37 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
 
     // Mirror: best-effort, never decides delivery.
     let mirrored = false;
+    let mirrorRecorded: { quietId: string; deliveredParts: number } | undefined;
     try {
       // The mirror is a copy for people reading the topic: credential-shaped spans always show
       // as "[credential hidden]", even when the operator sent them as written (§4.9).
       const mirrorText = svc.nativeOn ? hideCredentialSpans(delivered) : text;
+      // Only this authenticated, accepted ingress creates these closures. The shared helper
+      // keeps its routine default; each physical mirror call gets this verified conversation scope.
+      const sendMirrorText: TelegramMediaMirrorTarget['sendToTopic'] = (id, value, options) =>
+        withNotificationEnvelope(verifiedInboundMirrorEnvelope('verified-mobile-ingress-mirror'), () => tg.sendToTopic(id, value, options));
+      const mirrorTarget: TelegramMediaMirrorTarget = {
+        sendToTopic: sendMirrorText,
+        sendMediaToTopic: (id, files, value, options) => withNotificationEnvelope(verifiedInboundMirrorEnvelope('verified-mobile-ingress-mirror'),
+          () => (tg as unknown as TelegramMediaMirrorTarget).sendMediaToTopic(id, files, value, options)),
+      };
       if (app && stored.length > 0) {
-        await mirrorMediaToTelegram(tg as unknown as TelegramMediaMirrorTarget, topicId, senderName, stored, mirrorText, (sha) => app.media.locateBlob(sha));
+        const result = await mirrorMediaToTelegram(mirrorTarget, topicId, senderName, stored, mirrorText, (sha) => app.media.locateBlob(sha));
+        if (result.delivery.outcome === 'recorded') mirrorRecorded = { quietId: result.delivery.receipt.quietId, deliveredParts: result.delivery.deliveredParts };
+        else mirrored = true;
       } else {
-        await withNotificationEnvelope(stampNotification(), async () => (tg)!.sendToTopic(topicId, `📱 ${senderName} (from the app): ${mirrorText}`, { silent: true, skipStallClear: true, operatorMirror: true }));
+        const result = await sendMirrorText(topicId, `📱 ${senderName} (from the app): ${mirrorText}`, { silent: true, skipStallClear: true, operatorMirror: true });
+        if (isQuietReceipt(result)) mirrorRecorded = { quietId: result.quietId, deliveredParts: 0 };
+        else mirrored = true;
       }
-      mirrored = true;
     } catch (err) {
-      deps.reportDegradation?.('MobileChat.mirror', err);
+      if (err instanceof QuietRecordedError) mirrorRecorded = { quietId: err.receipt.quietId, deliveredParts: 0 };
+      else deps.reportDegradation?.('MobileChat.mirror', err);
     }
     const response = {
-      ok: true, outcome, eventId, mirrored, ...(stored.length > 0 ? { mirror: mirrored ? 'sent' : 'failed', messageId: storeMessageId } : {}), ...extras,
+      ok: true, outcome, eventId, mirrored,
+      ...(mirrorRecorded ? { mirror: 'recorded', mirrorQuietId: mirrorRecorded.quietId, partiallyMirrored: mirrorRecorded.deliveredParts > 0 } : {}),
+      ...(stored.length > 0 ? { ...(mirrorRecorded ? {} : { mirror: mirrored ? 'sent' : 'failed' }), messageId: storeMessageId } : {}), ...extras,
       ...(b.killed !== undefined ? { stopped: b.killed } : {}),
       ...(b.paused !== undefined ? { paused: b.paused } : {}),
     };

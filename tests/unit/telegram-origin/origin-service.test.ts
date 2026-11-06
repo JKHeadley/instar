@@ -1,4 +1,5 @@
-import { NotificationSelectivityGate, QuietRecordedError } from '../../../src/messaging/NotificationSelectivityGate.js';
+import { withNotificationEnvelope } from '../../../src/messaging/notificationStampers.js';
+import { NotificationSelectivityGate, QuietRecordedError, verifiedInboundMirrorEnvelope, verifiedReplyEnvelope } from '../../../src/messaging/NotificationSelectivityGate.js';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHash, generateKeyPairSync } from 'node:crypto';
 import { OriginStore } from '../../../src/messaging/telegram-origin/OriginStore.js';
@@ -38,6 +39,25 @@ async function harness(hidden = false) {
   return { stateDir, store, service, input, network, send, authorize, onHold, spoolEvidence };
 }
 describe('origin service durable delivery', () => {
+  it('preserves waiting state across a signed human media mirror and completes it for the actual answer', async () => {
+    const h = await harness();
+    const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));
+    h.service.notificationGate = gate; gate.observeInbound(42, 'human-input');
+    const presence = { origin: 'automated' as const, category: 'presence-standby' as const, sourceContext: 'presence', inboundMessageId: 'human-input' };
+    try {
+      await withNotificationEnvelope(verifiedInboundMirrorEnvelope('test-admitted-human'), () => h.service.runAsAutomation('telegram-server',
+        () => h.service.sendBot({ method: 'sendPhoto', accountId: 'bot-1', params: { chat_id: '-100123', message_thread_id: 42, photo: 'file-id', caption: 'Human photo' } }, h.network)));
+      expect(h.network).toHaveBeenCalledOnce();
+      const rows = (await h.store.listOrigins()).records;
+      const record = JSON.parse(rows[0].record.envelopeJson);
+      expect(record.notification).toMatchObject({ origin: 'verified-reply', inboundMirror: true });
+      h.service.completeNotification(record);
+      expect(gate.decide(42, presence).decision).toBe('deliver');
+      await withNotificationEnvelope(verifiedReplyEnvelope('test-real-answer'), () => h.service.runAsAutomation('telegram-server',
+        () => h.service.sendBot({ ...h.input, params: { ...h.input.params, text: 'The actual answer resolves the waiting turn.' } }, h.network)));
+      expect(gate.decide(42, presence).decision).toBe('record');
+    } finally { await gate.close(); }
+  });
   it('preserves the existing release promotion only for a trusted upgrade session', async () => {
     const h = await harness(); const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));
     h.service.notificationGate = gate; h.service.notificationJobSession = () => true;

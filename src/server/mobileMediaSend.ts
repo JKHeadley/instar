@@ -1,3 +1,4 @@
+import { isQuietReceipt, QuietRecordedError, type QuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/mobileMediaSend.ts');
 /**
@@ -205,6 +206,10 @@ export interface TelegramMediaMirrorTarget {
   sendToTopic(topicId: number, text: string, options?: { silent?: boolean; skipStallClear?: boolean; operatorMirror?: boolean }): Promise<unknown>;
 }
 
+export type TelegramMirrorDelivery = { outcome: 'delivered'; deliveredParts: number }
+  | { outcome: 'recorded'; deliveredParts: number; receipt: QuietReceipt };
+export type TelegramMirrorResult = TelegramMirrorPlan & { delivery: TelegramMirrorDelivery };
+
 /**
  * Mirror an app-sent media message into its Telegram topic (§4.9): the files that fit go up in
  * one request (a media group for several), then any text lines (an over-long caption, and one
@@ -215,15 +220,28 @@ export interface TelegramMediaMirrorTarget {
 export async function mirrorMediaToTelegram(
   tg: TelegramMediaMirrorTarget, topicId: number, ownerName: string, attachments: ReadonlyArray<AppAttachment>, caption: string,
   locate: (sha256: string) => string | null,
-): Promise<TelegramMirrorPlan> {
+): Promise<TelegramMirrorResult> {
   if (typeof tg.sendMediaToTopic !== 'function') throw new Error('this Telegram adapter cannot send files');
   const plan = planTelegramMirror(ownerName, attachments, caption, locate);
-  if (plan.upload.length > 0) {
-    const files = await Promise.all(plan.upload.map(async (f) => ({
-      data: new Uint8Array(await fs.promises.readFile(f.path)), filename: f.filename, mediaType: f.mediaType, kind: f.kind,
-    })));
-    await tg.sendMediaToTopic(topicId, files, plan.caption, { silent: true });
+  let deliveredParts = 0;
+  const recorded = (receipt: QuietReceipt): TelegramMirrorResult => ({ ...plan, delivery: { outcome: 'recorded', deliveredParts, receipt } });
+  try {
+    if (plan.upload.length > 0) {
+      const files = await Promise.all(plan.upload.map(async (f) => ({
+        data: new Uint8Array(await fs.promises.readFile(f.path)), filename: f.filename, mediaType: f.mediaType, kind: f.kind,
+      })));
+      const result = await withNotificationEnvelope(stampNotification(), () => tg.sendMediaToTopic(topicId, files, plan.caption, { silent: true }));
+      if (isQuietReceipt(result)) return recorded(result);
+      deliveredParts++;
+    }
+    for (const line of plan.textLines) {
+      const result = await withNotificationEnvelope(stampNotification(), () => tg.sendToTopic(topicId, line, { silent: true, skipStallClear: true, operatorMirror: true }));
+      if (isQuietReceipt(result)) return recorded(result);
+      deliveredParts++;
+    }
+    return { ...plan, delivery: { outcome: 'delivered', deliveredParts } };
+  } catch (error) {
+    if (error instanceof QuietRecordedError) return recorded(error.receipt);
+    throw error;
   }
-  for (const line of plan.textLines) await withNotificationEnvelope(stampNotification(), async () => (tg)!.sendToTopic(topicId, line, { silent: true, skipStallClear: true, operatorMirror: true }));
-  return plan;
 }

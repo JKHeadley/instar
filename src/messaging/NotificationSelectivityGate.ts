@@ -8,7 +8,7 @@ import type { NotificationCategoryId, SignificantClass } from './notificationCat
 
 export interface OutboundEnvelope {
   origin: 'verified-reply' | 'automated'; category: NotificationCategoryId;
-  sourceContext: string; messageKind?: 'reply' | 'automated' | 'unknown'; contextTopicId?: number; localPermit?: string; inboundMessageId?: string; significantClass?: SignificantClass; relayedOrigin?: boolean; releaseAudiencePromoted?: boolean;
+  sourceContext: string; inboundMirror?: true; messageKind?: 'reply' | 'automated' | 'unknown'; contextTopicId?: number; localPermit?: string; inboundMessageId?: string; significantClass?: SignificantClass; relayedOrigin?: boolean; releaseAudiencePromoted?: boolean;
 }
 export interface SelectivityConfig {
   enabled?: boolean; dryRun?: boolean; legacy?: Partial<Record<NotificationCategoryId, boolean>>; push?: { categories?: Partial<Record<NotificationCategoryId, boolean>> };
@@ -25,6 +25,10 @@ const replyCapabilities = new WeakSet<object>();
 export function verifiedReplyEnvelope(sourceContext: string): OutboundEnvelope {
   const envelope: OutboundEnvelope = { origin: 'verified-reply', category: 'command-response', sourceContext };
   replyCapabilities.add(envelope); return envelope;
+}
+/** A verified copy of admitted human ingress; it must not answer the user's waiting turn. */
+export function verifiedInboundMirrorEnvelope(sourceContext: string): OutboundEnvelope {
+  const envelope = verifiedReplyEnvelope(sourceContext); envelope.inboundMirror = true; return envelope;
 }
 export function isVerifiedReplyEnvelope(value: unknown): boolean {
   return typeof value === 'object' && value !== null && replyCapabilities.has(value);

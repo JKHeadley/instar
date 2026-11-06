@@ -10,6 +10,10 @@ conversation replies still arrive, including late replies. Command responses,
 conversation-availability notices and delivery-loss notices retain narrowly
 bound exceptions for the incoming message they serve.
 
+Text and media you send from an authenticated mobile conversation still copy
+to Telegram. These copies preserve the waiting reply; they do not count as an
+agent answer. Automated media follows the same quiet policy as automated text.
+
 ## Read and choose
 
 Open the dashboard **Notifications** page to see unread notices. Select **Mark

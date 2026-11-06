@@ -1,8 +1,9 @@
+import { withNotificationEnvelope } from '../../src/messaging/notificationStampers.js';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { NotificationSelectivityGate, verifiedReplyEnvelope } from '../../src/messaging/NotificationSelectivityGate.js';
+import { NotificationSelectivityGate, verifiedReplyEnvelope, verifiedInboundMirrorEnvelope, QuietRecordedError } from '../../src/messaging/NotificationSelectivityGate.js';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 const cleanup: Array<() => Promise<void>> = [];
@@ -14,6 +15,38 @@ function setup(dryRun = false) {
   return { root, gate };
 }
 describe('Quiet by Default delivery', () => {
+  it('records routine media before transport and preserves verified human copies without answering their turn', async () => {
+    const { root, gate } = setup();
+    const adapter = new TelegramAdapter({ token: '123:test', chatId: '-1001' }, root, { suppressLifelineAutoCreate: true });
+    adapter.selectivity = gate;
+    const wire = vi.fn(async (_url: string, _options?: RequestInit) => new Response(JSON.stringify({ ok: true, result: { message_id: 31 } })));
+    vi.stubGlobal('fetch', wire);
+    const files = [{ data: new Uint8Array([1, 2, 3]), filename: 'image.png', mediaType: 'image/png', kind: 'photo' as const }];
+    const quiet = await adapter.sendMediaToTopic(42, files, 'Routine screenshot');
+    expect(quiet).toMatchObject({ recorded: true, delivered: false });
+    expect(quiet).not.toHaveProperty('messageIds'); expect(wire).not.toHaveBeenCalled();
+    expect(await withNotificationEnvelope({ origin: 'automated', category: 'uncategorized', sourceContext: 'forged', inboundMirror: true },
+      () => adapter.sendMediaToTopic(42, files, 'A flag is not authority'))).toMatchObject({ recorded: true });
+    expect(wire).not.toHaveBeenCalled();
+    gate.observeInbound(42, 'actual-user-event');
+    await expect(withNotificationEnvelope(verifiedInboundMirrorEnvelope('test-human-ingress'),
+      () => adapter.sendMediaToTopic(42, files, 'Human photo'))).resolves.toEqual({ messageIds: [31] });
+    await withNotificationEnvelope(verifiedInboundMirrorEnvelope('test-human-ingress'),
+      () => adapter.sendToTopic(42, 'Human copy', { operatorMirror: true }));
+    expect(gate.decide(42, { origin: 'automated', category: 'presence-standby', sourceContext: 'presence', inboundMessageId: 'actual-user-event' }).decision).toBe('deliver');
+    expect(await adapter.sendToTopic(42, 'Later routine output')).toMatchObject({ recorded: true });
+    expect(wire).toHaveBeenCalledTimes(2);
+  });
+  it('returns a delegated media quiet receipt without transport retries or message IDs', async () => {
+    const { root, gate } = setup();
+    const adapter = new TelegramAdapter({ token: '123:test', chatId: '-1001' }, root, { suppressLifelineAutoCreate: true });
+    adapter.selectivity = gate; adapter.selectivityDelegated = true;
+    const receipt = { recorded: true as const, delivered: false as const, quietId: 'quiet-media' };
+    const wire = vi.fn(async () => { throw new QuietRecordedError(receipt); }); vi.stubGlobal('fetch', wire);
+    const result = await adapter.sendMediaToTopic(42, [{ data: new Uint8Array([1]), filename: 'x.png', mediaType: 'image/png', kind: 'photo' }], null);
+    expect(result).toEqual(receipt); expect(wire).toHaveBeenCalledTimes(1);
+  });
+
   it('serves one verified owner approval reply without granting routine output replyhood', async () => {
     const { root, gate } = setup();
     const adapter = new TelegramAdapter({ token: '123:test', chatId: '-1001', ownerUserId: 555 }, root,

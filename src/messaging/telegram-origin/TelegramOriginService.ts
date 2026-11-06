@@ -598,7 +598,7 @@ export class TelegramOriginService {
   }
   /** Shared last-hop policy for Bot API, typed browser writes, and their recovery. */
   completeNotification(record: TelegramOriginRecord): void {
-    if (record.notification?.origin === 'verified-reply' || record.notification?.category === 'command-response') this.notificationGate?.markAnswered(record.notification?.contextTopicId ?? this.notificationTopicId(record.destination.chatId, record.destination.topicId));
+    if (!record.notification?.inboundMirror && (record.notification?.origin === 'verified-reply' || record.notification?.category === 'command-response')) this.notificationGate?.markAnswered(record.notification?.contextTopicId ?? this.notificationTopicId(record.destination.chatId, record.destination.topicId));
   }
   async classifyPreparedNotification(operation: OriginPreparedBotOperation, stored: OriginAuditRecord): Promise<void> {
     if (stored.operation?.state === 'suppressed' && stored.operation.holdReason === 'quiet-notification-recorded') {
