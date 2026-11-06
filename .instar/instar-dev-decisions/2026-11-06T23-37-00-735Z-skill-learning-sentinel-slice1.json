@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-06T23:37:00.735Z",
+  "slug": "skill-learning-sentinel-slice1",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 26,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/skillCanonicalFrontmatter.ts",
+      "src/monitoring/LearnedSkillReconciler.ts",
+      "src/monitoring/SkillLearningSentinel.ts"
+    ],
+    "addedLines": 13,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "unchanged from the slice-1 commit (skill-learning-tick registered); this follow-up adds comments only"
+    }
+  },
+  "verdict": "pass"
+}

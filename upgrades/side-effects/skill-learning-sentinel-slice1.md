@@ -243,3 +243,5 @@ Remaining, none blocking:
 - note — server.ts now imports `SkillLearningSentinel.js` → `Ledger.js` → `better-sqlite3` statically; `routes.ts` and `MessageProcessingLedger.ts` already do the same, so this is not a new boot-failure class, but the SeamFilter.ts header (`:28-31`) overstates that the native module never loads at boot.
 
 **Concur with the review.**
+
+**Follow-up (2026-11-06, ratchet):** slice 0's fail-safe catches are marked (cherry-picked); the two slice-1 catches the no-silent-fallbacks scanner flagged (`SkillLearningSentinel.start` bound-start failure, logged; the per-phase guard that records `phaseFailures` + a degradation row) now carry in-window `@silent-fallback-ok` reasons. No behaviour change.

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "skill-learning-sentinel-slice1",
+  "sessionId": "f1d7515b-8a10-4206-94b6-7c0f689d2d22",
+  "timestamp": "2026-11-06T23:33:49.793Z",
+  "artifactPath": "upgrades/side-effects/skill-learning-sentinel-slice1.md",
+  "artifactSha256": "183f93414c0f58579cbe1c8353ae574b150212807f0ddbe772d5a4afa5d729f1",
+  "specPath": "docs/specs/skill-learning-sentinel.md",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/skillCanonicalFrontmatter.ts",
+    "src/monitoring/LearnedSkillReconciler.ts",
+    "src/monitoring/SkillLearningSentinel.ts",
+    "upgrades/side-effects/skill-learning-sentinel-slice0.md",
+    "upgrades/side-effects/skill-learning-sentinel-slice1.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to the slice-1 PR: no-silent-fallbacks ratchet markers (slice-0 cherry-pick + two slice-1 catches); comments only, no behaviour change",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

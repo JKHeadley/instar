@@ -263,7 +263,7 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
 
   start(): void {
     if (this.timer) return;
-    try { this.deps.bound?.start(); } catch (err) {
+    try { this.deps.bound?.start(); } catch (err) { // @silent-fallback-ok — logged on the next line; the sentinel still starts its tick so the backlog stays visible, never silently dark
       this.log(`[SkillLearningSentinel] bound start failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     const minutes = Number.isFinite(this.cfg.tickMinutes) && this.cfg.tickMinutes > 0 ? this.cfg.tickMinutes : 10;
@@ -306,7 +306,7 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
   private async phase(name: string, summary: TickSummary, fn: () => Promise<void>): Promise<void> {
     try {
       await fn();
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok — recorded in summary.phaseFailures + logged + DegradationReporter below; a failed phase never aborts the tick (each phase is independent and retried next tick)
       const message = err instanceof Error ? err.message : String(err);
       summary.phaseFailures.push(name);
       this.counters.tickFailures++;
