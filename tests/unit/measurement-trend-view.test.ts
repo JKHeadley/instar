@@ -18,6 +18,10 @@ describe('numeric measurement display',()=>{
   expect(node.textContent).toContain('raw measurements');expect(node.textContent).toContain('does not by itself prove improvement');expect(node.textContent).toContain('baseline comparison cannot be established');
   expect(node.querySelectorAll('svg circle')).toHaveLength(2);expect(node.querySelector('svg')?.getAttribute('aria-label')).toContain('2 recorded points');
  });
+ it('labels exact archived methods and gaps without reconstructing an old policy',()=>{
+  const d=detail();d.historicalContractDetails='archived';d.contractVersions={available:true,requested:2,missing:['old'],omitted:[],unreadable:[],rows:[{hash:d.currentContractHash,firstArchivedAtMs:now,lastSeenAtMs:now,contract:{cadenceHours:6,evidenceMaxAgeHours:12,metrics:[{id:'quality',source:'feature-summary',sourceRef:'quality',direction:'at-least',threshold:3,minSamples:10}]}}]};
+  const node=measurementDetail({schema:'measurement-read/1',state:'available',detail:d});expect(node.textContent).toContain('Current definition');expect(node.textContent).toContain('Not archived: 1');expect(node.textContent).toContain('Method description not recorded');expect(node.textContent).toContain('at least 3');
+ });
  it('renders only declared continuity edges and remains finite at extreme numeric values',()=>{
   const d=detail(),metric=d.metrics[0],series=metric.series[0];series.points[1].joinPrevious=true;
   const node=measurementChart(metric,series,d,null);expect(node.querySelectorAll('line[stroke-width="2"]')).toHaveLength(1);

@@ -1,6 +1,7 @@
 /** Bounded numeric history on the existing observation/evaluation owner.
  * Identity/version continuity is not inferred from proximity or activity.
  */
+import { validMeasurementContractVersions, type MeasurementContractVersions } from './MeasurementContractVersion.js';
 import type { MaturationEvaluationContract } from '../core/InitiativeTracker.js';
 import type { MaturationMetricObservation, MaturationEvaluationRecord } from './BlockerLifecycleLedger.js';
 import { validMaturationOutcomeDetail, type projectMaturationOutcome } from './MaturationOutcome.js';
@@ -17,7 +18,8 @@ export interface MeasurementTrend {
   evidence: ReturnType<typeof projectMaturationOutcome>;
   evaluations: { available: boolean; total: number | null; omitted: number | null; rows: TrendEvaluation[] };
   metrics: MeasurementMetricTrend[];
-  historicalContractDetails: 'not-retained';
+  historicalContractDetails: 'not-retained' | 'archived';
+  contractVersions?: MeasurementContractVersions;
 }
 
 /** Only an exact, unambiguous capture/evaluation join can label a point's
@@ -32,6 +34,7 @@ export function measurementTrend(input: {
   origin: string; subjectId: string; subjectKnown: boolean; now: number; windowDays: number;
   contract: MaturationEvaluationContract; contractHash: string; evidence: MeasurementTrend['evidence'];
   evaluations: { total: number; rows: MaturationEvaluationRecord[] } | null;
+  contractVersions?: MeasurementContractVersions;
   observations: Map<string, { total: number; rows: MaturationMetricObservation[]; ambiguousTimes?: number[] } | null>;
 }): MeasurementTrend {
   const rows = (input.evaluations?.rows ?? []).map(r => ({ dueSlotMs: r.dueSlotMs, evaluatedAtMs: r.evaluatedAtMs,
@@ -48,7 +51,7 @@ export function measurementTrend(input: {
     origin: input.origin, subjectId: input.subjectId, subjectKnown: input.subjectKnown, generatedAt: new Date(input.now).toISOString(),
     windowDays: input.windowDays, currentContractHash: input.contractHash, cadenceHours: input.contract.cadenceHours,
     evidence: input.evidence, evaluations: { available: input.evaluations !== null, total: totalEvaluations,
-      omitted: totalEvaluations === null ? null : totalEvaluations - rows.length, rows }, metrics, historicalContractDetails: 'not-retained' };
+      omitted: totalEvaluations === null ? null : totalEvaluations - rows.length, rows }, metrics, historicalContractDetails: input.contractVersions ? 'archived' : 'not-retained', ...(input.contractVersions ? { contractVersions: input.contractVersions } : {}) };
   // Reserve wrapper/counter growth; count all stored rows before trimming the view.
   let bytes = Buffer.byteLength(JSON.stringify(result));
   const ambiguous = metrics.map(metric => {
@@ -109,12 +112,12 @@ export function validMeasurementTrend(raw: unknown, origin: string, subjectId: s
   const time = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) > 0 && (v as number) <= 8_640_000_000_000_000;
   const statuses = ['ready','hold','stale-evidence','insufficient-evidence','missing-contract','invalid-contract','missed-cadence'];
   if (!object(raw) || Buffer.byteLength(JSON.stringify(raw)) > 128 * 1024 ||
-      !keys(raw, ['schema','advisory','authority','origin','subjectId','subjectKnown','generatedAt','windowDays','currentContractHash','cadenceHours','evidence','evaluations','metrics','historicalContractDetails']) ||
+      !keys(raw, ['schema','advisory','authority','origin','subjectId','subjectKnown','generatedAt','windowDays','currentContractHash','cadenceHours','evidence','evaluations','metrics','historicalContractDetails','contractVersions']) ||
       raw.schema !== 'measurement-detail/1' || raw.advisory !== true || raw.authority !== 'none' || raw.origin !== origin || raw.subjectId !== subjectId ||
       typeof raw.subjectKnown !== 'boolean' || !text(raw.generatedAt,40) || !Number.isFinite(Date.parse(raw.generatedAt)) ||
       Date.parse(raw.generatedAt) > now + 5000 || now - Date.parse(raw.generatedAt) > 120000 ||
       !count(raw.windowDays) || raw.windowDays < 7 || raw.windowDays > 90 || !text(raw.currentContractHash,64) || !/^[a-f0-9]{64}$/.test(raw.currentContractHash) ||
-      !count(raw.cadenceHours) || raw.cadenceHours < 6 || raw.cadenceHours > 168 || raw.cadenceHours % 6 !== 0 || raw.historicalContractDetails !== 'not-retained' ||
+      !count(raw.cadenceHours) || raw.cadenceHours < 6 || raw.cadenceHours > 168 || raw.cadenceHours % 6 !== 0 || !['not-retained','archived'].includes(String(raw.historicalContractDetails)) ||
       !validMaturationOutcomeDetail({ featureId: subjectId, subjectKnown: raw.subjectKnown, evidence: raw.evidence },origin,now) ||
       !object(raw.evaluations) || !keys(raw.evaluations,['available','total','omitted','rows']) || typeof raw.evaluations.available !== 'boolean' ||
       !Array.isArray(raw.evaluations.rows) || raw.evaluations.rows.length > 128 ||
@@ -124,6 +127,9 @@ export function validMeasurementTrend(raw: unknown, origin: string, subjectId: s
     time(v.dueSlotMs) && time(v.evaluatedAtMs) && text(v.contractHash,64) && (v.rung === null || text(v.rung,32)) && statuses.includes(String(v.status));
   if (!raw.evaluations.rows.every(validEvaluation)) return false;
   const evaluations = raw.evaluations.rows as TrendEvaluation[];
+  if (raw.historicalContractDetails === 'archived'
+    ? !validMeasurementContractVersions(raw.contractVersions, [raw.currentContractHash as string, ...evaluations.map(r => r.contractHash)], now)
+    : raw.contractVersions !== undefined) return false;
   const metricIds = new Set<string>();
   for (const item of raw.metrics) {
     if (!object(item) || !keys(item,['id','source','sourceRef','direction','threshold','minSamples','outcome','qualityGuard','historyAvailable','total','omitted','series']) ||

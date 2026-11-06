@@ -4,6 +4,9 @@
  * fail-soft and no caller may branch commitment behavior on its result.
  */
 import fs from 'node:fs';
+import type { MaturationEvaluationContract } from '../core/InitiativeTracker.js';
+import { measurementContractHash, validArchivedContract, type MeasurementContractVersions } from './MeasurementContractVersion.js';
+import { projectMaturationOutcome } from './MaturationOutcome.js';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
@@ -48,6 +51,7 @@ export interface MaturationEvaluationRecord {
 
 export class BlockerLifecycleLedger {
   private db: BetterSqliteDatabase | null = null;
+  private archiveReady = false;
   private unregisterSqlite: (() => void) | null = null;
   private queue: BlockerMetricRecord[] = [];
   private draining = false;
@@ -66,6 +70,7 @@ export class BlockerLifecycleLedger {
       this.db.pragma('synchronous = NORMAL');
       this.db.pragma('busy_timeout = 25');
       this.ensureSchema();
+      this.ensureMeasurementArchive();
     } catch { // @silent-fallback-ok — availability is exposed as 503/guard degradation
       this.unregisterSqlite?.();
       this.unregisterSqlite = null;
@@ -176,6 +181,97 @@ export class BlockerLifecycleLedger {
         CREATE INDEX IF NOT EXISTS idx_maturation_evaluation_trend ON maturation_evaluations
           (origin,feature_id,due_slot_ms DESC);
       `);
+  }
+
+  private ensureMeasurementArchive(): boolean {
+    if (!this.db) return false;
+    if (this.archiveReady) return true;
+    try {
+      this.db.exec(`CREATE TABLE IF NOT EXISTS maturation_contract_versions (
+        origin TEXT NOT NULL, feature_id TEXT NOT NULL, contract_hash TEXT NOT NULL, contract_json TEXT NOT NULL,
+        first_archived_at_ms INTEGER NOT NULL, last_seen_at_ms INTEGER NOT NULL,
+        PRIMARY KEY(origin,feature_id,contract_hash));
+        CREATE INDEX IF NOT EXISTS idx_maturation_contract_seen ON maturation_contract_versions(last_seen_at_ms);
+        CREATE TABLE IF NOT EXISTS maturation_baseline_pins (
+          origin TEXT NOT NULL, feature_id TEXT NOT NULL, contract_hash TEXT NOT NULL, metric_id TEXT NOT NULL,
+          observed_at_ms INTEGER NOT NULL, source TEXT NOT NULL, source_ref TEXT NOT NULL, descriptor_version INTEGER NOT NULL,
+          last_seen_at_ms INTEGER NOT NULL,
+          PRIMARY KEY(origin,feature_id,contract_hash,metric_id));
+        CREATE INDEX IF NOT EXISTS idx_maturation_pin_observation ON maturation_baseline_pins
+          (origin,feature_id,metric_id,observed_at_ms,source,source_ref,descriptor_version,last_seen_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_maturation_pin_seen ON maturation_baseline_pins(last_seen_at_ms);
+        CREATE TABLE IF NOT EXISTS maturation_archive_usage (id INTEGER PRIMARY KEY CHECK(id=1), rows INTEGER NOT NULL, bytes INTEGER NOT NULL);
+        INSERT OR IGNORE INTO maturation_archive_usage SELECT 1,COUNT(*),COALESCE(SUM(length(CAST(contract_json AS BLOB))),0) FROM maturation_contract_versions;
+        CREATE TRIGGER IF NOT EXISTS maturation_archive_capacity BEFORE INSERT ON maturation_contract_versions
+          WHEN NOT EXISTS (SELECT 1 FROM maturation_contract_versions WHERE origin=NEW.origin AND feature_id=NEW.feature_id AND contract_hash=NEW.contract_hash)
+          BEGIN SELECT CASE WHEN (SELECT rows>=8192 OR bytes+length(CAST(NEW.contract_json AS BLOB))>67108864 FROM maturation_archive_usage WHERE id=1)
+            OR (SELECT COUNT(*) FROM maturation_contract_versions WHERE origin=NEW.origin AND feature_id=NEW.feature_id)>=256
+            THEN RAISE(ABORT,'Measurement archive capacity exhausted') END; END;
+        CREATE TRIGGER IF NOT EXISTS maturation_archive_insert AFTER INSERT ON maturation_contract_versions
+          BEGIN UPDATE maturation_archive_usage SET rows=rows+1,bytes=bytes+length(CAST(NEW.contract_json AS BLOB)) WHERE id=1; END;
+        CREATE TRIGGER IF NOT EXISTS maturation_archive_delete AFTER DELETE ON maturation_contract_versions
+          BEGIN UPDATE maturation_archive_usage SET rows=rows-1,bytes=bytes-length(CAST(OLD.contract_json AS BLOB)) WHERE id=1; END;`);
+      this.archiveReady = true; return true;
+    } catch { /* @silent-fallback-ok — archive failure remains separate from ordinary telemetry availability */ return false; }
+  }
+
+  /** Immutable hash/body archive. Baseline declarations alone never create pins. */
+  archiveMaturationContract(origin: string, featureId: string, contract: MaturationEvaluationContract): boolean {
+    if (!validArchivedContract(contract) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(origin) ||
+        !/^[a-z0-9][a-z0-9-]{0,62}$/.test(featureId) || !this.ensureMeasurementArchive()) return false;
+    const now = this.opts.now?.() ?? Date.now();
+    if (!Number.isSafeInteger(now) || now <= 0) return false;
+    const hash = measurementContractHash(contract); const body = JSON.stringify(contract);
+    try {
+      this.db!.transaction(() => {
+        const existing = this.db!.prepare(`SELECT contract_json AS body FROM maturation_contract_versions
+          WHERE origin=? AND feature_id=? AND contract_hash=?`).get(origin, featureId, hash) as { body: string } | undefined;
+        if (existing && existing.body !== body) throw new Error('Inconsistent immutable measurement definition');
+        this.db!.prepare(`INSERT INTO maturation_contract_versions VALUES (?,?,?,?,?,?)
+          ON CONFLICT(origin,feature_id,contract_hash) DO UPDATE SET last_seen_at_ms=MAX(last_seen_at_ms,excluded.last_seen_at_ms)`)
+          .run(origin, featureId, hash, body, now, now);
+        // Retention is not corroboration. A later tie must remain visible while
+        // this exact current definition still refers to its established baseline.
+        this.db!.prepare(`UPDATE maturation_baseline_pins SET last_seen_at_ms=MAX(last_seen_at_ms,?)
+          WHERE origin=? AND feature_id=? AND contract_hash=?`).run(now, origin, featureId, hash);
+        const proof = projectMaturationOutcome(contract, origin, featureId, now,
+          (id, at) => this.maturationObservation(origin, featureId, id, at));
+        for (const metric of proof.metrics) {
+          if (metric.baseline.state !== 'verified') continue;
+          this.db!.prepare(`INSERT INTO maturation_baseline_pins VALUES (?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(origin,feature_id,contract_hash,metric_id) DO UPDATE SET last_seen_at_ms=MAX(last_seen_at_ms,excluded.last_seen_at_ms)`)
+            .run(origin, featureId, hash, metric.id, metric.baseline.observedAtMs, metric.source, metric.sourceRef, metric.descriptorVersion, now);
+        }
+      })();
+      return true;
+    } catch { /* @silent-fallback-ok — false prevents fully recorded ready claims, never ordinary service */ return false; }
+  }
+
+  /** Only requested current/history hashes, newest first. Missing and omitted differ. */
+  maturationContractVersions(origin: string, featureId: string, hashes: string[]): MeasurementContractVersions {
+    const requested = [...new Set(hashes)].slice(0, 129);
+    const result: MeasurementContractVersions = { available: false, requested: requested.length, missing: [], omitted: [], unreadable: [], rows: [] };
+    if (!this.db || !this.archiveReady) return result;
+    try {
+      let bytes = 0;
+      for (const hash of requested) {
+        const row = this.db.prepare(`SELECT contract_json AS body,first_archived_at_ms AS firstArchivedAtMs,
+          last_seen_at_ms AS lastSeenAtMs FROM maturation_contract_versions WHERE origin=? AND feature_id=? AND contract_hash=?`)
+          .get(origin, featureId, hash) as { body: string; firstArchivedAtMs: number; lastSeenAtMs: number } | undefined;
+        if (!row) { result.missing.push(hash); continue; }
+        let contract: unknown;
+        try { contract = JSON.parse(row.body); } catch { result.unreadable.push(hash); continue; /* @silent-fallback-ok — malformed stored JSON is an explicit gap */ }
+        if (!validArchivedContract(contract) || measurementContractHash(contract) !== hash ||
+            !Number.isSafeInteger(row.firstArchivedAtMs) || row.firstArchivedAtMs <= 0 || !Number.isSafeInteger(row.lastSeenAtMs) || row.lastSeenAtMs < row.firstArchivedAtMs) {
+          result.unreadable.push(hash); continue;
+        }
+        const version = { hash, firstArchivedAtMs: row.firstArchivedAtMs, lastSeenAtMs: row.lastSeenAtMs, contract };
+        const size = Buffer.byteLength(JSON.stringify(version));
+        if (bytes + size > 32 * 1024) { result.omitted.push(hash); continue; }
+        result.rows.push(version); bytes += size;
+      }
+      result.available = true; return result;
+    } catch { /* @silent-fallback-ok — whole read failure returns no partial certification */ return { ...result, available: false, rows: [], missing: [], omitted: [], unreadable: [] }; }
   }
 
   available(): boolean { return this.db !== null; }
@@ -299,6 +395,17 @@ export class BlockerLifecycleLedger {
     } catch { /* @silent-fallback-ok — null history is an explicit unavailable read */ return null; }
   }
 
+  /** A failed archive cannot leave an already-recorded ready slot certified.
+   * Preserve its identity/times, conservatively retract only its ready verdict. */
+  retractMaturationReady(origin: string, featureId: string, dueSlotMs: number): boolean {
+    if (!this.db) return false;
+    try {
+      this.db.prepare(`UPDATE maturation_evaluations SET status='insufficient-evidence',passing_metrics=0,min_normalized_margin=NULL
+        WHERE origin=? AND feature_id=? AND due_slot_ms=? AND status='ready'`).run(origin, featureId, dueSlotMs);
+      return true;
+    } catch { /* @silent-fallback-ok — service read overlay also holds the current slot if durable retraction fails */ return false; }
+  }
+
   recordMaturationEvaluation(record: MaturationEvaluationRecord): boolean {
     if (!this.db) return false;
     try {
@@ -336,11 +443,22 @@ export class BlockerLifecycleLedger {
       const cap = excess > 0 ? this.db.prepare(`DELETE FROM blocker_lifecycle_metrics WHERE rowid IN
         (SELECT rowid FROM blocker_lifecycle_metrics ORDER BY observed_at_ms LIMIT ?)`).run(Math.min(1000, excess)).changes : 0;
       const maturationCutoff = (this.opts.now?.() ?? Date.now()) - 90 * 86_400_000;
+      // If archive storage is unavailable, leave observations intact rather than delete potential baselines.
+      if (!this.ensureMeasurementArchive()) return old + cap;
+      const archiveCutoff = (this.opts.now?.() ?? Date.now()) - 180 * 86_400_000;
+      const expiredPins = this.db.prepare(`DELETE FROM maturation_baseline_pins WHERE rowid IN
+        (SELECT rowid FROM maturation_baseline_pins WHERE last_seen_at_ms<? LIMIT 1000)`).run(archiveCutoff).changes;
+      const expiredVersions = this.db.prepare(`DELETE FROM maturation_contract_versions WHERE rowid IN
+        (SELECT v.rowid FROM maturation_contract_versions v WHERE last_seen_at_ms<? AND NOT EXISTS
+          (SELECT 1 FROM maturation_baseline_pins p WHERE p.origin=v.origin AND p.feature_id=v.feature_id AND p.contract_hash=v.contract_hash) LIMIT 1000)`).run(archiveCutoff).changes;
       const observations = this.db.prepare(`DELETE FROM maturation_metric_observations WHERE rowid IN
-        (SELECT rowid FROM maturation_metric_observations WHERE observed_at_ms<? LIMIT 1000)`).run(maturationCutoff).changes;
+        (SELECT o.rowid FROM maturation_metric_observations o WHERE observed_at_ms<? AND NOT EXISTS
+          (SELECT 1 FROM maturation_baseline_pins p WHERE p.origin=o.origin AND p.feature_id=o.feature_id
+           AND p.metric_id=o.metric_id AND p.observed_at_ms=o.observed_at_ms AND p.last_seen_at_ms>=?) LIMIT 1000)`)
+        .run(maturationCutoff, archiveCutoff).changes;
       const evaluations = this.db.prepare(`DELETE FROM maturation_evaluations WHERE rowid IN
         (SELECT rowid FROM maturation_evaluations WHERE due_slot_ms<? LIMIT 1000)`).run(maturationCutoff).changes;
-      return old + cap + observations + evaluations;
+      return old + cap + expiredPins + expiredVersions + observations + evaluations;
     } catch { /* @silent-fallback-ok — pruning retries on the next bounded pass */ return 0; }
   }
 

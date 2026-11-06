@@ -31,6 +31,7 @@ export class BlockerLifecycleService {
   } | null = null;
   private maturationPassRunning = false;
   private maturationInitiatives: Initiative[] = [];
+  private archiveFailedSlots = new Set<string>();
   private maturationAccountingInitiatives: Initiative[] = [];
   private readonly maturationProjections = new Map<string, () => { value: number; samples: number } | null>();
   private readonly onRequest = (event: Record<string, unknown>): void => {
@@ -153,6 +154,7 @@ export class BlockerLifecycleService {
   /** D7 recurring scorer. Called only by the existing rollout reconciler cadence. */
   evaluateMaturation(input: Initiative[]): { eligible: number; inserted: number } {
     const now = this.now();
+    for (const key of this.archiveFailedSlots) if (Number(key.slice(key.lastIndexOf(':') + 1)) < now - 90 * 86_400_000) this.archiveFailedSlots.delete(key);
     const initiatives = this.maturationHooks?.subjects ? this.maturationHooks.subjects(input) : input;
     const accounted = initiatives.filter(i => i.rolloutAccounting)
       .sort((a, b) => a.id.localeCompare(b.id)).slice(0, 512);
@@ -217,7 +219,12 @@ export class BlockerLifecycleService {
       for (const [metricId, row] of latestByFeature.get(initiative.id) ?? []) {
         if (row.observedAtMs >= oldestAllowed) latest.set(metricId, row);
       }
-      let status: MaturationEvaluationStatus = 'ready';
+      const archived = this.ledger.archiveMaturationContract(this.origin, initiative.id, contract);
+      if (!archived) {
+        this.archiveFailedSlots.add(`${initiative.id}:${dueSlotMs}`);
+        this.ledger.retractMaturationReady(this.origin, initiative.id, dueSlotMs);
+      }
+      let status: MaturationEvaluationStatus = archived ? 'ready' : 'insufficient-evidence';
       let passing = 0; let newest: number | null = null; const margins: number[] = [];
       for (const metric of contract.metrics) {
         const row = latest.get(metric.id);
@@ -241,7 +248,8 @@ export class BlockerLifecycleService {
 
   /** This machine's evaluation rows, for readers that show D7's own verdicts. */
   maturationEvaluationRows(sinceMs: number): MaturationEvaluationRecord[] {
-    return this.ledger.maturationEvaluations(this.origin, sinceMs);
+    return this.ledger.maturationEvaluations(this.origin, sinceMs).map(row => this.archiveFailedSlots.has(`${row.featureId}:${row.dueSlotMs}`) && row.status === 'ready'
+      ? { ...row, status: 'insufficient-evidence' as const, passingMetrics: 0, minNormalizedMargin: null } : row);
   }
 
   /** The hash D7 stores on each row, for readers matching a row to its contract. */
@@ -322,14 +330,17 @@ export class BlockerLifecycleService {
     if (!validMaturationPolicy(contract) || !Number.isInteger(windowDays) || windowDays < 7 || windowDays > 90) return null;
     const now = this.now(); const since = now - windowDays * 86_400_000;
     const proof = this.maturationOutcomeForContract(featureId, contract);
+    const evaluations = this.ledger.maturationEvaluationHistory(this.origin, featureId, since);
+    if (evaluations) evaluations.rows = evaluations.rows.map(row => this.archiveFailedSlots.has(`${row.featureId}:${row.dueSlotMs}`) && row.status === 'ready'
+      ? { ...row, status: 'insufficient-evidence', passingMetrics: 0, minNormalizedMargin: null } : row);
     return measurementTrend({ origin: this.origin, subjectId: featureId, subjectKnown: proof.subjectKnown,
       now, windowDays, contract, contractHash: this.contractHash(contract), evidence: proof.evidence,
-      evaluations: this.ledger.maturationEvaluationHistory(this.origin, featureId, since),
+      evaluations, contractVersions: this.ledger.maturationContractVersions(this.origin, featureId, [this.contractHash(contract), ...(evaluations?.rows ?? []).map(r => r.contractHash)]),
       observations: new Map(contract.metrics.map(m => [m.id, this.ledger.maturationMetricHistory(this.origin, featureId, m.id, since)])) });
   }
 
   private maturationSummary(sinceMs: number, outcomeFeatureId?: string): Record<string, unknown> {
-    const rows = this.ledger.maturationEvaluations(this.origin, sinceMs);
+    const rows = this.maturationEvaluationRows(sinceMs);
     const latest = new Map<string, MaturationEvaluationRecord>();
     for (const row of rows) latest.set(row.featureId, row);
     const byStatus: Record<MaturationEvaluationStatus, number> = { ready: 0, hold: 0, 'stale-evidence': 0,
@@ -375,7 +386,7 @@ export class BlockerLifecycleService {
   }
 
   private maturationTrend(sinceMs: number): Record<string, unknown> {
-    const rows = this.ledger.maturationEvaluations(this.origin, sinceMs);
+    const rows = this.maturationEvaluationRows(sinceMs);
     const grouped = new Map<string, MaturationEvaluationRecord[]>();
     for (const row of rows) { const values = grouped.get(row.featureId) ?? []; values.push(row); grouped.set(row.featureId, values); }
     return { features: [...grouped.entries()].slice(0, 512).map(([featureId, values]) => ({ featureId,

@@ -63,6 +63,14 @@ describe('existing maturation read carries outcome proof', () => {
     const m=read.detail.metrics[0];expect(m).toMatchObject({outcome:true,qualityGuard:true,total:3,omitted:0});
     expect(m.series[0].points.map((p:{value:number})=>p.value)).toEqual([4,5,7]);
     expect(m.series[0].points.map((p:{joinPrevious:boolean})=>p.joinPrevious)).toEqual([false,false,true]);
+    expect(read.detail.contractVersions).toMatchObject({available:true,requested:1,missing:[],rows:[{contract}]});
+    const changed={...contract,outcome:{...outcome,version:'v2',method:'Reviewed outcomes with v2'}};
+    ini.rollout!.maturationEvaluation=changed;svc.evaluateMaturation([ini]);
+    const updated=(await request(app).get('/maturation/board?part=measurement&subject=one&machine=local').set('Authorization','Bearer test').set('X-Instar-AgentId','test')).body;
+    expect(validMeasurementRead(updated,'local','one',90,Date.now())).toBe(true);expect(updated.detail.contractVersions.rows).toHaveLength(2);
+    expect(updated.detail.contractVersions.rows.map((v:{contract:{outcome:{version:string}}})=>v.contract.outcome.version)).toEqual(['v2','v1']);
+    expect(updated.detail.metrics[0].series[0].points.every((p:{joinPrevious:boolean})=>!p.joinPrevious)).toBe(true);
+
     expect((await request(app).get('/maturation/board?part=measurement&subject=bad.path').set('Authorization','Bearer test')).status).toBe(400);
   });
 

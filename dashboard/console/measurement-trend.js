@@ -6,6 +6,20 @@ const words={verified:'Recorded and corroborated',unavailable:'Cannot be read',m
 const number=n=>typeof n==='number'&&Number.isFinite(n)?(n!==0&&(Math.abs(n)>1e7||Math.abs(n)<1e-5)?n.toExponential(5):new Intl.NumberFormat(undefined,{maximumSignificantDigits:6}).format(n)):'Unknown';
 const date=n=>typeof n==='number'?new Date(n).toLocaleString():'Unknown';
 const svg=(tag,attrs={},text)=>{const node=document.createElementNS(SVG,tag);for(const [k,v]of Object.entries(attrs))node.setAttribute(k,String(v));if(text!==undefined)node.textContent=text;return node;};
+function retainedMethods(detail){
+  const versions=detail.contractVersions;
+  if(!versions?.available)return el('p',{text:detail.historicalContractDetails==='archived'?'Archived method definitions cannot be read.':'Previous contract details are not retained. Older versions remain separate; no historical method is reconstructed.'});
+  const section=el('section',{},el('p',{text:`Archived definitions: ${versions.rows.length}. Not archived: ${versions.missing.length}. Outside this bounded read: ${versions.omitted.length}. Unreadable: ${versions.unreadable.length}.`}));
+  for(const version of versions.rows){
+    const c=version.contract;
+    section.append(el('details',{},el('summary',{text:`${version.hash===detail.currentContractHash?'Current definition':'Historical definition'} — ${c.outcome?.version||'method version not recorded'}`}),
+      el('p',{text:c.outcome?.statement||'Intended outcome not recorded.'}),el('p',{text:c.outcome?.method||'Method description not recorded.'}),
+      el('p',{text:`Owner: ${c.outcome?.owner||'not recorded'}. Evaluation every ${c.cadenceHours} hours; evidence age limit ${c.evidenceMaxAgeHours} hours.`}),
+      el('ul',{},c.metrics.map(m=>el('li',{text:`${humanName({id:m.id})}: ${m.direction==='at-least'?'at least':'at most'} ${number(m.threshold)}, minimum ${m.minSamples} samples; source ${m.sourceRef}.`}))),
+      el('p',{class:'mb-hint',text:`Definition first archived ${date(version.firstArchivedAtMs)}. Last seen as current ${date(version.lastSeenAtMs)}. Identity: ${version.hash}. This archive does not establish a baseline observation or an improvement verdict.`})));
+  }
+  return section;
+}
 export function measurementChart(metric,series,detail,proof) {
   const points=series.points||[];
   if(!points.length)return el('p',{text:metric.historyAvailable?'No recorded points in this read.':'Numeric history cannot be read.'});
@@ -67,7 +81,7 @@ export function measurementDetail(read) {
   }
   panel.append(el('details',{},el('summary',{text:'Evaluation versions and method'}),
     el('p',{text:proof.owner?`Owner recorded in the contract: ${proof.owner}.`:'Accountable owner not recorded.'}),
-    el('p',{text:proof.method||'Evaluation method not recorded.'}),proof.evidenceMaxAgeHours?el('p',{text:`Current evidence age limit: ${proof.evidenceMaxAgeHours} hours.`}):null,el('p',{text:'Previous contract details are not retained. Older versions remain separate; no historical method is reconstructed.'}),
+    el('p',{text:proof.method||'Evaluation method not recorded.'}),proof.evidenceMaxAgeHours?el('p',{text:`Current evidence age limit: ${proof.evidenceMaxAgeHours} hours.`}):null,retainedMethods(d),
     d.evaluations.available?el('p',{text:`${d.evaluations.omitted} evaluation rows omitted from this bounded read.`}):null,
     d.evaluations.available?el('ul',{},d.evaluations.rows.map(e=>el('li',{text:`${date(e.evaluatedAtMs)}; version ${e.contractHash}; ${e.status}`}))):el('p',{text:'Evaluation history cannot be read.'})));
   return panel;
