@@ -23,3 +23,7 @@ A corrective constitutional revision and regenerated paired publication preserve
 ## Second-pass review
 
 **Reviewer:** original independent review_history semantic Building-family/paired-wording review is retained in docs/audits/improvement-observability-building-2026-11-06.json and its unchanged report. It required restoring the universal feature duty, which remains present. This documentation cleanup claims no new final-head concurrence or operator approval; final paired review follows the runtime split and exact candidate head.
+
+## Combined upstream refresh
+
+Upstream purchased-service and attribution articles are preserved. The combined Building family now has44articles; floor34/40 remains unchanged. New combined-family audit and report record independent semantic concurrence and the resolved attribution finding. Exact source quotes distinguish authorization to pursue work from still-pending final-head constitutional ratification. Earlier audit artifacts remain historical, not current combined attestations. No new runtime behavior.

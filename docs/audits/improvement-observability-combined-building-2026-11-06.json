@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-11-06T09:39:57.096Z",
+  "reviewers": [
+    "echo:codex",
+    "independent-review-history:codex"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 1
+  },
+  "convergenceReport": "docs/specs/reports/improvement-observability-combined-building-2026-11-06.md",
+  "convergenceSha256": "fcb2b039fbd1db043cabb36fee3a2db9156ba10663bc9479409393569dba851b",
+  "areas": {
+    "Building": {
+      "areaSha256": "a9a5522667a1199649bcc087e1fc4fe0f4e2d93e78034ec0776af16acbdb5028",
+      "verdict": "accepted"
+    }
+  }
+}

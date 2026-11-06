@@ -80,6 +80,10 @@ export const POOL_ACTIVATION_KEYS: ReadonlyArray<readonly [path: string, value: 
   ['multiMachine.coherenceJournal.replication.enabled', true],
   ['multiMachine.pollFollowsLease.enabled', true],
   ['multiMachine.pollFollowsLease.dryRun', false],
+  // session-pool-takeover-at-pairing: the spare keeps a lease it took, with no git remote to confirm over.
+  ['multiMachine.leaseSelfHeal.soloCaptainHold.enabled', true],
+  ['multiMachine.leaseSelfHeal.soloCaptainHold.requireLastingLink', true],
+  // `multiMachine.leaseSelfHeal.soloCaptainHold.pairRole` differs per side: see applyPairActivationKeys.
 ];
 
 function setPath(root: Json, dotted: string, value: unknown): void {
@@ -97,9 +101,12 @@ function setPath(root: Json, dotted: string, value: unknown): void {
  * on disk and the decision has ruled out a choice. `stage` is removed so a joiner starts
  * dark under the `shadow` ceiling whatever its home held.
  */
-export function applyPairActivationKeys(fileConfig: Json, nowIso: string): Json {
+export function applyPairActivationKeys(fileConfig: Json, nowIso: string, role: PairRole, pairedWith: string): Json {
   const next = structuredClone(fileConfig);
   for (const [dotted, value] of POOL_ACTIVATION_KEYS) setPath(next, dotted, value);
+  // Decides who is in charge until a lasting link is proved, so exactly one machine ever is.
+  setPath(next, 'multiMachine.leaseSelfHeal.soloCaptainHold.pairRole', role);
+  setPath(next, 'multiMachine.leaseSelfHeal.soloCaptainHold.pairedWith', pairedWith);
   setPath(next, 'multiMachine.sessionPool.activatedAtPairing', nowIso);
   delete ((next.multiMachine as Json).sessionPool as Json).stage;
   return next;
@@ -128,8 +135,11 @@ function recordPairDecision(stateDir: string, decision: PairActivationDecision, 
   fs.writeFileSync(decisionPath(stateDir), JSON.stringify({ ...decision, at: nowIso }, null, 2));
 }
 
+export type PairRole = 'inviter' | 'joiner';
+
 export type InviterPairResponse = {
-  sessionPoolActivation?: { version: number };
+  /** `role` is the joiner's: normally `joiner`, but a rebuilt first machine pairing back through its partner is not. */
+  sessionPoolActivation?: { version: number; role?: PairRole };
   telegramHandover?: EncryptedSecretPayload;
 };
 
@@ -179,7 +189,7 @@ export function finishInviterPairActivation(input: {
     const first = decision.reason === 'first-pairing';
     if (first) {
       const configPath = path.join(stateDir, 'config.json');
-      writeConfigAtomic(configPath, applyPairActivationKeys(JSON.parse(fs.readFileSync(configPath, 'utf-8')), nowIso));
+      writeConfigAtomic(configPath, applyPairActivationKeys(JSON.parse(fs.readFileSync(configPath, 'utf-8')), nowIso, 'inviter', input.joinerMachineId));
     }
     const telegramHandover = telegram ? sealTelegramHandover({
       ...telegram,
@@ -189,7 +199,10 @@ export function finishInviterPairActivation(input: {
       now,
     }) : undefined;
     return {
-      response: { sessionPoolActivation: { version: PAIR_ACTIVATION_VERSION }, ...(telegramHandover ? { telegramHandover } : {}) },
+      response: {
+        sessionPoolActivation: { version: PAIR_ACTIVATION_VERSION, role: roleForJoiner(stateDir) },
+        ...(telegramHandover ? { telegramHandover } : {}),
+      },
       restart: first,
     };
   } catch (err) {
@@ -203,6 +216,12 @@ export function finishInviterPairActivation(input: {
     });
     return { response: {}, restart: false };
   }
+}
+
+/** The other side of this machine's own role, so a pair never holds two joiners. */
+function roleForJoiner(stateDir: string): PairRole {
+  const own = at(JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8')), 'multiMachine', 'leaseSelfHeal', 'soloCaptainHold', 'pairRole');
+  return own === 'joiner' ? 'inviter' : 'joiner';
 }
 
 /** The inviter reads activation at boot, so it restarts once the joiner has its answer. */
@@ -247,6 +266,8 @@ export function applyJoinerPairActivation(input: {
   binding: TelegramHandoverBinding;
   encryptionPrivateKeyPem: string | null;
   now: Date;
+  /** Who this machine paired with. Absent only from a response with no identity, which waits on every peer. */
+  inviterMachineId?: string;
 }): {
   activated: boolean;
   telegram: 'written' | 'not-offered' | 'kept-existing' | TelegramHandoverRefusal | 'no-key';
@@ -259,7 +280,12 @@ export function applyJoinerPairActivation(input: {
   if (response.sessionPoolActivation?.version !== PAIR_ACTIVATION_VERSION) return { activated: false, telegram: 'not-offered' };
   // Pairing again only resends the token: anything the owner changed here since stands.
   const onDisk = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Json;
-  const config = activatedAtPairing(onDisk) ? onDisk : applyPairActivationKeys(onDisk, now.toISOString());
+  const config = activatedAtPairing(onDisk) ? onDisk : applyPairActivationKeys(
+    onDisk,
+    now.toISOString(),
+    response.sessionPoolActivation?.role === 'inviter' ? 'inviter' : 'joiner',
+    input.inviterMachineId ?? '',
+  );
   let telegram: 'written' | 'not-offered' | 'kept-existing' | TelegramHandoverRefusal | 'no-key' = 'not-offered';
   let peopleFilled = false;
   let peopleUnchecked = false;

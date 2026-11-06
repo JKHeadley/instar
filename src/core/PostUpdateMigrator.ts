@@ -129,7 +129,7 @@ import { getDefaultJobs, installBuiltinSkills, installBrowserScripts } from '../
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { recordInstallProvenanceIfAbsent, hasInstallProvenanceRecord } from './ApprenticeshipStallGate.js';
 import { IdentityManager } from '../threadline/client/IdentityManager.js';
-import { installAutoStart, installBootWrapper, SYSTEMD_KILL_MODE_LINE, systemdUnitNeedsStableStart } from '../commands/setup.js';
+import { installAutoStart, installBootWrapper, SYSTEMD_KILL_MODE_LINE, SYSTEMD_SUPERVISED_ENV_LINE, systemdUnitNeedsStableStart } from '../commands/setup.js';
 import { autoStartRefusalReason, takeLastAutoStartRefusal } from './ThrowawayAgentGuard.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 import { jobsMigrate } from '../commands/jobMigrate.js';
@@ -203,6 +203,20 @@ export function addSystemdKillModeProcess(unit: string): string {
   if (!m) return unit;
   const at = m.index + m[0].length;
   return `${unit.slice(0, at)}${SYSTEMD_KILL_MODE_LINE}\n${unit.slice(at)}`;
+}
+
+/**
+ * Add `Environment=INSTAR_SUPERVISED=1` to a systemd unit's [Service] section, leaving the
+ * rest byte-identical (the inserted line uses the file's own line ending). A unit that already
+ * names INSTAR_SUPERVISED in any Environment= line is returned untouched, so an operator value,
+ * including 0, wins and a re-run is a no-op. A unit with no [Service] section is not ours.
+ */
+export function addSystemdSupervisedEnv(unit: string): string {
+  if (/^\s*Environment\s*=.*\bINSTAR_SUPERVISED=/m.test(unit)) return unit;
+  const m = /^\[Service\][ \t]*(\r?\n)/m.exec(unit);
+  if (!m) return unit;
+  const at = m.index + m[0].length;
+  return `${unit.slice(0, at)}${SYSTEMD_SUPERVISED_ENV_LINE}${m[1]}${unit.slice(at)}`;
 }
 
 export const LAUNCHD_PROCESS_CEILING_FLOOR = 2048;
@@ -2429,7 +2443,7 @@ const CONTEXT_DEATH_MARKER_ID = 'INSTAR:ANTI-PATTERN-CONTEXT-DEATH';
 
 export const POOL_MOVE_NUDGE_CLAUDE_MD_LINE = `- **Why a message waited after a move:** after a move, the old machine tells the others to check for the new owner, so this should take seconds. If someone asks why a message waited, read the \`multiMachine.sessionPool.moveNudge\` rows in \`logs/feature-evidence.jsonl\`: each says whether the machine caught up and how long it took. A missing or \`not-reached\` row means the normal 30-second check delivered it instead, and nothing was lost.`;
 
-export const POOL_READINESS_CLAUDE_MD_LINE = `- **Pool readiness:** can this agent move conversations between machines, or take over if a machine dies? \`GET /session-pool/readiness\` answers line by line per peer: contact, clock, capacity, no start failure seen, channels, follow-ups, plus this machine's takeover, ownership and duplicate check. Each is \`ok\`, \`failing\` or \`unknown\`. It only reports: ready means the known prerequisites look met, not that a real conversation has been placed. History is in \`logs/pool-readiness.jsonl\` on agents with 2 or more machines. Takeover reads \`failing\` on a machine using the git lease with no git remote, because it cannot take over yet. When the user asks "would my conversations work on the other machine?" or "what happens if this machine dies?" → read this before answering.`;
+export const POOL_READINESS_CLAUDE_MD_LINE = `- **Pool readiness:** can this agent move conversations between machines, or take over if a machine dies? \`GET /session-pool/readiness\` answers line by line per peer: contact, clock, capacity, no start failure seen, channels, follow-ups, plus this machine's takeover, ownership and duplicate check. Each is \`ok\`, \`failing\` or \`unknown\`. It only reports: ready means the known prerequisites look met, not that a real conversation has been placed. History is in \`logs/pool-readiness.jsonl\` on agents with 2 or more machines. Takeover reads \`failing\` on a machine using the git lease with no git remote, because it cannot take over yet. Takeover reads \`unknown\` with a no-lasting-connection reason on a new pair that has not proved a connection surviving a restart: the first machine stays in charge, the spare waits, and conversations do not move. Tell the owner plainly, and that the fix is both machines on one network or Tailscale, then pairing again. When the user asks "would my conversations work on the other machine?" or "what happens if this machine dies?" → read this before answering.`;
 
 /**
  * Insert the context-death anti-pattern block into a CLAUDE.md string (end of
@@ -2652,6 +2666,7 @@ export class PostUpdateMigrator {
     this.migrateBootWrapperToCjs(result);
     this.migrateLaunchdProcessCeiling(result);
     this.migrateSystemdKillMode(result);
+    this.migrateSystemdSupervised(result);
     this.migrateSystemdStableStart(result);
     this.migrateBootWrapperAbiCheck(result);
     this.migrateStaleLifelineSignal(result);
@@ -4939,6 +4954,58 @@ export class PostUpdateMigrator {
         : 'systemd KillMode: set KillMode=process on disk; takes effect after `systemctl --user daemon-reload` or next login',
     );
   }
+  /**
+   * Give existing Linux installs `Environment=INSTAR_SUPERVISED=1` (Migration Parity Standard —
+   * the template fix in setup.ts only reaches NEW agents). The unit starts the bash boot wrapper,
+   * so the lifeline cannot see systemd as its parent and its watchdog never exits for a
+   * self-restart (spec: docs/specs/linux-lifeline-supervised.md). Surgical insert with a backup;
+   * an operator-set value is left alone. `daemon-reload` reloads the file; the running process
+   * keeps its environment until its next start. Nothing is restarted here.
+   */
+  private migrateSystemdSupervised(result: MigrationResult): void {
+    if (process.platform !== 'linux') {
+      result.skipped.push('systemd supervised: non-linux, no unit');
+      return;
+    }
+    const unitPath = path.join(
+      process.env.HOME ?? os.homedir(),
+      '.config', 'systemd', 'user',
+      `instar-${this.config.projectName}.service`,
+    );
+    let content: string;
+    try {
+      content = fs.readFileSync(unitPath, 'utf-8');
+    } catch {
+      result.skipped.push('systemd supervised: no systemd unit present');
+      return;
+    }
+    const next = addSystemdSupervisedEnv(content);
+    if (next === content) {
+      result.skipped.push('systemd supervised: already declared (or no [Service] section)');
+      return;
+    }
+    try {
+      fs.writeFileSync(`${unitPath}.bak-${Date.now()}`, content, 'utf-8');
+      fs.writeFileSync(unitPath, next, 'utf-8');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      result.errors.push(`systemd supervised: ${msg}`);
+      return;
+    }
+    let reloaded = false;
+    if (!process.env.VITEST && !process.env.INSTAR_SKIP_LAUNCHCTL_LOAD) {
+      try {
+        withSyncOp(() => execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore', timeout: 10_000 }));
+        reloaded = true;
+      } catch { /* @silent-fallback-ok: reported below; the file is still fixed for the next manager start */ }
+    }
+    result.upgraded.push(
+      reloaded
+        ? 'systemd supervised: set INSTAR_SUPERVISED=1 (the lifeline can restart itself to recover; applies at its next start)'
+        : 'systemd supervised: set INSTAR_SUPERVISED=1 on disk; applies after `systemctl --user daemon-reload` or next login',
+    );
+  }
+
 
   // ── Conversational-action catalog Playbook manifest (v0.2) ─────────
   //
@@ -12621,6 +12688,12 @@ ${OVERLOAD_SHED_CLAUDE_MD_LINE}
 
     // session-pool-default-on step 1: agents that carry the pool section learn the readiness
     // report. Idempotent via the unique '**Pool readiness:**' marker.
+    // session-pool-takeover-at-pairing: an older copy of the line gets the current text.
+    if (content.includes('**Pool readiness:**') && !content.includes('no-lasting-connection reason')) {
+      content = content.replace(/^- \*\*Pool readiness:\*\*.*$/m, () => POOL_READINESS_CLAUDE_MD_LINE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated pool readiness line');
+    }
     if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('**Pool readiness:**')) {
       content += '\n' + POOL_READINESS_CLAUDE_MD_LINE + '\n';
       patched = true;
