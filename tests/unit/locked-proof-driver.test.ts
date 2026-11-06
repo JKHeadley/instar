@@ -12,7 +12,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 // @ts-expect-error — plain .mjs script, no type declarations
 import { CASES, RESUME_WINDOW_MS, TERMINAL, assertProofTarget, generateProofPassword, judge, launchdServePlist, renderExpected, resetAttempts, runCase, selectCases } from '../../scripts/locked-proof/lib.mjs';
 // @ts-expect-error — plain .mjs script, no type declarations
-import { RealTarget, VIEWER_READY, ownerOf, recordPersonStep, refusalFromStatus, setupGaps } from '../../scripts/locked-proof/driver.mjs';
+import { RealTarget, VIEWER_READY, ownerOf, parseProcessList, recordPersonStep, refusalFromStatus, setupGaps } from '../../scripts/locked-proof/driver.mjs';
 // @ts-expect-error — plain .mjs script, no type declarations
 import { isInsideProofHome, proofConfig, validPin } from '../../scripts/locked-proof/configure-proof-agent.mjs';
 
@@ -397,6 +397,25 @@ describe('locked-proof launchd kill', () => {
     expect(sent[0]['X-Instar-Operator-Session']).toBe('viewers');
     const refused = realTarget({ ...base, main: { session: 'viewers' }, api: async () => ({ status: 403, error: 'Desktop revocation unavailable' }) });
     await expect(refused.act('revoke')).rejects.toThrow(/revoke: refused with 403 Desktop revocation unavailable/);
+  });
+
+  it('a zombie is not a running process: a frozen server cannot collect its finished children', () => {
+    // Live, 2026-11-05 20:43 PST (case 12.1, server frozen with SIGSTOP under launchd): the typist exited
+    // 31 s after the password and the guard 2 s after the relock, and both stayed as Z under the stopped
+    // server, so a pid match called them "still running after the duty closed".
+    const ps = [
+      '52260 Z    Thu Nov  5 20:43:15 2026 (instar-desktop-host)',
+      '52484 Ss   Thu Nov  5 20:43:16 2026 /Users/proof/.instar/desktop-helper/instar-desktop-host relock-guard --x',
+      '16542 T    Thu Nov  5 20:40:01 2026 node dist/server.js',
+      '  99 R+   Thu Nov  5 20:40:01 2026 ps -U proof',
+      'not a process line',
+    ].join('\n');
+    const parsed = parseProcessList(ps);
+    expect(parsed.live.map(p => p.pid)).toEqual([52484, 16542, 99]);
+    expect(parsed.live[0]).toEqual({ pid: 52484, stat: 'Ss', start: 'Thu Nov  5 20:43:16 2026', command: '/Users/proof/.instar/desktop-helper/instar-desktop-host relock-guard --x' });
+    expect(parsed.zombies).toEqual([52260]);
+    // A stopped (T) process is still a process: the freeze cases depend on seeing it.
+    expect(parsed.live.find(p => p.pid === 16542)?.stat).toBe('T');
   });
 
   it('with no duty at all, the input helper of a live grant is not a leftover typist', async () => {

@@ -89,6 +89,20 @@ export function recordPersonStep(o, text, send) {
 }
 
 /** The proof Mac, the proof user, its two agents and the real viewer page. */
+/**
+ * Splits `ps -o pid=,stat=,lstart=,command=` output into live processes and zombies.
+ * A zombie (stat Z) has exited and holds nothing; it lingers only because its parent
+ * has not collected it. With the proof server frozen on purpose (cases 12.1, 12.9) its
+ * typist and guard both became zombies after they finished, and a leftover check that
+ * matched them by pid called them "still running" (live, 2026-11-05 20:43 PST).
+ */
+export function parseProcessList(text) {
+  const rows = text.split('\n')
+    .map(line => line.match(/^\s*(\d+)\s+(\S+)\s+(\w{3} \w{3} +\d+ [\d:]+ \d{4})\s+(.*)$/)).filter(Boolean)
+    .map(m => ({ pid: Number(m[1]), stat: m[2], start: m[3], command: m[4] }));
+  return { live: rows.filter(p => !p.stat.startsWith('Z')), zombies: rows.filter(p => p.stat.startsWith('Z')).map(p => p.pid) };
+}
+
 export class RealTarget {
   constructor(o) {
     this.o = o;
@@ -167,10 +181,9 @@ export class RealTarget {
 
   consoleOwner() { return sh('stat', ['-f', '%Su', '/dev/console']).trim(); }
 
+  /** The proof user's live processes. Zombies are left out: see parseProcessList. */
   processes() {
-    return sudo(['ps', '-U', PROOF_USER, '-o', 'pid=,lstart=,command='], { allowFail: true }).split('\n')
-      .map(line => line.match(/^\s*(\d+)\s+(\w{3} \w{3} +\d+ [\d:]+ \d{4})\s+(.*)$/)).filter(Boolean)
-      .map(m => ({ pid: Number(m[1]), start: m[2], command: m[3] }));
+    return parseProcessList(sudo(['ps', '-U', PROOF_USER, '-o', 'pid=,stat=,lstart=,command='], { allowFail: true })).live;
   }
 
   async snapshot() {
@@ -634,6 +647,8 @@ export class RealTarget {
     const finalMarkers = Object.values(ev.final.markers ?? {});
     const procs = this.processes();
     const out = {
+      // Exited children a frozen server has not collected: not running, but visible in the evidence.
+      zombies: parseProcessList(sudo(['ps', '-U', PROOF_USER, '-o', 'pid=,stat=,lstart=,command='], { allowFail: true })).zombies,
       submissions: enters.size,
       submissionsAfterClose: closedAt === null ? 0 : [...enters.values()].filter(t => t > closedAt).length,
       guardReplaced: finalMarkers.some(m => (m.guardReplacements ?? 0) > 0),

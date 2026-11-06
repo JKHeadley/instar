@@ -29,6 +29,8 @@ Thirteen faults found in the live run on the Mac Mini on 2026-11-05, once the vi
 - **The driver tries again when the lock screen is momentarily not ready, and no longer nudges the display before a grant.** `typePassword` retries a `shield-not-confirmed` refusal at most twice, 1.5 s apart, and records `notReadyRetries`; `wakeDisplay()` is used only 6 s before deadline typing. This is what the page tells a person to do, and the refusal comes before reservation, so no attempt is spent. What it costs the proof: a case no longer fails on this refusal alone, so the rate at which a person would meet it is NOT measured by the pass/fail line; it is in each row's `notReadyRetries`. Cause, measured (observer source: /Users/Shared/lp-shieldwatch/shieldwatch.swift on the proof Mac): loginwindow drops and re-takes secure input for about half a second a few seconds after a lock or a display wake. Filed for the product as feedback: the helper should wait and re-check before refusing.
 - **Leftovers are the duty's own.** `processesGone` compares the duty's recorded `guardPid` and `typistPid` with the process list. Seen in the 17:45 run's case 12.1: the helper of the frozen server had refused the password before reserving, stayed up with its server, and was reported as a leftover typist although the guard relocked. Cases that set `typistGone` still check for any input helper.
 
+- **Zombies are not processes.** `processes()` now asks `ps` for `stat` too and drops rows whose stat starts with Z (`parseProcessList`, exported and unit-tested); `extraEvidence` records the zombie pids as `zombies`. Live, 20:43 PST, case 12.1 with the server frozen under launchd: the typist (52260) exited 31 s after the password and the guard (52484) 2 s after the relock, and both lingered as Z under the stopped parent, so the leftover rule matched them by pid. The freeze cases depend on seeing a stopped (T) process, which is kept.
+
 ## 1. Over-block
 
 `stop-server` can now fail a case that the old code let run. That is the point: a freeze that did not hold is not evidence. A process that is gone reads an empty state and also throws; a case that wants a dead server uses `kill-server`.
@@ -44,6 +46,8 @@ The typing window is short (about 0.7 s for a 20-character password on the Mini)
 Changing 12.5a changes what the proof asks of the product, so it is stated here plainly: the spec (docs/specs/desktop-locked-screen.md, "A dead guard" and gate P12) asks for a replacement guard and for the Mac to end locked. It does not ask for a relock while the owner's session is still live. The case as written could only pass if the product locked a Mac out from under a live session. If that stricter behaviour is wanted, it is a spec change, not a test fix.
 
 The deadline offset is measured from when the driver saw the grant open, which trails the server's own start of the 10-minute ceiling by the page's opening delay. If that delay is close to half the typing time, 15.3 can still type too late and will fail honestly with no duty; the rerun shows which.
+
+Dropping zombies from every reading means `oldGuardGone` and `typistGone` also read true for a zombie, which is right (it has exited), but a helper that exited early and wrongly would also read as cleanly gone; the duty's recorded state and the Mac's own flag still have to agree for a pass.
 
 ## 3. Level-of-abstraction fit
 

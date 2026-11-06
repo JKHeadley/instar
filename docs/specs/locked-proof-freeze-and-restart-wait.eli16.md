@@ -46,6 +46,8 @@ Instar can show and control a Mac's screen remotely, even while that Mac is lock
 
 **Two wrong turns of mine.** I first thought the screen being asleep caused those refusals, and had the driver nudge the Mac awake at the start of each test, then just before each session. Measuring showed that was not the cause and made it worse, so both nudges are gone; one remains before the two tests that type at the ten-minute mark. Separately, the check for leftover helpers now looks only at the helpers a relock duty actually recorded.
 
+**Finished helpers that had not been tidied away.** When a program exits, its parent program is meant to note that and clear it from the list. In the test that freezes the test server on purpose, the server cannot do that, so its finished helpers stayed in the process list as empty entries (the system calls them zombies) after they had done their job and the Mac was locked. The driver saw those entries and reported that the helpers were "still running". They were not; nothing was running. The driver now ignores such entries and records them separately in the evidence instead.
+
 ## What stays the same
 
 The product is unchanged: the web page, the server and the safety guard all behaved correctly. Once the freeze test was fixed, it passed: the guard noticed the frozen server and relocked the Mac. Nothing here reaches any running agent; it only affects the proof tool run by hand on the test Mac.
