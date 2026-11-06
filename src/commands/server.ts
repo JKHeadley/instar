@@ -1,11 +1,11 @@
-import { hasPromotedUpgradeAnnouncement, LEGACY_NOTIFICATION_GATES } from '../messaging/notificationCategories.js';
+import { hasPromotedUpgradeAnnouncement, LEGACY_NOTIFICATION_GATES, scheduledJobSlug } from '../messaging/notificationCategories.js';
 import { readPeerNotifications } from '../server/notificationPoolRead.js';
 import { NotificationPreferences } from '../messaging/NotificationPreferences.js';
 import { notificationStamper, responseNotificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/commands/server.ts');
 const stampReapNotification = notificationStamper('src/commands/server.ts', 'reap-notifier');
 const stampResponse = responseNotificationStamper('src/commands/server.ts');
-import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, notificationContext } from '../messaging/NotificationSelectivityGate.js';
+import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, verifiedJobEnvelope, notificationContext } from '../messaging/NotificationSelectivityGate.js';
 import type { SelectivityConfig } from '../messaging/NotificationSelectivityGate.js';
 /**
  * Governed by: Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS (docs/STANDARDS-REGISTRY.md) —
@@ -7126,13 +7126,19 @@ export async function startServer(options: StartOptions): Promise<void> {
       root: config.stateDir, self: () => _meshSelfId ?? 'local',
       peers: () => (_resolvePeerUrls?.() ?? []).map(peer => peer.machineId),
       read: category => liveConfig.get<boolean>(`notifications.selectivity.push.categories.${category}`, false),
-      onMassChange: async () => { await telegram?.createAttentionItem({ id: 'notification-preference-churn', title: 'Notification preferences changed for several categories', summary: 'Review the current choices in the dashboard Notifications page.', category: 'system', priority: 'NORMAL', sourceContext: 'selectivity-preference-churn' }); },
+      onMassChange: async () => { await telegram?.createAttentionItem({ id: 'notification-preference-churn', title: 'Notification preferences changed several times', summary: 'Review the current choices in the dashboard Notifications page.', category: 'system', priority: 'NORMAL', sourceContext: 'selectivity-preference-churn' }); },
       apply: (category, enabled) => {
         liveConfig.set(`notifications.selectivity.push.categories.${category}`, enabled);
         const legacy = LEGACY_NOTIFICATION_GATES[category as keyof typeof LEGACY_NOTIFICATION_GATES];
         if (legacy) liveConfig.set(legacy, enabled);
         if (category === 'selectivity-digest') liveConfig.set('notifications.selectivity.digest.enabled', enabled);
         if (liveConfig.get(`notifications.selectivity.push.categories.${category}`, !enabled) !== enabled) throw new Error('Notification preference was not saved');
+      },
+      readJob: slug => liveConfig.get<boolean>(`notifications.selectivity.push.jobs.${slug}`, false),
+      applyJob: (slug, enabled, topicId) => {
+        liveConfig.set(`notifications.selectivity.push.jobs.${slug}`, enabled);
+        liveConfig.set(`notifications.selectivity.push.jobTopics.${slug}`, enabled ? topicId ?? null : null);
+        if (liveConfig.get(`notifications.selectivity.push.jobs.${slug}`, !enabled) !== enabled) throw new Error('Notification preference was not saved');
       },
       send: async (peer, intent) => {
         const result = await _identityMeshSend?.(peer, { type: 'notification-preference', intent }, 2000);
@@ -8860,6 +8866,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         telegramOriginBoot.runtime.service.notificationGate = selectivityGate;
         telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
         telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
+        telegramOriginBoot.runtime.service.notificationJobSlug = id => id ? scheduledJobSlug(state.getSession(id)) : undefined;
         telegramOriginBoot.runtime.service.notificationPromotedUpgradeSession = id => hasPromotedUpgradeAnnouncement(config.stateDir, id ? state.getSession(id)?.jobSlug : undefined);
       }
       armHolderForwardWait(telegram);
@@ -8996,6 +9003,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         telegramOriginBoot.runtime.service.notificationGate = selectivityGate;
         telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
         telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
+        telegramOriginBoot.runtime.service.notificationJobSlug = id => id ? scheduledJobSlug(state.getSession(id)) : undefined;
         telegramOriginBoot.runtime.service.notificationPromotedUpgradeSession = id => hasPromotedUpgradeAnnouncement(config.stateDir, id ? state.getSession(id)?.jobSlug : undefined);
       }
       armHolderForwardWait(telegram);
@@ -12991,7 +12999,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     sessionManager.on('injectionReplyDetected', (info: { topicId: number; sessionName: string; text: string; injectedAt: number }) => {
       if (!telegram) return;
       console.log(`[injectionReplyDetected] Surfacing Gemini final pane reply from "${info.sessionName}" to topic ${info.topicId}`);
-      withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(info.topicId, info.text, { envelope: state.findSessionByTmux(info.sessionName)?.jobSlug ? { origin: 'automated', category: 'job-status', sourceContext: 'pane-job-result' } : verifiedReplyEnvelope('observed-pane-reply') })).catch((err: Error) => {
+      const paneSession = state.findSessionByTmux(info.sessionName);
+      const paneJobSlug = scheduledJobSlug(paneSession);
+      withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(info.topicId, info.text, { envelope: paneJobSlug ? verifiedJobEnvelope(paneJobSlug) : paneSession?.jobSlug ? { origin: 'automated', category: 'job-status', sourceContext: 'pane-job-result' } : verifiedReplyEnvelope('observed-pane-reply') })).catch((err: Error) => {
         console.error(`[injectionReplyDetected] Failed to send reply for topic ${info.topicId}:`, err.message);
       });
     });

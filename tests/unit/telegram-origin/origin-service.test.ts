@@ -1,5 +1,5 @@
 import { withNotificationEnvelope } from '../../../src/messaging/notificationStampers.js';
-import { NotificationSelectivityGate, QuietRecordedError, verifiedInboundMirrorEnvelope, verifiedReplyEnvelope } from '../../../src/messaging/NotificationSelectivityGate.js';
+import { NotificationSelectivityGate, QuietRecordedError, isVerifiedJobEnvelope, verifiedInboundMirrorEnvelope, verifiedJobEnvelope, verifiedReplyEnvelope } from '../../../src/messaging/NotificationSelectivityGate.js';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHash, generateKeyPairSync } from 'node:crypto';
 import { OriginStore } from '../../../src/messaging/telegram-origin/OriginStore.js';
@@ -57,6 +57,78 @@ describe('origin service durable delivery', () => {
         () => h.service.sendBot({ ...h.input, params: { ...h.input.params, text: 'The actual answer resolves the waiting turn.' } }, h.network)));
       expect(gate.decide(42, presence).decision).toBe('record');
     } finally { await gate.close(); }
+  });
+  describe('per-job opt-in provenance', () => {
+    async function jobHarness(push: { jobs: Record<string, boolean>; jobTopics?: Record<string, number> }, sessionSlug?: string) {
+      const h = await harness(); const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false, push }));
+      gate.pushDestination = () => ({ chatId: String(h.input.params.chat_id), topicId: 7000 });
+      h.service.notificationGate = gate;
+      h.service.notificationJobSession = id => id === 'job-session' && !!sessionSlug;
+      h.service.notificationJobSlug = id => id === 'job-session' ? sessionSlug : undefined;
+      const token = await h.service.options.sessions.issue({ sessionId: 'job-session', harnessId: 'codex-cli', projectDir: h.stateDir });
+      h.service.options.observer.track(h.service.options.sessions.getBinding('job-session')!);
+      return { h, gate, token };
+    }
+    const sealed = async (h: Awaited<ReturnType<typeof harness>>) => JSON.parse((await h.store.listOrigins()).records[0].record.envelopeJson);
+    const claim = (slug: string) => ({ origin: 'automated' as const, category: 'job-status' as const, sourceContext: slug });
+    it('delivers an opted-in job session through the sealed record, in the topic the operator chose', async () => {
+      const topic = Number(((await harness()).input.params as { message_thread_id?: number }).message_thread_id ?? 1);
+      const { h, gate, token } = await jobHarness({ jobs: { 'instar2-checkin': true }, jobTopics: { 'instar2-checkin': topic } }, 'instar2-checkin');
+      try {
+        await h.service.runWithSessionToken(token, () => withNotificationEnvelope(claim('instar2-checkin'), () => h.service.sendBot(h.input, h.network)));
+        expect(h.network).toHaveBeenCalledOnce();
+        const record = await sealed(h);
+        expect(record.notification).toMatchObject({ category: 'job-status', sourceContext: 'instar2-checkin', verifiedJobSlug: 'instar2-checkin' });
+        expect(record.destination.topicId).toBe(String(topic));
+      } finally { await gate.close(); }
+    });
+    it('an opted-in job addressing any other topic is sent to the hub', async () => {
+      const { h, gate, token } = await jobHarness({ jobs: { 'instar2-checkin': true }, jobTopics: { 'instar2-checkin': 999 } }, 'instar2-checkin');
+      try {
+        // The fixture's canned receipt names the original topic, so a retargeted send is held after dispatch.
+        await h.service.runWithSessionToken(token, () => withNotificationEnvelope(claim('instar2-checkin'), () => h.service.sendBot(h.input, h.network))).catch(() => undefined);
+        expect(h.network).toHaveBeenCalledOnce();
+        expect((await sealed(h)).destination.topicId).toBe('7000');
+      } finally { await gate.close(); }
+    });
+    it('a job session claiming another job is named by its own session and stays quiet', async () => {
+      const { h, gate, token } = await jobHarness({ jobs: { 'instar2-checkin': true } }, 'bugs-overseer');
+      try {
+        await expect(h.service.runWithSessionToken(token, () => withNotificationEnvelope(claim('instar2-checkin'), () => h.service.sendBot(h.input, h.network)))).rejects.toBeInstanceOf(QuietRecordedError);
+        expect(h.network).not.toHaveBeenCalled();
+        expect((await sealed(h)).notification).toMatchObject({ sourceContext: 'bugs-overseer', verifiedJobSlug: 'bugs-overseer' });
+      } finally { await gate.close(); }
+    });
+    it('a claimed sealed field from a session with no scheduler job is stripped and stays quiet', async () => {
+      const { h, gate, token } = await jobHarness({ jobs: { 'instar2-checkin': true } });
+      try {
+        await expect(h.service.runWithSessionToken(token, () => withNotificationEnvelope({ ...claim('instar2-checkin'), verifiedJobSlug: 'instar2-checkin' }, () => h.service.sendBot(h.input, h.network)))).rejects.toBeInstanceOf(QuietRecordedError);
+        expect(h.network).not.toHaveBeenCalled();
+        expect((await sealed(h)).notification).not.toHaveProperty('verifiedJobSlug');
+      } finally { await gate.close(); }
+    });
+    it('a scheduler notice keeps its identity through the seal with no session', async () => {
+      const topic = Number(((await harness()).input.params as { message_thread_id?: number }).message_thread_id ?? 1);
+      const { h, gate } = await jobHarness({ jobs: { 'nightly': true }, jobTopics: { 'nightly': topic } });
+      try {
+        await withNotificationEnvelope(verifiedJobEnvelope('nightly'), () => h.service.runAsAutomation('telegram-server', () => h.service.sendBot(h.input, h.network)));
+        expect(h.network).toHaveBeenCalledOnce();
+      } finally { await gate.close(); }
+    });
+    it('restores a peer record from its sealed field, and only a job-status envelope', async () => {
+      const { h, gate } = await jobHarness({ jobs: {} });
+      try {
+        const peer = { sessionId: 'job-session', producerKind: 'session', originMachineId: 'other-machine' } as never;
+        h.service.notificationJobSlug = () => 'same-id-local-job'; // a coincident local session id must not rename a peer's job
+        const restored = h.service.restoreJobEnvelope(peer, { ...claim('a'), verifiedJobSlug: 'a', relayedOrigin: true, contextTopicId: 5 });
+        expect(isVerifiedJobEnvelope(restored)).toBe(true);
+        expect(restored?.sourceContext).toBe('a');
+        expect(restored).toMatchObject({ relayedOrigin: true, contextTopicId: 5 });
+        expect(isVerifiedJobEnvelope(h.service.restoreJobEnvelope(peer, claim('a')))).toBe(false);
+        const other = { origin: 'automated' as const, category: 'spend-alert' as const, sourceContext: 'a', verifiedJobSlug: 'a' };
+        expect(h.service.restoreJobEnvelope(peer, other)).toBe(other);
+      } finally { await gate.close(); }
+    });
   });
   it('preserves the existing release promotion only for a trusted upgrade session', async () => {
     const h = await harness(); const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));

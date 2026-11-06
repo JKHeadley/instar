@@ -1,5 +1,6 @@
 import { categoryForProducer } from '../notificationCategories.js';
-import { NotificationSelectivityGate, QuietRecordedError, notificationContext, verifiedReplyEnvelope, isVerifiedReplyEnvelope } from '../NotificationSelectivityGate.js';
+import { NotificationSelectivityGate, QuietRecordedError, notificationContext, verifiedReplyEnvelope, isVerifiedReplyEnvelope, verifiedJobEnvelope, isVerifiedJobEnvelope } from '../NotificationSelectivityGate.js';
+import type { OutboundEnvelope } from '../NotificationSelectivityGate.js';
 // Governed by: Telegram Message Origin Is Mandatory; Its Display Is Optional
 // (docs/STANDARDS-REGISTRY.md). Recording and presentation are independent.
 import { sealOriginAdmission, validOriginAdmission } from './OriginAdmissionSeal.js';
@@ -114,6 +115,8 @@ export class TelegramOriginService {
   /** Resolved from the server's session registry, never from caller metadata. */
   public notificationPromotedUpgradeSession: (sessionId: string | null) => boolean = () => false;
   public notificationJobSession: (sessionId: string | null) => boolean = () => false;
+  /** The job this local session runs, from the session record. A caller's claim never reaches here. */
+  public notificationJobSlug: (sessionId: string | null) => string | undefined = () => undefined;
   readonly #scope = new AsyncLocalStorage<OriginScope>();
   readonly #producers = new Map<string, TelegramOriginProducer>();
   readonly #automationCredentials = new Map<string, { producer: TelegramOriginProducer; bodyDigest: string; topicId: number; expiresAt: number; logicalSendKey?: string }>();
@@ -381,15 +384,28 @@ export class TelegramOriginService {
     if (producer.producerKind === 'session' && this.notificationPromotedUpgradeSession(producer.sessionId)) return { origin: 'automated', category: 'update-announcement', sourceContext: 'release-upgrade-notify', releaseAudiencePromoted: true };
     if (notification.origin === 'verified-reply' && !isVerifiedReplyEnvelope(notification)) notification = { origin: 'automated', category: 'uncategorized', sourceContext: producer.producerId };
     if (notification.origin === 'automated' && notification.category === 'uncategorized') notification = { ...notification, category: categoryForProducer(producer.producerId) };
+    const jobSlug = producer.producerKind === 'session' ? this.notificationJobSlug(producer.sessionId) : undefined;
+    // The session's own record names the job, whatever slug the send claimed.
+    if (jobSlug && notification.origin === 'automated' && (notification.category === 'job-status' || notification.category === 'uncategorized')) return verifiedJobEnvelope(jobSlug, notification);
+    if (notification.verifiedJobSlug !== undefined && !isVerifiedJobEnvelope(notification)) { const { verifiedJobSlug: _unproven, ...rest } = notification; return rest; }
     return notification;
+  }
+  /** Sealed bytes carry no capability, so every last-hop reader restores it here. Only a mint
+   * site can seal the field, and a peer's record arrives attested; a local session outranks it. */
+  restoreJobEnvelope(record: TelegramOriginRecord, envelope: OutboundEnvelope | undefined): OutboundEnvelope | undefined {
+    if (envelope?.origin !== 'automated' || envelope.category !== 'job-status') return envelope;
+    const localSession = record.producerKind === 'session' && record.originMachineId === this.options.identity.originMachineId;
+    const jobSlug = (localSession ? this.notificationJobSlug(record.sessionId ?? null) : undefined) ?? envelope.verifiedJobSlug;
+    return jobSlug ? verifiedJobEnvelope(jobSlug, envelope) : envelope;
   }
   prepareBot(input: { method: string; accountId: string; params: BotParameters; operationId?: string; executionOwnerMachineId?: string;
     attachments?: import('./OriginMultipart.js').PreparedOriginAttachments; policyInput?: OriginSendPolicyInput }): OriginPreparedBotOperation {
     const producer = this.currentProducer();
     let notification = this.notificationForCurrentProducer();
-    const pushDestination = this.notificationGate?.destination?.(notification);
+    const addressedTopicId = this.notificationTopicId(input.params.chat_id === undefined ? null : String(input.params.chat_id), input.params.message_thread_id === undefined ? null : String(input.params.message_thread_id));
+    const pushDestination = this.notificationGate?.destination?.(notification, addressedTopicId);
     if (pushDestination && !input.method.startsWith('edit')) {
-      notification = { ...notification, contextTopicId: this.notificationTopicId(input.params.chat_id === undefined ? null : String(input.params.chat_id), input.params.message_thread_id === undefined ? null : String(input.params.message_thread_id)) };
+      notification = { ...notification, contextTopicId: addressedTopicId };
       input = { ...input, params: { ...input.params, chat_id: pushDestination.chatId, message_thread_id: pushDestination.topicId } };
     }
     // Translate BEFORE sealing: the lease holder and recovery replay the sealed bytes.
@@ -627,6 +643,7 @@ export class TelegramOriginService {
       if (envelope && operation.record.originMachineId !== this.options.identity.originMachineId) envelope = { ...envelope, relayedOrigin: true };
       // Restore the local capability after tagging peer provenance.
       if (sessionReply) envelope = verifiedReplyEnvelope('relayed-origin-session');
+      else envelope = this.restoreJobEnvelope(operation.record, envelope);
       const request = parseOriginJson(operation.admission.children[0]?.materializations[0]?.requestJson ?? '{}') as { policy?: { text?: string }; body?: string };
       const body = JSON.parse(request.body ?? '{}') as { text?: string; caption?: string };
       const routed = await this.notificationGate.route(topicId, request.policy?.text ?? body.text ?? body.caption ?? '', envelope, operation.record.operationId);

@@ -33,3 +33,22 @@ export async function readPeerNotifications(ctx: NotificationPoolContext, query:
   }));
   return { items, unavailable, unread };
 }
+/** Job lists are not replicated, so a choice about a job on another machine reads that machine. */
+export async function readPeerJobs(ctx: NotificationPoolContext): Promise<{ jobs: Array<{ slug: string; name: string; enabled: boolean; machineId: string }>; unavailable: string[] }> {
+  const jobs: Array<{ slug: string; name: string; enabled: boolean; machineId: string }> = [], unavailable: string[] = [];
+  const allow = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+  const peers = (ctx.resolvePeerUrls?.() ?? []).slice(0, 16);
+  await Promise.all(peers.map(async peer => {
+    if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, allow).ok) { unavailable.push(peer.machineId); return; }
+    try {
+      const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, '/jobs', { headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000) });
+      if (!response.ok) throw new Error('Peer unavailable');
+      const text = await response.text(); if (text.length > 4 * 1024 * 1024) throw new Error('Peer job list too large');
+      const data = JSON.parse(text) as { jobs?: unknown };
+      for (const raw of Array.isArray(data.jobs) ? data.jobs.slice(0, 500) as Array<Record<string, unknown>> : []) {
+        if (typeof raw?.slug === 'string') jobs.push({ slug: raw.slug.slice(0, 100), name: String(raw.name ?? raw.slug).slice(0, 200), enabled: raw.enabled !== false, machineId: peer.machineId });
+      }
+    } catch { unavailable.push(peer.machineId); }
+  }));
+  return { jobs, unavailable };
+}
