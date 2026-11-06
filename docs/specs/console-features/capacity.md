@@ -372,7 +372,7 @@ does any sign-in need me?"*
   signed-in account, so nothing can run there.", action: the sign-in) or every usable account, or
   every usable account of one kind, is at or over 90% ("All 2 Claude accounts are used up." with
   when room returns, action: ask the agent). One account full while others have room is on its
-  row and is never a notice. Same rules as the phone's `notices` (`accountNotices` in
+  row and is never a notice, and a sign-in that is only waiting gets no line at the top either. Same rules as the phone's `notices` (`accountNotices` in
   `src/server/mobileCapacityRoutes.ts`). Facts:
   *Needs you* (sign-ins, approvals; hidden at zero), *Most used* (account + % + resets in),
   *Accounts* (n working of m), *In use now* (which account this machine is serving with).

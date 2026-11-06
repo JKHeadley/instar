@@ -233,8 +233,8 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
       remote: Boolean(c.row.remote),
     });
   }
-  const waiting = accounts.reduce((n, a) => n + a.cells.filter((c) => c.state === 'waiting').length, 0);
-  const waitingLine = waiting ? `${waiting === 1 ? '1 sign-in is' : `${waiting} sign-ins are`} unconfirmed or waiting on automatic repair; nothing for you to do yet.` : '';
+  // A waiting sign-in (unconfirmed, or repair the agent owns) shows on its row only: a line saying
+  // there is nothing to do is not worth the space (operator rule 2026-11-06, topic 134088).
   const usable = accounts.filter((a) => a.cells.some((c) => c.state === 'ok')).length;
   const busiest = accounts.filter((a) => a.tight).sort((a, b) => b.tight.pct - a.tight.pct)[0];
   const notices = accountNotices(accounts, { partial: failed.length > 0, now });
@@ -254,5 +254,5 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
   for (const [k, v] of Object.entries(extraNames || {})) if (!machineNames[k]) machineNames[k] = verifiedDisplayName(v, k);
   const partial = failed.length ? `No answer from ${failed.map((f) => verifiedDisplayName(f.nickname, f.machineId) || verifiedDisplayName(f.machineNickname, f.machineId) || machineNames[f.machineId] || 'a machine with no name yet').join(', ')}; its accounts may be out of date.` : null;
   // warning-path: pageHead
-  return { ok: true, needs, notices, accounts, headline, sub: waitingLine, facts, partial, tone: needs.length ? 'attn' : 'ok' };
+  return { ok: true, needs, notices, accounts, headline, sub: '', facts, partial, tone: needs.length ? 'attn' : 'ok' };
 }

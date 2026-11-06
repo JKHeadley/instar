@@ -38,7 +38,7 @@ Compliant (`docs/signal-vs-authority.md`). This is a display of existing signals
 
 - Phone: a machine notice already asks for its accounts' sign-in, so the sign-in notice counts only the rest ("1 more account …"). The app hides the sign-in notice in the spot, because the "Needs signing in" section directly below already has a button per account.
 - Dashboard: the busiest-account fact lost its warning tone. A routine full account no longer adds "Ask the agent about this" to the header.
-- The waiting line added in #2876 is kept as the dashboard sub-line.
+- The "nothing for you to do yet" sub-line added in #2876 is removed (coordinator call by the same rule). Waiting cells still show their state and Sign in button on their row, and still do not count toward Home.
 
 ## 6. External surfaces
 

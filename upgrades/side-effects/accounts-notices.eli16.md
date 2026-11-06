@@ -8,7 +8,7 @@
 - Every account, or every account of one kind (a Claude session can only use Claude accounts), is at 90% or more. The notice says "used up" when they are all at 100%, says how many, and says when the first one has room again.
 - This machine's own account list can't be read.
 
-Each notice has "Ask the agent about this". When a reading is missing for an account that is signed in, no "out of room" conclusion is drawn, because that account may have room. When some machines didn't answer, the notice says it covers only the machines that answered.
+Each notice has "Ask the agent about this". The dashboard line saying a sign-in was being checked and there was nothing to do is also gone; that sign-in still shows on its own row. When a reading is missing for an account that is signed in, no "out of room" conclusion is drawn, because that account may have room. When some machines didn't answer, the notice says it covers only the machines that answered.
 
 **Where the rule lives.** The server works out the notices for the phone. The dashboard works them out in its own page code with the same rules, because it reads the raw account list. Tests pin both.
 

@@ -41,7 +41,9 @@ describe('accounts page model', () => {
     expect(noIncident.needs).toHaveLength(0);
     expect(noIncident.headline).not.toContain('needs you');
     expect(noIncident.accounts[0].cells[0]).toMatchObject({ state: 'waiting', label: 'sign-in not confirmed; still checking' });
-    expect(noIncident.sub).toContain('nothing for you to do yet');
+    // Shown on its row only; no "nothing for you to do" line at the top.
+    expect(noIncident.sub).toBe('');
+    expect(noIncident.notices).toEqual([]);
     const blocked = buildAccountsPage(ok({ accounts: [row({ status: 'needs-reauth' })] }), NOW, { blockers: [{ accountId: 'luna', machineId: 'm1', reason: 'profile-unresolved' }] });
     expect(blocked.needs).toHaveLength(0);
     expect(blocked.accounts[0].cells[0].label).toBe("automatic repair can't start yet");
