@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const PRIOR_SHIPPED_SLACK_RELAY_SHA256 = new Set([
+  // Before JSON encoding avoided Bash here-string temporary files (owner live proof).
+  'f16111eb9d39140c59199608fb040e9638033675e7029abf35cba559a9723dde',
   // Every historical repository-shipped template before the session-bound
   // neutral relay (PR #1518). Append-only: hashes are overwrite authority.
   '1813442032e435e4ecbf01467510e39a33c3feb3acb1407307c5569a65f30305',

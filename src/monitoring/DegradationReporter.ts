@@ -34,6 +34,7 @@ import { detectJargon } from '../core/JargonDetector.js';
 import type { MessagingToneGate } from '../core/MessagingToneGate.js';
 import { Redactor } from './Redactor.js';
 import { featureEvidence } from './FeatureEvidenceLog.js';
+import { healthChoiceStoreFor } from './healthChoices.js';
 import { ErrorCodeExtractor, type ErrorProvenance } from './ErrorCodeExtractor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
@@ -197,6 +198,12 @@ interface OpenDegradation {
   lastEscalatedAt: number | null;
 }
 
+/** The two answers the reporter needs from the person's choices. HealthChoiceStore is the real one. */
+export interface DegradationIssuePolicy {
+  isIgnored(feature: string): boolean;
+  hidesNow(feature: string): boolean;
+}
+
 export class DegradationReporter {
   private static instance: DegradationReporter | null = null;
 
@@ -209,6 +216,8 @@ export class DegradationReporter {
   static readonly HEALTH_WINDOW_MS = 30 * 60 * 1000;
 
   private events: DegradationEvent[] = [];
+  private issuePolicy: DegradationIssuePolicy | null = null;
+  private readonly ignoredNoted = new Set<string>();
   /** Reentrancy guard for gateHealthAlert (event-loop WEDGE fix, 2026-06-21). */
   private _gatingHealthAlert = false;
   /**
@@ -300,6 +309,26 @@ export class DegradationReporter {
     this.stateDir = opts.stateDir;
     this.agentName = opts.agentName;
     this.instarVersion = opts.instarVersion;
+    // Before any feature can report: what the person chose survives a restart from the first event on.
+    this.issuePolicy = this.issuePolicy ?? healthChoiceStoreFor(opts.stateDir);
+  }
+
+  /**
+   * What the person chose to do about one problem (docs/specs/health-quick-actions.md). `isIgnored`: the agent
+   * stops tracking this exact feature. `hidesNow`: don't bring it to the person, but keep recording it.
+   */
+  setIssuePolicy(policy: DegradationIssuePolicy | null): void {
+    this.issuePolicy = policy;
+  }
+
+  /** A policy that fails is treated as no choice made, so a problem can only stay in view. */
+  isIgnored(feature: string): boolean {
+    try { return this.issuePolicy?.isIgnored(feature) === true; } catch { return false; } // @silent-fallback-ok — the event is recorded and reported as usual
+  }
+
+  /** While hidden, the daily digest must not raise it. Read-time, so it's raised normally once a snooze ends. */
+  isHidden(feature: string): boolean {
+    try { return this.issuePolicy?.hidesNow(feature) === true; } catch { return false; } // @silent-fallback-ok — the person is told as usual
   }
 
   /**
@@ -484,6 +513,8 @@ export class DegradationReporter {
    * compat). RestartPending re-routes everything to the durable queue.
    */
   report(event: Omit<DegradationEvent, 'timestamp' | 'reported' | 'alerted'>): void {
+    // The person chose to stop tracking this: no record, no alert, no feedback, no remediation.
+    if (this.isIgnored(event.feature)) { this.noteIgnored(event.feature); return; }
     const full: DegradationEvent = {
       ...event,
       timestamp: new Date().toISOString(),
@@ -547,6 +578,7 @@ export class DegradationReporter {
    *   is intentional, since structured callers bypass the legacy alert path.
    */
   reportStructured(event: NormalizedDegradationEvent): void {
+    if (this.isIgnored(event.subsystem)) { this.noteIgnored(event.subsystem); return; }
     const stamped: NormalizedDegradationEvent = {
       ...event,
       // Preserve caller-provided timestamp/monotonicTs if present; fill if not.
@@ -677,7 +709,7 @@ export class DegradationReporter {
    * Get all degradation events (for health check API).
    */
   getEvents(): DegradationEvent[] {
-    return [...this.events];
+    return this.events.filter((e) => !this.isIgnored(e.feature));
   }
 
   /**
@@ -696,6 +728,7 @@ export class DegradationReporter {
   ): DegradationEvent[] {
     const cutoff = now - windowMs;
     return this.events.filter((e) => {
+      if (this.isIgnored(e.feature)) return false; // undoing an Ignore brings a still-recent event back
       const t = Date.parse(e.timestamp);
       return Number.isNaN(t) || t >= cutoff;
     });
@@ -736,7 +769,7 @@ export class DegradationReporter {
    * Get unreported events (for monitoring).
    */
   getUnreportedEvents(): DegradationEvent[] {
-    return this.events.filter(e => !e.reported);
+    return this.events.filter(e => !e.reported && !this.isHidden(e.feature));
   }
 
   /**
@@ -771,10 +804,17 @@ export class DegradationReporter {
    * Check if any degradations have occurred.
    */
   hasDegradations(): boolean {
-    return this.events.length > 0;
+    return this.events.some((e) => !this.isIgnored(e.feature));
   }
 
   // ── Internal ──────────────────────────────────────────────
+
+  /** The one trace of an ignored problem: a log line, the first time this run. */
+  private noteIgnored(feature: string): void {
+    if (this.ignoredNoted.has(feature)) return;
+    this.ignoredNoted.add(feature);
+    console.warn(`[DEGRADATION-IGNORED] ${feature}: the person chose to stop tracking this. Not recorded from now on.`);
+  }
 
   private async reportEvent(event: DegradationEvent): Promise<void> {
     // Submit to feedback system
@@ -829,6 +869,9 @@ export class DegradationReporter {
           console.warn(
             `[DEGRADATION] ${event.feature}: self-heal succeeded after ${healResult.attempts} attempt(s); user alert suppressed.`
           );
+        } else if (this.isHidden(event.feature)) {
+          // Hidden by the person: still recorded, filed and repaired above, but not brought to them.
+          event.alerted = true;
         } else {
           // Compose the narrative, route it through the tone gate with
           // health-alert signals, fall back to the safe template if blocked.

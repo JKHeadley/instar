@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "measurement-subjects",
+  "sessionId": "30384209-0957-44f8-9037-d33d452ffbc6",
+  "timestamp": "2026-11-06T05:37:15.015Z",
+  "artifactPath": "upgrades/side-effects/measurement-subjects.md",
+  "artifactSha256": "8dfb3c747d234d4ab2dbb9de2ee381877d5842a807562e94693b249c6b6f96f1",
+  "coveredFiles": [
+    "docs/specs/measurement-subjects.eli16.md",
+    "docs/specs/measurement-subjects.md",
+    "src/server/measurementCoverageRead.ts",
+    "tests/e2e/maturation-board-alive.test.ts",
+    "tests/integration/maturation-board-route.test.ts",
+    "upgrades/side-effects/measurement-subjects.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible correction preserves malformed generic owner declarations before ladder precedence; same independent collector, no new authority or state migration. Three red-to-green integration cases and actual production-route E2E.",
+  "eli16Path": "docs/specs/measurement-subjects.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/measurement-subjects.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

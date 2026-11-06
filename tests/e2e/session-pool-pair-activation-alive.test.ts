@@ -47,7 +47,12 @@ describe('a single-machine agent', () => {
 describe('wiring', () => {
   it('the decision runs before the joiner is stored', () => {
     expect(routes.indexOf('decideInviterPairActivation({')).toBeLessThan(routes.indexOf('storeRemoteIdentity(acceptedMachineIdentity'));
-    expect(routes.indexOf('decideInviterPairActivation({')).toBeGreaterThan(routes.indexOf("router.post('/api/pair'"));
+    // The pairing route delegates to handlePair, so the decision must sit inside that handler.
+    const handler = routes.indexOf('const handlePair = async');
+    expect(handler).toBeGreaterThan(-1);
+    expect(routes.indexOf('decideInviterPairActivation({')).toBeGreaterThan(handler);
+    expect(routes.indexOf('decideInviterPairActivation({')).toBeLessThan(routes.indexOf("router.post('/api/pair'"));
+    expect(routes.slice(routes.indexOf("router.post('/api/pair'")).slice(0, 200)).toContain('handlePair(req, res)');
   });
   it('the joiner writes before its first boot, and before it records the peer', () => {
     expect(joinFlow.indexOf('applyJoinerPairActivation({')).toBeLessThan(joinFlow.indexOf('mgr.storeRemoteIdentity(result.machineIdentity)'));

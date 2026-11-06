@@ -18,6 +18,7 @@
  * explicit null, in which case asking the agent is the path.
  */
 import { scrubSecrets } from './scrubSecrets.js';
+import { offerFor, type HealthChoiceMode, type HealthHiddenRow } from './healthChoices.js';
 
 export type HealthImpact = 'user-affecting' | 'internal' | 'unclassified';
 export type HealthVerdict = 'healthy' | 'running' | 'unsure' | 'attention';
@@ -57,6 +58,24 @@ export interface HealthIssue {
   action: HealthAction | null;
   /** The message "Ask the agent about this" starts from. */
   ask: string;
+  /** The exact ids behind this row. A choice binds to these, never to a family. */
+  keys: string[];
+  /** What the person can do about it (docs/specs/health-quick-actions.md). Empty when nothing is offered. */
+  choices: HealthChoiceMode[];
+  /** The one sentence Ignore's confirmation shows. */
+  ignoreSays: string | null;
+  /** Why a choice isn't offered. */
+  choiceNote: string | null;
+  /** Said when it's showing again after being hidden for a while. */
+  returnNote: string | null;
+}
+
+/** The person's choices, as a read needs them. HealthChoiceStore is the real one. */
+export interface HealthChoiceView {
+  hidesNow(key: string): boolean;
+  returnNote(key: string): string | null;
+  hiddenRows(present: ReadonlySet<string>): HealthHiddenRow[];
+  observe(present: ReadonlySet<string>): void;
 }
 
 export interface HealthIssuesSummary {
@@ -66,6 +85,8 @@ export interface HealthIssuesSummary {
   counts: { userAffecting: number; internal: number; unclassified: number };
   issues: HealthIssue[];
   truncated: boolean;
+  /** What the person hid. Never counted above. */
+  hidden: HealthHiddenRow[];
 }
 
 export const MAX_HEALTH_ISSUES = 40;
@@ -200,6 +221,7 @@ export function summarizeHealth(
   health: unknown,
   events: ReadonlyArray<{ feature?: unknown; timestamp?: unknown; internalOnly?: unknown; narrative?: unknown }>,
   current: HealthCurrentState = {},
+  choices?: HealthChoiceView,
 ): HealthIssuesSummary {
   const h = rec(health);
   // iMessage fails once at startup and is never retried, so its event ages out of the window while it stays down.
@@ -218,8 +240,15 @@ export function summarizeHealth(
     ...signalsFromHealth(health),
     ...(current.iMessage === 'down' ? [{ id: 'iMessage', evidence: events.find((e) => e.feature === 'iMessage')?.narrative as string | undefined ?? null, at: (events.find((e) => e.feature === 'iMessage')?.timestamp as string | undefined) ?? null }] : []),
   ];
+  // What's happening now, hidden or not: the choices note what stopped and what came back.
+  const present = new Set(signals.map((s) => s.id));
+  choices?.observe(present);
+  const hidden = choices?.hiddenRows(present) ?? [];
   const groups = new Map<string, HealthIssue>();
+  let hidNow = false;
   for (const s of signals) {
+    // By exact id: a different problem in the same family still shows.
+    if (choices?.hidesNow(s.id)) { hidNow = true; continue; }
     const rule = ruleFor(s.id);
     const key = rule?.key ?? s.id;
     // A reporter's own `internalOnly` mark counts as a declaration. It can only quieten an unnamed id, never a row.
@@ -231,6 +260,8 @@ export function summarizeHealth(
     const evidence = text(s.evidence, EVIDENCE_MAX);
     if (seen) {
       seen.count += 1;
+      if (!seen.keys.includes(s.id)) seen.keys.push(s.id);
+      seen.returnNote = seen.returnNote ?? choices?.returnNote(s.id) ?? null;
       if (s.at && (!seen.lastAt || s.at > seen.lastAt)) {
         seen.lastAt = s.at;
         seen.evidence = evidence ?? seen.evidence;
@@ -249,27 +280,37 @@ export function summarizeHealth(
       lastAt: s.at ?? null,
       action: rule?.action ?? null,
       ask: askFor(title, s.id),
+      keys: [s.id],
+      choices: [],
+      ignoreSays: null,
+      choiceNote: null,
+      returnNote: choices?.returnNote(s.id) ?? null,
     });
   }
   // /health says something is wrong and nothing above explains it: say so, never read as healthy.
   // Not when the only reason was an iMessage event the present state just cleared.
   const cleared = known && current.iMessage !== 'down' && events.some((e) => e.feature === 'iMessage');
-  if (h.status !== 'ok' && h.status !== 'healthy' && groups.size === 0 && !cleared) {
+  if (h.status !== 'ok' && h.status !== 'healthy' && groups.size === 0 && !cleared && !hidNow) {
     const title = 'The agent reports a problem I can’t name';
-    groups.set('health:unnamed', { id: 'health:unnamed', impact: 'unclassified', title, detail: 'The health check says something is off but didn’t say what. Ask me and I’ll look into it.', evidence: null, count: 1, lastAt: null, action: null, ask: askFor(title, 'health:unnamed') });
+    groups.set('health:unnamed', { id: 'health:unnamed', impact: 'unclassified', title, detail: 'The health check says something is off but didn’t say what. Ask me and I’ll look into it.', evidence: null, count: 1, lastAt: null, action: null, ask: askFor(title, 'health:unnamed'), keys: ['health:unnamed'], choices: [], ignoreSays: null, choiceNote: null, returnNote: null });
   }
+  for (const g of groups.values()) Object.assign(g, offerFor(g.keys, g.impact === 'unclassified'));
   const all = [...groups.values()].sort((a, b) => IMPACT_ORDER[a.impact] - IMPACT_ORDER[b.impact] || (b.lastAt ?? '').localeCompare(a.lastAt ?? '') || a.id.localeCompare(b.id));
   const counts = {
     userAffecting: all.filter((i) => i.impact === 'user-affecting').length,
     internal: all.filter((i) => i.impact === 'internal').length,
     unclassified: all.filter((i) => i.impact === 'unclassified').length,
   };
-  const verdict: HealthVerdict = counts.userAffecting > 0 ? 'attention' : counts.unclassified > 0 ? 'unsure' : counts.internal > 0 ? 'running' : 'healthy';
+  // A hidden problem that's happening, or one nobody is tracking, is never "healthy". It doesn't raise anything either.
+  const unseen = hidden.filter((r) => r.happening !== false).length;
+  const verdict: HealthVerdict = counts.userAffecting > 0 ? 'attention' : counts.unclassified > 0 ? 'unsure' : counts.internal > 0 || unseen > 0 ? 'running' : 'healthy';
   const headline = verdict === 'attention'
     ? (counts.userAffecting === 1 ? all[0].title + '.' : `${counts.userAffecting} problems are affecting you.`)
     : verdict === 'unsure'
       ? (counts.unclassified === 1 ? 'Running, with one thing I haven’t sorted yet.' : `Running, with ${counts.unclassified} things I haven’t sorted yet.`)
-      : verdict === 'running' ? 'Running normally.' : 'Healthy.';
+      : verdict === 'running'
+        ? (unseen === 0 ? 'Running normally.' : unseen === 1 ? 'Running, with one thing you’ve hidden.' : `Running, with ${unseen} things you’ve hidden.`)
+        : 'Healthy.';
   return {
     verdict,
     headline,
@@ -277,6 +318,7 @@ export function summarizeHealth(
     counts,
     issues: all.slice(0, MAX_HEALTH_ISSUES),
     truncated: all.length > MAX_HEALTH_ISSUES,
+    hidden,
   };
 }
 

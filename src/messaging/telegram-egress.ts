@@ -44,6 +44,7 @@
  * the control that matters. Stated so the next reader can disagree with the judgment rather than
  * discover the gap.
  */
+import { Agent } from 'undici';
 import { dispatchOriginBotEgress } from './telegram-origin/OriginBotEgress.js';
 import { OriginTransportCancelledBeforeNetwork, OriginTransportUnsent, provedUnsentCode } from './telegram-origin/OriginTransportCancellation.js';
 import { OriginCapacityUnavailable } from './telegram-origin/OriginEgressCapacity.js';
@@ -55,6 +56,19 @@ import {
   readerVisibleFieldsFor,
   NO_READER_VISIBLE_FIELD_TELEGRAM_METHODS,
 } from './invisible-payload.js';
+
+/**
+ * How long Node waits on one address before trying the next. api.telegram.org has one IPv4 and one
+ * IPv6 address. The default of 250 ms is about one round trip here (160-190 ms), and it is a timer in
+ * this process: if the event loop pauses past it, the timer runs before the finished connect is seen.
+ * With no IPv6 route the second address fails at once and the send fails with ETIMEDOUT while the
+ * network is fine. Measured 2026-11-05 through fetch: 10 of 10 failed with a 400 ms pause at the
+ * default, and 0 of 6 failed with a 1500 ms pause at this value. The dispatcher keeps this to Bot API
+ * requests, so a host elsewhere that drops its first address keeps its fast fallback. undici's own
+ * connect timeout still bounds the whole connect.
+ */
+export const TELEGRAM_CONNECT_ATTEMPT_TIMEOUT_MS = 5_000;
+const telegramDispatcher = new Agent({ connect: { autoSelectFamily: true, autoSelectFamilyAttemptTimeout: TELEGRAM_CONNECT_ATTEMPT_TIMEOUT_MS } as Agent.Options['connect'] });
 
 /**
  * Any Bot API URL — `api.telegram.org/bot<token>/<method>`. Case-INSENSITIVE: a hostname is
@@ -520,7 +534,7 @@ export async function telegramFetch(
       networkInit = { ...networkInit, signal: networkInit.signal
         ? AbortSignal.any([networkInit.signal, deadline]) : deadline };
     }
-    try { return await fetch(networkUrl, networkInit); }
+    try { return await fetch(networkUrl, { ...networkInit, dispatcher: telegramDispatcher } as RequestInit); }
     catch (error) {
       // A caller can reuse an earlier known-unsent error as abort(reason).
       // Once fetch was invoked even that same object is no longer proof.

@@ -44,7 +44,7 @@ import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { registryMirrorPaths } from './standardsRegistryPath.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
-import { ensureInstarBashPreToolUseHooks, ensureInstarWildcardPreToolUseHooks, type SettingsMatcherEntry } from './instarSettingsHooks.js';
+import { ensureInstarBashPreToolUseHooks, ensureInstarWildcardPreToolUseHooks, ensureInstarWritePreToolUseHooks, type SettingsMatcherEntry } from './instarSettingsHooks.js';
 import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotlightExclusion, ensureClaudeTranscriptSpotlightExclusion, ensureAgentDataSpotlightExclusion } from './InstarWorktreeManager.js';
 import { classifyTccProtectedPath, describeTccProtectedPath } from './TccProtectedPathGuard.js';
 import { fileURLToPath } from 'node:url';
@@ -129,7 +129,7 @@ import { getDefaultJobs, installBuiltinSkills, installBrowserScripts } from '../
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { recordInstallProvenanceIfAbsent, hasInstallProvenanceRecord } from './ApprenticeshipStallGate.js';
 import { IdentityManager } from '../threadline/client/IdentityManager.js';
-import { installAutoStart, installBootWrapper, SYSTEMD_KILL_MODE_LINE, systemdUnitNeedsStableStart } from '../commands/setup.js';
+import { installAutoStart, installBootWrapper, SYSTEMD_KILL_MODE_LINE, SYSTEMD_SUPERVISED_ENV_LINE, systemdUnitNeedsStableStart } from '../commands/setup.js';
 import { autoStartRefusalReason, takeLastAutoStartRefusal } from './ThrowawayAgentGuard.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 import { jobsMigrate } from '../commands/jobMigrate.js';
@@ -203,6 +203,20 @@ export function addSystemdKillModeProcess(unit: string): string {
   if (!m) return unit;
   const at = m.index + m[0].length;
   return `${unit.slice(0, at)}${SYSTEMD_KILL_MODE_LINE}\n${unit.slice(at)}`;
+}
+
+/**
+ * Add `Environment=INSTAR_SUPERVISED=1` to a systemd unit's [Service] section, leaving the
+ * rest byte-identical (the inserted line uses the file's own line ending). A unit that already
+ * names INSTAR_SUPERVISED in any Environment= line is returned untouched, so an operator value,
+ * including 0, wins and a re-run is a no-op. A unit with no [Service] section is not ours.
+ */
+export function addSystemdSupervisedEnv(unit: string): string {
+  if (/^\s*Environment\s*=.*\bINSTAR_SUPERVISED=/m.test(unit)) return unit;
+  const m = /^\[Service\][ \t]*(\r?\n)/m.exec(unit);
+  if (!m) return unit;
+  const at = m.index + m[0].length;
+  return `${unit.slice(0, at)}${SYSTEMD_SUPERVISED_ENV_LINE}${m[1]}${unit.slice(at)}`;
 }
 
 export const LAUNCHD_PROCESS_CEILING_FLOOR = 2048;
@@ -826,6 +840,19 @@ export const TONE_ADVISORY_FLAG_POSITION_CLAUDEMD_SECTION = `- **How to send the
   \`\`\`
   Use \`--tone-complied <RULE>\` instead of \`--tone-ack\`/\`--tone-reason\` when you agreed and revised. A flag in the wrong position is now REFUSED (it used to be sent to the user as literal text with its effect silently dropped, which is exactly how a correct check once got graded \`wrong\`). If such a token is genuinely part of your message, pipe the text on stdin — the check only inspects arguments.`;
 
+export const ATTRIBUTION_CLAUDEMD_SECTION = `## Attribution paper trail (who said this, and how did it change?)
+
+Anything I credit to a person, in my memory, notes, rules or messages, either points at the logged message it came from or says plainly that it has no source. A note that said "Justin corrected me" with no pointer can harden over months into "his standing rule" and refuse real work on words he never said; this is what stops that.
+
+- **Sourced:** the person's exact words in quotes, then a marker on the same line: \`Name: "exact words" [source: telegram 102965/123160 2026-10-08]\`. The format is \`[source: <channel> <conversation>/<message> <YYYY-MM-DD>]\`, the date being the record's UTC date; channels are telegram, slack, imessage, whatsapp, app, threadline.
+- **Unsourced:** \`[source unknown]\`, or \`[my inference]\` for my own conclusion. **A label removes the credit; it does not decorate it.** \`Name's standing rule: X [source unknown]\` still credits them and is refused. \`X. An earlier note credited this to Name; source unknown. [source unknown]\` passes.
+- **Who said this?** (Registry First) \`curl -H "Authorization: Bearer $AUTH" "http://localhost:\${port}/attribution/trace?q=<words>"\` (or \`?claim=<id>\`, \`?channel=&conversation=&message=&date=\`) → the origin record, then every wording in order, across my machines, with a \`failed\` list. \`GET /attribution/resolve?marker=<marker>\` checks one citation; \`GET /attribution/find?person=&claim=\` suggests sources and never writes one.
+- **Outcomes stay distinct:** \`found\`, \`pinned-copy\` (no longer in the log), \`not-found\` (not on any live machine, never "false"), \`unverifiable\` (older than a log, or in a declared gap), \`unreachable\` (a machine did not answer), \`removed\` (the person deleted it).
+- **The write gate:** a PreToolUse hook checks changed lines in my memory folder, MEMORY.md, USER.md, AGENT.md, \`.claude/rules\` and my part of CLAUDE.md. A refusal shows the failing lines and the two honest ways through. On any error or timeout it passes, counted.
+- **Status:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:\${port}/attribution/status\` → mode, budgets, hook timeouts, \`unchecked\` counts, judge error rate, and the daily report. Zero refusals with a healthy count means it is working; check the counts before reading silence as success. 503 means the feature is dark on this agent; say so. \`POST /attribution/audit\` runs the report now.
+- **Modes:** \`record\` (the default where it is live) refuses nothing, and its verdicts measure what enforcement would hold. \`enforce\` refuses note writes and turns on the send nudge \`B23_UNSOURCED_ATTRIBUTION\`, which also catches a refusal resting on an unsourced rule whether or not it names anyone ("that's a standing rule, so no"). React to that nudge like any other: revise with \`--tone-complied B23_UNSOURCED_ATTRIBUTION\`, or \`--tone-ack\` with the reason; if the rule is mine, say so.
+- **The daily report writes nothing to any note.** Fixing one is a normal edit that passes the same check. **When to use** (PROACTIVE): before I say "you told me", "your rule" or "we agreed", or refuse work on a rule, I find the source or say it is my own. When someone asks "did I say that?" or "where did that rule come from?", I run the trace and show the chain.`;
+
 export const SURFACE_REFERRAL_CLAUDEMD_SECTION = `**Sending the operator to a page: link, words, and look first.** A message that sends the operator to a dashboard, console or app page carries a direct link and the exact words they will see there in quotes, and I load that link at their screen size (1280x728 and 390x844) and read the first screen before sending. The outbound gate nudges (\`B22_SURFACE_REFERRAL\`) until that holds: after loading the page, resend with \`--tone-complied B22_SURFACE_REFERRAL\` (its flags go before the topic id). If it cannot be loaded from here, override with \`--tone-ack\` and the reason. Anything that needs the operator also belongs on the first screen of its page and in Home's count, through \`dashboard/console/needs-model.js\`.`;
 export const TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION = `**File-path feedback is always a NUDGE, never a wall; most other checks become nudges under the advisory migration.** B2_FILE_PATH is advisory on every agent (operator decision 2026-09-03): file paths are sometimes necessary and acceptable, so the check may suggest clearer wording but must accept an explicit override even when decision-quality recording is unavailable. For the other eligible judgment rules, \`toneGate.advisoryMigration\` remains dev-gated live / fleet-dark. A nudge returns \`422 tone-gate-advisory\` with \`notSent: true\` and a \`decisionRef\` when available — the message is handed back to YOU, not dropped. Two ways forward, and **both are recorded when the evidence seam is available**:
 - **You agree** → revise and re-send with \`metadata.toneAdvisoryComplied: "<RULE>"\` + \`metadata.toneAdvisoryDecisionRef: "<decisionRef>"\` → the check is graded \`right\`.
@@ -1103,6 +1130,14 @@ export function MOBILE_SECRETS_WRITES_LINE(port: number): string {
 }
 export const MOBILE_SECRETS_WRITES_MARKER = 'POST /mobile/secrets/requests/<key>/cancel';
 /**
+ * The session screen's controls (docs/specs/mobile-native-session-controls.md), one bullet after the health
+ * quick actions bullet. Sniff: `GET /mobile/sessions/controls`.
+ */
+export function MOBILE_SESSION_CONTROLS_LINE(port: number): string {
+  return `- The app's session screen has the dashboard's controls: a menu reading \`GET /mobile/sessions/controls\` on http://localhost:${port} (machine, door, model, what each can do and why not), keys and Stop (\`POST /sessions/<name>/key\`), attaching a file (\`POST /sessions/<name>/attachments\`), History (\`GET /mobile/sessions/history\`), and sessions on other machines through the machine the phone reached. Switching door and model, moving to another machine, closing, starting a session and setting the default for new topics each take Face ID (\`POST /mobile/sessions/door/<topic>\`, \`/move/<topic>\`, \`/close/<id>\`, \`/new\`, \`/default\`, behind \`mobilePairing.permissionActions\`) and run the dashboard's own routes, so their rules and refusals stay. When the operator asks "why can't I change this from my phone?", read the same answer: the menu's \`door.reason\`, \`move.reason\` and \`actions.reason\`.`;
+}
+export const MOBILE_SESSION_CONTROLS_MARKER = 'GET /mobile/sessions/controls';
+/**
  * The native Proposals / How I'm doing inside screens (docs/specs/mobile-native-proposals-inside.md),
  * one bullet in the Mobile app routes block after the permissions bullet. Sniff: `GET /mobile/proposals`.
  */
@@ -1127,6 +1162,16 @@ export function MOBILE_HEALTH_ISSUES_LINE(port: number): string {
   return `- The app's Fleet and Machines and health screens and the console read \`GET /mobile/health-issues\` (\`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/health-issues\`): why \`/health\` says degraded, each reason sorted into \`user-affecting\`, \`internal\` or \`unclassified\` from the declared table in \`src/monitoring/healthIssues.ts\`, with plain words, details, a next step and the message "Ask the agent about this" starts from. Owner phone or bearer, read-only. Verdicts: \`attention\`, \`unsure\`, \`running\`, \`healthy\`. An id the table doesn't name is \`unclassified\`: it shows in the details and never reads as healthy. **When to use** (PROACTIVE): "why does it say degraded?" → read this before answering, and answer in its words. When the person asks about a \`reference:\` id from this page, look at \`/health/degradations\` for that feature and say what happened and what to do.`;
 }
 export const MOBILE_HEALTH_ISSUES_MARKER = 'GET /mobile/health-issues';
+
+/**
+ * The person's quick actions on a health problem (docs/specs/health-quick-actions.md), one bullet after the
+ * health reading bullet. Sniff: `POST /mobile/health-issues/choices`.
+ */
+export function MOBILE_HEALTH_CHOICES_LINE(port: number): string {
+  return `- On each problem the person can Hide for a while (1 hour, 1 day or 1 week), Hide from me (they stop seeing it, I keep tracking it) or Ignore completely (I stop tracking it): \`POST /mobile/health-issues/choices\` with \`{"id":"<issue id>","choice":"snooze","hours":24}\`, and \`POST /mobile/health-issues/choices/undo\` with \`{"key":"<hidden key>"}\`; what's hidden is the \`hidden\` list in \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/health-issues\`. Hidden items never raise a count. Security and data-loss items only get Hide for a while, and a live reading can't be ignored because other parts of me depend on it. **When to use** (PROACTIVE): the person says "stop showing me that" or "ignore this" → it's their tap in the app or the console, or do it for them when they ask. These choices are theirs: never hide or ignore a problem on my own, because that silences what they rely on me to show them. The Hidden list says who did it.`;
+}
+
+export const MOBILE_HEALTH_CHOICES_MARKER = 'POST /mobile/health-issues/choices';
 export const MOBILE_ROUTES_PROBE_LINE_PREFIX = '- A probe that fails 8 times in a row pauses for that name';
 
 /** The increment-1 wording of the verdict bullet's tail, replaced in place on update. */
@@ -1260,6 +1305,8 @@ ${MOBILE_SECRETS_LINE(port)}
 ${MOBILE_SECRETS_WRITES_LINE(port)}
 ${MOBILE_CONSOLE_PAGES_LINE(port)}
 ${MOBILE_HEALTH_ISSUES_LINE(port)}
+${MOBILE_HEALTH_CHOICES_LINE(port)}
+${MOBILE_SESSION_CONTROLS_LINE(port)}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }
@@ -2396,7 +2443,7 @@ const CONTEXT_DEATH_MARKER_ID = 'INSTAR:ANTI-PATTERN-CONTEXT-DEATH';
 
 export const POOL_MOVE_NUDGE_CLAUDE_MD_LINE = `- **Why a message waited after a move:** after a move, the old machine tells the others to check for the new owner, so this should take seconds. If someone asks why a message waited, read the \`multiMachine.sessionPool.moveNudge\` rows in \`logs/feature-evidence.jsonl\`: each says whether the machine caught up and how long it took. A missing or \`not-reached\` row means the normal 30-second check delivered it instead, and nothing was lost.`;
 
-export const POOL_READINESS_CLAUDE_MD_LINE = `- **Pool readiness:** can this agent move conversations between machines, or take over if a machine dies? \`GET /session-pool/readiness\` answers line by line per peer: contact, clock, capacity, no start failure seen, channels, follow-ups, plus this machine's takeover, ownership and duplicate check. Each is \`ok\`, \`failing\` or \`unknown\`. It only reports: ready means the known prerequisites look met, not that a real conversation has been placed. History is in \`logs/pool-readiness.jsonl\` on agents with 2 or more machines. Takeover reads \`failing\` on a machine using the git lease with no git remote, because it cannot take over yet. When the user asks "would my conversations work on the other machine?" or "what happens if this machine dies?" → read this before answering.`;
+export const POOL_READINESS_CLAUDE_MD_LINE = `- **Pool readiness:** can this agent move conversations between machines, or take over if a machine dies? \`GET /session-pool/readiness\` answers line by line per peer: contact, clock, capacity, no start failure seen, channels, follow-ups, plus this machine's takeover, ownership and duplicate check. Each is \`ok\`, \`failing\` or \`unknown\`. It only reports: ready means the known prerequisites look met, not that a real conversation has been placed. History is in \`logs/pool-readiness.jsonl\` on agents with 2 or more machines. Takeover reads \`failing\` on a machine using the git lease with no git remote, because it cannot take over yet. Takeover reads \`unknown\` with a no-lasting-connection reason on a new pair that has not proved a connection surviving a restart: the first machine stays in charge, the spare waits, and conversations do not move. Tell the owner plainly, and that the fix is both machines on one network or Tailscale, then pairing again. When the user asks "would my conversations work on the other machine?" or "what happens if this machine dies?" → read this before answering.`;
 
 /**
  * Insert the context-death anti-pattern block into a CLAUDE.md string (end of
@@ -2619,6 +2666,7 @@ export class PostUpdateMigrator {
     this.migrateBootWrapperToCjs(result);
     this.migrateLaunchdProcessCeiling(result);
     this.migrateSystemdKillMode(result);
+    this.migrateSystemdSupervised(result);
     this.migrateSystemdStableStart(result);
     this.migrateBootWrapperAbiCheck(result);
     this.migrateStaleLifelineSignal(result);
@@ -4906,6 +4954,58 @@ export class PostUpdateMigrator {
         : 'systemd KillMode: set KillMode=process on disk; takes effect after `systemctl --user daemon-reload` or next login',
     );
   }
+  /**
+   * Give existing Linux installs `Environment=INSTAR_SUPERVISED=1` (Migration Parity Standard —
+   * the template fix in setup.ts only reaches NEW agents). The unit starts the bash boot wrapper,
+   * so the lifeline cannot see systemd as its parent and its watchdog never exits for a
+   * self-restart (spec: docs/specs/linux-lifeline-supervised.md). Surgical insert with a backup;
+   * an operator-set value is left alone. `daemon-reload` reloads the file; the running process
+   * keeps its environment until its next start. Nothing is restarted here.
+   */
+  private migrateSystemdSupervised(result: MigrationResult): void {
+    if (process.platform !== 'linux') {
+      result.skipped.push('systemd supervised: non-linux, no unit');
+      return;
+    }
+    const unitPath = path.join(
+      process.env.HOME ?? os.homedir(),
+      '.config', 'systemd', 'user',
+      `instar-${this.config.projectName}.service`,
+    );
+    let content: string;
+    try {
+      content = fs.readFileSync(unitPath, 'utf-8');
+    } catch {
+      result.skipped.push('systemd supervised: no systemd unit present');
+      return;
+    }
+    const next = addSystemdSupervisedEnv(content);
+    if (next === content) {
+      result.skipped.push('systemd supervised: already declared (or no [Service] section)');
+      return;
+    }
+    try {
+      fs.writeFileSync(`${unitPath}.bak-${Date.now()}`, content, 'utf-8');
+      fs.writeFileSync(unitPath, next, 'utf-8');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      result.errors.push(`systemd supervised: ${msg}`);
+      return;
+    }
+    let reloaded = false;
+    if (!process.env.VITEST && !process.env.INSTAR_SKIP_LAUNCHCTL_LOAD) {
+      try {
+        withSyncOp(() => execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore', timeout: 10_000 }));
+        reloaded = true;
+      } catch { /* @silent-fallback-ok: reported below; the file is still fixed for the next manager start */ }
+    }
+    result.upgraded.push(
+      reloaded
+        ? 'systemd supervised: set INSTAR_SUPERVISED=1 (the lifeline can restart itself to recover; applies at its next start)'
+        : 'systemd supervised: set INSTAR_SUPERVISED=1 on disk; applies after `systemctl --user daemon-reload` or next login',
+    );
+  }
+
 
   // ── Conversational-action catalog Playbook manifest (v0.2) ─────────
   //
@@ -7396,6 +7496,13 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     }
 
     try {
+      fs.writeFileSync(path.join(instarHooksDir, 'attribution-gate.js'), this.getAttributionGateHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/attribution-gate.js (attribution write gate)');
+    } catch (err) {
+      result.errors.push(`attribution-gate.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'stop-gate-router.js'), this.getStopGateRouterHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/stop-gate-router.js (unjustified Stop gate router)');
     } catch (err) {
@@ -7536,6 +7643,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       'instructions-loaded-tracker.js', 'subagent-start-tracker.js',
       'free-text-guard.sh', 'claim-intercept.js', 'claim-intercept-response.js', 'response-review.js',
       'stop-gate-router.js',
+      'attribution-gate.js',
       'auto-approve-permissions.js',
     ];
 
@@ -9229,6 +9337,13 @@ setTimeout(() => process.exit(0), 2000);
     // Tone-gate advisory migration (operator approval 2026-07-19, topic 33368) —
     // operator-needs-first-screen §6: the B22 nudge needs its reaction flag known, or an agent
     // reads the nudge as a wall. Content-sniffed for idempotency.
+    // Attribution paper trail: Agent Awareness + Migration Parity. Content-sniffed for idempotency.
+    if (!content.includes('## Attribution paper trail')) {
+      content += `\n${ATTRIBUTION_CLAUDEMD_SECTION.replace(/\$\{port\}/g, String(port))}\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the attribution paper trail');
+    }
+
     if (!content.includes('Sending the operator to a page: link, words, and look first')) {
       content += `\n${SURFACE_REFERRAL_CLAUDEMD_SECTION}\n`;
       patched = true;
@@ -9887,6 +10002,7 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added the phone ask and cancel line');
     }
 
+
     // Native Proposals / How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): one bullet
     // after the permissions bullet of an existing Mobile app routes block (a block added below already has it).
     if (content.includes('Mobile app routes') && !content.includes(MOBILE_PROPOSALS_INSIDE_MARKER)) {
@@ -9934,6 +10050,36 @@ setTimeout(() => process.exit(0), 2000);
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added the owner health reading line');
+    }
+
+    // The quick actions on a health problem (docs/specs/health-quick-actions.md): one bullet after the reading.
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_HEALTH_CHOICES_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_HEALTH_ISSUES_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_HEALTH_CHOICES_LINE(port));
+        content = lines.join('\n');
+      } else {
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_HEALTH_CHOICES_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the health quick actions line');
+    }
+
+    // The session screen's controls (docs/specs/mobile-native-session-controls.md): one bullet after the
+    // health quick actions bullet of an existing Mobile app routes block (a block added below already has it).
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_SESSION_CONTROLS_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_HEALTH_CHOICES_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_SESSION_CONTROLS_LINE(port));
+        content = lines.join('\n');
+      } else {
+        // A block without that bullet: append the line rather than skip it.
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_SESSION_CONTROLS_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the session screen controls line');
     }
 
     // Mobile app routes (docs/specs/mobile-multi-route.md) — Agent Awareness + Migration Parity.
@@ -12542,6 +12688,12 @@ ${OVERLOAD_SHED_CLAUDE_MD_LINE}
 
     // session-pool-default-on step 1: agents that carry the pool section learn the readiness
     // report. Idempotent via the unique '**Pool readiness:**' marker.
+    // session-pool-takeover-at-pairing: an older copy of the line gets the current text.
+    if (content.includes('**Pool readiness:**') && !content.includes('no-lasting-connection reason')) {
+      content = content.replace(/^- \*\*Pool readiness:\*\*.*$/m, () => POOL_READINESS_CLAUDE_MD_LINE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated pool readiness line');
+    }
     if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('**Pool readiness:**')) {
       content += '\n' + POOL_READINESS_CLAUDE_MD_LINE + '\n';
       patched = true;
@@ -16309,6 +16461,17 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       }
     }
 
+    // The attribution write gate (docs/specs/attribution-paper-trail.md). Same shared function init.ts
+    // calls. It restricts nobody by arriving: the route answers 503 while the feature is dark, `record`
+    // refuses nothing, and `enforce` is opt-in.
+    {
+      const added = ensureInstarWritePreToolUseHooks(preToolUse as SettingsMatcherEntry[]);
+      if (added.length > 0) {
+        patched = true;
+        for (const fname of added) result.upgraded.push(`.claude/settings.json: added PreToolUse Write|Edit|MultiEdit ${fname} hook`);
+      }
+    }
+
     // Ensure PreToolUse Bash slopcheck-guard hook exists (cherry-pick 2026-05-23).
     // Existing agents only get new Bash-matcher hooks through an explicit ensure
     // block here — there is no wholesale settings-template refresh on migration.
@@ -18137,7 +18300,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
+  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'attribution-gate' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
     switch (name) {
       case 'signin-profile-guard': return signinProfileGuardHook();
       case 'telegram-origin-guard': return originToolGuardHook();
@@ -18159,6 +18322,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       case 'telegram-topic-context': return this.getTelegramTopicContextHook();
       case 'response-review': return this.getResponseReviewHook();
       case 'stop-gate-router': return this.getStopGateRouterHook();
+      case 'attribution-gate': return this.getAttributionGateHook();
       case 'auto-approve-permissions': return this.getAutoApprovePermissionsHook();
       case 'skill-usage-telemetry': return this.getSkillUsageTelemetryHook();
       case 'build-stop-hook': return this.getBuildStopHook();
@@ -18507,7 +18671,27 @@ except Exception:
 fi
 
 MEM_PORT="\$PORT"; MEM_TOKEN="\$TOKEN"; MEM_EVENT="\$EVENT"
-${this.jevMemoryPickerHookStep()}# AUTO-LEARNED PREFERENCES injection — Correction & Preference Learning Sentinel
+${this.jevMemoryPickerHookStep()}# ATTRIBUTION BACKLOG — the daily report needs a reader. One line, only when the report holds
+# something. Fail-open: route 503 (feature dark) / unreachable / empty → silent skip.
+if [ -n "\$PORT" ] && [ -n "\$TOKEN" ]; then
+  ATTRIBUTION_LINE=\$(curl -sf --max-time 2 -H "Authorization: Bearer \$TOKEN" \\
+    "http://localhost:\${PORT}/attribution/status" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    line = json.load(sys.stdin).get('sessionLine')
+    if line:
+        print(line)
+except Exception:
+    pass
+" 2>/dev/null)
+  if [ -n "\$ATTRIBUTION_LINE" ]; then
+    echo ""
+    echo "\$ATTRIBUTION_LINE"
+    echo ""
+  fi
+fi
+
+# AUTO-LEARNED PREFERENCES injection — Correction & Preference Learning Sentinel
 # (Slice 1a). Fetches /preferences/session-context and injects the structured
 # block of preferences the correction loop has learned about this user, so the
 # agent reasons with them from message one. SIGNAL-ONLY — these are preferences,
@@ -22842,6 +23026,95 @@ if (!reviewEnabled) {
   }
 })();
 
+`;
+  }
+
+  private getAttributionGateHook(): string {
+    const port = this.config.port;
+    return `#!/usr/bin/env node
+// Attribution write gate (docs/specs/attribution-paper-trail.md).
+//
+// Thin client on the stop-gate-router pattern: the decision stays server-side. It exits at once for
+// any other tool or for a file out of scope (matched after realpath, since the memory folder is a
+// link; the server checks the scope again), and otherwise asks POST /attribution/check. In record
+// mode the server answers at once and this does not wait. On any error, timeout or 503 it passes:
+// only a server verdict that says blocked stops a write. Exit 2 is how Claude Code and Codex both
+// read a refusal, and the reason on stderr is what the agent sees.
+//
+// ESM-SAFE: dynamic import inside an async IIFE, so this runs in CJS and ESM host packages alike.
+
+(async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+  let raw = '';
+  for await (const chunk of process.stdin) raw += chunk;
+  const input = JSON.parse(raw);
+  const tool = String(input.tool_name || '').replace(/^functions\\./, '');
+  if (!['Write', 'Edit', 'MultiEdit', 'apply_patch'].includes(tool)) process.exit(0);
+  const toolInput = input.tool_input || {};
+
+  const paths = [];
+  if (typeof toolInput.file_path === 'string') paths.push(toolInput.file_path);
+  const patch = typeof toolInput.input === 'string' ? toolInput.input
+    : typeof toolInput.patch === 'string' ? toolInput.patch
+    : typeof toolInput.command === 'string' ? toolInput.command
+    : Array.isArray(toolInput.command) ? toolInput.command.join('\\n') : '';
+  for (const match of patch.matchAll(/^\\*\\*\\* (?:Add|Update) File: (.+)$/gm)) paths.push(match[1].trim());
+  if (paths.length === 0) process.exit(0);
+
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  let serverPort = ${port};
+  let authToken = process.env.INSTAR_AUTH_TOKEN || '';
+  let extraPaths = [];
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(projectDir, '.instar', 'config.json'), 'utf-8'));
+    serverPort = cfg.port || ${port};
+    if (!authToken && typeof cfg.authToken === 'string') authToken = cfg.authToken;
+    if (cfg.attribution && cfg.attribution.enabled === false) process.exit(0);
+    if (cfg.attribution && Array.isArray(cfg.attribution.paths)) extraPaths = cfg.attribution.paths.filter((p) => typeof p === 'string');
+  } catch {}
+
+  function real(target) {
+    const rest = [];
+    let current = path.resolve(projectDir, target);
+    for (;;) {
+      try { return path.join(fs.realpathSync(current), ...rest); } catch {}
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(projectDir, target);
+      rest.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+  const memorySegment = path.resolve(projectDir).replace(/[/.]/g, '-');
+  const roots = ['.instar/agent-memory', '.claude/rules', ...extraPaths.filter((p) => p.endsWith('/'))].map(real);
+  const files = ['.instar/MEMORY.md', '.instar/USER.md', '.instar/AGENT.md', 'CLAUDE.md', ...extraPaths.filter((p) => !p.endsWith('/'))].map(real);
+  const inScope = paths.some((target) => {
+    const resolved = real(target);
+    if (files.includes(resolved) || roots.some((root) => resolved === root || resolved.startsWith(root + path.sep))) return true;
+    const parts = resolved.split(path.sep);
+    const at = parts.indexOf('projects');
+    return at >= 0 && parts[at + 1] === memorySegment && parts[at + 2] === 'memory';
+  });
+  if (!inScope) process.exit(0);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  const response = await fetch('http://127.0.0.1:' + serverPort + '/attribution/check', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+    body: JSON.stringify({ toolName: tool, toolInput }),
+    signal: controller.signal,
+  });
+  clearTimeout(timer);
+  if (!response.ok) process.exit(0);
+  const answer = await response.json();
+  if (answer && answer.blocked === true) {
+    process.stderr.write(String(answer.reason || 'The attribution check refused this write.') + '\\n');
+    process.exit(2);
+  }
+  process.exit(0);
+})().catch(() => process.exit(0));
 `;
   }
 

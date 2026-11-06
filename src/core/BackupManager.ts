@@ -181,6 +181,8 @@ const DEFAULT_CONFIG: BackupConfig = {
     'state/recommended-services/',
     'state/offer-prerequisites/',
     'state/recommended-service-setup/',
+    // Attribution paper trail: a restore without pins would turn good citations into uncheckable ones.
+    'attribution/',
     // Integrated-Being v1 (gated by config.integratedBeing.enabled at snapshot
     // time — see resolveIncludedFiles()). Glob matches the active ledger and
     // any rotated .jsonl.<epoch> archives.

@@ -112,7 +112,7 @@ describe('Fresh install: instar init <project-name>', () => {
     expect(fs.existsSync(jobsPath)).toBe(true);
 
     const jobs = JSON.parse(fs.readFileSync(jobsPath, 'utf-8'));
-    expect(jobs.length).toBe(28);
+    expect(jobs.length).toBe(29);
 
     const slugs = jobs.map((j: any) => j.slug);
     // Core jobs

@@ -1,0 +1,10 @@
+{
+  "source": "real `tailscale status --json` stdout from a fresh, never-signed-in tailscaled (Tailscale 1.104.4, Homebrew bottle, userspace networking, own state folder and socket), BackendState NeedsLogin",
+  "command": "tailscale --socket=<rig socket> status --json",
+  "capturedAt": "2026-11-06T07:22:00Z",
+  "machine": "Mac Studio (throwaway tailscaled for the CMT-1320 Tailscale recipe proof; the machine's own Tailscale was not touched)",
+  "redactions": [
+    "HostName -> same-length x fill (punctuation preserved)"
+  ],
+  "note": "All structural bytes are as captured, including the missing trailing newline. This is the shape the Tailscale setup recipe's check sees before the person's sign-in tap."
+}
