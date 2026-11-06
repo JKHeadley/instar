@@ -270,7 +270,7 @@ machine-local-justification: operator-ratified-exception — inherits the lease-
 - **fleet:** the behavior has no switch and reaches every agent with the package update, like the base decision. Agents with no peer verifiers never write the heartbeat, so for them nothing changes.
 - **graduation criterion:** on Echo, over seven days after deployment, at least three planned restarts that found an accepted attempt, each followed by `imported` (or `bound-reached` for a run past 21 minutes), and zero `lease-changed` abandons within 120 s of an own lease re-acquire for those restarts.
 - **dark-window:** none. It ships live; the residual risk is a routine restart delayed by up to 21 minutes, and rollback is a code revert.
-- **ladder:** test-agent-live, dev-agent-live (Echo), fleet via the normal release (graduation by the 7-day comparison)
+- **ladder:** not applicable: no flag; the hold ships live with the package update and graduates by the 7-day comparison above.
 
 ## Open questions
 
