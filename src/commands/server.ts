@@ -83,6 +83,7 @@ import { chunkLiteralForTmux, buildLiteralSendArgs } from '../core/tmuxLiteralSe
 import { parseStandardsRegistry } from '../core/StandardsRegistryParser.js';
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath, detectClaudePath, readConfiguredAnthropicKey } from '../core/Config.js';
 import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
+import { guardProcessStdio } from '../core/pipeErrorGuard.js';
 import { planInboundLossNotices } from '../core/inboundLossRouting.js';
 import { heartbeatFreshEnoughToRerecord } from '../core/MachineHeartbeat.js';
 import { slackRespawnBootstrapIds } from '../core/slackRefreshBinding.js';
@@ -4640,6 +4641,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Set up file logging for observability
     setupServerLog(config.stateDir);
+    guardProcessStdio();
 
     // ── Fork-bomb prevention P2 — single-instance lock (forkbomb-prevention-simple §P2) ──
     // Refuse to start a DUPLICATE server instance of this agent on this host
