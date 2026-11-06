@@ -62,6 +62,8 @@ Clear to ship. The spec's every-channel promise did not hold.
 
 The first read found that `/slack/session-reply` refused the new metadata, so spawned Slack sessions could not answer an advisory, and that the send record reads turns in `record` too. The second found an existing route test the first fix contradicted, a false rollback claim and a stale size. The route now refuses all metadata except the four tone fields, and the claims are corrected. The third read concurs. Its checks: prior SHAs match origin/main, markers occur exactly, the body-suffix edit is correct, a missing python3 does not break a send, and conversation ids match, with the iMessage mismatch disclosed. It ran no integration tests; my run passed 27 of 27 across both changed integration files.
 
+After Local Verify: two unit tests failed. The app relay's new prior hash went at the end of its append-only list, the Slack hash likewise, and the idempotent migrator fixture gained the new iMessage marker. The reviewer read these two edits too.
+
 ## Evidence pointers
 
 - Live test: `.instar/lanes/attribution-live-rung-1106/REPORT.md` (Echo's home) and the ledger lines for the slot.

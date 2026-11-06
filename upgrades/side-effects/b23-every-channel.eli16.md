@@ -10,4 +10,4 @@ The second fix is about answering a held message. Telegram's reply script lets t
 
 Testing also found that the iMessage script used a command that fails on macOS, the only place iMessage runs, so it lost the reason for every refusal. That is fixed too.
 
-Existing agents get the new scripts through the normal update. Undoing this is a plain revert. There is nothing for you to decide.
+Existing agents get the new scripts through the normal update. Full testing caught two mistakes in how that update recorded older script versions, both fixed before merge. Undoing this is a plain revert. There is nothing for you to decide.
