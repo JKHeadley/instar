@@ -307,7 +307,7 @@ ls -la .github/workflows/instar-pr-gate.yml
 \`\`\`
 
 The file should be present and owned by the repo (not a symlink). If
-missing, run \`npx instar update\` to re-run \`PostUpdateMigrator\`.
+missing, run \`instar migrate\` to re-run \`PostUpdateMigrator\`.
 
 ## Step 2 — Set up repo secrets
 
