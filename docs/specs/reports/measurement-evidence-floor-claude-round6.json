@@ -1,0 +1,50 @@
+{
+  "round": "6 (final, cap 6)",
+  "reviewer": {
+    "agent": "echo",
+    "machine": "Studio",
+    "model": "claude-opus-5-5",
+    "modelEvidence": "same Claude Code session transcript as floor-claude-review.json; every model field reads claude-opus-5-5"
+  },
+  "scope": "Read-only review of the exact round-6 text against the substrate and the standard text read in rounds 4-5. Nothing changed, activated, spawned or sent. No new round requested.",
+  "overall": "Approvable as a design once five precision narrowings are made. No remaining DESIGN finding. The conservative all-configured-member move floor is a legitimate root choice: stricter than the standard requires, not unsafe, and its cost is now disclosed (one offline member holds promotion and claims while ordinary services continue). Round-5 items S1 (decision audit in the same kind), S2 (no machine-local dark capture: capture unavailable while off), S3 (no zero-window claim), S4 (cited observations copied), R5P3-R5P5 are addressed in the text. R5P1 is only partly addressed (see P6-1).",
+  "design": [],
+  "precision": [
+    {
+      "id": "P6-1",
+      "title": "Restart re-emission is accounted, not prevented",
+      "detail": "The summary says 'restart dedup', but the text only counts repeated emissions toward the 64 MiB/origin ceiling and tests that restart loops respect it. Respecting the ceiling means publication holds once restarts have spent it, which is a functional failure caused by a non-event. Name the prevention: either the reconciler seed reads every retained rotated segment for this kind (rotateKeep:0), or admission skips a record whose (origin, recordKey, contentHash) is already retained. Test: 20 restarts with no new captures leave retained bytes unchanged."
+    },
+    {
+      "id": "P6-2",
+      "title": "Do not attribute the all-member gate to the standard",
+      "detail": "Lines in both the floor and the producer say the all-member floor is 'required by the existing Always Multi-Machine information-survival rule'. The standard's text governs where information lives (unified default; single-machine survivability; proxied-on-read only for operational state). It does not say decisions wait for every member. The draft itself concedes a residual window for the decision audit ('Do not claim zero information-loss window'), which would be a violation if the standard required no window. Narrow to: 'chosen as a conservative reading of the survivability rule; the standard requires all-member replication, and this proposal additionally gates moves on all-member confirmation.' Keep the gate; correct the citation."
+    },
+    {
+      "id": "P6-3",
+      "title": "Define 'configured participating machine' and its version skew",
+      "detail": "Say what the set is (MachinePoolRegistry paired, non-revoked machines) and how an older-version member that cannot yet receive the new kind counts. As written, 'unsupported' holds, so every move holds until every machine has updated, and a machine that is paired but permanently off holds forever. Both are acceptable under the conservative choice, but they must be stated as expected consequences, with the existing operator membership authority named as the only way out."
+    },
+    {
+      "id": "P6-4",
+      "title": "Every hold names the blocking member and what to do",
+      "detail": "The eligibility reason for an all-member hold should list the pending machines by nickname, their reason (offline, unsupported version, disabled, over budget) and when each was last seen, plus the action that clears it (wake it or update it; membership changes stay with the operator). A bare 'sharing pending' leaves the operator nothing to act on."
+    },
+    {
+      "id": "P6-5",
+      "title": "Make the claim-instruction scope measurable without a new blocker",
+      "detail": "Scope honesty is right: moves are structural; improvement claims are an existing review instruction; CompletionClaimVerifier stays observe-only; the general semantic-claim duty stays an explicit open CMT-001 gap. The one narrowing: say the observe-only verifier (or the review report) counts improvement claims made while the context was pending. That gives the CMT-001 gap a measured signal and no new text filter. If that counter does not exist, say 'unmeasured' rather than implying the instruction is followed."
+    }
+  ],
+  "sixLenses": {
+    "security": "No new authority. Origin authenticated, revoked/quarantined cannot confirm, dropped-origin history cannot confirm or seed. Fine.",
+    "scalability": "Bounded readback (8 members, concurrency 2, 2 s each, 8 s total), 8192 contexts / 64 MiB per origin. P6-1 is the one remaining way the bound is spent without new data.",
+    "adversarial": "Snapshot-binding and the local synchronous recheck close the A-for-B and stale-confirmation paths. Partial samples never imply all-member. Fine.",
+    "integration": "Rides the existing registry, journal kinds, reconciler, reader funnel and audit writer. The draft declares the new pieces honestly. P6-1 depends on reconciler seed behaviour I did not trace.",
+    "decisionCompleteness": "Complete apart from P6-3's membership definition.",
+    "lessonsAware": "'Every warning needs a path to act' (P6-4). 'A rule credited to someone needs their words' applies to citing the constitution for a choice it does not make (P6-2)."
+  },
+  "scopeHonesty": "Honest. The drafts claim a producer slice and a move floor, both new implementation, disclose the residual window and the offline-member cost, and leave the general semantic-claim enforcement explicitly open under CMT-001 instead of implying the run is complete. With P6-2 and P6-5 the scope statement is accurate as written.",
+  "limits": "Read the current text and prior-round substrate notes; ran nothing; the reconciler seed across rotated segments is still unverified.",
+  "writtenAt": "2026-11-06T07:27:51.151394+00:00"
+}
