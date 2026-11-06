@@ -35431,7 +35431,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (m.latestByStatus !== undefined) {
         if (!m.latestByStatus || typeof m.latestByStatus !== 'object' || Array.isArray(m.latestByStatus)) return null;
         const counts = m.latestByStatus as Record<string, unknown>;
-        if (!statuses.every(status => nonnegativeInteger(counts[status]) &&
+        if (m.evaluated !== features.length || !statuses.every(status => nonnegativeInteger(counts[status]) &&
           counts[status] === features.filter(feature => feature?.status === status).length)) return null;
         latestByStatus = Object.fromEntries(statuses.map(status => [status, counts[status] as number]));
       }
@@ -35516,6 +35516,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     for (const value of m.features) {
       if (!value || typeof value !== 'object') return null;
       const feature = value as Record<string, unknown>;
+      if (hasMetadata && (typeof feature.featureId !== 'string' || feature.featureId.length < 1 || feature.featureId.length > 63)) return null;
       if (!Array.isArray(feature.evaluations)) {
         if (hasMetadata) return null;
         continue; // Preserve older peers' pre-extension envelope.
@@ -35524,17 +35525,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         feature.evaluations.length > (m.evaluationLimit as number) ||
         feature.totalEvaluations !== feature.evaluations.length + feature.omittedEvaluations)) return null;
       let previousDue: string | null = null;
+      let previousPoint: Record<string, unknown> | null = null;
       for (const rawPoint of feature.evaluations) {
         if (!rawPoint || typeof rawPoint !== 'object') return null;
         const point = rawPoint as Record<string, unknown>;
         if (point.dueAt === undefined && !hasMetadata) continue;
-        if (!isoTime(point.dueAt) || !isoTime(point.evaluatedAt) ||
+        if (!statuses.includes(String(point.status)) ||
+          typeof point.contractHash !== 'string' || point.contractHash.length < 1 || point.contractHash.length > 128 ||
+          !(point.rung === null || (typeof point.rung === 'string' && point.rung.length > 0 && point.rung.length <= 128)) ||
+          !(point.minNormalizedMargin === null || (typeof point.minNormalizedMargin === 'number' && Number.isFinite(point.minNormalizedMargin))) ||
+          !isoTime(point.dueAt) || !isoTime(point.evaluatedAt) ||
           (point.newestEvidenceAt !== null && !isoTime(point.newestEvidenceAt)) ||
           point.day !== point.dueAt.slice(0, 10) || (previousDue !== null && point.dueAt <= previousDue) ||
           !nonnegativeInteger(point.passingMetrics) || !nonnegativeInteger(point.totalMetrics) ||
           point.passingMetrics > point.totalMetrics || !nonnegativeInteger(point.additionalMissedSlots) ||
           typeof point.sameEvaluationSeries !== 'boolean') return null;
+        if (point.sameEvaluationSeries && !(previousPoint && previousPoint.contractHash === point.contractHash &&
+          previousPoint.rung === point.rung && ['ready', 'hold'].includes(String(previousPoint.status)) &&
+          ['ready', 'hold'].includes(String(point.status)) && previousPoint.minNormalizedMargin !== null && point.minNormalizedMargin !== null)) return null;
         previousDue = point.dueAt;
+        previousPoint = point;
       }
     }
     return { features: m.features.slice(0, 512),

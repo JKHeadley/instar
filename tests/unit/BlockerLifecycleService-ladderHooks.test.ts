@@ -100,6 +100,30 @@ describe('BlockerLifecycleService ladder hooks', () => {
     }
   });
 
+  it('keeps the full maximum-lookback response below the existing peer envelope with dense factors', () => {
+    const now = Date.parse('2026-11-03T00:00:00Z'); const { svc, ledger } = make(now);
+    for (let day = 0; day < 90; day++) for (const factor of ['request-to-persist', 'clear-latency', 'deliverable-completion'] as const) {
+      for (let sample = 0; sample < 3; sample++) expect(ledger.record({ origin: 'm1', factor,
+        sourceEventId: `${factor}-${day}-${sample}`, observedAtMs: now - day * 86_400_000,
+        latencyMs: factor === 'deliverable-completion' ? null : 90_000 + sample, outcome: 'observed' })).toBe(true);
+    }
+    const rows: MaturationEvaluationRecord[] = [];
+    for (let feature = 0; feature < 512; feature++) for (let index = 0; index < 4; index++) rows.push({
+      origin: 'm1', featureId: `f-${feature}`.padEnd(63, 'x'), rung: 'r'.repeat(128),
+      dueSlotMs: now - (4 - index) * 3_600_000, evaluatedAtMs: now - (4 - index) * 3_600_000 + 1,
+      status: 'ready', passingMetrics: Number.MAX_SAFE_INTEGER, totalMetrics: Number.MAX_SAFE_INTEGER,
+      minNormalizedMargin: -0.12345678901234568, contractHash: 'a'.repeat(128), newestEvidenceAtMs: now - 6 * 3_600_000,
+    });
+    vi.spyOn(ledger, 'maturationEvaluations').mockReturnValue(rows);
+    const local = svc.localTrend(90);
+    const history = local.maturation as { features: unknown[]; historyByteLimit: number };
+    expect(history.features).toHaveLength(512);
+    expect((local.factors as { days: unknown[] }[]).every(f => f.days.length >= 89)).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(local)) - Buffer.byteLength(JSON.stringify(history))).toBeLessThan(128 * 1024);
+    expect(Buffer.byteLength(JSON.stringify({ schemaVersion: 2, origins: [local] }))).toBeLessThanOrEqual(512 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(history))).toBeLessThanOrEqual(history.historyByteLimit);
+  });
+
   it('scores in-memory subjects by the same rule, both sides', () => {
     const { svc } = make();
     svc.registerMaturationProjection('a.good', () => ({ value: 5, samples: 5 }));

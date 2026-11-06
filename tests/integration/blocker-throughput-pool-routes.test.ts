@@ -83,6 +83,38 @@ describe('blocker throughput pool schema honesty', () => {
       byStatus: { ready: 1, hold: 4 }, latestByStatus: { ready: 1, hold: 0 } });
   });
 
+  it('rejects latest counts that contradict the evaluated cohort size', async () => {
+    const peer = { machineId: 'peer-a', factors: [latencySummary('request-to-persist', 'best-effort'), latencySummary('clear-latency', 'reconcilable'), countSummary], counters,
+      maturation: { eligible: 1, evaluated: 999, missedDue: 0, byStatus: latestStates, latestByStatus: latestStates,
+        features: [{ featureId: 'one', rung: 'live', status: 'ready', passingMetrics: 1, totalMetrics: 1, minNormalizedMargin: 0.5, evaluatedAt: maturationPoint.evaluatedAt }] } };
+    const response = await request(app({ schemaVersion: 2, origins: [peer] })).get('/blocker-lifecycle/summary?scope=pool').set('Authorization', `Bearer ${AUTH}`);
+    expect(response.body).toMatchObject({ poolComplete: false, failures: [{ reason: 'unsupported-maturation' }] });
+  });
+
+  it('preserves compatible adjacent points without claiming cadence continuity', async () => {
+    const second = { ...maturationPoint, dueAt: '2026-07-20T12:00:00.000Z', evaluatedAt: '2026-07-20T12:00:01.000Z', sameEvaluationSeries: true };
+    const peer = { machineId: 'peer-a', factors: [emptyTrend('request-to-persist'), emptyTrend('clear-latency'), countTrend],
+      maturation: { ...maturationHistory, features: [{ featureId: 'one', totalEvaluations: 2, omittedEvaluations: 0, evaluations: [maturationPoint, second] }] } };
+    const response = await request(app({ schemaVersion: 2, origins: [peer] })).get('/blocker-lifecycle/trend?scope=pool').set('Authorization', `Bearer ${AUTH}`);
+    expect(response.body.poolComplete).toBe(true);
+    expect(response.body.origins[1].maturation).toMatchObject({ cadenceContinuity: 'unknown', features: [{ evaluations: [{ sameEvaluationSeries: false }, { sameEvaluationSeries: true }] }] });
+  });
+
+  it.each(['status', 'contractHash', 'rung', 'contract-boundary', 'rung-boundary', 'first-continuous'])('rejects contradictory new-format point metadata: %s', async change => {
+    const first: Record<string, unknown> = { ...maturationPoint };
+    const second: Record<string, unknown> = { ...maturationPoint, dueAt: '2026-07-20T12:00:00.000Z', evaluatedAt: '2026-07-20T12:00:01.000Z', sameEvaluationSeries: true };
+    if (change === 'status') second.status = 'invented';
+    if (change === 'contractHash') delete second.contractHash;
+    if (change === 'rung') delete second.rung;
+    if (change === 'contract-boundary') second.contractHash = 'v2';
+    if (change === 'rung-boundary') second.rung = 'fleet';
+    if (change === 'first-continuous') first.sameEvaluationSeries = true;
+    const peer = { machineId: 'peer-a', factors: [emptyTrend('request-to-persist'), emptyTrend('clear-latency'), countTrend],
+      maturation: { ...maturationHistory, features: [{ featureId: 'one', totalEvaluations: 2, omittedEvaluations: 0, evaluations: [first, second] }] } };
+    const response = await request(app({ schemaVersion: 2, origins: [peer] })).get('/blocker-lifecycle/trend?scope=pool').set('Authorization', `Bearer ${AUTH}`);
+    expect(response.body).toMatchObject({ poolComplete: false, failures: [{ reason: 'unsupported-maturation' }] });
+  });
+
   it('preserves exact times and disclosed history omissions across the pool', async () => {
     const peer = { machineId: 'peer-a', factors: [emptyTrend('request-to-persist'),
       emptyTrend('clear-latency'), countTrend], maturation: maturationHistory };
