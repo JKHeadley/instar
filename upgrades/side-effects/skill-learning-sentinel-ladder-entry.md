@@ -46,3 +46,5 @@ Remove the entry; nothing persists.
 A one-row data change that unblocks the approved spec's merge. Clear to ship.
 ## Class-Closure Declaration (display-only mirror)
 No agent-authored-artifact defect and no self-triggered controller — not applicable.
+
+**Release fragment:** `upgrades/next/skill-learning-sentinel-ladder.md` (added 2026-11-06 after the pre-push gate asked for one; this artifact is the review for that same data-only change).
