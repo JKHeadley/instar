@@ -130,3 +130,12 @@ Minor notes, none blocking:
 - Integration: `tests/integration/mobile-pairing-introducer.test.ts`
 - E2E: `tests/e2e/mobile-pairing-introducer-alive.test.ts`
 - Live proof on the pairtest VM: see the PR body.
+
+## Local Verify follow-up (2026-11-06)
+
+The first Local Verify run (head 0f433414) failed two repo checks, neither of them behavioural.
+
+- **feature-ladders-coverage:** the spec's ladder line must name the registry entry exactly. It now reads `mobilePairing`.
+- **no-silent-fallbacks:** this check scans 20 lines from each catch. A new helper appended to the end of `machineRoutes.ts` fell inside that window for an older catch block, so the check counted it. The helper now sits by the imports, and the exemption comments of the two new intentional fallbacks sit inside their catch blocks.
+
+Nothing at runtime changes.

@@ -186,7 +186,7 @@ export function mountIntroducerRoutes(router: Router, svc: MobilePairingService,
     return true;
   };
   const identity = (): IntroducerIdentity | null => {
-    try { const id = deps.readIdentity(); return id && id.publicKey.length === 32 && id.privateKey.length >= 32 ? deriveIntroducerKey(id) : null; } catch { return null; } // @silent-fallback-ok — no identity answers 404 no-identity
+    try { const id = deps.readIdentity(); return id && id.publicKey.length === 32 && id.privateKey.length >= 32 ? deriveIntroducerKey(id) : null; } catch { /* @silent-fallback-ok — no identity answers 404 no-identity */ return null; }
   };
 
   /** Bearer (the agent creating another agent) or an owner phone of this agent. */

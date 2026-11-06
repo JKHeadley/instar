@@ -44,6 +44,24 @@ import { identityRecoveryBearerResponseMessage } from '../core/IdentityRecoveryB
 import { identityProjectionBatchMessage } from '../core/IdentityProjectionEnvelope.js';
 import { identityPropagationReceiptMessage, type IdentityPropagationReceiptUnsigned } from '../core/IdentityPropagationReceipt.js';
 import { recoveryRootDelegationHash, signingAckDelegationHash } from '../core/MachineOperatorDelegation.js';
+
+/**
+ * `mobilePairing.ownerIntroducers` from this machine's own config file, for a joining machine
+ * (docs/specs/mobile-pairing-introducer.md §6). Public keys and names only; nothing when absent.
+ */
+export function ownerIntroducersForJoin(stateDir: string | undefined): { ownerIntroducers?: Array<{ name: string; publicKey: string }> } {
+  if (!stateDir) return {};
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf8')) as { mobilePairing?: { ownerIntroducers?: unknown } };
+    const list = cfg.mobilePairing?.ownerIntroducers;
+    if (!Array.isArray(list)) return {};
+    const clean = list.slice(0, 8).filter((e): e is { name: string; publicKey: string } =>
+      !!e && typeof (e as { name?: unknown }).name === 'string' && typeof (e as { publicKey?: unknown }).publicKey === 'string'
+      && /^[A-Za-z0-9_-]{43}$/.test((e as { publicKey: string }).publicKey))
+      .map((e) => ({ name: e.name.slice(0, 40), publicKey: e.publicKey }));
+    return clean.length ? { ownerIntroducers: clean } : {};
+  } catch { /* @silent-fallback-ok — no readable list means the joiner simply has none (it falls back to the code) */ return {}; }
+}
 export { identityRecoveryBearerResponseMessage } from '../core/IdentityRecoveryBearer.js';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -1259,22 +1277,4 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
   });
 
   return router;
-}
-
-/**
- * `mobilePairing.ownerIntroducers` from this machine's own config file, for a joining machine
- * (docs/specs/mobile-pairing-introducer.md §6). Public keys and names only; nothing when absent.
- */
-export function ownerIntroducersForJoin(stateDir: string | undefined): { ownerIntroducers?: Array<{ name: string; publicKey: string }> } {
-  if (!stateDir) return {};
-  try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf8')) as { mobilePairing?: { ownerIntroducers?: unknown } };
-    const list = cfg.mobilePairing?.ownerIntroducers;
-    if (!Array.isArray(list)) return {};
-    const clean = list.slice(0, 8).filter((e): e is { name: string; publicKey: string } =>
-      !!e && typeof (e as { name?: unknown }).name === 'string' && typeof (e as { publicKey?: unknown }).publicKey === 'string'
-      && /^[A-Za-z0-9_-]{43}$/.test((e as { publicKey: string }).publicKey))
-      .map((e) => ({ name: e.name.slice(0, 40), publicKey: e.publicKey }));
-    return clean.length ? { ownerIntroducers: clean } : {};
-  } catch { return {}; } // @silent-fallback-ok — no readable list means the joiner simply has none (it falls back to the code)
 }

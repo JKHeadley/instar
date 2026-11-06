@@ -241,4 +241,4 @@ machine-local-justification: physical-credential-locality impossible-because="th
 - **fleet:** the introducer path does nothing until a creator writes `ownerIntroducers`. It follows `mobilePairing.approve.enabled`, which is on wherever pairing is on.
 - **graduation criterion:** the next agent Echo creates for Justin is added to his phone with one Face ID tap and no chat round-trip.
 - **dark-window:** not applicable. The introducer path is inert until configured, and the fleet-visible parts are argued above.
-- **ladder:** mobilePairing (it records to the mobilePairing evidence log and follows mobilePairing.approve.enabled)
+- **ladder:** mobilePairing
