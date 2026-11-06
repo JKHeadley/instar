@@ -27,7 +27,7 @@ None. Layout, a second entry point to an existing control, and string sourcing. 
 - **dev-agent-live:** Echo's console after release, the same three sizes.
 - **fleet:** ships to all; no switch, no authority change.
 - **graduation criterion:** Justin's next look at the page raises no layout complaint.
-- **ladder:** none (presentation only).
+- **ladder:** not applicable: presentation and wording only, with no switch; a revert undoes it.
 
 ## Open questions
 
