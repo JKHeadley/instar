@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "attributed-statements-trace",
+  "sessionId": "83ff0005-03a1-47ac-9794-fc5f5dbd69b5",
+  "timestamp": "2026-11-05T19:56:35.667Z",
+  "artifactPath": "upgrades/side-effects/attributed-statements-trace.md",
+  "artifactSha256": "10d7b843d48fe8514168728239e82d158fb745361ced756a8c7653de5db6bef0",
+  "coveredFiles": [
+    "docs/standards-registry-area-audits.json"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Records the Interaction audit with the corrected report hash.",
+  "eli16Path": "docs/specs/attributed-statements-trace.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/attributed-statements-trace.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

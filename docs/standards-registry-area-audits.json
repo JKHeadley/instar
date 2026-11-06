@@ -2,20 +2,20 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-10-26T18:24:09.000Z",
-      "auditRef": "docs/audits/standards-single-provider-floor-and-cadence-well-2026-10-26.json",
-      "auditSha256": "d71b646fc0e257fa49e4e502b6e1ce30a62d82ac5f12609494fd4265dc2fc677",
-      "areaSha256": "f1e19aebd9bb8a1470a25c247528fe696b661e958d95de806e932b8b14d23328",
+      "lastAuditedAt": "2026-11-05T23:05:00.000Z",
+      "auditRef": "docs/audits/no-purchased-service-building-family-2026-11-05.json",
+      "auditSha256": "2eda87b4073109b00bf35947b7fcca26cd35f97dc562777f1883bd541bd91bfe",
+      "areaSha256": "e3e3c3820054c78e0113b3f3cd2d34db1d188e729b704d49ab1193d2ef9e3c32",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-11-04T16:46:00.000Z",
-      "auditRef": "docs/audits/person-decides-counterpart-interaction-family-2026-11-04.json",
-      "auditSha256": "180d72742802f4691a19c2ee2b3beac9ae3d1cbff9abc66184dd1d55ef7cce8a",
-      "areaSha256": "bdb754ca783fad7c1f436a6eb80f4d5887ad3e557465074e34653b1f5ad63bbd",
+      "lastAuditedAt": "2026-11-05T23:05:00.000Z",
+      "auditRef": "docs/audits/attributed-statements-trace-interaction-family-2026-11-05.json",
+      "auditSha256": "0039e562c633c5dffa38a1b264b645bcb99bd4ff3d6adbcc1c41ab0df0b93fa8",
+      "areaSha256": "c2902dc347d54e1c03d1d9db756679c49236aa000697c9b7c981ce4ff9558d9e",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13
