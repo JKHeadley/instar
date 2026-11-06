@@ -568,13 +568,16 @@ describe('lint-dev-agent-dark-gate', () => {
       // `enabled:` row, so only the three cartographer rows below it shift +4.
       // Below the failoverRunner insert → both +10 (missingLogin) and +15 shifts.
       '1966': 'autonomousSessions.codexTaskContinuation.enabled',
-      '2094': 'cartographer.freshnessSweep.enabled',
+      // promise-review-and-priority: a 13-line `commitments.promiseReview` block
+      // (enabled omitted for the dev gate) shifts the two rows below by +13.
+      '2107': 'cartographer.freshnessSweep.enabled',
       // Assisted relogin is intentionally fleet-dark until a per-agent
       // promotion; the exclusion registry classifies it as action-bearing.
       // The default-on subscriptionPool.wallRescue block above it (+9 lines,
       // `enabled: true`, no dark-gate row) shifts it down. Attribution adds
-      // seven more lines, without a new enabled:false row: 2202 + 7 = 2209.
-      '2209': 'subscriptionPool.assistedRelogin.enabled',
+      // seven more lines, without a new enabled:false row: 2202 + 7 = 2209,
+      // then +13 for the promiseReview block.
+      '2222': 'subscriptionPool.assistedRelogin.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

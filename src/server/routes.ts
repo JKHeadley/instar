@@ -591,7 +591,8 @@ import {
 import type { MemoryPressureMonitor } from '../monitoring/MemoryPressureMonitor.js';
 import type { CoherenceMonitor } from '../monitoring/CoherenceMonitor.js';
 import type { SystemReviewer } from '../monitoring/SystemReviewer.js';
-import { CommitmentPersistenceError, CommitmentTracker } from '../monitoring/CommitmentTracker.js';
+import { CommitmentPersistenceError, CommitmentTracker, priorityRank } from '../monitoring/CommitmentTracker.js';
+import { PromiseReview, PromiseReviewError, resolvePromiseReviewConfig, type PromiseReviewConfig } from '../monitoring/PromiseReview.js';
 import type { SemanticMemory } from '../memory/SemanticMemory.js';
 import type { SessionActivitySentinel } from '../monitoring/SessionActivitySentinel.js';
 import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
@@ -35704,19 +35705,35 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const status = req.query.status as string | undefined;
+    // promise-review-and-priority §2.1 — ?priority=high[,normal|low|unset]; absent → unchanged.
+    let priorityFilter: Set<string> | null = null;
+    if (typeof req.query.priority === 'string') {
+      const wanted = req.query.priority.split(',').map((p) => p.trim()).filter(Boolean);
+      if (!wanted.length || wanted.some((p) => !['high', 'normal', 'low', 'unset'].includes(p))) {
+        res.status(400).json({ error: 'priority must be a comma list of high, normal, low, unset' });
+        return;
+      }
+      priorityFilter = new Set(wanted);
+    }
+    const byPriority = <T,>(rows: T[]): T[] => priorityFilter
+      ? rows.filter((c) => {
+        const p = (c as { priority?: unknown }).priority;
+        return priorityFilter!.has(p === 'high' || p === 'normal' || p === 'low' ? p : 'unset');
+      })
+      : rows;
     // COMMITMENTS-COHERENCE-SPEC §3.3 — ?scope=mesh merges own + replica
     // rows on the composite (originMachineId, id) key with viewSource +
     // staleness honesty. Default scope stays byte-identical to before
     // (own rows only); a dark replica layer degrades mesh scope to own
     // rows too (200, never 503 — single-machine agents answer normally).
     if (req.query.scope === 'mesh') {
-      res.json({ enabled: true, scope: 'mesh', commitments: await commitmentsMeshRows(status === 'active') });
+      res.json({ enabled: true, scope: 'mesh', commitments: byPriority(await commitmentsMeshRows(status === 'active')) });
       return;
     }
     if (status === 'active') {
-      res.json({ enabled: true, commitments: ctx.commitmentTracker.getActive() });
+      res.json({ enabled: true, commitments: byPriority(ctx.commitmentTracker.getActive()) });
     } else {
-      res.json({ enabled: true, commitments: ctx.commitmentTracker.getAll() });
+      res.json({ enabled: true, commitments: byPriority(ctx.commitmentTracker.getAll()) });
     }
   });
 
@@ -35735,6 +35752,88 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   });
 
+  // ── Promise review (docs/specs/promise-review-and-priority.md) ──
+  // The judgment is the promise-review job session's; these routes are the
+  // floor it cannot cross. Bearer-only (the global auth middleware); own rows
+  // only — nothing here forwards to another machine. Registered before
+  // /commitments/:id so the literals never route to the :id handlers.
+  const promiseReviewConfig = () => {
+    const raw = (ctx.liveConfig?.get?.<PromiseReviewConfig | undefined>('commitments.promiseReview', undefined)
+      ?? ((ctx.config as Record<string, any>).commitments?.promiseReview as PromiseReviewConfig | undefined));
+    const developmentAgent = ctx.liveConfig?.get?.<boolean | undefined>('developmentAgent', undefined)
+      ?? (ctx.config as { developmentAgent?: boolean }).developmentAgent;
+    return resolvePromiseReviewConfig(raw, resolveDevAgentGate(raw?.enabled, { developmentAgent }));
+  };
+  let promiseReview: PromiseReview | null = null;
+  const getPromiseReview = (): PromiseReview | null => {
+    if (!ctx.commitmentTracker) return null;
+    if (!promiseReview) {
+      promiseReview = new PromiseReview({
+        tracker: ctx.commitmentTracker,
+        stateDir: ctx.config.stateDir,
+        projectDir: ctx.config.projectDir,
+        config: promiseReviewConfig,
+        // Cache-only: the adapter's in-memory per-topic tail, never a log-file read
+        // on the event loop. An uncached topic or an older message is
+        // unverifiable — fail safe (the row stays open if a person waits on it).
+        // "From the agent" = not from the user AND sent by a session (template
+        // notices such as check-in reminders carry no session).
+        findMessage: ctx.telegram ? (topicId, messageId) => {
+          const hit = ctx.telegram!.getCachedTopicTail(topicId)?.find((m) => m.messageId === messageId);
+          if (!hit) return null;
+          const at = Date.parse(hit.timestamp);
+          return Number.isFinite(at) ? { at, fromAgent: hit.fromUser === false && !!hit.sessionName } : null;
+        } : undefined,
+      });
+    }
+    return promiseReview;
+  };
+
+  router.get('/commitments/review/queue', (req, res) => {
+    const review = getPromiseReview();
+    if (!review) { res.json({ enabled: false, due: 0, runnable: false, items: [] }); return; }
+    if (req.query.peek === '1') { res.json(review.peek()); return; }
+    const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
+      res.status(400).json({ error: 'limit must be a positive integer' });
+      return;
+    }
+    res.json(review.queue(limit));
+  });
+
+  router.post('/commitments/review/apply', async (req, res) => {
+    const review = getPromiseReview();
+    if (!review) { res.status(404).json({ error: 'CommitmentTracker not configured' }); return; }
+    try {
+      const out = await review.apply(req.body?.runId, req.body?.decisions);
+      res.json(out);
+    } catch (err) {
+      if (err instanceof PromiseReviewError) {
+        res.status(err.code === 'bad-request' ? 400 : 409).json({ error: err.code, detail: err.message });
+        return;
+      }
+      if (err instanceof CommitmentPersistenceError) { res.status(503).json({ error: 'commitment-persistence-unavailable' }); return; }
+      res.status(500).json({ error: err instanceof Error ? err.message : 'apply failed' });
+    }
+  });
+
+  // Undo a closure the review made. Own rows only (a replica's closure is its
+  // owner's to undo); the dashboard offers it only on own rows.
+  router.post('/commitments/:id/reopen', (req, res) => {
+    const review = getPromiseReview();
+    if (!review) { res.status(404).json({ error: 'CommitmentTracker not configured' }); return; }
+    if (typeof req.query.origin === 'string' && ctx.meshSelfId && req.query.origin !== ctx.meshSelfId) {
+      res.status(409).json({ error: 'reopen-own-rows-only', detail: 'Only the machine that holds this promise can reopen it.' });
+      return;
+    }
+    const out = review.reopen(req.params.id, req.body?.reason);
+    if (!out.ok) {
+      res.status(out.error === 'not-found' ? 404 : out.error === 'reason-required' ? 400 : 409).json({ error: out.error });
+      return;
+    }
+    res.json({ reopened: true, id: out.commitment.id, commitment: out.commitment });
+  });
+
   /**
    * GET /commitments/active-context
    * Returns the `<active_commitments>` snippet for session-start injection
@@ -35747,16 +35846,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ enabled: false, snippet: '' });
       return;
     }
-    const all = ctx.commitmentTracker.getActive()
-      .filter(c => c.status === 'pending' && c.beaconEnabled);
+    // promise-review-and-priority §2.6: high-priority rows join the beacon rows
+    // so every new session sees what a person is waiting on — but under their
+    // own sub-cap (8), so marking rows high can never crowd the beacon rows out.
+    const pending = ctx.commitmentTracker.getActive().filter(c => c.status === 'pending');
+    const due = (c: { nextUpdateDueAt?: string }) => { const t = Date.parse(c.nextUpdateDueAt ?? ''); return Number.isFinite(t) ? t : Infinity; };
+    const order = (a: typeof pending[number], b: typeof pending[number]) => priorityRank(a.priority) - priorityRank(b.priority) || due(a) - due(b);
+    const highRows = pending.filter(c => c.priority === 'high').sort(order);
+    const highShown = highRows.slice(0, 8);
+    const beaconRows = pending.filter(c => c.beaconEnabled && !highShown.includes(c)).sort(order);
+    const all = [...highRows, ...beaconRows.filter(c => !highRows.includes(c))];
     const cap = 20;
-    const shown = all.slice(0, cap).map(c => ({
+    const picked = [...highShown, ...beaconRows].slice(0, cap);
+    const shown = picked.map(c => ({
       id: c.id,
       promiseText: (c.agentResponse || c.userRequest).slice(0, 120),
       nextUpdateDueAt: c.nextUpdateDueAt ?? null,
       atRisk: !!c.atRisk,
+      ...(c.priority ? { priority: c.priority } : {}),
     }));
-    const more = Math.max(0, all.length - cap);
+    const more = Math.max(0, all.length - shown.length);
     let snippet = '';
     if (shown.length > 0) {
       const body = JSON.stringify(shown);
@@ -36092,7 +36201,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             followThroughOptOutReason,
             // C1+C2 "The Agent Carries the Loop" state model (§4.1).
             owner, blockedOn, actionClass, supersededBy,
-            correctionId, classReviewRef, origin } = req.body;
+            correctionId, classReviewRef, origin,
+            // promise-review-and-priority §2.1
+            priority, priorityReason } = req.body;
 
     if (!type || !userRequest || !agentResponse) {
       res.status(400).json({ error: 'type, userRequest, and agentResponse are required' });
@@ -36239,6 +36350,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ...(typeof correctionId === 'string' ? { correctionId } : {}),
         ...(classReviewAdmission.classReviewRef ? { classReviewRef: classReviewAdmission.classReviewRef } : {}),
         ...(boundBy ? { boundBy } : {}),
+        ...(priority !== undefined ? { priority } : {}),
+        ...(typeof priorityReason === 'string' ? { priorityReason } : {}),
       });
       // §6.1 dark-window honesty (adversarial-A6/NEW#4): while followThrough
       // is dark/dry a session CAN open a commitment on a minted id — accept it
@@ -36268,7 +36381,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // C1+C2 well-formedness gate failures are client errors (400), not 500;
       // typed conversation-binder refusals are conflicts (409), not 500.
       const msg = err instanceof Error ? err.message : 'Failed to record';
-      const isWellFormedness = /invalid owner|invalid blockedOn|requires a non-empty actionClass|config-change requires configPath|verificationMethod must be/.test(msg);
+      const isWellFormedness = /invalid owner|invalid blockedOn|requires a non-empty actionClass|config-change requires configPath|verificationMethod must be|priority must be/.test(msg);
       const isBinderRefusal = /conversation-recording-disabled|conversation-registration-capacity|conversation-bind-unresolvable|multi-workspace-unsupported/.test(msg);
       res.status(isWellFormedness ? 400 : isBinderRefusal ? 409 : 500).json({ error: msg });
     }
@@ -36732,7 +36845,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
       if (typeof pRoute === 'object') {
-        await forwardMutation(res, pRoute.forward.owner, mutatePayload(req, pRoute.forward.owner, 'patch-beacon', req.body ?? {}));
+        // A Refusal Stays a Refusal: an older owner silently drops `priority` and
+        // answers idempotent-noop — report that as not applied, never as success.
+        const onlyPriority = Object.keys(req.body ?? {}).length > 0
+          && Object.keys(req.body ?? {}).every((k) => k === 'priority' || k === 'priorityReason');
+        await forwardMutation(res, pRoute.forward.owner, mutatePayload(req, pRoute.forward.owner, 'patch-beacon', req.body ?? {}),
+          onlyPriority ? 'owner-does-not-support-priority' : undefined);
         return;
       }
     }
@@ -36746,10 +36864,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
-    const { nextUpdateDueAt, softDeadlineAt, hardDeadlineAt, cadenceMs, beaconEnabled } = req.body ?? {};
+    const { nextUpdateDueAt, softDeadlineAt, hardDeadlineAt, cadenceMs, beaconEnabled, priority, priorityReason } = req.body ?? {};
 
     // Reject unknown keys to surface typos early.
-    const allowed = new Set(['nextUpdateDueAt', 'softDeadlineAt', 'hardDeadlineAt', 'cadenceMs', 'beaconEnabled', 'autoExpiryHold']);
+    const allowed = new Set(['nextUpdateDueAt', 'softDeadlineAt', 'hardDeadlineAt', 'cadenceMs', 'beaconEnabled', 'autoExpiryHold', 'priority', 'priorityReason']);
     const unknown = Object.keys(req.body ?? {}).filter(k => !allowed.has(k));
     if (unknown.length > 0) {
       res.status(400).json({ error: `Unknown field(s): ${unknown.join(', ')}. Allowed: ${[...allowed].join(', ')}` });
@@ -36769,6 +36887,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: 'beaconEnabled must be boolean' });
       return;
     }
+    if (priority !== undefined && !['high', 'normal', 'low'].includes(priority)) {
+      res.status(400).json({ error: 'priority must be high, normal, or low' });
+      return;
+    }
+    if (priorityReason !== undefined && (typeof priorityReason !== 'string' || priorityReason.length > 200)) {
+      res.status(400).json({ error: 'priorityReason must be a string of at most 200 characters' });
+      return;
+    }
 
     // CMT-1132: { reason } sets the hold, null clears it.
     const holdRequested = 'autoExpiryHold' in (req.body ?? {});
@@ -36781,7 +36907,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Effective-field validation (matches POST creation validator).
     const effBeaconEnabled = beaconEnabled ?? existing.beaconEnabled;
     // A hold touches no beacon field, so it must not fail on a row's beacon shape.
-    const holdOnly = holdRequested && Object.keys(req.body ?? {}).length === 1;
+    // Likewise a priority change (promise-review-and-priority §2.1).
+    const NON_BEACON_KEYS = new Set(['autoExpiryHold', 'priority', 'priorityReason']);
+    const holdOnly = Object.keys(req.body ?? {}).length > 0 && Object.keys(req.body ?? {}).every((k) => NON_BEACON_KEYS.has(k));
     if (effBeaconEnabled && !holdOnly) {
       if (!existing.topicId) {
         res.status(400).json({ error: 'beaconEnabled commitments require topicId (cannot be added via PATCH)' });
@@ -36812,6 +36940,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ...(beaconEnabled !== undefined ? { beaconEnabled } : {}),
         ...(parsedHold ? { autoExpiryHold: parsedHold.hold } : {}),
       }));
+      // promise-review-and-priority §2.1 — priority goes through the tracker so
+      // everHigh / prioritySetAt / prioritySetBy are stamped the one way.
+      if (priority !== undefined) {
+        const withPriority = ctx.commitmentTracker.setPriority(req.params.id, priority, priorityReason, 'agent');
+        if (!withPriority) {
+          res.status(409).json({ error: `Commitment ${req.params.id} is closed; its priority cannot change` });
+          return;
+        }
+        Object.assign(updated, withPriority);
+      }
       // Re-arm the beacon timer if the tracker is wired to a live beacon.
       try {
         const beacon = (globalThis as Record<string, unknown>).__instarPromiseBeacon as
@@ -36880,6 +37018,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res: import('express').Response,
     owner: string,
     payload: import('../core/CommitmentMutation.js').CommitmentMutatePayload,
+    /** When set, an owner `idempotent-noop` means the owner did not apply the request (409 with this error). */
+    noopIsRefusal?: string,
   ): Promise<void> {
     if (!ctx.forwardCommitmentMutate) {
       res.status(409).json({
@@ -36893,6 +37033,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const v = r.outcome;
+    if (noopIsRefusal && v.verdict === 'idempotent-noop') {
+      res.status(409).json({ error: noopIsRefusal, owner, status: v.status });
+      return;
+    }
     if (v.verdict === 'applied' || v.verdict === 'idempotent-noop') {
       res.json({ delivered: payload.op === 'deliver' ? true : undefined, op: payload.op, id: payload.id, owner, verdict: v.verdict, status: v.status, ...(v.staleObservation ? { staleObservation: true } : {}) });
       return;
@@ -36929,13 +37073,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(409).json({ error: `Commitment id ${req.params.id} is ambiguous across machines — retry with ?origin=<machineId>` });
       return;
     }
-    if (typeof route === 'object') {
-      const { deliveryMessageId } = req.body ?? {};
-      await forwardMutation(res, route.forward.owner, mutatePayload(req, route.forward.owner, 'deliver', deliveryMessageId ? { deliveryMessageId } : undefined));
+    const { deliveryMessageId, evidence } = req.body ?? {};
+    if (evidence !== undefined && (typeof evidence !== 'string' || evidence.length > 500)) {
+      res.status(400).json({ error: 'evidence must be a string of at most 500 characters' });
       return;
     }
-    const { deliveryMessageId } = req.body ?? {};
-    const updated = ctx.commitmentTracker.deliver(req.params.id, deliveryMessageId);
+    if (typeof route === 'object') {
+      const args = { ...(deliveryMessageId ? { deliveryMessageId } : {}), ...(evidence ? { evidence } : {}) };
+      await forwardMutation(res, route.forward.owner, mutatePayload(req, route.forward.owner, 'deliver', Object.keys(args).length ? args : undefined));
+      return;
+    }
+    const updated = ctx.commitmentTracker.deliver(req.params.id, deliveryMessageId, evidence);
     if (!updated) {
       res.status(404).json({ error: `Commitment ${req.params.id} not found or already in terminal status` });
       return;

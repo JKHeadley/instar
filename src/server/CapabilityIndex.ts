@@ -1051,7 +1051,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({
       enabled: true,
       endpoints: [
-        'GET /commitments — list commitments (filterable)',
+        'GET /commitments — list commitments (filterable: ?status=active, ?scope=mesh, ?priority=high|normal|low|unset)',
         'GET /commitments/:id — fetch a single commitment',
         'POST /commitments — open a new commitment',
         'PATCH /commitments/:id — update status/details',
@@ -1059,6 +1059,9 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /commitments/:id/withdraw — withdraw the commitment',
         'POST /commitments/:id/resume — resume a paused commitment',
         'GET /commitments/active-context — assemble active-commitment context',
+        'GET /commitments/review/queue — promises due for the agent\'s own review (?peek=1 for the job gate)',
+        'POST /commitments/review/apply — apply a promise-review batch through the evidence/caps floor',
+        'POST /commitments/:id/reopen — undo a closure the promise review made (30-day window)',
         'GET /blocker-lifecycle/summary — raw per-origin blocker timing plus deliverable-completion count',
         'GET /blocker-lifecycle/trend — raw per-origin blocker timing plus completion-count direction',
       ],

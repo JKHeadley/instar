@@ -1168,6 +1168,10 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // owner-routed commitment mutation as /transition and /withdraw (a replica forwards
   // to the machine that holds the promise).
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/:id/decide', domain: 'cluster-shared' });
+  // promise-review-and-priority: the review's bounded apply and its undo both
+  // mutate the commitment store, the same shared agent state as the routes above.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/review/apply', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/:id/reopen', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/process', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/tick', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/runs/', domain: 'cluster-shared' });

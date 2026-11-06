@@ -2067,6 +2067,19 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       sweepIntervalMs: 21_600_000,
       dryRun: true,
     },
+    // promise-review-and-priority: the agent reviews its own open promises.
+    // `enabled` DELIBERATELY OMITTED — resolved by the developmentAgent gate
+    // (live on dev, dark on the fleet). Closures ship in shadow
+    // (closureDryRun) until the maturation ladder graduates them.
+    promiseReview: {
+      closureDryRun: true,
+      batchSize: 30,
+      maxClosuresPerRun: 15,
+      maxClosuresPerDay: 60,
+      rereviewAfterDays: 7,
+      highRereviewAfterDays: 1,
+      reopenWindowDays: 30,
+    },
     agentOwnedFollowthrough: {
       dryRun: true,
       // externalBlockWindowMs / externalBlockCeilingMs / externalBlockSweepMs:

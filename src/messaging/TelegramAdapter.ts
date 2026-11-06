@@ -4311,6 +4311,15 @@ export class TelegramAdapter implements MessagingAdapter {
    * the full multi-MB log: the measured cause of the 2026-06-05 event-loop
    * stalls.) Requests beyond the cache window fall through to a direct file scan.
    */
+  /**
+   * The in-memory per-topic tail ONLY — never reads the log file. null when the
+   * topic is not cached (promise-review-and-priority: a message-evidence lookup
+   * must not block the event loop; an uncached topic is "unverifiable").
+   */
+  getCachedTopicTail(topicId: number): ReadonlyArray<{ messageId: number; timestamp: string; fromUser: boolean; sessionName: string | null }> | null {
+    return this.topicTailCache.get(topicId) ?? null;
+  }
+
   getTopicHistory(topicId: number, limit: number = 20): LogEntry[] {
     if (limit <= TelegramAdapter.TAIL_CACHE_LIMIT) {
       const cached = this.topicTailCache.get(topicId);

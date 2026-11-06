@@ -3797,6 +3797,17 @@ export interface InstarConfig {
       maxAgeDays?: number;
       dryRun?: boolean;
     };
+    /** promise-review-and-priority — `enabled` omitted ⇒ developmentAgent gate. */
+    promiseReview?: {
+      enabled?: boolean;
+      closureDryRun?: boolean;
+      batchSize?: number;
+      maxClosuresPerRun?: number;
+      maxClosuresPerDay?: number;
+      rereviewAfterDays?: number;
+      highRereviewAfterDays?: number;
+      reopenWindowDays?: number;
+    };
     agentOwnedFollowthrough?: {
       enabled?: boolean;
       dryRun?: boolean;
