@@ -43,7 +43,7 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
     expect(inp!.bucket).toBe('session-input');
   });
   it('matches only the exact shapes: no other method, no other session route, no traversal', () => {
-    for (const p of ['/sessions/a/output/x', '/sessions/../output', '/sessions//output', '/sessions/a%2fb/output', '/sessions/a/attachments', '/sessions/a/kill', `/sessions/${'a'.repeat(201)}/output`]) {
+    for (const p of ['/sessions/a/output/x', '/sessions/../output', '/sessions//output', '/sessions/a%2fb/output', '/sessions/a/kill', '/mobile/sessions/relay/a/output', '/mobile/sessions/relay/a/input', '/mobile/sessions/relay/a/key', '/mobile/sessions/relay/a/state', `/sessions/${'a'.repeat(201)}/output`]) {
       expect(DEVICE_ALLOWLIST.some((r) => r.re.test(p)), p).toBe(false);
     }
     expect(DEVICE_ALLOWLIST.some((r) => r.method !== 'GET' && r.re.test('/sessions/a/output'))).toBe(false);
@@ -87,6 +87,16 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       // Approve a waiting phone with Face ID (mobile-pairing-approve §3.4).
       ['GET', '/mobile/pairing-requests'],
       ['POST', '/mobile/pairing-requests/00000000-0000-4000-8000-000000000000/approve'],
+      ['POST', '/sessions/a/key'],
+      ['POST', '/sessions/a/attachments'],
+      ['GET', '/mobile/sessions/controls'],
+      ['GET', '/mobile/sessions/new-options'],
+      ['GET', '/mobile/sessions/history'],
+      ['POST', '/mobile/sessions/door/134088'],
+      ['POST', '/mobile/sessions/move/134088'],
+      ['POST', '/mobile/sessions/close/a-session-id'],
+      ['POST', '/mobile/sessions/new'],
+      ['POST', '/mobile/sessions/default'],
     ];
     const ownerOnly = DEVICE_ALLOWLIST.filter((r) => r.ownerOnly);
     for (const [method, p] of named) expect(ownerOnly.filter((r) => r.method === method && r.re.test(p)), `${method} ${p}`).toHaveLength(1);

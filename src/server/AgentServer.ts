@@ -6064,6 +6064,22 @@ export class AgentServer {
         listSessions: () => options.state.listSessions(),
         captureOutputAsync: (tmux, lines) => options.sessionManager.captureOutputAsync(tmux, lines),
         sendInput: (tmux, text) => options.sessionManager.sendInput(tmux, text),
+        sendKey: (tmux, key) => options.sessionManager.sendKey(tmux, key),
+        allowRemoteInput: () => this.poolStreamAllowRemoteInput,
+        // The hop to another machine (docs/specs/mobile-native-session-controls.md). Only a listed peer, with the pool token.
+        relayToPeer: async (machineId, method, path, body) => {
+          const peer = (routeCtx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
+          if (!peer) return null;
+          try {
+            const r = await poolPeerFetch(routeCtx.recordRopeResult ?? undefined, peer, path, {
+              method,
+              headers: { Authorization: `Bearer ${options.config.authToken}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+              ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+              signal: AbortSignal.timeout(method === 'GET' ? 8000 : 30_000),
+            });
+            return { status: r.status, body: await r.json().catch(() => null) }; // @silent-fallback-ok — an unreadable body is what an older machine's unknown route gives, handled by the caller
+          } catch { return null; } // @silent-fallback-ok — not answering is the caller's plain reason
+        },
         lookupPeers: async (name) => {
           const peers = routeCtx.resolvePeerUrls?.() ?? [];
           const asked = peers.slice(0, PEER_LOOKUP_MAX);

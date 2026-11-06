@@ -1787,6 +1787,20 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     // Face ID-confirmed path and bucket. Neither answers a token or a Secret Drop link.
     { method: 'POST', re: /^\/mobile\/secrets\/requests$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/secrets\/requests\/[0-9a-f]{16}\/cancel$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // The session screen's controls (docs/specs/mobile-native-session-controls.md). Owner phones only.
+    // Conversation use, signed: the keys tray and attaching a file (each re-resolves the session).
+    { method: 'POST', re: /^\/sessions\/[a-z0-9_-]{1,200}\/key$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 60, bucket: 'session-keys' },
+    { method: 'POST', re: /^\/sessions\/[a-z0-9_-]{1,200}\/attachments$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'session-attachments' },
+    // Trimmed reads: what the menu shows, what a new session can pick, and the conversation record with secrets removed.
+    { method: 'GET', re: /^\/mobile\/sessions\/controls$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'session-controls-reads' },
+    { method: 'GET', re: /^\/mobile\/sessions\/new-options$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'session-controls-reads' },
+    { method: 'GET', re: /^\/mobile\/sessions\/history$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'session-history-reads' },
+    // What ends, moves or starts a session: the Face ID-confirmed path and bucket above.
+    { method: 'POST', re: /^\/mobile\/sessions\/door\/[1-9][0-9]{0,15}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/sessions\/move\/[1-9][0-9]{0,15}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/sessions\/close\/[a-z0-9._:-]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/sessions\/new$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/sessions\/default$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
   ];
 })();
 
