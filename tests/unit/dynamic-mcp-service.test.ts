@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { DynamicMcpService, type DynamicMcpServicePrimitives } from '../../src/core/DynamicMcpService.js';
+import { FeatureEvidenceLog, setFeatureEvidenceLog } from '../../src/monitoring/FeatureEvidenceLog.js';
 
 const MCP_JSON = { mcpServers: { playwright: { command: 'npx' }, threadline: { command: 'node' } } };
 
@@ -151,5 +152,70 @@ describe('DynamicMcpService', () => {
     const afterOffload = svc.getSessionState(TOPIC);
     expect(afterOffload.servers).toEqual(['threadline']);
     expect(committedOf(TOPIC)).toEqual(['threadline']);
+  });
+});
+
+describe('DynamicMcpService — ladder evidence', () => {
+  let dir: string;
+  let log: FeatureEvidenceLog;
+  const rows = () => fs.existsSync(log.filePath)
+    ? fs.readFileSync(log.filePath, 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
+    : [];
+  const make = (over: Partial<DynamicMcpServicePrimitives> = {}) => new DynamicMcpService({
+    projectDir: dir,
+    enabled: () => true,
+    config: () => ({ enabled: true, keepWarm: ['threadline'] }),
+    restart: async () => ({ ok: true }),
+    isPreapproved: () => true,
+    captureHeavyPids: () => [],
+    reapPids: () => {},
+    isMidToolUse: () => false,
+    ...over,
+  });
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-dynsvc-ev-'));
+    fs.writeFileSync(path.join(dir, '.mcp.json'), JSON.stringify(MCP_JSON));
+    log = new FeatureEvidenceLog({ projectDir: dir, machine: 'm', instarVersion: '0' });
+    setFeatureEvidenceLog(log);
+  });
+  afterEach(() => {
+    setFeatureEvidenceLog(null);
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/dynamic-mcp-service.test.ts' });
+  });
+
+  it('an applied load writes one fired row and still reaches the host audit sink', async () => {
+    const audited: unknown[] = [];
+    await make({ audit: (e) => audited.push(e) }).requestLoad(5, 'playwright', { kind: 'agent' });
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]).toMatchObject({ featureId: 'sessions.dynamicMcp', kind: 'fired', context: { op: 'load', server: 'playwright', topicId: 5 } });
+    expect(audited).toHaveLength(1);
+  });
+
+  it('a failed restart writes an error row, not a fired one', async () => {
+    await make({ restart: async () => ({ ok: false, code: 'boom' }) }).requestLoad(5, 'playwright', { kind: 'agent' });
+    expect(rows().map((r) => r.kind)).toEqual(['error']);
+    expect(rows()[0].context).toMatchObject({ outcome: 'restart-failed', detail: 'boom' });
+  });
+
+  it('an offload aborted mid-tool-use writes an error row', async () => {
+    const svc = make();
+    await svc.requestLoad(5, 'playwright', { kind: 'agent' });
+    const r = await make({ isMidToolUse: () => true }).requestOffload(5, 'playwright', { kind: 'agent' });
+    expect(r.status).toBe('aborted');
+    expect(rows().map((x) => x.kind)).toEqual(['fired', 'error']);
+  });
+
+  it('a no-op or a pending approval writes nothing, so it cannot thin out the error rate', async () => {
+    await make().requestOffload(5, 'playwright', { kind: 'agent' }); // not loaded: no-op
+    const r = await make({ isPreapproved: () => false }).requestLoad(5, 'playwright', { kind: 'agent' });
+    expect(r.status).toBe('needs-approval');
+    expect(rows()).toEqual([]);
+  });
+
+  it('a host audit sink that throws does not change the result', async () => {
+    const r = await make({ audit: () => { throw new Error('sink'); } }).requestLoad(5, 'playwright', { kind: 'agent' });
+    expect(r.status).toBe('applied');
+    expect(rows().map((x) => x.kind)).toEqual(['fired']);
   });
 });
