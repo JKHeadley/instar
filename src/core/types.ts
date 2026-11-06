@@ -1484,6 +1484,7 @@ export type SkipReason =
   | 'role-guard'      // WS4.3: state-writing job refused on a read-only standby (not the lease-holder)
   | 'throwaway-agent' // test-agent-leak-guard: agent lives in a temp folder / sandboxed HOME
   | 'script-cap'      // job-cost-reduction F8: 3 scripts already running on this server (retried in 1 min)
+  | 'definition-changed' // The job's definition changed while its gate ran; the next fire uses the new one
   | 'gate';           // Gate command returned non-zero (nothing to do)
 
 /**

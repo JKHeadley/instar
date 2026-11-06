@@ -404,6 +404,17 @@ export class JobScheduler {
    * Used to avoid rebuilding cron tasks when the on-disk jobs snapshot
    * has not actually changed.
    */
+  /**
+   * A job's definition for the post-gate comparison. `topicId` is left out: the
+   * scheduler writes it onto the live job at runtime and a reload drops that
+   * write, so it moves without anyone editing the job. A topic-only edit made
+   * during a gate therefore runs this one fire with the previous topic's notices
+   * and prompt context; the next fire uses the new topic.
+   */
+  private static gatedDefinition(job: JobDefinition): string {
+    return JSON.stringify({ ...job, topicId: undefined });
+  }
+
   private static signatureForJobs(jobs: JobDefinition[]): string {
     return crypto.createHash('sha256').update(JSON.stringify(jobs)).digest('hex');
   }
@@ -959,6 +970,11 @@ export class JobScheduler {
 
     this.refreshAgentMdBodyIfChanged(job);
 
+    // The definition this fire was admitted on, taken BEFORE the rollback
+    // projection below. The post-gate check compares the live set against this:
+    // the projection is a per-fire view of the same definition, never a change.
+    const admittedDefinition = job.gate ? JobScheduler.gatedDefinition(job) : undefined;
+
     // job-cost-reduction §5.1 / §8.4: an instar-origin `runner: script` job
     // runs its shipped script — unless the rollback switch (read LIVE here)
     // turns script runners off globally or for this slug, in which case the
@@ -1171,12 +1187,30 @@ export class JobScheduler {
     if (job.gate) {
       try { this.refreshJobs(); } catch { return 'skipped'; }
       const live = this.jobs.find(candidate => candidate.slug === slug);
-      if (!live || !live.enabled || this.paused || JSON.stringify(live) !== JSON.stringify(job)
-        || !verifyImportedPortableJob(this.stateDir, path.dirname(this.stateDir), slug)) {
+      // Each refusal names its own cause. A local job has no portable integrity
+      // to fail, so only a failed portable check may write that record: it feeds
+      // the coverage alert for imported jobs.
+      if (!verifyImportedPortableJob(this.stateDir, path.dirname(this.stateDir), slug)) {
         recordImportedPortableIntegrityFailure(this.stateDir, slug);
         this.skipLedger.recordSkip(slug, 'disabled');
         this.state.appendEvent({ type: 'job_skipped',
-          summary: `Job "${slug}" refused — definition or approval changed during its gate`,
+          summary: `Job "${slug}" refused — imported files no longer match local approval`,
+          timestamp: new Date().toISOString(), metadata: { slug, reason, gateReason: 'portable-integrity' },
+        });
+        return 'skipped';
+      }
+      if (!live || !live.enabled) {
+        this.skipLedger.recordSkip(slug, 'disabled');
+        this.state.appendEvent({ type: 'job_skipped',
+          summary: `Job "${slug}" refused — ${live ? 'disabled' : 'removed from the live job set'} during its gate`,
+          timestamp: new Date().toISOString(), metadata: { slug, reason, gateReason: live ? 'disabled' : 'job-missing' },
+        });
+        return 'skipped';
+      }
+      if (JobScheduler.gatedDefinition(live) !== admittedDefinition) {
+        this.skipLedger.recordSkip(slug, 'definition-changed');
+        this.state.appendEvent({ type: 'job_skipped',
+          summary: `Job "${slug}" refused — definition changed during its gate`,
           timestamp: new Date().toISOString(), metadata: { slug, reason, gateReason: 'post-gate-definition-changed' },
         });
         return 'skipped';
@@ -3760,7 +3794,7 @@ export class JobScheduler {
 
   /** A quiet gate or machine pin is evidence of lost job coverage, not success. */
   private observeContinuitySkip(slug: string, reason: SkipReason): void {
-    if (this.state.readOnly || (reason !== 'gate' && reason !== 'machine-scope')) return;
+    if (this.state.readOnly || (reason !== 'gate' && reason !== 'machine-scope' && reason !== 'definition-changed')) return;
     const job = this.jobs.find((candidate) => candidate.slug === slug);
     if (!job?.enabled) return;
     const key = `job-silence-${slug}`;

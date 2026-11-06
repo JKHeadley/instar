@@ -305,6 +305,7 @@ describe('run history with skips', () => {
     expect(markText(h.marks[1], NOW)).toContain('succeeded · 3 min');
     expect(markText(h.marks[3], NOW)).toContain('failed · 12 s · exit 1 · started by dashboard manual');
     expect(skipWords('gate')).toBe('skipped (nothing to do, by its pre-flight check)');
+    expect(skipWords('definition-changed')).toBe('skipped (its settings changed while it was starting)');
     expect(skipWords('something-new')).toBe('skipped (something new)');
   });
   it('tells a failed history read from a failed skip read (runs still shown)', () => {
