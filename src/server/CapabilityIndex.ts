@@ -512,10 +512,10 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     key: 'mobileHealthIssues',
     // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
     prefixes: [],
-    description: 'What a degraded /health means for the person (docs/specs/mobile-health-issues.md): each reason sorted into user-affecting, internal or unclassified from a declared table, with plain words and a next step. Read-only, owner phone or bearer. /health itself is unchanged.',
+    description: 'What a degraded /health means for the person (docs/specs/mobile-health-issues.md): each reason sorted into user-affecting, internal or unclassified from a declared table, with plain words and a next step, and the quick actions on each one (docs/specs/health-quick-actions.md): hide for a while, hide from me, or ignore completely, undoable from the Hidden list. Owner phone or bearer. /health keeps its shape; only an ignored problem stops counting in it.',
     build: () => ({
       configured: true,
-      endpoints: ['GET /mobile/health-issues'],
+      endpoints: ['GET /mobile/health-issues', 'POST /mobile/health-issues/choices', 'POST /mobile/health-issues/choices/undo'],
     }),
   },
   {

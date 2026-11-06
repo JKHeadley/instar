@@ -21,3 +21,5 @@ Change: a controls menu for the iPhone app's session screen. New owner-phone rou
 ## After Local Verify
 
 The first verify failed one test: `tests/unit/mobile-native-console-pages-claudemd.test.ts` pins the console pages bullet right after the ask-and-cancel bullet, and this change had put its own bullet between them. The bullet and its migration now follow the owner health reading bullet, the last in the block, so each existing bullet keeps its neighbour. No behaviour change beyond where the line sits.
+
+Main then gained PR 2823, whose health quick actions bullet took the same place. Forward-merged: both kept, this bullet after it, anchored on it in the migration.

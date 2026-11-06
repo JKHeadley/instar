@@ -1103,8 +1103,8 @@ export function MOBILE_SECRETS_WRITES_LINE(port: number): string {
 }
 export const MOBILE_SECRETS_WRITES_MARKER = 'POST /mobile/secrets/requests/<key>/cancel';
 /**
- * The session screen's controls (docs/specs/mobile-native-session-controls.md), one bullet after the owner
- * health reading bullet. Sniff: `GET /mobile/sessions/controls`.
+ * The session screen's controls (docs/specs/mobile-native-session-controls.md), one bullet after the health
+ * quick actions bullet. Sniff: `GET /mobile/sessions/controls`.
  */
 export function MOBILE_SESSION_CONTROLS_LINE(port: number): string {
   return `- The app's session screen has the dashboard's controls: a menu reading \`GET /mobile/sessions/controls\` on http://localhost:${port} (machine, door, model, what each can do and why not), keys and Stop (\`POST /sessions/<name>/key\`), attaching a file (\`POST /sessions/<name>/attachments\`), History (\`GET /mobile/sessions/history\`), and sessions on other machines through the machine the phone reached. Switching door and model, moving to another machine, closing, starting a session and setting the default for new topics each take Face ID (\`POST /mobile/sessions/door/<topic>\`, \`/move/<topic>\`, \`/close/<id>\`, \`/new\`, \`/default\`, behind \`mobilePairing.permissionActions\`) and run the dashboard's own routes, so their rules and refusals stay. When the operator asks "why can't I change this from my phone?", read the same answer: the menu's \`door.reason\`, \`move.reason\` and \`actions.reason\`.`;
@@ -1135,6 +1135,16 @@ export function MOBILE_HEALTH_ISSUES_LINE(port: number): string {
   return `- The app's Fleet and Machines and health screens and the console read \`GET /mobile/health-issues\` (\`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/health-issues\`): why \`/health\` says degraded, each reason sorted into \`user-affecting\`, \`internal\` or \`unclassified\` from the declared table in \`src/monitoring/healthIssues.ts\`, with plain words, details, a next step and the message "Ask the agent about this" starts from. Owner phone or bearer, read-only. Verdicts: \`attention\`, \`unsure\`, \`running\`, \`healthy\`. An id the table doesn't name is \`unclassified\`: it shows in the details and never reads as healthy. **When to use** (PROACTIVE): "why does it say degraded?" → read this before answering, and answer in its words. When the person asks about a \`reference:\` id from this page, look at \`/health/degradations\` for that feature and say what happened and what to do.`;
 }
 export const MOBILE_HEALTH_ISSUES_MARKER = 'GET /mobile/health-issues';
+
+/**
+ * The person's quick actions on a health problem (docs/specs/health-quick-actions.md), one bullet after the
+ * health reading bullet. Sniff: `POST /mobile/health-issues/choices`.
+ */
+export function MOBILE_HEALTH_CHOICES_LINE(port: number): string {
+  return `- On each problem the person can Hide for a while (1 hour, 1 day or 1 week), Hide from me (they stop seeing it, I keep tracking it) or Ignore completely (I stop tracking it): \`POST /mobile/health-issues/choices\` with \`{"id":"<issue id>","choice":"snooze","hours":24}\`, and \`POST /mobile/health-issues/choices/undo\` with \`{"key":"<hidden key>"}\`; what's hidden is the \`hidden\` list in \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/health-issues\`. Hidden items never raise a count. Security and data-loss items only get Hide for a while, and a live reading can't be ignored because other parts of me depend on it. **When to use** (PROACTIVE): the person says "stop showing me that" or "ignore this" → it's their tap in the app or the console, or do it for them when they ask. These choices are theirs: never hide or ignore a problem on my own, because that silences what they rely on me to show them. The Hidden list says who did it.`;
+}
+
+export const MOBILE_HEALTH_CHOICES_MARKER = 'POST /mobile/health-issues/choices';
 export const MOBILE_ROUTES_PROBE_LINE_PREFIX = '- A probe that fails 8 times in a row pauses for that name';
 
 /** The increment-1 wording of the verdict bullet's tail, replaced in place on update. */
@@ -1189,6 +1199,7 @@ ${PAIRING_APPROVE_DASHBOARD_BULLET}
 }
 
 export const SLACK_FROM_APP_CLAUDEMD_MARKER = '### Slack conversations from the Instar app';
+export const SLACK_OWNER_READ_AUTHORITY_LINE = '- **Owner-phone remote Slack history:** the server rechecks the signed phone\'s current key, person, owner role, revocation record and live pairing/native gates before every holder dial and before returning private history. Removing access while a read waits prevents that history from being returned. If revocation state cannot be checked, the read is refused. This does not proxy sends or remote file downloads.';
 /**
  * CLAUDE.md awareness block for continuing Slack conversations from the iPhone app
  * (docs/specs/mobile-native-conversations.md §4.9 — increment 4). Sniffed by its exact heading.
@@ -1199,6 +1210,7 @@ export function SLACK_FROM_APP_CLAUDEMD_SECTION(port: number): string {
 Where Slack is set up, the app's conversation list also shows Slack channels and threads (\`platform: "slack"\`, id = the negative durable conversation id), and the operator can read and write them from the phone. A message the operator types in the app reaches my Slack session exactly like a Slack message from them, tagged \`[slack:<channel> from <owner> (uid:<U…>) (📱 signed)]\` ("📱 signed" only when the phone's signature checked out), and a copy "📱 <owner> (from the app): …" is posted in the channel (credential-shaped text shown as \`[credential hidden]\`). I answer it with \`slack-reply.sh\` as usual.
 - **The operator's Slack user id is a setting I propose, never infer.** Until \`mobilePairing.slackOwnerUserId\` is set the app shows no Slack rows and its Slack routes answer 503 \`slack-owner-unset\`. When the operator asks to use Slack from the app, read the Slack channel's verified operator (\`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic-operator\`), propose that \`U…\` id to the operator, and set it only after they say yes.
 - History an agent can read: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/chat/slack/CONVERSATION_ID/messages?machine=MACHINE"\`, with MACHINE the \`machine\` on that conversation's row in \`GET /mobile/conversations\` (a Slack id is local to one machine; another machine's id answers 409 \`wrong-machine\`, a missing machine 400 \`machine-required\`). App-sent rows carry \`originVerified\`; rows typed in Slack read \`none\`.
+${SLACK_OWNER_READ_AUTHORITY_LINE}
 - **When to use** (PROACTIVE): "can I use Slack from the app?" → check the setting above and offer to set it; "did my app message reach Slack?" → read that message's \`deliveryState\`, \`mirror\` and \`originVerified\`, never infer it from the text.
 `;
 }
@@ -1266,6 +1278,7 @@ ${MOBILE_SECRETS_LINE(port)}
 ${MOBILE_SECRETS_WRITES_LINE(port)}
 ${MOBILE_CONSOLE_PAGES_LINE(port)}
 ${MOBILE_HEALTH_ISSUES_LINE(port)}
+${MOBILE_HEALTH_CHOICES_LINE(port)}
 ${MOBILE_SESSION_CONTROLS_LINE(port)}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
@@ -9677,6 +9690,12 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Slack conversations from the Instar app section');
     }
+    if (!content.includes(SLACK_OWNER_READ_AUTHORITY_LINE)) {
+      content = content.replace(SLACK_FROM_APP_CLAUDEMD_MARKER,
+        SLACK_FROM_APP_CLAUDEMD_MARKER + '\n\n' + SLACK_OWNER_READ_AUTHORITY_LINE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: clarified live owner authority for remote Slack history');
+    }
     if (!content.includes('Native app conversations')) {
       content += APP_CONVERSATIONS_CLAUDEMD_SECTION(port);
       patched = true;
@@ -9938,11 +9957,25 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added the owner health reading line');
     }
 
-    // The session screen's controls (docs/specs/mobile-native-session-controls.md): one bullet after the
-    // owner health reading bullet of an existing Mobile app routes block (a block added below already has it).
-    if (content.includes('Mobile app routes') && !content.includes(MOBILE_SESSION_CONTROLS_MARKER)) {
+    // The quick actions on a health problem (docs/specs/health-quick-actions.md): one bullet after the reading.
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_HEALTH_CHOICES_MARKER)) {
       const lines = content.split('\n');
       const at = lines.findIndex((l) => l.includes(MOBILE_HEALTH_ISSUES_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_HEALTH_CHOICES_LINE(port));
+        content = lines.join('\n');
+      } else {
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_HEALTH_CHOICES_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the health quick actions line');
+    }
+
+    // The session screen's controls (docs/specs/mobile-native-session-controls.md): one bullet after the
+    // health quick actions bullet of an existing Mobile app routes block (a block added below already has it).
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_SESSION_CONTROLS_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_HEALTH_CHOICES_MARKER));
       if (at >= 0) {
         lines.splice(at + 1, 0, MOBILE_SESSION_CONTROLS_LINE(port));
         content = lines.join('\n');

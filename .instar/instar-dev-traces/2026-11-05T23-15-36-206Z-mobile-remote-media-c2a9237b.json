@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "mobile-remote-media",
+  "sessionId": "ae0d2305-6c8f-443a-a23d-9c020ecac27c",
+  "timestamp": "2026-11-05T23:15:36.206Z",
+  "artifactPath": "upgrades/side-effects/mobile-remote-media.md",
+  "artifactSha256": "7cdc81d096b5344672a63a725bb97398749e3655b57f2dff4dae3287b473001b",
+  "specPath": "docs/specs/mobile-remote-media.md",
+  "coveredFiles": [
+    "docs/specs/mobile-remote-media.eli16.md",
+    "docs/specs/mobile-remote-media.md",
+    "docs/specs/reports/mobile-remote-media-convergence.md",
+    "src/server/mobileMediaRoutes.ts",
+    "tests/integration/mobile-remote-media.test.ts",
+    "upgrades/side-effects/mobile-remote-media.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Coordinator-required fix from the independent read of the same owner read.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Narrows a socket timeout; adds no loop or self-action."
+  }
+}

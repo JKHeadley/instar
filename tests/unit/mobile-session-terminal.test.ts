@@ -82,6 +82,8 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['POST', '/mobile/permissions/features/git-backup'],
       ['POST', '/mobile/secrets/requests'],
       ['POST', '/mobile/secrets/requests/abcdef0123456789/cancel'],
+      ['POST', '/mobile/health-issues/choices'],
+      ['POST', '/mobile/health-issues/choices/undo'],
       // Approve a waiting phone with Face ID (mobile-pairing-approve §3.4).
       ['GET', '/mobile/pairing-requests'],
       ['POST', '/mobile/pairing-requests/00000000-0000-4000-8000-000000000000/approve'],
