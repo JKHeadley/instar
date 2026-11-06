@@ -33,7 +33,7 @@ import { renderMaturation, maturationTile } from './maturation-board.js';
 import { renderIdeas, ideasTile } from './ideas.js';
 import { paceCard } from './pace.js';
 import { takeTicket, signInAtBoot } from './ticket-model.js';
-import { sheetIsOpen, closeSheet, unlockCheck, machineIssue, MACHINES_PAGE, newArrival, refreshHeld } from './ui.js';
+import { sheetIsOpen, closeSheet, unlockCheck, machineIssue, MACHINES_PAGE, newArrival, refreshHeld, setKids } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
 const THEME_KEY = 'instar_console_theme';
@@ -681,7 +681,7 @@ const PHONE_ONLY = {
       onMissing: () => { if (!old) note.hidden = false; },
       onShown: () => { note.hidden = true; if (old && old.isConnected) old.replaceWith(card); },
     });
-    if (!old) main.replaceChildren(el('section', { class: 'group-head' }, el('h1', { text: 'Pace' })), card, note);
+    if (!old) setKids(main, el('section', { class: 'group-head' }, el('h1', { text: 'Pace' })), card, note);
   },
 };
 

@@ -63,7 +63,7 @@ Pure static-asset change: revert and ship a patch. No persistent state. The app 
 
 ## Conclusion
 
-Clear to ship. Review led to two adjustments: the refresh check uses the raw hash path so short names keep refreshing, and the phone Pace page swaps cards on load rather than blanking every 30 seconds.
+Clear to ship. The first local verify failed one floor test (`dashboard-refresh-keeps-place`: the phone Pace page drew with a raw `main.replaceChildren` instead of the `setKids` page helper that keeps the reader's place on refresh); fixed in a second commit. Review led to two adjustments: the refresh check uses the raw hash path so short names keep refreshing, and the phone Pace page swaps cards on load rather than blanking every 30 seconds.
 
 ## Second-pass review
 
