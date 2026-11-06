@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-06T16:24:53.306Z",
+  "slug": "issue-machine-name",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 39,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/mobileHealthRoutes.ts",
+      "src/server/mobileOpsRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 35,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

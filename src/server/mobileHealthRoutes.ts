@@ -9,6 +9,10 @@
  * Owner phone or bearer; the console uses its bearer. /health itself is read over loopback, so the two cannot
  * disagree about what is wrong. A choice is only taken for a problem showing right now, and binds to its exact ids.
  * Two more routes are for this agent's other machines, bearer only and off the phone's allowlist.
+ *
+ * Every problem in the reading is this machine's own (/health is read locally), so the answer and each row name
+ * the machine that answered (`machine: { key, name }`, the same key as GET /mobile/machines). An agent on more than
+ * one machine otherwise shows "someone at this Mac" with no way to tell which Mac.
  */
 import type { Request, Response, Router } from 'express';
 import { ownerOrBearer, singleFlight } from './mobileCapacityRoutes.js';
@@ -47,7 +51,27 @@ export interface MobileHealthDeps {
   /** The person's choices. Without it the read is unchanged and the choice routes answer 503. */
   choices?: HealthChoiceStore;
   peers?: HealthChoicePeers;
+  /** The machine that answered: its row key on GET /mobile/machines and its verified name. Without it no machine is named. */
+  machine?: () => HealthMachine;
   now?: () => number;
+}
+
+/** Which machine a problem is on. `name` is null when the machine has no verified name yet. */
+export interface HealthMachine { key: string | null; name: string | null }
+
+/** Adds the machine that answered to the reading and to each of its problems. A failing lookup names none. */
+export function withMachine<T extends { issues: object[] }>(summary: T, machine: (() => HealthMachine) | undefined): T & { machine?: HealthMachine } {
+  if (!machine) return summary;
+  let m: HealthMachine;
+  try {
+    m = machine();
+  } catch (err) {
+    report('naming this machine', err);
+    return summary;
+  }
+  if (!m || (m.key === null && m.name === null)) return summary;
+  const one = { key: m.key, name: m.name };
+  return { ...summary, machine: one, issues: summary.issues.map((i) => ({ ...i, machine: one })) };
 }
 
 function report(detail: string, err: unknown): void {
@@ -82,7 +106,7 @@ export function mountMobileHealthRoutes(router: Router, deps: MobileHealthDeps):
     return { body: r.body, events: events(), current: deps.current?.() ?? {} };
   });
   const answer = (raw: RawRead): HealthIssuesSummary => summarizeHealth(raw.body, raw.events, raw.current, deps.choices);
-  const page = (summary: HealthIssuesSummary) => ({ schemaVersion: MOBILE_HEALTH_SCHEMA_VERSION, generatedAt: new Date(now()).toISOString(), ...summary });
+  const page = (summary: HealthIssuesSummary) => ({ schemaVersion: MOBILE_HEALTH_SCHEMA_VERSION, generatedAt: new Date(now()).toISOString(), ...withMachine(summary, deps.machine) });
 
   const owner = (req: Request, res: Response): boolean => {
     res.set('Cache-Control', 'no-store');

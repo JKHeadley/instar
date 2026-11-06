@@ -37,6 +37,15 @@ describe('health-model', () => {
     expect(rows).toEqual([{ key: 'iMessage', title: 'iMessage isn’t connected', detail: 'Messages won’t reach me.', href: '#/capacity/health?s=iMessage' }]);
   });
 
+  it('each problem names its machine on Home, and says nothing when the agent named none', async () => {
+    const { healthNeedRows, machineWords } = await model();
+    const rows = healthNeedRows(answer('attention', [issue({ machine: { key: 'k1', name: 'Mac Studio' } })]));
+    expect(rows[0].detail).toBe('On Mac Studio · Messages won’t reach me.');
+    expect(machineWords(issue())).toBe('');
+    expect(machineWords(issue({ machine: { key: 'k1', name: null } }))).toBe('');
+    expect(machineWords(issue({ machine: { key: 'k1', name: '  ' } }))).toBe('');
+  });
+
   it('the Ask link carries the question, encoded', async () => {
     const { askHref } = await model();
     const href = askHref(issue());
@@ -86,6 +95,16 @@ describe('the page', () => {
     expect(main.querySelector('[data-focus-key="h:GitSync.gitHygiene"]').hasAttribute('open')).toBe(true);
     expect(main.querySelector('details.list-section').hasAttribute('open')).toBe(true);
     expect(main.querySelector('h1').textContent).toBe('iMessage isn’t connected.');
+  });
+
+  it('a problem card says which machine it is on', async () => {
+    const { renderHealth } = await import(path.join(CONSOLE, 'health.js'));
+    const main = document.querySelector('main');
+    await renderHealth(main, { get: vi.fn(async () => answer('attention', [issue({ machine: { key: 'k1', name: 'Mac Studio' } })])) });
+    const card = main.querySelector('[data-focus-key="h:iMessage"]');
+    expect(card.querySelector('summary').nextElementSibling.textContent).toBe('On Mac Studio');
+    await renderHealth(main, { get: vi.fn(async () => answer('attention', [issue()])) });
+    expect(main.textContent).not.toContain('On ');
   });
 
   // ── Quick actions (docs/specs/health-quick-actions.md) ──
