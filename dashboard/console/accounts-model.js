@@ -80,9 +80,87 @@ export function resetWords(ts, now = Date.now()) {
   return `resets ${sameDay ? '' : d.toLocaleDateString([], { weekday: 'short' }) + ' '}${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 }
 
+/** A usage window at or over this share is "nearly out" (the rows' red tone uses the same line). */
+export const NEAR_OUT_PCT = 90;
+
+/** Every usage window on a reading: [{ pct, resetsAt }]. */
+function windowsOf(q) {
+  if (!q) return [];
+  const seen = new Set();
+  const out = [];
+  for (const [k, label] of [['fiveHour', '5-hour'], ['sevenDay', 'weekly'], ['fable', 'Fable weekly'], ['primary', '5-hour'], ['secondary', 'weekly']]) {
+    const w = q[k];
+    if (!w || seen.has(label)) continue;
+    const pct = Number(w.utilizationPct ?? w.usedPercent);
+    if (!Number.isFinite(pct)) continue;
+    seen.add(label);
+    out.push({ pct, resetsAt: w.resetsAt || w.resetsAtIso || null });
+  }
+  return out;
+}
+
+/**
+ * The page's notice spot: only what needs the person or changes what they can do, and nothing at all
+ * otherwise. Same rules as the phone's (src/server/mobileCapacityRoutes.ts accountNotices). Sign-ins are
+ * the "Needs you" card and its count, so they are not repeated here. One account full while others have
+ * room is on its row and is never a notice.
+ *  - a machine with no signed-in account, where a sign-in would fix it;
+ *  - every usable account, or every usable account of one kind, at or over the line, with when room returns.
+ * Returns [{ key, tone, title, returnsAt, action: { kind: 'sign-in' } | { kind: 'ask', about } }].
+ * Reads each cell's `actionable` (set by buildAccountsPage) to choose the machine notice's action.
+ */
+export function accountNotices(accounts, { partial = false, now = Date.now() } = {}) {
+  const scope = partial ? ' (on the machines that answered)' : '';
+  const byMachine = new Map();
+  for (const a of accounts) for (const c of a.cells) {
+    const g = byMachine.get(c.machineId) || { name: c.machine, states: [], canSignIn: false };
+    g.states.push(c.state);
+    if (c.state === 'attn' && c.actionable) g.canSignIn = true;
+    byMachine.set(c.machineId, g);
+  }
+  const machine = [];
+  for (const [id, g] of byMachine) {
+    if (g.states.some((s) => s === 'ok' || s === 'working') || !g.states.includes('attn')) continue;
+    const title = `${g.name} has no signed-in account, so nothing can run there.`;
+    // The sign-in is on the "Needs you" card when it can be started from here; otherwise ask the agent.
+    // warning-path: inline
+    machine.push({ key: `machine:${id}`, tone: 'bad', title, returnsAt: null, action: g.canSignIn ? { kind: 'sign-in' } : { kind: 'ask', about: title } });
+  }
+  const usable = accounts.filter((a) => a.cells.some((c) => c.state === 'ok'));
+  const kinds = [...new Set(usable.map((a) => frameworkName(a.framework)))].sort();
+  const outKinds = [];
+  for (const kind of kinds) {
+    const list = usable.filter((a) => frameworkName(a.framework) === kind);
+    if (list.some((a) => !a.tight)) continue; // one we can't read may have room
+    if (list.every((a) => a.tight.pct >= NEAR_OUT_PCT)) outKinds.push({ kind, list });
+  }
+  const returnsAt = (a) => {
+    let latest = 0;
+    for (const w of windowsOf(a.reading).filter((x) => x.pct >= NEAR_OUT_PCT)) {
+      const t = Date.parse(w.resetsAt);
+      if (!Number.isFinite(t) || t <= now) return null;
+      latest = Math.max(latest, t);
+    }
+    return latest || null;
+  };
+  const room = (list, kind) => {
+    const usedUp = list.every((a) => a.tight.pct >= 100);
+    const state = usedUp ? 'used up' : 'nearly out';
+    const noun = kind ? `${kind} account` : 'account';
+    const title = list.length === 1 ? `The only ${noun} is ${state}${scope}.` : `All ${list.length} ${noun}s are ${state}${scope}.`;
+    const times = list.map(returnsAt).filter((t) => t !== null);
+    // warning-path: inline
+    return { key: `room:${kind || '*'}`, tone: usedUp ? 'bad' : 'attn', title, returnsAt: times.length ? new Date(Math.min(...times)).toISOString() : null, action: { kind: 'ask', about: title } };
+  };
+  const rooms = outKinds.length && outKinds.length === kinds.length
+    ? [room(outKinds.flatMap((k) => k.list), kinds.length === 1 ? kinds[0] : null)]
+    : outKinds.map((k) => room(k.list, k.kind));
+  return [...machine, ...rooms].sort((a, b) => Number(b.tone === 'bad') - Number(a.tone === 'bad'));
+}
+
 /**
  * Build the page. episodes: /subscription-relogin?scope=pool episodes (optional).
- * Returns { ok, needs, accounts, headline, sub, facts, partial }.
+ * Returns { ok, needs, notices, accounts, headline, sub, facts, partial, tone }.
  */
 export function buildAccountsPage(res, now = Date.now(), { episodes = [], blockers = [], inUse = null, names: extraNames = {} } = {}) {
   if (!res.ok) return { ok: false, reason: `Couldn't read accounts: ${res.reason}.` };
@@ -159,18 +237,15 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
   const waitingLine = waiting ? `${waiting === 1 ? '1 sign-in is' : `${waiting} sign-ins are`} unconfirmed or waiting on automatic repair; nothing for you to do yet.` : '';
   const usable = accounts.filter((a) => a.cells.some((c) => c.state === 'ok')).length;
   const busiest = accounts.filter((a) => a.tight).sort((a, b) => b.tight.pct - a.tight.pct)[0];
-  // warning-path: row
-  const near = accounts.filter((a) => a.tight && a.tight.pct >= 90 && a.cells.some((c) => c.state === 'ok'));
-  let headline;
-  if (needs.length) headline = needs.length === 1 ? '1 sign-in needs you.' : `${needs.length} sign-ins need you.`;
-  else if (near.length && near.length === accounts.filter((a) => a.tight).length) headline = 'Every account is nearly out.';
-  // warning-path: row
-  else if (busiest) headline = busiest.tight.pct >= 90 ? `${busiest.name} is nearly out; others have room.` : `Plenty left: the busiest account is at ${Math.round(busiest.tight.pct)}%.`;
-  else headline = 'No usage readings yet.';
+  const notices = accountNotices(accounts, { partial: failed.length > 0, now });
+  // The title says what needs the person; otherwise it is just the page name and the notices
+  // (each with its own action) sit under it.
+  const headline = needs.length ? (needs.length === 1 ? '1 sign-in needs you.' : `${needs.length} sign-ins need you.`) : 'Accounts';
   const facts = [
     // warning-path: inline
     needs.length ? { n: needs.length, label: 'need you', tone: 'attn', href: '#/capacity/accounts?s=needs' } : null,
-    busiest ? { n: `${Math.round(busiest.tight.pct)}%`, label: `most used · ${busiest.name}` , tone: busiest.tone } : null,
+    // A routine number: one full account among others with room is not a warning (the notices say when it is).
+    busiest ? { n: `${Math.round(busiest.tight.pct)}%`, label: `most used · ${busiest.name}` } : null,
     { n: `${usable}/${accounts.length}`, label: 'accounts usable' },
     inUse && inUse.activeAccountId ? { n: (byId.get(inUse.activeAccountId) || {}).name || 'Account name unavailable', label: 'in use here' } : null,
   ].filter(Boolean);
@@ -179,5 +254,5 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
   for (const [k, v] of Object.entries(extraNames || {})) if (!machineNames[k]) machineNames[k] = verifiedDisplayName(v, k);
   const partial = failed.length ? `No answer from ${failed.map((f) => verifiedDisplayName(f.nickname, f.machineId) || verifiedDisplayName(f.machineNickname, f.machineId) || machineNames[f.machineId] || 'a machine with no name yet').join(', ')}; its accounts may be out of date.` : null;
   // warning-path: pageHead
-  return { ok: true, needs, accounts, headline, sub: [near.length ? `${near.map((a) => a.name).join(', ')} ${near.length === 1 ? 'is' : 'are'} at 90% or more of a limit.` : '', waitingLine].filter(Boolean).join(' '), facts, partial, tone: needs.length ? 'attn' : 'ok' };
+  return { ok: true, needs, notices, accounts, headline, sub: waitingLine, facts, partial, tone: needs.length ? 'attn' : 'ok' };
 }

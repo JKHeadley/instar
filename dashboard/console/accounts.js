@@ -6,8 +6,8 @@
 //   cancel a sign-in          POST /subscription-pool/follow-me/cancel     bearer
 //   repair / retry / cancel   POST /subscription-relogin/repair-cell       operator session
 
-import { buildAccountsPage, frameworkName } from './accounts-model.js';
-import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell, askPin, forgetOperatorSession, firstPaint, arrivalScroll, markNeed } from './ui.js';
+import { buildAccountsPage, frameworkName, resetWords } from './accounts-model.js';
+import { el, setKids, pageHead, askLink, sheet, closeSheet, story, details, note, cantTell, askPin, forgetOperatorSession, firstPaint, arrivalScroll, markNeed } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName } from './display-identity.js';
 
@@ -61,12 +61,19 @@ export async function renderAccounts(main, ctx) {
       return row;
     })))));
 
+  // The notice spot: nothing unless something needs the person; each notice carries its action.
+  const notices = page.notices.length ? el('section', { class: 'page-sections', id: 'sec-notices' },
+    page.notices.map((n) => el('div', { class: 'need-card', 'data-tone': n.tone },
+      el('span', { class: 'need-title', text: n.title }),
+      n.returnsAt && resetWords(n.returnsAt) ? el('span', { class: 'row-sub', text: `Room returns: ${resetWords(n.returnsAt).replace(/^resets /, '')}` }) : null,
+      el('p', { class: 'hero-ask' }, n.action.kind === 'sign-in' ? el('a', { href: '#/capacity/accounts?s=needs', text: 'Sign in' }) : askLink(n.action.about))))) : null;
+
   markNeed(needs, 'accounts');
   setKids(main,
     pageHead({ eyebrow: 'Capacity · Accounts', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
     page.partial ? note(page.partial) : null,
     !relogin.ok ? note(`Couldn't read sign-in repairs: ${relogin.reason}.`) : null,
-    needs, list, legacyLink());
+    notices, needs, list, legacyLink());
   const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
   if (want === 'needs') arrivalScroll(needs);
 }
