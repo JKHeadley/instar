@@ -254,7 +254,7 @@ describe('locked-proof launchd kill', () => {
 
   const realTarget = (o: Record<string, unknown>) => Object.assign(Object.create(RealTarget.prototype), {
     a: { port: 4098, dir: '/d' }, uid: '502', launchdJob: { label: 'l', plist: 'p' },
-    now: () => Date.now(), sleep: async () => {}, signalJob: () => {}, ...o,
+    now: () => Date.now(), sleep: async () => {}, signalJob: () => {}, wakeDisplay: () => '', ...o,
   });
   const guardRow = { pid: 7, command: 'instar-desktop-host relock-guard' };
 
@@ -413,25 +413,38 @@ describe('locked-proof launchd kill', () => {
   it('"deadline before Enter" starts typing before the ceiling and presses Enter after it', async () => {
     // On the Mini the whole password takes 0.73 s; a fixed 1.5 s offset started typing 0.77 s
     // after the ceiling, when the page had already closed the box, and nothing was typed.
-    let clock = 0; const slept: number[] = [];
+    let clock = 0; const slept: number[] = []; const woke: number[] = [];
     const page = { waitForSelector: async () => {}, fill: async () => {}, press: async () => {}, isVisible: async () => true, textContent: async () => '' };
     const cal = { reserveMs: 38, perCharMs: 34.75 };
-    const target = realTarget({ main: { page }, mainOpenedAt: 0, cal, password: 'a'.repeat(20), now: () => clock, sleep: async (ms: number) => { slept.push(ms); clock += ms; } });
+    const timing = { now: () => clock, sleep: async (ms: number) => { slept.push(ms); clock += ms; }, wakeDisplay: () => { woke.push(clock); return ''; } };
+    const target = realTarget({ main: { page }, mainOpenedAt: 0, cal, password: 'a'.repeat(20), ...timing });
     const typing = cal.reserveMs + cal.perCharMs * 20;
+    const startOf = () => slept[0] + slept[1];
     await target.typePassword({ timing: 'deadline', inject: [{ action: 'wait-deadline', at: 'before-enter' }] });
     // 0.8 s ahead of the ceiling: measured live, the duty appears about 0.4 s after the start and
     // Enter about 0.65 s after that, so the ceiling falls between the first character and Enter.
-    expect(slept[0]).toBe(600_000 - 800);
+    expect(startOf()).toBe(600_000 - 800);
+    // Ten idle minutes is also the display-sleep time, and a password typed as the display sleeps
+    // is refused "lock screen is not ready": the display is woken 6 s before typing starts.
+    expect(woke).toEqual([600_000 - 800 - 6_000]);
     // "Deadline after Enter" keeps Enter 1.5 s ahead of the ceiling.
-    clock = 0; slept.length = 0;
+    clock = 0; slept.length = 0; woke.length = 0;
     await target.typePassword({ timing: 'deadline', inject: [{ action: 'wait-deadline', at: 'after-enter' }] });
-    expect(slept[0] + typing).toBe(600_000 - 1_500);
+    expect(startOf() + typing).toBe(600_000 - 1_500);
     // When the page was told the grant's own end time, the cases aim from that: measured live,
     // the server's ceiling comes about 0.6 s before "the moment the driver saw it open, plus 10 minutes".
     clock = 0; slept.length = 0;
-    const told = realTarget({ main: { page, expiresAt: 599_360 }, mainOpenedAt: 0, cal, password: 'a'.repeat(20), now: () => clock, sleep: async (ms: number) => { slept.push(ms); clock += ms; } });
+    const told = realTarget({ main: { page, expiresAt: 599_360 }, mainOpenedAt: 0, cal, password: 'a'.repeat(20), ...timing });
     await told.typePassword({ timing: 'deadline', inject: [{ action: 'wait-deadline', at: 'before-enter' }] });
-    expect(slept[0]).toBe(599_360 - 800);
+    expect(startOf()).toBe(599_360 - 800);
+  });
+
+  it('every case starts by waking the display, as a person touching the mouse would', async () => {
+    const calls: string[][] = [];
+    const target = realTarget({ wakeDisplay: undefined, asProof: (args: string[]) => { calls.push(args); return ''; } });
+    delete (target as Record<string, unknown>).wakeDisplay;
+    target.wakeDisplay(2);
+    expect(calls).toEqual([['caffeinate', '-u', '-t', '2']]);
   });
 
   it('the deadline-recovery case freezes the owning server too, or its sweep replaces the frozen guard', () => {

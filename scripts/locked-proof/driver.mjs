@@ -242,7 +242,16 @@ export class RealTarget {
 
   calibration() { return this.cal; }
 
+  /**
+   * What a person touching the mouse does: declares user activity for a moment, which wakes a
+   * sleeping display. Seen live: a password typed within a few seconds of the display waking, or
+   * as the Mac reaches ten idle minutes, is refused "lock screen is not ready". That refusal is
+   * the product's and is safe, but it is not what these cases are about.
+   */
+  wakeDisplay(seconds = 1) { return this.asProof(['caffeinate', '-u', '-t', String(seconds)]); }
+
   async prepare(c) {
+    this.wakeDisplay();
     await this.closeViewers();
     this.events.clear();
     this.pids = {};
@@ -318,6 +327,9 @@ export class RealTarget {
       const typingMs = this.cal.reserveMs + this.cal.perCharMs * this.password.length;
       const ceiling = this.main?.expiresAt ?? (opened + 600_000);
       const startAt = ceiling - (c.inject[0].at === 'before-enter' ? 800 : 1_500 + typingMs);
+      // Ten idle minutes is also this Mac's display-sleep time: wake it a few seconds ahead.
+      await this.sleep(Math.max(0, startAt - 6_000 - this.now()));
+      this.wakeDisplay(2);
       await this.sleep(Math.max(0, startAt - this.now()));
     }
     // Delayed-completion cases need an open duty with the Mac still locked: a refused password
