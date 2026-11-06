@@ -8,7 +8,7 @@
 // - The page is served with a strict Content-Security-Policy (no inline script, nothing
 //   third-party); keep it that way: no inline handlers, no style attributes, no external URLs.
 
-import { deviceFromHash, shownApprovals, prettyCode, copyText, waitingLine, waitingHeadline } from './pair-model.js';
+import { deviceFromHash, shownApprovals, prettyCode, copyText, waitingLine, waitingHeadline, approveHint } from './pair-model.js';
 
 const POLL_MS = 10_000;
 const MAX_FAILURES = 5;
@@ -246,14 +246,18 @@ export function mountPairPage(doc, {
   // while the session that made it is still the live one.
   async function act(path, done, failed, onDone) {
     if (!auth || now() >= auth.expiresAt) { forget(EXPIRED); return; }
+    let message;
     try {
       const r = await request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-      status.textContent = r.ok ? done : failed;
+      // A refusal's own plain reason (mobile-pairing-approve §3.3) beats a general sentence.
+      message = r.ok ? done : (r.data && typeof r.data.detail === 'string' ? r.data.detail : failed);
       if (r.ok && onDone) onDone();
-    } catch (e) { if (gone(e)) return; status.textContent = 'Could not reach the agent.'; }
+    } catch (e) { if (gone(e)) return; message = 'Could not reach the agent.'; }
     await refresh();
+    // After the refresh, which clears the status line on a good read: the answer must stay readable.
+    if (auth) status.textContent = message;
   }
-  // Phones declined on this page: never drawn again, even by a read that started before the decline.
+  // Phones approved or declined on this page: never drawn again, even by a read that started before the decline.
   const declined = new Set();
 
   function renderWaiting(data) {
@@ -274,6 +278,17 @@ export function mountPairPage(doc, {
     for (const a of list) {
       const card = make('div', { cls: 'pair-card' }, waitingBox);
       make('p', { cls: 'pair-device', text: waitingLine(a, now()) }, card);
+      // Approve instead of a code (mobile-pairing-approve §3.3): the same unlock, no new PIN question.
+      if (a.canApprove) {
+        make('p', { cls: 'pair-fp', text: approveHint(a.fingerprint) }, card);
+        const approve = make('button', { cls: 'pair-button', text: 'Approve this phone', type: 'button' }, card);
+        approve.addEventListener('click', () => {
+          approve.disabled = true;
+          void act(`/mobile/pairing-approvals/${encodeURIComponent(a.deviceId)}/approve`, `Approved. That phone is paired. If the app still shows a code box, type ${prettyCode(a.code)} to finish.`, 'Could not approve. Try again.',
+            () => { declined.add(a.deviceId); if (lastData && auth) renderWaiting(lastData); });
+        });
+        make('p', { text: 'If the app asks for a code instead:' }, card);
+      }
       const code = make('p', { cls: 'pair-code', text: prettyCode(a.code), attrs: { 'aria-label': 'Confirmation code' } }, card);
       const copy = make('button', { cls: 'pair-button', text: 'Copy', type: 'button' }, card);
       const copied = make('span', { cls: 'pair-copied', attrs: { role: 'status' } }, card);
@@ -292,7 +307,7 @@ export function mountPairPage(doc, {
         }
       });
       make('p', { text: 'Paste it into the Instar app on that phone. Never send it to anyone, including me.' }, card);
-      if (a.fingerprint) make('p', { cls: 'pair-fp', text: `Phone key: ${a.fingerprint}. The app shows the same key; check they match.` }, card);
+      if (a.fingerprint && !a.canApprove) make('p', { cls: 'pair-fp', text: `Phone key: ${a.fingerprint}. The app shows the same key; check they match.` }, card);
       const decline = make('button', { cls: 'pair-link-button', text: 'Not my phone — decline', type: 'button' }, card);
       decline.addEventListener('click', () => {
         decline.disabled = true;

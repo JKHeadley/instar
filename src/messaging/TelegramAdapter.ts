@@ -1052,8 +1052,44 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
+  /**
+   * The owner's Approve tap on a waiting phone (docs/specs/mobile-pairing-approve.md §3.2). The same
+   * check as Decline: verified, from the owner, in the owner's private chat. A tap the lifeline did
+   * not prove never counts, even before the ingress guard is armed.
+   */
+  async handleMobileApprove(t: { callbackQueryId: string | number; data: string; fromUserId: number | undefined; chatId: number | string | undefined; messageId?: number; verified: boolean }): Promise<'approved' | 'refused' | 'unknown' | 'held'> {
+    const owner = this.getOwnerUserId();
+    const m = /^md:a:([0-9a-f]{24})$/.exec(t.data);
+    if (!t.verified || !owner || t.fromUserId !== owner || String(t.chatId) !== String(owner) || !m) {
+      await this.answerCallback(t.callbackQueryId, 'Only the owner can do this.');
+      return 'refused';
+    }
+    const r = this.mobileApproveHandler ? this.mobileApproveHandler(m[1]!) : { outcome: 'ended' as const, text: 'This pairing has already ended.' };
+    await this.answerCallback(t.callbackQueryId, r.outcome === 'approved' ? 'Approved. That phone is paired.' : r.text);
+    if (r.outcome === 'approved') {
+      // The code stays in the message: a shipped app's code box only submits a complete-looking code,
+      // and once the phone is active any such code finishes it. Only the buttons go.
+      if (typeof t.messageId === 'number') await this.apiCall('editMessageReplyMarkup', { chat_id: owner, message_id: t.messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {
+        // @silent-fallback-ok — tidying only: the old buttons answer "already ended"
+      });
+      await this.apiCall('sendMessage', { chat_id: owner, text: 'Approved. That phone is paired with this agent. If the app still shows a code box, type the code above to finish. You can remove the phone any time on the Phones page.' }).catch(() => {
+        // @silent-fallback-ok — the toast already said so, and the phone is paired
+      });
+      return 'approved';
+    }
+    return r.outcome === 'ended' ? 'unknown' : 'held';
+  }
+
+  /** Replace a finished pairing message, so a dead code and stale buttons leave the chat. Best-effort. */
+  private async closeOwnerPairingMessage(owner: number, messageId: number | undefined, text: string): Promise<void> {
+    if (typeof messageId !== 'number') return;
+    await this.apiCall('editMessageText', { chat_id: owner, message_id: messageId, text }).catch(() => {
+      // @silent-fallback-ok — tidying only: the decision is recorded and the old buttons answer "already ended"
+    });
+  }
+
   /** The owner's Decline tap on a phone-pairing code. Counts only when verified, from the owner, in the owner's private chat. */
-  async handleMobileDecline(t: { callbackQueryId: string | number; data: string; fromUserId: number | undefined; chatId: number | string | undefined; verified: boolean }): Promise<'declined' | 'refused' | 'unknown'> {
+  async handleMobileDecline(t: { callbackQueryId: string | number; data: string; fromUserId: number | undefined; chatId: number | string | undefined; messageId?: number; verified: boolean }): Promise<'declined' | 'refused' | 'unknown'> {
     const owner = this.getOwnerUserId();
     const m = /^md:d:([0-9a-f]{24})$/.exec(t.data);
     if (!t.verified || !owner || t.fromUserId !== owner || String(t.chatId) !== String(owner) || !m) {
@@ -1062,6 +1098,7 @@ export class TelegramAdapter implements MessagingAdapter {
     }
     const r = this.mobileDeclineHandler ? this.mobileDeclineHandler(m[1]!) : 'unknown';
     await this.answerCallback(t.callbackQueryId, r === 'declined' ? 'Declined. That phone will not be paired.' : 'This pairing has already ended.');
+    if (r === 'declined') await this.closeOwnerPairingMessage(owner, t.messageId, 'Declined. That phone was not paired.');
     return r;
   }
 
@@ -2241,14 +2278,15 @@ export class TelegramAdapter implements MessagingAdapter {
    * sent only to the owner's private chat, with an optional Decline button. Resolves to the
    * Telegram message id when Telegram accepted it, else null.
    */
-  async sendOwnerDMWithButton(text: string, button: { text: string; data: string } | null): Promise<number | null> {
+  async sendOwnerDMWithButton(text: string, button: { text: string; data: string } | Array<{ text: string; data: string }> | null): Promise<number | null> {
     const owner = this.getOwnerUserId();
     if (!owner) return null;
+    const buttons = Array.isArray(button) ? button : button ? [button] : [];
     try {
       const result = await this.apiCall('sendMessage', {
         chat_id: owner,
         text,
-        ...(button ? { reply_markup: { inline_keyboard: [[{ text: button.text, callback_data: button.data }]] } } : {}),
+        ...(buttons.length ? { reply_markup: { inline_keyboard: [buttons.map((b) => ({ text: b.text, callback_data: b.data }))] } } : {}),
       }) as { message_id: number };
       return typeof result?.message_id === 'number' ? result.message_id : null;
     } catch (err) {
@@ -2263,6 +2301,8 @@ export class TelegramAdapter implements MessagingAdapter {
 
   /** Mobile device keys: the owner's Decline tap on a pairing code. Wired by AgentServer. */
   public mobileDeclineHandler: ((nonce: string) => 'declined' | 'unknown') | null = null;
+  /** Approve instead of a code (mobile-pairing-approve §3.2): the owner's Approve tap. Wired by AgentServer. */
+  public mobileApproveHandler: ((nonce: string) => { outcome: 'approved' | 'ended' | 'other'; text: string }) | null = null;
   /** Mobile device keys: void a pending pairing whose code appears in inbound text. Wired by AgentServer. */
   public mobileInboundScan: ((text: string) => string[]) | null = null;
 
@@ -6531,7 +6571,13 @@ export class TelegramAdapter implements MessagingAdapter {
     // owner's private chat. Read from getUpdates here, so authentic.
     if (query.data.startsWith('md:d:')) {
       await this.handleMobileDecline({ callbackQueryId: query.id, data: query.data, fromUserId: query.from.id,
-        chatId: query.message?.chat?.id, verified: true });
+        chatId: query.message?.chat?.id, messageId: query.message?.message_id, verified: true });
+      return;
+    }
+    // ── Mobile pairing Approve (docs/specs/mobile-pairing-approve.md §3.2): the same check as Decline.
+    if (query.data.startsWith('md:a:')) {
+      await this.handleMobileApprove({ callbackQueryId: query.id, data: query.data, fromUserId: query.from.id,
+        chatId: query.message?.chat?.id, messageId: query.message?.message_id, verified: true });
       return;
     }
 

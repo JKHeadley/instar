@@ -64,7 +64,7 @@ export const GROUPS = [
       { id: 'threadline', label: 'Other agents', icon: 'chat', desc: 'Who is waiting on you, whether each agent I work with is actually there, pairing new ones, and our conversations.' },
       { id: 'origins', label: 'Messages to you', icon: 'chat', desc: 'Who wrote each message I sent you, and the who-wrote-this footer.' },
       { id: 'mandates', label: 'Permission slips', icon: 'stamp', desc: 'What you have let agents do together, who is waiting for your approval, and every allow and refusal.' },
-      { id: 'phones', label: 'Phones', icon: 'phone', desc: 'Pair the Instar iPhone app: a waiting phone’s code, large with a Copy button, after your PIN (when there is no Telegram), and the phones already paired.' },
+      { id: 'phones', label: 'Phones', icon: 'phone', desc: 'Pair the Instar iPhone app: approve a waiting phone, or read its code, after your PIN (when there is no Telegram), and the phones already paired.' },
       { id: 'secrets', label: 'Passwords & keys', icon: 'lock', desc: 'Whether the agent is waiting on a password, a safe one-time link to hand one over, and the keys it already holds.' },
     ],
   },

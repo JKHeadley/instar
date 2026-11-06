@@ -189,7 +189,7 @@ import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, reso
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
-import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled } from './mobilePairingRoutes.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
 import { buildSlackHolderRead } from './mobileSlackHolderProxy.js';
@@ -1722,9 +1722,12 @@ export class AgentServer {
           feature: what, primary: 'record the phone device state', fallback: 'the request was refused or a pending pairing was cancelled',
           reason: err instanceof Error ? err.message : String(err), impact: 'A phone pairing step failed and must be retried.',
         }),
-      ownerDM: async (text, declineData) => {
+      ownerDM: async (text, declineData, approveData) => {
         if (!options.telegram) return null;
-        return options.telegram.sendOwnerDMWithButton(text, declineData ? { text: 'Decline', data: declineData } : null);
+        return options.telegram.sendOwnerDMWithButton(text, [
+          ...(approveData ? [{ text: 'Approve', data: approveData }] : []),
+          ...(declineData ? [{ text: 'Decline', data: declineData }] : []),
+        ]);
       },
       // Without a Telegram owner, pairing codes are confirmed on the dashboard (mobile-native-conversations §4.4).
       telegramOwnerPresent: () => !!options.telegram?.getOwnerUserId?.(),
@@ -1785,6 +1788,11 @@ export class AgentServer {
       mp.push.start();
       if (options.telegram) {
         options.telegram.mobileDeclineHandler = (nonce) => mp.declineByNonce(nonce);
+        options.telegram.mobileApproveHandler = (nonce) => {
+          const outcome = mp.approveByNonce(nonce);
+          return outcome === 'approved' ? { outcome, text: '' }
+            : { outcome: outcome === 'ended' ? 'ended' : 'other', text: outcome === 'ended' ? 'This pairing has already ended.' : APPROVE_REFUSAL[outcome].detail };
+        };
         options.telegram.mobileInboundScan = (text) => mp.scanInbound(text);
         options.telegram.onHubPost = (t) => mp.push?.onHubPost(t);
       }
