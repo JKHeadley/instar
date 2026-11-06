@@ -68,6 +68,12 @@ export interface OrchestratorDeps {
   /** Whether this process runs under launchd (true) or dev (false). */
   isSupervised: boolean;
   /**
+   * Called once, synchronously, immediately before the process exits for a restart, so the
+   * restart history can record that this attempt really exited. Never called on a
+   * suppressed or deferred request. A throw is swallowed: it must never block the exit.
+   */
+  recordExit?: () => void;
+  /**
    * Returns true if a shadow-install update is in progress. The orchestrator
    * will defer the restart by one tick if so, per spec §Shadow-install coordination.
    * Tests can return a fixed value.
@@ -195,7 +201,7 @@ export class RestartOrchestrator {
     this._state = 'persisting';
     const hardKill = setTimeout(() => {
       console.error('[RestartOrchestrator] hard-kill: persist exceeded budget');
-      this.deps.exitFn(1);
+      this.exitNow(1);
     }, this.hardKillMs);
     if (typeof hardKill.unref === 'function') hardKill.unref();
 
@@ -230,8 +236,21 @@ export class RestartOrchestrator {
 
     // Step 3: exit.
     this._state = 'exiting';
-    this.deps.exitFn(0);
+    this.exitNow(0);
     return 'proceeded';
+  }
+
+  private exitRecorded = false;
+
+  /** Record that this restart really exits (once), then exit. */
+  private exitNow(code: number): void {
+    if (!this.exitRecorded) {
+      this.exitRecorded = true;
+      try { this.deps.recordExit?.(); } catch (err) {
+        console.error(`[RestartOrchestrator] recordExit failed (exiting anyway): ${err}`);
+      }
+    }
+    this.deps.exitFn(code);
   }
 
   /** Test helper: reset state to idle without exiting. Only safe in tests. */

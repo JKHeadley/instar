@@ -430,8 +430,11 @@ export class PeerEndpointResolver {
     for (const cidr of this.ownCidrs()) {
       const [base, prefixStr] = cidr.split('/');
       const baseInt = ipv4ToInt(base);
-      const prefix = Number(prefixStr);
-      if (baseInt === null || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) continue;
+      const stated = Number(prefixStr);
+      if (baseInt === null || !Number.isInteger(stated) || stated < 0 || stated > 32) continue;
+      // A /32 says nothing about the network: cloud private networks (Hetzner's, for one) give
+      // every machine one and route the rest. Read it as its /16 rather than ruling all peers out.
+      const prefix = stated === 32 ? 16 : stated;
       const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
       if ((target & mask) >>> 0 === (baseInt & mask) >>> 0) return true;
     }

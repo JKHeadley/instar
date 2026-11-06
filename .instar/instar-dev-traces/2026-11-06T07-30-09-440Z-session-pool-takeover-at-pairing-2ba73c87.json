@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "session-pool-takeover-at-pairing",
+  "sessionId": "8d4a421a-0dd9-4deb-830b-1a1b17a047ce",
+  "timestamp": "2026-11-06T07:30:09.440Z",
+  "artifactPath": "upgrades/side-effects/session-pool-takeover-at-pairing.md",
+  "artifactSha256": "be847f2e036e936a0130b926704727a70b070534f19d13a6a20fdf87367b206b",
+  "specPath": "docs/specs/session-pool-takeover-at-pairing.md",
+  "coveredFiles": [
+    "tests/e2e/session-pool-pair-activation-alive.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Test-only follow-up: an ordering check that expected the pairing decision after the route line; the handler now lives in handlePair above it",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

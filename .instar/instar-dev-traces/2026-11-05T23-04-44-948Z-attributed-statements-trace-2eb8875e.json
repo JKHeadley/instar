@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "attributed-statements-trace",
+  "sessionId": "83ff0005-03a1-47ac-9794-fc5f5dbd69b5",
+  "timestamp": "2026-11-05T23:04:44.948Z",
+  "artifactPath": "upgrades/side-effects/attributed-statements-trace.md",
+  "artifactSha256": "234422236328425b53d7508999adf4ddfbb4b31d14dd05a34492be36c44a9f7c",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/attributed-statements-trace-interaction-family-2026-11-05.json",
+    "docs/audits/no-purchased-service-building-family-2026-11-05.json",
+    "docs/constitution-alignment-map.md",
+    "docs/specs/attributed-statements-trace.eli16.md",
+    "docs/specs/no-purchased-service.eli16.md",
+    "docs/specs/reports/attributed-statements-trace-constitution-review-2026-11-05.md",
+    "docs/specs/reports/no-purchased-service-constitution-review-2026-11-05.md",
+    "docs/standards-registry-area-audits.json",
+    "package-lock.json",
+    "package.json",
+    "tests/unit/standards-coverage-ratchet.test.ts",
+    "upgrades/next/autonomous-run-reporting-all-machines.md",
+    "upgrades/side-effects/attributed-statements-trace.md",
+    "upgrades/side-effects/no-purchased-service.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Constitution text only, two approved articles and their records; no runtime code; a revert fully undoes it.",
+  "eli16Path": "docs/specs/attributed-statements-trace.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/attributed-statements-trace.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

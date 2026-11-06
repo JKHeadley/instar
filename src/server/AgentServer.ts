@@ -10,6 +10,7 @@ import { readMeasurementTargets } from './measurementCoverageRead.js';
  * WebSocket connections for real-time terminal streaming.
  */
 
+import { computeOwnLastingEndpoints } from '../core/MeshUrlAdvertiser.js';
 import { holdAllSetups } from '../recommended/setupState.js';
 import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
@@ -1971,6 +1972,7 @@ export class AgentServer {
         onReplyMarker: options.onReplyMarker,
         peerEndpointRecorder: options.peerEndpointRecorder,
         getSelfMeshEndpoints: options.getSelfMeshEndpoints,
+        getFreshLastingEndpoints: () => computeOwnLastingEndpoints(options.config),
         identityReannounce: options.identityReannounce,
         getTelegramHandoverSource: () => {
           const entry = options.config.messaging?.find((m) => m.type === 'telegram' && m.enabled !== false);
