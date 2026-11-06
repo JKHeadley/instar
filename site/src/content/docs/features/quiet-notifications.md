@@ -102,3 +102,6 @@ choices and authenticated same-agent replication. Desired changes and their
 peer queue are saved before applying them. Delivery attempts stop after eight
 failures; only an observed offline-to-online transition rearms them. Exhausted
 or backed-off entries cannot starve newer eligible changes.
+
+Old queued delivery-interruption notices are withheld from replay after an upgrade.
+Actual replies retain their existing recovery path, and uncertain delivery evidence is preserved.

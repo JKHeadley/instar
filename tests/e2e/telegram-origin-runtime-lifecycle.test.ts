@@ -89,6 +89,118 @@ describe('Telegram origin initialization and outage lifecycle', () => {
     } finally { await telegram.stop(); }
   });
 
+  it.each(['disabled', 'observing', 'classifier-unavailable'] as const)('keeps a job or unknown session failure record-only (%s)', async mode => {
+    const events: string[] = [];
+    let telegram!: TelegramAdapter;
+    const sendNotice = vi.fn(async () => new Response('{}'));
+    const h = await boot(async entry => {
+      await reportSessionDelivery(entry, entry.threadId, { telegram, sendNotice }); events.push(entry.source);
+    });
+    telegram = new TelegramAdapter({ token: 'fixture-token', chatId: '-100123' }, temporaryState());
+    const hub = vi.spyOn(telegram, 'sendToTopic').mockResolvedValue({ messageId: 1, topicId: 7848 });
+    const gate = new NotificationSelectivityGate(h.runtime.options.storage.stateDir, 'studio', () => ({ enabled: mode === 'observing', dryRun: true }));
+    h.runtime.service.notificationGate = gate;
+    let transportFailed = false;
+    h.runtime.service.notificationJobSession = id => {
+      if (mode === 'classifier-unavailable' && transportFailed) throw new Error('fixture session registry unavailable');
+      return mode !== 'classifier-unavailable' && id === 'background-job';
+    };
+    const token = await h.lifecycle.issue({ sessionId: 'background-job', harnessId: 'codex-cli', projectDir: temporaryState() });
+    h.network.mockImplementation(async () => { transportFailed = true; throw new Error('job reply connection lost after dispatch'); });
+    try {
+      await expect(h.runtime.service.runWithSessionToken(token, () => h.send())).rejects.toMatchObject({ outcome: 'outcome-unknown' });
+      await vi.waitFor(() => expect(events).toEqual(['scan']));
+      expect(sendNotice).not.toHaveBeenCalled(); expect(hub).not.toHaveBeenCalled();
+      expect(telegram.getAttentionItems('OPEN')).toHaveLength(1);
+      expect(h.network).toHaveBeenCalledOnce();
+    } finally { await telegram.stop(); await gate.close(); }
+  });
+
+  it.each([false, true])('retires old queued delivery notices while recovering the original reply (restart=%s)', async restart => {
+    const h = await boot();
+    h.runtime.service.registerAutomationProducer('reply-delivery-notice');
+    const notice = h.runtime.service.runAsAutomation('reply-delivery-notice', () => h.runtime.service.prepareBot({
+      method: 'sendMessage', accountId: 'bot-1', params: { chat_id: '-100123', message_thread_id: 42,
+        text: 'A reply I wrote is delayed by a delivery interruption.' } }));
+    const token = await h.lifecycle.issue({ sessionId: 'reply-delivery-notice', harnessId: 'codex-cli', projectDir: temporaryState() });
+    const original = await h.runtime.service.runWithSessionToken(token, () => h.runtime.service.prepareBot({
+      method: 'sendMessage', accountId: 'bot-1', params: { chat_id: '-100123', message_thread_id: 42,
+        text: 'The actual requested answer still recovers.' } }));
+    await h.runtime.service.admit(notice); await h.runtime.service.admit(original);
+    let runtime = h.runtime;
+    if (restart) {
+      await runtime.close();
+      runtime = await TelegramOriginRuntime.open(h.runtime.options);
+      allowFixtureSends(runtime); runtimes.push(runtime);
+    }
+    const result = await runtime.recoverHeld();
+    expect(result.recovered).toBe(1);
+    expect(h.network).toHaveBeenCalledOnce();
+    expect(JSON.parse(h.network.mock.calls[0][1].body as string).text).toContain('The actual requested answer still recovers.');
+    expect((await runtime.store.getOperation(notice.record.operationId))?.operation?.state).toBe('suppressed');
+    expect((await runtime.store.getOperation(original.record.operationId))?.operation?.state).toBe('accepted');
+    await runtime.recoverHeld();
+    expect(h.network).toHaveBeenCalledOnce();
+  });
+  it.each(['refused', 'outcome-unknown', 'local-sent'])('withholds an old notice on the forward ladder (%s)', async lastAttempt => {
+    const h = await boot();
+    h.runtime.service.registerAutomationProducer('reply-delivery-notice');
+    const notice = h.runtime.service.runAsAutomation('reply-delivery-notice', () => h.runtime.service.prepareBot({
+      method: 'sendMessage', accountId: 'bot-1', executionOwnerMachineId: 'mini',
+      params: { chat_id: '-100123', message_thread_id: 42, text: 'Obsolete delivery notice' } }));
+    await h.runtime.service.admit(notice);
+    const detail = { kind: 'forward-to-holder', text: 'Obsolete delivery notice', chatId: '-100123', topicId: 42,
+      lastAttempt, machineId: 'mini', ladder: { attempts: 1, nextAt: Date.now() - 1 } };
+    await h.runtime.store.recordOperationState({ operationId: notice.record.operationId, state: 'held',
+      holdReason: 'lease-not-held', holdDetail: detail });
+    const forward = vi.fn(async () => 'sent' as const);
+    h.runtime.options.forwardRecovery = forward;
+    expect(await h.runtime.runForwardLadder()).toEqual({ processed: 1, recovered: 0 });
+    expect(forward).not.toHaveBeenCalled(); expect(h.network).not.toHaveBeenCalled();
+    const audit = await h.runtime.store.getOperation(notice.record.operationId);
+    expect(audit?.operation?.state).toBe('held');
+    expect(audit?.operation?.holdDetail).toEqual(detail);
+  });
+
+  it('leaves a first delivery notice alone while its current admission is still pending', async () => {
+    const h = await boot();
+    h.runtime.service.registerAutomationProducer('reply-delivery-notice');
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const admit = h.runtime.store.admit.bind(h.runtime.store);
+    let admitted = false;
+    const held = vi.spyOn(h.runtime.store, 'admit').mockImplementation(async input => {
+      const result = await admit(input); admitted = true; await pending; return result;
+    });
+    const sending = h.runtime.service.runAsAutomation('reply-delivery-notice', () => h.send());
+    try {
+      await vi.waitFor(() => expect(admitted).toBe(true));
+      await h.runtime.recoverHeld();
+      expect(h.network).not.toHaveBeenCalled();
+      const notice = (await h.runtime.store.listOrigins()).records.find(row => JSON.parse(row.record.envelopeJson).producerId === 'reply-delivery-notice');
+      expect(notice?.operation?.state).toBe('admitted');
+    } finally { release(); await sending; held.mockRestore(); }
+    expect(h.network).toHaveBeenCalledOnce();
+  });
+
+  it('preserves an uncertain notice receipt when a stale recovery snapshot races with it', async () => {
+    const h = await boot();
+    h.runtime.service.registerAutomationProducer('reply-delivery-notice');
+    const prepared = vi.spyOn(h.runtime.service, 'prepareBot');
+    h.network.mockRejectedValue(new Error('connection lost after notice dispatch'));
+    await expect(h.runtime.service.runAsAutomation('reply-delivery-notice', () => h.send()))
+      .rejects.toMatchObject({ outcome: 'outcome-unknown' });
+    const operation = prepared.mock.results[0].value;
+    const stale = vi.spyOn(h.runtime.store, 'takeRecoverableAdmissions').mockResolvedValue([operation.admission]);
+    const forget = vi.spyOn(h.runtime.service, 'forgetTerminalHold');
+    try {
+      await h.runtime.recoverHeld();
+      expect((await h.runtime.store.getOperation(operation.record.operationId))?.operation?.state).toBe('outcome-unknown');
+      expect(forget).not.toHaveBeenCalled();
+      expect(h.network).toHaveBeenCalledOnce();
+    } finally { stale.mockRestore(); forget.mockRestore(); prepared.mockRestore(); }
+  });
+
   it('keeps routine origin egress quiet while a verified late reply reaches the real egress boundary', async () => {
     const h = await boot();
     const gate = new NotificationSelectivityGate(h.runtime.options.storage.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));

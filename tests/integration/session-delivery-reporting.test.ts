@@ -49,6 +49,15 @@ describe('historical delivery reconciliation stays off Telegram', () => {
       expect(restarted.sendNotice).not.toHaveBeenCalled();
       expect(restarted.telegram.getAttentionItem('telegram-origin-held-reply:original-0')?.summary).toContain('did not reach');
     });
+  it('keeps legacy callback entries quiet when explicit live eligibility is absent', async () => {
+    const h = fixture();
+    // An older runtime can remain loaded while a newer reporter is imported.
+    const legacy = { ...held(1) } as Partial<Parameters<typeof reportSessionDelivery>[0]>;
+    delete legacy.source;
+    await reportSessionDelivery(legacy as Parameters<typeof reportSessionDelivery>[0], 2, h);
+    expect(h.sendNotice).not.toHaveBeenCalled(); expect(h.send).not.toHaveBeenCalled();
+    expect(h.telegram.getAttentionItem('telegram-origin-held-reply:original-1')).toMatchObject({ status: 'OPEN', hubHeld: true });
+  });
   it('silently closes a late accepted original without claiming a notice was delivered', async () => {
     const h = fixture();
     await reportSessionDelivery(held(1), 2, h);
