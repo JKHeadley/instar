@@ -70,6 +70,7 @@ function createTestManager(options: {
   poolStreamConnector?: any;
   selfMachineId?: string;
   resolveSessionPlatform?: (tmuxSession: string) => any;
+  sessionPresentationSources?: () => any;
 } = {}) {
   const sessionManager = options.sessionManager ?? createMockSessionManager();
   const httpServer = createMockHttpServer();
@@ -86,6 +87,7 @@ function createTestManager(options: {
     poolStreamConnector: options.poolStreamConnector,
     selfMachineId: options.selfMachineId,
     resolveSessionPlatform: options.resolveSessionPlatform,
+    sessionPresentationSources: options.sessionPresentationSources,
   });
 
   /**
@@ -420,6 +422,16 @@ describe('WebSocketManager', () => {
   });
 
   describe('session list building', () => {
+    it('uses the same durable conversation source as HTTP when the adapter is stale', () => {
+      const { manager, sessionManager } = createTestManager({
+        sessionPresentationSources: () => ({ telegramRegistry: { topicToName: { 42: 'Instar App' } } }),
+      });
+      sessionManager.listRunningSessions.mockReturnValue([{
+        id: 'old', name: 'echo-topic-42', tmuxSession: 'old-binding', telegramTopicId: 42, status: 'running',
+      }]);
+      expect((manager as any).buildSessionList()[0]).toMatchObject({ name: 'Instar App', platformName: 'Instar App', platform: 'telegram' });
+    });
+
     it('never presents a Telegram routing key as the session name', () => {
       const { manager, sessionManager } = createTestManager({
         resolveSessionPlatform: () => ({ platform: 'telegram', platformId: 127504, platformName: null }),

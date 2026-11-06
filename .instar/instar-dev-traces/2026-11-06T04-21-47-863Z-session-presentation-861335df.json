@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "slug": "session-presentation",
+  "sessionId": "b8bf8f78-b6d2-4458-a76f-9f842c8ef731",
+  "timestamp": "2026-11-06T04:21:47.863Z",
+  "artifactPath": "upgrades/side-effects/session-presentation.md",
+  "artifactSha256": "40efcde0ea515d7b391ac5f4a631a115af783b1abb914c232238cf6b82b4b7d8",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "src/server/WebSocketManager.ts",
+    "src/server/routes.ts",
+    "src/server/sessionPlatform.ts",
+    "src/server/sessionPresentation.ts",
+    "tests/e2e/session-presentation-lifecycle.test.ts",
+    "tests/integration/sessions-listing-hygiene.test.ts",
+    "tests/unit/WebSocketManager.test.ts",
+    "tests/unit/session-presentation.test.ts",
+    "tests/unit/sessionPlatform.test.ts",
+    "upgrades/next/session-presentation.md",
+    "upgrades/session-presentation.eli16.md",
+    "upgrades/side-effects/session-presentation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible read-only session presentation repair; no session lifecycle, migration, routing or action authority changes. User explicitly authorizes merge of non-constitution changes when green.",
+  "eli16Path": "upgrades/session-presentation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/session-presentation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}
