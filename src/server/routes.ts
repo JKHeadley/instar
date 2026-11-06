@@ -350,6 +350,7 @@ import { FailureAnalyzer } from '../monitoring/FailureAnalyzer.js';
 import { FailureLoopDriver } from '../monitoring/FailureLoopDriver.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { scrubSecrets as scrubCorrectionSecrets } from '../monitoring/scrubSecrets.js';
+import { redactSpawnError } from '../core/redactSpawnError.js';
 import { validateTurnEvidence } from '../monitoring/TurnEvidence.js';
 import { evaluateCorrectionInstanceFix } from '../monitoring/CorrectionInstanceFixGate.js';
 import { routeActionClaim, type ClaimClauseArbitration } from '../monitoring/ClaimClauseArbiter.js';
@@ -12568,7 +12569,8 @@ export function createRoutes(ctx: RouteContext): Router {
         ...(parsedTopicId !== undefined ? { topicId: parsedTopicId, topicBound: true, ownership: topicOwnership } : {}),
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      // #2184: never echo credential-bearing spawn argv back to the caller.
+      res.status(500).json({ error: redactSpawnError(err) });
     }
   });
 
@@ -12634,7 +12636,7 @@ export function createRoutes(ctx: RouteContext): Router {
       try {
         result = await ctx.sessionRefresh.respawnDeadBound({ sessionName, followUpPrompt, reason, fresh: fresh === true });
       } catch (err) {
-        res.status(500).json({ code: 'respawn_failed', error: err instanceof Error ? err.message : String(err) });
+        res.status(500).json({ code: 'respawn_failed', error: redactSpawnError(err) });
         return;
       }
       if (result.ok) {
