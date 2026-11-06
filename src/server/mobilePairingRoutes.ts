@@ -1733,7 +1733,7 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     { method: 'POST', re: /^\/mobile\/media\/uploads$/, statuses: active, body: 'json', conversationRef: true },
     { method: 'PUT', re: new RegExp(`^/mobile/media/uploads/${UUID}/chunks/(0|[1-9][0-9]{0,5})$`), statuses: active, body: 'octet', ownBucket: 240 },
     { method: 'GET', re: new RegExp(`^/mobile/media/uploads/${UUID}$`), statuses: active, body: 'none' },
-    { method: 'GET', re: /^\/mobile\/media\/[0-9a-f]{64}$/, statuses: active, body: 'none', conversationRef: true },
+    { method: 'GET', re: /^\/mobile\/media\/[0-9a-f]{64}$/, statuses: active, body: 'none', conversationRef: true, ownBucket: 120, bucket: 'media-read' },
     { method: 'POST', re: /^\/mobile\/media\/purge$/, statuses: active, body: 'json', conversationRef: true },
     // Console sign-in from an owner phone (mobile-console-device-signin §3.1-3.2); each route
     // re-checks owner, local TLS and the feature switch itself.
@@ -1784,6 +1784,10 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     // What /health means for the person (docs/specs/mobile-health-issues.md): a read-only trimmed summary,
     // owner phones only. The Fleet screen reads it every 30 s, so it has its own bucket.
     { method: 'GET', re: /^\/mobile\/health-issues$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'health-issues-reads' },
+    // The person's quick actions on a problem (docs/specs/health-quick-actions.md): undoable, so the device signature
+    // is enough. Exactly these two paths: the routes machines use with each other are bearer-only.
+    { method: 'POST', re: /^\/mobile\/health-issues\/choices$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'health-choices' },
+    { method: 'POST', re: /^\/mobile\/health-issues\/choices\/undo$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'health-choices' },
     // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): read-only
     // trimmed summaries, owner phones only, with one shared bucket of their own (they read peers).
     { method: 'GET', re: /^\/mobile\/proposals$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'proposals-inside-reads' },
@@ -1862,6 +1866,9 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       }
       host = h;
     }
+    // Immutable evidence from the key lookup used by THIS signature verification, not a later
+    // registry snapshot. Async private reads compare current authority to this admission.
+    let admittedIdentity: MobileDeviceAdmissionIdentity | null = null;
     const v = verifyDeviceRequest(
       { deviceId: id, time: req.headers['x-instar-device-time'], sig: req.headers['x-instar-device-sig'], method: req.method, pathWithQuery: req.originalUrl, rawBody: raw, host },
       (deviceId) => {
@@ -1871,6 +1878,8 @@ export function deviceAuthenticator(svc: MobilePairingService) {
         // write after it failed (mobile-native-conversations §4.6: the ledger row is the recorded
         // intent). In-memory index, no file read per request.
         const ledgerRevoked = !!svc.keyLedger && svc.keyLedger.isRevoked(deviceKeyHashOf(d.publicKey), d.id);
+        admittedIdentity = Object.freeze({ keyHash: deviceKeyHashOf(d.publicKey),
+          userId: d.userId ?? null, role: d.role ?? 'owner' });
         return { publicKey: d.publicKey, host: d.host, status: ledgerRevoked ? 'revoked' : d.status as DeviceStatus };
       },
       rule.statuses, svc.replay, Date.now(), rule.sendRoute === true,
@@ -1894,6 +1903,7 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       (req as unknown as { instarDevicePerson: ResolvedPerson }).instarDevicePerson = person;
     }
     (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device', deviceId: v.deviceId };
+    (req as unknown as { instarDeviceAdmissionIdentity: MobileDeviceAdmissionIdentity | null }).instarDeviceAdmissionIdentity = admittedIdentity;
     // The moment the device signature was accepted: the signed records' `receivedAt` (§4.6).
     (req as unknown as { instarDeviceAdmittedAt: number }).instarDeviceAdmittedAt = Date.now();
     // The Host the signature was checked against (multi-route: one of this machine's own names;
@@ -1905,6 +1915,17 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     }
     return 'ok';
   };
+}
+
+export interface MobileDeviceAdmissionIdentity {
+  readonly keyHash: string;
+  readonly userId: string | null;
+  readonly role: 'owner' | 'msp';
+}
+
+/** Identity actually used by deviceAuthenticator; never accepted from an HTTP header/body. */
+export function deviceAdmissionIdentity(req: Request): MobileDeviceAdmissionIdentity | null {
+  return (req as unknown as { instarDeviceAdmissionIdentity?: MobileDeviceAdmissionIdentity }).instarDeviceAdmissionIdentity ?? null;
 }
 
 /** The person of the phone that signed this request (people and roles §3.4), or null. */

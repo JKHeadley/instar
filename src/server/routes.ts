@@ -27,7 +27,9 @@ import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } fr
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
 import { mountMobileConsolePagesRoutes, type SelfRead } from './mobileConsolePagesRoutes.js';
-import { mountMobileHealthRoutes } from './mobileHealthRoutes.js';
+import { mountMobileHealthRoutes, HEALTH_CHOICES_LOCAL_PATH, HEALTH_CHOICES_MERGE_PATH } from './mobileHealthRoutes.js';
+import { LLM_COMPONENT_PREFIX, healthChoiceStoreFor } from '../monitoring/healthChoices.js';
+import { withoutComponents } from '../monitoring/FeatureMetricsLedger.js';
 import { mountMobileSecretsRoutes, resolveKeys as resolveMobileKeys, askForSecret, cancelSecretByKey } from './mobileSecretsRoutes.js';
 import { mountMobileProposalsInsideRoutes, ACTIVITY_WINDOW, CLAIMS_WINDOW } from './mobileProposalsInsideRoutes.js';
 import { loadAllProposals } from './routes/remediation-proposals.js';
@@ -633,6 +635,7 @@ import type { UnifiedTrustSystem } from '../threadline/UnifiedTrustWiring.js';
 import { DEFAULT_RELAY_URL } from '../threadline/constants.js';
 import { ThreadlineNicknames } from '../threadline/ThreadlineNicknames.js';
 import { resolvePeerFingerprint, resolvePeerFingerprintByName } from '../threadline/peerFingerprint.js';
+import { createAttributionRoutes } from './attributionRoutes.js';
 import {
   backupLogLine,
   checkFingerprintHealth,
@@ -1106,6 +1109,8 @@ export interface MobileInboundTrust {
 }
 
 export interface RouteContext {
+  /** Attribution paper trail; absent/null when dark. docs/specs/attribution-paper-trail.md */
+  attribution?: import('../core/attribution/attributionRuntime.js').AttributionRuntime | null;
   /** Stops the lease coverage peer poller when AgentServer shuts down. */
   jobCoverageStop?: (() => void) | null;
   /** Installed by createRoutes: feeds a device-authenticated app message through
@@ -4605,6 +4610,17 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       }
 
+      // attribution-paper-trail section 5: B23. Advisory, only in `enforce`, only for a sender that
+      // can react. SIGNAL ONLY, and marker checks have their own sub-budget inside the route budget.
+      if (ctx.attribution?.enabled && ctx.attribution.mode === 'enforce' && options.liveArtefactSignals === true && (options.messageKind ?? 'reply') === 'reply' && options.noReactionPossible !== true) {
+        try {
+          signals.attributionSources = await ctx.attribution.sourcesSignal(text, (recentMessages?.length ?? 0) > 0);
+        } catch {
+          // @silent-fallback-ok — detector errors never override the authority; the signal reads unmeasured.
+          signals.attributionSources = { status: 'unmeasured', conversationContext: (recentMessages?.length ?? 0) > 0, markers: [] };
+        }
+      }
+
       if (!options.allowDuplicate && ctx.outboundDedupGate && recentOutbound.length > 0) {
         try {
           const dupResult = ctx.outboundDedupGate.check({ text, recent: recentOutbound });
@@ -5046,6 +5062,22 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!decision.ok) {
       res.status(decision.status).json(decision.body);
       return true;
+    }
+    // Send-side record (attribution-paper-trail section 5): after delivery, in the background, never
+    // blocking a send. The route answering 2xx is what says the message went out.
+    if (ctx.attribution?.enabled) {
+      const attribution = ctx.attribution;
+      res.once('finish', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          let recentConversation: string | undefined;
+          try {
+            recentConversation = options.topicId && ctx.topicMemory
+              ? ctx.topicMemory.getRecentMessages(options.topicId, 10).map((m) => `${m.fromUser ? 'user' : 'agent'}: ${m.text}`).join('\n')
+              : undefined;
+          } catch { /* @silent-fallback-ok — with no recent messages the recap exemption simply does not apply */ }
+          attribution.recordInBackground(text, { surface: 'send', path: `${channel}:${options.topicId ?? ''}`, recentConversation });
+        }
+      });
     }
     return false;
   }
@@ -5514,7 +5546,7 @@ export function createRoutes(ctx: RouteContext): Router {
       | null = null;
     if (ctx.featureMetricsLedger) {
       try {
-        llmReliability = ctx.featureMetricsLedger.reliability({ sinceHours: 24 });
+        llmReliability = withoutComponents(ctx.featureMetricsLedger.reliability({ sinceHours: 24 }), (f) => DegradationReporter.getInstance().isIgnored(`${LLM_COMPONENT_PREFIX}${f}`));
       } catch {
         // Three-outcome health contract: unavailable telemetry is not rendered
         // as healthy and not rendered as an empty component list.
@@ -5957,6 +5989,8 @@ export function createRoutes(ctx: RouteContext): Router {
       unreported: reporter.getUnreportedEvents().length,
       events: events.map(e => ({
         ...e,
+        // The daily digest raises unreported events to the person. One they hid isn't for them right now.
+        reported: e.reported || reporter.isHidden(e.feature),
         narrative: DegradationReporter.narrativeFor(e),
       })),
     });
@@ -7306,6 +7340,8 @@ export function createRoutes(ctx: RouteContext): Router {
     'contradicts', 'part_of', 'used_in', 'knows_about', 'caused', 'verified_by',
   ]);
 
+  router.use(createAttributionRoutes(() => ctx.attribution));
+
   router.post('/semantic/remember', (req, res) => {
     if (!ctx.semanticMemory) { res.status(503).json({ error: 'Semantic memory not enabled' }); return; }
     const { type, name, content, confidence, source, sourceSession, tags, domain, expiresAt } = req.body;
@@ -7321,6 +7357,7 @@ export function createRoutes(ctx: RouteContext): Router {
         lastVerified: new Date().toISOString(),
         source, sourceSession, tags: tags || [], domain, expiresAt,
       });
+      ctx.attribution?.recordInBackground(String(content), { surface: 'memory-route', path: '/semantic/remember' });
       res.json({ id });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to remember' });
@@ -29712,6 +29749,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Spec § Producers line 228 — LearnSkill kinds are message|session;
     // externalReferences carry feedback/commit refs that the caller routes
     // through the appropriate downstream producer.
+    ctx.attribution?.recordInBackground(`${title}\n${description}`, { surface: 'memory-route', path: '/evolution/learnings' });
     res.status(201).json({
       ...learning,
       soulNudge,
@@ -29933,6 +29971,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       title, description, priority, commitTo, dueBy, source, tags: stampedTags,
       ...(normalizedOptOutReason ? { followThroughOptOutReason: normalizedOptOutReason } : {}),
     });
+    ctx.attribution?.recordInBackground(`${title}\n${description}`, { surface: 'memory-route', path: '/evolution/actions' });
     res.status(201).json({ ...action, classReviewAdmission: { wouldRefuse: admission.wouldRefuse, reason: admission.reason } });
   });
 
@@ -38182,6 +38221,34 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return { iMessage: ctx.imessage?.getConnectionInfo().state === 'connected' ? 'up' : 'down' };
       },
       bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+      choices: (() => {
+        const storeError = (detail: string, err: unknown) => DegradationReporter.getInstance().report({ feature: 'HealthChoices.store', primary: 'Saving what the person hid', fallback: 'Hidden problems may show again', reason: `${detail}: ${err instanceof Error ? err.message : String(err)}`, impact: 'A problem you hid may show again.' });
+        const store = healthChoiceStoreFor(ctx.config.stateDir, { onError: storeError });
+        // The reporter opened it at boot, before anything could hear about a bad file.
+        if (store.failedToRead) storeError('read', new Error('the saved choices could not be read at startup'));
+        if (ctx.meshSelfId) store.setOrigin(ctx.meshSelfId);
+        DegradationReporter.getInstance().setIssuePolicy(store);
+        return store;
+      })(),
+      // Every online machine of this agent holds a copy, so a choice applies wherever the problem is.
+      peers: {
+        list: () => onlinePeers().slice(0, MAX_PHONE_PEERS).map((p) => p.machineId), // bounded-input-reviewed: a list of peer machines, not text fed to a prompt
+        pull: async () => (await peerSummaries(HEALTH_CHOICES_LOCAL_PATH)).flatMap((a) => (a.state === 'ok' ? [(a.data as { rows?: unknown }).rows] : [])),
+        push: async (rows) => {
+          const peers = onlinePeers();
+          const answers = await Promise.all(peers.slice(0, MAX_PHONE_PEERS).map(async (p) => { // bounded-input-reviewed: a list of peer machines, not text fed to a prompt
+            try {
+              const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, HEALTH_CHOICES_MERGE_PATH, {
+                method: 'POST', headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ rows }), signal: AbortSignal.timeout(5000),
+              });
+              await r.body?.cancel().catch(() => undefined); // @silent-fallback-ok — releasing an unread body
+              return r.ok;
+            } catch { return false; } // @silent-fallback-ok — counted as not answering; the timer brings it across later
+          }));
+          return { reached: answers.filter(Boolean).length, unreached: answers.filter((a) => !a).length + Math.max(0, peers.length - MAX_PHONE_PEERS) };
+        },
+      },
     });
     // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): trimmed
     // read-only summaries, owner phone or bearer, proxied-on-read across peers.
@@ -41934,6 +42001,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
     }
+
+    // attribution-paper-trail section 5: alongside the send, never before it, because the reply wait
+    // leaves little margin. Findings ride the `advisory` field; it never holds a peer message. Installed
+    // before the commitment nudge, so that nudge writes first and this one joins it rather than hiding it.
+    try {
+      const attributionCheck = ctx.attribution?.checkAlongside(message);
+      if (attributionCheck) {
+        const origJson = res.json.bind(res);
+        (res as unknown as { json: (b: unknown) => unknown }).json = (body: unknown) => {
+          const advisory = attributionCheck.settled();
+          if (advisory && body && typeof body === 'object' && (body as { success?: boolean }).success) {
+            const existing = (body as { advisory?: string }).advisory;
+            (body as { advisory?: string }).advisory = existing ? `${existing} ${advisory}` : advisory;
+          }
+          return origJson(body as Record<string, unknown>);
+        };
+      }
+    } catch { /* @silent-fallback-ok — advisory only, never affects the send */ }
 
     // Commitment-class advisory nudge (FD-10) — SIGNAL ONLY, never blocks, fails
     // open to no-nudge. Surfaced as `advisory` on the success response so the

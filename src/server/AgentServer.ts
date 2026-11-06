@@ -197,10 +197,13 @@ import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairi
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
 import { buildSlackHolderRead } from './mobileSlackHolderProxy.js';
+import { buildMediaHolderStream, holderBearerOk } from './mobileMediaHolderProxy.js';
+import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
 import { createMobileMediaRouter } from './mobileMediaRoutes.js';
 import { createMobileSessionRouter } from './mobileSessionRoutes.js';
 import { createMobileSessionTerminalRouter, peerRowsMatch, PEER_LOOKUP_MAX, PEER_LOOKUP_TIMEOUT_MS, type PeerLookup } from './mobileSessionTerminalRoutes.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
+import { AttributionRuntime, type AttributionConfig } from '../core/attribution/attributionRuntime.js';
 import { AppConversationService, VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS } from '../core/AppConversationService.js';
 import { transcribeAudioFile, configuredVoiceProvider, resolveTranscriptionProvider } from '../core/VoiceTranscription.js';
 import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
@@ -291,7 +294,7 @@ import { SpendAlertResolver, buildStalePriceAlert } from '../core/SpendAlertReso
 import { SpendAlertDispatcher } from '../core/SpendAlertDispatcher.js';
 import { TelegramSpendTopicChannel, spendAlertDeliveryId } from '../core/TelegramSpendTopicChannel.js';
 import { SpendAlertEmitters } from '../core/SpendAlertEmitters.js';
-import { MachineIdentityManager, sign as signMachinePayload, verify as verifyMachinePayload } from '../core/MachineIdentity.js';
+import { isRegistryEntryActive, MachineIdentityManager, sign as signMachinePayload, verify as verifyMachinePayload } from '../core/MachineIdentity.js';
 import { DesktopDelegatedSessionStore } from '../core/DesktopDelegatedSessionStore.js';
 import { DesktopAssertionReplayStore } from '../core/DesktopAssertionReplayStore.js';
 import { verifyDesktopOperatorAssertion, type DesktopOperatorAssertion } from '../core/DesktopOperatorAssertion.js';
@@ -456,6 +459,7 @@ export class AgentServer {
   mobilePairing: MobilePairingService | null = null;
   /** Native app conversations (docs/specs/mobile-native-conversations.md); null when off at boot. */
   appConversations: AppConversationService | null = null;
+  private attribution: AttributionRuntime | null = null;
   private readonly dashboardOperatorSessions = new DashboardOperatorSessionStore();
   private readonly desktopDelegatedSessions = new DesktopDelegatedSessionStore();
   private desktopAssertionReplay: DesktopAssertionReplayStore | null = null;
@@ -2064,7 +2068,7 @@ export class AgentServer {
     }).multiMachine?.accountFollowMe?.remoteScrapeTimeoutMs;
     this.app.use(requestTimeout(
       options.config.requestTimeoutMs,
-      buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs, followMeRemoteScrapeTimeoutMs }),
+      buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs, followMeRemoteScrapeTimeoutMs, defaultTimeoutMs: options.config.requestTimeoutMs }),
     ));
 
     // ── Token Ledger ──────────────────────────────────────────────────
@@ -6045,7 +6049,10 @@ export class AgentServer {
       },
     });
     routeCtx.desktopSetupTarget = this.desktopSetupTarget;
+    this.attribution = this.createAttribution(options, routeCtx);
+    routeCtx.attribution = this.attribution;
     const routes = createRoutes(routeCtx);
+    this.attribution?.start();
     // Runs the LLM-free check-in reminder pass with no session. The first tick
     // waits one interval: Telegram may not be up yet at this point in boot.
     const checkInReminderTicker = routeCtx.checkInReminderTicker;
@@ -6483,6 +6490,17 @@ export class AgentServer {
       const slackRegistry = options.slack ? routeCtx.conversationRegistry ?? null : null;
       this.app.use(createMobileMediaRouter({
         pairing: this.mobilePairing, service: this.appConversations, mediaEnabled: isMobileMediaEnabled(options.config),
+        machineId: () => this.appConversations?.deps.machineId() ?? 'local',
+        // The owner's phone opens a Slack file from the machine that holds it (mobile-remote-media).
+        ownerAdmission: (req) => mobileOwnerDeviceAdmission(this.mobilePairing!, req),
+        bearerOk: (req) => holderBearerOk(req, options.config.authToken),
+        holderMedia: buildMediaHolderStream({
+          peers: () => routeCtx.resolvePeerUrls?.() ?? [],
+          allowlist: () => (options.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,
+          token: () => options.config.authToken,
+          selfMachineId: () => this.appConversations?.deps.machineId() ?? 'local',
+          record: routeCtx.recordRopeResult ?? undefined,
+        }),
         // A Slack file downloads only through the machine whose registry minted the conversation (§4.9).
         // Same gate as the Slack history route: nothing is served until the owner's Slack id is set.
         ...(slackRegistry ? { slackHeld: (key: string) => slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, key) } : {}),
@@ -8414,7 +8432,49 @@ export class AgentServer {
    * Stop the HTTP server gracefully.
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
+  /** Attribution paper trail: built only when the dev-agent gate resolves it on. Null means every route 503s. */
+  private createAttribution(options: ConstructorParameters<typeof AgentServer>[0], routeCtx: import('./routes.js').RouteContext): AttributionRuntime | null {
+    const config = options.config;
+    if (!config.stateDir || !resolveDevAgentGate(config.attribution?.enabled, config)) return null;
+    const readLive = (): AttributionConfig | undefined => options.liveConfig?.get?.<AttributionConfig | undefined>('attribution', undefined) ?? config.attribution;
+    let users: UserManager | null = null;
+    return new AttributionRuntime({
+      stateDir: config.stateDir,
+      projectDir: config.projectDir,
+      machineId: options.meshSelfId ?? 'local',
+      machineName: options.meshSelfId ?? 'local',
+      intelligence: options.intelligence,
+      config: readLive,
+      isEnabled: () => resolveDevAgentGate(readLive()?.enabled, config),
+      users: () => {
+        try { return users ??= new UserManager(config.stateDir, config.users); } catch { /* @silent-fallback-ok — no users file names nobody, which reads identity-unverified */ return null; }
+      },
+      topicMemory: () => routeCtx.topicMemory ?? null,
+      threadLog: () => routeCtx.threadLog ?? null,
+      appStore: () => routeCtx.appConversations?.store ?? null,
+      configuredOwnerUid: () => routeCtx.telegram?.getOwnerUserId?.() ?? config.monitoring?.promptGate?.ownerId,
+      slackOwnerUserId: () => config.mobilePairing?.slackOwnerUserId ?? null,
+      peers: () => (options.resolvePeerUrls?.() ?? []).filter((peer) => !!peer.url),
+      registeredMachines: () => {
+        try {
+          const identity = new MachineIdentityManager(config.stateDir);
+          const self = identity.loadIdentity().machineId;
+          return Object.entries(identity.loadRegistry().machines ?? {})
+            .filter(([id, entry]) => id !== self && isRegistryEntryActive(entry))
+            .map(([id]) => id);
+        } catch {
+          // @silent-fallback-ok — a machine with no identity has no registered siblings to ask.
+          return [];
+        }
+      },
+      authToken: () => config.authToken,
+      recordRope: options.recordRopeResult,
+      holdsLease: () => { try { return options.coordinator?.enabled ? options.coordinator.holdsLease() : true; } catch { /* @silent-fallback-ok — unsure of the lease means the audit waits for the next look */ return false; } },
+    });
+  }
+
   async stop(): Promise<void> {
+    this.attribution?.stop();
     this.routeContext?.jobCoverageStop?.();
     this.mobilePairing?.push?.stop();
     this.mobilePairing?.stop();

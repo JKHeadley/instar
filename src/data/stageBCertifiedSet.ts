@@ -28,6 +28,14 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "Claude-only helper that passes the sign-in key to claude children; a Codex launch never reads it, so it cannot change the behaviour the Stage-B evidence certifies."
     },
     {
+      "file": "src/monitoring/healthChoices.ts",
+      "reason": "The person's hide and ignore choices on a health problem, reached through DegradationReporter; it decides only whether a degradation is recorded or shown, and has no part in the certified Codex Stage-B delivery path."
+    },
+    {
+      "file": "src/monitoring/scrubSecrets.ts",
+      "reason": "Text scrubber reached through healthChoices for a saved problem title; pure, and no part of the certified Codex Stage-B delivery path."
+    },
+    {
       "file": "src/monitoring/FeatureEvidenceLog.ts",
       "reason": "Write-only evidence log reached through DegradationReporter; its calls never throw, return nothing the caller reads, and do not alter the certified Codex Stage-B delivery path."
     },

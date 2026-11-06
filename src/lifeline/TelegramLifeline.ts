@@ -75,7 +75,7 @@ import { decideReplay, type ForwardOutcome } from './replayPolicy.js';
 import { writeStartupMarker } from './startupMarker.js';
 import { acquireLockFile, startLockHeartbeat } from './lifelineLock.js';
 import { shouldOwnTelegramPoll } from './telegramPollOwnership.js';
-import { bootHoldStep, decidePollAction, holdPollAtBoot, type PollOverride } from './pollDecision.js';
+import { bootHoldStep, decidePollAction, hasRecent409, holdPollAtBoot, type PollOverride } from './pollDecision.js';
 import { readPollIntent, effectivePollIntent, writePollActive, pidAlive } from '../core/pollIntent.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { writeLease as writePollOwnerLease } from './TelegramPollOwnerLease.js';
@@ -183,6 +183,8 @@ export class TelegramLifeline {
   private lifelineTopicId: number | null = null;
   private lockPath: string;
   private consecutive409s = 0;
+  /** When the last 409 arrived; with the count, says whether the conflict is still current. */
+  private last409AtMs = 0;
   private consecutive429s = 0;
   /**
    * B1 (multimachine-lease-poll-robustness, Decision 4) — the monotonic ms at
@@ -1117,6 +1119,7 @@ export class TelegramLifeline {
       }
     }
 
+    const recent409 = hasRecent409({ consecutive409s: this.consecutive409s, last409AtMs: this.last409AtMs, nowMs: now });
     const action = decidePollAction({
       currentlyPolling: this.polling,
       intentShouldPoll,
@@ -1124,8 +1127,8 @@ export class TelegramLifeline {
       // Peer poll-state cross-check (B5 surface) is a follow-up; the 409 signal is
       // the partition-immune backstop and peerPresumedGone stays conservative
       // (false → START always rides the debounce, never an unsafe fast-path here).
-      anotherMachinePolling: this.consecutive409s > 0,
-      recentLocal409: this.consecutive409s > 0,
+      anotherMachinePolling: recent409,
+      recentLocal409: recent409,
       startDebounceElapsed,
       peerPresumedGone: false,
     });
@@ -1140,6 +1143,10 @@ export class TelegramLifeline {
     if (action === 'stop') {
       this.polling = false;
       this.cancelPollStart();
+      // A standby is not stuck in a 409 fight, so the watchdog stops timing one. The count
+      // and its time stay: a lease that flaps back inside the window still sees the conflict,
+      // and hasRecent409 lets the evidence lapse so the next start is never blocked forever.
+      this.conflict409StartedAt = null;
       console.log('[Lifeline] [poll-follows-lease] stopping poll (lost the lease)');
     } else if (action === 'start') {
       this.startPollAfterFlush(stateDir, forcePoll);
@@ -1220,8 +1227,9 @@ export class TelegramLifeline {
       // Handle 409 Conflict (multiple bot instances polling)
       if (errMsg.includes('409') && errMsg.includes('Conflict')) {
         // 0→>0 edge: record when conflict started so watchdog can time the stuck state.
-        if (this.consecutive409s === 0) this.conflict409StartedAt = Date.now();
+        if (this.consecutive409s === 0 || this.conflict409StartedAt === null) this.conflict409StartedAt = Date.now();
         this.consecutive409s++;
+        this.last409AtMs = Date.now();
         // Exponential backoff: 4s, 8s, 16s, 32s, max 60s
         this.pollBackoffMs = Math.min(60_000, 2000 * Math.pow(2, this.consecutive409s));
         if (this.consecutive409s === 1 || this.consecutive409s % 10 === 0) {

@@ -309,6 +309,7 @@ describe('Feature Delivery Completeness', () => {
     // Some migrator sections are legacy patches for old agents that have since been
     // absorbed into the base template differently. These don't need template parity.
     const legacyMigratorSections = [
+      '## Attribution paper trail', // attribution-paper-trail spec: generateClaudeMd and migrateClaudeMd both append the shared ATTRIBUTION_CLAUDEMD_SECTION, so templates.ts holds the constant reference rather than this heading
       '| Can I use a browser?', // normal-chrome-linux: a Registry First row, inserted after "What can I do?" in template and migration alike.
       'Find verified topic names across my machines:', // Telegram capability addendum; migrateClaudeMd inserts it once and the framework shadow mirrors the same line.
       'replies are forwarded to the holder', // a2a-single-agent-identity §4 (ACT-058): generateClaudeMd and migrateClaudeMd both append the shared telegramOriginForwardAwareness(port) helper, so templates.ts holds the function reference rather than this literal; the migrator sniffs the helper's own sentence so it lands exactly once.

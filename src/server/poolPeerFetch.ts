@@ -68,6 +68,11 @@ function isAbort(err: unknown): boolean {
   return name === 'AbortError' || name === 'TimeoutError';
 }
 
+/** Caller rejected a dial BEFORE network activity. Not a rope failure or a retry signal. */
+export class PoolPeerAdmissionError extends Error {
+  override readonly name = 'PoolPeerAdmissionError';
+}
+
 /**
  * Drop-in for `fetch(`${peer.url}${path}`, init)` that reports the rope outcome.
  *
@@ -113,8 +118,12 @@ export async function poolPeerFetch(
       void lastEdge?.body?.cancel().catch(() => {});
       lastEdge = res;
     } catch (err) {
+      if (err instanceof PoolPeerAdmissionError) {
+        void lastEdge?.body?.cancel().catch(() => {});
+        throw err;
+      }
       if (kind && record) record(peer.machineId, kind, false, Date.now() - started, rope.url);
-      if (isAbort(err)) throw err;
+      if (isAbort(err)) { void lastEdge?.body?.cancel().catch(() => {}); throw err; }
       if (i === attempts.length - 1) { if (lastEdge) return lastEdge; throw err; }
       lastError = err;
     }

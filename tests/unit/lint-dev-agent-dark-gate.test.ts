@@ -572,8 +572,9 @@ describe('lint-dev-agent-dark-gate', () => {
       // Assisted relogin is intentionally fleet-dark until a per-agent
       // promotion; the exclusion registry classifies it as action-bearing.
       // The default-on subscriptionPool.wallRescue block above it (+9 lines,
-      // `enabled: true`, no dark-gate row) shifts it down.
-      '2202': 'subscriptionPool.assistedRelogin.enabled',
+      // `enabled: true`, no dark-gate row) shifts it down. Attribution adds
+      // seven more lines, without a new enabled:false row: 2202 + 7 = 2209.
+      '2209': 'subscriptionPool.assistedRelogin.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

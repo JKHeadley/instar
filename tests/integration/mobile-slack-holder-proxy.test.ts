@@ -98,7 +98,7 @@ async function machine(id: string, channel: string, text: string, peers: () => P
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
   cleanups.push(() => new Promise<void>((r) => { server.close(() => r()); server.closeAllConnections(); }));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  return { id, app, url, alias, pairing, posted, dispatched, logPath, hits: () => hits };
+  return { id, app, url, alias, pairing, config, dir, posted, dispatched, logPath, hits: () => hits };
 }
 type Machine = Awaited<ReturnType<typeof machine>>;
 
@@ -110,7 +110,7 @@ async function fakeHolder(handle: http.RequestListener): Promise<Peer & { calls:
   return { machineId: 'm_fake', url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, kind: 'lan', calls: () => calls };
 }
 
-async function phone(m: Machine, person?: { userId: string; role: 'msp' }) {
+async function phone(m: Machine, person?: { userId: string; role: 'msp' | 'owner' }) {
   const dev = makeDevice();
   const c = m.pairing.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST, ...(person ?? {}) } as never);
   if (!c.ok) throw new Error('setup');
@@ -231,6 +231,44 @@ describe('owner phone reads a Slack conversation held by another machine', () =>
     expect(r.status).toBe(403);
     expect(JSON.stringify(r.body)).not.toContain('private');
   });
+
+  it.each(['ledger', 'key', 'binding', 'named-removed', 'named-demoted', 'pairing-off', 'native-off'])(
+    'refuses private content when %s changes during the actual holder wait', async change => {
+      const { a, set } = await pair();
+      const named = change.startsWith('named-');
+      const profiles = [{ id: 'owner', name: 'Justin', orgRole: 'owner', permissions: [], channels: [] }];
+      if (named) fs.writeFileSync(path.join(a.dir, 'users.json'), JSON.stringify(profiles));
+      const p = await phone(a, named ? { userId: 'owner', role: 'owner' } : undefined);
+      let release!: () => void, entered!: () => void;
+      const reached = new Promise<void>(r => { entered = r; });
+      const holder = await fakeHolder((_req, res) => {
+        release = () => res.end(JSON.stringify({ deviceView: true, conversationId: a.alias, messages: [{ text: 'private held bytes' }] }));
+        entered();
+      });
+      set([{ ...holder, machineId: 'm_b' }]);
+      const pending = signed(a, p, 'GET', read(a.alias, 'm_b')).then(r => r);
+      await reached;
+      if (change === 'ledger') {
+        a.pairing.keyLedger!.recordRevocation(a.pairing.devices.get(p.deviceId)!, new Date().toISOString());
+        expect(a.pairing.devices.get(p.deviceId)!.status).toBe('active');
+      }
+      if (change === 'key' || change === 'binding') {
+        const file = JSON.parse(fs.readFileSync(a.pairing.devices.file, 'utf8'));
+        const row = file.devices.find((d: { id: string }) => d.id === p.deviceId);
+        if (change === 'key') row.publicKey = makeDevice().publicKey;
+        else row.userId = 'another-owner';
+        fs.writeFileSync(a.pairing.devices.file, JSON.stringify(file));
+      }
+      if (change === 'named-removed') fs.writeFileSync(path.join(a.dir, 'users.json'), '[]');
+      if (change === 'named-demoted') fs.writeFileSync(path.join(a.dir, 'users.json'),
+        JSON.stringify([{ ...profiles[0], name: 'Former owner', orgRole: 'member' }]));
+      if (change === 'pairing-off') (a.config.mobilePairing as any).enabled = false;
+      if (change === 'native-off') (a.config.mobilePairing as any).native = { enabled: false };
+      release();
+      const response = await pending;
+      expect(response.status).toBe(403);
+      expect(JSON.stringify(response.body)).not.toContain('private held bytes');
+    });
 
   it('refuses a redirect, an oversized body, an old holder and a slow holder; the server stays free', async () => {
     const { a, set } = await pair();

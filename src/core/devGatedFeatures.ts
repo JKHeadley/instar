@@ -311,6 +311,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'The session value lives in PROCESS MEMORY ONLY — never written to any log/config/temp file, never passed as a CLI argv (handed to bw only via the child BW_SESSION env), and NEVER placed on the multiMachine.secretSync path (machine-local). It is held warm only while a checklist run is in flight and carries a TTL + idle-expiry, so the standing-privilege window is minimal. The master password stays operator-held; no new on-disk secret is introduced. The dev agent is the controlled blast radius where this matures before any fleet flip.',
   },
   {
+    name: 'attributionPaperTrail',
+    configPath: 'attribution.enabled',
+    description: 'Attribution paper trail — statements credited to a person resolve to the logged message, in notes, messages and a daily report (attribution-paper-trail).',
+    justification: 'Ships in mode record: on a dev agent it writes its own ledger and report, refuses nothing, holds nothing and never edits a note. Spend is the agent\'s own subscription inside fixed budgets of 200 and 300 model calls a day plus 40 a run.',
+  },
+  {
     name: 'topicProfiles',
     configPath: 'topicProfiles.enabled',
     description: 'Topic Profile — per-topic model/thinking/framework pins (TOPIC-PROFILE-SPEC).',
