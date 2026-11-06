@@ -34,6 +34,8 @@ Instar can show and control a Mac's screen remotely, even while that Mac is lock
 
 **One test left running the very thing that fixes the problem it creates.** A test freezes the typing helper and the guard, waits ten minutes, and expects a second agent to have to clean up. But the first agent's server was still running, and its job is to notice a frozen guard and start a new one, which it did within ten seconds. So there was never anything for the second agent to clean up. The test now freezes that server as well.
 
+**One message it did not recognise.** When the Mac's lock screen is not ready to take a password, the page says so in plain words. The driver did not know that sentence and wrote down "no answer". It now records it as the refusal it is.
+
 ## What stays the same
 
 The product is unchanged: the web page, the server and the safety guard all behaved correctly. Once the freeze test was fixed, it passed: the guard noticed the frozen server and relocked the Mac. Nothing here reaches any running agent; it only affects the proof tool run by hand on the test Mac.

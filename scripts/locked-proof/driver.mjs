@@ -635,6 +635,7 @@ const STATUS_REASONS = [
   ['Stopped before the password finished', 'aborted'], ['Clearing the password field', 'field-dirty'],
   ['secure tunnel is up', 'tunnel-not-active'], ['kept desktop helper', 'retained-helper-required'],
   ['Password entry from a browser is off', 'browser-box-off'], ['backup connection', 'tunnel-not-first-tier'],
+  ['lock screen is not ready for a password', 'shield-not-confirmed'],
   ['did not accept that', 'refused-other'],
 ];
 export function refusalFromStatus(text) {

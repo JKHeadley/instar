@@ -202,6 +202,8 @@ describe('locked-proof viewer driving', () => {
   });
 
   it('maps the new viewer reasons back to their words', () => {
+    // Seen live: the helper's shield-not-confirmed refusal was recorded as "no result" for want of this line.
+    expect(refusalFromStatus("This Mac's lock screen is not ready for a password right now. Wake the screen and try again.")).toBe('shield-not-confirmed');
     expect(refusalFromStatus("Password entry from a browser is off until this Mac's secure tunnel is up. This page updates when it is.")).toBe('tunnel-not-active');
     expect(refusalFromStatus("Password entry needs Instar's kept desktop helper on this Mac, and this install does not have one.")).toBe('retained-helper-required');
     expect(refusalFromStatus('Password entry from a browser is off for this Mac.')).toBe('browser-box-off');
