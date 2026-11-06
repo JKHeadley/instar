@@ -8,10 +8,10 @@ import type { NotificationCategoryId, SignificantClass } from './notificationCat
 
 export interface OutboundEnvelope {
   origin: 'verified-reply' | 'automated'; category: NotificationCategoryId;
-  sourceContext: string; inboundMirror?: true; messageKind?: 'reply' | 'automated' | 'unknown'; contextTopicId?: number; localPermit?: string; inboundMessageId?: string; significantClass?: SignificantClass; relayedOrigin?: boolean; releaseAudiencePromoted?: boolean;
+  sourceContext: string; verifiedJobSlug?: string; inboundMirror?: true; messageKind?: 'reply' | 'automated' | 'unknown'; contextTopicId?: number; localPermit?: string; inboundMessageId?: string; significantClass?: SignificantClass; relayedOrigin?: boolean; releaseAudiencePromoted?: boolean;
 }
 export interface SelectivityConfig {
-  enabled?: boolean; dryRun?: boolean; legacy?: Partial<Record<NotificationCategoryId, boolean>>; push?: { categories?: Partial<Record<NotificationCategoryId, boolean>> };
+  enabled?: boolean; dryRun?: boolean; legacy?: Partial<Record<NotificationCategoryId, boolean>>; push?: { categories?: Partial<Record<NotificationCategoryId, boolean>>; jobs?: Record<string, boolean>; jobTopics?: Record<string, number | null> };
   digest?: { enabled?: boolean; cadence?: 'daily' }; quietStore?: { retentionDays?: number; maxEntries?: number };
 }
 export type NotificationDecision = { decision: 'deliver' | 'deliver-push' | 'record'; reason: string; category: NotificationCategoryId; dryRun: boolean; mapCold?: boolean };
@@ -33,11 +33,25 @@ export function verifiedInboundMirrorEnvelope(sourceContext: string): OutboundEn
 export function isVerifiedReplyEnvelope(value: unknown): boolean {
   return typeof value === 'object' && value !== null && replyCapabilities.has(value);
 }
+const jobCapabilities = new WeakSet<object>();
+/** Names the job a notice came from. Only code holding server-side job truth mints this (enforced by the funnel lint). */
+export function verifiedJobEnvelope(slug: string, base?: OutboundEnvelope): OutboundEnvelope {
+  const envelope: OutboundEnvelope = { ...base, origin: 'automated', category: 'job-status', sourceContext: slug, verifiedJobSlug: slug };
+  jobCapabilities.add(envelope); return envelope;
+}
+export function isVerifiedJobEnvelope(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || !jobCapabilities.has(value)) return false;
+  const envelope = value as OutboundEnvelope;
+  return envelope.category === 'job-status' && !!envelope.verifiedJobSlug && envelope.sourceContext === envelope.verifiedJobSlug;
+}
 /** Structural policy only. Content judgments belong to the existing tone authority. */
 export class NotificationSelectivityGate {
   public pushDestination: ((category: NotificationCategoryId) => { chatId: string; topicId: number } | null) | null = null;
-  destination(envelope: OutboundEnvelope): { chatId: string; topicId: number } | null {
+  destination(envelope: OutboundEnvelope, addressedTopicId?: number): { chatId: string; topicId: number } | null {
     if (!this.isEnforcing() || isVerifiedReplyEnvelope(envelope) || CONVERSATION_CATEGORIES.has(envelope.category)) return null;
+    // An opted-in job stays only in the topic the operator chose it in, never wherever it addressed.
+    const config = this.config();
+    if (addressedTopicId !== undefined && this.jobOptedIn(envelope, config) && config.push?.jobTopics?.[envelope.verifiedJobSlug!] === addressedTopicId) return null;
     return this.pushDestination?.(envelope.category) ?? null;
   }
   public readPeers: ((topicId: number) => Promise<{ items: import('./QuietNotificationStore.js').QuietNotification[]; unavailable: string[] }>) | null = null;
@@ -104,6 +118,11 @@ export class NotificationSelectivityGate {
   isEnforcing(): boolean { const config = this.config(); return config.enabled === true && config.dryRun === false; }
   categoryPushEnabled(category: NotificationCategoryId): boolean { const config = this.config(); return this.isEnforcing() && (config.push?.categories?.[category] === true || config.legacy?.[category] === true); }
   holdsCategory(category: NotificationCategoryId): boolean { const config = this.config(); return config.enabled === true && config.dryRun === false && config.push?.categories?.[category] !== true && config.legacy?.[category] !== true; }
+  jobPush(): Record<string, boolean> { return this.config().push?.jobs ?? {}; }
+  /** Text and priority play no part: only a verified identity and the operator's own choice. */
+  private jobOptedIn(envelope: OutboundEnvelope | undefined, config: SelectivityConfig): boolean {
+    return isVerifiedJobEnvelope(envelope) && pushedJobs(config).includes(envelope!.verifiedJobSlug!);
+  }
   observeInbound(topicId: number, id: string | number, operator = false, observedAt = this.now()): void {
     const rows = this.inbound.get(topicId) ?? [];
     const clean = rows.filter(row => row.at > this.now() - 7 * 86400000 && row.id !== String(id));
@@ -149,7 +168,9 @@ export class NotificationSelectivityGate {
     }
     const significant = envelope?.significantClass && SIGNIFICANT_TABLE[category]?.includes(envelope.significantClass);
     const promotedUpdate = category === 'update-announcement' && envelope?.releaseAudiencePromoted === true && settings.push?.categories?.[category] !== false;
-    if (!significant && !promotedUpdate && settings.push?.categories?.[category] !== true && settings.legacy?.[category] !== true) return result('record', 'quiet-default');
+    const categoryPush = settings.push?.categories?.[category] === true || settings.legacy?.[category] === true;
+    const jobOptIn = !categoryPush && this.jobOptedIn(envelope, settings);
+    if (!significant && !promotedUpdate && !categoryPush && !jobOptIn) return result('record', 'quiet-default');
     if (significant) {
       const key = `${category}:${envelope!.significantClass}:${envelope!.sourceContext.slice(0, 160)}`;
       for (const [k, at] of this.episodes) if (this.now() - at >= 21600000) this.episodes.delete(k);
@@ -161,7 +182,7 @@ export class NotificationSelectivityGate {
       if (!this.budget(category, 3)) return result('record', 'push-budget');
       if (!this.budget('*', 10)) return result('record', 'global-budget');
     }
-    return result('deliver-push', significant ? 'significant-class' : promotedUpdate ? 'release-audience-promotion' : 'category-opt-in');
+    return result('deliver-push', significant ? 'significant-class' : promotedUpdate ? 'release-audience-promotion' : jobOptIn ? 'job-opt-in' : 'category-opt-in');
   }
   private flushEvidence(cleanShutdown: boolean): Promise<void> {
     const snapshot = { ...this.evidence, cleanShutdown, checkpointAt: new Date(this.now()).toISOString() };
@@ -188,8 +209,9 @@ export class NotificationSelectivityGate {
       const total = Object.values(counts).reduce((sum, value) => sum + value, 0); if (!total) return;
       const lines = notificationCategories.filter(([id]) => counts[id]).map(([id, name]) => `${counts[id]} ${name.toLowerCase()}`);
       const inventory = notificationCategories.filter(([id]) => this.config().push?.categories?.[id] === true).map(([, name]) => name.toLowerCase());
+      const jobs = pushedJobs(this.config());
       const permit = `${this.machineId}:digest:${this.now()}`; this.permits.set(permit, this.now() + 60000);
-      await this.onSummary(`${total} quiet notices since the last digest: ${lines.join(', ')}. ${this.store.counters().unreadAging} unread notices are over three days old. Pushed categories: ${inventory.join(', ') || 'none'}. ${this.dashboardLink?.() ?? 'See the dashboard Notifications feed.'}`, {
+      await this.onSummary(`${total} quiet notices since the last digest: ${lines.join(', ')}. ${this.store.counters().unreadAging} unread notices are over three days old. Pushed categories: ${inventory.join(', ') || 'none'}.${jobs.length ? ` Pushed jobs: ${jobs.join(', ')}.` : ''} ${this.dashboardLink?.() ?? 'See the dashboard Notifications feed.'}`, {
         origin: 'automated', category: 'selectivity-digest', sourceContext: 'selectivity-digest', localPermit: permit,
       });
     } catch (error) { console.warn('[selectivity] digest unavailable; next attempt is the next daily cadence:', error); }
@@ -206,7 +228,7 @@ export class NotificationSelectivityGate {
       const summary = this.summaries.get(key); this.summaries.delete(key);
       if (!summary || !this.onSummary) return;
       const current = this.config();
-      if (!this.isEnforcing() || (!significant && (global ? !Object.values(current.push?.categories ?? {}).some(Boolean) : current.push?.categories?.[summary.category] !== true && current.legacy?.[summary.category] !== true))) return;
+      if (!this.isEnforcing() || (!significant && (global ? !Object.values(current.push?.categories ?? {}).some(Boolean) && !pushedJobs(current).length : current.push?.categories?.[summary.category] !== true && current.legacy?.[summary.category] !== true && !(summary.category === 'job-status' && pushedJobs(current).length)))) return;
       for (const [id, until] of this.permits) if (until < this.now()) this.permits.delete(id);
       const permit = `${this.machineId}:${this.now()}:${Math.random()}`;
       this.permits.set(permit, this.now() + 60000);
@@ -345,6 +367,11 @@ export class NotificationSelectivityGate {
   }
   close(): Promise<void> { return this.closePromise ??= this.closeOnce(); }
   private async closeOnce(): Promise<void> { clearInterval(this.evidenceTimer); await this.evidenceReady; await this.flushEvidence(true); clearInterval(this.digestTimer); for (const summary of this.summaries.values()) clearTimeout(summary.timer); await this.preferences?.close(); await this.store.close(); await this.ledgerWrites; }
+}
+
+/** Own keys holding exactly true: an inherited name or a truthy value is not a choice. */
+function pushedJobs(config: SelectivityConfig): string[] {
+  return Object.entries(config.push?.jobs ?? {}).filter(([, enabled]) => enabled === true).map(([slug]) => slug);
 }
 
 /** For contracts that require a real conversational anchor, a quiet record is not one. */
