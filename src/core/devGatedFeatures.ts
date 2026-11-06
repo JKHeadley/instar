@@ -208,6 +208,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the owner-gate + governor + reconciler run the full decision loop and AUDIT/log every suppression/dead-letter/close they WOULD make, but PromiseBeacon.emitUserSend STILL sends and the governor/reconciler mutate nothing while dryRun holds (verified at emitUserSend §4.2 + reconcileGraveyard/maybeReconcileGraveyard dryRun branches). No spend, no destructive action, no egress while the canary holds; real suppression/closes need a deliberate dryRun:false. Same dogfooding posture as topicProfiles / credential-repointing.',
   },
   {
+    name: 'promiseReview',
+    configPath: 'commitments.promiseReview.enabled',
+    description: 'Promise review (docs/specs/promise-review-and-priority.md): the promise-review job reviews the agent\'s own open promises every 6 h and keeps / prioritizes / delivers / archives each through POST /commitments/review/apply.',
+    justification: 'Ships closureDryRun:true: on a dev agent keep/prioritize stamp live (they close nothing), while deliver/archive are validated and audited as would-apply and close nothing until a deliberate closureDryRun:false. Even live, every closure needs a written reason plus server-checked evidence, is capped (15/run, 60/day), audited to logs/promise-review.jsonl and reopenable for 30 days; nothing is ever deleted and the job never messages anyone. Spend: one sonnet session per 6 h only when enough rows are due (gate). Kill switch read live.',
+  },
+  {
     name: 'biasToAction',
     configPath: 'monitoring.biasToAction.enabled',
     description: 'Standing-authorization signal for B17_FALSE_BLOCKER (BIAS-TO-ACTION-SPEC) — feeds the outbound tone gate a VERIFIED-operator, non-forwarded, in-window grant so "re-asking for authority you already hold" is recognized as the false blocker it is.',

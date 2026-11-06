@@ -1225,3 +1225,7 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
            calc(var(--safe-b) + var(--s-6))
            calc(env(safe-area-inset-left, 0px) + var(--s-4));
 }
+
+/* Promises priority filter (promise-review-and-priority §2.7) */
+.promise-filter { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; }
+.promise-filter .chip[aria-pressed="true"] { border-color: var(--accent, var(--hairline-strong)); color: var(--text); background: var(--surface-raised, var(--surface)); font-weight: 600; }

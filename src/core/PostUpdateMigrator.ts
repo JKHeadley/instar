@@ -13919,6 +13919,30 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.skipped.push('CLAUDE.md: Commitments & Follow-Through section already present');
     }
 
+    // Promise review + priority (docs/specs/promise-review-and-priority.md).
+    // SEPARATE block, content-sniffed on its own marker, so agents that already
+    // have the Commitments section receive it on update (Migration Parity).
+    if (
+      content.includes('**Commitments & Follow-Through**') &&
+      !content.includes('/commitments/review/queue')
+    ) {
+      const reviewLine = `- **Priority and my own promise review.** Every promise can carry \`priority\`: \`high\` (a person is waiting on something concrete from me), \`normal\` (real work I own, nobody actively waiting) or \`low\` (nice to have); no priority means "not assessed yet". Set it when opening (\`"priority":"high","priorityReason":"…"\` on POST) or later (\`PATCH /commitments/:id\` with \`{"priority":"normal","priorityReason":"…"}\`). Filter: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/commitments?status=active&priority=high"\` (comma list; \`unset\` = not assessed). Close with proof: \`POST /commitments/:id/deliver\` accepts \`{"evidence":"<what shows it is done>"}\`. The \`promise-review\` job reviews my open promises every 6 h through \`GET /commitments/review/queue\` + \`POST /commitments/review/apply\` (keep / prioritize / deliver with evidence / archive with a reason, capped and audited to \`logs/promise-review.jsonl\`; closures in shadow until it graduates; dev-gated \`commitments.promiseReview\`). A closure it made can be undone for 30 days: \`POST /commitments/:id/reopen\` with \`{"reason":"…"}\`. High-priority open promises lead my session-start context — act on them first. **When to use** (PROACTIVE): when the user asks "what are you working on / what do I owe / what's waiting", answer from \`?priority=high\` first; never hand the user a raw promise list to sort.`;
+      const deliverLine = '- Mark delivered when done: `curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:' + port + '/commitments/:id/deliver`';
+      const at = content.indexOf(deliverLine);
+      if (at >= 0) {
+        const end = at + deliverLine.length;
+        content = content.slice(0, end) + '\n' + reviewLine + content.slice(end);
+      } else {
+        const sec = content.indexOf('**Commitments & Follow-Through**');
+        const eol = content.indexOf('\n', sec);
+        content = content.slice(0, eol + 1) + reviewLine + '\n' + content.slice(eol + 1);
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added promise priority + promise-review lines');
+    } else {
+      result.skipped.push('CLAUDE.md: promise priority + promise-review lines already present (or no Commitments section)');
+    }
+
     // Dated check-in reminders (ACT-724 step 1). SEPARATE from the block above:
     // an agent that already HAS the Commitments section never re-enters that
     // branch, so appending to it would reach only fresh installs — the exact
