@@ -1324,6 +1324,8 @@ export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
   { component: 'SpawnRequestManager', reason: 'Cross-session spawn coordination; session mechanics, not a guard.' },
   { component: 'SessionManager', reason: 'Core session lifecycle engine; the thing guards act ON, not a guard.' },
   { component: 'StateManager', reason: 'Core state persistence; storage layer.' },
+  { component: 'SigninProfileGuard', reason: 'Always-on profile ownership invariant and generated native hook; stateless boundary validation, no boot lifecycle or posture switch.' },
+  { component: 'BrowserMcpProfileGuard', reason: 'Stateless mandatory MCP startup preflight over registry ownership; not an independently scheduled runtime monitor or switch.' },
   { component: 'SourceTreeGuard', reason: 'Hard invariant on destructive ops against the source tree — always-on by design with NO off switch, so posture (on/off) is meaningless for it.' },
   { component: 'SafeGitExecutor', reason: 'Single-funnel for destructive git ops; hard invariant, no off switch, posture meaningless.' },
   { component: 'SafeFsExecutor', reason: 'Single-funnel for destructive fs ops; hard invariant, no off switch, posture meaningless.' },

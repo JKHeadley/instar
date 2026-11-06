@@ -182,6 +182,9 @@ export const WRONG_BUDGET_WINDOW_MS = 24 * 60 * 60_000;
 const TERMINAL_KEEP_MS = 24 * 60 * 60_000;
 const MAX_TOMBSTONES = 200;
 
+/** Which proof approved a phone: the owner's private chat, a dashboard PIN session, or an owner phone's Face ID. */
+export type ApprovedVia = 'telegram-dm' | 'dashboard-pin' | 'owner-phone';
+
 export interface DeviceRecord {
   id: string;
   deviceName: string | null;
@@ -193,8 +196,10 @@ export interface DeviceRecord {
   host?: string;
   expiresAt?: string;
   approvedAt?: string;
-  /** How the owner approved this key (mobile-native-conversations §4.4); absent ⇒ telegram-dm. */
-  approvedVia?: 'telegram-dm' | 'dashboard-pin';
+  /** How the owner approved this key (mobile-native-conversations §4.4, mobile-pairing-approve §3.1); absent ⇒ telegram-dm. */
+  approvedVia?: ApprovedVia;
+  /** The owner phone whose Face ID approved this key (mobile-pairing-approve §3.1). */
+  approvedBy?: string;
   declinedAt?: string;
   revokedAt?: string;
   /** HMACs of distinct wrong codes already tried (per-process key; cleared on activation). */
@@ -351,12 +356,13 @@ export class DeviceRegistry {
   }
 
   /** Records the outcome of a confirmation attempt. `wrongHmac` is set for a wrong code. */
-  applyConfirm(id: string, outcome: { ok: true; approvedVia?: 'telegram-dm' | 'dashboard-pin'; approvedAt?: string } | { ok: false; wrongHmac: string }): DeviceRecord | null {
+  applyConfirm(id: string, outcome: { ok: true; approvedVia?: ApprovedVia; approvedAt?: string; approvedBy?: string } | { ok: false; wrongHmac: string }): DeviceRecord | null {
     const f = this.normalize(this.read());
     const d = f.devices.find((x) => x.id === id);
     if (!d || d.status !== 'pending') return d ?? null;
     if (outcome.ok) {
       d.status = 'active'; d.approvedAt = outcome.approvedAt ?? new Date(this.now()).toISOString(); d.approvedVia = outcome.approvedVia ?? 'telegram-dm';
+      if (outcome.approvedBy) d.approvedBy = outcome.approvedBy;
       delete d.wrongCodes; delete d.expiresAt;
     } else {
       d.wrongCodes = d.wrongCodes ?? [];

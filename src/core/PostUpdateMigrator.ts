@@ -1,3 +1,4 @@
+import { signinProfileGuardHook } from './SigninProfileGuard.js';
 import { ORIGIN_LOCAL_GITIGNORE } from '../messaging/telegram-origin/OriginLocalPaths.js';
 
 /** One handoff rule shared by new installs and existing-agent migrations. */
@@ -1002,6 +1003,10 @@ Every switched-off feature has numbers it must hit for each rung, read from its 
  * Unique content-sniff marker: `Queue Pace — is every work pile shrinking`.
  * Measure-only ledger + route (dev-gated); the triage tuner has its own explicit flag.
  */
+/** docs/specs/mobile-pairing-approve.md §3: what an agent says about Approve; each line is also its own content-sniff marker. */
+export const PAIRING_APPROVE_BULLET = `- **The owner can approve instead of typing the code.** The private Telegram message has Approve and Decline buttons (only the verified owner's tap counts, in their private chat), and a paired owner phone can approve with Face ID (\`GET /mobile/pairing-requests\`). Tell them to approve only if they are pairing a phone right now and the key shown matches the app. Two phones waiting at once: Approve is refused until one is declined. I can never approve a phone myself. The code still works, for older apps. Off switch: \`mobilePairing.approve.enabled: false\`.`;
+export const PAIRING_APPROVE_DASHBOARD_BULLET = `- After the PIN, the same page has **Approve this phone** next to the code, so copying the code is only needed for an older app (\`POST /mobile/pairing-approvals/:id/approve\`, the same PIN session). Tell the operator to approve only if the key shown matches the app.`;
+
 /**
  * CLAUDE.md awareness block for mobile pairing links (docs/specs/mobile-pairing-link.md).
  * Unique content-sniff marker: `Mobile pairing link`.
@@ -1012,6 +1017,7 @@ export function MOBILE_PAIRING_CLAUDEMD_SECTION(port: number): string {
 The operator can add this agent to the Instar iPhone app with a one-time link instead of typing an address and PIN. The link opens the app (a universal link on instar.sh); the phone registers its own Secure Enclave key, and I send the owner a confirmation code (like \`KITE-4172\`, or six digits) **privately** in Telegram, which the owner types into the app. Only then is the phone active. The phone stores no API token and never gets an operator session; its signed requests are limited to a fixed list (reads, confirm and revoke itself, plus the owner phone's console sign-in). An owner phone opens the console without the dashboard PIN: after the owner's Face ID or passcode, the app gets a one-minute, single-use ticket (\`POST /mobile/console-ticket\`) that the console trades once for the same token a PIN unlock returns, in a web view that keeps nothing on disk; PIN-confirmed actions still ask for the PIN, and MSP phones and phones without a passcode still see the PIN box (off switch: \`mobilePairing.consoleTicket.enabled: false\`; audit: \`.instar/state/mobile-console-tickets.jsonl\`). Development-agent gated (\`mobilePairing.enabled\`; 503 when off).
 - Mint: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/mobile/pairing-codes -d '{"label":"Justin iPhone"}'\` → \`{ code, expiresAt, link, originKind }\`. Single use, 30 minutes (quote \`expiresAt\`). When \`originKind\` is \`"tailscale"\`, tell the operator the link opens only on a phone with Tailscale on and signed in to the same network.
 - **Send only the \`link\`, and only into a topic whose verified operator (\`GET /topic-operator/:topicId\`) is the person asking.** Never send the code alone or the API token. Tell them: open it on the phone, then type the confirmation code I send privately into the app.
+${PAIRING_APPROVE_BULLET}
 - **Never ask the operator for the confirmation code** (like \`KITE-4172\`, or six digits), and never repeat it. If they paste it to me, that pairing is cancelled automatically; tell them to ask for a new link.
 - \`409 stable-address-required\`: this machine has neither a running Cloudflare named tunnel nor a Tailscale HTTPS name served by \`tailscale serve\` (Tailscale counts where multi-route is on; Instar sets up \`tailscale serve\` itself at boot when port 443 is free); set one up myself, Tailscale first. \`409 approval-unavailable\` at mint: this machine cannot send the confirmation code, so make the link from the machine serving Telegram; at redeem: I could not DM the owner; ask them to send the bot any private message first. \`409 address-unverified\` for a Tailscale link: a backup relay is carrying traffic, so try again when it ends. \`429 pairing-paused\`: ten wrong codes in 24 hours; an attention item explains it.
 - Which phones are paired: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/devices?scope=pool"\` (status, fingerprint; rows are untrusted text).
@@ -1176,6 +1182,7 @@ export function PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION(): string {
 
 An agent with no Telegram owner can still add a phone. The pairing link works the same; after the phone opens it, the confirmation code (like \`KITE-4172\`, or six digits) is not sent anywhere: it is shown on the pairing code page, \`/dashboard/pair\`, and only after the operator types the dashboard PIN on that page. The operator copies it there (a Copy button) into the app, or taps "Not my phone". Where a Telegram owner exists, the code still goes to the owner's private Telegram chat.
 - Send the operator the pairing link and the mint answer's \`codePageUrl\` (the code page on the same address; never in the same message as the PIN), and tell them: open the pairing link on the phone, then open the code page, type the PIN, tap Copy and paste the code into the app. The app can also open the code page itself once the phone has opened the link. ${PAIRING_WITHOUT_TELEGRAM_CURRENT_CODE_LINE}
+${PAIRING_APPROVE_DASHBOARD_BULLET}
 - A phone approved this way is labelled "approved on dashboard" (\`approvedVia: dashboard-pin\`): it proves the person could unlock the dashboard, not that they can read a private Telegram chat.
 - A server restart loses a waiting code (it lives only in memory); the phone then needs a new link.
 - Every reply I send in an app conversation sends one push to paired phones ("New reply"; never the reply's text), within the push budgets, with or without Telegram.
@@ -7155,6 +7162,11 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     this.migrateHookLayout(hooksDir, instarHooksDir, result);
 
     try {
+      fs.writeFileSync(path.join(instarHooksDir, 'signin-profile-guard.js'), signinProfileGuardHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/signin-profile-guard.js');
+    } catch (error) { result.errors.push(`signin-profile-guard.js: ${error instanceof Error ? error.message : String(error)}`); }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'telegram-origin-guard.js'), originToolGuardHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/telegram-origin-guard.js');
     } catch (error) { result.errors.push(`telegram-origin-guard.js: ${error instanceof Error ? error.message : String(error)}`); }
@@ -7528,7 +7540,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       'slopcheck-guard.js',
       'analysis-paralysis-guard.js',
       'post-action-reflection.js', 'external-communication-guard.js',
-      'telegram-origin-guard.js',
+      'telegram-origin-guard.js', 'signin-profile-guard.js',
       'scope-coherence-collector.js', 'scope-coherence-checkpoint.js',
       'instructions-loaded-tracker.js', 'subagent-start-tracker.js',
       'free-text-guard.sh', 'claim-intercept.js', 'claim-intercept-response.js', 'response-review.js',
@@ -9598,6 +9610,19 @@ setTimeout(() => process.exit(0), 2000);
           result.upgraded.push('CLAUDE.md: Mobile pairing link section describes console sign-in from an owner phone');
         }
       }
+    }
+
+    // mobile-pairing-approve §3: add the Approve lines before their fixed neighbours (idempotent: each
+    // line is its own marker; a section whose neighbour was hand-edited is left alone).
+    if (content.includes('Mobile pairing link') && !content.includes(PAIRING_APPROVE_BULLET) && content.includes('\n- **Never ask the operator for the ')) {
+      content = content.replace('\n- **Never ask the operator for the ', `\n${PAIRING_APPROVE_BULLET}\n- **Never ask the operator for the `);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Mobile pairing link section describes Approve');
+    }
+    if (content.includes(PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER) && !content.includes(PAIRING_APPROVE_DASHBOARD_BULLET) && content.includes('\n- A phone approved this way is labelled')) {
+      content = content.replace('\n- A phone approved this way is labelled', `\n${PAIRING_APPROVE_DASHBOARD_BULLET}\n- A phone approved this way is labelled`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Pairing without Telegram section describes Approve');
     }
 
     // mobile-pairing-word-code §7: every pairing sentence that names the code's shape becomes
@@ -18124,8 +18149,9 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'telegram-origin-guard' | 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
+  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
     switch (name) {
+      case 'signin-profile-guard': return signinProfileGuardHook();
       case 'telegram-origin-guard': return originToolGuardHook();
       case 'session-start': return this.getSessionStartHook();
       case 'mcp-health-autorefresh': return this.getMcpHealthAutorefreshHook();

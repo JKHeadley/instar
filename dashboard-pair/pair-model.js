@@ -61,6 +61,13 @@ export function waitingLine(a, now = Date.now()) {
 export function waitingHeadline({ approval, shown, missing }) {
   if (approval === 'telegram') return 'This agent sends pairing codes to your private Telegram chat, not to this page.';
   if (missing) return 'That phone is no longer waiting: it was paired, declined, or its link expired.';
-  if (!shown.length) return 'No phone is waiting. Open the pairing link on the phone; its code appears here by itself.';
+  if (!shown.length) return 'No phone is waiting. Open the pairing link on the phone; it appears here by itself.';
   return shown.length === 1 ? 'A phone is waiting to pair.' : `${shown.length} phones are waiting to pair.`;
+}
+
+/** The instruction beside Approve (mobile-pairing-approve §3.2): the matching key is the condition. */
+export function approveHint(fingerprint) {
+  return fingerprint
+    ? `Phone key: ${fingerprint}. Approve only if you are pairing this phone right now and the key matches the one the app shows.`
+    : 'Approve only if you are pairing this phone right now.';
 }
