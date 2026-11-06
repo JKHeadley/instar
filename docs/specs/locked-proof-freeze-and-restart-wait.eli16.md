@@ -44,6 +44,8 @@ Instar can show and control a Mac's screen remotely, even while that Mac is lock
 
 **The screen was asleep.** A password typed a few seconds after the Mac's display wakes, or just as it is about to sleep after ten quiet minutes, is turned away with "lock screen is not ready, wake the screen and try again". That is the product being careful, and a person would just try again. But two of the timed tests type at exactly the ten-minute mark, so they kept being turned away. The driver now nudges the Mac awake first, the way moving the mouse would.
 
+**The nudge came too early.** I had the driver wake the screen at the start of each test, but a locked Mac's screen goes back to sleep after about thirty seconds, which is before some tests get to the password. The nudge now comes just before the remote session opens. And the check for leftover helpers now looks only at the helpers a relock duty actually recorded.
+
 ## What stays the same
 
 The product is unchanged: the web page, the server and the safety guard all behaved correctly. Once the freeze test was fixed, it passed: the guard noticed the frozen server and relocked the Mac. Nothing here reaches any running agent; it only affects the proof tool run by hand on the test Mac.

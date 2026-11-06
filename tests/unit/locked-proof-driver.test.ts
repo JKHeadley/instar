@@ -405,9 +405,15 @@ describe('locked-proof launchd kill', () => {
     const helper = [{ pid: 9, command: 'instar-desktop-host input-stream' }];
     const none = await realTarget({ ...base, processes: () => helper, readStore: () => ({ markers: {} }) }).snapshot();
     expect(none.processesGone).toBeUndefined();
-    // Once a duty has closed, the same helper still counts as a typist that should be gone.
-    const closed = await realTarget({ ...base, processes: () => helper, readStore: () => ({ markers: { k: { state: 'relocked', requestId: 'r9' } } }) }).snapshot();
+    // Once a duty has closed, the typist and guard THAT DUTY RECORDED must be gone.
+    const closed = await realTarget({ ...base, processes: () => helper, readStore: () => ({ markers: { k: { state: 'relocked', requestId: 'r9', typistPid: 9 } } }) }).snapshot();
     expect(closed.processesGone).toBe(false);
+    const guardLeft = await realTarget({ ...base, processes: () => [{ pid: 4, command: 'instar-desktop-host relock-guard' }], readStore: () => ({ markers: { k: { state: 'relocked', requestId: 'r9', guardPid: 4 } } }) }).snapshot();
+    expect(guardLeft.processesGone).toBe(false);
+    // A helper that refused the password before reserving is in no duty's record: live, case 12.1
+    // froze the server, the refused helper stayed up with it, and the guard relocked all the same.
+    const unrecorded = await realTarget({ ...base, processes: () => helper, readStore: () => ({ markers: { k: { state: 'relocked', requestId: 'r9', guardPid: 4 } } }) }).snapshot();
+    expect(unrecorded.processesGone).toBe(true);
   });
 
   it('"deadline before Enter" starts typing before the ceiling and presses Enter after it', async () => {
@@ -439,12 +445,21 @@ describe('locked-proof launchd kill', () => {
     expect(startOf()).toBe(599_360 - 800);
   });
 
-  it('every case starts by waking the display, as a person touching the mouse would', async () => {
+  it('wakes the display the way touching the mouse would, a few seconds before a grant opens', async () => {
     const calls: string[][] = [];
     const target = realTarget({ wakeDisplay: undefined, asProof: (args: string[]) => { calls.push(args); return ''; } });
     delete (target as Record<string, unknown>).wakeDisplay;
     target.wakeDisplay(2);
     expect(calls).toEqual([['caffeinate', '-u', '-t', '2']]);
+    // A locked Mac's display sleeps again about 30 s after waking, so the wake belongs right before
+    // the grant, with time for the lock screen to be ready: live, a password typed one second after
+    // the grant itself woke the display was refused "lock screen is not ready".
+    let clock = 0; const order: string[] = [];
+    const page = { waitForSelector: async () => { order.push(`control@${clock}`); } };
+    const opening = realTarget({ now: () => clock, sleep: async (ms: number) => { clock += ms; }, wakeDisplay: () => { order.push(`wake@${clock}`); return ''; },
+      viewer: async () => { order.push(`viewer@${clock}`); return { page }; }, requestGrant: async () => ({ clicked: false }) });
+    await opening.openGrant({});
+    expect(order).toEqual(['wake@0', 'viewer@3000', 'control@3000']);
   });
 
   it('the deadline-recovery case freezes the owning server too, or its sweep replaces the frozen guard', () => {

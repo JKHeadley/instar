@@ -193,9 +193,11 @@ export class RealTarget {
     if (typist) this.pids.typist = typist.pid;
     if (this.consoleOwner() === PROOF_USER) this.events.add('proof-user-console');
     return { now, markers, dirty: state.dirty !== undefined && state.dirty !== null, lockState, serverLockState, typistRunning: !!typist, guardPid: guard?.pid, events: [...this.events],
-      // Judged only once a duty exists and has closed. With no duty at all, the input helper of a
-      // live grant is not a leftover typist.
-      processesGone: !Object.keys(markers).length || !Object.values(markers).every(m => TERMINAL.includes(m.state)) ? undefined : !guard && !typist, procs };
+      // Judged only once a duty exists and has closed, and only against the processes that duty
+      // recorded. An input helper that refused the password before reserving belongs to no duty:
+      // with its server frozen it stays up, holds no password, and is not a leftover typist.
+      processesGone: !Object.keys(markers).length || !Object.values(markers).every(m => TERMINAL.includes(m.state)) ? undefined
+        : !Object.values(markers).some(m => procs.some(p => p.pid === m.guardPid || p.pid === m.typistPid)), procs };
   }
 
   /** Agent A's lock reading; while A is down or suspended, agent B's (same user, same Mac). */
@@ -251,7 +253,6 @@ export class RealTarget {
   wakeDisplay(seconds = 1) { return this.asProof(['caffeinate', '-u', '-t', String(seconds)]); }
 
   async prepare(c) {
-    this.wakeDisplay();
     await this.closeViewers();
     this.events.clear();
     this.pids = {};
@@ -302,6 +303,11 @@ export class RealTarget {
   }
 
   async openGrant(c) {
+    // A locked Mac's display sleeps again about 30 s after it wakes, and a grant opening on a
+    // sleeping display wakes it only a second before the password is typed. Wake it here and give
+    // the lock screen a few seconds, so the password does not meet a lock screen still waking up.
+    this.wakeDisplay(5);
+    await this.sleep(3_000);
     const v = await this.viewer(this.a);
     await this.requestGrant(v);
     await v.page.waitForSelector('#control:not([hidden])', { timeout: 30_000 });
