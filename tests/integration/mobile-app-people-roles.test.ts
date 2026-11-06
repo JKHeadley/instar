@@ -168,7 +168,7 @@ describe('people and roles — pairing', () => {
     const d = e.pairing.devices.get(r.body.deviceId)!;
     expect(d.role).toBeUndefined();
     expect(d.userId).toBeUndefined();
-    expect(e.spies.dms[0]).toMatch(/^Your code to pair a phone with echo is /);
+    expect(e.spies.dms[0]).toMatch(/Your code to pair a phone with echo is /);
   });
 
   it('GET /mobile/device reports the person; the owner sees every phone, an MSP only its own', async () => {

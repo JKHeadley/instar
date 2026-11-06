@@ -103,8 +103,10 @@ describe('pairing without Telegram (dashboard path)', () => {
     expect(r.status).toBe(200);
     // dashboard-console-default-and-pair-page §3.3: the code page on the host the phone redeemed on,
     // the device only in the fragment.
+    // mobile-pairing-approve §3.5 adds confirmWith, fingerprint and expiresAt.
     expect(r.body).toEqual({ deviceId, agentName: 'echo', status: 'pending', approval: 'dashboard', codeFormat: 'digits',
-      codePageUrl: `https://${HOST}/dashboard/pair#d=${encodeURIComponent(deviceId)}` });
+      codePageUrl: `https://${HOST}/dashboard/pair#d=${encodeURIComponent(deviceId)}`,
+      confirmWith: ['dashboard', 'code'], fingerprint: expect.any(String), expiresAt: expect.any(String) });
     expect(ctx.dms).toHaveLength(0);
 
     // Bearer alone: refused. A wrong session: refused. A device: not on its allowlist.

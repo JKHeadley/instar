@@ -229,7 +229,7 @@ export function normalHost(raw: unknown): string {
   if (typeof raw !== 'string') return '';
   return normalizeRequestHost(raw) ?? raw.trim().toLowerCase();
 }
-function signedHost(req: Request, svc: MobilePairingService, deviceId: string): string {
+export function signedHost(req: Request, svc: MobilePairingService, deviceId: string): string {
   const h = (req as unknown as { instarDeviceHost?: unknown }).instarDeviceHost;
   return normalHost(typeof h === 'string' && h.length > 0 ? h : svc.devices.get(deviceId)?.host ?? '');
 }
