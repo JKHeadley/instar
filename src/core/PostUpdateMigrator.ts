@@ -14953,6 +14953,11 @@ ${topicProfileProposeBullet(port)}
       patched = true;
       result.upgraded.push('CLAUDE.md: added test-runner progress-extension + interruption-notice awareness');
     }
+    if (!content.includes('Xcode test runs get the test-runner floor too:')) {
+      content += `\n- **Xcode test runs get the test-runner floor too:** an \`xcodebuild test\` / \`test-without-building\` run, or \`xctest\` running a \`.xctest\` bundle, gets the same bounded protection as \`npm test\` (60 minutes, held open to 3 hours only while its CPU time keeps advancing). It is matched on identity, not name: the executable must be the active Xcode's own (\`DEVELOPER_DIR\` or \`xcode-select -p\`, plus the \`/usr/bin/xcodebuild\` shim) and \`test\` must be an action word, so \`xcodebuild build\`, \`-scheme test\` or a copied binary elsewhere is judged normally. If a user asks why an iOS UI test run ended early, read \`.instar/watchdog-interventions.jsonl\`; an Xcode test run interrupted inside that bound is a bug to report.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Xcode test-run watchdog floor awareness');
+    }
     if (!content.includes('Crash-safe inbound delivery:')) {
       content += `\n- **Crash-safe inbound delivery:** Normal tmux injection and Codex stranded-draft key attempts use FULL-durable armed/started/terminal phases. A crash-open mutation becomes \`effect-unknown\` and is never blindly repeated. Diagnose privacy-safe counts at \`GET /sessions/inbound-delivery-status\`; no message body is exposed. Command-watchdog continuation is owned by the canonical continuation/recovery funnel, never an independent watchdog prompt.\n`;
       patched = true;
