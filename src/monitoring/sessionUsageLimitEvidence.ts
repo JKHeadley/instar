@@ -9,7 +9,7 @@ export function confirmSessionUsageLimit(transcriptPath: string, sessionId: stri
   for (let i = lines.length - 1; i >= 0; i--) {
     let row;
     try { row = JSON.parse(lines[i]); }
-    catch { return false; /* partial/corrupt latest record is unknown */ }
+    catch { return false; /* @silent-fallback-ok — partial/corrupt latest record is unknown, never affirmative limit evidence */ }
     if (row.sessionId !== sessionId || row.isSidechain || row.agentId) continue;
     if (row.type !== 'assistant' && row.type !== 'user') continue;
     // User/tool-result rows or a later normal assistant turn refute an old

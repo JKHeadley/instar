@@ -7,3 +7,7 @@ This fix asks for two pieces of evidence together: a current usage banner in the
 One durable warning reservation belongs to the actual provider session UUID and topic. The reservation happens before delivery starts, so overlapping checks cannot both send it. New messages and server restarts keep that reservation. The existing topic working-set transfer carries it to the next machine. A genuine reply from the serving session clears it; a replacement provider session has its own reservation. A transport failure with uncertain delivery keeps the reservation to avoid repeating a warning the user may already have received.
 
 The change adjusts evidence and notice bookkeeping. It does not restart sessions, change account limits, or introduce a new recovery action. It is a Tier 1 reversible fix: reverting the source restores prior behavior. Tests use isolated transcript files and mocked messaging, and full CI remains the merge authority.
+
+The repair on current main preserves the real Claude banner that starts with a tool-result connector: the same symbol can appear on a helper error, so the symbol alone cannot identify whose limit it is. The serving transcript still decides ownership. If that proof disappears before delivery, the warning is withheld. Ordinary AI summaries are instructed to leave usage diagnoses to this verified warning path.
+
+Malformed transcript records are treated as unknown evidence and cannot authorize a warning.

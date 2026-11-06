@@ -39,6 +39,46 @@ describe('usage-limit ownership and current state', () => {
     expect(classifyStuckSignature("You've hit your session limit · resets 11am\n✻ Cooked for 0s")?.kind).toBe('rate-limited');
     expect(detectQuotaExhaustion(wall)).toContain('usage limit');
   });
+  it('does not attribute a helper printing the captured connector banner to the parent', async () => {
+    const { proxy, sendMessage } = setup({
+      captureSessionOutput: () => '  ⎿  Usage limit reached · limit resets 8am\n❯',
+      confirmSessionUsageLimit: () => false,
+    });
+    const state = inbound(proxy);
+    await proxy.fireTier1(123, state);
+    await proxy.fireTier2(123, state);
+    await proxy.fireTier3(123, state);
+    expect(sendMessage.mock.calls.flat().join(' ')).not.toMatch(/hit.*usage limit|paused until/i);
+  });
+  it('withholds a warning when serving-session proof disappears before sending', async () => {
+    let checks = 0;
+    const { proxy, sendMessage } = setup({ confirmSessionUsageLimit: () => ++checks === 1 });
+    await proxy.fireTier1(123, inbound(proxy));
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+  it('revalidates a limit warning built by the honest-receipt path', async () => {
+    // The quota precheck misses; the honest-receipt precheck observes a wall;
+    // the session recovers before the transport recheck.
+    let checks = 0;
+    const { proxy, sendMessage } = setup({ standbyHonestyTiers: true,
+      confirmSessionUsageLimit: () => ++checks === 2 });
+    await proxy.fireTier1(123, inbound(proxy));
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+  it('instructs the live summary authority to leave usage diagnoses to the verified path', async () => {
+    const evaluate = vi.fn(async (prompt: string) => {
+      expect(prompt).toContain('Do not diagnose a usage limit');
+      expect(prompt).toContain('errors may belong to a helper');
+      return 'Echo is reviewing the helper output.';
+    });
+    const { proxy, sendMessage } = setup({ intelligence: { evaluate },
+      captureSessionOutput: () => '⏺ Agent(builder)\n  ⎿  Usage limit reached · limit resets 8am',
+      confirmSessionUsageLimit: () => false });
+    await proxy.fireTier1(123, inbound(proxy));
+    expect(evaluate).toHaveBeenCalledOnce();
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(sendMessage.mock.calls.flat().join(' ')).toContain('reviewing the helper output');
+  });
   it('requires session-owned corroboration even for a tool printing a naked banner', async () => {
     const { proxy, sendMessage } = setup({ confirmSessionUsageLimit: () => false });
     const state = inbound(proxy);

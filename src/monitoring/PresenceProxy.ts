@@ -1325,7 +1325,7 @@ export class PresenceProxy {
         // Skip LLM, cancel further tiers — quota is a definitive state, not ambiguous
         if (state.cancelled) return;
         state.tier1FiredAt = Date.now();
-        await this.sendProxyMessage(topicId, message, 1, originAuthor, snapshot && currentUsageLimitBanner(snapshot) && this.confirmUsageLimit(state.sessionName) ? state.sessionName : undefined);
+        await this.sendProxyMessage(topicId, message, 1, originAuthor, state.sessionName);
         this.persistState(topicId, state);
         state.conversationHistory.push({ role: 'proxy', text: message, timestamp: Date.now() });
         return; // Don't schedule tier 2/3 — nothing more to assess
@@ -1414,7 +1414,7 @@ export class PresenceProxy {
     if (state.cancelled) return;
 
     state.tier1FiredAt = Date.now();
-    await this.sendProxyMessage(topicId, message, 1, originAuthor, snapshot && currentUsageLimitBanner(snapshot) && this.confirmUsageLimit(state.sessionName) ? state.sessionName : undefined);
+    await this.sendProxyMessage(topicId, message, 1, originAuthor, typeof honest1 === 'string' && snapshot && currentUsageLimitBanner(snapshot) ? state.sessionName : undefined);
     this.persistState(topicId, state);
 
     // Add to conversation history
@@ -2162,6 +2162,9 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
     priority: 'low' | 'high',
     timeoutMs: number,
   ): Promise<{ text: string; author: OriginAutomationAuthor }> {
+    // Usage diagnoses have their own exact-session evidence + one-notice path.
+    // Terminal text may quote a helper failure; the summarizer is not its owner.
+    prompt = `Usage-limit ownership: Do not diagnose a usage limit, quota exhaustion, or a wait for quota reset in this summary. Terminal errors may belong to a helper or be historical. Verified serving-session usage warnings are sent separately with provider evidence and deduplication. Describe other observed activity, or say the session has not replied yet when its state is unclear.\n\n${prompt}`;
     // Default attribution so every PresenceProxy LLM call is labeled in
     // /metrics/features (this is a high-frequency monitor); a caller that already
     // set attribution wins.

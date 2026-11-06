@@ -13,3 +13,5 @@ No new user action. A genuine serving reply or a replacement session opens a new
 ## Evidence
 
 Regression tests reproduce the false helper attribution and cross-tier duplicate before the fix. Unit tests cover evidence and reservation races; integration tests use exact-session transcript files, with a real captured provider-error schema; lifecycle tests exercise warning transfer and replacement identity without starting agents. CI supplies full-suite verification before merge.
+
+Current-main repair also preserves the captured Claude connector banner, revalidates a warning if the session recovers before sending, and reserves usage diagnoses for the verified path in AI summary instructions. Both disappearing-proof regressions reproduced before the repair.

@@ -43,3 +43,12 @@ Defect class: unbounded-self-action. Closure: guard. Ratchet: tests/unit/self-ac
 
 ## Second-pass review
 Concur with the review — diagnosis_review independently checked the artifact, runtime diff and three regression layers, including captured provider metadata, durable claims, transfer nomination and state identity guards. No remaining blocking concern identified.
+
+## Current-main repair — 2026-11-06
+Tier 1 reversible repair in a fresh isolated origin/main clone (main d1de939e5, package 1.3.1693); the original worktree metadata is sandbox read-only. Rebase preserved both profile-reconciliation and presence-notice convergence controllers. Restored the captured Claude connector banner as a signal, retaining exact-session transcript proof. Tier 1 now always preserves warning identity through final revalidation; disappearing proof cannot downgrade a usage warning to ordinary text. AI summary instructions reserve usage diagnoses for the verified path rather than making a semantic regex into blocking authority.
+
+The two disappearing-proof race tests failed before repair and passed afterward. Targeted verification: 704 unit tests, 10 exact-session integration tests, 5 usage/rescue lifecycle tests. No over-block, under-block, rollback, external-action, or cross-machine posture change beyond the evidence safeguards already reviewed above. Full-suite verification remains required before merge. Repair size and commit/gate attempts are recorded in the PR.
+
+Second-pass repair review: review_usage_fix — Concur with the review. Independently checked both Tier 1 paths, disappearing-evidence regressions, captured banner support, summary ownership guidance, and both convergence controllers. No remaining blocking concern identified.
+
+The full-source silent-fallback ratchet reproduced 495 catches against its 494 ceiling. The added transcript parse catch now explicitly documents its intentional unknown-evidence result; no threshold was raised and no runtime behavior changed.
