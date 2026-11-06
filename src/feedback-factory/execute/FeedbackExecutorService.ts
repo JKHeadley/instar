@@ -375,7 +375,7 @@ export class FeedbackExecutorService {
       this.opts.audit.append('execute:tick-error', { runId, reason: out.reason });
     } finally {
       this.running = false;
-      try { this.setMeta(epoch, 'exec:last_tick', { ...out, startedAt, finishedAt: this.now() }); } catch { /* @silent-fallback-ok: a stale-epoch writer must not record a tick */ }
+      try { this.setMeta(this.opts.isCanonicalOwner() ? this.opts.ownerEpoch() : epoch, 'exec:last_tick', { ...out, startedAt, finishedAt: this.now() }); } catch { /* @silent-fallback-ok: a stale-epoch writer must not record a tick */ }
     }
     return out;
   }
@@ -583,6 +583,8 @@ export class FeedbackExecutorService {
       // the next candidate would fail the same way and spend another start and another item's attempt.
       if (!ok) break;
       if (!this.availability?.available) break;
+      // Preparation may have carried the attempt to a newer epoch; the next tick claims under it.
+      if (this.opts.ownerEpoch() !== epoch) break;
     }
     return started;
   }
@@ -644,10 +646,25 @@ export class FeedbackExecutorService {
     return inUse;
   }
 
-  private async prepareAndSpawn(row: ExecutionRow, triage: TriageRow, epoch: number): Promise<boolean> {
+  /**
+   * Preparation runs for minutes, and a busy machine can lapse and re-acquire its own lease in that
+   * time. That raises the epoch without any change of owner, so the attempt moves to the new epoch
+   * instead of being stopped as stale. A machine that is no longer the owner keeps the old epoch, and
+   * the check before the spawn stops it.
+   */
+  private carryPreparationEpoch(row: ExecutionRow, epoch: number): number {
+    const current = this.opts.ownerEpoch();
+    if (current <= epoch || !this.opts.isCanonicalOwner()) return epoch;
+    this.opts.store.adopt(current, row.attemptId);
+    this.opts.audit.append('execute:preparation-epoch-carried', { attemptId: row.attemptId, from: epoch, to: current });
+    return current;
+  }
+
+  private async prepareAndSpawn(row: ExecutionRow, triage: TriageRow, claimedEpoch: number): Promise<boolean> {
     const cfg = this.opts.config();
     const p = this.attemptPaths(row);
     let spawned: { sessionName: string; sessionId: string } | null = null;
+    let epoch = claimedEpoch;
     try {
       // Stop any earlier attempt's session first (remote-close when it ran on a previous owner).
       for (const prior of this.opts.store.attemptsFor(row.initiativeId)) {
@@ -656,6 +673,7 @@ export class FeedbackExecutorService {
       }
       const baseSha = await this.opts.git.fetchBase(cfg.sourceRepoPath!);
       const deps = await this.opts.deps.ensure(cfg.sourceRepoPath!, baseSha);
+      epoch = this.carryPreparationEpoch(row, epoch);
       if (!deps.ok) { await this.depsUnavailable(epoch, deps.reason); this.endAttempt(row, epoch, 'stopped', 'deps-unavailable'); return false; }
       this.setMeta(epoch, 'exec:deps', { failures: 0, nextRetryAt: 0, hash: deps.hash });
       this.setMeta(epoch, `exec:attempt-deps:${row.attemptId}`, { hash: deps.hash });
@@ -667,11 +685,13 @@ export class FeedbackExecutorService {
       fs.symlinkSync(path.join(deps.dir, 'node_modules'), path.join(p.workspace, 'node_modules'), 'dir');
       this.writeEvidence(p.workspace, triage);
       const previousReviewFile = this.writePreviousReview(p.workspace, row);
+      epoch = this.carryPreparationEpoch(row, epoch);
       this.opts.store.patch(epoch, row.attemptId, { baseSha, workspace: p.workspace, publishClone: p.publishClone, tmpDir: p.tmpDir });
       const paths = this.confinementPaths(p.workspace, p.publishClone, p.tmpDir, deps.dir);
 
       // Confinement canary, both application paths, before every attempt.
       const canary = await this.runCanary(row, paths, deps.hash, cfg);
+      epoch = this.carryPreparationEpoch(row, epoch);
       if (!canary.ok) { await this.profileUnenforceable(epoch, canary.probes); this.endAttempt(row, epoch, 'stopped', 'profile-unenforceable'); return false; }
 
       const settingsPath = this.writeClaudeSettings(row.attemptId, paths);
@@ -684,15 +704,19 @@ export class FeedbackExecutorService {
       const sessionBase = `feedback-${pathSlug(row.initiativeId)}-a${row.attempt}`;
       // Record the session's name BEFORE spawning it (fenced): a lost ownership refuses here, and a
       // crash after the spawn leaves a row whose session the next owner can find and stop.
+      if (!this.opts.isCanonicalOwner()) throw new DrainConflictError('lost feedback queue ownership during preparation');
       this.opts.store.patch(epoch, row.attemptId, { sessionName: this.opts.sessions.plannedSessionName?.(sessionBase) ?? sessionBase, sessionMachine: this.opts.selfMachineId });
       spawned = await this.opts.sessions.spawnConfined({ name: sessionBase, prompt, cwd: p.workspace, settingsPath, tmpDir: p.tmpDir,
         maxDurationMinutes: Math.min(cfg.maxDurationMinutes, EXECUTION_LEASE_MS / 60_000) });
+      epoch = this.carryPreparationEpoch(row, epoch);
       // transcriptRef = the session's uuid (its transcript and the remote-close key).
       this.opts.store.patch(epoch, row.attemptId, { state: 'running', sessionName: spawned.sessionName, sessionMachine: this.opts.selfMachineId, transcriptRef: spawned.sessionId });
       this.opts.audit.append('execute:spawned', { attemptId: row.attemptId, session: spawned.sessionName });
       await this.markBuildPhase(row.initiativeId, 'in-progress');
       return true;
     } catch (error) {
+      // A long step can throw after the lease moved; refunds and latches below need the current epoch.
+      try { epoch = this.carryPreparationEpoch(row, epoch); } catch { /* @silent-fallback-ok: an uncarried epoch is refused below and the owner's next tick stops the row */ }
       // A session that started but could not be recorded (e.g. ownership moved mid-preparation)
       // must not keep running unrecorded: stop it now.
       if (spawned) {

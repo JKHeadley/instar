@@ -513,6 +513,70 @@ describe('verification and publication', () => {
     expect(h.execStore.latestFor(id2)!.state).toBe('pr-open');
   });
 
+  it('a lease the same machine re-acquires during preparation does not stop the attempt', async () => {
+    h = await createExecHarness();
+    const initiativeId = await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n' });
+    const scripted = h.runScript.fn;
+    h.runScript.fn = (cmd) => { h.epoch.value = 2; return scripted(cmd); };
+    const t = await h.exec.tick();
+    expect(t.started).toBe(1);
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'running', ownerEpoch: 2 });
+    expect((h.exec.summary().lastTick as { started: number }).started).toBe(1);
+    h.runScript.fn = scripted;
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.execStore.latestFor(initiativeId)!.state).toBe('running');
+  });
+
+  it('a lease lost during preparation with no epoch change still stops the attempt before its session', async () => {
+    h = await createExecHarness();
+    const initiativeId = await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n' });
+    const scripted = h.runScript.fn;
+    h.runScript.fn = (cmd) => { h.canonical.value = false; h.runScript.fn = scripted; return scripted(cmd); };
+    const t = await h.exec.tick();
+    expect(t.started).toBe(0);
+    const row = h.execStore.latestFor(initiativeId)!;
+    expect(row.state).not.toBe('running');
+    expect(row.sessionName ?? null).toBeNull();
+  });
+
+  it('after a carried epoch the tick keeps its started count and leaves other items for the next tick', async () => {
+    h = await createExecHarness();
+    const first = await h.workItem('c1');
+    const second = await h.workItem('c2');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n' });
+    const scripted = h.runScript.fn;
+    h.runScript.fn = (cmd) => { h.epoch.value = 2; return scripted(cmd); };
+    const t = await h.exec.tick();
+    expect(t.started).toBe(1);
+    expect(t.result).toBe('succeeded');
+    const started = [first, second].map((id) => h.execStore.latestFor(id)?.state).filter((state) => state === 'running');
+    expect(started).toHaveLength(1);
+  });
+
+  it('losing ownership during preparation still stops the attempt before any session starts', async () => {
+    h = await createExecHarness();
+    const initiativeId = await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n' });
+    const scripted = h.runScript.fn;
+    h.runScript.fn = (cmd) => {
+      // A new owner has written at a newer epoch and this machine no longer owns the queue.
+      h.execStore.fenced(5, () => undefined);
+      h.epoch.value = 5;
+      h.canonical.value = false;
+      h.runScript.fn = scripted;
+      return scripted(cmd);
+    };
+    const t = await h.exec.tick();
+    expect(t.started).toBe(0);
+    const row = h.execStore.latestFor(initiativeId)!;
+    expect(row.ownerEpoch).toBe(1);
+    expect(row.state).not.toBe('running');
+    expect(row.sessionName ?? null).toBeNull();
+  });
+
   it('a failed check run records its OWN output, so the failure is diagnosable after the clones are gone', async () => {
     h = await createExecHarness();
     const { initiativeId } = await startOne();
