@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-05T12:34:43.285Z",
+  "slug": "mobile-slack-holder-live-owner",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 105,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/scaffold/templates.ts",
+      "src/server/mobileOwnerDeviceAdmission.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobileSlackHolderProxy.ts",
+      "src/server/mobileSlackRoutes.ts",
+      "src/server/poolPeerFetch.ts"
+    ],
+    "addedLines": 95,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

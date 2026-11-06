@@ -1847,6 +1847,9 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       }
       host = h;
     }
+    // Immutable evidence from the key lookup used by THIS signature verification, not a later
+    // registry snapshot. Async private reads compare current authority to this admission.
+    let admittedIdentity: MobileDeviceAdmissionIdentity | null = null;
     const v = verifyDeviceRequest(
       { deviceId: id, time: req.headers['x-instar-device-time'], sig: req.headers['x-instar-device-sig'], method: req.method, pathWithQuery: req.originalUrl, rawBody: raw, host },
       (deviceId) => {
@@ -1856,6 +1859,8 @@ export function deviceAuthenticator(svc: MobilePairingService) {
         // write after it failed (mobile-native-conversations §4.6: the ledger row is the recorded
         // intent). In-memory index, no file read per request.
         const ledgerRevoked = !!svc.keyLedger && svc.keyLedger.isRevoked(deviceKeyHashOf(d.publicKey), d.id);
+        admittedIdentity = Object.freeze({ keyHash: deviceKeyHashOf(d.publicKey),
+          userId: d.userId ?? null, role: d.role ?? 'owner' });
         return { publicKey: d.publicKey, host: d.host, status: ledgerRevoked ? 'revoked' : d.status as DeviceStatus };
       },
       rule.statuses, svc.replay, Date.now(), rule.sendRoute === true,
@@ -1879,6 +1884,7 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       (req as unknown as { instarDevicePerson: ResolvedPerson }).instarDevicePerson = person;
     }
     (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device', deviceId: v.deviceId };
+    (req as unknown as { instarDeviceAdmissionIdentity: MobileDeviceAdmissionIdentity | null }).instarDeviceAdmissionIdentity = admittedIdentity;
     // The moment the device signature was accepted: the signed records' `receivedAt` (§4.6).
     (req as unknown as { instarDeviceAdmittedAt: number }).instarDeviceAdmittedAt = Date.now();
     // The Host the signature was checked against (multi-route: one of this machine's own names;
@@ -1890,6 +1896,17 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     }
     return 'ok';
   };
+}
+
+export interface MobileDeviceAdmissionIdentity {
+  readonly keyHash: string;
+  readonly userId: string | null;
+  readonly role: 'owner' | 'msp';
+}
+
+/** Identity actually used by deviceAuthenticator; never accepted from an HTTP header/body. */
+export function deviceAdmissionIdentity(req: Request): MobileDeviceAdmissionIdentity | null {
+  return (req as unknown as { instarDeviceAdmissionIdentity?: MobileDeviceAdmissionIdentity }).instarDeviceAdmissionIdentity ?? null;
 }
 
 /** The person of the phone that signed this request (people and roles §3.4), or null. */
