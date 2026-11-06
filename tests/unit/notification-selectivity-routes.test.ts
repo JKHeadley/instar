@@ -17,17 +17,106 @@ function setup() {
   const gate = new NotificationSelectivityGate(root, 'machine-a', () => ({ enabled: true, dryRun: false }));
   const sendToTopic = vi.fn().mockResolvedValue({ messageId: 7 });
   const apply = vi.fn((category, enabled) => values.set(`notifications.selectivity.push.categories.${category}`, enabled));
+  const applyJob = vi.fn((slug, enabled) => values.set(`notifications.selectivity.push.jobs.${slug}`, enabled));
+  const scheduler = { getJobs: vi.fn(() => [{ slug: 'instar2-checkin', name: '2.0 check-in', enabled: true }]), refreshJobs: vi.fn() };
   const send = vi.fn().mockResolvedValue(false);
-  gate.preferences = new NotificationPreferences({ root, self: () => 'machine-a', peers: () => ['machine-b'], apply, send });
+  gate.preferences = new NotificationPreferences({ root, self: () => 'machine-a', peers: () => ['machine-b'], apply, applyJob, send });
   const app = express(); app.use(express.json()); const router = express.Router();
-  mountNotificationRoutes(router, { config: { stateDir: root }, telegram: { selectivity: gate, sendToTopic },
+  const peers: Array<{ machineId: string; url: string; kind: string }> = [];
+  mountNotificationRoutes(router, { config: { stateDir: root, multiMachine: { peerUrlAllowlist: ['http://127.0.0.1:9'] } }, telegram: { selectivity: gate, sendToTopic }, scheduler, resolvePeerUrls: () => peers,
     liveConfig: { get: (key: string, fallback: unknown) => values.get(key) ?? fallback },
     verifyDashboardOperatorSession: (proof: string | undefined) => proof === 'pin-proof',
   } as unknown as RouteContext, () => false);
   app.use(router);
   cleanup.push(async () => { await gate.close(); SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'tests/unit/notification-selectivity-routes.test.ts' }); });
-  return { app, gate, values, sendToTopic, root, apply, send };
+  return { app, gate, values, sendToTopic, root, apply, applyJob, scheduler, send, peers };
 }
+describe('per-job push route', () => {
+  const route = '/notifications/jobs/instar2-checkin/push';
+  it('refuses without confirmation and writes nothing', async () => {
+    const { app, applyJob } = setup();
+    expect((await request(app).post(route).send({ enabled: true })).status).toBe(400);
+    expect((await request(app).post(route).send({ enabled: true, confirmedBy: 'dashboard-pin' })).status).toBe(400);
+    expect((await request(app).post(route).send({ enabled: true, confirmedBy: 'operator-conversational-confirm', topicId: 42, confirmingMessageId: 'made-up' })).status).toBe(400);
+    expect(applyJob).not.toHaveBeenCalled();
+  });
+  it('a non-operator message is no confirmation', async () => {
+    const { app, gate, applyJob } = setup(); gate.observeInbound(42, 'm1', false);
+    expect((await request(app).post(route).send({ enabled: true, confirmedBy: 'operator-conversational-confirm', topicId: 42, confirmingMessageId: 'm1' })).status).toBe(400);
+    expect(applyJob).not.toHaveBeenCalled();
+  });
+  it('accepts a PIN, and keeps the report on the hub since no topic was chosen', async () => {
+    const { app, applyJob, values } = setup();
+    const result = await request(app).post(route).set('X-Instar-Operator-Session', 'pin-proof').send({ enabled: true, confirmedBy: 'dashboard-pin', topicId: 42 });
+    expect(result.status).toBe(200); expect(result.body).toMatchObject({ ok: true, slug: 'instar2-checkin', enabled: true, topicId: null });
+    expect(applyJob).toHaveBeenCalledWith('instar2-checkin', true, undefined);
+    expect(values.get('notifications.selectivity.push.jobs.instar2-checkin')).toBe(true);
+  });
+  it('accepts a recent operator message, binds that topic and confirms in chat', async () => {
+    const { app, gate, applyJob, sendToTopic } = setup(); gate.observeInbound(102965, 'm9', true);
+    const result = await request(app).post(route).send({ enabled: true, confirmedBy: 'operator-conversational-confirm', topicId: 102965, confirmingMessageId: 'm9' });
+    expect(result.status).toBe(200); expect(result.body.topicId).toBe(102965);
+    expect(applyJob).toHaveBeenCalledWith('instar2-checkin', true, 102965);
+    expect(sendToTopic.mock.calls[0][1]).toContain('2.0 check-in');
+  });
+  it('refuses an unknown or malformed slug, but only after confirmation', async () => {
+    const { app, applyJob, scheduler } = setup(); const proof = { enabled: true, confirmedBy: 'dashboard-pin' };
+    expect((await request(app).post('/notifications/jobs/no-such-job/push').send(proof)).status).toBe(400);
+    expect((await request(app).post('/notifications/jobs/no-such-job/push').set('X-Instar-Operator-Session', 'pin-proof').send(proof)).status).toBe(404);
+    expect((await request(app).post('/notifications/jobs/__proto__/push').set('X-Instar-Operator-Session', 'pin-proof').send(proof)).status).toBe(400);
+    expect(scheduler.refreshJobs).toHaveBeenCalled();
+    expect(applyJob).not.toHaveBeenCalled();
+  });
+  it('finds a job written seconds ago', async () => {
+    const { app, scheduler } = setup();
+    scheduler.refreshJobs.mockImplementation(() => { scheduler.getJobs.mockReturnValue([{ slug: 'fresh', name: 'Fresh', enabled: true }]); });
+    expect((await request(app).post('/notifications/jobs/fresh/push').set('X-Instar-Operator-Session', 'pin-proof').send({ enabled: true, confirmedBy: 'dashboard-pin' })).status).toBe(200);
+  });
+  it('a job file that cannot be parsed answers 503 for a yes and does not block a no', async () => {
+    const { app, scheduler, applyJob } = setup();
+    scheduler.refreshJobs.mockImplementation(() => { throw new Error('Failed to parse jobs file'); });
+    expect((await request(app).post(route).set('X-Instar-Operator-Session', 'pin-proof').send({ enabled: true, confirmedBy: 'dashboard-pin' })).status).toBe(503);
+    expect((await request(app).post(route).set('X-Instar-Operator-Session', 'pin-proof').send({ enabled: false, confirmedBy: 'dashboard-pin' })).status).toBe(200);
+    expect(applyJob).toHaveBeenCalledTimes(1);
+  });
+  it('accepts a job another machine runs, and is honest when a machine is dark', async () => {
+    const { app, peers } = setup();
+    peers.push({ machineId: 'machine-b', url: 'http://127.0.0.1:9', kind: 'lan' });
+    const proof = { enabled: true, confirmedBy: 'dashboard-pin' };
+    const network = vi.fn(async () => new Response(JSON.stringify({ jobs: [{ slug: 'on-b', name: 'On B', enabled: true }] })));
+    vi.stubGlobal('fetch', network);
+    try {
+      expect((await request(app).post('/notifications/jobs/on-b/push').set('X-Instar-Operator-Session', 'pin-proof').send(proof)).status).toBe(200);
+      expect((await request(app).post('/notifications/jobs/nowhere/push').set('X-Instar-Operator-Session', 'pin-proof').send(proof)).status).toBe(404);
+      const pool = (await request(app).get('/notifications/selectivity?scope=pool')).body;
+      expect(pool.jobs.map((job: { slug: string }) => job.slug).sort()).toEqual(['instar2-checkin', 'on-b']);
+      network.mockRejectedValue(new Error('dark'));
+      expect((await request(app).post('/notifications/jobs/nowhere/push').set('X-Instar-Operator-Session', 'pin-proof').send(proof)).status).toBe(503);
+      expect((await request(app).get('/notifications/selectivity?scope=pool')).body.jobsUnavailable).toEqual(['machine-b']);
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it('turning a job off never needs the job to exist', async () => {
+    const { app, applyJob } = setup();
+    expect((await request(app).post('/notifications/jobs/deleted-job/push').set('X-Instar-Operator-Session', 'pin-proof').send({ enabled: false, confirmedBy: 'dashboard-pin' })).status).toBe(200);
+    expect(applyJob).toHaveBeenCalledWith('deleted-job', false, undefined);
+  });
+  it('says the opt-in changes nothing yet while the gate is only observing', async () => {
+    const { app, gate } = setup();
+    (gate as unknown as { config: () => object }).config = () => ({ enabled: true, dryRun: true });
+    const body = (await request(app).post(route).set('X-Instar-Operator-Session', 'pin-proof').send({ enabled: true, confirmedBy: 'dashboard-pin' })).body;
+    expect(body).toMatchObject({ enforcing: false }); expect(body.message).toContain('only observing');
+    expect(body.message).not.toContain('Attention topic');
+  });
+  it('shows per-job state, separating never-asked from an explicit no', async () => {
+    const { gate, app } = setup();
+    (gate as unknown as { config: () => object }).config = () => ({ enabled: true, dryRun: false, push: { jobs: { 'instar2-checkin': false } } });
+    const body = (await request(app).get('/notifications/selectivity')).body;
+    expect(body.jobs).toEqual([{ slug: 'instar2-checkin', name: '2.0 check-in', enabled: true, push: false, decided: true }]);
+    expect(body.jobsScope).toBe('this-machine');
+    (gate as unknown as { config: () => object }).config = () => ({ enabled: true, dryRun: false });
+    expect((await request(app).get('/notifications/selectivity')).body.jobs[0]).toMatchObject({ push: false, decided: false });
+  });
+});
 describe('notification surfaces and confirmation authority', () => {
   it('serves and acknowledges durable quiet notices', async () => {
     const { app, gate } = setup(); const row = await gate.route(42, '<script>quoted data</script>');

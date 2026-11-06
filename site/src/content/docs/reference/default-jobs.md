@@ -17,6 +17,7 @@ path until its script is enabled.
 | `commitment-detection` | `*/5 * * * *` (every 5 min) | Haiku | Detect new commitments in the recent conversation flow |
 | `promise-review` | `23 */6 * * *` (every 6h at minute 23) | Sonnet | Review up to 30 due promises, retain or prioritize uncertain work, and propose evidence-backed closures through the server. Gated by `commitments.promiseReview`; closures use shadow mode until graduation. Never sends messages. |
 | `commitment-checkin-reminder` | `*/5 * * * *` (every 5 min) | — (no LLM) | Post one reminder for each commitment whose check-in date has arrived. Ships disabled. |
+| `promise-review` | `23 */6 * * *` (every 6h, at :23) | Sonnet | Review up to 30 due open promises; keep them, adjust priority, or propose evidence-backed completion/archive. Never sends messages. Gated by `commitments.promiseReview` (live on development agents, dark on the fleet); closures stay in shadow until graduation, and the server enforces evidence and per-run/day closure caps. |
 | `reflection-trigger` | `0 */4 * * *` (every 4h) | Opus | Reflect on recent work and surface insights |
 | `evolution-overdue-check` | `0 */4 * * *` (every 4h) | Haiku | Surface overdue commitments and stalled action items |
 | `evolution-proposal-evaluate` | `0 */6 * * *` (every 6h) | Sonnet | Evaluate evolution proposals against current goals |

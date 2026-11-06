@@ -5,8 +5,9 @@
  * instead of closing its databases and exiting. Both sides of the boundary are
  * tested with realistic messages.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
+  handleProcessLevelError,
   isNonFatalUncaught,
   shouldLogStackForUncaught,
   __resetUncaughtStackDedupeForTests,
@@ -131,5 +132,51 @@ describe('shouldLogStackForUncaught', () => {
       shouldLogStackForUncaught(errWithStack('write after end', `Error\n  at origin${i}`));
     }
     expect(shouldLogStackForUncaught(first)).toBe(true); // cleared past cap → surfaces again
+  });
+});
+
+describe('closed-pipe writes (2026-11-06 Studio crashes)', () => {
+  const run = (err: unknown) => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onFatalCleanup = vi.fn();
+    const exit = vi.fn() as unknown as (code: number) => never;
+    const verdict = handleProcessLevelError(err, 'uncaughtException', { onFatalCleanup, exit });
+    const logged = { error: error.mock.calls.flat().join(' '), warn: warn.mock.calls.flat().join(' ') };
+    error.mockRestore();
+    warn.mockRestore();
+    return { verdict, logged, onFatalCleanup, exit };
+  };
+
+  beforeEach(() => __resetUncaughtStackDedupeForTests());
+
+  it('keeps the server up on the exact message that crashed it, and names the writer', () => {
+    const err = new Error('write EPIPE');
+    const { verdict, logged, exit } = run(err);
+    expect(verdict).toBe('recovered');
+    expect(exit).not.toHaveBeenCalled();
+    expect(logged.warn).toContain(err.stack);
+  });
+
+  it('does not widen to other errors that merely mention a pipe', () => {
+    expect(isNonFatalUncaught(new Error('EPIPE handler misconfigured'))).toBe(false);
+    expect(isNonFatalUncaught(new Error('read EPIPE'))).toBe(false);
+    expect(isNonFatalUncaught(new Error('pipe closed unexpectedly'))).toBe(false);
+  });
+
+  it('still crashes on an unknown error, now with the stack in the FATAL line', () => {
+    const err = new Error('genuine unknown corruption');
+    const { verdict, logged, onFatalCleanup, exit } = run(err);
+    expect(verdict).toBe('fatal');
+    expect(onFatalCleanup).toHaveBeenCalledOnce();
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(logged.error).toContain('closing databases before crash: genuine unknown corruption');
+    expect(logged.error).toContain(err.stack);
+  });
+
+  it('logs a fatal non-Error value without inventing a stack', () => {
+    const { verdict, logged } = run('plain string failure');
+    expect(verdict).toBe('fatal');
+    expect(logged.error.endsWith('closing databases before crash: plain string failure')).toBe(true);
   });
 });
