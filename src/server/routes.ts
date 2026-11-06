@@ -249,7 +249,7 @@ import { discardPrepared, prepareReplyFiles } from '../core/appMediaReplyFiles.j
 import { MEDIA_PATH_WAIT_MS } from '../core/AppMediaReplicator.js';
 import { isNeverServed } from './fileRoutes.js';
 import { isMobileMediaEnabled } from './mobilePairingRoutes.js';
-import { mountMobileOpsRoutes } from './mobileOpsRoutes.js';
+import { mountMobileOpsRoutes, machineKey } from './mobileOpsRoutes.js';
 import { joinTelegramHistory, withTelegramMediaForDevice } from './mobileConversationRoutes.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
 import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
@@ -38482,6 +38482,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return { iMessage: ctx.imessage?.getConnectionInfo().state === 'connected' ? 'up' : 'down' };
       },
       bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+      // Each problem says which machine it is on: the pool nickname, else this computer's own name.
+      machine: () => {
+        const id = ctx.meshSelfId ?? null;
+        const pooled = id ? verifiedEntityName(id, ctx.machinePoolRegistry?.getCapacity(id)?.nickname) : null;
+        const host = os.hostname().replace(/\.local$/i, '').replace(/[-_]+/g, ' ').trim();
+        return { key: id ? machineKey(id) : null, name: pooled ?? verifiedEntityName(id ?? 'self', host) };
+      },
       choices: (() => {
         const storeError = (detail: string, err: unknown) => DegradationReporter.getInstance().report({ feature: 'HealthChoices.store', primary: 'Saving what the person hid', fallback: 'Hidden problems may show again', reason: `${detail}: ${err instanceof Error ? err.message : String(err)}`, impact: 'A problem you hid may show again.' });
         const store = healthChoiceStoreFor(ctx.config.stateDir, { onError: storeError });

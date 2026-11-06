@@ -355,8 +355,8 @@ function machineState(m: Rec): { state: MobileMachineState; estimated: boolean }
   return { state: m.online === true ? 'live' : m.online === false ? 'stale' : 'unknown', estimated: true };
 }
 
-/** A one-way, stable row key for a machine (never the id itself). */
-function machineKey(id: string): string {
+/** A one-way, stable row key for a machine (never the id itself). Shared with the health reading's `machine`. */
+export function machineKey(id: string): string {
   return crypto.createHash('sha256').update(`mobile-ops-machine:${id}`).digest('hex').slice(0, 16);
 }
 
