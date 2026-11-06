@@ -95,9 +95,11 @@ export function buildInstarCodexHookGroups(
     // language (it is a PreToolUse hook on Claude too — NOT a Stop hook). All read the
     // command from Codex's stdin payload — Codex's exec_command puts it in
     // tool_input.cmd (Claude uses tool_input.command); the scripts accept both field
-    // names AND both tool names (Bash | exec_command).
+    // names AND both tool names (Bash | exec_command). attribution-gate covers apply_patch and exits
+    // at once for any other tool; its timeout is set explicitly, over its 20s budget, so it always
+    // passes on its own terms rather than being killed.
     PreToolUse: [
-      { matcher: '.*', hooks: [node('signin-profile-guard.js'), node('telegram-origin-guard.js'), sh('dangerous-command-guard.sh'), node('external-operation-gate.js'), sh('grounding-before-messaging.sh'), node('deferral-detector.js'), node('self-stop-guard.js')] },
+      { matcher: '.*', hooks: [node('signin-profile-guard.js'), node('telegram-origin-guard.js'), sh('dangerous-command-guard.sh'), node('external-operation-gate.js'), sh('grounding-before-messaging.sh'), node('deferral-detector.js'), node('self-stop-guard.js'), { ...node('attribution-gate.js'), timeout: 25000 }] },
     ],
     // Codex-only checkpoint. Routes to the same gate; the trust system
     // auto-decides (allow/deny) with NO human prompt so autonomy is preserved.

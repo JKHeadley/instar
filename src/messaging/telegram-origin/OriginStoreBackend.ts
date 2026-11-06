@@ -23,6 +23,15 @@ import type {
 
 const SIX_HOURS = 6 * 60 * 60_000;
 const RECOVERY_REVIEW_INTERVAL_MS = 15 * 60_000;
+// The first recovery starts usually land in a brief local fault (a config read
+// or a connect that ran out of time). A flat 15 minutes after one of those left
+// a reply waiting 24 minutes while everything else was healthy. This paces the
+// same reservation; it changes neither eligibility, nor the claim fence, nor the
+// transport attempt budget, so an uncertain operation still never reaches here.
+const RECOVERY_REVIEW_LADDER_MS = [30_000, 60_000, 2 * 60_000, 5 * 60_000];
+// prepared_at comes from the machine that wrote the reply; acceptance time from
+// the one that recorded it. The window below tolerates this much disagreement.
+const OUT_OF_ORDER_CLOCK_SKEW_MS = 5 * 60_000;
 const MAX_LEASE_MS = 60_000;
 const MAX_ARCHIVE_BYTES = 32 * 1024 * 1024;
 const MAX_ARCHIVE_READ_BYTES = 64 * 1024 * 1024;
@@ -58,6 +67,28 @@ type DbChild = { child_id: string; operation_id: string; delivery_id: string; de
 type DbEntry = { state: string; claimed_by: string | null; attempts: number; next_attempt_at: string | null; entry_kind: string; owner_boot_id: string | null; lease_until: number | null };
 type DbMaterialization = { materialization_id: string; child_id: string; generation: number; request_json: string | null; request_digest: string; dispatch_deadline: number | null };
 type DbAttempt = { attempt_id: string; child_id: string; materialization_id: string; claim_token: string; owner_boot_id: string; phase: string; outcome: string | null; receipt_json: string | null; created_at: number; resolved_at: number | null };
+
+/** Did a newer session reply reach this chat before this one? Message ids prove
+ * the order. A reply that landed first was written before this one was accepted,
+ * so only replies written in that window can answer yes. CROSS JOIN and the unary
+ * plus keep this walking outward from the one reply through child_id: left to
+ * choose, the planner read every receipt in the store (or in the topic) and one
+ * page took 39 s (2026-11-05), during which no reply could be recorded. */
+export const SESSION_REPLY_OUT_OF_ORDER_SQL = `SELECT 1 FROM telegram_origin_children c1
+  CROSS JOIN telegram_origin_platform_receipts r1 ON r1.child_id=c1.child_id
+  CROSS JOIN telegram_origin_operations o2 INDEXED BY telegram_origin_operation_prepared
+    ON o2.kind='ordinary' AND o2.prepared_at>? AND o2.prepared_at<=?
+  CROSS JOIN telegram_origin_children c2 ON c2.operation_id=o2.operation_id
+  CROSS JOIN telegram_origin_platform_receipts r2 ON r2.child_id=c2.child_id
+  CROSS JOIN telegram_origins t2 ON t2.origin_id=o2.origin_id
+  WHERE c1.operation_id=? AND o2.state='accepted'
+    AND +r1.transport='bot-api' AND r1.message_id NOT GLOB '*[^0-9]*'
+    AND +r2.transport=r1.transport AND +r2.account_id=r1.account_id AND +r2.chat_id=r1.chat_id AND +r2.topic_id=r1.topic_id
+    AND r2.message_id NOT GLOB '*[^0-9]*'
+    AND CAST(r2.message_id AS INTEGER)<CAST(r1.message_id AS INTEGER)
+    AND json_extract(json_extract(t2.record_json,'$.envelopeJson'),'$.producerKind')='session'
+    AND json_extract(json_extract(t2.record_json,'$.envelopeJson'),'$.operationKind')='sendMessage'
+  LIMIT 1`;
 
 export class OriginStoreBackend {
   private readonly queue: PendingRelayStore;
@@ -114,6 +145,7 @@ export class OriginStoreBackend {
         prepared_at INTEGER NOT NULL, deadline_at INTEGER NOT NULL, max_attempts INTEGER NOT NULL,
         payload_bytes INTEGER NOT NULL, state TEXT NOT NULL, kind TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS telegram_origin_operation_state ON telegram_origin_operations(kind,state,deadline_at);
+      CREATE INDEX IF NOT EXISTS telegram_origin_operation_prepared ON telegram_origin_operations(kind,prepared_at,operation_id);
       CREATE TABLE IF NOT EXISTS telegram_origin_payloads (
         payload_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, digest TEXT NOT NULL, size INTEGER NOT NULL, data BLOB);
       CREATE INDEX IF NOT EXISTS telegram_origin_payload_operation ON telegram_origin_payloads(operation_id);
@@ -497,9 +529,11 @@ export class OriginStoreBackend {
           AND c.state NOT IN ('queued','accepted'))`)
         .get(operationId, now, now, now, new Date(now).toISOString());
       if (!eligible) return false;
+      const previous = this.db.prepare('SELECT attempts FROM telegram_origin_recovery_schedule WHERE operation_id=?').get(operationId) as { attempts: number } | undefined;
+      const interval = RECOVERY_REVIEW_LADDER_MS[previous?.attempts ?? 0] ?? RECOVERY_REVIEW_INTERVAL_MS;
       this.db.prepare(`INSERT INTO telegram_origin_recovery_schedule VALUES (?,1,?)
         ON CONFLICT(operation_id) DO UPDATE SET attempts=attempts+1,next_attempt_at=excluded.next_attempt_at`)
-        .run(operationId, now + RECOVERY_REVIEW_INTERVAL_MS);
+        .run(operationId, now + interval);
       return true;
     }).immediate();
   }
@@ -812,27 +846,15 @@ export class OriginStoreBackend {
     const afterId = input.afterOperationId ?? '';
     // A cursor, rather than a 24-hour window or newest-N snapshot, gives
     // every unresolved operation a turn even after long outages or bursts.
+    // Read in index order: no sort of the whole candidate set, and the costly
+    // out-of-order lookup below runs only for rows on the returned page.
     const rows = this.db.prepare(`SELECT o.operation_id operationId,o.state,o.hold_reason holdReason,
         o.prepared_at preparedAt,d.chat_id chatId,d.topic_id topicId,
         EXISTS(SELECT 1 FROM telegram_origin_attempts a JOIN telegram_origin_children c ON c.child_id=a.child_id
           WHERE c.operation_id=o.operation_id AND a.outcome='outcome-unknown') uncertain,
         (SELECT max(a.resolved_at) FROM telegram_origin_attempts a JOIN telegram_origin_children c ON c.child_id=a.child_id
-          WHERE c.operation_id=o.operation_id AND a.outcome='accepted') acceptedAt,
-        EXISTS(SELECT 1 FROM telegram_origin_children c1
-          JOIN telegram_origin_platform_receipts r1 ON r1.child_id=c1.child_id
-          JOIN telegram_origin_platform_receipts r2 ON r2.transport=r1.transport
-            AND r2.account_id=r1.account_id AND r2.chat_id=r1.chat_id AND r2.topic_id=r1.topic_id
-          JOIN telegram_origin_children c2 ON c2.child_id=r2.child_id
-          JOIN telegram_origin_operations o2 ON o2.operation_id=c2.operation_id
-          JOIN telegram_origins t2 ON t2.origin_id=o2.origin_id
-          WHERE o.state='accepted' AND c1.operation_id=o.operation_id
-            AND o2.kind='ordinary' AND o2.state='accepted' AND o2.prepared_at>o.prepared_at
-            AND r1.transport='bot-api' AND r1.message_id NOT GLOB '*[^0-9]*'
-            AND r2.message_id NOT GLOB '*[^0-9]*'
-            AND CAST(r2.message_id AS INTEGER)<CAST(r1.message_id AS INTEGER)
-            AND json_extract(json_extract(t2.record_json,'$.envelopeJson'),'$.producerKind')='session'
-            AND json_extract(json_extract(t2.record_json,'$.envelopeJson'),'$.operationKind')='sendMessage') outOfOrder
-      FROM telegram_origin_operations o
+          WHERE c.operation_id=o.operation_id AND a.outcome='accepted') acceptedAt
+      FROM telegram_origin_operations o INDEXED BY telegram_origin_operation_prepared
       JOIN telegram_origins t ON t.origin_id=o.origin_id
       JOIN telegram_origin_destinations d ON d.origin_id=o.origin_id
       WHERE o.kind='ordinary' AND (o.prepared_at>? OR (o.prepared_at=? AND o.operation_id>?))
@@ -846,11 +868,14 @@ export class OriginStoreBackend {
         AND json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.operationKind')='sendMessage'
       ORDER BY o.prepared_at,o.operation_id LIMIT ?`).all(after, after, afterId, Date.now() - 60_000, limit) as Array<{
         operationId: string; state: string; holdReason: string | null; preparedAt: number;
-        chatId: string | null; topicId: string | null; uncertain: number; acceptedAt: number | null; outOfOrder: number;
+        chatId: string | null; topicId: string | null; uncertain: number; acceptedAt: number | null;
       }>;
+    const outOfOrder = this.db.prepare(SESSION_REPLY_OUT_OF_ORDER_SQL);
     return rows.map(row => ({ operationId: row.operationId, state: row.state,
       reason: row.holdReason ?? row.state, uncertain: row.uncertain !== 0,
-      preparedAt: row.preparedAt, acceptedAt: row.acceptedAt, outOfOrder: row.outOfOrder !== 0,
+      preparedAt: row.preparedAt, acceptedAt: row.acceptedAt,
+      outOfOrder: row.state === 'accepted' && outOfOrder.get(row.preparedAt,
+        (row.acceptedAt ?? Date.now()) + OUT_OF_ORDER_CLOCK_SKEW_MS, row.operationId) !== undefined,
       chatId: row.chatId, threadId: row.topicId === null ? null : Number(row.topicId) }));
   }
 

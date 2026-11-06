@@ -133,10 +133,18 @@ describe('tmux Event-Loop Resilience — slow-stub integration (GROUP G)', () =>
     let server: AgentServer;
     let sm: SessionManager;
     let app: ReturnType<AgentServer['getApp']>;
+    let priorHome: string | undefined;
 
     beforeAll(async () => {
       const t = mkTmp('tmux-routes');
       tmpDir = t.tmpDir;
+      // The server reads this machine's home at boot and then on timers (the
+      // token ledger scans ~/.claude/projects). On a host with a large real
+      // history that scan held the event loop for over a second, which is what
+      // the timed checks below then measured. An empty home keeps them about
+      // these routes only.
+      priorHome = process.env.HOME;
+      process.env.HOME = tmpDir;
       const tmuxPath = writeSlowTmuxStub(tmpDir);
       const state = new StateManager(t.stateDir);
       sm = new SessionManager(smConfig(tmpDir, tmuxPath), state, {
@@ -158,6 +166,8 @@ describe('tmux Event-Loop Resilience — slow-stub integration (GROUP G)', () =>
 
     afterAll(async () => {
       await server.stop();
+      if (priorHome === undefined) delete process.env.HOME;
+      else process.env.HOME = priorHome;
       SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tmux-resilience-slow-stub.test.ts' });
     });
 

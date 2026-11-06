@@ -22,6 +22,8 @@ import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoute
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
+import { mountMobileSessionControlsRoutes, runSessionAction, type RouteAnswer } from './mobileSessionControlsRoutes.js';
+import { redactDeep, redactForDevice } from './mobileSessionTerminalRoutes.js';
 import { mountMobileConsolePagesRoutes, type SelfRead } from './mobileConsolePagesRoutes.js';
 import { mountMobileHealthRoutes, HEALTH_CHOICES_LOCAL_PATH, HEALTH_CHOICES_MERGE_PATH } from './mobileHealthRoutes.js';
 import { LLM_COMPONENT_PREFIX, healthChoiceStoreFor } from '../monitoring/healthChoices.js';
@@ -50,7 +52,8 @@ import {
 } from './machineMaintenancePool.js';
 import { getActiveSessionPriorityLowerer } from '../core/sessionPriority.js';
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
-import { resolveSessionPlatform, sessionDisplayName, type SessionPlatformInfo } from './sessionPlatform.js';
+import { sessionDisplayName, type SessionPlatformInfo } from './sessionPlatform.js';
+import { createSessionPresentationResolver } from './sessionPresentation.js';
 import { readSystemTopicIds } from '../messaging/SystemTopicAdoption.js';
 import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 /**
@@ -74,7 +77,7 @@ import { IdentityManager as ThreadlineIdentityManager } from '../threadline/clie
 import { resolveAgentRelayStatus } from '../threadline/agentRelayStatus.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
 import { emergencyStopUserMessage } from '../messaging/shared/emergencyStopUserMessage.js';
-import { isVerifiedChannelName, verifiedEntityName } from '../messaging/shared/channelIdentity.js';
+import { verifiedChannelIdentity, isVerifiedChannelName, verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import { execFileSync } from 'node:child_process';
 import { activeClaudeKeyHealth } from '../core/ClaudeKeyHealth.js';
@@ -268,7 +271,7 @@ import {
 import { PlaywrightSeatLease } from '../core/PlaywrightSeatLease.js';
 import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
 import { buildViewTunnelUrl } from './viewTunnelUrl.js';
-import { rateLimiter, OUTBOUND_GATE_REVIEW_BUDGET_MS, resolveFollowMeBudgets, FOLLOWME_SIMPLE_RELAY_FETCH_MS, bearerMatches } from './middleware.js';
+import { rateLimiter, OUTBOUND_GATE_REVIEW_BUDGET_MS, resolveFollowMeBudgets, FOLLOWME_SIMPLE_RELAY_FETCH_MS, bearerMatches, MOBILE_SESSION_ACTION_TIMEOUT_MS, MOBILE_SESSION_MOVE_TIMEOUT_MS } from './middleware.js';
 import { relayHoldHours } from '../threadline/relayVerdict.js';
 import {
   buildPeerDarkSentence,
@@ -631,6 +634,7 @@ import type { UnifiedTrustSystem } from '../threadline/UnifiedTrustWiring.js';
 import { DEFAULT_RELAY_URL } from '../threadline/constants.js';
 import { ThreadlineNicknames } from '../threadline/ThreadlineNicknames.js';
 import { resolvePeerFingerprint, resolvePeerFingerprintByName } from '../threadline/peerFingerprint.js';
+import { createAttributionRoutes } from './attributionRoutes.js';
 import {
   backupLogLine,
   checkFingerprintHealth,
@@ -1104,6 +1108,8 @@ export interface MobileInboundTrust {
 }
 
 export interface RouteContext {
+  /** Attribution paper trail; absent/null when dark. docs/specs/attribution-paper-trail.md */
+  attribution?: import('../core/attribution/attributionRuntime.js').AttributionRuntime | null;
   /** Stops the lease coverage peer poller when AgentServer shuts down. */
   jobCoverageStop?: (() => void) | null;
   /** Installed by createRoutes: feeds a device-authenticated app message through
@@ -4601,6 +4607,17 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       }
 
+      // attribution-paper-trail section 5: B23. Advisory, only in `enforce`, only for a sender that
+      // can react. SIGNAL ONLY, and marker checks have their own sub-budget inside the route budget.
+      if (ctx.attribution?.enabled && ctx.attribution.mode === 'enforce' && options.liveArtefactSignals === true && (options.messageKind ?? 'reply') === 'reply' && options.noReactionPossible !== true) {
+        try {
+          signals.attributionSources = await ctx.attribution.sourcesSignal(text, (recentMessages?.length ?? 0) > 0);
+        } catch {
+          // @silent-fallback-ok — detector errors never override the authority; the signal reads unmeasured.
+          signals.attributionSources = { status: 'unmeasured', conversationContext: (recentMessages?.length ?? 0) > 0, markers: [] };
+        }
+      }
+
       if (!options.allowDuplicate && ctx.outboundDedupGate && recentOutbound.length > 0) {
         try {
           const dupResult = ctx.outboundDedupGate.check({ text, recent: recentOutbound });
@@ -5042,6 +5059,22 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!decision.ok) {
       res.status(decision.status).json(decision.body);
       return true;
+    }
+    // Send-side record (attribution-paper-trail section 5): after delivery, in the background, never
+    // blocking a send. The route answering 2xx is what says the message went out.
+    if (ctx.attribution?.enabled) {
+      const attribution = ctx.attribution;
+      res.once('finish', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          let recentConversation: string | undefined;
+          try {
+            recentConversation = options.topicId && ctx.topicMemory
+              ? ctx.topicMemory.getRecentMessages(options.topicId, 10).map((m) => `${m.fromUser ? 'user' : 'agent'}: ${m.text}`).join('\n')
+              : undefined;
+          } catch { /* @silent-fallback-ok — with no recent messages the recap exemption simply does not apply */ }
+          attribution.recordInBackground(text, { surface: 'send', path: `${channel}:${options.topicId ?? ''}`, recentConversation });
+        }
+      });
     }
     return false;
   }
@@ -7304,6 +7337,8 @@ export function createRoutes(ctx: RouteContext): Router {
     'contradicts', 'part_of', 'used_in', 'knows_about', 'caused', 'verified_by',
   ]);
 
+  router.use(createAttributionRoutes(() => ctx.attribution));
+
   router.post('/semantic/remember', (req, res) => {
     if (!ctx.semanticMemory) { res.status(503).json({ error: 'Semantic memory not enabled' }); return; }
     const { type, name, content, confidence, source, sourceSession, tags, domain, expiresAt } = req.body;
@@ -7319,6 +7354,7 @@ export function createRoutes(ctx: RouteContext): Router {
         lastVerified: new Date().toISOString(),
         source, sourceSession, tags: tags || [], domain, expiresAt,
       });
+      ctx.attribution?.recordInBackground(String(content), { surface: 'memory-route', path: '/semantic/remember' });
       res.json({ id });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to remember' });
@@ -7793,18 +7829,14 @@ export function createRoutes(ctx: RouteContext): Router {
     // (and every concurrent request) on per-session sync isSessionAlive probes (A1 hardening).
     const sessions = ctx.sessionManager.getCachedRunningSessions().sessions;
     const schedulerStatus = ctx.scheduler?.getStatus() ?? null;
+    const presentSession = createSessionPresentationResolver({ ...ctx, stateDir: ctx.config.stateDir });
 
     res.json({
       sessions: {
         running: sessions.length,
         max: ctx.config.sessions.maxSessions,
         list: sessions.map(s => {
-          const detected = resolveSessionPlatform(s.tmuxSession, ctx.telegram, ctx.slack);
-          const topicName = ctx.telegram?.getTopicName(s.telegramTopicId ?? 0);
-          const platform = detected.platform === 'headless' && Number.isSafeInteger(s.telegramTopicId)
-            ? { platform: 'telegram', platformId: s.telegramTopicId, ...(isVerifiedChannelName('telegram', s.telegramTopicId!, topicName) ? { platformName: topicName } : {}) }
-            : detected;
-          return { id: s.id, name: sessionDisplayName(s.name, platform), jobSlug: s.jobSlug };
+          return { id: s.id, name: presentSession(s).name, jobSlug: s.jobSlug };
         }),
       },
       scheduler: schedulerStatus,
@@ -11452,6 +11484,7 @@ export function createRoutes(ctx: RouteContext): Router {
       : null;
 
     // Enrich sessions with hook event telemetry and platform info
+    const presentSession = createSessionPresentationResolver({ ...ctx, stateDir: ctx.config.stateDir });
     const enriched = sessions.map(s => {
       const result: Record<string, unknown> = { ...s };
 
@@ -11486,13 +11519,7 @@ export function createRoutes(ctx: RouteContext): Router {
 
       // Add platform indicator and display name (shared with the dashboard
       // WebSocket list so local and pooled rows can never disagree).
-      const detected = resolveSessionPlatform(s.tmuxSession, ctx.telegram, ctx.slack);
-      const topicName = ctx.telegram?.getTopicName(s.telegramTopicId ?? 0);
-      const platform = detected.platform === 'headless' && Number.isSafeInteger(s.telegramTopicId)
-        ? { platform: 'telegram', platformId: s.telegramTopicId, ...(isVerifiedChannelName('telegram', s.telegramTopicId!, topicName) ? { platformName: topicName } : {}) }
-        : detected;
-      Object.assign(result, platform);
-      result.name = sessionDisplayName(s.name, platform);
+      Object.assign(result, presentSession(s));
 
       return result;
     });
@@ -11543,16 +11570,29 @@ export function createRoutes(ctx: RouteContext): Router {
             // re-introduces the finished-session wall into the pool view.
             if (!includeAll && !explicitStatus && !isActiveStatus(s.status)) continue;
             if (explicitStatus && s.status !== explicitStatus) continue;
-            const remoteTopicId = typeof s.telegramTopicId === 'number' && Number.isSafeInteger(s.telegramTopicId) ? s.telegramTopicId : undefined;
+            const remoteTopicId = typeof s.telegramTopicId === 'number' && Number.isSafeInteger(s.telegramTopicId) && s.telegramTopicId > 0 ? s.telegramTopicId : undefined;
             const remotePlatformId = typeof s.platformId === 'number' || typeof s.platformId === 'string' ? s.platformId : remoteTopicId;
-            const remotePlatform: SessionPlatformInfo = s.platform === 'telegram' || s.platform === 'slack'
+            const remotePlatform: SessionPlatformInfo = s.platform === 'telegram' || s.platform === 'slack' || s.platform === 'app'
               ? { platform: s.platform, platformId: remotePlatformId, platformName: typeof s.platformName === 'string' ? s.platformName : undefined }
               : remoteTopicId !== undefined
                 ? { platform: 'telegram', platformId: remoteTopicId }
                 : { platform: 'headless' };
+            // Telegram IDs are pool-wide; negative app/Slack aliases are local
+            // to their owner and must never be looked up on the receiving machine.
+            let presentation = remotePlatform.platform === 'telegram' && Number(remotePlatform.platformId) > 0
+              ? { ...remotePlatform, ...presentSession({ name: sessionDisplayName(s.name, remotePlatform), tmuxSession: '', telegramTopicId: Number(remotePlatform.platformId) }) }
+              : { ...remotePlatform, name: sessionDisplayName(s.name, remotePlatform) };
+            // Renderers prefer platformName. Do not leave a placeholder or ID
+            // there to hide the valid session title we just recovered.
+            if (presentation.platformName) {
+              const title = presentation.platform === 'slack'
+                ? verifiedChannelIdentity('slack', String(presentation.platformId ?? '').split(':')[0], presentation.platformName)?.name
+                : verifiedEntityName(presentation.platformId ?? '__session__', presentation.platformName);
+              presentation = { ...presentation, platformName: title ?? undefined };
+            }
             remote.push({
               ...s,
-              name: sessionDisplayName(s.name, remotePlatform),
+              ...presentation,
               machineId: s.machineId ?? p.machineId,
               // This machine's registry names the machine first, so one dashboard never shows
               // the same machine under two names (2026-11-02: a peer called itself "Mac Lan"
@@ -11847,7 +11887,9 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: '"before" and "limit" must be whole numbers' }); return;
     }
     try {
-      res.json({ ok: true, ...readTranscriptPage(filePath, { before, limit }) });
+      // `redact=device`: the phone's read. Secrets go before each entry is cut, so no cut can leave part of one.
+      const clean = req.query.redact === 'device' ? (s: string) => redactForDevice(s, [ctx.config.authToken, ctx.config.dashboardPin]) : undefined;
+      res.json({ ok: true, ...readTranscriptPage(filePath, { before, limit, clean }) });
     } catch (err) {
       res.status(500).json({ error: `Could not read the conversation record: ${err instanceof Error ? err.message : String(err)}` });
     }
@@ -29683,6 +29725,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Spec § Producers line 228 — LearnSkill kinds are message|session;
     // externalReferences carry feedback/commit refs that the caller routes
     // through the appropriate downstream producer.
+    ctx.attribution?.recordInBackground(`${title}\n${description}`, { surface: 'memory-route', path: '/evolution/learnings' });
     res.status(201).json({
       ...learning,
       soulNudge,
@@ -29904,6 +29947,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       title, description, priority, commitTo, dueBy, source, tags: stampedTags,
       ...(normalizedOptOutReason ? { followThroughOptOutReason: normalizedOptOutReason } : {}),
     });
+    ctx.attribution?.recordInBackground(`${title}\n${description}`, { surface: 'memory-route', path: '/evolution/actions' });
     res.status(201).json({ ...action, classReviewAdmission: { wouldRefuse: admission.wouldRefuse, reason: admission.reason } });
   });
 
@@ -38227,7 +38271,42 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Native Permission slips and What I'm allowed to do (docs/specs/mobile-native-permissions.md):
     // trimmed reads (owner phone or bearer; approvals and slips proxied-on-read across peers) and the
     // owner phone's Face ID-confirmed approve, decline and switch, which run the console's own paths.
+    // The session screen's controls (docs/specs/mobile-native-session-controls.md): every control calls the
+    // dashboard's own route, here or on the machine holding the session, so its rules stay in force.
+    const sessionControlCall = async (method: 'GET' | 'POST' | 'DELETE', p: string, body?: unknown, machine?: string | null): Promise<RouteAnswer> => {
+      const init = {
+        method,
+        headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-Request': '1', 'X-Instar-Close-Via': 'mobile-app', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        // Each is inside its own route's budget (middleware.ts MOBILE_SESSION_*_TIMEOUT_MS), so the phone gets a plain answer, not a 408.
+        signal: AbortSignal.timeout(p === '/pool/transfer' ? MOBILE_SESSION_MOVE_TIMEOUT_MS - 13_000 : method === 'GET' ? 12_000 : MOBILE_SESSION_ACTION_TIMEOUT_MS - 5000),
+      };
+      try {
+        let r: globalThis.Response;
+        if (machine && machine !== ctx.meshSelfId) {
+          const peer = (ctx.resolvePeerUrls?.() ?? []).find((x) => x.machineId === machine);
+          if (!peer) return { status: 0, body: null };
+          r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, p, init);
+        } else {
+          r = await fetch(`http://127.0.0.1:${ctx.config.port}${p}`, init);
+        }
+        return { status: r.status, body: await r.json().catch(() => null) }; // @silent-fallback-ok — an unreadable body has no usable shape, and each control words that as a failed read
+      } catch { return { status: 0, body: null }; } // @silent-fallback-ok — status 0 is worded as "couldn't be reached" by each control
+    };
+    mountMobileSessionControlsRoutes(router, {
+      call: sessionControlCall,
+      actions: (req) => mobileActionsState(req, { pairing: () => ctx.mobilePairingService ?? null, config: () => ctx.config }),
+      bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+      selfMachineId: () => ctx.meshSelfId ?? null,
+      nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+      secrets: () => [ctx.config.authToken, ctx.config.dashboardPin],
+    });
     mountMobilePermissionsRoutes(router, {
+      // A route's words can quote a run's goal, so the phone's answer gets the same removal as anything else it reads.
+      sessionAction: async (action) => {
+        const r = await runSessionAction(action, { call: sessionControlCall, selfMachineId: () => ctx.meshSelfId ?? null });
+        return { status: r.status, body: redactDeep(r.body, [ctx.config.authToken, ctx.config.dashboardPin]) };
+      },
       pairing: () => ctx.mobilePairingService ?? null,
       config: () => ctx.config,
       stateDir: ctx.config.stateDir,
@@ -41953,6 +42032,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
     }
+
+    // attribution-paper-trail section 5: alongside the send, never before it, because the reply wait
+    // leaves little margin. Findings ride the `advisory` field; it never holds a peer message. Installed
+    // before the commitment nudge, so that nudge writes first and this one joins it rather than hiding it.
+    try {
+      const attributionCheck = ctx.attribution?.checkAlongside(message);
+      if (attributionCheck) {
+        const origJson = res.json.bind(res);
+        (res as unknown as { json: (b: unknown) => unknown }).json = (body: unknown) => {
+          const advisory = attributionCheck.settled();
+          if (advisory && body && typeof body === 'object' && (body as { success?: boolean }).success) {
+            const existing = (body as { advisory?: string }).advisory;
+            (body as { advisory?: string }).advisory = existing ? `${existing} ${advisory}` : advisory;
+          }
+          return origJson(body as Record<string, unknown>);
+        };
+      }
+    } catch { /* @silent-fallback-ok — advisory only, never affects the send */ }
 
     // Commitment-class advisory nudge (FD-10) — SIGNAL ONLY, never blocks, fails
     // open to no-nudge. Surfaced as `advisory` on the success response so the

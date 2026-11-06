@@ -67,6 +67,7 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   UnjustifiedStopGate: 'gate',
   CoherenceGate: 'gate',
   MessagingToneGate: 'gate',
+  AttributionJudge: 'gate', // attribution-paper-trail: is this credited to a person, and do the logged words support it?
   CoherenceReviewer: 'gate',
   // Hub-intent recognizer — infers "open this"/"tie this to <topic>?" over the
   // message + recent conversation, replacing the anchored regexes that swallowed
