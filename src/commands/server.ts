@@ -6061,6 +6061,25 @@ export async function startServer(options: StartOptions): Promise<void> {
       (configPath, fallback) => liveConfig.get<boolean>(configPath, fallback),
       (message) => console.log(pc.dim(`  [lease] ${message}`)),
     );
+    // ── Learned-skill rendering reconcile (skill-learning-sentinel §3.2,
+    // decisions 19/28). Renderings live outside stateDir and never sync, so
+    // EVERY machine re-renders `instar-learned` canonicals here: once at boot
+    // (below, after the boot pull), at the sync() call sites when commits were
+    // pulled, and on a 10-minute tick. Runs regardless of
+    // monitoring.skillLearning.enabled (it repairs the concept spec's own
+    // deferred design); `monitoring.skillLearning.reconcile.enabled: false` is
+    // the live kill switch. Constructed before the git substrate so the boot
+    // pull can hand it its first 'pull'.
+    const { LearnedSkillReconciler } = await import('../monitoring/LearnedSkillReconciler.js');
+    const learnedSkillReconciler = new LearnedSkillReconciler({
+      projectDir: config.projectDir,
+      stateDir: config.stateDir,
+      machineId: coordinator.identity?.machineId ?? os.hostname(),
+      enabledFrameworks: () => config.enabledFrameworks ?? config.sessions?.enabledFrameworks,
+      reconcileEnabled: () => liveConfig.get<boolean>('monitoring.skillLearning.reconcile.enabled', true) !== false,
+      tickMinutes: liveConfig.get<number>('monitoring.skillLearning.tickMinutes', 10),
+      logger: (m) => console.log(pc.dim(`  ${m}`)),
+    });
     // Construct gitSync for BOTH roles when this is a git-backed mesh machine:
     // a standby needs it to pull, and a standby that later self-elects to awake
     // (the Phase-0 scenario) must ALREADY have it so its role-change push fires.
@@ -6103,6 +6122,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             const syncResult = await gitSync.sync();
             if (syncResult.pulled) {
               console.log(pc.green(`  Git sync: pulled ${syncResult.commitsPulled} commit(s)`));
+              // A pulled canonical learned skill must be re-rendered on this machine.
+              void learnedSkillReconciler.reconcileAll('pull').catch(() => { /* @silent-fallback-ok — counted in status(), never fails boot */ });
             }
           }
           gitSyncRef = gitSync;
@@ -7034,6 +7055,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         config.multiMachine?.sessionPool?.inboundQueue,
       ),
       localMachineId: () => coordinator.identity?.machineId ?? os.hostname(),
+      // skill-learning-sentinel decision 18: the `INSTAR_MACHINE_ID` export
+      // for spawned sessions is the verified machine identity or nothing —
+      // never the hostname (SessionManager omits the export on null).
+      machineId: () => coordinator.identity?.machineId ?? null,
       ownerEpochForConversation: (conversationId) => stageBOwnerEpochForConversation(conversationId),
       stageCRecoveryEnabled,
     });
@@ -15332,6 +15357,19 @@ export async function startServer(options: StartOptions): Promise<void> {
       return Promise.resolve(true);
     };
 
+
+    // Learned-skill rendering reconcile — the boot pass (after the post-update
+    // migrations and the boot pull above) and the 10-minute tick.
+    try {
+      const bootReconcile = await learnedSkillReconciler.reconcileAll('boot');
+      if (bootReconcile.rendered > 0 || bootReconcile.conflicts > 0) {
+        console.log(pc.dim(`  Learned skills: ${bootReconcile.rendered} rendered, ${bootReconcile.conflicts} locked (user edit)`));
+      }
+    } catch (err) {
+      // @silent-fallback-ok — the reconcile counts its own errors; boot continues.
+      console.log(pc.yellow(`  Learned-skill reconcile at boot: ${err instanceof Error ? err.message : String(err)}`));
+    }
+    learnedSkillReconciler.start();
 
     // Helper Watchdog — detects subagent stalls and rate-limit failures,
     // surfacing them back into the parent session's stdin so the agent

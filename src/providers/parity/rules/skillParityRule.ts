@@ -32,9 +32,9 @@
  *   - C3: render `allowed-tools` → Claude frontmatter + Codex
  *     `dependencies.tools`. Removed from canonical for v0.1 to avoid
  *     promise-without-delivery drift; will land with the Tool primitive.
- *   - C6: atomic-write tempfile+rename. Single-sentinel-pass + single-
- *     machine narrows the race window for v0.1; will add when sentinel
- *     ships.
+ *   - C6: atomic-write tempfile+rename — LANDED (skill-learning slice 0):
+ *     every rendered file is written temp + rename (`writeFileAtomic`),
+ *     so a crash mid-render leaves the previous rendering intact.
  *   - H2/H3: BackupManager defaults + CLAUDE.md template — separate PRs.
  *   - H4: git-sync conflict-marker detection — operator-facing; surfaced
  *     in this PR as fail-loud `canonical-parse-error`.
@@ -224,6 +224,29 @@ async function listCanonicalSkillNames(projectRoot: string): Promise<string[]> {
   }
 }
 
+// ─── Atomic write (C6, landed with the skill-learning slice 0) ─────────
+
+/**
+ * Write a rendered file as temp + rename so a reader (a framework loading the
+ * skill, the every-machine reconciler hashing it) never sees a truncated file,
+ * and a crash mid-write leaves the previous rendering intact. The temp file
+ * lives beside the target (same directory ⇒ same filesystem ⇒ rename is atomic).
+ */
+async function writeFileAtomic(target: string, content: string | Buffer): Promise<void> {
+  const tmp = `${target}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+  try {
+    await fs.writeFile(tmp, content);
+    await fs.rename(tmp, target);
+  } catch (err) {
+    try {
+      await fs.rm(tmp, { force: true });
+    } catch {
+      /* @silent-fallback-ok — best-effort temp cleanup after a failed write */
+    }
+    throw err;
+  }
+}
+
 // ─── Mirror + compare helpers ──────────────────────────────────────────
 
 async function mirrorSubdir(src: string, dest: string): Promise<void> {
@@ -240,7 +263,7 @@ async function mirrorSubdir(src: string, dest: string): Promise<void> {
       await mirrorSubdir(s, d);
     } else {
       const content = await fs.readFile(s);
-      await fs.writeFile(d, content);
+      await writeFileAtomic(d, content);
     }
   }
 }
@@ -330,7 +353,7 @@ const claudeCodeRenderer: FrameworkRenderer = {
       '---',
       '',
     ].join('\n');
-    await fs.writeFile(path.join(skillDir, 'SKILL.md'), fmLines + skill.body, 'utf-8');
+    await writeFileAtomic(path.join(skillDir, 'SKILL.md'), fmLines + skill.body);
     const canonicalDir = path.join(projectRoot, CANONICAL_ROOT, skill.name);
     for (const sub of skill.bundledSubdirs) {
       await mirrorSubdir(path.join(canonicalDir, sub), path.join(skillDir, sub));
@@ -453,15 +476,14 @@ const codexCliRenderer: FrameworkRenderer = {
     }
     fmObj[STAMP_KEY] = skill.bodyHash;
     const fmYaml = yaml.dump(fmObj, { lineWidth: 200, noRefs: true });
-    await fs.writeFile(
+    await writeFileAtomic(
       path.join(skillDir, 'SKILL.md'),
       `---\n${fmYaml}---\n${skill.body}`,
-      'utf-8',
     );
 
     const yamlDir = path.join(skillDir, 'agents');
     await fs.mkdir(yamlDir, { recursive: true });
-    await fs.writeFile(path.join(yamlDir, 'openai.yaml'), buildOpenAiYaml(skill), 'utf-8');
+    await writeFileAtomic(path.join(yamlDir, 'openai.yaml'), buildOpenAiYaml(skill));
 
     const canonicalDir = path.join(projectRoot, CANONICAL_ROOT, skill.name);
     for (const sub of skill.bundledSubdirs) {
