@@ -1714,7 +1714,7 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     { method: 'POST', re: /^\/mobile\/media\/uploads$/, statuses: active, body: 'json', conversationRef: true },
     { method: 'PUT', re: new RegExp(`^/mobile/media/uploads/${UUID}/chunks/(0|[1-9][0-9]{0,5})$`), statuses: active, body: 'octet', ownBucket: 240 },
     { method: 'GET', re: new RegExp(`^/mobile/media/uploads/${UUID}$`), statuses: active, body: 'none' },
-    { method: 'GET', re: /^\/mobile\/media\/[0-9a-f]{64}$/, statuses: active, body: 'none', conversationRef: true },
+    { method: 'GET', re: /^\/mobile\/media\/[0-9a-f]{64}$/, statuses: active, body: 'none', conversationRef: true, ownBucket: 120, bucket: 'media-read' },
     { method: 'POST', re: /^\/mobile\/media\/purge$/, statuses: active, body: 'json', conversationRef: true },
     // Console sign-in from an owner phone (mobile-console-device-signin §3.1-3.2); each route
     // re-checks owner, local TLS and the feature switch itself.

@@ -193,6 +193,8 @@ import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairi
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
 import { buildSlackHolderRead } from './mobileSlackHolderProxy.js';
+import { buildMediaHolderStream, holderBearerOk } from './mobileMediaHolderProxy.js';
+import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
 import { createMobileMediaRouter } from './mobileMediaRoutes.js';
 import { createMobileSessionRouter } from './mobileSessionRoutes.js';
 import { createMobileSessionTerminalRouter, peerRowsMatch, PEER_LOOKUP_MAX, PEER_LOOKUP_TIMEOUT_MS, type PeerLookup } from './mobileSessionTerminalRoutes.js';
@@ -2060,7 +2062,7 @@ export class AgentServer {
     }).multiMachine?.accountFollowMe?.remoteScrapeTimeoutMs;
     this.app.use(requestTimeout(
       options.config.requestTimeoutMs,
-      buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs, followMeRemoteScrapeTimeoutMs }),
+      buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs, followMeRemoteScrapeTimeoutMs, defaultTimeoutMs: options.config.requestTimeoutMs }),
     ));
 
     // ── Token Ledger ──────────────────────────────────────────────────
@@ -6476,6 +6478,17 @@ export class AgentServer {
       const slackRegistry = options.slack ? routeCtx.conversationRegistry ?? null : null;
       this.app.use(createMobileMediaRouter({
         pairing: this.mobilePairing, service: this.appConversations, mediaEnabled: isMobileMediaEnabled(options.config),
+        machineId: () => this.appConversations?.deps.machineId() ?? 'local',
+        // The owner's phone opens a Slack file from the machine that holds it (mobile-remote-media).
+        ownerAdmission: (req) => mobileOwnerDeviceAdmission(this.mobilePairing!, req),
+        bearerOk: (req) => holderBearerOk(req, options.config.authToken),
+        holderMedia: buildMediaHolderStream({
+          peers: () => routeCtx.resolvePeerUrls?.() ?? [],
+          allowlist: () => (options.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,
+          token: () => options.config.authToken,
+          selfMachineId: () => this.appConversations?.deps.machineId() ?? 'local',
+          record: routeCtx.recordRopeResult ?? undefined,
+        }),
         // A Slack file downloads only through the machine whose registry minted the conversation (§4.9).
         // Same gate as the Slack history route: nothing is served until the owner's Slack id is set.
         ...(slackRegistry ? { slackHeld: (key: string) => slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, key) } : {}),
