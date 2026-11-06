@@ -1,3 +1,4 @@
+import { claimReconciliationNotice } from '../core/TopicProfileOrchestrator.js';
 /**
  * selfActionRegistry.ts — the self-action controller registry (Part D1 of
  * docs/specs/self-action-convergence.md). This is the single list the
@@ -4051,10 +4052,37 @@ const codex429ExitNotice: SelfActionController = {
   },
 };
 
+function makeProfileReconciliationNotice(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  // Reload on each tick to model repeated server boots under the same busy
+  // mismatch. Only the durable episode claim survives, never a pending slot.
+  return { tick() {
+    sink.considered += 1;
+    const notices = JSON.parse(String(f.durableState.get('profile-reconciliation-notices') ?? '{}')) as Record<string, string>;
+    if (claimReconciliationNotice(notices, 'topic', 'same-unresolved-profile-mismatch')) {
+      sink.emit({ verb: 'notify-profile-mismatch', target: 'topic' });
+    }
+    f.durableState.set('profile-reconciliation-notices', JSON.stringify(notices));
+  } };
+}
+
+const profileReconciliationNotice: SelfActionController = {
+  id: 'topic-profile-reconciliation-notice',
+  actionVerb: 'notify-profile-mismatch',
+  models: 'TopicProfileOrchestrator.bootReconcileSweep → durable mismatch episode claim; busy retry carries no twin notice',
+  modelsPath: 'src/core/TopicProfileOrchestrator.ts',
+  makeUnderPressure: makeProfileReconciliationNotice,
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 1000,
+  tickMs: 60_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: makeProfileReconciliationNotice },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   attributionAuditRetry,
   jobPortableTransferPoll,
   jobCoverageAlertRetry,
+  profileReconciliationNotice,
   linuxBrowserInstallRetry,
   codex429ExitNotice,
   claudeKeySessionRefresh,
