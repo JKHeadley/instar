@@ -1,3 +1,9 @@
+# Review reopened — Claude findings require revised round4
+
+The prior GPT-only convergence below is historical and superseded as an approval claim. Actual independent Claude Opus5.5 review at head01626f7b8 found2DESIGN findings: impossible first-start outcomes, and undisclosed per-machine eligibility loss. The spec now proposes baseline-only first starts, meaningful baseline-acquisition raises and explicit foreign-baseline holds. Eight precision findings are addressed in the proposed policy/test matrix. No convergence tag or approval remains while round4 is pending. Raw verified model receipt and review are retained in topic139374 evidence.
+
+---
+
 # Evidence floor — convergence report
 
 ## Same-family independent reviews; cross-family review unavailable

@@ -1,0 +1,70 @@
+{
+  "reviewedHead": "01626f7b8597c0e4e28367f8373f1444b9724ff6",
+  "baseBranch": "echo/measurement-subjects-139374",
+  "reviewer": {
+    "agent": "echo",
+    "machine": "Studio",
+    "harness": "Claude Code",
+    "sessionId": "938bb864-7611-423a-9d1f-5695ffc5f3c0",
+    "model": "claude-opus-5-5",
+    "modelEvidence": "all 255 \"model\" fields in this session's transcript JSONL read claude-opus-5-5"
+  },
+  "lenses": [
+    "security",
+    "scalability",
+    "adversarial",
+    "integration",
+    "decision-completeness",
+    "lessons-aware"
+  ],
+  "findings": {
+    "design": [
+      {
+        "id": "D1",
+        "title": "A managed start can never pass the floor as written (no current numbers before a feature runs); not-started raises become undischargeable"
+      },
+      {
+        "id": "D2",
+        "title": "Eligibility is per machine; a serving-machine change holds every feature, consequence undisclosed"
+      }
+    ],
+    "precision": [
+      {
+        "id": "P1",
+        "title": "evidence.state 'verified' ignores criterion.met; floor must require met===true for every metric incl. quality guards"
+      },
+      {
+        "id": "P2",
+        "title": "Registry is parsed only at construction; 'current registry-derived target' needs re-read or redefinition"
+      },
+      {
+        "id": "P3",
+        "title": "subjectKnown comes from D7's cached list; never treat it as ownership"
+      },
+      {
+        "id": "P4",
+        "title": "Owner collector lives in the server route layer; must be injected and wiring-tested; its cost is inventory-bounded"
+      },
+      {
+        "id": "P5",
+        "title": "Reverts and downward moves must stay free of the evidence floor"
+      },
+      {
+        "id": "P6",
+        "title": "Baseline pins refresh only via D7 archive; 180-day pin expiry + 90-day observation retention can permanently hold a feature (code-confirmed)"
+      },
+      {
+        "id": "P7",
+        "title": "Evidence refusals leave no audit row"
+      },
+      {
+        "id": "P8",
+        "title": "Run-together words, undefined not-applicable state, ELI16 start sentence depends on D1"
+      }
+    ]
+  },
+  "testsRun": false,
+  "codeChanged": false,
+  "reviewMarkdownSha256": "41f45510331b6b65145f66b2d02ade4b662e32869b5db5cd2a9e40fd8b9d0c08",
+  "writtenAt": "2026-11-06T05:53:28.754922+00:00"
+}

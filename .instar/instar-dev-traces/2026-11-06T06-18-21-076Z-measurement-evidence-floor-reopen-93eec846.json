@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "measurement-evidence-floor-reopen",
+  "sessionId": "30384209-0957-44f8-9037-d33d452ffbc6",
+  "timestamp": "2026-11-06T06:18:21.076Z",
+  "artifactPath": "upgrades/side-effects/measurement-evidence-floor-reopen.md",
+  "artifactSha256": "ee826b4acf0a7e0badf0e357bb09de17bc140627a8229218b375c83e69571e46",
+  "coveredFiles": [
+    "docs/specs/measurement-evidence-floor.eli16.md",
+    "docs/specs/measurement-evidence-floor.md",
+    "docs/specs/reports/measurement-evidence-floor-claude-round4.json",
+    "docs/specs/reports/measurement-evidence-floor-convergence.md",
+    "upgrades/side-effects/measurement-evidence-floor-reopen.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only reopening of the unapproved Tier2 proposal after actual Claude findings. No implementation or authority change; removes premature convergence tags and publishes model provenance without private transcript paths.",
+  "eli16Path": "docs/specs/measurement-evidence-floor.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/measurement-evidence-floor-reopen.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
