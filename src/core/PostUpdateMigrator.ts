@@ -1181,6 +1181,7 @@ ${PAIRING_APPROVE_DASHBOARD_BULLET}
 }
 
 export const SLACK_FROM_APP_CLAUDEMD_MARKER = '### Slack conversations from the Instar app';
+export const SLACK_OWNER_READ_AUTHORITY_LINE = '- **Owner-phone remote Slack history:** the server rechecks the signed phone\'s current key, person, owner role, revocation record and live pairing/native gates before every holder dial and before returning private history. Removing access while a read waits prevents that history from being returned. If revocation state cannot be checked, the read is refused. This does not proxy sends or remote file downloads.';
 /**
  * CLAUDE.md awareness block for continuing Slack conversations from the iPhone app
  * (docs/specs/mobile-native-conversations.md §4.9 — increment 4). Sniffed by its exact heading.
@@ -1191,6 +1192,7 @@ export function SLACK_FROM_APP_CLAUDEMD_SECTION(port: number): string {
 Where Slack is set up, the app's conversation list also shows Slack channels and threads (\`platform: "slack"\`, id = the negative durable conversation id), and the operator can read and write them from the phone. A message the operator types in the app reaches my Slack session exactly like a Slack message from them, tagged \`[slack:<channel> from <owner> (uid:<U…>) (📱 signed)]\` ("📱 signed" only when the phone's signature checked out), and a copy "📱 <owner> (from the app): …" is posted in the channel (credential-shaped text shown as \`[credential hidden]\`). I answer it with \`slack-reply.sh\` as usual.
 - **The operator's Slack user id is a setting I propose, never infer.** Until \`mobilePairing.slackOwnerUserId\` is set the app shows no Slack rows and its Slack routes answer 503 \`slack-owner-unset\`. When the operator asks to use Slack from the app, read the Slack channel's verified operator (\`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic-operator\`), propose that \`U…\` id to the operator, and set it only after they say yes.
 - History an agent can read: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/chat/slack/CONVERSATION_ID/messages?machine=MACHINE"\`, with MACHINE the \`machine\` on that conversation's row in \`GET /mobile/conversations\` (a Slack id is local to one machine; another machine's id answers 409 \`wrong-machine\`, a missing machine 400 \`machine-required\`). App-sent rows carry \`originVerified\`; rows typed in Slack read \`none\`.
+${SLACK_OWNER_READ_AUTHORITY_LINE}
 - **When to use** (PROACTIVE): "can I use Slack from the app?" → check the setting above and offer to set it; "did my app message reach Slack?" → read that message's \`deliveryState\`, \`mirror\` and \`originVerified\`, never infer it from the text.
 `;
 }
@@ -9667,6 +9669,12 @@ setTimeout(() => process.exit(0), 2000);
       content += SLACK_FROM_APP_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Slack conversations from the Instar app section');
+    }
+    if (!content.includes(SLACK_OWNER_READ_AUTHORITY_LINE)) {
+      content = content.replace(SLACK_FROM_APP_CLAUDEMD_MARKER,
+        SLACK_FROM_APP_CLAUDEMD_MARKER + '\n\n' + SLACK_OWNER_READ_AUTHORITY_LINE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: clarified live owner authority for remote Slack history');
     }
     if (!content.includes('Native app conversations')) {
       content += APP_CONVERSATIONS_CLAUDEMD_SECTION(port);

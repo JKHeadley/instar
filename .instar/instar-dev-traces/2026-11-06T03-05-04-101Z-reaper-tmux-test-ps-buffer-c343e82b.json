@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "reaper-tmux-test-ps-buffer",
+  "sessionId": "67d506f7-651f-4fd3-b2b0-163f2c612b57",
+  "timestamp": "2026-11-06T03:05:04.101Z",
+  "artifactPath": "upgrades/side-effects/reaper-tmux-test-ps-buffer.md",
+  "artifactSha256": "ad05be49e374afb67b70b19ff714fbf969f44fb675585f115b58e72d8491f47d",
+  "coveredFiles": [
+    "docs/specs/reaper-tmux-test-ps-buffer.eli16.md",
+    "tests/integration/reaper-live-tool-shell-real-tmux.test.ts",
+    "upgrades/next/reaper-tmux-test-ps-buffer.md",
+    "upgrades/side-effects/reaper-tmux-test-ps-buffer.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test-only helper buffer fix, one file, revert undoes it",
+  "eli16Path": "docs/specs/reaper-tmux-test-ps-buffer.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/reaper-tmux-test-ps-buffer.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
