@@ -307,12 +307,12 @@ export function activeXcodeDeveloperDir(now: number = Date.now()): string | null
   else if (process.platform === 'darwin') {
     try {
       dir = withSyncOp(() => execFileSync('/usr/bin/xcode-select', ['-p'], { encoding: 'utf8', timeout: 2_000, stdio: ['ignore', 'pipe', 'ignore'] })).trim() || null;
-    } catch { dir = null; }
+    } catch { dir = null; /* @silent-fallback-ok — no Xcode tools is a normal state: only the /usr/bin/xcodebuild shim matches, the run is judged normally (no new protection), and null is re-probed after XCODE_DIR_NULL_RETRY_MS */ }
   }
   if (dir) {
     dir = path.resolve(dir);
     if (dir.endsWith('.app')) dir = path.join(dir, 'Contents', 'Developer');
-    try { dir = fs.realpathSync(dir); } catch { /* keep the unresolved path */ }
+    try { dir = fs.realpathSync(dir); } catch { /* @silent-fallback-ok — keep the unresolved path: a mismatch with ps output only withholds the floor, so the run is judged normally */ }
   }
   cachedActiveDeveloperDir = { dir, at: now };
   return dir;

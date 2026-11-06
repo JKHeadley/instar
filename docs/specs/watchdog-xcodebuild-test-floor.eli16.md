@@ -11,3 +11,5 @@
 **Found alongside.** The feedback also suggests logging when the judge changes its verdict on the same process between polls. That is a separate improvement and is left in the feedback item.
 
 **What to decide.** Nothing. This is a narrow fix that a revert fully undoes.
+
+**If the Xcode lookup fails.** When the watchdog cannot work out which Xcode is active, it does not guess. The run simply does not get the floor and is judged the way it always was. That is the normal state on a Mac without Xcode tools, and the lookup is tried again after ten minutes.

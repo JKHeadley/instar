@@ -82,3 +82,12 @@ Reviewer concurred on: the identity check (suffix, lookalike and path-with-space
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect: the defect is in TypeScript classifier code. The change modifies a kill controller only by removing kill candidates within an existing absolute bound (`MAX_TEST_RUNNER_ABSOLUTE_MS`). It adds no action, so it introduces no new control-loop edge. Steady state is unchanged, and the settling brake is the existing 3 h bound (ratchet: tests/unit/self-action-convergence.test.ts unchanged).
+
+## Addendum 2026-11-06 — two structural tests fixed (builder echo-2843-fix)
+
+Local verify on 316e188a2 failed two checks; both were missing declarations, not behavior faults. Tier 1, 3 files, comment and test-list changes only: no runtime behavior changes.
+
+- `tests/unit/no-silent-fallbacks.test.ts`: the two new catches in `activeXcodeDeveloperDir` were uncounted fallbacks (496 over the 494 baseline). Both now carry `@silent-fallback-ok` with the reason. Each fails toward the old behavior: without a resolved developer dir the run does not get the floor and is judged normally, so no new protection is granted on uncertain identity. A missing Xcode is routine on a Mac without the tools, so a report per probe would be noise. Baseline unchanged at 494.
+- `tests/unit/feature-delivery-completeness.test.ts`: the new CLAUDE.md line is now tracked in `legacyMigratorSections`, alongside the two test-runner floor lines it extends.
+
+Neither test was loosened, no thresholds changed. Answers to questions 1-8 above are unchanged. Second-pass not repeated: the reviewed logic is untouched.
