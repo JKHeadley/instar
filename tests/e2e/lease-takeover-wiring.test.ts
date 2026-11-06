@@ -29,10 +29,19 @@ describe('lease takeover wiring in server.ts', () => {
     expect(block).toContain('survivorMayHold()');
     expect(block).toContain('gitLeaseHasNoRemote(config.projectDir) === true');
   });
+  it('only an unproved joiner is held back, and the coordinator receives it', () => {
+    const start = server.indexOf('const acquireHeldBack = ');
+    const line = server.slice(start, server.indexOf('\n', start));
+    expect(line).toContain("pairRole === 'joiner'");
+    expect(line).toContain('noLinkProved()');
+    expect(server.slice(server.indexOf('const survivorMayHold = '), server.indexOf('const survivorMayHold = ') + 300)).toContain('!acquireHeldBack()');
+    expect(server).toMatch(/new LeaseCoordinator\(\{[\s\S]{0,4000}acquireHeldBack,/);
+  });
   it('survivorMayHold needs a non-revoked peer and no named preferred machine', () => {
     const start = server.indexOf('const survivorMayHold = ');
     const block = server.slice(start, start + 300);
     expect(block).toContain('preferredAwakeMachineId');
-    expect(block).toContain('!entry.revokedAt');
+    expect(block).toContain('livePeerIds()');
+    expect(server.slice(server.indexOf('const livePeerIds = '), server.indexOf('const survivorMayHold = '))).toContain('!entry.revokedAt');
   });
 });

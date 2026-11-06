@@ -215,6 +215,7 @@ import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForward
 import { formatForwardedTopicContext, crossMachineReplyEvidence, INCOMPLETE_TOPIC_HISTORY_WARNING } from '../core/ForwardedTopicContext.js';
 import { CoherenceJournalReader } from '../core/CoherenceJournalReader.js';
 import { createTopicHistoryPullHandler, pullMovedTopicHistory, TOPIC_HISTORY_PULL_MAX_MESSAGES, TOPIC_HISTORY_PULL_TIMEOUT_MS } from '../core/topicHistoryPull.js';
+import { LastingLinkLedger, lastingLinkUnproved } from '../core/lastingLink.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl, detectTailscaleIp, pickPrimaryLanIp, computeSelfMeshEndpoints, advertiseSelfMeshEndpoints, resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { PeerEndpointResolver } from '../core/PeerEndpointResolver.js';
 import {
@@ -761,6 +762,7 @@ let _memoryUserResolver: { slack(id: string): import('../core/types.js').UserPro
 let _refreshPoolHeartbeat: () => void = () => {};
 /** Boot-cached takeover reading for the pool readiness report; never read from /health. */
 let _takeoverReadiness: import('../core/poolReadiness.js').ReadinessLine = { state: 'unknown', reason: 'only a real takeover proves this' };
+let _noLastingLinkYet: (() => boolean) | null = null;
 // Module-level handle for the machine-coherence guard (machine-coherence-guard
 // §6) so `GET /pool/machine-coherence` can read the sentinel constructed deep in
 // the mesh peer-presence wiring. Null when the guard is dark (route 503s).
@@ -6123,8 +6125,27 @@ export async function startServer(options: StartOptions): Promise<void> {
       const leaseStoreName = leaseGitRef ? 'GitLeaseStore' as const : 'LocalLeaseStore' as const;
       coordinator.attachLeaseMediumProvider(() => ({ ...leaseMedium, store: leaseStoreName }));
       // Read live: a peer can join and a preferred machine can be named without a restart.
+      const lastingLink = new LastingLinkLedger(config.stateDir);
+      // Set only at a pairing. Without proof a dead peer and a lost one look alike for good.
+      const livePeerIds = () => Object.entries(idMgr.loadRegistry().machines ?? {})
+        .filter(([id, entry]) => id !== selfMachineId && !entry.revokedAt).map(([id]) => id);
+      const noLinkProved = (): boolean => {
+        const heal = config.multiMachine?.leaseSelfHeal;
+        return lastingLinkUnproved({
+          enabled: !!heal?.soloCaptainHold?.enabled,
+          requireLastingLink: heal?.soloCaptainHold?.requireLastingLink === true,
+          preferredNamed: !!heal?.preferredAwakeMachineId,
+          pairedWith: heal?.soloCaptainHold?.pairedWith,
+          livePeerIds: livePeerIds(),
+          provenWith: (id) => lastingLink.provenWith(id),
+        });
+      };
+      // Unproved, the inviter serves as it always did; only the joiner must wait.
+      const acquireHeldBack = (): boolean => config.multiMachine?.leaseSelfHeal?.soloCaptainHold?.pairRole === 'joiner' && noLinkProved();
       const survivorMayHold = (): boolean => !config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId
-        && Object.entries(idMgr.loadRegistry().machines ?? {}).some(([id, entry]) => id !== selfMachineId && !entry.revokedAt);
+        && livePeerIds().length > 0
+        && !acquireHeldBack();
+      _noLastingLinkYet = noLinkProved;
       const takeoverFixOn = !!config.multiMachine?.leaseSelfHeal?.soloCaptainHold?.enabled
         && !config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId;
       if (leaseGitRef && !takeoverFixOn && gitLeaseHasNoRemote(config.projectDir) === true) {
@@ -6242,6 +6263,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           logger: (m) => console.log(pc.dim(m)),
         });
         leaseTransport = new HttpLeaseTransport({
+          onSignedConfirmation: (peer, kind, url) => lastingLink.record(peer, kind, url),
           selfMachineId,
           signingKeyPem: idMgr.loadSigningKey(),
           peers: () => {
@@ -6346,6 +6368,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           allPeersPresumedGone: leaseLiveness.allPeersPresumedGone,
           survivorMayHold,
+          acquireHeldBack,
           onSelfSuspend: (reason) => console.log(pc.yellow(`  [lease] self-suspend: ${reason}`)),
           onEscalate: (info) => console.log(pc.yellow(`  [lease] split-brain escalation: ${info.reason} (holder ${info.holder})`)),
           logger: (m) => console.log(pc.dim(m)),
@@ -24810,7 +24833,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             },
             durableOwnership: () => durableOwnershipMod.shouldActivateDurableOwnership(config, resolveDevAgentGate),
             duplicateCheck: () => _duplicateReconciler?.status() ?? null,
-            takeover: () => _takeoverReadiness,
+            takeover: () => _noLastingLinkYet?.()
+              ? { state: 'unknown', reason: 'no lasting connection between these machines has been proved, so the spare will not take over if the machine in charge dies. Same network or Tailscale, then pair again, fixes it' }
+              : _takeoverReadiness,
           };
           readinessMod.setActivePoolReadiness(poolReadinessDeps);
           const poolReadinessLog = new readinessMod.PoolReadinessLog(poolReadinessDeps, path.join(config.stateDir, '..', 'logs', 'pool-readiness.jsonl'));
