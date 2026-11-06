@@ -288,6 +288,15 @@ export function runClassClosureLint(input) {
   // Decision 1) needing a declaration?
   let inScope = false;
   let exempt;
+  // Whether THIS diff carries a class block: `declarations` above is every entry ever committed.
+  const prDeclared = (changedFiles ?? []).some((f) => {
+    if (!/^\.instar\/instar-dev-decisions\/[^/]+\.json$/.test(f)) return false;
+    try {
+      return Boolean(JSON.parse(readFileMaybe(repoRoot, f) ?? '{}').classClosure);
+    } catch {
+      return false;
+    }
+  });
   if (changedFiles && changedFiles.length > 0) {
     const agentFiles = changedFiles.filter(isAgentAuthoredArtifact);
     // A diff touching a self-action controller file (name-shape or marker) is
@@ -334,6 +343,7 @@ export function runClassClosureLint(input) {
     escalations,
     inScope,
     exempt,
+    prDeclared,
     declarationCount: declarations.length,
   };
 }
@@ -352,6 +362,41 @@ export function parseNameStatus(text) {
 }
 
 // ── CLI entrypoint (CI) ────────────────────────────────────────────────────
+/**
+ * The maturation-ladder row for one lint run (docs/specs/class-closure-gate.md,
+ * ladder entry prGate.classClosure): fired for a fix that declared its class,
+ * error for one that did not or a run that could not read the registry. Null when
+ * the diff is out of scope or is not a fix, because the written bar counts fixes
+ * only. `prKey` makes a re-push replace the row, not add one.
+ */
+export function classClosureEvidence(res, prKey, isFix = true) {
+  if (!res.inScope || res.exempt || !isFix) return null;
+  const broken = res.hardViolations.some((h) => /^(registry unparseable|malformed registry)/.test(h));
+  const ok = res.prDeclared && !broken;
+  return {
+    featureId: 'prGate.classClosure',
+    kind: ok ? 'fired' : 'error',
+    reason: broken ? 'class registry unreadable' : ok ? 'class block populated' : 'class block missing',
+    ...(prKey ? { gradesEventId: String(prKey).slice(0, 64) } : {}),
+  };
+}
+
+/** Best effort: a CI runner has no agent to reach, and a lost row costs one sample, never a push. */
+async function postEvidence(row) {
+  const token = process.env.INSTAR_AUTH_TOKEN;
+  if (!row || !token) return;
+  try {
+    await fetch(`http://localhost:${process.env.INSTAR_PORT || 4042}/maturation/evidence`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(row),
+      signal: AbortSignal.timeout(3000),
+    });
+  } catch {
+    // @silent-fallback-ok — evidence never blocks; the missing row reads as fewer samples.
+  }
+}
+
 const invokedDirectly = process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop());
 if (invokedDirectly) {
   const repoRoot = process.env.CLASS_CLOSURE_REPO_ROOT || process.cwd();
@@ -398,5 +443,6 @@ if (invokedDirectly) {
   } else {
     console.log('class-closure gate: OK (report-only — no build failure)');
   }
+  if (process.argv.includes('--report-evidence')) await postEvidence(classClosureEvidence(res, process.env.CLASS_CLOSURE_PR_KEY, process.env.CLASS_CLOSURE_IS_FIX === '1'));
   process.exit(res.exitCode);
 }

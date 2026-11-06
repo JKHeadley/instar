@@ -455,12 +455,20 @@ export class MaturationLadderService {
           ...(r?.coverageDays !== undefined ? { coverageDays: r.coverageDays } : {}),
           ...(r?.reason ? { reason: r.reason } : {}) };
       };
-      const readings = (rungDef?.metrics ?? []).map(m => readingFor(m, this.readings, projectionRef(m)));
       const move = this.lastMoves.get(entry.id);
       const watchFrom = this.watchStart(entry.id);
       const afterMove = watchFrom !== null
         ? (crossedRung(entry, rung)?.metrics ?? []).filter(m => m.role !== 'quality').map(m => readingFor(m, this.afterMoveReadings, `after:${entry.id}:${m.id}`))
         : [];
+      // At its last rung there is no next bar, so show the rung it crossed. A number under
+      // the post-move watch is the one that judged it, so `harmed` shows why and when it clears.
+      const shown = target ? rungDef : crossedRung(entry, rung);
+      const readings = (shown?.metrics ?? []).map(m => {
+        const after = `after:${entry.id}:${m.id}`;
+        return !target && watchFrom !== null && this.afterMoveReadings.has(after)
+          ? readingFor(m, this.afterMoveReadings, after)
+          : readingFor(m, this.readings, projectionRef(m));
+      });
       const contract = rungDef ? contractForRung(rungDef) : null;
       const evaluations = bySubject.get(entry.subject) ?? [];
       const result = computeLadderState({

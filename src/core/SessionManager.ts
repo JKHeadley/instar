@@ -1938,7 +1938,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
   /** Clean up after a session that ran inside the boundary. */
   releaseMemorySession(session: Pick<Session, 'id' | 'memoryScopeDir' | 'memorySettingsPath' | 'memoryAudience'>): void {
     if (!session.memoryScopeDir) return;
-    this.memoryPrivacyWiring?.privacy.revokeSessionTokens(session.id);
+    const privacy = this.memoryPrivacyWiring?.privacy;
+    if (privacy && !privacy.sessionReplied(session.id)) {
+      featureEvidence.record('memoryPrivacy', { kind: 'error', reason: 'session ended with no reply', context: { audience: session.memoryAudience ?? null } });
+    }
+    privacy?.revokeSessionTokens(session.id);
     const op = 'SessionManager.releaseMemorySession';
     if (session.memorySettingsPath) SafeFsExecutor.safeRmSync(session.memorySettingsPath, { force: true, operation: op });
     if (session.memoryAudience === 'none') SafeFsExecutor.safeRmSync(session.memoryScopeDir, { recursive: true, force: true, operation: op });
