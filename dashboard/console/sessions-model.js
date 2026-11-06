@@ -9,6 +9,12 @@
 import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
 import { sessionTopicName } from './topic-names.js';
 
+/**
+ * What a person reads for a "door" (an AI tool a session runs on: Claude Code, Codex...). One place,
+ * so the word can change without touching the API or config, which keep `framework`.
+ */
+export const DOOR = { word: 'engine', Word: 'Engine', words: 'engines' };
+
 export const WORKING_MS = 2 * 60_000;   // activity under 2 min reads "working"
 export const QUIET_MS = 10 * 60_000;    // 10+ min without activity reads "quiet" (never "stuck")
 export const HISTORY_FIRST = 2000;      // lines the server sends on subscribe
@@ -331,8 +337,8 @@ export function doorModelWords(options, framework, model) {
 /** The regime note: what a model choice actually does on this agent. */
 export function regimeWords(options) {
   const r = options && options.regime;
-  if (r === 'dry-run') return 'On this agent a chosen model is recorded as intent, not applied; the door still switches.';
-  if (r === 'disabled') return 'On this agent the door switch works, but model choice is turned off; a model will be refused.';
+  if (r === 'dry-run') return `On this agent a chosen model is recorded as intent, not applied; the ${DOOR.word} still switches.`;
+  if (r === 'disabled') return `On this agent the ${DOOR.word} switch works, but model choice is turned off; a model will be refused.`;
   return null;
 }
 

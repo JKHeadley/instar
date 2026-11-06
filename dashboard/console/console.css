@@ -977,11 +977,18 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .sessions-page.has-open .sess-list { display: none; }
 .sessions-page.has-open .sess-view { display: block; }
 @media (min-width: 900px) {
-  .sessions-page { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: var(--s-6); align-items: start; }
+  /* The page uses the window: a list wide enough to read and a session pane that takes the rest
+     (Justin, 2026-11-05: "the columns are way too squeezed"). */
+  .main:has(> .sessions-page) { max-width: 1680px; }
+  .sessions-page { display: grid; grid-template-columns: minmax(340px, 480px) minmax(0, 1fr); gap: var(--s-8); align-items: start; }
   .sessions-page .sess-view, .sessions-page.has-open .sess-list { display: block; }
   .sessions-page .sess-view { position: sticky; top: var(--s-4); }
+  .sessions-page .sess-list .page-title { font-size: clamp(26px, 2.4vw, 34px); }
+  /* No session open: the pane is a quiet card the size of a session, not a stray line in space. */
+  .sessions-page:not(.has-open) .sess-view { min-height: calc(100dvh - var(--topbar-h, 56px) - var(--s-10) - var(--s-10)); display: flex; align-items: center; justify-content: center; border: 1px dashed var(--hairline); border-radius: var(--r-lg, 16px); }
+  .sessions-page:not(.has-open) .sess-pick { margin: 0; }
 }
-.sess-new { margin: var(--s-2) 0 var(--s-4); }
+.sess-new { margin: var(--s-2) 0 var(--s-4); gap: var(--s-2); flex-wrap: wrap; }
 .sess-row { text-decoration: none; color: inherit; }
 .sess-row.open { background: var(--accent-wash); }
 .stale-banner { margin: var(--s-2) 0; padding: var(--s-2) var(--s-3); border: 1px dashed var(--unknown-line); border-radius: var(--r-md); color: var(--text-muted); font-size: 14px; }
@@ -1046,8 +1053,8 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 /* Desktop: an open session fills the window beside the list, so the composer is
    always on screen (no page scroll to reach it) and the terminal takes the rest. */
 @media (min-width: 900px) {
-  .main:has(> .sessions-page.has-open) { max-width: 1680px; padding-top: var(--s-6); padding-bottom: var(--s-6); }
-  .sessions-page.has-open { grid-template-columns: minmax(280px, 340px) 1fr; }
+  .main:has(> .sessions-page.has-open) { padding-top: var(--s-6); padding-bottom: var(--s-6); }
+  .sessions-page.has-open { grid-template-columns: minmax(300px, 400px) minmax(0, 1fr); gap: var(--s-6); }
   .sessions-page.has-open .sess-list .page-title { font-size: 28px; }
   .sessions-page.has-open .sess-view { top: calc(var(--topbar-h, 56px) + var(--s-4)); height: calc(100dvh - var(--topbar-h, 56px) - var(--preview-h, 0px) - var(--s-6) - var(--s-4)); }
   .app:has(> .preview-banner) { --preview-h: 37px; }
