@@ -1,3 +1,5 @@
+> Historical first increment29e97456d. Runtime history is separately submitted in2853. The current wording-only overview and side effects are observability-evidence-duty; this historical record does not claim a second new runtime delivery.
+
 # See whether improvement has evidence
 
 A running job, a green indicator and a large count of checks do not tell us whether a capability is getting better. This change strengthens the existing Observability rule in both constitutional books: record an intended outcome and baseline, evaluate repeatedly, show progress and regressions with their uncertainty, cover the whole effort and its material parts, and have an accountable review act on the results. Universal coverage remains an explicit implementation obligation, not a claim that this patch has completed it.
