@@ -1,3 +1,5 @@
+import { reportSessionDelivery } from '../../src/messaging/telegram-origin/SessionDeliveryReporter.js';
+import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { NotificationSelectivityGate, QuietRecordedError, notificationContext, verifiedReplyEnvelope } from '../../src/messaging/NotificationSelectivityGate.js';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
@@ -26,7 +28,7 @@ afterEach(async () => {
   for (const runtime of runtimes.splice(0)) await runtime.close();
   vi.unstubAllGlobals();
 });
-async function boot() {
+async function boot(onSessionDeliveryHeld?: import('../../src/messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntimeOptions['onSessionDeliveryHeld']) {
   const token = `123:${randomUUID()}`;
   let lifecycle: OriginSessionLifecycle | undefined;
   const policy: OutagePolicyProjection = { alertDestinationId: 'operator-hub', destination: { accountId: 'bot-1', chatId: '-100123', topicId: '7848' }, authorized: true,
@@ -46,7 +48,7 @@ async function boot() {
     display: () => ({ agent: policy.display }), authorize: () => policy.authorized && policy.ownershipValid,
     diagnoseUnknown: async () => undefined,
     alertDestinations: () => [{ id: 'operator-hub', chatId: '-100123', topicId: '7848' }],
-    getAlertPolicy: () => policy, onNoticeState: vi.fn(), workerUrl: worker,
+    getAlertPolicy: () => policy, onNoticeState: vi.fn(), workerUrl: worker, onSessionDeliveryHeld,
   });
   allowFixtureSends(runtime); runtimes.push(runtime);
   const send = (topic = 42, capability?: object) => telegramFetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -56,6 +58,30 @@ async function boot() {
   return { runtime, policy, network, send, lifecycle: lifecycle! };
 }
 describe('Telegram origin initialization and outage lifecycle', () => {
+  it('reconciles scanned session failures without sending another notice, while preserving live reporting', async () => {
+    const events: Array<'live' | 'scan'> = [];
+    let telegram!: TelegramAdapter;
+    const sendNotice = vi.fn(async () => new Response('{}'));
+    const h = await boot(async entry => {
+      await reportSessionDelivery(entry, entry.threadId, { telegram, sendNotice });
+      events.push(entry.source);
+    });
+    telegram = new TelegramAdapter({ token: 'fixture-token', chatId: '-100123' }, temporaryState());
+    const hubSend = vi.spyOn(telegram, 'sendToTopic').mockResolvedValue({ messageId: 1, topicId: 7848 });
+    const token = await h.lifecycle.issue({ sessionId: 'failed-live-session', harnessId: 'codex-cli', projectDir: temporaryState() });
+    h.network.mockRejectedValue(new Error('connection lost after dispatch'));
+    try {
+      await expect(h.runtime.service.runWithSessionToken(token, () => h.send())).rejects.toMatchObject({ outcome: 'outcome-unknown' });
+      await vi.waitFor(() => expect(sendNotice).toHaveBeenCalledOnce());
+      expect(events).toEqual(['live']);
+      hubSend.mockClear(); sendNotice.mockClear();
+      await h.runtime.recoverHeld();
+      await vi.waitFor(() => expect(events).toContain('scan'));
+      expect(sendNotice).not.toHaveBeenCalled(); expect(hubSend).not.toHaveBeenCalled();
+      expect(h.network).toHaveBeenCalledOnce();
+    } finally { await telegram.stop(); }
+  });
+
   it('keeps routine origin egress quiet while a verified late reply reaches the real egress boundary', async () => {
     const h = await boot();
     const gate = new NotificationSelectivityGate(h.runtime.options.storage.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));

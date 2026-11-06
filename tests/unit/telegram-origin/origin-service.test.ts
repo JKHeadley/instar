@@ -73,6 +73,31 @@ describe('origin service durable delivery', () => {
     } finally { await gate.close(); }
   });
 
+  it.each([
+    { enabled: true, dryRun: false, quiet: true },
+    { enabled: true, dryRun: true, quiet: false },
+    { enabled: false, dryRun: false, quiet: false },
+  ])('characterizes PR 2819 delivery-notice gating: %j', async ({ enabled, dryRun, quiet }) => {
+    const h = await harness();
+    const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled, dryRun }));
+    h.service.notificationGate = gate;
+    h.service.registerAutomationProducer('reply-delivery-notice');
+    const body = { text: 'A reply I wrote is delayed by a delivery interruption.' };
+    const token = h.service.issueAutomationReply('reply-delivery-notice', 42, body, undefined, 'reply-delivery-notice:original:delayed');
+    try {
+      const send = h.service.runWithAutomationReply(token, 42, body, () => h.service.sendBot({ ...h.input,
+        params: { ...h.input.params, text: body.text } }, h.network));
+      if (quiet) {
+        await expect(send).rejects.toBeInstanceOf(QuietRecordedError);
+        expect(h.network).not.toHaveBeenCalled();
+        expect(await h.store.recoverableAdmissions()).toEqual([]);
+      } else {
+        await send;
+        expect(h.network).toHaveBeenCalledOnce();
+      }
+    } finally { await gate.close(); }
+  });
+
   it('terminally records quiet automation and replays its receipt after worker restart', async () => {
     const h = await harness();
     const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));

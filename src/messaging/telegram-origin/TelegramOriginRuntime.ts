@@ -85,7 +85,7 @@ export interface TelegramOriginRuntimeOptions {
   onLeaseHoldObserved?: (row: import('./StoreTypes.js').HeldOperationRow) => Promise<void> | void;
   /** Mirror a recovered, receipt-confirmed Bot API message into topic history. */
   onRecoveredMessage?: (input: { operationId: string; chatId: string; threadId: number | null; messageId: number; text: string; acceptedAt: number; preparedAt: number; producerKind: string }) => Promise<void> | void;
-  onSessionDeliveryHeld?: (input: { operationId: string; reason: string; chatId: string | null; threadId: number | null; state?: string; uncertain?: boolean; preparedAt?: number; acceptedAt?: number | null; outOfOrder?: boolean }) => Promise<void> | void;
+  onSessionDeliveryHeld?: (input: { source: 'live' | 'scan'; operationId: string; reason: string; chatId: string | null; threadId: number | null; state?: string; uncertain?: boolean; preparedAt?: number; acceptedAt?: number | null; outOfOrder?: boolean }) => Promise<void> | void;
   /** Synchronous diagnostics, independent of worker/transport authority. */
   readDetectorHealth?: () => Record<string, unknown>;
 }
@@ -168,7 +168,7 @@ export class TelegramOriginRuntime {
       onHold: ({ operationId, reason, producerKind, operationKind, destination }) => {
         if (producerKind === 'session' && operationKind === 'sendMessage' && reason !== 'lease-not-held' && reason !== 'destination-not-authorized' && reason !== 'original-operation-unresolved') {
           const uncertain = reason === 'transport-acceptance-unknown' || reason === 'response-without-correlated-receipt' || reason === 'partial-platform-receipt';
-          Promise.resolve(options.onSessionDeliveryHeld?.({ operationId, reason, chatId: destination.chatId,
+          Promise.resolve(options.onSessionDeliveryHeld?.({ source: 'live', operationId, reason, chatId: destination.chatId,
             threadId: destination.topicId === null ? null : Number(destination.topicId), state: uncertain ? 'outcome-unknown' : 'held', uncertain }))
             .catch(error => console.warn('[telegram-origin] session delivery notice unavailable',
               error instanceof Error ? error.name : 'unknown-error'));
@@ -676,7 +676,7 @@ export class TelegramOriginRuntime {
         ? { afterPreparedAt: rows[99].preparedAt, afterOperationId: rows[99].operationId } : null;
       for (const row of rows) {
         if (this.closed) break;
-        try { await this.options.onSessionDeliveryHeld(row); }
+        try { await this.options.onSessionDeliveryHeld({ ...row, source: 'scan' }); }
         catch (error) { console.warn('[telegram-origin] session delivery notice retry retained',
           error instanceof Error ? error.name : 'unknown-error'); }
       }
