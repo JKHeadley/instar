@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "improvement-evidence-history",
+  "sessionId": "30384209-0957-44f8-9037-d33d452ffbc6",
+  "timestamp": "2026-11-06T00:21:14.875Z",
+  "artifactPath": "upgrades/side-effects/improvement-evidence-history.md",
+  "artifactSha256": "92b783706acebc7685ab98817d3e726fcf4457d6b0568f8c30dec09c1fee819e",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/constitution-alignment-map.md",
+    "docs/specs/improvement-evidence-history.eli16.md",
+    "src/monitoring/BlockerLifecycleService.ts",
+    "src/server/routes.ts",
+    "tests/integration/blocker-throughput-pool-routes.test.ts",
+    "tests/unit/BlockerLifecycleService-ladderHooks.test.ts",
+    "upgrades/side-effects/improvement-evidence-history.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive reversible read projection and paired editorial clarification of operator-authorized Observability obligations; no mutation, new store, promotion authority or activation. Existing ordinary services and old peers remain compatible. Required constitutional owner review still applies.",
+  "eli16Path": "docs/specs/improvement-evidence-history.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/improvement-evidence-history.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
