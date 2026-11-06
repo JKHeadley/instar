@@ -11,7 +11,7 @@
  * GitHub releases API for changelogs.
  */
 
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -24,7 +24,6 @@ import { PostUpdateMigrator } from './PostUpdateMigrator.js';
 import type { MigratorConfig } from './PostUpdateMigrator.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
-import { withSyncOp } from './InFlightSyncOpMarker.js';
 
 const GITHUB_RELEASES_URL = 'https://api.github.com/repos/JKHeadley/instar/releases';
 
@@ -50,6 +49,9 @@ export interface UpdateCheckerConfig {
   /** Server listen host (native-hook-events loopback gate). */
   host?: string;
 }
+
+/** Generous bound for one recursive xattr pass: it no longer holds the server, and the old call had none. */
+const XATTR_STRIP_TIMEOUT_MS = 600_000;
 
 export class UpdateChecker {
   private stateDir: string;
@@ -223,20 +225,14 @@ export class UpdateChecker {
         // com.apple.quarantine can cause EPERM; com.apple.provenance is kernel-protected
         // on macOS 15+ (Sequoia) and can't actually be removed, but the attempt is harmless.
         if (os.platform() === 'darwin') {
-          for (const attr of ['com.apple.quarantine', 'com.apple.provenance']) {
-            try {
-              withSyncOp(() => execFileSync('xattr', ['-rd', attr, candidateDir], { stdio: 'ignore' }));
-            } catch {
-              // Non-fatal: attribute may not exist or may be kernel-protected
-            }
-          }
+          await this.stripCandidateXattrs(candidateDir);
           console.log('[UpdateChecker] Attempted xattr cleanup on candidate install');
         }
 
         // Probe the actual required dependency with the Node binary that will
         // start the agent. A successful npm exit alone proves neither presence
         // nor loadability of the native binding.
-        newVersion = this.validateCandidate(candidateDir, targetVersion);
+        newVersion = await this.validateCandidate(candidateDir, targetVersion);
       } catch (err) {
         lastError = `Candidate update validation or native rebuild failed: ${err instanceof Error ? err.message : String(err)}`;
         newVersion = 'unknown';
@@ -390,7 +386,7 @@ export class UpdateChecker {
   }
 
   /** The same startup proof is required for forward updates and rollbacks. */
-  private validateCandidate(candidateDir: string, targetVersion: string): string {
+  private async validateCandidate(candidateDir: string, targetVersion: string): Promise<string> {
     const newCliPath = path.join(candidateDir, 'node_modules', 'instar', 'dist', 'cli.js');
     const localPkgPath = path.join(candidateDir, 'node_modules', 'instar', 'package.json');
     const installed = JSON.parse(fs.readFileSync(localPkgPath, 'utf-8')) as { version?: string };
@@ -398,11 +394,11 @@ export class UpdateChecker {
     if (newVersion !== targetVersion) throw new Error(`Installed version is ${newVersion}, expected ${targetVersion}`);
     const nodeSymlink = path.join(this.stateDir, 'bin', 'node');
     const nodeRuntime = fs.existsSync(nodeSymlink) ? nodeSymlink : process.execPath;
-    withSyncOp(() => execFileSync(nodeRuntime, ['--check', newCliPath], { stdio: 'pipe', timeout: 10000 }));
-    const startupVersion = withSyncOp(() => execFileSync(nodeRuntime, [newCliPath, '--version'], { encoding: 'utf-8', timeout: 15000 })).trim();
+    await this.execAsync(nodeRuntime, ['--check', newCliPath], 10000);
+    const startupVersion = await this.execAsync(nodeRuntime, [newCliPath, '--version'], 15000);
     if (startupVersion !== targetVersion) throw new Error(`CLI startup reported ${startupVersion || 'no version'}, expected ${targetVersion}`);
     const probe = `const {createRequire}=require('node:module'); const Database=createRequire(process.argv[1])('better-sqlite3'); const db=new Database(':memory:'); try { const row=db.prepare('SELECT 1 AS value').get(); if (row.value !== 1) throw new Error('SQLite query returned an unexpected result'); } finally { db.close(); }`;
-    withSyncOp(() => execFileSync(nodeRuntime, ['-e', probe, newCliPath], { stdio: 'pipe', timeout: 10000 }));
+    await this.execAsync(nodeRuntime, ['-e', probe, newCliPath], 10000);
     return newVersion;
   }
 
@@ -482,11 +478,9 @@ export class UpdateChecker {
       ], 120000);
       await this.execAsync('npm', ['rebuild', 'better-sqlite3', '--prefix', candidateDir], 60000);
       if (os.platform() === 'darwin') {
-        for (const attr of ['com.apple.quarantine', 'com.apple.provenance']) {
-          try { withSyncOp(() => execFileSync('xattr', ['-rd', attr, candidateDir], { stdio: 'ignore' })); } catch { /* attribute absent or protected */ }
-        }
+        await this.stripCandidateXattrs(candidateDir);
       }
-      restoredVersion = this.validateCandidate(candidateDir, rollbackInfo.previousVersion);
+      restoredVersion = await this.validateCandidate(candidateDir, rollbackInfo.previousVersion);
       await this.ensurePromotionRecovery();
       this.promoteCandidate(candidateDir);
       if (fs.existsSync(previousDir)) {
@@ -675,6 +669,27 @@ export class UpdateChecker {
       }
     } catch { /* @silent-fallback-ok — shadow version read is best-effort */ }
     return null;
+  }
+
+  /**
+   * Strip macOS extended attributes from a candidate install WITHOUT holding the server's
+   * event loop. A recursive xattr walks the whole candidate tree: under load it blocked the
+   * server for 39.8s in one update, long enough to fail health checks and lapse the lease.
+   * Output is discarded rather than buffered: xattr can print one error per file for a
+   * kernel-protected attribute, which would overflow execFile's buffer and kill it midway.
+   * Every failure stays non-fatal, because the attribute may be absent or kernel-protected.
+   */
+  private async stripCandidateXattrs(candidateDir: string): Promise<void> {
+    for (const attr of ['com.apple.quarantine', 'com.apple.provenance']) {
+      await new Promise<void>((resolve) => {
+        const child = spawn('xattr', ['-rd', attr, candidateDir], { stdio: 'ignore', timeout: XATTR_STRIP_TIMEOUT_MS });
+        child.once('error', () => resolve()); // @silent-fallback-ok: non-fatal by design, see above
+        child.once('close', (_code, signal) => {
+          if (signal) console.warn(`[UpdateChecker] xattr cleanup for ${attr} stopped early (${signal}); continuing to candidate validation`);
+          resolve();
+        });
+      });
+    }
   }
 
   /**

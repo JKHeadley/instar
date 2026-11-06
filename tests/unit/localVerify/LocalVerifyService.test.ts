@@ -253,6 +253,66 @@ describe('automatic full-suite replay after enforced preflight red', () => {
     expect(fs.readFileSync(restarted.svc.auditPath, 'utf8')).toContain('"reason":"replay-managed"');
     restarted.svc.shutdown();
   });
+  describe('rebuildIndex reads open PRs in one call', () => {
+    const seed = (h: ReturnType<typeof setup>, prs: number[]) => {
+      fs.mkdirSync(path.dirname(h.svc.journalPath), { recursive: true });
+      fs.writeFileSync(h.svc.journalPath, prs.map((pr, n) => JSON.stringify({ v: 1, writtenAt: new Date(Date.parse('2026-10-21T12:00:00Z') + n).toISOString(), record: record({ pr }) })).join('\n') + '\n');
+    };
+    const seamsOf = (h: ReturnType<typeof setup>) => (h.svc as unknown as { seams: LocalVerifyServiceSeams }).seams;
+    const countIsPrOpen = (h: ReturnType<typeof setup>) => {
+      const counter = { calls: 0 };
+      const original = seamsOf(h).isPrOpen;
+      seamsOf(h).isPrOpen = async (pr) => { counter.calls += 1; return original(pr); };
+      return counter;
+    };
+
+    it('makes no per-PR call when the list is available, and treats a PR missing from it as not open', async () => {
+      const h = setup();
+      seed(h, [1, 2, 3]);
+      const perPr = countIsPrOpen(h);
+      let lists = 0;
+      seamsOf(h).listOpenPrs = async () => { lists += 1; return new Set([1, 3]); };
+      const res = await h.svc.rebuildIndex();
+      expect(lists).toBe(1);
+      expect(perPr.calls).toBe(0);
+      expect(res).toMatchObject({ loaded: 2, skippedClosed: 1 });
+      h.svc.shutdown();
+    });
+
+    it('makes no GitHub call at all for an empty journal', async () => {
+      const h = setup();
+      let lists = 0;
+      seamsOf(h).listOpenPrs = async () => { lists += 1; return new Set<number>(); };
+      await h.svc.rebuildIndex();
+      expect(lists).toBe(0);
+      h.svc.shutdown();
+    });
+
+    it('gives the same answer as the per-PR path', async () => {
+      const viaList = setup();
+      seed(viaList, [1, 2, 3]);
+      seamsOf(viaList).listOpenPrs = async () => new Set([1, 3]);
+      const viaPerPr = setup({ open: { 2: false } });
+      seed(viaPerPr, [1, 2, 3]);
+      expect(await viaList.svc.rebuildIndex()).toEqual(await viaPerPr.svc.rebuildIndex());
+      viaList.svc.shutdown();
+      viaPerPr.svc.shutdown();
+    });
+
+    it.each([
+      ['returns null', async () => null],
+      ['throws', async () => { throw new Error('gh down'); }],
+    ])('falls back to one read per PR when the list %s', async (_label, listOpenPrs) => {
+      const h = setup({ open: { 2: false } });
+      seed(h, [1, 2, 3]);
+      const perPr = countIsPrOpen(h);
+      seamsOf(h).listOpenPrs = listOpenPrs as LocalVerifyServiceSeams['listOpenPrs'];
+      const res = await h.svc.rebuildIndex();
+      expect(perPr.calls).toBe(3);
+      expect(res).toMatchObject({ loaded: 2, skippedClosed: 1 });
+      h.svc.shutdown();
+    });
+  });
   it('keeps the journal cap when pending replay proofs fill every slot', async () => {
     const h = setup();
     const state = path.join(h.stateDir, 'state');
