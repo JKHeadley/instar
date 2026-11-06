@@ -12,3 +12,4 @@ export function reviewRequired(args: { policy?: RulesetReviewPolicy | null; clas
 export interface CodeownersRule { pattern: string; owners: string[]; re: RegExp }
 export function parseCodeowners(text: unknown): CodeownersRule[] | null;
 export function codeOwnedFiles(files: readonly string[], rules: readonly CodeownersRule[]): string[];
+export function codeOwnerApprovedAtHead(a: { reviewDecision?: string | null; files?: string[]; rules?: readonly CodeownersRule[] | null; reviews?: Array<{ login: string; state: string; commitId: string; submittedAt: string }>; headSha?: string }): boolean;
