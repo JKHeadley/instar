@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-06T20:04:33.782Z",
+  "slug": "feedback-github-runtime",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 57,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/buildFeedbackExecutor.ts",
+      "src/feedback-factory/execute/executorPorts.ts",
+      "src/feedback-factory/triage/buildFeedbackTriage.ts"
+    ],
+    "addedLines": 43,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
