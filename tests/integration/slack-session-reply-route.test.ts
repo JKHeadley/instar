@@ -75,6 +75,16 @@ describe('POST /slack/session-reply', () => {
     expect(f.calls[0].nativeReferences).toEqual(['U0C62ABNDK8']);
   });
 
+  it('accepts a tone reaction in metadata and still refuses any other metadata', async () => {
+    const f = fixture();
+    const token = f.bindAuth.mint('spawned', [f.id]);
+    const send = (metadata: object) => request(f.app).post('/slack/session-reply').set('X-Instar-Bind-Token', token).send({ conversationId: f.id, text: 'x', metadata });
+    expect((await send({ toneAdvisoryComplied: 'B23_UNSOURCED_ATTRIBUTION' })).status).toBe(200);
+    expect(f.calls).toHaveLength(1);
+    expect((await send({ toneAdvisoryComplied: 'B23_UNSOURCED_ATTRIBUTION', allowDuplicate: true })).status).toBe(400);
+    expect(f.calls).toHaveLength(1);
+  });
+
   it('refuses missing/foreign bindings and any caller-supplied destination', async () => {
     const f = fixture();
     expect((await request(f.app).post('/slack/session-reply').send({ conversationId: f.id, text: 'x' })).status).toBe(403);

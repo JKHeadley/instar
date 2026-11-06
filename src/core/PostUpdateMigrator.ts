@@ -16042,6 +16042,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       templateFilename: 'whatsapp-reply.sh',
       shippedMarker: 'whatsapp-reply.sh — Send a message back to a WhatsApp JID via instar server',
       label: 'scripts/whatsapp-reply.sh',
+      featureMarker: 'whatsapp-reply-feature: tone-reaction',
       result,
     });
 
@@ -16208,6 +16209,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
         // identifies our copies without touching custom forks.
         shippedMarker: '# imessage-reply.sh',
         label: 'scripts/imessage-reply.sh',
+        currentMarker: 'imessage-reply-feature: tone-reaction',
       },
       {
         relPath: path.join(this.config.stateDir, 'scripts', 'serendipity-capture.sh'),
@@ -22269,7 +22271,9 @@ process.stdin.on('end', async () => {
         ? 'HTTP 408 ambiguous-outcome handling'
         : !hasAuthEnvHandling
           ? 'auth-env-first (secret-externalization survivability)'
-          : 'thread_ts reply argument (threads-as-sessions §5.3)';
+          : opts.featureMarker?.includes('tone-reaction')
+            ? 'tone-gate reaction flags'
+            : 'thread_ts reply argument (threads-as-sessions §5.3)';
       opts.result.upgraded.push(`${opts.label} (upgraded to ${reason})`);
     } catch (err) {
       opts.result.errors.push(`${opts.label} migration: ${err instanceof Error ? err.message : String(err)}`);
