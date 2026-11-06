@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-Tier 1, 18 files, about 400 lines of code and tests plus these notes. Two linked faults took down Studio servers on 2026-11-06.
+Tier 1, 19 files, about 400 lines of code and tests plus these notes. Two linked faults took down Studio servers on 2026-11-06.
 
 The supervisor's `isServerSessionAlive` caught every error from `tmux has-session` and returned false, so any failed probe read as a dead server, and the supervisor restarted servers whose logs show they were running. What the probe said at those moments was never recorded, so "got no answer" is an inference (see section 2). Its cleanup SIGTERMs the server and the `tee` behind the server's stderr, and at those moments the server died on an uncaught `write EPIPE`. Now only tmux saying the session is missing counts as gone. Anything else is logged and counts as alive, and the /health checks decide.
 

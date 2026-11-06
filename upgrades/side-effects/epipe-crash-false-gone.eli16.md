@@ -18,6 +18,7 @@ The watcher now believes "gone" only when tmux itself says the session is missin
 - A closed pipe joins the survivable list, because only that one write failed.
 - Known places that write to a helper program now handle that program closing early.
 - A crash line now includes where the error came from. The two crashes on 2026-11-06 logged no source.
+- The new helper is listed as outside the certified message-delivery code, because it only listens for stream errors. That code and its proof are unchanged.
 
 ## The safeguards
 
