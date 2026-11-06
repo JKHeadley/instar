@@ -2,7 +2,8 @@
  * Express middleware — JSON parsing, CORS, auth, error handling.
  */
 
-import { memorySessionAllows } from './memorySessionGuard.js';
+import { memoryReplyChannel, memorySessionAllows } from './memorySessionGuard.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { SessionTokenRecord } from '../users/MemoryPrivacy.js';
 import { THREADLINE_MCP_DEADLINES } from '../core/threadlineMcpSpawn.js';
 import type { Request, Response, NextFunction } from 'express';
@@ -206,6 +207,8 @@ export function authMiddleware(
    * memorySessionGuard. When absent, session tokens are refused like any bad token.
    */
   memorySessionLookup?: (token: string) => SessionTokenRecord | null,
+  /** Told when a scoped session's reply went out. A record only, after the response. */
+  memorySessionReplied?: (session: SessionTokenRecord) => void,
 ) {
   return (req: Request, res: Response, next: NextFunction): void => {
     // Threadline MCP over local HTTP — ONE exact-path rule, FIRST: before the
@@ -430,6 +433,14 @@ export function authMiddleware(
         return;
       }
       res.locals.memorySession = session;
+      const replyChannel = memoryReplyChannel(req.method, req.path);
+      if (replyChannel) {
+        res.once('finish', () => {
+          if (res.statusCode < 200 || res.statusCode >= 300) return;
+          featureEvidence.record('memoryPrivacy', { kind: 'fired', reason: 'reply delivered', context: { channel: replyChannel, audience: session.audience.kind } });
+          try { memorySessionReplied?.(session); } catch { /* @silent-fallback-ok — a lost note reads as no reply, which shows on the ladder */ }
+        });
+      }
       next();
       return;
     }

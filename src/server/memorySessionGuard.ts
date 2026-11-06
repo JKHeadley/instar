@@ -52,6 +52,15 @@ export const MEMORY_SESSION_ROUTES: readonly Rule[] = [
   { method: 'POST', pattern: /^\/feedback$/, limit: 'any' },
 ];
 
+const REPLY_ROUTE = /^\/(?:(telegram|slack|imessage)\/reply\/[^/]+|(whatsapp)\/send\/[^/]+|(slack|app)\/session-reply)$/;
+
+/** The channel when this request is a reply reaching a person, else null. Preflights and hooks are not replies. */
+export function memoryReplyChannel(method: string, path: string): string | null {
+  if (method !== 'POST') return null;
+  const m = REPLY_ROUTE.exec(path);
+  return m ? (m[1] ?? m[2] ?? m[3]) : null;
+}
+
 function placeMatches(expected: string, own: string | null): boolean {
   if (!own) return false;
   return expected === 'telegram:' ? own.startsWith('telegram:') : expected === own;
