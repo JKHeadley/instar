@@ -17378,6 +17378,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (checkLogForAgentResponse(slackMessagesLogPath, topicId, sinceIso)) return true;
             return false;
           },
+          confirmSessionUsageLimit: (name) => sessionManager.confirmSessionUsageLimit(name),
           captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
           getSessionForTopic: (topicId) => {
             // Check if this is a Slack synthetic ID

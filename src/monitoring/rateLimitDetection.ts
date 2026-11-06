@@ -266,8 +266,7 @@ export function isPaneChromeLine(line: string): boolean {
  * True iff a usage-wall banner is the CURRENT state of the pane: the last
  * banner line in the inspected window is followed only by chrome, never by
  * any session output. A session that walled earlier and has since resumed is
- * not walled. (Stricter than PresenceProxy's notice check, which tolerates one
- * stray line: this signal can lead to a restart, the notice only to words.)
+ * not walled. Recovery uses this pane signal with its existing settle window.
  */
 export function detectUsageWall(
   snapshot: string | null | undefined,
@@ -286,6 +285,28 @@ export function detectUsageWall(
   // cancel" must veto, not be filtered away as chrome).
   if (rawAfter.some((l) => RETRY_SPINNER_PATTERN.test(stripSeparators(l)))) return false;
   return rawAfter.filter((l) => !isPaneChromeLine(l)).length === 0;
+}
+
+/** Current usage-banner signal for courtesy notices. Claude also renders real
+ * provider errors with a tool-result connector, so that connector alone cannot
+ * establish ownership. Only finished-turn chrome may follow the banner; the
+ * consumer must corroborate ownership with the exact serving-session transcript. */
+export function currentUsageLimitBanner(snapshot: string | null | undefined): string | null {
+  if (!snapshot) return null;
+  const lines = snapshot.split('\n').slice(-RATE_LIMIT_SETTLED_CAPTURE_LINES);
+  const banner = /^\s*(?:[●⏺✗⚠⎿]\s*)?(?:api error:\s*)?(?:(?:you['’]?ve|you have) (?:hit|reached) your (?:(?:session|weekly|opus|sonnet|usage|5-hour) )?limit\b|(?:session|weekly|opus|sonnet|usage|5-hour) limit\s*(?:(?:has been )?reached\b|[·•∙,]\s*resets\b)|\/extra-usage to finish\b)/i;
+  const finished = /^[✻✽✶✳✢]\s+\S+ for \d[^\n]*$/;
+  let found: string | null = null;
+  for (const line of lines) {
+    if (banner.test(line)) {
+      // Extra-usage is a companion hint, not a replacement for the banner's
+      // reset time. Preserve both when the framework prints both rows.
+      found = found ? `${found}\n${line}` : line;
+      continue;
+    }
+    if (found && !isPaneChromeLine(line) && !finished.test(line.trim())) found = null;
+  }
+  return found;
 }
 
 /**

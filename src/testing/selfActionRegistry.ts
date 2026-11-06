@@ -4078,8 +4078,29 @@ const profileReconciliationNotice: SelfActionController = {
   restartPosture: { pressureSurvives: true, restartUnderPressure: makeProfileReconciliationNotice },
 };
 
+/** The standby limit-notice edge settles after one durable claim per serving
+ * UUID. Repeated tiers, inbound messages and restarts retain the claim; only
+ * an external serving reply or replacement UUID opens a different episode. */
+function makePresenceUsageNotice(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered++;
+    if (!f.targetAlwaysRejects() || f.durableState.has('presence-limit:serving-uuid')) return;
+    f.durableState.set('presence-limit:serving-uuid', true);
+    sink.emit({ verb: 'usage-limit-notify', target: 'serving-uuid' });
+  } };
+}
+const presenceUsageNotice: SelfActionController = {
+  id: 'presence-usage-limit-notice', actionVerb: 'usage-limit-notify',
+  models: 'src/monitoring/PresenceProxy.ts (sendProxyMessage: durable per-topic serving UUID claim before send; retained on ambiguous error)',
+  modelsPath: 'src/monitoring/PresenceProxy.ts',
+  boundK: 1, perTargetBoundK: 1, ticks: 720, tickMs: 60_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: makePresenceUsageNotice },
+  makeUnderPressure: makePresenceUsageNotice,
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   attributionAuditRetry,
+  presenceUsageNotice,
   jobPortableTransferPoll,
   jobCoverageAlertRetry,
   profileReconciliationNotice,

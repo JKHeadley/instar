@@ -29,6 +29,7 @@ import { resolveGhTokenFromVault } from './ghToken.js';
 import type { ReapGuard, ReapKeepReason } from './ReapGuard.js';
 import { DRAINED_CLOSE_BYPASSED_REASONS, drainProcessShape, analyseTranscriptSinceBoundary } from './standDownDrain.js';
 import { clampWorkEvidence, isMidWork } from './WorkEvidence.js';
+import { confirmSessionUsageLimit } from '../monitoring/sessionUsageLimitEvidence.js';
 import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 import type { OriginSessionLaunch, OriginSessionLifecycle } from '../messaging/telegram-origin/OriginSessionRegistry.js';
 import { captureOriginHookSettings } from '../messaging/telegram-origin/OriginNativeHookProof.js';
@@ -6330,6 +6331,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   /** Frameworks whose closed-headless-lane fallback has already been disclosed. */
   private readonly closedHeadlessLaneDisclosed = new Set<string>();
+
+  /** A helper's limit is never evidence that the session serving the topic is
+   * unable to reply. Corroborate the exact main transcript and account home. */
+  confirmSessionUsageLimit(tmuxSession: string): string | false {
+    const session = this.listRunningSessions().find(s => s.tmuxSession === tmuxSession);
+    if (!session?.claudeSessionId || (session.framework ?? 'claude-code') !== 'claude-code') return false;
+    const configHome = this.configHomeForSession(tmuxSession, { defaultWhenUnset: true });
+    if (!configHome) return false;
+    return confirmSessionUsageLimit(resolveFrameworkTranscriptPath({
+      framework: 'claude-code', sessionId: session.claudeSessionId,
+      projectDir: session.cwd ?? this.config.projectDir, configHome,
+    }), session.claudeSessionId) ? session.claudeSessionId : false;
+  }
 
   /**
    * Last-modified time of the session's framework transcript, in ms, or null when
