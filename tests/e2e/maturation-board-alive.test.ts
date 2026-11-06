@@ -10,6 +10,7 @@ import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
 import { BlockerLifecycleLedger } from '../../src/monitoring/BlockerLifecycleLedger.js';
+import { CapabilityRegistryWriter } from '../../src/core/CapabilityRegistry.js';
 import { FeatureMetricsLedger } from '../../src/monitoring/FeatureMetricsLedger.js';
 import type { BlockerLifecycleService } from '../../src/monitoring/BlockerLifecycleService.js';
 import { measurementSourceRef,type GenericMeasurementContract } from '../../src/monitoring/MeasurementSubject.js';
@@ -111,6 +112,22 @@ describe('maturation board — production wiring', () => {
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ state: 'invalid-contract', subjectId: id, detail: null });
     expect(response.body.sources).toContainEqual(expect.objectContaining({ name: 'ladder-owner', ok: true }));
+  });
+
+  it('counts a real local capability definition without availability or routing permission', async () => {
+    const { server, stateDir } = await boot(true);
+    const at = new Date().toISOString();
+    new CapabilityRegistryWriter(path.join(stateDir, 'capability-registry.json'), 'local').write({
+      schemaVersion: 1, machineEpoch: 1, projectionSeq: 1, scanStampSecs: 1, scanState: 'observed', truncated: false,
+      entries: [{ capabilityId: 'models:codex-cli/test-model', capabilityKind: 'model', doorwayId: 'codex-cli', machineId: 'local',
+        probeOutcome: 'unknown', endpointRef: 'mesh://local/doorways', observedAt: at, receivedAt: at, source: 'local-doorways',
+        sourceDetail: 'doorway-manifest', evidenceClass: 'manifest-only', evidence: { manifestVerifiedAt: at } }],
+    });
+    const response = await request(server.getApp()).get('/maturation/board?part=coverage');
+    expect(response.status).toBe(200);
+    expect(response.body.counts.capability.total).toBe(1);
+    expect(response.body.rows.find((r: { kind: string }) => r.kind === 'capability')).toMatchObject({ posture: 'registered-definition', state: 'not-linked' });
+    expect(response.body.sources).toContainEqual(expect.objectContaining({ name: 'local-model-capability-projection', ok: true }));
   });
 
   it('is off on a fleet agent: 503', async () => {

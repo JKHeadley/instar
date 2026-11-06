@@ -1,3 +1,4 @@
+import { readLocalCapabilityInventory } from '../core/CapabilityRegistry.js';
 /** Read existing inventories for the maturation board; no file walk or state writes. */
 import { validGenericMeasurement } from '../monitoring/MeasurementContractVersion.js';
 import { hasMeasurementBinding, validMeasurementSubject, type MeasurementSubject, type MeasurementTargetState } from '../monitoring/MeasurementSubject.js';
@@ -11,7 +12,7 @@ import { parseMaturationOutcome } from '../monitoring/MaturationOutcome.js';
 import { measurementCoverage, type CoverageDeclaration, type CoverageMember, type CoverageParent, type CoverageProof, type CoverageSource } from '../monitoring/MeasurementCoverage.js';
 import type { RouteContext } from './routes.js';
 
-export type MeasurementCoverageContext = Pick<RouteContext, 'config' | 'meshSelfId' | 'scheduler' | 'initiativeTracker' | 'blockerLifecycleService' | 'featureRegistry' | 'capabilityRegistry'>
+export type MeasurementCoverageContext = Pick<RouteContext, 'config' | 'meshSelfId' | 'scheduler' | 'initiativeTracker' | 'blockerLifecycleService' | 'featureRegistry'>
   & { maturationLadder?: () => MaturationLadderService | null };
 export const measurementOrigin = (ctx: MeasurementCoverageContext): string => ctx.meshSelfId ?? ctx.blockerLifecycleService?.measurementOrigin() ?? 'unknown-origin';
 const normalize = (path: string) => path.replace(/\.(enabled|dryRun)$/, '');
@@ -98,11 +99,12 @@ function collectMeasurementInputs(ctx: MeasurementCoverageContext, now = Date.no
     }
   });
   read('local-model-capability-projection', () => {
-    if (!ctx.capabilityRegistry || !ctx.meshSelfId) throw Error('unavailable');
-    const rows = ctx.capabilityRegistry.snapshot(now).filter(r => r.machineId === ctx.meshSelfId);
-    if (!rows.length || rows.some(r => r.kind === 'failure')) throw Error('unavailable');
-    for (const row of rows) if (row.kind === 'capability') members.push({ kind: 'capability', id: `${row.entry.capabilityId}:${row.entry.doorwayId}`,
-      title: bounded(row.entry.capabilityId), sources: ['local-model-capability-projection'], subjects: [], posture: row.status });
+    if (!ctx.meshSelfId && ctx.config.multiMachine?.enabled) throw Error('unavailable');
+    const projection = readLocalCapabilityInventory(ctx.config.projectDir, ctx.config.stateDir, ctx.meshSelfId ?? 'local', now);
+    for (const entry of projection.entries) members.push({ kind: 'capability', id: `${entry.capabilityId}:${entry.doorwayId}`,
+      title: bounded(entry.capabilityId), sources: ['local-model-capability-projection'], subjects: [], posture: 'registered-definition' });
+    // Keep the known prefix, but never certify an incomplete source as a zero.
+    if (projection.truncated || projection.scanState !== 'observed') throw Error('unavailable');
   });
   const targetGroups = new Map<string,string[]>();
   for (const b of bindings) {const key=JSON.stringify([b.target.kind,b.target.key]);targetGroups.set(key,[...(targetGroups.get(key)??[]),b.id]);}

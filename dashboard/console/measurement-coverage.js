@@ -7,7 +7,7 @@ const STATES = { corroborated: 'Recorded comparison available', 'missing-contrac
 const name = row => humanName({ id: row.id, title: row.title === row.id ? null : row.title });
 export function coveragePanel(data, api = null) {
   if (!data || data.schema !== 'measurement-coverage-pool/1') return el('section', { class: 'mb-coverage' },
-    el('h2', { text: 'Measurement coverage' }), el('p', { text: 'Coverage cannot be read right now. The feature review below is a separate source.' }), askLink('Measurement coverage cannot be read.'));
+    el('h2', { text: 'Measurement coverage' }), el('p', { text: 'Coverage cannot be read right now.' }), askLink('Measurement coverage cannot be read.'));
   const origins = data.origins || [];
   let total = 0, compared = 0;
   for (const origin of origins) for (const kind of Object.keys(KINDS)) {

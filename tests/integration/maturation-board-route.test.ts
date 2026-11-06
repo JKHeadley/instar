@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createMaturationBoardRoutes, resolveReviewsDir } from '../../src/server/maturationBoardRoutes.js';
 import { readMeasurementOwner } from '../../src/server/measurementCoverageRead.js';
 import { measurementCoverage } from '../../src/monitoring/MeasurementCoverage.js';
+import { CapabilityRegistryWriter } from '../../src/core/CapabilityRegistry.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const rm = (p: string) => SafeFsExecutor.safeRmSync(p, { recursive: true, force: true, operation: 'tests/integration/maturation-board-route.test.ts:cleanup' });
@@ -34,7 +35,7 @@ function makeFixture(): Fixture {
 
 function ctxFor(fx: Fixture, over: Record<string, unknown> = {}) {
   return {
-    config: { stateDir: fx.stateDir, authToken: 'tok', developmentAgent: true, ...(over.config as object ?? {}) },
+    config: { projectDir: fx.projectDir, stateDir: fx.stateDir, authToken: 'tok', developmentAgent: true, ...(over.config as object ?? {}) },
     meshSelfId: 'm_self',
     machinePoolRegistry: { getCapacity: (id: string) => ({ nickname: id === 'm_self' ? 'Self' : id === 'm_peer' ? 'Peer' : id }) },
     resolvePeerUrls: () => [],
@@ -88,6 +89,26 @@ describe('GET /maturation/board', () => {
     expect(res.body.counts.decision.total).toBeGreaterThan(0);
     expect(res.body.counts.effort.total).toBe(2);
     expect(res.body.sourcesComplete).toBe(false);
+  });
+
+  it.each([
+    { origin: 'm_self', truncated: false, entries: true, ok: true, count: 1 },
+    { origin: 'm_self', truncated: false, entries: false, ok: true, count: 0 },
+    { origin: 'm_self', truncated: true, entries: true, ok: false, count: 1 },
+    { origin: 'm_foreign', truncated: false, entries: true, ok: false, count: 0 },
+  ])('reads capability definitions without treating advisory availability as authority: %j', async spec => {
+    const at = new Date().toISOString();
+    new CapabilityRegistryWriter(path.join(fx.stateDir, 'capability-registry.json'), spec.origin).write({
+      schemaVersion: 1, machineEpoch: 1, projectionSeq: 1, scanStampSecs: 1, scanState: 'observed', truncated: spec.truncated,
+      entries: spec.entries ? [{ capabilityId: 'models:codex-cli/test-model', capabilityKind: 'model', doorwayId: 'codex-cli', machineId: spec.origin,
+        probeOutcome: 'unknown', endpointRef: `mesh://${spec.origin}/doorways`, observedAt: at, receivedAt: at, source: 'local-doorways',
+        sourceDetail: 'doorway-manifest', evidenceClass: 'manifest-only', evidence: { manifestVerifiedAt: at } }] : [],
+    });
+    const res = await request(appFor(ctxFor(fx, { capabilityRegistry: null }))).get('/maturation/board?part=coverage');
+    expect(res.status).toBe(200);
+    expect(res.body.sources).toContainEqual(expect.objectContaining({ name: 'local-model-capability-projection', ok: spec.ok }));
+    expect(res.body.counts.capability.total).toBe(spec.count);
+    if (spec.count) expect(res.body.rows.find((r: { kind: string }) => r.kind === 'capability')).toMatchObject({ posture: 'registered-definition', state: 'not-linked' });
   });
 
   it('preserves a graduated declaration and refuses ambiguous exact flag associations', async () => {
