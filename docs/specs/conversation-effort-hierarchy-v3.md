@@ -1,5 +1,6 @@
 ---
 approved: true
+parent-principle: "The User Experience Is the Product — Reachability, Responsiveness, and Coherence Are Sacred"
 review-convergence: true
 review-convergence-source: "Imported existing convergence record and review rounds 1-16; no new review run claimed"
 eli16-overview: docs/specs/conversation-effort-hierarchy-brief.md
@@ -7,6 +8,8 @@ approval-evidence: "Justin topic 137342 choice A 2026-11-05 00:37 PST; implement
 ---
 
 # Conversation and Effort Hierarchy — Design Draft v3
+
+**Later product requirement, 2026-11-05 09:50 PST:** Justin requires ordinary Conversations to work on owned machines without purchasing a third-party service. `conversations-owned-custody-redesign.md` governs the implementation delta: owned custody by default, sequence-free local intent recording during outages, and optional separately hosted custody with explicitly different loss limits. The original approval/convergence metadata above records the original design only; it is not a new convergence claim for this delta or release acceptance. All-installed-member canonical success, current authorization and erasure/restore gates remain required. The source was subsequently imported into the Instar repository; the older handoff location described below is historical.
 
 **Status:** reviewed design with operator-approved choice A for witness-backed Pending intake; focused GPT/Claude correction checks recorded. The narrow exception and its bounds are ratified for this design in `conversation-effort-hierarchy-standard-decision.md`. The installed standards checker may still report the literal rule until its registry is updated; a clean machine-check result is not claimed. **Origin:** Justin, Telegram topic 137342, 2026-11-03. **Owner:** Echo. **Scope:** Instar framework, dashboard, mobile app, Telegram and Slack adapters. This draft lives in Echo's project pending a coherent Instar repository handoff.
 
