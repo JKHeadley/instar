@@ -326,6 +326,43 @@ describe('coordinator — dispatch', () => {
     expect(c.peer.runs()).toHaveLength(0);
   });
 
+  it('a skipped peer leaves one audit row per version change, and one when the skew ends', async () => {
+    const c = coordinator();
+    const rows = (event: string) => {
+      const f = path.join(c.stateDir, 'logs', 'local-verify.jsonl');
+      return fs.readFileSync(f, 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>).filter((e) => e.event === event);
+    };
+    const inner = c.svc as unknown as { peerHealth: Map<string, { statusAt: number }>; dispatchOnce(): Promise<void> };
+    const pollAgain = async () => { inner.peerHealth.forEach((h) => { h.statusAt = 0; }); await inner.dispatchOnce(); };
+    c.peer.setStatus({ inFlight: null, verifierVersion: '2.0.0', policyHash: POLICY, slotBusy: false });
+    await c.svc.request(1);
+    await c.svc.request(2);
+    await c.runTimers();
+    await pollAgain();
+    expect(rows('peer-skipped-skew')).toHaveLength(1);
+    expect(rows('peer-skipped-skew')[0]).toMatchObject({ peerVerifierVersion: '2.0.0', verifierVersion: '1.0.0', policyMatches: true });
+
+    c.peer.setStatus({ inFlight: null, verifierVersion: '3.0.0', policyHash: POLICY, slotBusy: false });
+    await pollAgain();
+    expect(rows('peer-skipped-skew')).toHaveLength(2);
+    expect(rows('peer-skew-cleared')).toHaveLength(0);
+
+    c.peer.setStatus({ inFlight: null, verifierVersion: '1.0.0', policyHash: POLICY, slotBusy: false });
+    await pollAgain();
+    expect(rows('peer-skew-cleared')).toHaveLength(1);
+    expect(rows('peer-skipped-skew')).toHaveLength(2);
+  });
+
+  it('a peer that was never skewed leaves no skew rows', async () => {
+    const c = coordinator();
+    await c.svc.request(1);
+    await c.svc.request(2);
+    await c.runTimers();
+    const log = fs.readFileSync(path.join(c.stateDir, 'logs', 'local-verify.jsonl'), 'utf-8');
+    expect(log).not.toContain('peer-skipped-skew');
+    expect(log).not.toContain('peer-skew-cleared');
+  });
+
   it('no lease, no dispatch', async () => {
     const c = coordinator({ holds: false });
     await c.svc.request(1);

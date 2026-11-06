@@ -1756,6 +1756,7 @@ export class LocalVerifyService {
           if (!st) { this.peerFailure(peer, h, 'status-unreachable'); continue; }
         }
         const st = h.status;
+        this.notePeerSkew(peer.machineId, h);
         if (!st || st.inFlight || st.slotBusy || st.verifierVersion !== this.cfg.verifierVersion || st.policyHash !== this.policyHash) continue;
         const hold = this.holdDecision();
         const held = new Set(hold.active ? hold.heldPrs.map((x) => x.pr) : []);
@@ -1956,6 +1957,25 @@ export class LocalVerifyService {
   }
 
   /** Coordinator view of the peers for `GET /local-verify`. */
+  /**
+   * Signal only: a peer on a different verifier or policy never receives work, and that skip
+   * used to leave no trace. One audit row per change of the peer's versions, one when it ends.
+   */
+  private notePeerSkew(machineId: string, h: PeerHealth): void {
+    const st = h.status;
+    if (!st) return;
+    const skewed = st.verifierVersion !== this.cfg.verifierVersion || st.policyHash !== this.policyHash;
+    const key = skewed ? `${st.verifierVersion}|${st.policyHash}|${this.cfg.verifierVersion}|${this.policyHash}` : null;
+    if (key === (h.skewKey ?? null)) return;
+    const was = h.skewKey ?? null;
+    h.skewKey = key;
+    if (key) {
+      this.audit({ event: 'peer-skipped-skew', peer: machineId, peerVerifierVersion: st.verifierVersion, verifierVersion: this.cfg.verifierVersion, policyMatches: st.policyHash === this.policyHash });
+    } else if (was) {
+      this.audit({ event: 'peer-skew-cleared', peer: machineId, verifierVersion: this.cfg.verifierVersion });
+    }
+  }
+
   peersInfo(): { configured: Array<{ machineId: string; healthy: boolean; status: PeerStatus | null; consecutiveFailures: number; openUntil: string | null }>; reserved: Array<{ pr: number; peer: string; attemptId: string; state: string; sentAt: string }> } {
     const now = this.now();
     return {
