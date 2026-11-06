@@ -76,6 +76,8 @@ export class PeerHomebaseRelay {
   /** Threads that already had a message posted — the SalienceGate's first-reply input (first-only mode). In memory. */
   private readonly seenThreads = new Map<string, number>();
   private readonly byTopic = new Map<number, number[]>();
+  private readonly pendingByTopic = new Map<number, Set<symbol>>();
+  private readonly pendingThreads = new Map<string, Set<symbol>>();
   /** Threads whose messages the relay judges per message (§2.7). In memory. */
   private readonly ownedThreads = new Map<string, number>();
   private pendingRetries = 0;
@@ -165,28 +167,38 @@ export class PeerHomebaseRelay {
     // The per-thread minute applies only to the first-only rule: under per-message judging a
     // second user-meant message inside a minute is still meant for the user. The per-topic
     // bound stays as the flood brake.
-    const threadBrake = !judged && last !== undefined && now - last < PER_THREAD_MS;
-    if (threadBrake || recent.length >= PER_TOPIC_LIMIT) {
+    const threadBrake = !judged && (this.pendingThreads.has(threadId) || last !== undefined && now - last < PER_THREAD_MS);
+    const pending = this.pendingByTopic.get(topicId) ?? new Set<symbol>();
+    if (threadBrake || recent.length + pending.size >= PER_TOPIC_LIMIT) {
       this.d.log?.(`[homebase-relay] rate-limited post for thread ${threadId.slice(0, 8)} → topic ${topicId}`);
       const retry = judged && !threadBrake ? this.scheduleRetry(threadId, topicId, senderName, body, attempt, peers, Math.max(1000, PER_TOPIC_WINDOW_MS - (now - (recent[0] ?? now)) + 1000)) : false;
       return { posted: false, reason: 'rate-limited', topicId, ...(retry ? { retryScheduled: true } : {}) };
     }
 
     const text = formatRelayPost(senderName, body);
+    const reservation = Symbol('homebase-send');
+    pending.add(reservation); this.pendingByTopic.set(topicId, pending);
+    const threadPending = this.pendingThreads.get(threadId) ?? new Set<symbol>();
+    threadPending.add(reservation); this.pendingThreads.set(threadId, threadPending);
     try {
       const receipt = await withNotificationEnvelope(stampNotification(), async () => (this.d)!.sendToTopic(topicId, text));
       if (isQuietReceipt(receipt)) return { posted: false, recorded: true, reason: 'quiet-recorded', quietId: receipt.quietId, topicId };
+      const deliveredAt = this.now();
+      this.seenThreads.set(threadId, deliveredAt);
+      if (this.seenThreads.size > MAX_TRACKED_THREADS) {
+        const first = this.seenThreads.keys().next().value;
+        if (first !== undefined) this.seenThreads.delete(first);
+      }
+      const delivered = (this.byTopic.get(topicId) ?? []).filter(t => deliveredAt - t < PER_TOPIC_WINDOW_MS);
+      delivered.push(deliveredAt); this.byTopic.set(topicId, delivered);
     } catch (err) {
       this.d.log?.(`[homebase-relay] post to topic ${topicId} failed: ${err instanceof Error ? err.message : String(err)}`);
       const retry = judged ? this.scheduleRetry(threadId, topicId, senderName, body, attempt, peers, SEND_RETRY_MS) : false;
       return { posted: false, reason: 'send-failed', topicId, ...(retry ? { retryScheduled: true } : {}) };
+    } finally {
+      pending.delete(reservation); if (!pending.size) this.pendingByTopic.delete(topicId);
+      threadPending.delete(reservation); if (!threadPending.size) this.pendingThreads.delete(threadId);
     }
-    this.seenThreads.set(threadId, now);
-    if (this.seenThreads.size > MAX_TRACKED_THREADS) {
-      const first = this.seenThreads.keys().next().value;
-      if (first !== undefined) this.seenThreads.delete(first);
-    }
-    recent.push(now);
     this.d.log?.(`[homebase-relay] ${senderName}'s message on thread ${threadId.slice(0, 8)} posted to its topic ${topicId}${attempt > 0 ? ` (retry ${attempt})` : ''}`);
     return { posted: true, topicId };
   }

@@ -15,6 +15,28 @@ function setup(dryRun = false) {
   return { root, gate };
 }
 describe('Quiet by Default delivery', () => {
+  it('registers real on-disk evidence and keeps promotion and digest opt-in with the operator', async () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'quiet-ladder-'));
+    const gate = new NotificationSelectivityGate(path.join(project, '.instar'), 'test-machine', () => ({ enabled: true, dryRun: false }));
+    cleanup.push(async () => { await gate.close(); SafeFsExecutor.safeRmSync(project, { recursive: true, force: true, operation: 'quiet-ladder-test' }); });
+    await gate.route(42, 'Routine observation', { origin: 'automated', category: 'uncategorized', sourceContext: 'test-ledger' });
+    await gate.close();
+    const registry = JSON.parse(fs.readFileSync('src/data/feature-ladders.json', 'utf8'));
+    const entries = registry.entries.filter((entry: { id: string }) => entry.id === 'notifications.selectivity' || entry.id === 'notifications.selectivity.digest');
+    expect(entries).toHaveLength(2);
+    for (const entry of entries) {
+      expect(entry.start).toBeUndefined();
+      for (const rung of Object.values(entry.rungs) as Array<{ advance: { kind: string }; metrics: Array<{ ref: { file: string } }> }>) {
+        expect(rung.advance.kind).toBe('owner-driver');
+        for (const metric of rung.metrics) {
+          const rows = fs.readFileSync(path.join(project, metric.ref.file), 'utf8');
+          expect(rows).toContain('test-ledger');
+        }
+      }
+    }
+    expect(entries.find((entry: { id: string }) => entry.id.endsWith('.digest')).final).toBe('default-off-by-preference');
+  });
+
   it('records routine media before transport and preserves verified human copies without answering their turn', async () => {
     const { root, gate } = setup();
     const adapter = new TelegramAdapter({ token: '123:test', chatId: '-1001' }, root, { suppressLifelineAutoCreate: true });

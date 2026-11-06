@@ -15216,6 +15216,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     // ensured exists in CLAUDE.md. Kept in document order so appended
     // sections preserve narrative ordering in the shadow.
     const markers = [
+      '### Quiet by Default notifications',
       '**Memory privacy**',
       'An update never turns it on',
       'one-time repair link',

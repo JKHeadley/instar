@@ -1,5 +1,5 @@
 import { renderGlance } from '../glance.js';
-import { el, setKids, pageHead, section, note, askPin, operatorSession } from './ui.js';
+import { el, setKids, pageHead, section, note, askPin, operatorSession, arrivalScroll } from './ui.js';
 
 async function request(url, options = {}) {
   const response = await fetch(url, { ...options, headers: { Authorization: `Bearer ${localStorage.getItem('instar_token') || ''}`,
@@ -17,6 +17,7 @@ export function notificationsGlanceSpec(feed, activate = {}) {
     ] };
 }
 /** All server/peer text is rendered as text, including stored HTML and quoted notices. */
+let notificationClick = 0;
 let notificationView = { unread: true, cursors: undefined };
 export async function renderNotifications(main, ctx, view) {
   if (view) notificationView = view;
@@ -53,8 +54,8 @@ export async function renderNotifications(main, ctx, view) {
     const preferences = el('section', {}, el('h2', { text: 'Choose what reaches you' }), note('Replies and critical recovery notices remain automatic.'));
     root.append(preferences);
     renderGlance(document, glance, notificationsGlanceSpec(feed, {
-      notices: () => notices.scrollIntoView({ behavior: 'smooth' }),
-      preferences: () => preferences.scrollIntoView({ behavior: 'smooth' }),
+      notices: () => arrivalScroll(notices, { key: `notifications-click:${++notificationClick}` }),
+      preferences: () => arrivalScroll(preferences, { key: `notifications-click:${++notificationClick}` }),
     }));
     for (const category of status.categories.filter(category => category.configurable !== false)) {
       const input = el('input', { type: 'checkbox', 'aria-label': `Push ${category.description.toLowerCase()}`, style: 'width:22px;height:22px' });

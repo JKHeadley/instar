@@ -296,7 +296,7 @@ export class NotificationBatcher {
     // Cross-batch suppression: an unexpired entry means this exact shape was
     // already DELIVERED (the map is written after a successful flush, so
     // presence follows delivery rather than intent).
-    const crossBatchKey = `${notification.topicId}:${dedupKey}`;
+    const crossBatchKey = `${notification.topicId}:${origin?.producerId ?? 'notification-batcher'}:${dedupKey}`;
     const sentAt = this.lastSentContent.get(crossBatchKey);
     if (sentAt !== undefined && Date.now() - sentAt < this.config.suppressionTtlHours * 3_600_000) {
       this.suppressedCount++;
@@ -304,7 +304,7 @@ export class NotificationBatcher {
     }
 
     // Within-batch dedup: collapse identical shapes into one entry with count
-    const existing = queue.find(q => !q.originHold && q.dedupKey === dedupKey && q.topicId === notification.topicId);
+    const existing = queue.find(q => !q.originHold && q.dedupKey === dedupKey && q.topicId === notification.topicId && (q.origin?.producerId ?? 'notification-batcher') === (origin?.producerId ?? 'notification-batcher'));
     if (existing) {
       existing.count++;
       existing.origin = composeBatcherOrigins([existing.origin, origin]);
@@ -385,7 +385,7 @@ export class NotificationBatcher {
         if (id && resolved.get(id)) {
           if (!recordedRecoveries.has(id)) { this.recordSend(item.topicId, now); recordedRecoveries.add(id); }
           queue.splice(queue.indexOf(item), 1);
-          this.lastSentContent.set(`${item.topicId}:${item.dedupKey}`, now);
+          this.lastSentContent.set(`${item.topicId}:${item.origin?.producerId ?? 'notification-batcher'}:${item.dedupKey}`, now);
           recoveredCount++;
           continue;
         }
@@ -438,7 +438,7 @@ export class NotificationBatcher {
     const queue = batch.tier === 'SUMMARY' ? this.summaryQueue : this.digestQueue;
     for (const item of items) {
       const index = queue.indexOf(item); if (index >= 0) queue.splice(index, 1);
-      if (delivered) this.lastSentContent.set(`${item.topicId}:${item.dedupKey}`, now);
+      if (delivered) this.lastSentContent.set(`${item.topicId}:${item.origin?.producerId ?? 'notification-batcher'}:${item.dedupKey}`, now);
     }
     this.frozenBatches.delete(batch.logicalSendId);
     if (delivered) this.recordSend(batch.topicId, now);
