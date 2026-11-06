@@ -7,7 +7,7 @@ import {loadRecoveryConfig,LaunchdRecoveryControl} from '../../src/recovery/Reco
 import {installRecoveryServices} from '../../src/recovery/RecoveryInstallation.js';
 import {recoveryKeyPair} from '../../src/recovery/RecoveryProtocol.js';
 import {SafeFsExecutor} from '../../src/core/SafeFsExecutor.js';
-import {saveRecoveryMainBindingCandidate} from '../../src/recovery/RecoveryMainBindings.js';
+import {saveRecoveryMainBindingCandidate,validateRecoveryMainBindings} from '../../src/recovery/RecoveryMainBindings.js';
 
 const earlyBridges=vi.hoisted(()=>({loadCommands:[] as Array<{action:string;owned:boolean}>,snapshots:[] as Array<{project:string;before:string|null;observed:string|null;nodeBefore:string|null;nodeObserved:string|null}>}));
 vi.mock('node:child_process',async original=>{
@@ -69,8 +69,13 @@ describe('real Autostart writer recovery transaction',()=>{
   it('refuses to bless a present tampered main wrapper before the trusted installer writes candidates',()=>{
     const f=fixture(),pending={...f.transaction,phase:'rolled-back'};fs.writeFileSync(f.transactionFile,JSON.stringify(pending),{mode:0o600});
     const mainStateDir=path.join(f.project,'.instar'),fallback=path.join(mainStateDir,'recovery','runtime-slots','test','node');fs.mkdirSync(path.dirname(fallback),{recursive:true,mode:0o700});fs.writeFileSync(fallback,'retained-node-fixture',{mode:0o500});
-    const config={...f.config,mainStateDir},wrapper=path.join(mainStateDir,'instar-boot.cjs'),snapshot=saveRecoveryMainBindingCandidate(config,fs.readFileSync(wrapper,'utf8'),fs.realpathSync(process.execPath),fallback);
-    fs.writeFileSync(f.configFile,JSON.stringify({...config,mainBindings:snapshot}),{mode:0o600});fs.appendFileSync(wrapper,'\n// external tamper\n');const priorTransaction=fs.readFileSync(f.transactionFile,'utf8');
+    // Hosted CI's shared tool-cache Node may be group-writable. Own a protected
+    // fixture copy and its exact alias; never change the runner's installation.
+    const ownedNode=path.join(mainStateDir,'fixture-owned-node');fs.copyFileSync(fs.realpathSync(process.execPath),ownedNode,fs.constants.COPYFILE_FICLONE);fs.chmodSync(ownedNode,0o500);
+    const alias=path.join(mainStateDir,'bin','node');SafeFsExecutor.safeUnlinkSync(alias,{operation:'recovery-autostart-update.test:pin-owned-fixture-interpreter'});fs.symlinkSync(ownedNode,alias);
+    const config={...f.config,mainStateDir},wrapper=path.join(mainStateDir,'instar-boot.cjs'),snapshot=saveRecoveryMainBindingCandidate(config,fs.readFileSync(wrapper,'utf8'),ownedNode,fallback),pinned={...config,mainBindings:snapshot};
+    expect(fs.statSync(ownedNode).mode&0o777).toBe(0o500);expect(fs.readlinkSync(alias)).toBe(ownedNode);expect(()=>validateRecoveryMainBindings(pinned)).not.toThrow();
+    fs.writeFileSync(f.configFile,JSON.stringify(pinned),{mode:0o600});fs.appendFileSync(wrapper,'\n// external tamper\n');const priorTransaction=fs.readFileSync(f.transactionFile,'utf8');
     expect(()=>beginRecoveryAutostartBindingUpdate(f.project,f.plist)).toThrow('recovery-main-binding-changed');expect(fs.readFileSync(f.transactionFile,'utf8')).toBe(priorTransaction);expect(fs.readFileSync(wrapper,'utf8')).toContain('external tamper');
   });
   it('enters the fenced bridge before either trusted bootstrap writer mutates its prior bindings',()=>{

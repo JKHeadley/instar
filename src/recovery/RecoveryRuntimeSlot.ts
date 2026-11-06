@@ -171,7 +171,16 @@ export function cleanupRecoveryRuntimeSlots(configFile:string,now=Date.now()):{r
   try{return admission.withOwnedBindingWrite(()=>{
     if(fileBytes(configFile,131072).toString()!==configBytes)throw new Error('recovery-install-config-changed');
     const root=path.join(path.dirname(c.stateDir),'runtime-slots');directory(root);const keep=new Set<string>();
-    const collect=(value:unknown):void=>{if(typeof value==='string'){for(const match of value.matchAll(new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'/([a-f0-9]{64})(?:/|["\\\\]|$)','g')))keep.add(match[1]);try{if(value.startsWith('{'))collect(JSON.parse(value));}catch{}}else if(value&&typeof value==='object')for(const item of Object.values(value))collect(item);};
+    const collect=(value:unknown):void=>{
+      if(typeof value==='string'){
+        for(const match of value.matchAll(new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'/([a-f0-9]{64})(?:/|["\\\\]|$)','g')))keep.add(match[1]);
+        if(value.trimStart().startsWith('{')){
+          let embedded:unknown;
+          try{embedded=JSON.parse(value);}catch{throw new Error('recovery-runtime-cleanup-reference-invalid');}
+          collect(embedded);
+        }
+      }else if(value&&typeof value==='object')for(const item of Object.values(value))collect(item);
+    };
     collect(c);
     const transactions=[path.join(path.dirname(c.stateDir),'main-update.json'),...(c.watchdog?.script?[path.join(path.dirname(c.watchdog.script),'recovery-fleet-update.json')]:[])];
     for(const file of transactions)if(fs.existsSync(file))collect(JSON.parse(fileBytes(file,1048576).toString()));

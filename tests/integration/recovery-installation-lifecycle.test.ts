@@ -1,7 +1,7 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import crypto from 'node:crypto';
+import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import crypto from 'node:crypto';import {pathToFileURL} from 'node:url';
 
-const host=vi.hoisted(()=>({loaded:new Map<string,{file:string;content:string}>(),calls:[] as Array<{args:string[];holdPresent:boolean}>,failBootstrap:'',eioBootstrap:'',failPrint:'',home:'',holdFile:''}));
+const host=vi.hoisted(()=>({loaded:new Map<string,{file:string;content:string}>(),calls:[] as Array<{args:string[];holdPresent:boolean}>,failBootstrap:'',eioBootstrap:'',failPrint:'',home:'',holdFile:'',ownedNode:''}));
 vi.mock('node:child_process',async(importOriginal)=>{
  const original=await importOriginal<typeof import('node:child_process')>();
  const operatingSystem=(file:string,args:string[])=>{
@@ -39,6 +39,20 @@ vi.mock('node:child_process',async(importOriginal)=>{
  return {...original,execFile:mocked,execFileSync:(file:string,args:string[],options:unknown)=>{if(file==='/bin/launchctl'||file==='/usr/sbin/sysctl')return operatingSystem(file,args).stdout;return (original.execFileSync as any)(file,args,options);}};
 });
 
+// Execute the real slot builder in an owned protected interpreter. Only this
+// call boundary adapts the fixture's tool-cache permissions; slot verification,
+// copied native storage and all existing launchd IO assertions remain real.
+vi.mock('../../src/recovery/RecoveryRuntimeSlot.js',async importOriginal=>{
+ const actual=await importOriginal<typeof import('../../src/recovery/RecoveryRuntimeSlot.js')>();
+ const {execFileSync}=await import('node:child_process');
+ return{...actual,prepareRecoveryRuntimeSlot:(entrypoint:string,stateDir:string)=>{
+  if(!host.ownedNode)throw new Error('protected fixture interpreter missing');
+  const code=`const {prepareRecoveryRuntimeSlot}=await import(process.argv[1]);process.stdout.write(JSON.stringify(prepareRecoveryRuntimeSlot(process.argv[2],process.argv[3])));`;
+  return JSON.parse(execFileSync(host.ownedNode,['--input-type=module','-e',code,pathToFileURL(path.resolve('dist/recovery/RecoveryRuntimeSlot.js')).href,entrypoint,stateDir],{
+   encoding:'utf8',timeout:60000,maxBuffer:16384,stdio:['ignore','pipe','pipe'],cwd:host.home,env:{HOME:host.home,PATH:'/usr/bin:/bin',NODE_PATH:''}}));
+ }};
+});
+
 import {qualifyRecoverySshEnvironment} from '../../src/recovery/RecoverySshEnvironment.js';
 import {RecoveryEnrollment,type RecoveryEnrollmentAdvert} from '../../src/recovery/RecoveryEnrollment.js';
 import {RecoveryAdmission} from '../../src/recovery/RecoveryAdmission.js';
@@ -71,6 +85,8 @@ describe('production recovery enrollment and persistent installation lifecycle',
  };
  beforeEach(async()=>{
   directory=fs.mkdtempSync(path.join(os.tmpdir(),'recovery-install-lifecycle-'));host.home=path.join(directory,'home');fs.mkdirSync(host.home,{mode:0o700});host.loaded.clear();host.calls=[];host.failBootstrap='';host.eioBootstrap='';host.failPrint='';host.holdFile='';
+  host.ownedNode=path.join(directory,'owned-node');fs.copyFileSync(fs.realpathSync(process.execPath),host.ownedNode,fs.constants.COPYFILE_FICLONE);fs.chmodSync(host.ownedNode,0o500);
+  expect(fs.statSync(host.ownedNode).mode&0o777).toBe(0o500);
   vi.spyOn(os,'homedir').mockReturnValue(host.home);Object.defineProperty(process,'platform',{...platformDescriptor,value:'darwin'});
   vi.spyOn(globalThis,'fetch').mockImplementation(async url=>new Response(JSON.stringify(String(url).endsWith('/whoami')?{agentId}:{status:'ok'}),{status:200}));
   const agents=path.join(host.home,'Library','LaunchAgents');fs.mkdirSync(agents,{recursive:true,mode:0o700});
@@ -78,7 +94,7 @@ describe('production recovery enrollment and persistent installation lifecycle',
   fs.mkdirSync(path.join(host.home,'.instar'),{mode:0o700});fs.writeFileSync(path.join(host.home,'.instar','instar-watchdog.sh'),'#!/bin/sh\n# recovery_rule_held\n',{mode:0o700});fs.writeFileSync(path.join(agents,'ai.instar.watchdog.plist'),'<plist>owned fleet watchdog</plist>',{mode:0o600});
   fs.mkdirSync(path.join(host.home,'.ssh'),{mode:0o700});operatorLine=sshPublicKey()+' operator-owned';fs.writeFileSync(path.join(host.home,'.ssh','authorized_keys'),operatorLine+'\n',{mode:0o600});
   const policy=path.join(directory,'sshd_config');fs.writeFileSync(policy,'AcceptEnv LANG LC_*\nPermitUserEnvironment no\n',{mode:0o600});
-  const stateDir=path.join(directory,'agent','.instar');fs.mkdirSync(stateDir,{recursive:true,mode:0o700});installBootWrapper(path.dirname(stateDir));fs.mkdirSync(path.join(stateDir,'bin'),{recursive:true,mode:0o700});fs.symlinkSync(process.execPath,path.join(stateDir,'bin','node'));entrypoint=stageRuntime('installed');
+  const stateDir=path.join(directory,'agent','.instar');fs.mkdirSync(stateDir,{recursive:true,mode:0o700});installBootWrapper(path.dirname(stateDir));fs.mkdirSync(path.join(stateDir,'bin'),{recursive:true,mode:0o700});fs.symlinkSync(host.ownedNode,path.join(stateDir,'bin','node'));entrypoint=stageRuntime('installed');
   enrollment=new RecoveryEnrollment({stateDir,agentId,machineId,certificationRoot:root.publicKey,machineSigningKey:machine.privateKey,paired:()=>[{machineId:'peer',pairingEpoch:42,publicKey:peerMachine.publicKey}],relayUrl:'https://recovery.invalid',directHost:'192.0.2.10',sshPort:22,sshHostPublicKey:sshPublicKey(),username:'fixture',agentHome:host.home,mainServicePlist:mainPlist,mainHealthPort:4040,mainAuthToken:'disposable-token',entrypoint,inspectSshEnvironment:hostKeyFile=>{qualifyRecoverySshEnvironment({hostKeyFile,configFile:policy,run:()=> 'acceptenv LANG\nacceptenv LC_*\npermituserenvironment no\nforcecommand none\n'});}});
   const prepared=await enrollment.prepare(),now=Date.now();configFile=path.join(enrollment.directory,'host.json');config=loadRecoveryConfig(configFile);host.holdFile=config.watchdog!.holdFile!;
   certificate=signRecovery<RecoveryCertificate>({domain:'instar-recovery-certificate-v1',agentId,publicKey:signer.publicKey,generation:1,issuedAt:now-1000,expiresAt:now+30*OFFLINE_LEASE_MS},root.privateKey);

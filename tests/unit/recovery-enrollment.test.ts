@@ -20,7 +20,8 @@ function fixture(){
   let paired=[{machineId:'peer',pairingEpoch:1,publicKey:peer.publicKey}];
   const options={stateDir:dir,agentId:'agent',machineId:'source',certificationRoot:root.publicKey,machineSigningKey:source.privateKey,paired:()=>paired,
     relayUrl:'https://relay.example',directHost:'100.1.2.3',sshPort:22,sshHostPublicKey:'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA==',username:'test',agentHome:dir,mainServicePlist:main,mainHealthPort:4040,mainAuthToken:'fixture',entrypoint:'/installed/recovery-entrypoint.mjs',inspectSshEnvironment:()=>{}};
-  fs.mkdirSync(path.join(dir,'bin'),{mode:0o700});fs.symlinkSync(process.execPath,path.join(dir,'bin','node'));fs.writeFileSync(path.join(dir,'instar-boot.cjs'),'// trusted installer wrapper',{mode:0o600});
+  const ownedNode=path.join(dir,'owned-node');fs.copyFileSync(fs.realpathSync(process.execPath),ownedNode,fs.constants.COPYFILE_FICLONE);fs.chmodSync(ownedNode,0o500);
+  fs.mkdirSync(path.join(dir,'bin'),{mode:0o700});fs.symlinkSync(ownedNode,path.join(dir,'bin','node'));fs.writeFileSync(path.join(dir,'instar-boot.cjs'),'// trusted installer wrapper',{mode:0o600});
   const enrollment=new RecoveryEnrollment(options),now=Date.now();
   const advert:RecoveryEnrollmentAdvert={domain:'instar-recovery-enrollment-v1',agentId:'agent',machineId:'peer',generation:1,sshPublicKey:peerSsh.publicKey,relayPublicKey:peerRelay.publicKey,
     sshClientPublicKey:'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK3J18o7t58nPfEYuvSgU0BWC3P7l3ukW7lwtuv3OgHz',ssh:{host:'100.2.3.4',port:22,username:'peer',hostFingerprint:'a'.repeat(64)},relayUrl:'https://relay.example',issuedAt:now,expiresAt:now+300_000};

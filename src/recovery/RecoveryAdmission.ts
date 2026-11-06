@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import Database from 'better-sqlite3';
+import {registerSqliteHandle} from '../core/SqliteRegistry.js';
 import { processStartMs } from '../core/processIdentity.js';
 import {
   OFFLINE_LEASE_MS, recoveryCanonical, recoveryDigest, validRecoveryId, validRecoveryTime,
@@ -20,6 +21,7 @@ export interface RecoveryWatchdogHold {
 }
 export class RecoveryAdmission {
   private readonly db: Database.Database;
+  private readonly unregisterSqlite:()=>void;
   private readonly ownProcessStart:number|null;
   constructor(private readonly options: {
     stateDir: string; agentId: string; machineId: string; bootId: string; certificationRoot: string;
@@ -42,6 +44,8 @@ export class RecoveryAdmission {
     const fd = fs.openSync(database, fs.constants.O_CREAT | fs.constants.O_RDWR | fs.constants.O_NOFOLLOW, 0o600);
     fs.closeSync(fd);
     this.db = new Database(database);
+    this.unregisterSqlite=registerSqliteHandle(()=>this.close());
+    try{
     this.db.pragma('busy_timeout = 5000');
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = FULL');
@@ -58,6 +62,7 @@ export class RecoveryAdmission {
       this.db.exec('ALTER TABLE operations ADD COLUMN admitted_at INTEGER NOT NULL DEFAULT 0');
       this.db.exec('UPDATE operations SET admitted_at = expires - 30000 WHERE admitted_at = 0');
     })();
+    }catch(error){this.close();throw error;}
   }
   private now(): number { return (this.options.now ?? Date.now)(); }
   private uptime(): number { return (this.options.uptime ?? (() => Number(process.hrtime.bigint() / 1_000_000n)))(); }
@@ -372,5 +377,5 @@ export class RecoveryAdmission {
       this.write('local-admission',{active:true,epoch:expectedEpoch,activatedAt:this.now(),checkpointVersion:checkpoint.version});this.audit('recovery-admission-activated');
     }).immediate();
   }
-  close(): void { this.db.close(); }
+  close(): void { this.unregisterSqlite();if(this.db.open)this.db.close(); }
 }

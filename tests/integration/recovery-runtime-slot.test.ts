@@ -1,6 +1,6 @@
 import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {pathToFileURL}from 'node:url';import {execFileSync}from 'node:child_process';
-import {prepareRecoveryRuntimeSlot,verifyRecoveryRuntimeSlot,RECOVERY_RUNTIME_SLOT_CAPACITY,cleanupRecoveryRuntimeSlots,type RecoveryRuntimeSlot}from '../../src/recovery/RecoveryRuntimeSlot.js';
+import {verifyRecoveryRuntimeSlot,RECOVERY_RUNTIME_SLOT_CAPACITY,cleanupRecoveryRuntimeSlots,type RecoveryRuntimeSlot}from '../../src/recovery/RecoveryRuntimeSlot.js';
 import {recoveryKeyPair}from '../../src/recovery/RecoveryProtocol.js';
 import {SafeFsExecutor}from '../../src/core/SafeFsExecutor.js';
 
@@ -9,17 +9,27 @@ import {SafeFsExecutor}from '../../src/core/SafeFsExecutor.js';
 vi.mock('node:child_process',async(importOriginal)=>{const actual=await importOriginal<typeof import('node:child_process')>();return{...actual,execFileSync:(file:string,args:string[],options:unknown)=>file==='/usr/sbin/sysctl'&&args.join(' ')==='-n kern.bootsessionuuid'?'slot-test-boot\n':(actual.execFileSync as any)(file,args,options)};});
 
 describe('independent copied recovery runtime with native storage',()=>{
- let root:string,source:string,stateDir:string,first:RecoveryRuntimeSlot,second:RecoveryRuntimeSlot;
+ let root:string,source:string,stateDir:string,ownedNode:string,first:RecoveryRuntimeSlot,second:RecoveryRuntimeSlot;
+ function stageRuntime():RecoveryRuntimeSlot {
+  const moduleUrl=pathToFileURL(path.resolve('dist/recovery/RecoveryRuntimeSlot.js')).href;
+  const code=`const {prepareRecoveryRuntimeSlot}=await import(process.argv[1]);process.stdout.write(JSON.stringify(prepareRecoveryRuntimeSlot(process.argv[2],process.argv[3])));`;
+  return JSON.parse(execFileSync(ownedNode,['--input-type=module','-e',code,moduleUrl,path.join(source,'scripts','recovery-entrypoint.mjs'),stateDir],{
+   encoding:'utf8',timeout:60000,maxBuffer:16384,cwd:root,env:{HOME:root,PATH:'/usr/bin:/bin',NODE_PATH:''}}));
+ }
  beforeAll(()=>{
   root=fs.mkdtempSync(path.join(os.tmpdir(),'recovery-native-slot-'));source=path.join(root,'mutable-main-package');stateDir=path.join(root,'private-state','admission');
   fs.mkdirSync(path.join(source,'scripts'),{recursive:true,mode:0o700});fs.mkdirSync(path.dirname(stateDir),{recursive:true,mode:0o700});
+  // Hosted tool-cache Node is not necessarily an owned, non-writable runtime.
+  // Execute a private protected byte-for-byte copy; never chmod the shared tool.
+  ownedNode=path.join(root,'owned-node');fs.copyFileSync(fs.realpathSync(process.execPath),ownedNode,fs.constants.COPYFILE_FICLONE);fs.chmodSync(ownedNode,0o500);
+  expect(fs.statSync(ownedNode).mode&0o777).toBe(0o500);
   fs.copyFileSync(path.resolve('package.json'),path.join(source,'package.json'));
   fs.cpSync(path.resolve('dist'),path.join(source,'dist'),{recursive:true,mode:fs.constants.COPYFILE_FICLONE});
   for(const name of ['recovery-entrypoint.mjs','recovery-update-entrypoint.mjs'])fs.copyFileSync(path.resolve('scripts',name),path.join(source,'scripts',name));
   // This symlink is a SOURCE dependency resolver only. The installed slot must
   // materialize its own native module/dependency files, with no external links.
   fs.symlinkSync(fs.realpathSync('node_modules'),path.join(source,'node_modules'),'dir');
-  first=prepareRecoveryRuntimeSlot(path.join(source,'scripts','recovery-entrypoint.mjs'),stateDir);
+  first=stageRuntime();
  },120000);
  afterAll(()=>{if(root)SafeFsExecutor.safeRmSync(root,{recursive:true,force:true,operation:'recovery-runtime-slot.test:cleanup'});});
  function coldStorage(slot:RecoveryRuntimeSlot):unknown {
@@ -38,14 +48,14 @@ describe('independent copied recovery runtime with native storage',()=>{
  });
  it('keeps the previous known runtime usable when a genuinely different package is staged',()=>{
   fs.appendFileSync(path.join(source,'dist','recovery','RecoveryEngine.js'),'\n// independently installed next recovery build\n');
-  second=prepareRecoveryRuntimeSlot(path.join(source,'scripts','recovery-entrypoint.mjs'),stateDir);
+  second=stageRuntime();
   expect(second.digest).not.toBe(first.digest);expect(fs.existsSync(first.node)).toBe(true);
   fs.renameSync(source,source+'.offline');try{expect(coldStorage(first)).toMatchObject({ready:false});expect(coldStorage(second)).toMatchObject({ready:false});}finally{fs.renameSync(source+'.offline',source);}
  });
  it('fails closed at the total complete-plus-staging capacity without evicting a known runtime',()=>{
   const slots=path.dirname(first.directory),reserved:string[]=[];
   try{for(let i=fs.readdirSync(slots).length;i<RECOVERY_RUNTIME_SLOT_CAPACITY;i++){const dir=path.join(slots,'.staging-capacity-'+i);fs.mkdirSync(dir,{mode:0o700});reserved.push(dir);}
-   expect(()=>prepareRecoveryRuntimeSlot(path.join(source,'scripts','recovery-entrypoint.mjs'),stateDir)).toThrow('recovery-runtime-slot-capacity');expect(fs.existsSync(first.node)).toBe(true);
+   expect(()=>stageRuntime()).toThrow('recovery-runtime-slot-capacity');expect(fs.existsSync(first.node)).toBe(true);
   }finally{for(const dir of reserved)SafeFsExecutor.safeRmSync(dir,{recursive:true,force:true,operation:'recovery-slot.test:remove-capacity-reservations'});}
  });
  it('keeps current and transaction-referenced slots and removes only a day-old unreferenced owned slot',()=>{
@@ -58,7 +68,16 @@ describe('independent copied recovery runtime with native storage',()=>{
   SafeFsExecutor.safeUnlinkSync(transaction,{operation:'recovery-slot.test:remove-finished-transaction'});
   expect(cleanupRecoveryRuntimeSlots(configFile).removed).toEqual([second.digest]);expect(fs.existsSync(first.node)).toBe(true);
   // Restage for the independent corruption regression below.
-  second=prepareRecoveryRuntimeSlot(path.join(source,'scripts','recovery-entrypoint.mjs'),stateDir);
+  second=stageRuntime();
+ });
+ it('refuses all cleanup before deleting anything when an embedded transaction reference is malformed',()=>{
+  const configFile=path.join(path.dirname(stateDir),'host.json'),transaction=path.join(path.dirname(stateDir),'main-update.json');
+  const old=new Date(Date.now()-2*86400000);fs.utimesSync(second.directory,old,old);
+  fs.writeFileSync(transaction,JSON.stringify({previousConfig:'  {"runtimeSlot":'+JSON.stringify(second)+','}),{mode:0o600});
+  try{
+   expect(()=>cleanupRecoveryRuntimeSlots(configFile)).toThrow('recovery-runtime-cleanup-reference-invalid');
+   expect(fs.existsSync(first.node)).toBe(true);expect(fs.existsSync(second.node)).toBe(true);
+  }finally{SafeFsExecutor.safeUnlinkSync(transaction,{operation:'recovery-slot.test:remove-malformed-transaction'});}
  });
  it('refuses a foreign slot path and detects modified immutable package bytes',()=>{
   expect(()=>verifyRecoveryRuntimeSlot({...first,directory:source},stateDir,true)).toThrow('recovery-runtime-slot-invalid');
