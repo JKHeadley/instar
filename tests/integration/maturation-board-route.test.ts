@@ -87,7 +87,8 @@ describe('GET /maturation/board', () => {
     expect(res.body.rows.find((r: { id: string }) => r.id === 'brandNew')).toMatchObject({ kind: 'feature', state: 'not-linked' });
     expect(res.body.rows.find((r: { id: string }) => r.id === 'disabled-review')).toMatchObject({ kind: 'job', posture: 'disabled', state: 'not-linked' });
     expect(res.body.counts.decision.total).toBeGreaterThan(0);
-    expect(res.body.counts.effort.total).toBe(2);
+    expect(res.body.counts.effort.total).toBe(3);
+    expect(res.body.rows.find((r: { id: string }) => r.id === 'commitment:["m_self","CMT-1"]')).toMatchObject({ kind: 'effort', state: 'not-linked', posture: 'pending' });
     expect(res.body.sourcesComplete).toBe(false);
   });
 
@@ -151,7 +152,8 @@ describe('GET /maturation/board', () => {
 
   it('pool coverage preserves a valid origin and discloses an old peer as unsupported', async () => {
     let old = false;
-    const peer = express().get('/maturation/board', (_req, res) => res.json(old ? { schema: 'maturation-board/1' } : measurementCoverage('m_peer', Date.now(), [{ kind: 'job', id: 'j', title: 'Review', sources: ['jobs'], subjects: [] }], [{ name: 'jobs', ok: true }], () => null)));
+    let hasCommitmentSource = false;
+    const peer = express().get('/maturation/board', (_req, res) => res.json(old ? { schema: 'maturation-board/1' } : measurementCoverage('m_peer', Date.now(), [{ kind: 'job', id: 'j', title: 'Review', sources: ['jobs'], subjects: [] }], [{ name: 'jobs', ok: true }, ...(hasCommitmentSource ? [{ name: 'commitment-tracker', ok: true }] : [])], () => null)));
     const server = http.createServer(peer); servers.push(server);
     await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()));
     const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -159,6 +161,13 @@ describe('GET /maturation/board', () => {
     const res = await request(app).get('/maturation/board?scope=pool&part=coverage');
     expect(res.body.origins.map((o: { origin: string }) => o.origin)).toEqual(['m_peer', 'm_self']);
     expect(res.body.origins[0].counts.job.total).toBe(1);
+    expect(res.body.poolComplete).toBe(false);
+    expect(res.body.failed).toContainEqual({ machineId: 'm_peer', reason: 'commitment-inventory-unsupported' });
+    expect(res.body.origins[0].sources).toEqual([{ name: 'jobs', ok: true }]);
+    hasCommitmentSource = true;
+    const upgraded = await request(app).get('/maturation/board?scope=pool&part=coverage');
+    expect(upgraded.body.failed).toEqual([]);
+    expect(upgraded.body.origins[0].counts.job.total).toBe(1);
     old = true;
     const unsupported = await request(app).get('/maturation/board?scope=pool&part=coverage');
     expect(unsupported.body.poolComplete).toBe(false);

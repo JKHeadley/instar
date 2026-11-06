@@ -16,6 +16,7 @@ export function coveragePanel(data, api = null) {
   const body = el('section', { class: 'mb-coverage' }, el('h2', { text: 'Measurement coverage' }),
     el('p', { text: `At the last read, ${compared} of ${total} tracked entries had a recorded baseline comparison. This shows coverage, not improvement.` }),
     el('progress', { value: compared, max: Math.max(1, total), 'aria-label': `${compared} of ${total} entries with recorded comparisons` }),
+    el('p', { class: 'mb-hint', text: 'These are tracking records. Linked records and copies on different machines can describe the same work; the count is not a count of distinct outcomes.' }),
     el('p', { class: 'mb-hint', text: data.poolComplete ? 'Read from the existing inventories. The same item on two machines is counted twice.' : 'Some inventories or machines could not be read. These counts are incomplete; missing sources are not counted as zero.' }));
   if (!data.poolComplete) body.append(askLink('Measurement coverage is incomplete. Which sources are missing?'));
   const times = origins.map(o => Date.parse(o.generatedAt)).filter(Number.isFinite);
@@ -65,7 +66,7 @@ export function coveragePanel(data, api = null) {
   body.append(el('details', {}, el('summary', { text: 'Read times and missing sources' }), origins.map(o => el('div', {},
     el('p', { text: `Read ${new Date(o.generatedAt).toLocaleString()}. ${o.omittedRows} entries omitted from the shared rows.` }),
     o.sources.filter(s => !s.ok).map(s => el('p', { text: `${s.name}: unavailable` })))),
-    (data.failed || []).map(() => el('p', { text: 'Another machine could not provide a supported coverage read.' })),
+    (data.failed || []).map(() => el('p', { text: 'A machine or one of its inventories could not provide a supported coverage read.' })),
     data.peersOmitted ? el('p', { text: `${data.peersOmitted} machines were outside this bounded read.` }) : null));
   return body;
 }

@@ -48,7 +48,7 @@ import {
 } from '../monitoring/MaturationBoard.js';
 import type { RouteContext } from './routes.js';
 import { readMeasurementDetail, validMeasurementRead } from './measurementDetailRead.js';
-import { measurementOrigin, readMeasurementCoverage } from './measurementCoverageRead.js';
+import { COMMITMENT_INVENTORY_SOURCE, measurementOrigin, readMeasurementCoverage } from './measurementCoverageRead.js';
 import { validMeasurementCoverage, type MeasurementCoverage } from '../monitoring/MeasurementCoverage.js';
 
 export const DEFAULT_REVIEWS_DIR = 'docs/research/feature-maturation/reviews';
@@ -549,6 +549,11 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
           const body: unknown = JSON.parse(text);
           if (!validMeasurementCoverage(body, peer.machineId, now)) throw Error('peer-unsupported-or-invalid');
           origins.push(body);
+          // Keep an older peer's known prefix while disclosing that its census
+          // does not account for this existing inventory; absence is not zero.
+          if (!body.sources.some(s => s.name === COMMITMENT_INVENTORY_SOURCE)) {
+            failed.push({ machineId: peer.machineId, reason: 'commitment-inventory-unsupported' });
+          }
         } catch { failed.push({ machineId: peer.machineId, reason: 'unavailable-or-unsupported' }); }
       }));
       res.json({ schema: 'measurement-coverage-pool/1', advisory: true, authority: 'none', scope: 'pool', generatedAt: new Date(now).toISOString(),

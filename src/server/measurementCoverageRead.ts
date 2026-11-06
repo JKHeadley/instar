@@ -12,9 +12,10 @@ import { parseMaturationOutcome } from '../monitoring/MaturationOutcome.js';
 import { measurementCoverage, type CoverageDeclaration, type CoverageMember, type CoverageParent, type CoverageProof, type CoverageSource } from '../monitoring/MeasurementCoverage.js';
 import type { RouteContext } from './routes.js';
 
-export type MeasurementCoverageContext = Pick<RouteContext, 'config' | 'meshSelfId' | 'scheduler' | 'initiativeTracker' | 'blockerLifecycleService' | 'featureRegistry'>
+export type MeasurementCoverageContext = Pick<RouteContext, 'config' | 'meshSelfId' | 'scheduler' | 'initiativeTracker' | 'commitmentTracker' | 'blockerLifecycleService' | 'featureRegistry'>
   & { maturationLadder?: () => MaturationLadderService | null };
 export const measurementOrigin = (ctx: MeasurementCoverageContext): string => ctx.meshSelfId ?? ctx.blockerLifecycleService?.measurementOrigin() ?? 'unknown-origin';
+export const COMMITMENT_INVENTORY_SOURCE = 'commitment-tracker';
 const normalize = (path: string) => path.replace(/\.(enabled|dryRun)$/, '');
 const bounded = (text: string) => text.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 160);
 
@@ -130,6 +131,15 @@ function collectMeasurementInputs(ctx: MeasurementCoverageContext, now = Date.no
     const parents = featureParents.get(member.id);
     if (parents) member.parents = [...new Map(parents.map(p => [`${p.kind}:${p.id}:${p.source}`, p])).values()];
   }
+  // Inventory-only records: add after target binding, without creating a new
+  // authoring seam or copying conversation text into the pooled read surface.
+  read(COMMITMENT_INVENTORY_SOURCE, () => {
+    if (!ctx.commitmentTracker) throw Error('unavailable');
+    for (const c of ctx.commitmentTracker.getAll()) members.push({
+      kind: 'effort', id: `commitment:${JSON.stringify([c.originMachineId ?? measurementOrigin(ctx), c.id])}`, title: bounded(`Commitment ${c.id}`),
+      sources: [COMMITMENT_INVENTORY_SOURCE], subjects: [], posture: c.status,
+    });
+  });
   return { members, sources, subjects, d7, evidenceAvailable, targetStates };
 }
 

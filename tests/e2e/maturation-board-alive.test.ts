@@ -26,7 +26,7 @@ import type { InstarConfig } from '../../src/core/types.js';
 const servers: AgentServer[] = [];
 const dirs: string[] = [];
 
-async function boot(developmentAgent: boolean, measurement=false, retainedOwner?: { id: string; liveConfig: Record<string, unknown> }) {
+async function boot(developmentAgent: boolean, measurement=false, retainedOwner?: { id: string; liveConfig: Record<string, unknown> }, authToken?: string) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'mb-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -42,6 +42,7 @@ async function boot(developmentAgent: boolean, measurement=false, retainedOwner?
   }));
   const config: InstarConfig = {
     projectName: 'mb-e2e', projectDir: dir, stateDir, port: 0,
+    ...(authToken ? { authToken } : {}),
     developmentAgent,
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
@@ -62,6 +63,31 @@ afterAll(async () => {
 });
 
 describe('maturation board — production wiring', () => {
+  it('includes real commitment owner records in the census without sharing their conversation text', async () => {
+    const { server } = await boot(true, true, undefined, 'commitment-census-test');
+    const privateRequest = 'Private commitment census fixture';
+    const privateResponse = 'Private response retained only by its existing owner';
+    expect((await request(server.getApp()).get('/maturation/board?part=coverage')).status).toBe(401);
+    const created = await request(server.getApp()).post('/commitments').set('Authorization', 'Bearer commitment-census-test').send({
+      type: 'one-time-action', userRequest: privateRequest, agentResponse: privateResponse,
+      owner: 'user', blockedOn: 'none', verificationMethod: 'manual',
+      followThroughOptOutReason: 'Isolated test fixture; no user delivery required',
+    });
+    expect(created.status).toBe(201);
+    const coverage = await request(server.getApp()).get('/maturation/board?part=coverage').set('Authorization', 'Bearer commitment-census-test');
+    expect(coverage.status).toBe(200);
+    expect(coverage.body.sources).toContainEqual({ name: 'commitment-tracker', ok: true });
+    const id = `commitment:${JSON.stringify([created.body.originMachineId ?? coverage.body.origin, created.body.id])}`;
+    expect(coverage.body.rows.find((r: { id: string }) => r.id === id)).toMatchObject({
+      kind: 'effort', title: `Commitment ${created.body.id}`, posture: 'pending',
+      sources: ['commitment-tracker'], subjects: [], state: 'not-linked',
+    });
+    expect(JSON.stringify(coverage.body)).not.toContain(privateRequest);
+    expect(JSON.stringify(coverage.body)).not.toContain(privateResponse);
+    const ownerRead = await request(server.getApp()).get('/commitments').set('Authorization', 'Bearer commitment-census-test');
+    expect(ownerRead.body.commitments.find((r: { id: string }) => r.id === created.body.id)).toMatchObject({ userRequest: privateRequest, agentResponse: privateResponse });
+  });
+
   it('is alive on a development agent: 200, real review rows, advisory, registry wired', async () => {
     const { server, date } = await boot(true);
     const res = await request(server.getApp()).get('/maturation/board');
