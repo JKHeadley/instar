@@ -32353,7 +32353,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   applied: {
                     ...resolvedToApplied(_resolved),
                     framework: spawned?.framework ?? _resolved.framework,
-                    model: spawned?.model ?? _resolved.model ?? null,
+                    model: _resolved.modelTier ? null : (spawned?.model ?? _resolved.model ?? null),
                   },
                 };
               } catch (err) {
@@ -32464,6 +32464,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               switchNowConfirmTtlMs: cfg?.switchNowConfirmTtlMs ?? 300_000,
             };
           },
+          canDiscloseReconciliation: (topicKey) => speakerElection.decide(Number(topicKey)).speak,
           disclose: (topicKey, text, meta) => {
             // §8 disclosure-of-record. The orchestrator stamps each notice with
             // an audit sequence ([#N]) so consecutive notices are never byte-

@@ -60,4 +60,27 @@ describe('PostUpdateMigrator command-watchdog awareness parity', () => {
       'CLAUDE.md: hardened command-watchdog descendant attribution awareness',
     );
   });
+
+  it('adds the Xcode test-run floor line to an existing CLAUDE.md once, matching the template', async () => {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-watchdog-xcode-awareness-'));
+    cleanup.push(projectDir);
+    fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
+    const claudeMd = path.join(projectDir, 'CLAUDE.md');
+    fs.writeFileSync(claudeMd, '# Existing\n\n- **Command-watchdog test-runner floor:** old.\n');
+
+    const first = migrate(projectDir);
+    const afterFirst = fs.readFileSync(claudeMd, 'utf8');
+    expect(first.errors).toEqual([]);
+    expect(first.upgraded).toContain('CLAUDE.md: added Xcode test-run watchdog floor awareness');
+    const line = afterFirst.split('\n').find((l) => l.includes('Xcode test runs get the test-runner floor too:'));
+    expect(line).toBeDefined();
+
+    const { generateClaudeMd } = await import('../../src/scaffold/templates.js');
+    const template = generateClaudeMd('test', 'test', 4042, false);
+    expect(template.split('\n')).toContain(line);
+
+    const second = migrate(projectDir);
+    expect(fs.readFileSync(claudeMd, 'utf8')).toBe(afterFirst);
+    expect(second.upgraded).not.toContain('CLAUDE.md: added Xcode test-run watchdog floor awareness');
+  });
 });

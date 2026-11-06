@@ -30,3 +30,7 @@ Independent SMALL review by coverage_fix_review concurred on scope/authority and
 **Reviewer:** /root/coverage_fix_review, independent native SMALL six-lens review. Round1 found2peer consistency gaps; round2 concurred after actual7red-to-green route regressions. Scope, owner/authority boundaries, lookback denominator, old-peer compatibility, omission arithmetic and whole-response budget checked. Reviewer read code/tests and did not rerun them.
 
 Final author verification:10service unit and24actual pool-route integration tests pass.8production-AgentServer throughput/measurement-board E2E tests pass, including actual retained evaluation rows read through the summary/trend routes with exact times/latest counts and existing outcome fields.4separate ordinary blocker-service lifecycle checks also pass. These are labelled controlled tests, not production activity or a deployment claim. Full canonical verifier remains required.
+
+## Documentation gate closure
+
+The complete verifier passed at source f3684939a07ba696a4f5059394c80a78f742c14f, but the separate documentation coverage check reported class54%below55%. Added the measurement evidence guide and contextual Observability cross-reference describing existing owners, actual read behavior and explicit baseline/promotion/claim limits. No source, test, threshold or authority changes. The real documentation check now passes with class55% and unchanged floor. Prior full-test evidence remains bound to its named source, not asserted for a later head.

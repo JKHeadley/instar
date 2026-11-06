@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "watchdog-xcodebuild-test-floor",
+  "sessionId": "58a38277-4e5a-423a-b26f-cdf27a0d1e91",
+  "timestamp": "2026-11-06T09:09:03.057Z",
+  "artifactPath": "upgrades/side-effects/watchdog-xcodebuild-test-floor.md",
+  "artifactSha256": "fe175c8821a99e309f944549bc1a0e652df0203118c6beaa70692689c0f0d421",
+  "coveredFiles": [
+    "docs/specs/watchdog-xcodebuild-test-floor.eli16.md",
+    "src/monitoring/SessionWatchdog.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "upgrades/side-effects/watchdog-xcodebuild-test-floor.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Comment tags and a test tracking-list entry on an already reviewed Tier-1 change; no runtime behavior change; a revert fully undoes it",
+  "eli16Path": "docs/specs/watchdog-xcodebuild-test-floor.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/watchdog-xcodebuild-test-floor.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

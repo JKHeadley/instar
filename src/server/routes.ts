@@ -12527,7 +12527,7 @@ export function createRoutes(ctx: RouteContext): Router {
             ctx.topicProfile?.orchestrator?.recordSpawnSuccess(parsedTopicId, {
               ...topicSpawnProfile.applied,
               framework: (session.framework ?? topicSpawnProfile.applied.framework) as typeof topicSpawnProfile.applied.framework,
-            });
+            }, { launchExpectation: topicSpawnProfile.launchExpectation });
           } catch (err) {
             // @silent-fallback-ok: without the record the boot sweep leaves the
             // session alone (unknown launch profile is not divergence).

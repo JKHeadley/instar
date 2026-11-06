@@ -281,11 +281,8 @@ describe('Verified pairing v2 — two relay-only agents (FD4 v2)', () => {
       const typed = [...own];
       typed[7] = typed[7] === 'abandon' ? 'ability' : 'abandon';
       const r = await authed(request(F.app).post(`/threadline/pairing/${other.fp}/verify`)).send({ words: typed, pin: PIN });
+      expect(r.status).toBe(200);
       expect(r.body.state).toBe('verification-failed');
-      const swapped = [...own];
-      [swapped[0], swapped[1]] = [swapped[1], swapped[0]];
-      // already failed; a reordered set would also have been a mismatch (checked by the unit-level compare)
-      expect(swapped).not.toEqual(own);
     } finally {
       await F.server.stop();
       SafeFsExecutor.safeRmSync(F.tmpDir, { recursive: true, force: true, operation: 'tests/e2e/threadline-pairing-v2-relay-agents.test.ts:cleanup-typed' });
