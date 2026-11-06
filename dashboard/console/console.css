@@ -1236,3 +1236,12 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 /* Promises priority filter (promise-review-and-priority §2.7) */
 .promise-filter { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; }
 .promise-filter .chip[aria-pressed="true"] { border-color: var(--accent, var(--hairline-strong)); color: var(--text); background: var(--surface-raised, var(--surface)); font-weight: 600; }
+
+/* What I've learned to do (Learned page): proposal cards, the disagree reason, one line per skill. */
+.skill-proposals { display: flex; flex-direction: column; gap: var(--s-2); margin-top: var(--s-2); }
+.skill-paraphrases { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+.disagree-with { display: flex; gap: var(--s-2); align-items: center; flex-wrap: wrap; }
+.reason-select { height: 44px; font: inherit; font-size: 14px; color: var(--text); background: var(--surface-solid); border: 1px solid var(--hairline-strong); border-radius: var(--r-md); padding: 0 10px; max-width: 100%; }
+.reason-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash); }
+.skill-lines { margin: var(--s-2) 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 14.5px; }
+.skill-line { color: var(--text); }

@@ -3,13 +3,17 @@
 // How you like things (the learned preferences), Two machines disagree (only when
 // any), Things I'm still watching (corrections not yet a preference), Earlier
 // corrections (collapsed, paged with the ledger's own cursor), and the quiet line
-// "To change one, tell me in chat." Read only: no write route is called from here.
+// "To change one, tell me in chat." Plus "What I've learned to do" (the Skill Learning
+// Sentinel, docs/specs/skill-learning-sentinel.md §3.10): proposals first, each with Agree /
+// Disagree (the one write here, operator PIN in that request's body), then learned skills.
+// Drafter text (descriptions, paraphrases) is rendered as text, never as markup.
 
 import {
   buildPreferences, buildCorrections, buildConflicts, machineNames, learnedHeadline, learnedFacts,
   correctionsUrl, kindWords, confidenceWords, correctionStatusWords, ADVISORY_LINE,
+  buildLearnedSkillsView, DISAGREE_REASONS,
 } from './learned-model.js';
-import { el, setKids, pageHead, section, sheet, story, details, note, cantTell, firstPaint, askLink } from './ui.js';
+import { el, setKids, pageHead, section, sheet, story, details, note, cantTell, firstPaint, askLink, askPin, markNeed } from './ui.js';
 
 const PAGE = 20;
 // The last good preferences build, so a failed refresh shows it with its age (stale) instead of nothing.
@@ -20,11 +24,12 @@ let olderPages = [];
 const CORRECTION_KEYS = ['id', 'kind', 'status', 'occurrenceCount', 'detectedAt', 'updatedAt', 'dayBucket', 'topicId', 'routedVia', 'verifyWindowStart', 'verifyWindowEnd', 'reopenCount', 'dedupeKey'];
 
 export async function renderLearned(main, ctx) {
-  const { get } = ctx;
+  const { get, post } = ctx;
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Settings · What I’ve learned about you' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
-  const [prefsRes, firstPage, conflictsRes, poolRes] = await Promise.all([
-    get('/preferences/session-context'), get(correctionsUrl(null, PAGE)), get('/state/conflicts'), get('/pool'),
+  const [prefsRes, firstPage, conflictsRes, poolRes, skillsRes] = await Promise.all([
+    get('/preferences/session-context'), get(correctionsUrl(null, PAGE)), get('/state/conflicts'), get('/pool'), get('/skills/learned'),
   ]);
+  const learnedSkills = buildLearnedSkillsView(skillsRes);
   const now = Date.now();
   const prefs = buildPreferences(prefsRes, { lastGood, now });
   if (prefs.ok && !prefs.stale) lastGood = { prefs, at: now };
@@ -34,7 +39,9 @@ export async function renderLearned(main, ctx) {
   const h = learnedHeadline({ prefs, corrections });
 
   const parts = [pageHead({ eyebrow: 'Settings · What I’ve learned about you', headline: h.text, tone: h.tone, facts: learnedFacts({ prefs, corrections, conflicts }) })];
-  const sections = [prefsBlock(prefs)];
+  // A proposal waiting for a verdict leads the page (first screen, Home counts it); otherwise the section follows the preferences.
+  const skillsSection = skillsBlock(learnedSkills, { post, refresh });
+  const sections = learnedSkills.pendingCount ? [skillsSection, prefsBlock(prefs)] : [prefsBlock(prefs), skillsSection];
   if (!conflicts.hidden) sections.push(conflictsBlock(conflicts));
   sections.push(...correctionsBlocks(corrections, { get, refresh }));
   sections.push(el('p', { class: 'card-note learned-change', text: 'To change one, tell me in chat.' }));
@@ -78,6 +85,65 @@ function prefCard(p, prefs) {
     sheet({ title: 'A preference I picked up' }, story(lines), note(ADVISORY_LINE), note('To change or drop it, tell me in chat.'), details({ line: p.raw }, ['line']));
   });
   return b;
+}
+
+// ── What I've learned to do ───────────────────────────────────────────────
+function skillsBlock(view, deps) {
+  const head = el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'What I’ve learned to do' }),
+    view.ok && view.pendingCount ? el('span', { class: 'list-count', text: String(view.pendingCount) }) : null);
+  const wrap = el('section', { class: 'list-section', id: 'sec-skills' }, head);
+  if (!view.ok) {
+    wrap.append(view.off ? el('p', { class: 'empty-line', text: view.reason }) : cantTell(view.reason));
+    return wrap;
+  }
+  if (view.empty) {
+    wrap.append(el('p', { class: 'empty-line', text: view.empty }));
+  } else {
+    if (view.proposals.length) wrap.append(el('div', { class: 'skill-proposals' }, view.proposals.map((p) => proposalCard(p, deps))));
+    if (view.skills.length) wrap.append(el('ul', { class: 'skill-lines' }, view.skills.map((s) => el('li', { class: 'skill-line', 'data-skill': s.name, text: s.text }))));
+  }
+  if (view.modeWords) wrap.append(note(view.modeWords));
+  wrap.append(el('p', { class: 'card-note skill-cost', text: view.costWords }));
+  return view.pendingCount ? markNeed(wrap, 'skill-learning-proposals') : wrap;
+}
+
+function proposalCard(p, deps) {
+  const status = el('p', { class: 'action-status', role: 'status' });
+  const card = el('div', { class: `need-card skill-proposal${p.pending ? '' : ' muted-card'}`, 'data-proposal': p.name },
+    el('span', { class: 'need-title', text: p.description }),
+    p.paraphrases.length ? el('ul', { class: 'skill-paraphrases' }, p.paraphrases.map((t) => el('li', { class: 'need-sub', text: `“${t}”` }))) : null,
+    el('span', { class: 'need-sub', text: [p.name, p.createdWords].filter(Boolean).join(' · ') }),
+    p.dissent ? el('span', { class: 'need-sub skill-dissent', text: p.dissent }) : null,
+    p.waiting ? el('span', { class: 'need-sub', text: p.waiting }) : null);
+  if (!p.pending) { card.append(el('span', { class: 'need-sub', text: p.decided })); return card; }
+  const path = (verdict) => `/skills/learned/proposals/${encodeURIComponent(p.name)}/${verdict}`;
+  const agree = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Agree', 'data-agree': p.name });
+  agree.addEventListener('click', async () => {
+    const pin = await askPin({ title: 'Agree with this?', explain: 'Agreeing needs your PIN so an agent can never agree for you. It goes in this one request and is not kept.', adapter: 'body' });
+    if (!pin) return;
+    agree.disabled = true; disagree.disabled = true; status.textContent = 'Working…';
+    const body = { pin: pin.pin }; pin.pin = '';
+    const r = await deps.post(path('agree'), body);
+    body.pin = '';
+    status.textContent = r.ok ? 'Agreed. Noted for the next review.' : (r.reason || 'That did not work.');
+    if (r.ok) setTimeout(deps.refresh, 900); else { agree.disabled = false; disagree.disabled = false; }
+  });
+  const reason = el('select', { class: 'reason-select', 'aria-label': 'Why you disagree', 'data-reason': p.name },
+    DISAGREE_REASONS.map((o) => el('option', { value: o.value, text: o.label })));
+  const disagree = el('button', { class: 'btn-quiet', type: 'button', text: 'Disagree', 'data-disagree': p.name });
+  disagree.addEventListener('click', async () => {
+    const why = reason.value;
+    const pin = await askPin({ title: 'Disagree with this?', explain: `“${reason.options[reason.selectedIndex].textContent}” — disagreeing needs your PIN too, so an agent can never answer for you. It goes in this one request and is not kept.`, adapter: 'body' });
+    if (!pin) return;
+    agree.disabled = true; disagree.disabled = true; status.textContent = 'Working…';
+    const body = { pin: pin.pin, reason: why }; pin.pin = '';
+    const r = await deps.post(path('disagree'), body);
+    body.pin = '';
+    status.textContent = r.ok ? 'Noted. I will not draft this one again.' : (r.reason || 'That did not work.');
+    if (r.ok) setTimeout(deps.refresh, 900); else { agree.disabled = false; disagree.disabled = false; }
+  });
+  card.append(el('div', { class: 'sheet-actions' }, agree, el('span', { class: 'disagree-with' }, reason, disagree)), status);
+  return card;
 }
 
 // ── Two machines disagree ─────────────────────────────────────────────────

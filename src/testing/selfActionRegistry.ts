@@ -4158,7 +4158,62 @@ const learnedSkillReconciler: SelfActionController = {
   makeUnderPressure: makeLearnedSkillReconcilerPressure,
 };
 
+/**
+ * skill-learning-tick — the Skill Learning Sentinel's tick
+ * (docs/specs/skill-learning-sentinel.md §3.1, §3.3–§3.5;
+ * src/monitoring/SkillLearningSentinel.ts). Self-triggered every
+ * `tickMinutes`. The emit is ONE classify/draft LLM batch: up to
+ * `llm.batchSize` keys per tick reach the arbiter/drafter.
+ *
+ * Convergence argument: every key a tick touches reaches a DURABLE verdict row
+ * in the append-only ledger — a draft becomes a proposal (the key is skipped
+ * while its proposal exists), a wait/never carries `expiresAt = now +
+ * verdictReaskDays`, and a refusal is held the same way — so a key is never
+ * re-asked inside its horizon. Under the pinned pressure (a fixed backlog of
+ * PENDING keys, every arbiter answer `wait`, every draft refused, the re-ask
+ * horizon longer than the test horizon) the backlog drains in
+ * ceil(PENDING / batchSize) batches and then the tick makes ZERO calls:
+ * boundK = PENDING ÷ batchSize, horizon-independent. An LlmQueue admission
+ * refusal stops the tick early WITHOUT marking keys (counted; retried next
+ * tick) — that pauses the drain, it never widens it. The durable holds live in
+ * the ledger, so a restart cannot re-arm them.
+ */
+const SKILL_LEARNING_PENDING = 100;
+const SKILL_LEARNING_BATCH = 20;
+function makeSkillLearningTickPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const held = (f.durableState.get('skill-learning-tick:held') as Set<string> | undefined) ?? new Set<string>();
+  f.durableState.set('skill-learning-tick:held', held);
+  const keys = Array.from({ length: SKILL_LEARNING_PENDING }, (_, i) => `procedure-key-${i}`);
+  return {
+    tick() {
+      sink.considered += 1;
+      const pending = keys.filter((k) => !held.has(k));
+      if (pending.length === 0) return;                       // empty backlog ⇒ zero calls
+      const batch = pending.slice(0, SKILL_LEARNING_BATCH);
+      sink.emit({ verb: 'converge-classify-draft', target: `batch-${held.size / SKILL_LEARNING_BATCH}` });
+      for (const k of batch) held.add(k);                      // durable verdict row (wait / refused) per key
+    },
+  };
+}
+const skillLearningTick: SelfActionController = {
+  id: 'skill-learning-tick',
+  actionVerb: 'converge-classify-draft',
+  models: 'src/monitoring/SkillLearningSentinel.ts (evaluateKeys — per-key durable verdict rows with a re-ask horizon; llm.batchSize keys per tick)',
+  modelsPath: 'src/monitoring/SkillLearningSentinel.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeSkillLearningTickPressure(f, sink),
+  },
+  boundK: SKILL_LEARNING_PENDING / SKILL_LEARNING_BATCH,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 10 * 60_000, // the 10-minute tick
+  eternalSentinel: undefined,
+  makeUnderPressure: makeSkillLearningTickPressure,
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  skillLearningTick,
   attributionAuditRetry,
   presenceUsageNotice,
   learnedSkillReconciler,

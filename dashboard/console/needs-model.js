@@ -11,6 +11,7 @@ import { buildPlansPage } from './plans-model.js';
 import { buildRequests } from './secrets-model.js';
 import { spendingNeed } from './costs-model.js';
 import { healthNeedRows } from './health-model.js';
+import { proposalsNeedingVerdict } from './learned-model.js';
 
 // warning-path: inline
 const row = (key, main, sub, href, refs = []) => ({ key: `need:${key}`, main, sub: sub || '', tone: 'attn', refs, action: { kind: 'href', href } });
@@ -62,6 +63,13 @@ export const NEED_SOURCES = [
     } },
   { id: 'spending', page: 'capacity/costs', reads: { status: '/routing-spend/enable-status' },
     rows: ({ status }) => { const n = spendingNeed(status); return n ? [row('spending', n.title, n.why, '#/capacity/costs')] : []; } },
+  // Skill-learning proposals without a verdict (docs/specs/skill-learning-sentinel.md §3.10); 503 = the sentinel is off here.
+  { id: 'skill-learning-proposals', page: 'settings/learned', reads: { status: '/skills/learned' },
+    rows: ({ status }) => {
+      const pending = proposalsNeedingVerdict(status.data);
+      if (pending === null) return UNREADABLE;
+      return pending.map((p) => row(`skill-proposal:${p.name}`, `I think I’ve learned to: ${p.description}`, 'Agree, or disagree with a reason, on the Learned page', '#/settings/learned?s=skills', [p.name]));
+    } },
 ];
 
 /**

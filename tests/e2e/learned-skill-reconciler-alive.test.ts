@@ -95,7 +95,9 @@ describe('LearnedSkillReconciler E2E — WIRED into the boot path (dead-code gua
 
   it('server.ts runs the boot pass and starts the tick', () => {
     expect(serverSrc).toMatch(/learnedSkillReconciler\.reconcileAll\('boot'\)/);
-    expect(serverSrc).toMatch(/learnedSkillReconciler\.start\(\)/);
+    // Slice 1: the reconciler's start() moved inside the one-expression skill-learning wiring (TS2563 budget);
+    // wire.ts calls `reconciler.start()` unconditionally before the enabled check (tests/unit/skill-learning-wire.test.ts).
+    expect(serverSrc).toMatch(/startSkillLearning\(\{ reconciler: learnedSkillReconciler/);
   });
 
   it('server.ts hands the boot pull its reconcile when commits were pulled', () => {

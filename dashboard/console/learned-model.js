@@ -215,3 +215,98 @@ export function learnedFacts({ prefs, corrections, conflicts }) {
   if (conflicts && conflicts.ok && conflicts.rows.length) facts.push({ n: conflicts.rows.length, label: conflicts.rows.length === 1 ? 'disagreement between machines' : 'disagreements between machines', tone: 'attn' });
   return facts.slice(0, 4);
 }
+
+// ── What I've learned to do (GET /skills/learned) ─────────────────────────
+// The Skill Learning Sentinel's status for this machine (docs/specs/skill-learning-sentinel.md
+// §3.10). Proposals come first (each wants a verdict: Agree / Disagree with a reason), then
+// one plain line per learned skill with its numbers in words, then the measured cost. Every
+// string the drafter wrote (description, paraphrases) is shown as TEXT by the page; nothing
+// here produces markup.
+
+/** The reasons the Disagree control offers; the tag goes in the request as `reason`. */
+export const DISAGREE_REASONS = [
+  { value: 'not something I do', label: 'Not something I do' },
+  { value: 'wrong steps', label: 'Wrong steps' },
+  { value: 'already have a skill for this', label: 'I already have a skill for this' },
+  { value: 'other', label: 'Other' },
+];
+export const LEARNED_SKILLS_OFF = 'Not switched on here.';
+export const LEARNED_SKILLS_EMPTY = 'Nothing learned yet.';
+const MAX_PARAPHRASES = 6;
+
+const count = (n, one, many) => `${n} ${n === 1 ? one : (many || `${one}s`)}`;
+const num = (v) => (Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0);
+
+/** A proposal with no operator verdict yet wants one; a decided one is shown with its verdict. */
+export function proposalPending(p) {
+  return Boolean(p) && typeof p.name === 'string' && !(p.verdict && typeof p.verdict === 'object' && p.verdict.verdict);
+}
+
+/** What a proposal card shows: the plain description, its triggering paraphrases, and the decided line when any. */
+export function proposalCardText(p) {
+  const name = clean(p && p.name, 80) || 'unnamed';
+  const description = clean(p && p.description, 600) || `A skill I think I have learned (${name}).`;
+  const paraphrases = (Array.isArray(p && p.paraphrases) ? p.paraphrases : []).map((t) => clean(t, 200)).filter(Boolean).slice(0, MAX_PARAPHRASES);
+  const v = p && p.verdict && typeof p.verdict === 'object' ? p.verdict : null;
+  const decided = v && v.verdict ? `You ${v.verdict === 'agree' ? 'agreed' : 'disagreed'}${v.reason ? ` (${clean(v.reason, 80)})` : ''}${v.at ? ` · ${ago(v.at) || 'earlier'}` : ''}.` : null;
+  const waiting = p && p.pendingReason === 'one-family' ? 'Only one reviewer family has looked at this; a second one, or your verdict, settles it.' : null;
+  // Spec §3.3: a proposal on the disagreement set is LABELLED so the operator's tap grades the dissenting rung.
+  const d = p && p.disagreement;
+  const dissent = d === 'arbiter-only' ? 'My judgment drafted this; the fixed rule would have waited.' : d === 'default-only' ? 'The fixed rule drafted this; my judgment would have waited.' : (p && p.arbiterOnly === true ? 'My judgment drafted this; the fixed rule would have waited.' : null);
+  return { name, description, paraphrases, decided, waiting, dissent, pending: proposalPending(p), createdWords: p && p.createdAt ? `Drafted ${ago(p.createdAt) || 'earlier'}` : '' };
+}
+
+/** "weekly-ci-health — 4 runs accepted, 1 corrected, 2 unknown" (plus the state when not plainly learned). */
+export function skillLine(s) {
+  const name = clean(s && s.name, 80) || 'unnamed';
+  const accepted = num(s && s.accepted) + num(s && s.acceptedInferred);
+  const parts = [`${count(accepted, 'run')} accepted`, `${num(s && s.corrected)} corrected`, `${num(s && s.unknown)} unknown`];
+  const state = s && s.state === 'locked' ? ' · locked' : s && s.state === 'retired' ? ' · retired' : '';
+  const misfires = num(s && s.misfires) ? ` · ${count(num(s.misfires), 'misfire')}` : '';
+  return { key: `skill:${name}`, name, text: `${name} — ${parts.join(', ')}${misfires}${state}`, state: (s && s.state) || 'learned', locked: Boolean(s && s.locked) };
+}
+
+/** The measured cost line, from the sentinel's own number; never estimated here. */
+export function costLine(status) {
+  const c = status && status.llmSpendCentsToday;
+  if (!Number.isFinite(c)) return 'Cost today: not measured yet.';
+  const dollars = (c / 100).toFixed(2);
+  return c === 0 ? 'Cost today: nothing spent.' : `Cost today: $${dollars} measured.`;
+}
+
+/**
+ * GET /skills/learned → the section's view. 503 = not switched on here (no fake empty list);
+ * any other failure = can't tell; a 200 without the expected shape is unreadable, never "nothing".
+ */
+export function buildLearnedSkillsView(res) {
+  if (!res || !res.ok) {
+    const off = (res && res.status === 503) || /switched off/.test((res && res.reason) || '');
+    if (off) return { ok: false, off: true, reason: LEARNED_SKILLS_OFF, proposals: [], skills: [], pendingCount: 0 };
+    return { ok: false, off: false, reason: `Can’t tell what I’ve learned to do: ${(res && res.reason) || 'no answer'}.`, proposals: [], skills: [], pendingCount: 0 };
+  }
+  const d = res.data;
+  if (!d || typeof d !== 'object' || !Array.isArray(d.proposals) || !Array.isArray(d.skills)) {
+    return { ok: false, off: false, reason: 'Can’t tell what I’ve learned to do: the answer had no list.', proposals: [], skills: [], pendingCount: 0 };
+  }
+  const proposals = d.proposals.filter((p) => p && typeof p.name === 'string').map(proposalCardText);
+  const pending = proposals.filter((p) => p.pending);
+  const skills = d.skills.filter((s) => s && typeof s.name === 'string' && s.state !== 'proposal').map(skillLine);
+  const mode = d.mode === 'live' ? 'live' : 'shadow';
+  return {
+    ok: true, off: false, reason: null,
+    proposals: [...pending, ...proposals.filter((p) => !p.pending)],
+    pendingCount: pending.length,
+    skills,
+    mode,
+    modeWords: mode === 'shadow' ? 'Watching only: I draft proposals here and write nothing until you agree.' : null,
+    costWords: costLine(d),
+    machine: clean(d.machine, 60) || null,
+    empty: !proposals.length && !skills.length ? LEARNED_SKILLS_EMPTY : null,
+  };
+}
+
+/** For Home: the proposals still without a verdict, or null when the answer cannot be read. */
+export function proposalsNeedingVerdict(data) {
+  if (!data || typeof data !== 'object' || !Array.isArray(data.proposals)) return null;
+  return data.proposals.filter(proposalPending).map(proposalCardText);
+}
