@@ -60,3 +60,7 @@ Initial review found peer projection stripped new metadata and structural compat
 ## simplestRobustRoute
 
 Use the existing ledger, summary/trend service and pooled read; extend the existing recurring review with scoped instructions. No added background machinery. Start: real persisted evaluation; end: truthful local and peer projection; limit: original ledger retention and explicit read budgets. This is a read-path proof, not an unattended improvement-outcome claim.
+
+## 2026-11-06 Building audit supplement
+
+The only additional change is the content-bound Building-family audit record required by the constitutional edit. Independent same-family Codex review accepted exact candidate digest545426ef273d92449be8cc2189adfb077959bd17a3221ae75e16e0e190d640ff,43unchanged article identities and substantive alignment with pairedRule39. Floor34/40 is preserved with no rebaseline. Actual recorder reports audit-current=true. Protected-base/reference resolution did not certify a fresh enforcement ratio; the report explicitly states that limit. The separate direction approval remains unsatisfied: this audit is not operator ratification. No runtime, control, notification, migration or rollback-cost change. Existing over/under-block, multi-machine and operator-surface assessments remain applicable. Revert restores the old audit fact and its truthful stale state; it cannot authorize a constitutional merge.
