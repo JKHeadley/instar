@@ -419,8 +419,9 @@ describe('locked-proof launchd kill', () => {
     const target = realTarget({ main: { page }, mainOpenedAt: 0, cal, password: 'a'.repeat(20), now: () => clock, sleep: async (ms: number) => { slept.push(ms); clock += ms; } });
     const typing = cal.reserveMs + cal.perCharMs * 20;
     await target.typePassword({ timing: 'deadline', inject: [{ action: 'wait-deadline', at: 'before-enter' }] });
-    expect(slept[0]).toBeLessThan(600_000);
-    expect(slept[0] + typing).toBeGreaterThan(600_000);
+    // 0.8 s ahead of the ceiling: measured live, the duty appears about 0.4 s after the start and
+    // Enter about 0.65 s after that, so the ceiling falls between the first character and Enter.
+    expect(slept[0]).toBe(600_000 - 800);
     // "Deadline after Enter" keeps Enter 1.5 s ahead of the ceiling.
     clock = 0; slept.length = 0;
     await target.typePassword({ timing: 'deadline', inject: [{ action: 'wait-deadline', at: 'after-enter' }] });
