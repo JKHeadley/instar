@@ -16,7 +16,7 @@ const runtimes: TelegramOriginRuntime[] = [];
 const privateKey = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 beforeAll(async () => { worker = await compileOriginWorker(); });
 afterEach(async () => { for (const runtime of runtimes.splice(0)) await runtime.close(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-async function harness() {
+async function harness(extra: Partial<Parameters<typeof TelegramOriginRuntime.open>[0]> = {}) {
   const stateDir = temporaryState(), token = `123:${randomUUID()}`;
   let lifecycle: OriginSessionLifecycle | undefined;
   const runtime = await TelegramOriginRuntime.open({ storage: { stateDir, agentId: 'echo' }, workerUrl: worker,
@@ -24,7 +24,7 @@ async function harness() {
     signingKey: { privateKey, keyId: 'studio-1', keyEpoch: 1 }, bot: { token, accountId: 'bot-1', chatId: '-100123' },
     isSessionLive: () => true, attachSessionLifecycle: value => { lifecycle = value; },
     display: () => ({}), authorize: () => true, diagnoseUnknown: async () => undefined,
-    alertDestinations: () => [], getAlertPolicy: () => null, onNoticeState: () => undefined });
+    alertDestinations: () => [], getAlertPolicy: () => null, onNoticeState: () => undefined, ...extra });
   runtimes.push(runtime);
   const sessionToken = await lifecycle!.issue({ sessionId: 'deadline-session', harnessId: 'codex-cli', projectDir: process.cwd(), configuredModel: 'fixture-model' });
   const review = vi.fn(async () => ({ ok: true as const }));
@@ -134,6 +134,37 @@ describe('Telegram network deadlines after origin preparation', () => {
     const line = warn.mock.calls.map(c => String(c[0])).find(l => l.includes('send outcome unknown'));
     expect(line).toContain(`code=${cause.code}`);
     expect(line).not.toContain(h.token);
+  });
+  it('leaves a send alone while its own first pass is still in review, then sends exactly once', async () => {
+    const reviewQueuedReply = vi.fn(async () => 'retire' as const);
+    const h = await harness({ reviewQueuedReply });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    h.review.mockImplementationOnce(async () => { await gate; return { ok: true as const }; });
+    const sending = h.send({ networkTimeoutMs: 15_000 });
+    await vi.waitFor(() => expect(h.review).toHaveBeenCalledOnce());
+    expect(await h.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
+    expect(reviewQueuedReply).not.toHaveBeenCalled();
+    const operationId = (await h.runtime.store.listOrigins()).records[0].operation!.operationId;
+    expect((await h.runtime.store.getOperation(operationId))?.recovery ?? null).toBeNull();
+    release();
+    expect((await sending).status).toBe(200);
+    expect(h.network).toHaveBeenCalledOnce();
+    expect(h.runtime.service.isFirstSendRunning(operationId)).toBe(false);
+  });
+  it('runs recovery as often as asked but scans for reader-visible notices once per five minutes', async () => {
+    const onSessionDeliveryHeld = vi.fn(async () => undefined);
+    const h = await harness({ onSessionDeliveryHeld });
+    const scan = vi.spyOn(h.runtime.store, 'listSessionDeliveryExceptions');
+    await h.runtime.recoverHeld();
+    await vi.waitFor(() => expect(scan).toHaveBeenCalledOnce());
+    await h.runtime.recoverHeld(); await h.runtime.recoverHeld();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(scan).toHaveBeenCalledOnce();
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => now + 5 * 60_000);
+    await h.runtime.recoverHeld();
+    await vi.waitFor(() => expect(scan).toHaveBeenCalledTimes(2));
   });
   it('retains caller cancellation after invocation as unknown and never automatically replays it', async () => {
     const h = await harness(), caller = new AbortController();

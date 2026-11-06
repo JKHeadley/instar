@@ -137,11 +137,13 @@ export async function handleOriginMesh(options: {
   }
   try {
     await runtime.store.putVerifiedEvidence({ record: stored, verification });
-    await runtime.service.admit(operation);
-    const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson);
-    const response = await telegramFetch(`https://api.telegram.org/bot${runtime.options.bot.token}/${request.method}`,
-      { method: 'POST', headers: { 'Content-Type': request.contentType }, body: request.body,
-        networkTimeoutMs: 10_000 }, undefined, operation);
+    const response = await runtime.service.runFirstSend(record.operationId, async () => {
+      await runtime.service.admit(operation);
+      const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson);
+      return telegramFetch(`https://api.telegram.org/bot${runtime.options.bot.token}/${request.method}`,
+        { method: 'POST', headers: { 'Content-Type': request.contentType }, body: request.body,
+          networkTimeoutMs: 10_000 }, undefined, operation);
+    });
     const body = await response.json() as { result?: { message_id?: number } };
     return { ok: true, originId: record.originId, messageId: body.result?.message_id, originReceiptConfirmed: true,
       deliveryMachineId: runtime.options.identity.originMachineId, forwardedFromMachine: record.originMachineId };
