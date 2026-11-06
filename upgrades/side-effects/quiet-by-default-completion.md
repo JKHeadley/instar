@@ -79,6 +79,8 @@ Defect class: unbounded-self-action. Closure: guard. The source provenance lint 
 
 ## Second-pass review
 
+**Reviewer:** /root/review_design, /root/review_floors, /root/review_store — independent reviews, all concurred after corrections.
+
 All three independent reviewers concurred after corrections. Correctness review found the browser executor bypass and terminal replay edge; both now share origin classification and durable suppression with bot delivery. Conversation-floor review found the cold-start helper dropping its inbound binding; the narrowed helper and actual forwarded stop-ack path are covered. Storage review found version ordering, restart/ack ordering and retry fairness issues; the final durable offline→online rearm and eligibility-before-batch fix passed review. No constitution files changed.
 
 ## Evidence pointers
@@ -106,3 +108,5 @@ Final transport retry review: a quiet origin receipt is terminal in both formatt
 Latest main reconciliation (v1.3.1682) preserves both the notification awareness migration and sign-in profile protection, including both reviewed outbound/non-composer Stage-B dependency exclusions. Certified code and evidence remain unchanged.
 
 The merged main introduced additional public capability inventory. Architecture documentation now explains the gate/store/preference components and corrects legacy urgency wording so immediate scheduling cannot be mistaken for push entitlement. Documentation thresholds remain unchanged.
+
+Aggregate review evidence: the final trace covers the complete PR diff, including the reviewed package.json lint-chain change. This refreshes the artifact hash after follow-up documentation, preserving the native verifier requirement for a named, concurred independent review of every flagged harness path. The correctness reviewer explicitly concurred with this metadata repair.
