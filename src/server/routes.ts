@@ -49,7 +49,8 @@ import {
 } from './machineMaintenancePool.js';
 import { getActiveSessionPriorityLowerer } from '../core/sessionPriority.js';
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
-import { resolveSessionPlatform, sessionDisplayName, type SessionPlatformInfo } from './sessionPlatform.js';
+import { sessionDisplayName, type SessionPlatformInfo } from './sessionPlatform.js';
+import { createSessionPresentationResolver } from './sessionPresentation.js';
 import { readSystemTopicIds } from '../messaging/SystemTopicAdoption.js';
 import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 /**
@@ -73,7 +74,7 @@ import { IdentityManager as ThreadlineIdentityManager } from '../threadline/clie
 import { resolveAgentRelayStatus } from '../threadline/agentRelayStatus.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
 import { emergencyStopUserMessage } from '../messaging/shared/emergencyStopUserMessage.js';
-import { isVerifiedChannelName, verifiedEntityName } from '../messaging/shared/channelIdentity.js';
+import { verifiedChannelIdentity, isVerifiedChannelName, verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import { execFileSync } from 'node:child_process';
 import { activeClaudeKeyHealth } from '../core/ClaudeKeyHealth.js';
@@ -7825,18 +7826,14 @@ export function createRoutes(ctx: RouteContext): Router {
     // (and every concurrent request) on per-session sync isSessionAlive probes (A1 hardening).
     const sessions = ctx.sessionManager.getCachedRunningSessions().sessions;
     const schedulerStatus = ctx.scheduler?.getStatus() ?? null;
+    const presentSession = createSessionPresentationResolver({ ...ctx, stateDir: ctx.config.stateDir });
 
     res.json({
       sessions: {
         running: sessions.length,
         max: ctx.config.sessions.maxSessions,
         list: sessions.map(s => {
-          const detected = resolveSessionPlatform(s.tmuxSession, ctx.telegram, ctx.slack);
-          const topicName = ctx.telegram?.getTopicName(s.telegramTopicId ?? 0);
-          const platform = detected.platform === 'headless' && Number.isSafeInteger(s.telegramTopicId)
-            ? { platform: 'telegram', platformId: s.telegramTopicId, ...(isVerifiedChannelName('telegram', s.telegramTopicId!, topicName) ? { platformName: topicName } : {}) }
-            : detected;
-          return { id: s.id, name: sessionDisplayName(s.name, platform), jobSlug: s.jobSlug };
+          return { id: s.id, name: presentSession(s).name, jobSlug: s.jobSlug };
         }),
       },
       scheduler: schedulerStatus,
@@ -11484,6 +11481,7 @@ export function createRoutes(ctx: RouteContext): Router {
       : null;
 
     // Enrich sessions with hook event telemetry and platform info
+    const presentSession = createSessionPresentationResolver({ ...ctx, stateDir: ctx.config.stateDir });
     const enriched = sessions.map(s => {
       const result: Record<string, unknown> = { ...s };
 
@@ -11518,13 +11516,7 @@ export function createRoutes(ctx: RouteContext): Router {
 
       // Add platform indicator and display name (shared with the dashboard
       // WebSocket list so local and pooled rows can never disagree).
-      const detected = resolveSessionPlatform(s.tmuxSession, ctx.telegram, ctx.slack);
-      const topicName = ctx.telegram?.getTopicName(s.telegramTopicId ?? 0);
-      const platform = detected.platform === 'headless' && Number.isSafeInteger(s.telegramTopicId)
-        ? { platform: 'telegram', platformId: s.telegramTopicId, ...(isVerifiedChannelName('telegram', s.telegramTopicId!, topicName) ? { platformName: topicName } : {}) }
-        : detected;
-      Object.assign(result, platform);
-      result.name = sessionDisplayName(s.name, platform);
+      Object.assign(result, presentSession(s));
 
       return result;
     });
@@ -11575,16 +11567,29 @@ export function createRoutes(ctx: RouteContext): Router {
             // re-introduces the finished-session wall into the pool view.
             if (!includeAll && !explicitStatus && !isActiveStatus(s.status)) continue;
             if (explicitStatus && s.status !== explicitStatus) continue;
-            const remoteTopicId = typeof s.telegramTopicId === 'number' && Number.isSafeInteger(s.telegramTopicId) ? s.telegramTopicId : undefined;
+            const remoteTopicId = typeof s.telegramTopicId === 'number' && Number.isSafeInteger(s.telegramTopicId) && s.telegramTopicId > 0 ? s.telegramTopicId : undefined;
             const remotePlatformId = typeof s.platformId === 'number' || typeof s.platformId === 'string' ? s.platformId : remoteTopicId;
-            const remotePlatform: SessionPlatformInfo = s.platform === 'telegram' || s.platform === 'slack'
+            const remotePlatform: SessionPlatformInfo = s.platform === 'telegram' || s.platform === 'slack' || s.platform === 'app'
               ? { platform: s.platform, platformId: remotePlatformId, platformName: typeof s.platformName === 'string' ? s.platformName : undefined }
               : remoteTopicId !== undefined
                 ? { platform: 'telegram', platformId: remoteTopicId }
                 : { platform: 'headless' };
+            // Telegram IDs are pool-wide; negative app/Slack aliases are local
+            // to their owner and must never be looked up on the receiving machine.
+            let presentation = remotePlatform.platform === 'telegram' && Number(remotePlatform.platformId) > 0
+              ? { ...remotePlatform, ...presentSession({ name: sessionDisplayName(s.name, remotePlatform), tmuxSession: '', telegramTopicId: Number(remotePlatform.platformId) }) }
+              : { ...remotePlatform, name: sessionDisplayName(s.name, remotePlatform) };
+            // Renderers prefer platformName. Do not leave a placeholder or ID
+            // there to hide the valid session title we just recovered.
+            if (presentation.platformName) {
+              const title = presentation.platform === 'slack'
+                ? verifiedChannelIdentity('slack', String(presentation.platformId ?? '').split(':')[0], presentation.platformName)?.name
+                : verifiedEntityName(presentation.platformId ?? '__session__', presentation.platformName);
+              presentation = { ...presentation, platformName: title ?? undefined };
+            }
             remote.push({
               ...s,
-              name: sessionDisplayName(s.name, remotePlatform),
+              ...presentation,
               machineId: s.machineId ?? p.machineId,
               // This machine's registry names the machine first, so one dashboard never shows
               // the same machine under two names (2026-11-02: a peer called itself "Mac Lan"

@@ -7988,6 +7988,7 @@ export class AgentServer {
           poolStreamAllowRemoteInput: this.poolStreamAllowRemoteInput,
           poolStreamConnector: this.poolStreamConnector,
           selfMachineId: this.meshSelfId,
+          sessionPresentationSources: () => ({ ...this.routeContext!, stateDir: this.config.stateDir }),
           resolveSessionPlatform: (tmuxSession) =>
             resolveSessionPlatform(tmuxSession, this.telegramAdapter, this.slackAdapter),
         });
