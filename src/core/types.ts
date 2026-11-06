@@ -4022,6 +4022,8 @@ export interface InstarConfig {
      * `enabled` omitted ⇒ on wherever mobile pairing is on. Read live.
      */
     consoleTicket?: { enabled?: boolean };
+    /** Approve a waiting phone without a code (docs/specs/mobile-pairing-approve.md). Omitted ⇒ on wherever pairing is on; `false` keeps only the code. Read live. */
+    approve?: { enabled?: boolean };
     /**
      * Face ID-confirmed permission writes from the owner's phone (docs/specs/mobile-native-permissions.md).
      * `enabled` omitted ⇒ live on a development agent, dark on the fleet (DEV_GATED_FEATURES). Read live.

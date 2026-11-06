@@ -29473,9 +29473,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Mobile pairing Decline (mobile-device-keys §2.2): counts only when the lifeline proved the tap.
     if (ctx.telegram && typeof data === 'string' && data.startsWith('md:d:')) {
       try {
-        await ctx.telegram.handleMobileDecline({ callbackQueryId, data, fromUserId, chatId, verified: callbackDecision.verified });
+        await ctx.telegram.handleMobileDecline({ callbackQueryId, data, fromUserId, chatId, messageId: typeof messageId === 'number' ? messageId : undefined, verified: callbackDecision.verified });
         claimStore.markDone(callbackQueryId);
         res.json({ ok: true, mobileDecline: true });
+      } catch (err) { // @silent-fallback-ok — not silent: the tap is answered 500 and its claim marked failed
+        claimStore.markFailed(callbackQueryId);
+        res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+
+    // Mobile pairing Approve (mobile-pairing-approve §3.2): the same rule; an unproven tap never counts.
+    if (ctx.telegram && typeof data === 'string' && data.startsWith('md:a:')) {
+      try {
+        await ctx.telegram.handleMobileApprove({ callbackQueryId, data, fromUserId, chatId, messageId: typeof messageId === 'number' ? messageId : undefined, verified: callbackDecision.verified });
+        claimStore.markDone(callbackQueryId);
+        res.json({ ok: true, mobileApprove: true });
       } catch (err) { // @silent-fallback-ok — not silent: the tap is answered 500 and its claim marked failed
         claimStore.markFailed(callbackQueryId);
         res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });

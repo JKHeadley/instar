@@ -181,6 +181,7 @@ export class RealTarget {
     const guard = helper.find(p => p.command.includes('relock-guard'));
     const typist = helper.find(p => p.command.includes('input-stream'));
     const lockState = await this.readLockState();
+    const serverLockState = await this.serverLockState();
     const now = this.now();
     for (const [key, m] of Object.entries(markers)) {
       if (spawnSync('sudo', ['-n', 'test', '-e', path.join(this.store, `lease-${key}`)]).status === 0) this.events.add('lease-written');
@@ -191,19 +192,42 @@ export class RealTarget {
     if (guard) { this.events.add('guard-spawned'); this.pids.firstGuard ??= guard.pid; this.pids.guard = guard.pid; }
     if (typist) this.pids.typist = typist.pid;
     if (this.consoleOwner() === PROOF_USER) this.events.add('proof-user-console');
-    return { now, markers, dirty: state.dirty !== undefined && state.dirty !== null, lockState, typistRunning: !!typist, guardPid: guard?.pid, events: [...this.events],
+    return { now, markers, dirty: state.dirty !== undefined && state.dirty !== null, lockState, serverLockState, typistRunning: !!typist, guardPid: guard?.pid, events: [...this.events],
       processesGone: !Object.values(markers).every(m => TERMINAL.includes(m.state)) ? undefined : !guard && !typist, procs };
   }
 
   /** Agent A's lock reading; while A is down or suspended, agent B's (same user, same Mac). */
-  async readLockState() {
+  /**
+   * The Mac's own lock flag for the proof user's console session, read from IORegistry. It does
+   * not pass through the servers under test, whose reading is a cache that only refreshes while
+   * a viewer is connected. 'none' when the proof user holds no console session.
+   */
+  consoleLock() {
+    const py = "import plistlib,sys,subprocess\nd=plistlib.loads(subprocess.run(['ioreg','-n','Root','-d1','-a'],capture_output=True).stdout)\n"
+      + "u=[x for x in d.get('IOConsoleUsers',[]) if x.get('kCGSSessionUserNameKey')==sys.argv[1] and x.get('kCGSSessionOnConsoleKey')]\n"
+      + "print(('locked' if u[0].get('CGSSessionScreenIsLocked') else 'open') if u else 'none')";
+    return sh('python3', ['-c', py, PROOF_USER], { allowFail: true }).trim() || 'none';
+  }
+
+  /** What the servers report, for the record only: it can be stale, so no verdict rests on it. */
+  async serverLockState() {
     for (const agent of [this.a, this.b]) {
       try {
         const st = await this.api(agent, 'GET', '/desktop/locked/status');
-        if (typeof st.lockState === 'string') return st.lockState;
+        // A server reads 'unknown' until something samples the lock; one that does not know
+        // yet is skipped like one that is down.
+        if (typeof st.lockState === 'string' && st.lockState !== 'unknown') return st.lockState;
       } catch { /* this agent is down or stopped; try the other */ }
     }
     return 'unknown';
+  }
+
+  async readLockState() {
+    const own = this.consoleLock();
+    if (own === 'locked') return 'locked-in-session';
+    if (own === 'open') return 'unlocked';
+    // No console session for the proof user (logged out, or switched away): only a server can say which.
+    return this.serverLockState();
   }
 
   settled(snap, c) {
@@ -299,6 +323,8 @@ export class RealTarget {
   kill(pid, sig) {
     if (!pid) return { pid: null, sig, skipped: 'no-pid' };
     const owner = ownerOf(pid);
+    // Resuming a process that has already exited is not an error; stopping or killing nothing is.
+    if (!owner && sig === 'CONT') { this.stopped.delete(pid); return { pid, sig, skipped: 'gone' }; }
     if (owner !== PROOF_USER) throw new Error(`refusing to signal pid ${pid}: owned by "${owner || 'nobody'}", not ${PROOF_USER}`);
     sudo(['kill', `-${sig}`, String(pid)], { allowFail: true });
     if (sig === 'STOP') this.stopped.add(pid);
@@ -346,7 +372,7 @@ export class RealTarget {
     sudo(['install', '-o', PROOF_USER, '-m', '644', staged, plist]);
     sudo(['launchctl', 'bootstrap', `gui/${this.uid}`, plist]);
     const pid = await this.waitForServer(true, 90_000);
-    return { label, pid };
+    return { label, pid, lockStateKnown: await this.waitLockStateKnown() };
   }
 
   /**
@@ -379,6 +405,23 @@ export class RealTarget {
     return { removed: label };
   }
 
+  /** `ps` state letters for one pid: a stopped process starts with T. Empty when it is gone. */
+  procStat(pid) { return sh('ps', ['-o', 'stat=', '-p', String(pid)], { allowFail: true }).trim(); }
+
+  /**
+   * Listening is not ready: a freshly started server reads 'unknown' for about a minute, and the
+   * viewer page has no machine to offer until it knows. False after the wait is evidence, not an error.
+   */
+  async waitLockStateKnown(ms = 120_000) {
+    const until = this.now() + ms;
+    while (this.now() < until) {
+      const st = await this.api(this.a, 'GET', '/desktop/locked/status').catch(() => null);
+      if (typeof st?.lockState === 'string' && st.lockState !== 'unknown') return true;
+      await this.sleep(1_000);
+    }
+    return false;
+  }
+
   async waitForServer(up, ms) {
     const until = this.now() + ms;
     while (this.now() < until) {
@@ -394,15 +437,32 @@ export class RealTarget {
   async act(action, { step } = {}) {
     const helper = () => this.processes().filter(p => p.command.includes('instar-desktop-host'));
     switch (action) {
-      case 'stop-server': return this.kill(this.pids.server = this.serverPid(this.a), 'STOP');
+      case 'stop-server': {
+        const r = this.kill(this.pids.server = this.serverPid(this.a), 'STOP');
+        // tmux resumes a stopped pane process at once, so a case that believes it froze the
+        // server would be judging a server that never stopped. Prove the stop held.
+        await this.sleep(500);
+        const stat = r.pid ? this.procStat(r.pid) : '';
+        if (!stat.startsWith('T')) throw new Error(`stop-server: pid ${r.pid} did not stay stopped (state "${stat}"); serve it under launchd first`);
+        return { ...r, stat };
+      }
       case 'cont-server': return this.kill(this.pids.server, 'CONT');
       case 'kill-server': return this.kill(this.serverPid(this.a), 'KILL');
       case 'start-server': {
-        this.asProof([path.join(this.o.proofInstall, 'node_modules/.bin/instar'), 'server', 'start', '--dir', this.a.dir]);
-        const until = this.now() + 60_000;
-        while (this.now() < until && !this.serverPid(this.a)) await this.sleep(1_000);
-        if (!this.serverPid(this.a)) throw new Error(`start-server: nothing listening on port ${this.a.port} after 60 s`);
-        return { started: true };
+        // Both agents share the proof user's tmux server, so kill-tmux takes agent B down too,
+        // and with B down nothing answers while A is down. Every start leaves both listening.
+        const started = [];
+        for (const agent of [this.a, this.b]) {
+          // Agent A is always started: this step follows a kill or a launchd bootout, and a server
+          // that is still shutting down can hold the port for a moment and look alive.
+          if (agent !== this.a && this.serverPid(agent)) continue;
+          this.asProof([path.join(this.o.proofInstall, 'node_modules/.bin/instar'), 'server', 'start', '--dir', agent.dir]);
+          const until = this.now() + 60_000;
+          while (this.now() < until && !this.serverPid(agent)) await this.sleep(1_000);
+          if (!this.serverPid(agent)) throw new Error(`start-server: nothing listening on port ${agent.port} after 60 s`);
+          started.push(agent.port);
+        }
+        return { started: true, ports: started, lockStateKnown: await this.waitLockStateKnown() };
       }
       case 'kill-tmux': return { out: this.asProof(['tmux', 'kill-server']) };
       case 'serve-under-launchd': return this.serveUnderLaunchd();

@@ -717,13 +717,34 @@ export function acquireWorktreeCreateLock(agentHome: string): { release: () => v
 /** Keep full checkout growth bounded before git creates another source tree. */
 export function assertWorktreeCapacity(worktreesDir: string, limit = 500): void {
   const directories = fs.readdirSync(worktreesDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory()).length;
-  if (directories >= limit) {
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  if (directories.length >= limit) {
     throw new Error(
-      `worktree-capacity: ${directories} directories under ${worktreesDir} (limit ${limit}); ` +
-      'reclaim clean idle worktrees and preserve unique commits before creating another checkout',
+      `worktree-capacity: ${directories.length} directories under ${worktreesDir} (limit ${limit}): ` +
+      `${describeWorktreeFolder(worktreesDir, directories)}. ` +
+      'Everything listed counts toward the limit. Reclaim clean idle worktrees and preserve unique commits before creating another checkout',
     );
   }
+}
+
+/** What is filling the folder, in a form the reader can act on: checkouts vs other folders, grouped by name. */
+function describeWorktreeFolder(worktreesDir: string, directories: string[]): string {
+  const others = new Map<string, number>();
+  let checkouts = 0;
+  for (const name of directories) {
+    if (fs.existsSync(path.join(worktreesDir, name, '.git'))) { checkouts += 1; continue; }
+    const hyphen = name.indexOf('-', 1);
+    const group = hyphen === -1 ? name : `${name.slice(0, hyphen)}-*`;
+    others.set(group, (others.get(group) ?? 0) + 1);
+  }
+  const otherCount = directories.length - checkouts;
+  const summary = `${checkouts} git checkouts and ${otherCount} other folders`;
+  if (otherCount === 0) return summary;
+  const groups = [...others.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const shown = groups.slice(0, 6).map(([group, count]) => `${group} ${count}`).join(', ');
+  const rest = groups.length > 6 ? `, and ${groups.length - 6} more kinds` : '';
+  return `${summary} (${shown}${rest})`;
 }
 
 export async function resolveBaseBranch(

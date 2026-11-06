@@ -14,6 +14,33 @@ function setup(dryRun = false) {
   return { root, gate };
 }
 describe('Quiet by Default delivery', () => {
+  it('serves one verified owner approval reply without granting routine output replyhood', async () => {
+    const { root, gate } = setup();
+    const adapter = new TelegramAdapter({ token: '123:test', chatId: '-1001', ownerUserId: 555 }, root,
+      { suppressLifelineAutoCreate: true });
+    adapter.selectivity = gate;
+    let approved = false;
+    adapter.mobileApproveHandler = () => {
+      if (approved) return { outcome: 'ended', text: 'This pairing has already ended.' };
+      approved = true; return { outcome: 'approved', text: 'Approved.' };
+    };
+    const wire = vi.fn(async (_url: string, _options?: RequestInit) => new Response(JSON.stringify({ ok: true, result: { message_id: 17 } })));
+    vi.stubGlobal('fetch', wire);
+    const tap = { callbackQueryId: 'actual-verified-owner-tap', data: 'md:a:' + 'a'.repeat(24),
+      fromUserId: 555, chatId: 555, messageId: 9, verified: true };
+    gate.observeInbound(1, 'waiting-general-message');
+    const sends = () => wire.mock.calls.filter(call => String(call[0]).endsWith('/sendMessage'));
+    expect(await adapter.handleMobileApprove({ ...tap, verified: false })).toBe('refused');
+    expect(sends()).toHaveLength(0);
+    expect(await adapter.handleMobileApprove(tap)).toBe('approved');
+    expect(sends()).toHaveLength(1);
+    expect(await adapter.handleMobileApprove(tap)).toBe('unknown');
+    expect(sends()).toHaveLength(1);
+    expect(gate.latestInbound(1)).toBe('waiting-general-message');
+    expect(await adapter.sendToTopic(42, 'Routine output after pairing.')).toMatchObject({ recorded: true, delivered: false });
+    expect(sends()).toHaveLength(1);
+  });
+
   it('records 1000 unstamped mixed source sends with zero Telegram calls', async () => {
     const { root, gate } = setup();
     const adapter = new TelegramAdapter({ token: '123:test', chatId: '-1001' }, root);
