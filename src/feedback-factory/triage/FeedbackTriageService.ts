@@ -1,3 +1,6 @@
+import { isQuietReceipt } from '../../messaging/NotificationSelectivityGate.js';
+import { notificationStamper, withNotificationEnvelope } from '../../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/feedback-factory/triage/FeedbackTriageService.ts');
 /**
  * Feedback triage (docs/specs/feedback-triage-and-execution.md, Phase 1: §1–§3, §5–§7).
  *
@@ -103,9 +106,9 @@ export interface FeedbackTriageServiceOptions {
   listMergedPrs: () => Promise<MergedPr[] | null>;
   /** Executor availability before an executor is attached (`not-built` when none is constructed). */
   executorStatus: () => { available: boolean; reason: string };
-  raiseAttention: (item: AttentionInput) => Promise<void>;
+  raiseAttention: (item: AttentionInput) => Promise<unknown>;
   reportDegradation: (event: { feature: string; primary: string; fallback: string; reason: string; impact: string }) => void;
-  sendToTopic?: (topicId: number, text: string) => Promise<void>;
+  sendToTopic?: (topicId: number, text: string) => Promise<unknown>;
   dashboardLink: () => string;
   maxWallClockMs?: number;
   clock?: () => number;
@@ -1072,25 +1075,31 @@ export class FeedbackTriageService {
   }
 
   /** Send the action list at most once a day, never in the quiet window; stamps notifiedAt only after delivery. */
-  async sendActionList(): Promise<{ sent: boolean; reason?: string; items?: number }> {
+  async sendActionList(): Promise<{ sent: boolean; recorded?: boolean; reason?: string; items?: number }> {
     if (!this.opts.isCanonicalOwner()) return { sent: false, reason: 'not-canonical-owner' };
     const cfg = this.opts.config();
     const nowDate = new Date(this.now());
     if (inQuietWindow(nowDate, cfg.timeZone)) return { sent: false, reason: 'quiet-window' };
     const day = new Intl.DateTimeFormat('en-CA', { timeZone: cfg.timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(nowDate);
-    if (this.opts.store.meta('action_list:last_day') === day) return { sent: false, reason: 'already-sent-today' };
+    if (this.opts.store.meta('action_list:last_day') === day || this.opts.store.meta('action_list:last_recorded_day') === day) return { sent: false, reason: 'already-sent-today' };
     const composed = this.composeActionList();
     if (!composed) return { sent: false, reason: 'nothing-new' };
     const epoch = this.opts.ownerEpoch();
+    let receipt: unknown;
     /* @self-action-controller: feedback-triage-action-list */
     if (cfg.actionTopicId !== undefined && this.opts.sendToTopic) {
-      await this.opts.sendToTopic(cfg.actionTopicId, composed.text);
+      receipt = await withNotificationEnvelope(stampNotification(), async () => (this.opts)!.sendToTopic!(cfg.actionTopicId!, composed.text));
     } else {
-      await this.opts.raiseAttention({
+      receipt = await this.opts.raiseAttention({
         id: `feedback-triage:action-list:${day}`, title: 'Feedback triage: things that need you',
         summary: composed.text.split('\n')[1]?.replace(/^• /, '').slice(0, 200) ?? 'Feedback triage action list',
         description: composed.text, category: 'feedback', priority: 'NORMAL', sourceContext: 'feedback-triage:action-list',
       });
+    }
+    if (isQuietReceipt(receipt) || !!receipt && typeof receipt === 'object' && 'hubHeld' in receipt && receipt.hubHeld === true) {
+      this.opts.store.fenced(epoch, () => this.opts.store.setMeta('action_list:last_recorded_day', day));
+      this.opts.audit.append('action-list-recorded', { items: composed.itemIds.length, extra: composed.metaKeys.length });
+      return { sent: false, recorded: true, reason: 'quiet-recorded', items: composed.itemIds.length + composed.metaKeys.length };
     }
     this.opts.store.markNotified(epoch, composed.itemIds);
     this.opts.store.fenced(epoch, () => {

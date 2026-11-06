@@ -29,6 +29,17 @@ export const SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS = [
 
 /** Fields shared across ALL agent types and contexts (init + migration) */
 const SHARED_DEFAULTS: Record<string, unknown> = {
+  notifications: {
+    selectivity: {
+      dryRun: true,
+      push: { categories: {} },
+      digest: {
+        enabled: false,
+        cadence: 'daily',
+      },
+      quietStore: { retentionDays: 30, maxEntries: 20000 },
+    },
+  },
   // Native operator desktop access is a privileged full-machine capability.
   // Every new and existing agent stays dark until a deliberate local opt-in;
   // production also requires the developmentAgent role and live host checks.

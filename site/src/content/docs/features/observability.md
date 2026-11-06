@@ -240,3 +240,13 @@ rollout) and every reading path fails safe (a failed scan keeps the last sample 
 than crashing). An optional threshold heads-up exists but is **off by default** —
 measure first. It registers in the guard posture, so `GET /guards` shows whether it is
 on.
+
+## Outcome measurements and their limits
+
+The [measurement evidence guide](/features/measurement-evidence/) explains contracts, independent inventory coverage and versioned history. `MeasurementCoverage` reads existing registries to expose missing or incompatible measurement links. `MeasurementSubject` binds generic effort, job, capability and decision plans to an exact subject and origin; it does not create a parallel registry or let a parent's result stand in for a component.
+
+`MaturationOutcome` compares the declared baseline with current evidence and reports freshness, sample and origin gaps. `FeatureMetricsLedger` remains the telemetry and canonical decision-grade owner, while `BenchmarkDivergenceAnalyzer` checks evidence-health conditions such as sample floors and review cadence. Passing activity counters do not certify an improved outcome.
+
+`BlockerLifecycleLedger` retains the underlying observations and evaluations. `BlockerLifecycleService` reads their summary and trend, separating historical evaluation totals from latest results for the evaluated-feature cohort. `MeasurementTrend` preserves numeric samples and breaks lines across incompatible methods or stages. `MeasurementContractVersion` supplies retained full definitions rather than treating a contract hash as an explanation. Bounded reads disclose omitted data.
+
+These are advisory reads. `MaturationLadderService` still owns ladder moves, and no measurement view grants promotion authority. The views do not supply an automatic pre-intervention baseline or prove universal claim enforcement. Unavailable, stale or insufficient evidence remains a visible gap while ordinary services continue.

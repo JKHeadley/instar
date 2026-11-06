@@ -29,6 +29,20 @@ describe('job continuity alerts', () => {
 
   afterEach(() => { scheduler.stop(); project.cleanup(); });
 
+  it('keeps a quiet result separate from notified and observes its daily cadence', async () => {
+    raise.mockResolvedValue({ delivered: false, recorded: true, quietId: 'continuity-q' });
+    (scheduler as any).raiseContinuityAlert(job, 'fixture', 'job-silence-gci-review');
+    await vi.waitFor(() => expect(project.state.get<any>('job-silence-gci-review')?.recordedAt).toBeDefined());
+    expect(project.state.get<any>('job-silence-gci-review')?.lastNotified).toBeUndefined();
+    expect(project.state.queryEvents({ type: 'job_alert_delivered' })).toHaveLength(0);
+    (scheduler as any).raiseContinuityAlert(job, 'fixture', 'job-silence-gci-review'); expect(raise).toHaveBeenCalledOnce();
+  });
+  it('uses newer quiet recording time even when an older delivered timestamp exists', async () => {
+    project.state.set('job-silence-gci-review', { count: 3, lastSkip: new Date().toISOString(), lastNotified: new Date(Date.now() - 2 * 86400000).toISOString(), recordedAt: new Date(Date.now() - 60000).toISOString() });
+    (scheduler as any).raiseContinuityAlert(job, 'fixture', 'job-silence-gci-review');
+    await Promise.resolve(); expect(raise).not.toHaveBeenCalled();
+  });
+
   it('alerts after three gate skips and clears only after completed success', async () => {
     scheduler.start();
     for (let i = 0; i < 3; i++) scheduler.getSkipLedger().recordSkip(job.slug, 'gate');

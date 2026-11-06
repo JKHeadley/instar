@@ -48,7 +48,7 @@ async function harness(enabled: boolean) {
   vi.stubGlobal('fetch', network);
   const app = express(); app.use(express.json());
   app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer fixture-auth') { res.sendStatus(401); return; } next(); });
-  app.use(createRoutes({ config, telegramOrigin: boot.runtime, sessionManager: { clearInjectionTracker: () => undefined },
+  app.use(createRoutes({ state: { getSession: () => undefined }, config, telegramOrigin: boot.runtime, sessionManager: { clearInjectionTracker: () => undefined },
     telegram: { sendToTopic: async (topic: number, text: string) => {
       const response = await telegramFetch('https://api.telegram.org/bot123:notice-http/sendMessage', { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: '-100123', message_thread_id: topic, text }) });

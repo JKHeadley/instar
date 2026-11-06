@@ -31,6 +31,7 @@ const stops: Stop[] = [];
 const dirs: string[] = [];
 afterEach(async () => {
   for (const stop of stops.splice(0)) await stop();
+  vi.restoreAllMocks();
   for (const dir of dirs.splice(0)) SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/attribution-routes.test.ts:cleanup' });
 });
 
@@ -75,7 +76,7 @@ async function serve(agent: { project: string; stateDir: string }, ctxExtra: Rec
   app.use(createRoutes({
     config: { authToken: 'test', stateDir: agent.stateDir, port: 0, projectName: 'x', projectDir: agent.project },
     state: new StateManager(agent.stateDir),
-    sessionManager: { clearInjectionTracker: () => {} },
+    sessionManager: { clearInjectionTracker: () => {}, getSession: () => null },
     startTime: new Date(),
     ...ctxExtra,
   } as never));
@@ -257,7 +258,7 @@ describe('B23 through checkOutboundMessage', () => {
     const { url } = await serve(agent, {
       attribution: runtime,
       messagingToneGate: new MessagingToneGate(provider),
-      telegram: { sendToTopic: async (_t: number, text: string) => { sent.push(text); } },
+      telegram: { sendToTopic: async (_t: number, text: string) => { sent.push(text); return { messageId: sent.length }; } },
     });
     const reply = (text: string, metadata?: Record<string, unknown>) => postJson(`${url}/telegram/reply/42`, metadata ? { text, metadata } : { text });
     return { reply, sent, prompts, runtime };
@@ -324,6 +325,8 @@ describe('Threadline and memory routes', () => {
     const peer = await listen(target);
     const name = `attr-int-${randomBytes(4).toString('hex')}`;
     fs.writeFileSync(path.join(agent.stateDir, 'threadline', 'known-agents.json'), JSON.stringify({ agents: [{ name, port: peer.port, fingerprint: 'aabbccddeeff00112233445566778899', publicKey: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' }] }));
+    // Keep the real token lookup inside this disposable fixture's home.
+    vi.spyOn(os, 'homedir').mockReturnValue(agent.project);
     const tokenDir = path.join(os.homedir(), '.instar', 'agent-tokens');
     fs.mkdirSync(tokenDir, { recursive: true });
     const tokenFile = path.join(tokenDir, `${name}.token`);

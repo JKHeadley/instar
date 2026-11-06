@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-06T04:31:55.172Z",
+  "slug": "quiet-by-default-completion",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/threadline/peerHomebaseRelay.ts matches relay / delivery path",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 39,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/data/feature-ladders.json",
+      "src/messaging/NotificationBatcher.ts",
+      "src/threadline/peerHomebaseRelay.ts"
+    ],
+    "addedLines": 27,
+    "deletedLines": 12
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Full native unit suite exposed async delivery bookkeeping and pre-partition dedup holes plus unregistered shared feature contracts. In-flight reservations now precede await and success appends current state. Producer scope applies before dedup and after delivery; rollout and UI/framework contracts remain enforced."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "evidence": "tests/unit/peer-user-meant-judge.test.ts",
+    "howCaught": "Native broad suite plus deferred concurrent, out-of-order, quiet-release and first-only regressions guard the existing topic brake. Producer provenance survives identical shapes and cross-flush suppression. Real writer-to-registry evidence preserves operator-owned settling and tests/unit/self-action-convergence conventions."
+  },
+  "verdict": "pass"
+}

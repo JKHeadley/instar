@@ -568,7 +568,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
     return lease < this.deps.now();
   }
 
-  private async processRow(row: PendingRelayRow): Promise<'recovered' | 'escalated' | 'tone-gated' | 'retry' | 'ambiguous'> {
+  private async processRow(row: PendingRelayRow): Promise<'recovered' | 'quiet-recorded' | 'escalated' | 'tone-gated' | 'retry' | 'ambiguous'> {
     // Claim the row — write the lease.
     const leaseUntil = new Date(this.deps.now() + this.cfg.leaseDurationMs).toISOString();
     let claimedBy = `${this.deps.bootId}:${process.pid}:${leaseUntil}`;
@@ -676,6 +676,15 @@ export class DeliveryFailureSentinel extends EventEmitter {
       timeSinceFirstMs: this.deps.now() - Date.parse(row.attempted_at),
       now: this.deps.now,
     });
+
+    if (resp.status === 200) {
+      let receipt: { recorded?: boolean; delivered?: boolean; quietId?: string } = {};
+      try { receipt = JSON.parse(resp.body); } catch { /* @silent-fallback-ok: legacy text responses retain existing recovery handling */ }
+      if (receipt.recorded === true && receipt.delivered === false && typeof receipt.quietId === 'string' && receipt.quietId.length <= 200) {
+        if (!transitionOwned('quiet-recorded', { attempts: row.attempts + 1, http_code: 200, error_body: receipt.quietId })) return 'retry';
+        return 'quiet-recorded'; // No delivered counter, recovered marker, or delivery latch.
+      }
+    }
 
     if (decision.action === 'finalize-success') {
       // Update last-delivery time for per-topic rate cap.

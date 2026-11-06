@@ -110,7 +110,7 @@ export interface PresenceProxyConfig {
     /** The DETERMINISTIC send path (telegram.sendToTopic), which does not
      *  traverse the muzzled reply route. Without it the honest line is
      *  structurally undeliverable to the very topic it is about. */
-    sendDeterministic?: (topicId: number, text: string) => Promise<boolean>;
+    sendDeterministic?: (topicId: number, text: string, inboundMessageId?: string) => Promise<boolean>;
   };
 
   /**
@@ -240,6 +240,7 @@ export interface PresenceProxyConfig {
 }
 
 export interface ProxyMetadata {
+  inboundMessageId?: string;
   source: 'presence-proxy';
   tier: number;
   isProxy: true;
@@ -254,6 +255,7 @@ export interface ProcessInfo {
 }
 
 interface PresenceState {
+  inboundMessageId?: string;
   topicId: number;
   sessionName: string;
   userMessageAt: number;
@@ -1008,6 +1010,7 @@ export class PresenceProxy {
       sessionName,
       userMessageAt: Date.now(),
       userMessageText: event.text,
+      inboundMessageId: String(event.messageId),
       userMessageBaselineSnapshot: baselineSnapshot,
       tier1FiredAt: null,
       tier1Snapshot: null,
@@ -2288,7 +2291,7 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
         // path bypasses the /telegram/reply duplicate suppression that would
         // otherwise have absorbed the repeats.
         if (this.config.standDown?.hasProxyNotice?.(topicId)) return;
-        const sent = await this.config.standDown?.sendDeterministic?.(topicId, line);
+        const sent = await this.config.standDown?.sendDeterministic?.(topicId, line, this.states.get(topicId)?.inboundMessageId);
         if (sent) this.config.standDown?.claimProxyNotice(topicId);
       } catch {
         /* @silent-fallback-ok — the honest line is courtesy; failing to send it must
@@ -2311,6 +2314,7 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
     try {
       await this.config.sendMessage(topicId, text, {
         source: 'presence-proxy',
+        inboundMessageId: this.states.get(topicId)?.inboundMessageId,
         tier,
         isProxy: true,
         originAuthor,
@@ -2377,6 +2381,7 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
         sessionName: state.sessionName,
         userMessageAt: state.userMessageAt,
         userMessageText: state.userMessageText,
+        inboundMessageId: state.inboundMessageId,
         tier1FiredAt: state.tier1FiredAt,
         tier1SnapshotHash: state.tier1SnapshotHash,
         tier2FiredAt: state.tier2FiredAt,

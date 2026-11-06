@@ -1,3 +1,4 @@
+import { isQuietReceipt, type QuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import fs from 'node:fs';
@@ -58,7 +59,9 @@ export interface WindowCadenceReportReceipt {
   reportId: string;
   dueAt: string;
   attemptedAt: string;
-  status: 'would-deliver' | 'attempting' | 'delivered' | 'failed';
+  status: 'would-deliver' | 'attempting' | 'delivered' | 'quiet-recorded' | 'failed';
+  quietId?: string;
+  recordedAt?: string;
   messageId?: number;
   deliveredAt?: string;
   error?: string;
@@ -96,6 +99,8 @@ export interface WindowRunCadenceDocument {
     notificationAttemptCount: number;
     notificationNextAttemptAt?: string;
     notificationMessageId?: number;
+    notificationQuietId?: string;
+    notificationRecordedAt?: string;
   };
   closedAt?: string;
 }
@@ -117,7 +122,7 @@ export interface WindowRunCadenceDeps {
     reportId: string;
     dueAt: string;
     text: string;
-  }) => Promise<{ messageId: number }>;
+  }) => Promise<{ messageId: number } | QuietReceipt>;
   /** Sign the immutable report/run binding before any delivery attempt. */
   signSynthesis?: (request: {
     state: Readonly<WindowRunLivenessDocument>;
@@ -132,7 +137,7 @@ export interface WindowRunCadenceDeps {
     expectedText: string;
   }) => { messageId: number } | null;
   findDeliveredFailureNotification?: (topicId: number, notificationId: string) => number | null;
-  notifyFailure?: (state: Readonly<WindowRunLivenessDocument>, message: string) => Promise<{ messageId: number }>;
+  notifyFailure?: (state: Readonly<WindowRunLivenessDocument>, message: string) => Promise<{ messageId: number } | QuietReceipt>;
   now?: () => string;
 }
 
@@ -540,7 +545,7 @@ export class WindowRunCadenceExecutor {
         if (signatureError) this.fail(state, now, `synthesis-producer-signature-unavailable:${reportId}`);
         this.store.save(state); // crash-open send becomes an explicit ambiguous attempt
       }
-      if (!this.cfg.dryRun && report.status !== 'delivered') {
+      if (!this.cfg.dryRun && report.status !== 'delivered' && report.status !== 'quiet-recorded') {
         const body = report.body ?? '';
         if (!report.bodyHash || createHash('sha256').update(body).digest('hex') !== report.bodyHash || !report.producerSignature) {
           report.status = 'failed'; report.error ??= 'synthesis-producer-signature-unavailable';
@@ -569,8 +574,12 @@ export class WindowRunCadenceExecutor {
           this.store.save(state); // persist the bounded attempt before crossing the delivery boundary
           try {
             const delivered = await this.deps.deliverSynthesis({ state: liveness, reportId, dueAt, text });
+            if (isQuietReceipt(delivered)) {
+              report.status = 'quiet-recorded'; report.quietId = delivered.quietId; report.recordedAt = this.now(); report.error = undefined;
+            } else {
             report.status = 'delivered'; report.messageId = delivered.messageId; report.deliveredAt = this.now(); report.error = undefined;
             featureEvidence.record('monitoring.windowRunLiveness.cadenceExecutor', { kind: 'fired', reason: 'report-delivered', context: { windowId: state.windowId, topicId: state.topicId, reportId, attemptCount: report.attemptCount } });
+            }
           } catch (error) {
             report.status = 'failed'; report.error = String(error).slice(0, 300);
             featureEvidence.record('monitoring.windowRunLiveness.cadenceExecutor', { kind: 'error', reason: report.attemptCount >= this.cfg.reportRetryMaxAttempts ? 'report-retries-exhausted' : 'report-attempt-failed', context: { windowId: state.windowId, topicId: state.topicId, reportId, attemptCount: report.attemptCount, maxAttempts: this.cfg.reportRetryMaxAttempts } });
@@ -593,7 +602,7 @@ export class WindowRunCadenceExecutor {
   }
 
   private async notifyFailure(state: WindowRunCadenceDocument, liveness: WindowRunLivenessDocument): Promise<void> {
-    if (!state.failure || state.failure.notified || this.cfg.dryRun || !this.deps.notifyFailure) return;
+    if (!state.failure || state.failure.notified || state.failure.notificationQuietId || this.cfg.dryRun || !this.deps.notifyFailure) return;
     const observed = this.deps.findDeliveredFailureNotification?.(state.topicId, state.failure.notificationId) ?? null;
     if (observed !== null) {
       state.failure.notified = true;
@@ -613,6 +622,7 @@ export class WindowRunCadenceExecutor {
     this.store.save(state); // crash-open notification becomes a bounded ambiguous attempt
     try {
       const result = await this.deps.notifyFailure(liveness, `Window ${state.windowId} ${detail}. Cadence is failed; active liveness must not be inferred. W32 cadence failure receipt: ${state.failure.notificationId}`);
+      if (isQuietReceipt(result)) { state.failure.notificationQuietId = result.quietId; state.failure.notificationRecordedAt = now; return; }
       state.failure.notified = true;
       state.failure.notificationMessageId = result.messageId;
       featureEvidence.record('monitoring.windowRunLiveness.cadenceExecutor', { kind: 'fired', reason: 'failure-notification-sent', context: { windowId: state.windowId, topicId: state.topicId, attemptCount: state.failure.notificationAttemptCount } });

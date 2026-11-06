@@ -26,6 +26,7 @@
 export type MachineId = string;
 
 export type MeshCommand =
+  | { type: 'notification-preference'; intent: import('../messaging/NotificationPreferences.js').NotificationPreferenceIntent }
   | import('../messaging/telegram-origin/OriginMesh.js').OriginMeshCommand
   | { type: 'place'; session: string; machine: MachineId }
   | { type: 'claim'; session: string; epoch: number; failover?: boolean }
@@ -540,6 +541,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'session-live-probe':
     case 'ownership-nudge':
     case 'commitments-sync':
+    case 'notification-preference':
     case 'preferences-sync':
     case 'state-snapshot':
     case 'pool-view-fetch':

@@ -55,7 +55,7 @@ async function harness(buildId: () => string) {
   runtime.browsers.set('operator', { executor, resolvePeer: destination => executor.broker.resolvePeer(destination) });
   const app = express(); app.use(express.json());
   app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer agent-test') { res.sendStatus(401); return; } next(); });
-  app.use(createRoutes({ config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
+  app.use(createRoutes({ state: { getSession: () => undefined }, config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
     messaging: [{ type: 'telegram', enabled: true, config: { token: '123:x', chatId: '-100123', lifelineTopicId: 7848 } }] },
     telegramOrigin: runtime, sessionManager: { clearInjectionTracker: () => undefined } } as never));
   const send = () => request(app).post('/telegram/browser/operator/send').set('Authorization', 'Bearer agent-test')

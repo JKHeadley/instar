@@ -253,6 +253,7 @@ describe('Routing Control Room ALERT layer E2E lifecycle (Increment C)', () => {
       adapter: {
         sendToTopic: async (topicId: number, text: string) => {
           sent.push({ topicId, text });
+          return { messageId: sent.length, topicId };
         },
         createForumTopic: async () => ({ topicId: 7777, name: '💰 Routing & Spend Alerts' }),
         getLifelineTopicId: () => 999,
