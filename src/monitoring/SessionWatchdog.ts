@@ -13,13 +13,14 @@
  *   Level 4: Kill tmux session
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
+import { withSyncOp } from '../core/InFlightSyncOpMarker.js';
 import {
   evaluateThrottleSettle,
   evaluateUsageWallSettle,
@@ -264,6 +265,88 @@ export const MAX_TEST_RUNNER_ABSOLUTE_MS = 3 * 60 * 60 * 1_000;
 const PACKAGE_MANAGERS = new Set(['npm', 'pnpm', 'yarn']);
 const VITEST_EXECUTABLES = new Set(['vitest', 'vitest.mjs', 'vitest.js']);
 
+/**
+ * Xcode test runs (fb-412e8332-ee1). An iOS unit + UI suite under
+ * `xcodebuild test` takes 17-22 min and prints nothing while a UI test drives
+ * the simulator, so past the stuck threshold the judge once SIGINTed a healthy
+ * run with 21 of 69 tests still to go. It gets the same bounded floor as
+ * vitest — but only on identity, never a basename: the executable must be
+ * exactly `<developer dir>/usr/bin/<tool>` for the ACTIVE Xcode developer dir
+ * (or the SIP-protected `/usr/bin/xcodebuild` shim), and the argv must carry a
+ * test action as an action word, not as an option's value.
+ */
+const XCODEBUILD_TEST_ACTIONS = new Set(['test', 'test-without-building']);
+/** xcodebuild options that take no value; every other `-option` consumes the next token. */
+const XCODEBUILD_VALUELESS_OPTIONS = new Set([
+  '-quiet', '-verbose', '-json', '-hideShellScriptEnvironment', '-allowProvisioningUpdates',
+  '-allowProvisioningDeviceRegistration', '-skipUnavailableActions', '-skipPackagePluginValidation',
+  '-skipMacroValidation', '-disableAutomaticPackageResolution', '-onlyUsePackageVersionsFromResolvedFile',
+  '-skipPackageUpdates', '-disablePackageRepositoryCache', '-parallelizeTargets',
+  '-showBuildSettings', '-showdestinations', '-showTestPlans', '-list', '-dry-run', '-n',
+  '-retry-tests-on-failure', '-run-tests-until-failure', '-showBuildTimingSummary', '-showsdks',
+  '-alltargets', '-version', '-usage', '-help', '-enableCodeCoverage', '-enableAddressSanitizer',
+  '-enableThreadSanitizer', '-enableUndefinedBehaviorSanitizer', '-collect-test-diagnostics',
+]);
+
+let cachedActiveDeveloperDir: { dir: string | null; at: number } | undefined;
+/** A missing Xcode is re-checked after this long, so one failed probe or a later `xcode-select -s` is not permanent. */
+const XCODE_DIR_NULL_RETRY_MS = 10 * 60 * 1_000;
+/**
+ * The active Xcode developer dir: `DEVELOPER_DIR` if set, else `xcode-select -p`
+ * (macOS only), cached. A bare `.../Xcode.app` (which xcrun accepts) is
+ * normalised to `.../Xcode.app/Contents/Developer`, and symlinks are resolved
+ * because `ps` shows the resolved path. `null` when there is no Xcode — then
+ * only the `/usr/bin/xcodebuild` shim matches.
+ */
+export function activeXcodeDeveloperDir(now: number = Date.now()): string | null {
+  const cached = cachedActiveDeveloperDir;
+  if (cached && (cached.dir !== null || now - cached.at < XCODE_DIR_NULL_RETRY_MS)) return cached.dir;
+  let dir: string | null = null;
+  const fromEnv = process.env.DEVELOPER_DIR?.trim();
+  if (fromEnv) dir = fromEnv;
+  else if (process.platform === 'darwin') {
+    try {
+      dir = withSyncOp(() => execFileSync('/usr/bin/xcode-select', ['-p'], { encoding: 'utf8', timeout: 2_000, stdio: ['ignore', 'pipe', 'ignore'] })).trim() || null;
+    } catch { dir = null; /* @silent-fallback-ok — no Xcode tools is a normal state: only the /usr/bin/xcodebuild shim matches, the run is judged normally (no new protection), and null is re-probed after XCODE_DIR_NULL_RETRY_MS */ }
+  }
+  if (dir) {
+    dir = path.resolve(dir);
+    if (dir.endsWith('.app')) dir = path.join(dir, 'Contents', 'Developer');
+    try { dir = fs.realpathSync(dir); } catch { /* @silent-fallback-ok — keep the unresolved path: a mismatch with ps output only withholds the floor, so the run is judged normally */ }
+  }
+  cachedActiveDeveloperDir = { dir, at: now };
+  return dir;
+}
+
+/** True when xcodebuild's arguments (executable excluded) name a test action. */
+function hasXcodebuildTestAction(argv: readonly string[]): boolean {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg.startsWith('-')) {
+      // `-only-testing:Target/Case` and `-opt=value` carry their value inline.
+      if (!XCODEBUILD_VALUELESS_OPTIONS.has(arg) && !arg.includes(':') && !arg.includes('=')) i++; // skip the option's value
+      continue;
+    }
+    if (arg.includes('=')) continue; // a build setting, KEY=VALUE
+    if (XCODEBUILD_TEST_ACTIONS.has(arg)) return true;
+  }
+  return false;
+}
+
+function classifyXcodeTestCommand(command: string, developerDir: string | null): 'test-runner' | null {
+  // Match the executable as a prefix of the ps command column, not argv[0]:
+  // a developer dir may contain spaces (`/Applications/Xcode 26.app/...`).
+  const devBin = developerDir ? path.join(developerDir, 'usr', 'bin') : null;
+  const restAfter = (exe: string): string[] | null =>
+    command === exe ? [] : command.startsWith(exe + ' ') ? command.slice(exe.length + 1).trim().split(/\s+/) : null;
+  const xcodebuildArgs = restAfter('/usr/bin/xcodebuild') ?? (devBin ? restAfter(path.join(devBin, 'xcodebuild')) : null);
+  if (xcodebuildArgs) return hasXcodebuildTestAction(xcodebuildArgs) ? 'test-runner' : null;
+  // `xcrun xctest <bundle>.xctest` runs the developer dir's xctest.
+  const xctestArgs = devBin ? restAfter(path.join(devBin, 'xctest')) : null;
+  if (xctestArgs) return xctestArgs.some((a) => !a.startsWith('-') && /\.xctest\/?$/.test(a)) ? 'test-runner' : null;
+  return null;
+}
+
 /** First argument after `start` that is not a flag or the `--` separator. */
 function firstPositional(argv: string[], start: number): string | undefined {
   for (let i = start; i < argv.length; i++) {
@@ -278,8 +361,12 @@ function firstPositional(argv: string[], start: number): string | undefined {
  * position decides, never a substring: `echo npm test`, `grep vitest file` and
  * `node worker.mjs --label "npm test"` do not match.
  */
-export function classifyTestRunnerCommand(command: string): 'test-runner' | null {
+export function classifyTestRunnerCommand(
+  command: string,
+  xcodeDeveloperDir: string | null = activeXcodeDeveloperDir(),
+): 'test-runner' | null {
   const trimmed = command.trim();
+  if (classifyXcodeTestCommand(trimmed, xcodeDeveloperDir)) return 'test-runner';
   // Vitest rewrites its own process title: main process `node (vitest)`,
   // pool workers `node (vitest 1)`, `node (vitest 2)`, ...
   if (/^node \(vitest(?: \d+)?\)$/.test(trimmed)) return 'test-runner';
