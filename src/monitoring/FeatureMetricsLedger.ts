@@ -300,6 +300,12 @@ export type EvidenceStrength =
   | 'recurrence-proxy'
   | 'self-report';
 
+export interface DecisionMeasurementCohortRequest {
+  decisionPoint: string; ruleId: string; rung: GradingRung; evidenceStrength: EvidenceStrength; sinceMs: number; untilMs: number; machineSegment?: string | null;
+}
+export interface DecisionMeasurementCohort { total: number; right: number; wrong: number; unknownOrUnmatched: number }
+
+
 /**
  * One settled ENROLLED decision (§5.5 `decision_quality` — ~250B content-free
  * row, written by the router-settlement path for EVERY enrolled settlement
@@ -2132,6 +2138,32 @@ export class FeatureMetricsLedger {
       // @silent-fallback-ok: read-only reporting — degrade to [].
       return [];
     }
+  }
+
+  /** Exact winning-grade cohort for measurement. Null is a failed read;
+   * real zero denominators remain zero counts for the caller to disclose.
+   * Unmatched includes unknown, ungraded and incompatible winning cohorts. */
+  decisionMeasurementCohort(input: DecisionMeasurementCohortRequest): DecisionMeasurementCohort | null {
+    return this.decisionMeasurementCohorts([input])?.[0] ?? null;
+  }
+
+  /** One canonical winning-view read per bounded pass, not one per subject. */
+  decisionMeasurementCohorts(inputs: DecisionMeasurementCohortRequest[]): DecisionMeasurementCohort[] | null {
+    if (this.closed || inputs.length > 64 || inputs.some(i => !Number.isSafeInteger(i.sinceMs) || !Number.isSafeInteger(i.untilMs) ||
+        i.sinceMs <= 0 || i.sinceMs > i.untilMs || (i.machineSegment!==null && (typeof i.machineSegment!=='string'||i.machineSegment.length<1||i.machineSegment.length>32)) || [i.decisionPoint,i.ruleId,i.rung,i.evidenceStrength].some(v => typeof v !== 'string' || v.length < 1 || v.length > 128))) return null;
+    if (!inputs.length) return [];
+    try {
+      const bindings = inputs.flatMap((i, index) => [index,i.decisionPoint,i.ruleId,i.rung,i.evidenceStrength,i.sinceMs,i.untilMs,i.machineSegment??null]);
+      const rows = this.db.prepare(`WITH requested(idx,point,rule,rung,strength,since,until,machine) AS (VALUES ${inputs.map(() => '(?,?,?,?,?,?,?,?)').join(',')})
+        SELECT r.idx,COUNT(q.correlation_id) AS total,
+          COALESCE(SUM(CASE WHEN q.machine_id IS r.machine AND w.rule_id=r.rule AND w.rung=r.rung AND w.evidence_strength=r.strength AND w.grade='right' THEN 1 ELSE 0 END),0) AS right,
+          COALESCE(SUM(CASE WHEN q.machine_id IS r.machine AND w.rule_id=r.rule AND w.rung=r.rung AND w.evidence_strength=r.strength AND w.grade='wrong' THEN 1 ELSE 0 END),0) AS wrong
+        FROM requested r LEFT JOIN decision_quality q ON q.decision_point=r.point AND q.ts>=r.since AND q.ts<=r.until AND (q.machine_id IS r.machine OR q.machine_id IS NULL)
+        LEFT JOIN decision_winning_grade w ON w.correlation_id=q.correlation_id GROUP BY r.idx ORDER BY r.idx`)
+        .all(...bindings) as Array<{ idx: number; total: number; right: number; wrong: number }>;
+      if (rows.length !== inputs.length || rows.some((row,index) => row.idx !== index || ![row.total,row.right,row.wrong].every(n => Number.isSafeInteger(n) && n >= 0) || row.right + row.wrong > row.total)) return null;
+      return rows.map(({total,right,wrong}) => ({total,right,wrong,unknownOrUnmatched:total-right-wrong}));
+    } catch { /* @silent-fallback-ok — null exposes unavailable cohort evidence instead of a zero-quality observation */ return null; }
   }
 
   /**

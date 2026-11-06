@@ -50,7 +50,7 @@ export function measurementChart(metric,series,detail,proof) {
 }
 export function measurementDetail(read) {
   if(!read||read.schema!=='measurement-read/1')return el('div',{},el('p',{text:'This machine cannot provide a supported measurement read.'}),askLink('Measurement details cannot be read.'));
-  const messages={'missing-contract':'No measurement contract is recorded for this work.','invalid-contract':'The measurement contract needs repair.','unknown-subject':'This work is not known to that measurement owner.',unavailable:'The measurement owner cannot be read right now.'};
+  const messages={'missing-contract':'No measurement contract is recorded for this work.','invalid-contract':'The measurement contract needs repair.','unknown-subject':'This work is not known to that measurement owner.','unregistered-target':'The declared target is absent from its independent registry. These measurements cannot be certified.','ambiguous-target':'More than one measurement owner claims this target. Resolve the ownership before using its evidence.',unavailable:'The measurement owner cannot be read right now.'};
   if(read.state!=='available'||!read.detail)return el('div',{},el('p',{text:messages[read.state]||'Measurements cannot be read.'}),askLink(messages[read.state]||'Measurements cannot be read.'));
   const d=read.detail,proof=d.evidence;
   const panel=el('section',{class:'mb-measurement-detail'},el('h3',{text:'Recorded measurements'}),

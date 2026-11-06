@@ -1,3 +1,5 @@
+import { decisionQualityMachineSegment } from '../core/decisionQualityTypes.js';
+import { readMeasurementTargets } from './measurementCoverageRead.js';
 /**
  * Agent Server — HTTP server wrapping Express.
  *
@@ -5834,6 +5836,10 @@ export class AgentServer {
       startTime: this.startTime,
     };
     this.routeContext = routeCtx;
+    routeCtx.blockerLifecycleService?.setMeasurementReaders({
+      targets:()=>readMeasurementTargets(routeCtx),
+      decisionCohorts:requests=>this.featureMetricsLedger?.decisionMeasurementCohorts(requests.map(r=>({...r,machineSegment:decisionQualityMachineSegment(this.meshSelfId)})))??null,
+    });
     if (this.blockerLifecycleService) {
       this.blockerLifecycleService.registerMaturationProjection('feedback-factory.completed-runs', () => {
         const run = this.feedbackDrain?.service.stats().lastRun;

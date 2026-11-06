@@ -1,0 +1,13 @@
+# Give a whole effort its own evidence
+
+The independent inventory already lists efforts, jobs, decisions and capabilities. Before this change, the evaluation engine could only accept a contract through a feature rollout or ladder. A project could therefore have measured features without a measurement of the project's own intended outcome.
+
+An existing initiative can now carry an optional measurement contract. It names exactly one target and records its outcome, method, version, owner, baseline and quality safeguards. A whole-effort contract points back to that same initiative. Material components keep separate contracts connected through the existing parent relationship. A feature's good result cannot supply a project's or a job's missing proof.
+
+The existing evaluator and ledger still do the work. Generic measurements have separate totals, so they do not inflate feature counts. A contract targeting an absent registry entry, conflicting owners or an unreadable inventory cannot become ready. The evaluator also needs corroborated baseline evidence and a successful current capture for every metric. It keeps old observations as history when a new read fails, but does not use them to disguise that failure. Limits on evaluations and cohort reads are visible gaps rather than claims that every active subject was evaluated.
+
+The first automatic adapter measures decision quality from the existing canonical winning grades. It keeps two distinct measures: the fraction right among settled matching grades, and the fraction unknown or unmatched among the eligible decisions. The second measure prevents a small favourable cohort from looking like complete coverage. Different grading rules, evidence strengths, methods and target bindings stay separate. Known foreign machines do not supply local grades; unattributed records remain unmatched on a multi-machine installation. Zero denominators remain unknown.
+
+A completed or paused effort retains its readable numeric history without pretending it is in the current evaluation pass. Jobs and capabilities can author contracts, but remain short of evidence until their own scoped quality producer is available. A successful job exit or a larger activity count does not automatically prove improvement.
+
+This optional record and read extension adds no flag activation or ordinary-service control. Publishing the complete runtime change still requires full verification. The original work also includes the remaining promotion/claim rules, deployed live visuals, human intelligibility and verified recurring report delivery. None is certified by this authoring increment alone.

@@ -5,7 +5,7 @@
  */
 import fs from 'node:fs';
 import type { MaturationEvaluationContract } from '../core/InitiativeTracker.js';
-import { measurementContractHash, validArchivedContract, type MeasurementContractVersions } from './MeasurementContractVersion.js';
+import { measurementContractHash, validArchivedContract, validGenericMeasurement, type MeasurementContractVersions } from './MeasurementContractVersion.js';
 import { projectMaturationOutcome } from './MaturationOutcome.js';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -217,7 +217,7 @@ export class BlockerLifecycleLedger {
 
   /** Immutable hash/body archive. Baseline declarations alone never create pins. */
   archiveMaturationContract(origin: string, featureId: string, contract: MaturationEvaluationContract): boolean {
-    if (!validArchivedContract(contract) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(origin) ||
+    if (!validArchivedContract(contract) || ('subject' in contract && !validGenericMeasurement(contract,featureId)) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(origin) ||
         !/^[a-z0-9][a-z0-9-]{0,62}$/.test(featureId) || !this.ensureMeasurementArchive()) return false;
     const now = this.opts.now?.() ?? Date.now();
     if (!Number.isSafeInteger(now) || now <= 0) return false;
@@ -261,7 +261,7 @@ export class BlockerLifecycleLedger {
         if (!row) { result.missing.push(hash); continue; }
         let contract: unknown;
         try { contract = JSON.parse(row.body); } catch { result.unreadable.push(hash); continue; /* @silent-fallback-ok — malformed stored JSON is an explicit gap */ }
-        if (!validArchivedContract(contract) || measurementContractHash(contract) !== hash ||
+        if (!validArchivedContract(contract) || ('subject' in contract && !validGenericMeasurement(contract,featureId)) || measurementContractHash(contract) !== hash ||
             !Number.isSafeInteger(row.firstArchivedAtMs) || row.firstArchivedAtMs <= 0 || !Number.isSafeInteger(row.lastSeenAtMs) || row.lastSeenAtMs < row.firstArchivedAtMs) {
           result.unreadable.push(hash); continue;
         }

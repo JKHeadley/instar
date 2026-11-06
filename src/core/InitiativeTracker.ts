@@ -1,3 +1,5 @@
+import { validGenericMeasurement } from '../monitoring/MeasurementContractVersion.js';
+import { hasMeasurementBinding, type GenericMeasurementContract } from '../monitoring/MeasurementSubject.js';
 /**
  * InitiativeTracker — persists and queries multi-phase, long-running work.
  *
@@ -256,6 +258,7 @@ export interface Initiative {
    *  feature matures behind a flag. Stage is derived from observing flagPath. */
   rollout?: RolloutInfo;
   rolloutAccounting?: RolloutAccountingInfo;
+  measurement?: GenericMeasurementContract;
   /** Immutable exact-key link from the feedback-drain outbox. One work key may
    *  identify at most one Initiative task; semantic matching never substitutes. */
   feedbackWorkKey?: string;
@@ -307,6 +310,7 @@ export interface InitiativeCreateInput {
   driftCheck?: boolean;
   rollout?: RolloutInfo;
   rolloutAccounting?: RolloutAccountingInfo;
+  measurement?: GenericMeasurementContract;
   /** Immutable exact-key link from the feedback-drain outbox. */
   feedbackWorkKey?: string;
   rounds?: InitiativeRound[];
@@ -351,6 +355,7 @@ export interface InitiativeUpdateInput {
   driftCheck?: boolean;
   rollout?: RolloutInfo | null;
   rolloutAccounting?: RolloutAccountingInfo | null;
+  measurement?: GenericMeasurementContract | null;
   rounds?: InitiativeRound[];
   sourceDocs?: string[];
   autoAdvance?: boolean;
@@ -370,7 +375,7 @@ export interface InitiativeUpdateInput {
  * the compiler fail when a field is added to InitiativeUpdateInput but not here, or the reverse.
  */
 const INITIATIVE_UPDATE_FIELD_SET: Record<keyof InitiativeUpdateInput, true> = {
-  title: true, description: true, status: true, nextCheckAt: true, needsUser: true, needsUserReason: true, blockers: true, links: true, ifMatch: true, kind: true, parentProjectId: true, pipelineStage: true, specPath: true, prNumber: true, mergeCommitOid: true, ciCheckedAt: true, skippedAt: true, skippedBy: true, skippedReason: true, unskippedAt: true, driftCheck: true, rollout: true, rolloutAccounting: true, rounds: true, sourceDocs: true, autoAdvance: true, telegramTopicId: true, ownerMachineId: true, targetRepoPath: true, unacknowledgedAdvanceCount: true, firstLaunchAckAt: true, lastAckedRoundIndex: true, awaitingReconciliation: true, driftPromptTemplateVersion: true,
+  title: true, description: true, status: true, nextCheckAt: true, needsUser: true, needsUserReason: true, blockers: true, links: true, ifMatch: true, kind: true, parentProjectId: true, pipelineStage: true, specPath: true, prNumber: true, mergeCommitOid: true, ciCheckedAt: true, skippedAt: true, skippedBy: true, skippedReason: true, unskippedAt: true, driftCheck: true, rollout: true, rolloutAccounting: true, measurement: true, rounds: true, sourceDocs: true, autoAdvance: true, telegramTopicId: true, ownerMachineId: true, targetRepoPath: true, unacknowledgedAdvanceCount: true, firstLaunchAckAt: true, lastAckedRoundIndex: true, awaitingReconciliation: true, driftPromptTemplateVersion: true,
 };
 export const INITIATIVE_UPDATE_FIELDS: readonly string[] = Object.freeze(Object.keys(INITIATIVE_UPDATE_FIELD_SET));
 
@@ -1004,6 +1009,14 @@ export class InitiativeTracker {
     return this.initiatives.get(id);
   }
 
+  private validateMeasurementOwner(initiative: Initiative): void {
+    const featureContract=initiative.rolloutAccounting?.maturationEvaluation??initiative.rollout?.maturationEvaluation;
+    if(hasMeasurementBinding(featureContract)) throw new Error('Generic target bindings belong in measurement metadata, not a feature rollout contract');
+    if (initiative.measurement === undefined) return;
+    if (initiative.rollout || initiative.rolloutAccounting) throw new Error('An initiative must choose measurement or rollout ownership; clear the previous owner atomically');
+    if (!validGenericMeasurement(initiative.measurement, initiative.id)) throw new Error('Measurement requires a valid target-scoped contract with outcome, quality safeguard and baseline');
+  }
+
   async create(input: InitiativeCreateInput): Promise<Initiative> {
     if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(input.id)) {
       throw new Error('Initiative id must be lowercase kebab-case, 1–63 chars');
@@ -1082,6 +1095,8 @@ export class InitiativeTracker {
       initiative.driftPromptTemplateVersion = input.driftPromptTemplateVersion;
     }
 
+    if (input.measurement !== undefined) initiative.measurement = input.measurement;
+    this.validateMeasurementOwner(initiative);
     this.initiatives.set(initiative.id, initiative);
     let result: Initiative;
     if (this.isTaskFlowEnabled()) {
@@ -1206,6 +1221,9 @@ export class InitiativeTracker {
     if (input.driftPromptTemplateVersion !== undefined) {
       next.driftPromptTemplateVersion = input.driftPromptTemplateVersion;
     }
+
+    if (input.measurement !== undefined) next.measurement = input.measurement === null ? undefined : input.measurement;
+    this.validateMeasurementOwner(next);
 
     // Bump version on every successful write.
     next.version = currentVersion + 1;

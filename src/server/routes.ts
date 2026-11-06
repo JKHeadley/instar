@@ -22986,7 +22986,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'Initiative tracker not configured' });
       return;
     }
-    const { id, title, description, phases, links, nextCheckAt, needsUser, needsUserReason, blockers } = req.body ?? {};
+    const { id, title, description, phases, links, nextCheckAt, needsUser, needsUserReason, blockers, measurement } = req.body ?? {};
     if (typeof id !== 'string' || !initiativeIdRe.test(id)) {
       res.status(400).json({ error: '"id" must be lowercase kebab-case, 1–63 chars' });
       return;
@@ -23006,7 +23006,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       const created = await ctx.initiativeTracker.create({
         id, title, description, phases, links, nextCheckAt,
-        needsUser, needsUserReason, blockers,
+        needsUser, needsUserReason, blockers, measurement,
       });
       res.status(201).json(created);
     } catch (err) {

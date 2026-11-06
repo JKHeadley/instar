@@ -8,6 +8,13 @@ import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
+import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
+import { BlockerLifecycleLedger } from '../../src/monitoring/BlockerLifecycleLedger.js';
+import { FeatureMetricsLedger } from '../../src/monitoring/FeatureMetricsLedger.js';
+import type { BlockerLifecycleService } from '../../src/monitoring/BlockerLifecycleService.js';
+import { measurementSourceRef,type GenericMeasurementContract } from '../../src/monitoring/MeasurementSubject.js';
+import { PROVENANCE_COVERAGE } from '../../src/data/provenanceCoverage.js';
+import { validMeasurementRead } from '../../src/server/measurementDetailRead.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { createMockSessionManager } from '../helpers/setup.js';
@@ -17,7 +24,7 @@ import type { InstarConfig } from '../../src/core/types.js';
 const servers: AgentServer[] = [];
 const dirs: string[] = [];
 
-async function boot(developmentAgent: boolean) {
+async function boot(developmentAgent: boolean, measurement=false) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'mb-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -39,10 +46,11 @@ async function boot(developmentAgent: boolean) {
   };
   const sessionManager = createMockSessionManager() as any;
   sessionManager.on = () => undefined;
-  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir) });
+  const initiatives=new InitiativeTracker(stateDir);
+  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker:initiatives,...(measurement?{commitmentTracker:new CommitmentTracker({stateDir})}:{}) });
   servers.push(server);
   await new Promise((resolve) => setTimeout(resolve, 30));
-  return { server, date };
+  return { server, date, stateDir, initiatives };
 }
 
 afterAll(async () => {
@@ -73,6 +81,22 @@ describe('maturation board — production wiring', () => {
     expect(coverage.body.sources).toContainEqual(expect.objectContaining({ name: 'loaded-scheduler-jobs', ok: false }));
     const script=await request(server.getApp()).get('/dashboard/console/measurement-trend.js');
     expect(script.status).toBe(200);expect(script.text).toContain('export function measurementDetail');
+  });
+
+  it('real winning grades reach generic evaluation and the selected-origin visual data through production readers',async()=>{
+    const {server,stateDir,initiatives}=await boot(true,true);const now=Date.now(),at=now-6*3600000,point=PROVENANCE_COVERAGE[0].decisionPoint;
+    const c:GenericMeasurementContract={subject:{kind:'effort',key:'whole-quality'},adapter:{kind:'decision-quality',decisionPoint:point,ruleId:'test-grade-v1',rung:'deterministic-ground-truth',evidenceStrength:'deterministic-proof',windowHours:24,rightRateMetricId:'right-rate',unmatchedShareMetricId:'unmatched'},cadenceHours:6,evidenceMaxAgeHours:12,metrics:[{id:'right-rate',source:'feature-summary',sourceRef:'',direction:'at-least',threshold:.8,minSamples:10},{id:'unmatched',source:'feature-summary',sourceRef:'',direction:'at-most',threshold:.1,minSamples:10}],outcome:{statement:'Better checked decisions',owner:'Echo',method:'Canonical local winning grades',version:'v1',outcomeMetricIds:['right-rate'],qualityMetricIds:['unmatched'],baseline:{origin:'mb-e2e',points:[{id:'right-rate',observedAtMs:at,descriptorVersion:1,value:.8,samples:10},{id:'unmatched',observedAtMs:at,descriptorVersion:1,value:.1,samples:10}]}}};for(const m of c.metrics)m.sourceRef=measurementSourceRef(c,m.id);
+    const created=await request(server.getApp()).post('/initiatives').send({id:'whole-quality',title:'Whole quality effort',description:'Measured whole effort',phases:[{id:'p1',name:'Measure',summary:'Check outcomes'}],measurement:c});expect(created.status).toBe(201);
+    const observations=new BlockerLifecycleLedger({dbPath:path.join(stateDir,'server-data','blocker-lifecycle.db')});const grades=new FeatureMetricsLedger({dbPath:path.join(stateDir,'server-data','feature-metrics.db')});
+    try{
+      for(const m of c.metrics){const p=c.outcome!.baseline.points.find(p=>p.id===m.id)!;observations.recordMaturationObservation({origin:'mb-e2e',featureId:'whole-quality',metricId:m.id,source:m.source,sourceRef:m.sourceRef,observedAtMs:at,value:p.value,samples:p.samples});}
+      for(let n=0;n<10;n++){const id=`grade-${n}`;grades.recordDecision({correlationId:id,decisionPoint:point,ts:now});grades.upsertOutcome({correlationId:id,gradedBy:'test-owner',ruleId:'test-grade-v1',rung:'deterministic-ground-truth',evidenceStrength:'deterministic-proof',grade:n===0?'wrong':'right',ts:now});}
+      const d7=(server as unknown as {blockerLifecycleService:BlockerLifecycleService}).blockerLifecycleService;expect(d7).not.toBeNull();expect(d7.evaluateMaturation(initiatives.list())).toMatchObject({measurementEligible:1});
+      expect((d7.localSummary(24).maturation as {measurements:{subjects:Array<{id:string;status:string}>}}).measurements.subjects.find(i=>i.id==='whole-quality')!.status).toBe('ready');
+      const response=await request(server.getApp()).get('/maturation/board?part=measurement&subject=whole-quality&machine=mb-e2e');expect(response.status).toBe(200);expect(validMeasurementRead(response.body,'mb-e2e','whole-quality',90,Date.now())).toBe(true);expect(response.body.detail.evidence).toMatchObject({state:'verified',metrics:[{id:'right-rate',current:{value:.9,samples:10}},{id:'unmatched',current:{value:0,samples:10}}]});
+      const invalid=await request(server.getApp()).patch('/initiatives/whole-quality').send({rollout:{flagPath:'one.enabled',stage:'live'}});expect(invalid.status).toBe(400);expect(initiatives.get('whole-quality')!.measurement).toBeDefined();
+      const cleared=await request(server.getApp()).patch('/initiatives/whole-quality').send({measurement:null});expect(cleared.status).toBe(200);expect(initiatives.get('whole-quality')!.measurement).toBeUndefined();
+    }finally{observations.close();grades.close();}
   });
 
   it('is off on a fleet agent: 503', async () => {

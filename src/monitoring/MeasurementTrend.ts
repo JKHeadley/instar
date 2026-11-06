@@ -128,7 +128,7 @@ export function validMeasurementTrend(raw: unknown, origin: string, subjectId: s
   if (!raw.evaluations.rows.every(validEvaluation)) return false;
   const evaluations = raw.evaluations.rows as TrendEvaluation[];
   if (raw.historicalContractDetails === 'archived'
-    ? !validMeasurementContractVersions(raw.contractVersions, [raw.currentContractHash as string, ...evaluations.map(r => r.contractHash)], now)
+    ? !validMeasurementContractVersions(raw.contractVersions, [raw.currentContractHash as string, ...evaluations.map(r => r.contractHash)], now, subjectId)
     : raw.contractVersions !== undefined) return false;
   const metricIds = new Set<string>();
   for (const item of raw.metrics) {

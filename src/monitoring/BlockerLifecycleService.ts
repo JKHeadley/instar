@@ -6,6 +6,14 @@ import { BlockerLifecycleLedger, percentile, type BlockerFactor, type BlockerMet
 import { DegradationReporter } from './DegradationReporter.js';
 import { parseMaturationOutcome, projectMaturationOutcome, validMaturationPolicy } from './MaturationOutcome.js';
 import { measurementTrend } from './MeasurementTrend.js';
+import { validGenericMeasurement } from './MeasurementContractVersion.js';
+import type { DecisionMeasurementCohortRequest, DecisionMeasurementCohort } from './FeatureMetricsLedger.js';
+import { hasMeasurementBinding, validMeasurementSubject, type MeasurementTargetState } from './MeasurementSubject.js';
+const genericSubject = (i: Initiative) => i.measurement !== undefined;
+const misplacedBinding = (i:Initiative) => {const c=i.rolloutAccounting?.maturationEvaluation??i.rollout?.maturationEvaluation;return hasMeasurementBinding(c);};
+const measurementContractOf = (i: Initiative): MaturationEvaluationContract | undefined => genericSubject(i)
+  ? (!i.rollout && !i.rolloutAccounting && validGenericMeasurement(i.measurement,i.id) ? i.measurement : undefined)
+  : misplacedBinding(i)?undefined:i.rolloutAccounting?.maturationEvaluation ?? i.rollout?.maturationEvaluation;
 
 type FailureReason = 'insufficient-days' | 'insufficient-samples' | 'zero-denominator';
 
@@ -15,6 +23,11 @@ const PREPARE_TIMEOUT_MS = 10 * 60 * 1000;
 interface ObservationMemo {
   summaries?: Map<BlockerFactor, Record<string, unknown>>;
   trends?: Map<BlockerFactor, Record<string, unknown>>;
+}
+
+export interface MeasurementReaders {
+  targets: () => Map<string,MeasurementTargetState>;
+  decisionCohorts?: (requests:DecisionMeasurementCohortRequest[]) => DecisionMeasurementCohort[] | null;
 }
 
 export class BlockerLifecycleService {
@@ -31,7 +44,12 @@ export class BlockerLifecycleService {
   } | null = null;
   private maturationPassRunning = false;
   private maturationInitiatives: Initiative[] = [];
-  private archiveFailedSlots = new Set<string>();
+  private genericSubjectIds = new Set<string>();
+  private genericEligibleIds = new Set<string>();
+  private measurementTargetStates = new Map<string, MeasurementTargetState>();
+  private genericAdapterRefs = new Set<string>();
+  private measurementReaders: MeasurementReaders | null = null;
+  private heldReadSlots = new Set<string>();
   private maturationAccountingInitiatives: Initiative[] = [];
   private readonly maturationProjections = new Map<string, () => { value: number; samples: number } | null>();
   private readonly onRequest = (event: Record<string, unknown>): void => {
@@ -109,6 +127,40 @@ export class BlockerLifecycleService {
     this.maturationHooks = hooks;
   }
 
+  /** Existing inventory and winning-grade owners, read once per pass. */
+  setMeasurementReaders(readers: MeasurementReaders): void { this.measurementReaders = readers; }
+
+  private prepareGenericMeasurements(initiatives: Initiative[], now: number): void {
+    for (const ref of this.genericAdapterRefs) this.maturationProjections.delete(ref);
+    this.genericAdapterRefs.clear(); this.measurementTargetStates.clear();
+    let targets = new Map<string, MeasurementTargetState>();
+    try { targets = this.measurementReaders?.targets() ?? targets; } catch { /* @silent-fallback-ok — inventory failure holds generic readiness */ }
+    const requests: DecisionMeasurementCohortRequest[] = []; const indexes = new Map<string,number>();
+    const bindings: Array<{ contract: NonNullable<Initiative['measurement']>; index: number }> = [];
+    for (const i of initiatives) {
+      const state = targets.get(i.id) ?? 'unavailable'; this.measurementTargetStates.set(i.id,state);
+      if (!validGenericMeasurement(i.measurement,i.id) || !i.measurement.adapter) continue;
+      const contract = i.measurement; const a = contract.adapter!;
+      // Invalidate previous automatic numbers even when the current owner read fails.
+      for (const m of contract.metrics) { this.registerMaturationProjection(m.sourceRef,()=>null); this.genericAdapterRefs.add(m.sourceRef); }
+      if (state !== 'registered') continue;
+      const request = { decisionPoint:a.decisionPoint,ruleId:a.ruleId,rung:a.rung,evidenceStrength:a.evidenceStrength,sinceMs:now-a.windowHours*3_600_000,untilMs:now };
+      const key = JSON.stringify(request); let index = indexes.get(key);
+      if (index === undefined) { if (requests.length >= 64) continue; index=requests.length; requests.push(request); indexes.set(key,index); }
+      bindings.push({contract,index});
+    }
+    let values: DecisionMeasurementCohort[] | null = null;
+    try { values = this.measurementReaders?.decisionCohorts?.(requests) ?? null; } catch { /* @silent-fallback-ok — failed canonical grade reads cannot become zero observations */ }
+    for (const {contract,index} of bindings) {
+      const value = values?.length === requests.length ? values[index] : null; const a=contract.adapter!;
+      if (!value || ![value.total,value.right,value.wrong,value.unknownOrUnmatched].every(n=>Number.isSafeInteger(n)&&n>=0&&n<=100_000) ||
+          value.total !== value.right+value.wrong+value.unknownOrUnmatched || value.total===0) continue;
+      const settled=value.right+value.wrong;
+      for (const m of contract.metrics) this.registerMaturationProjection(m.sourceRef,()=>m.id===a.rightRateMetricId
+        ? (settled>0?{value:value.right/settled,samples:settled}:null) : {value:value.unknownOrUnmatched/value.total,samples:value.total});
+    }
+  }
+
   /** One timer-driven pass. Never overlaps itself and never throws. */
   private async runMaturationPass(list: () => Initiative[]): Promise<void> {
     if (this.maturationPassRunning) return;
@@ -152,17 +204,24 @@ export class BlockerLifecycleService {
   }
 
   /** D7 recurring scorer. Called only by the existing rollout reconciler cadence. */
-  evaluateMaturation(input: Initiative[]): { eligible: number; inserted: number } {
+  evaluateMaturation(input: Initiative[]): { eligible: number; measurementEligible?: number; inserted: number } {
     const now = this.now();
-    for (const key of this.archiveFailedSlots) if (Number(key.slice(key.lastIndexOf(':') + 1)) < now - 90 * 86_400_000) this.archiveFailedSlots.delete(key);
+    for (const key of this.heldReadSlots) if (Number(key.slice(key.lastIndexOf(':') + 1)) < now - 90 * 86_400_000) this.heldReadSlots.delete(key);
     const initiatives = this.maturationHooks?.subjects ? this.maturationHooks.subjects(input) : input;
-    const accounted = initiatives.filter(i => i.rolloutAccounting)
+    this.genericSubjectIds = new Set(initiatives.filter(genericSubject).map(i=>i.id));
+    const genericCandidates = initiatives.filter(i=>genericSubject(i) && ['active','awaiting-user'].includes(i.status)).sort((a,b)=>a.id.localeCompare(b.id));
+    this.genericEligibleIds=new Set(genericCandidates.map(i=>i.id));
+    const genericEligible=genericCandidates.slice(0,128);
+    const accounted = initiatives.filter(i => !genericSubject(i) && i.rolloutAccounting)
       .sort((a, b) => a.id.localeCompare(b.id)).slice(0, 512);
-    const eligible = initiatives.filter(i => {
+    const featureEligible = initiatives.filter(i => {
+      if (genericSubject(i)) return false;
       if (i.rolloutAccounting) return i.rolloutAccounting.disposition !== 'excluded';
       return Boolean(i.rollout && i.rollout.stage !== 'default-on');
     })
       .sort((a, b) => a.id.localeCompare(b.id)).slice(0, 512);
+    const eligible = [...featureEligible,...genericEligible];
+    this.prepareGenericMeasurements(genericEligible,now);
     this.maturationAccountingInitiatives = accounted.map(i => ({ ...i, rolloutAccounting: i.rolloutAccounting ? { ...i.rolloutAccounting } : undefined }));
     this.maturationInitiatives = eligible.map(i => ({ ...i, rollout: i.rollout ? { ...i.rollout } : undefined,
       rolloutAccounting: i.rolloutAccounting ? { ...i.rolloutAccounting } : undefined }));
@@ -173,11 +232,12 @@ export class BlockerLifecycleService {
       const cur = previousByFeature.get(r.featureId);
       if (!cur || r.dueSlotMs > cur.dueSlotMs) previousByFeature.set(r.featureId, r);
     }
-    const contractOf = (i: Initiative) => i.rolloutAccounting?.maturationEvaluation ?? i.rollout?.maturationEvaluation;
+    const contractOf = measurementContractOf;
     const memo: ObservationMemo = {};
+    const captured = new Map<string,Set<string>>();
     for (const initiative of eligible) {
       const contract = contractOf(initiative);
-      if (contract) this.captureBlockerObservations(initiative.id, contract, now, memo);
+      if (contract && (!genericSubject(initiative) || this.measurementTargetStates.get(initiative.id)==='registered')) captured.set(initiative.id,this.captureBlockerObservations(initiative.id, contract, now, memo));
     }
     const longestAgeHours = eligible.reduce((max, i) => Math.max(max, contractOf(i)?.evidenceMaxAgeHours ?? 0), 0);
     const latestByFeature = new Map<string, Map<string, MaturationMetricObservation>>();
@@ -190,7 +250,7 @@ export class BlockerLifecycleService {
     }
     for (const initiative of eligible) {
       const contract = contractOf(initiative);
-      const rung = initiative.rolloutAccounting ? initiative.rolloutAccounting.rung : initiative.rollout?.stage ?? null;
+      const rung = genericSubject(initiative) ? 'measurement' : initiative.rolloutAccounting ? initiative.rolloutAccounting.rung : initiative.rollout?.stage ?? null;
       const cadenceHours = contract?.cadenceHours ?? 6;
       const cadenceMs = cadenceHours * 3_600_000;
       const dueSlotMs = Math.floor(now / cadenceMs) * cadenceMs;
@@ -208,8 +268,9 @@ export class BlockerLifecycleService {
         }
       }
       if (!contract) {
+        if(genericSubject(initiative)||misplacedBinding(initiative)){this.heldReadSlots.add(`${initiative.id}:${dueSlotMs}`);this.ledger.retractMaturationReady(this.origin,initiative.id,dueSlotMs);}
         if (this.ledger.recordMaturationEvaluation({ origin: this.origin, featureId: initiative.id,
-          rung, dueSlotMs, evaluatedAtMs: now, status: (initiative.rolloutAccounting?.maturationContractError ?? initiative.rollout?.maturationContractError) ? 'invalid-contract' : 'missing-contract',
+          rung, dueSlotMs, evaluatedAtMs: now, status: (genericSubject(initiative) || misplacedBinding(initiative) || Boolean(initiative.rolloutAccounting?.maturationContractError ?? initiative.rollout?.maturationContractError)) ? 'invalid-contract' : 'missing-contract',
           passingMetrics: 0, totalMetrics: 0, minNormalizedMargin: null,
           contractHash: initiative.rolloutAccounting?.maturationContractError ?? initiative.rollout?.maturationContractError ?? 'missing', newestEvidenceAtMs: null })) inserted++;
         continue;
@@ -221,14 +282,16 @@ export class BlockerLifecycleService {
       }
       const archived = this.ledger.archiveMaturationContract(this.origin, initiative.id, contract);
       if (!archived) {
-        this.archiveFailedSlots.add(`${initiative.id}:${dueSlotMs}`);
+        this.heldReadSlots.add(`${initiative.id}:${dueSlotMs}`);
         this.ledger.retractMaturationReady(this.origin, initiative.id, dueSlotMs);
       }
-      let status: MaturationEvaluationStatus = archived ? 'ready' : 'insufficient-evidence';
+      const sameSlotChanged = previous?.dueSlotMs===dueSlotMs && previous.contractHash!==this.contractHash(contract);
+      const genericProof = !genericSubject(initiative) || (!sameSlotChanged && contract.metrics.every(m=>captured.get(initiative.id)?.has(m.id)) && projectMaturationOutcome(contract,this.origin,initiative.id,now,(id,at)=>this.ledger.maturationObservation(this.origin,initiative.id,id,at)).state==='verified');
+      let status: MaturationEvaluationStatus = archived && genericProof && (!genericSubject(initiative) || this.measurementTargetStates.get(initiative.id)==='registered') ? 'ready' : 'insufficient-evidence';
       let passing = 0; let newest: number | null = null; const margins: number[] = [];
       for (const metric of contract.metrics) {
         const row = latest.get(metric.id);
-        if (!row || row.samples < metric.minSamples) { status = 'insufficient-evidence'; continue; }
+        if (!row || row.samples < metric.minSamples || (genericSubject(initiative) && (row.source!==metric.source || row.sourceRef!==metric.sourceRef || row.observedAtMs>now))) { status = 'insufficient-evidence'; continue; }
         newest = Math.max(newest ?? 0, row.observedAtMs);
         if (now - row.observedAtMs > contract.evidenceMaxAgeHours * 3_600_000) { if (status === 'ready') status = 'stale-evidence'; continue; }
         const margin = metric.direction === 'at-least'
@@ -238,17 +301,18 @@ export class BlockerLifecycleService {
         if (margin >= 0) passing++; else if (status === 'ready') status = 'hold';
       }
       if (status === 'ready' && passing < contract.metrics.length) status = 'insufficient-evidence';
+      if (genericSubject(initiative) && status!=='ready') {this.heldReadSlots.add(`${initiative.id}:${dueSlotMs}`);this.ledger.retractMaturationReady(this.origin,initiative.id,dueSlotMs);}
       if (this.ledger.recordMaturationEvaluation({ origin: this.origin, featureId: initiative.id,
         rung, dueSlotMs, evaluatedAtMs: now, status, passingMetrics: passing,
         totalMetrics: contract.metrics.length, minNormalizedMargin: margins.length ? Math.min(...margins) : null,
         contractHash: this.contractHash(contract), newestEvidenceAtMs: newest })) inserted++;
     }
-    return { eligible: eligible.length, inserted };
+    return { eligible: featureEligible.length, ...(genericCandidates.length?{measurementEligible:genericCandidates.length}:{}), inserted };
   }
 
   /** This machine's evaluation rows, for readers that show D7's own verdicts. */
   maturationEvaluationRows(sinceMs: number): MaturationEvaluationRecord[] {
-    return this.ledger.maturationEvaluations(this.origin, sinceMs).map(row => this.archiveFailedSlots.has(`${row.featureId}:${row.dueSlotMs}`) && row.status === 'ready'
+    return this.ledger.maturationEvaluations(this.origin, sinceMs).map(row => this.heldReadSlots.has(`${row.featureId}:${row.dueSlotMs}`) && row.status === 'ready'
       ? { ...row, status: 'insufficient-evidence' as const, passingMetrics: 0, minNormalizedMargin: null } : row);
   }
 
@@ -262,7 +326,9 @@ export class BlockerLifecycleService {
     return crypto.createHash('sha256').update(JSON.stringify(contract)).digest('hex');
   }
 
-  private captureBlockerObservations(featureId: string, contract: MaturationEvaluationContract, now: number, memo: ObservationMemo = {}): void {
+  private captureBlockerObservations(featureId: string, contract: MaturationEvaluationContract, now: number, memo: ObservationMemo = {}): Set<string> {
+    const captured = new Set<string>();
+    const scoped=validGenericMeasurement(contract,featureId);
     // Blocker factors are expensive and few features ask for them: build each map once, on first ask.
     const summariesOf = () => memo.summaries ??= new Map<BlockerFactor, Record<string, unknown>>([
       ...(['request-to-persist', 'clear-latency'] as const).map(f => [f, this.factorSummary(f, now - 168 * 3_600_000)] as const),
@@ -291,6 +357,8 @@ export class BlockerLifecycleService {
           this.ledger.recordMaturationObservation({ origin: this.origin, featureId, metricId: metric.id,
             source: metric.source, sourceRef: metric.sourceRef, observedAtMs: now,
             value: projected.value, samples: projected.samples });
+          const stored=scoped?this.ledger.maturationObservation(this.origin,featureId,metric.id,now):null;
+          if(stored && stored.source===metric.source && stored.sourceRef===metric.sourceRef && stored.value===projected.value && stored.samples===projected.samples) captured.add(metric.id);
         }
         continue;
       }
@@ -305,16 +373,21 @@ export class BlockerLifecycleService {
         sourceRef: metric.sourceRef, observedAtMs: now, value, samples,
       });
     }
+    return captured;
   }
 
   /** Evidence for one existing subject, from the same ledger and contract D7 uses. */
   maturationOutcome(featureId: string) {
     const subject = this.maturationInitiatives.find(i => i.id === featureId);
-    const contract = subject?.rolloutAccounting?.maturationEvaluation ?? subject?.rollout?.maturationEvaluation;
-    return { featureId, subjectKnown: Boolean(subject), evidence: (subject?.rolloutAccounting?.maturationContractError ?? subject?.rollout?.maturationContractError)
+    const contract = subject ? measurementContractOf(subject) : undefined;
+    return { featureId, subjectKnown: Boolean(subject), evidence: ((subject && ((genericSubject(subject) && !contract)||misplacedBinding(subject))) || subject?.rolloutAccounting?.maturationContractError || subject?.rollout?.maturationContractError)
       ? { state: 'invalid-contract' as const, metrics: [] }
       : projectMaturationOutcome(contract, this.origin, featureId,
         this.now(), (metricId, at) => this.ledger.maturationObservation(this.origin, featureId, metricId, at)) };
+  }
+
+  measurementAdmission(id:string):'included'|'budget-omitted'|'inactive' {
+    return this.maturationInitiatives.some(i=>i.id===id)?'included':this.genericEligibleIds.has(id)?'budget-omitted':'inactive';
   }
 
   /** Read proof against the exact current owner's retained contract, independently
@@ -326,12 +399,17 @@ export class BlockerLifecycleService {
   }
 
   /** Bounded read only: exact owner contract, retained numbers and version boundaries. */
-  maturationTrendForContract(featureId: string, contract: MaturationEvaluationContract, windowDays: number) {
+  maturationTrendForContract(featureId: string, contract: MaturationEvaluationContract, windowDays: number, freshTargetState?:MeasurementTargetState) {
+    if (validGenericMeasurement(contract,featureId)) {
+      let state=freshTargetState;
+      try{state??=this.measurementReaders?.targets().get(featureId);}catch{/* @silent-fallback-ok — failed target inventory read remains unavailable */}
+      if(state!=='registered')return null;
+    }
     if (!validMaturationPolicy(contract) || !Number.isInteger(windowDays) || windowDays < 7 || windowDays > 90) return null;
     const now = this.now(); const since = now - windowDays * 86_400_000;
     const proof = this.maturationOutcomeForContract(featureId, contract);
     const evaluations = this.ledger.maturationEvaluationHistory(this.origin, featureId, since);
-    if (evaluations) evaluations.rows = evaluations.rows.map(row => this.archiveFailedSlots.has(`${row.featureId}:${row.dueSlotMs}`) && row.status === 'ready'
+    if (evaluations) evaluations.rows = evaluations.rows.map(row => this.heldReadSlots.has(`${row.featureId}:${row.dueSlotMs}`) && row.status === 'ready'
       ? { ...row, status: 'insufficient-evidence', passingMetrics: 0, minNormalizedMargin: null } : row);
     return measurementTrend({ origin: this.origin, subjectId: featureId, subjectKnown: proof.subjectKnown,
       now, windowDays, contract, contractHash: this.contractHash(contract), evidence: proof.evidence,
@@ -340,7 +418,8 @@ export class BlockerLifecycleService {
   }
 
   private maturationSummary(sinceMs: number, outcomeFeatureId?: string): Record<string, unknown> {
-    const rows = this.maturationEvaluationRows(sinceMs);
+    const allRows = this.maturationEvaluationRows(sinceMs);
+    const rows = allRows.filter(r=>r.rung!=='measurement' && !this.genericSubjectIds.has(r.featureId));
     const latest = new Map<string, MaturationEvaluationRecord>();
     for (const row of rows) latest.set(row.featureId, row);
     const byStatus: Record<MaturationEvaluationStatus, number> = { ready: 0, hold: 0, 'stale-evidence': 0,
@@ -368,25 +447,33 @@ export class BlockerLifecycleService {
     }));
     const accountingCounts = { active: 0, composed: 0, excluded: 0 };
     for (const row of accounting) accountingCounts[row.disposition]++;
-    const eligibleCount = this.maturationInitiatives.length;
+    const featureSubjects = this.maturationInitiatives.filter(i=>!genericSubject(i));
+    const genericSubjects = this.maturationInitiatives.filter(genericSubject);
+    const measurementRows = allRows.filter(r=>r.rung==='measurement' && this.genericSubjectIds.has(r.featureId));
+    const measurementLatest = new Map<string,MaturationEvaluationRecord>(); for (const row of measurementRows) measurementLatest.set(row.featureId,row);
+    const omittedIds=[...this.genericEligibleIds].filter(id=>!genericSubjects.some(i=>i.id===id));
+    const measurements = { scope:'generic-initiative-subjects',eligible:this.genericEligibleIds.size,admitted:genericSubjects.length,omitted:omittedIds.length,
+      omittedIds:omittedIds.slice(0,32),omittedIdsOmitted:Math.max(0,omittedIds.length-32),
+      subjects:genericSubjects.map(i=>({id:i.id,target:validMeasurementSubject(i.measurement?.subject)?{kind:i.measurement!.subject.kind,key:i.measurement!.subject.key}:null,targetState:this.measurementTargetStates.get(i.id)??'unavailable',status:measurementLatest.get(i.id)?.status??'insufficient-evidence'})) };
+    const eligibleCount = featureSubjects.length;
     const legacyEligible = Math.max(0, eligibleCount - accountingCounts.active - accountingCounts.composed);
     // This is declared-contract coverage of D7's subjects, not universal
     // inventory coverage and not a count of verified baselines.
     const outcomeContracts = { scope: 'current-d7-subjects', subjects: eligibleCount, declared: 0, missing: 0, invalid: 0 };
-    for (const subject of this.maturationInitiatives) {
-      const contract = subject.rolloutAccounting?.maturationEvaluation ?? subject.rollout?.maturationEvaluation;
-      if (subject.rolloutAccounting?.maturationContractError ?? subject.rollout?.maturationContractError) outcomeContracts.invalid++;
+    for (const subject of featureSubjects) {
+      const contract = measurementContractOf(subject);
+      if (misplacedBinding(subject) || Boolean(subject.rolloutAccounting?.maturationContractError ?? subject.rollout?.maturationContractError)) outcomeContracts.invalid++;
       else if (contract?.outcome === undefined) outcomeContracts.missing++;
       else if (parseMaturationOutcome(contract.outcome, contract.metrics.map(m => m.id))) outcomeContracts.declared++;
       else outcomeContracts.invalid++;
     }
     return { eligible: eligibleCount, evaluated: latest.size,
       missedDue: Math.max(0, eligibleCount - latest.size), byStatus, features, accountingCounts, legacyEligible, accounting,
-      outcomeContracts, ...(outcomeFeatureId ? { outcomeDetail: this.maturationOutcome(outcomeFeatureId) } : {}) };
+      outcomeContracts, measurements, ...(outcomeFeatureId ? { outcomeDetail: this.maturationOutcome(outcomeFeatureId) } : {}) };
   }
 
   private maturationTrend(sinceMs: number): Record<string, unknown> {
-    const rows = this.maturationEvaluationRows(sinceMs);
+    const rows = this.maturationEvaluationRows(sinceMs).filter(r=>r.rung!=='measurement' && !this.genericSubjectIds.has(r.featureId));
     const grouped = new Map<string, MaturationEvaluationRecord[]>();
     for (const row of rows) { const values = grouped.get(row.featureId) ?? []; values.push(row); grouped.set(row.featureId, values); }
     return { features: [...grouped.entries()].slice(0, 512).map(([featureId, values]) => ({ featureId,

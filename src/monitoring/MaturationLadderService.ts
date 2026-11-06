@@ -393,6 +393,9 @@ export class MaturationLadderService {
       const contract = contractForRung(rungDef);
       const stage: RolloutStage = rung === 'dry-run' ? 'dry-run' : 'live';
       const existing = byId.get(entry.subject);
+      // Independent target resolution reports this owner collision; never lend
+      // a feature's contract or projections to a generic measurement initiative.
+      if (existing?.measurement !== undefined) continue;
       if (existing) {
         byId.set(entry.subject, {
           ...existing,
