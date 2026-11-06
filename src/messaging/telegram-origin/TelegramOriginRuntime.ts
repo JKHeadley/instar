@@ -35,6 +35,8 @@ const MIN_AUDIT_RETENTION_DAYS = 30;
 const RETENTION_TICK_BUDGET_MS = 500;
 const RETENTION_STEP_SLOW_MS = 250;
 const RETENTION_STEP_QUICK_MS = 100;
+/** The scan raises reader-visible notices; recovery running more often must not raise them faster. */
+const SESSION_EXCEPTION_SCAN_INTERVAL_MS = 5 * 60_000;
 const RETENTION_BATCHES = { fold: { min: 200, max: 2000 }, compact: { min: 4, max: 32 }, purge: { min: 10, max: 50 } };
 /** A mistyped setting must never read as "delete all history". */
 export function auditRetentionDays(value: unknown): number {
@@ -343,6 +345,7 @@ export class TelegramOriginRuntime {
   #heldForwardRefreshedAt = 0;
   #sessionExceptionCursor: { afterPreparedAt: number; afterOperationId: string } | null = null;
   #reportingSessionExceptions = false;
+  #sessionExceptionScannedAt = 0;
   /** Direct-path lease holds already reported (bounded: pruned to the live held set). */
   #observedLeaseHolds = new Set<string>();
   /** `/health → telegramOrigin.heldForward` — a synchronous read of the last
@@ -525,6 +528,7 @@ export class TelegramOriginRuntime {
       for (const candidate of candidates.values()) {
         if (this.closed) break;
         const { operation } = candidate;
+        if (this.service.isFirstSendRunning(operation.record.operationId)) continue;
         if (operation.record.destination.transport !== 'bot-api') {
           const candidates = [...this.browsers.values()].filter(browser =>
             browser.executor.options.accountId === operation.record.destination.accountId &&
@@ -663,6 +667,8 @@ export class TelegramOriginRuntime {
   }
   private async reportSessionDeliveryExceptions(): Promise<void> {
     if (this.#reportingSessionExceptions || !this.options.onSessionDeliveryHeld || this.closed) return;
+    if (Date.now() - this.#sessionExceptionScannedAt < SESSION_EXCEPTION_SCAN_INTERVAL_MS) return;
+    this.#sessionExceptionScannedAt = Date.now();
     this.#reportingSessionExceptions = true;
     try {
       const rows = await this.store.listSessionDeliveryExceptions({ ...this.#sessionExceptionCursor ?? {}, limit: 100 });

@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "coverage-source-boundary",
+  "sessionId": "30384209-0957-44f8-9037-d33d452ffbc6",
+  "timestamp": "2026-11-06T06:56:17.878Z",
+  "artifactPath": "upgrades/side-effects/coverage-source-boundary.md",
+  "artifactSha256": "6bdc2f917f79d1909e901aef1f19f3eb196de242b0d1b46fc3e2a0c21db065a2",
+  "coveredFiles": [
+    "dashboard/console/measurement-coverage.js",
+    "docs/specs/measurement-coverage-view.eli16.md",
+    "docs/specs/measurement-coverage-view.md",
+    "src/core/CapabilityRegistry.ts",
+    "src/server/measurementCoverageRead.ts",
+    "tests/e2e/maturation-board-alive.test.ts",
+    "tests/integration/maturation-board-route.test.ts",
+    "upgrades/next/coverage-source-boundary.md",
+    "upgrades/side-effects/coverage-source-boundary.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible correction for two reproduced verifier failures in one coverage component. Validated definition census replaces forbidden advisory receiver consumption, ratchet unchanged; warning uses own action. No new authority or migration.",
+  "eli16Path": "docs/specs/measurement-coverage-view.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/coverage-source-boundary.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "locked-proof-freeze-and-restart-wait",
+  "sessionId": "aa5e6800-44b2-4221-914b-c621ae84a631",
+  "timestamp": "2026-11-05T21:24:29.256Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-freeze-and-restart-wait.md",
+  "artifactSha256": "b5bc455011b73e38c05c274f5a18e07e17565322b4419698bc05d85983ce8e74",
+  "coveredFiles": [
+    "docs/specs/locked-proof-freeze-and-restart-wait.eli16.md",
+    "scripts/locked-proof/lib.mjs",
+    "tests/unit/locked-proof-driver.test.ts",
+    "upgrades/next/locked-proof-freeze-and-restart-wait.md",
+    "upgrades/side-effects/locked-proof-freeze-and-restart-wait.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Hand-run proof tooling and unit tests only; no runtime code; a revert fully undoes it",
+  "eli16Path": "docs/specs/locked-proof-freeze-and-restart-wait.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-freeze-and-restart-wait.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

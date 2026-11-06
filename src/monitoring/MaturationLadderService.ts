@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { Initiative, RolloutStage } from '../core/InitiativeTracker.js';
+import type { Initiative, RolloutStage, MaturationEvaluationContract } from '../core/InitiativeTracker.js';
 import { maybeRotateJsonlSegment } from '../utils/jsonl-rotation.js';
 import { readJsonlQueries, RAN_FRESH_DAYS, type JsonlQuery } from './LadderEvidenceReader.js';
 import {
@@ -393,11 +393,14 @@ export class MaturationLadderService {
       const contract = contractForRung(rungDef);
       const stage: RolloutStage = rung === 'dry-run' ? 'dry-run' : 'live';
       const existing = byId.get(entry.subject);
+      // Independent target resolution reports this owner collision; never lend
+      // a feature's contract or projections to a generic measurement initiative.
+      if (existing?.measurement !== undefined) continue;
       if (existing) {
         byId.set(entry.subject, {
           ...existing,
-          ...(existing.rollout ? { rollout: { ...existing.rollout, maturationEvaluation: contract } } : { rollout: { flagPath: entry.flag?.path ?? entry.id, stage, maturationEvaluation: contract } }),
-          ...(existing.rolloutAccounting ? { rolloutAccounting: { ...existing.rolloutAccounting, maturationEvaluation: contract } } : {}),
+          ...(existing.rollout ? { rollout: { ...existing.rollout, maturationEvaluation: contract, maturationContractError: undefined } } : { rollout: { flagPath: entry.flag?.path ?? entry.id, stage, maturationEvaluation: contract } }),
+          ...(existing.rolloutAccounting ? { rolloutAccounting: { ...existing.rolloutAccounting, maturationEvaluation: contract, maturationContractError: undefined } } : {}),
         });
       } else {
         extra.push({ id: entry.subject, title: entry.title, rollout: { flagPath: entry.flag?.path ?? entry.id, stage, maturationEvaluation: contract } } as unknown as Initiative);
@@ -407,6 +410,23 @@ export class MaturationLadderService {
   }
 
   // ── Views ────────────────────────────────────────────────────────────────
+
+  /** Exact retained contracts for measurement reads. Unlike features(), this
+   * never uses the UI view cache to choose the live rung's contract. */
+  measurementContracts(): Map<string, { contract: MaturationEvaluationContract | undefined; overridesInitiative: boolean }> | null {
+    if (!this.registry) return null;
+    const live = this.deps.readLiveConfig();
+    if (live === null) return null;
+    const out = new Map<string, { contract: MaturationEvaluationContract | undefined; overridesInitiative: boolean }>();
+    for (const entry of this.entries) {
+      if (entry.disposition !== 'ladder') continue;
+      const { rung, target } = this.rungsOf(entry, live);
+      const definition = entry.rungs[target ?? 'fleet'];
+      out.set(entry.subject, { contract: definition ? contractForRung(definition) : undefined,
+        overridesInitiative: Boolean(target && rung !== 'dark' && definition) });
+    }
+    return out;
+  }
 
   private heldReason(live: Record<string, unknown> | null, entry: LadderEntry): string | null {
     const holds = readPath(live, 'maturation.ladder.holds') as Record<string, unknown> | undefined;

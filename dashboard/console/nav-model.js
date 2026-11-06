@@ -147,3 +147,58 @@ export function legacyHref(tabId) {
 export function icon(name) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 }
+
+// ── Phone mode (the Instar iPhone app) ────────────────────────────────────
+// The app shows one console page inside its own frame:
+//   /dashboard/console/?phone=1#/<page>   (or #/<page>?phone=1)
+// shows only that page's content, with no top bar, nav or Legacy link.
+// Without phone=1 nothing changes.
+
+/** Short page names the app may use, by the console's own hash path. */
+export const PHONE_PAGE_ALIASES = {
+  promises: 'work/promises',
+  plans: 'work/plans',
+  schedule: 'work/schedule',
+  development: 'work/development',
+  maturation: 'work/maturation',
+  ideas: 'work/ideas',
+  sessions: 'work/sessions',
+  pace: 'work/pace',
+  machines: 'capacity/machines',
+  health: 'capacity/health',
+  accounts: 'capacity/accounts',
+  costs: 'capacity/costs',
+  messages: 'people/messages',
+  agents: 'people/agents',
+  mandates: 'people/mandates',
+  secrets: 'people/secrets',
+  allowed: 'settings/allowed',
+  learned: 'settings/learned',
+  inside: 'settings/inside',
+  files: 'settings/files',
+};
+
+/** Pages that exist only in phone mode (the Pace card is a page of its own there). */
+export const PHONE_ONLY_PAGES = ['work/pace'];
+
+function queryHasPhone(query) {
+  if (typeof query !== 'string' || !query) return false;
+  try { return new URLSearchParams(query.replace(/^\?/, '')).get('phone') === '1'; } catch { return false; }
+}
+
+/**
+ * Is this load in phone mode? True when phone=1 is in the page's query
+ * (location.search) or in the hash's own query (#/accounts?phone=1).
+ */
+export function isPhoneMode(search, hash) {
+  if (queryHasPhone(search)) return true;
+  const h = typeof hash === 'string' ? hash : '';
+  const q = h.indexOf('?');
+  return q >= 0 && queryHasPhone(h.slice(q + 1));
+}
+
+/** The page path to render: in phone mode a short name resolves to its full path. */
+export function pagePath(path, phone) {
+  if (!phone) return path;
+  return Object.prototype.hasOwnProperty.call(PHONE_PAGE_ALIASES, path) ? PHONE_PAGE_ALIASES[path] : path;
+}

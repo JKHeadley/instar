@@ -61,6 +61,12 @@ import { DegradationReporter } from './DegradationReporter.js';
 export interface SentinelConfig {
   /** Backstop watchdog tick interval. Default 5 minutes (spec §3a). */
   watchdogIntervalMs?: number;
+  /**
+   * Tick interval when the origin outbox owns recovery. Default 30s, the first
+   * retry step a refused send is given; at the 5-minute backstop a reply due in
+   * 30s waited minutes. Every attempt still passes the outbox's claim fence.
+   */
+  originRecoveryIntervalMs?: number;
   /** Per-entry lease duration. Default 90s (spec §3b). */
   leaseDurationMs?: number;
   /** Per-topic delivery rate cap. Default 30s (spec §3c). */
@@ -150,6 +156,7 @@ export interface SentinelDeps {
 
 const DEFAULTS: Required<SentinelConfig> = {
   watchdogIntervalMs: 5 * 60 * 1000,
+  originRecoveryIntervalMs: 30 * 1000,
   leaseDurationMs: 90 * 1000,
   perTopicRateMs: 30 * 1000,
   maxConcurrent: 4,
@@ -202,6 +209,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
     super();
     this.cfg = {
       watchdogIntervalMs: config.watchdogIntervalMs ?? DEFAULTS.watchdogIntervalMs,
+      originRecoveryIntervalMs: config.originRecoveryIntervalMs ?? DEFAULTS.originRecoveryIntervalMs,
       leaseDurationMs: config.leaseDurationMs ?? DEFAULTS.leaseDurationMs,
       perTopicRateMs: config.perTopicRateMs ?? DEFAULTS.perTopicRateMs,
       maxConcurrent: config.maxConcurrent ?? DEFAULTS.maxConcurrent,
@@ -278,7 +286,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
       this.tick().catch((err) => {
         console.warn('[delivery-sentinel] watchdog tick failed:', err);
       });
-    }, this.cfg.watchdogIntervalMs);
+    }, this.deps.recoverOrigin ? this.cfg.originRecoveryIntervalMs : this.cfg.watchdogIntervalMs);
     // Don't keep the process alive just for this timer.
     if (typeof this.watchdog.unref === 'function') {
       this.watchdog.unref();

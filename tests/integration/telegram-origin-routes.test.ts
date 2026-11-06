@@ -162,15 +162,18 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
       .set('Authorization', 'Bearer agent-test').set('X-Instar-Origin-Session', h.sessionToken)
       .send({ text: 'The client report is ready for your review.' });
     expect(sent.status).toBe(409); expect(review).toHaveBeenCalledOnce();
+    const firstStart = Date.now();
     expect(await h.runtime.recoverHeld()).toEqual({ processed: 1, recovered: 0 });
     expect(review).toHaveBeenCalledTimes(2);
-    for (let n = 0; n < 12; n++) expect(await h.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
+    // The first step of the pacing ladder is 30 s: a few immediate ticks stay inside it.
+    for (let n = 0; n < 3; n++) expect(await h.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
     expect(review).toHaveBeenCalledTimes(2); expect(h.network).not.toHaveBeenCalled();
     const audit = await request(h.app).get('/telegram/origins').set('Authorization', 'Bearer agent-test')
       .set('X-Instar-AgentId', 'echo').set('X-Instar-Operator-Session', 'operator-test');
     expect(audit.status).toBe(200);
     expect(audit.body.records[0].recovery).toMatchObject({ attempts: 1 });
-    expect(audit.body.records[0].recovery.nextAttemptAt).toBeGreaterThan(Date.now() + 14 * 60_000);
+    expect(audit.body.records[0].recovery.nextAttemptAt).toBeGreaterThanOrEqual(firstStart + 30_000);
+    expect(audit.body.records[0].recovery.nextAttemptAt).toBeLessThanOrEqual(Date.now() + 30_000);
     expect(audit.body.records[0].attempts).toEqual([]);
     // Advance only the real worker scheduler's explicit test clock. Network,
     // policy, original custody and request bytes continue through production.

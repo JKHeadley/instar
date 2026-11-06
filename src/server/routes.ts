@@ -4,6 +4,7 @@ const stampNotification = notificationStamper('src/server/routes.ts');
 import { mountNotificationRoutes } from './notificationRoutes.js';
 import { verifiedReplyEnvelope, requireTelegramDelivery } from '../messaging/NotificationSelectivityGate.js';
 import { JobPortableSync } from '../core/JobPortableSync.js';
+import { validMaturationOutcomeDetail } from '../monitoring/MaturationOutcome.js';
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
 import { registerRecommendedServiceRoutes } from './recommendedServiceRoutes.js';
 import { catalogWithProving } from '../recommended/recipes.js';
@@ -26,6 +27,8 @@ import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoute
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
+import { mountMobileSessionControlsRoutes, runSessionAction, type RouteAnswer } from './mobileSessionControlsRoutes.js';
+import { redactDeep, redactForDevice } from './mobileSessionTerminalRoutes.js';
 import { mountMobileConsolePagesRoutes, type SelfRead } from './mobileConsolePagesRoutes.js';
 import { mountMobileHealthRoutes, HEALTH_CHOICES_LOCAL_PATH, HEALTH_CHOICES_MERGE_PATH } from './mobileHealthRoutes.js';
 import { LLM_COMPONENT_PREFIX, healthChoiceStoreFor } from '../monitoring/healthChoices.js';
@@ -54,7 +57,8 @@ import {
 } from './machineMaintenancePool.js';
 import { getActiveSessionPriorityLowerer } from '../core/sessionPriority.js';
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
-import { resolveSessionPlatform, sessionDisplayName, type SessionPlatformInfo } from './sessionPlatform.js';
+import { sessionDisplayName, type SessionPlatformInfo } from './sessionPlatform.js';
+import { createSessionPresentationResolver } from './sessionPresentation.js';
 import { readSystemTopicIds } from '../messaging/SystemTopicAdoption.js';
 import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 /**
@@ -78,7 +82,7 @@ import { IdentityManager as ThreadlineIdentityManager } from '../threadline/clie
 import { resolveAgentRelayStatus } from '../threadline/agentRelayStatus.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
 import { emergencyStopUserMessage } from '../messaging/shared/emergencyStopUserMessage.js';
-import { isVerifiedChannelName, verifiedEntityName } from '../messaging/shared/channelIdentity.js';
+import { verifiedChannelIdentity, isVerifiedChannelName, verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import { execFileSync } from 'node:child_process';
 import { activeClaudeKeyHealth } from '../core/ClaudeKeyHealth.js';
@@ -272,7 +276,7 @@ import {
 import { PlaywrightSeatLease } from '../core/PlaywrightSeatLease.js';
 import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
 import { buildViewTunnelUrl } from './viewTunnelUrl.js';
-import { rateLimiter, OUTBOUND_GATE_REVIEW_BUDGET_MS, resolveFollowMeBudgets, FOLLOWME_SIMPLE_RELAY_FETCH_MS, bearerMatches } from './middleware.js';
+import { rateLimiter, OUTBOUND_GATE_REVIEW_BUDGET_MS, resolveFollowMeBudgets, FOLLOWME_SIMPLE_RELAY_FETCH_MS, bearerMatches, MOBILE_SESSION_ACTION_TIMEOUT_MS, MOBILE_SESSION_MOVE_TIMEOUT_MS } from './middleware.js';
 import { relayHoldHours } from '../threadline/relayVerdict.js';
 import {
   buildPeerDarkSentence,
@@ -7832,18 +7836,14 @@ export function createRoutes(ctx: RouteContext): Router {
     // (and every concurrent request) on per-session sync isSessionAlive probes (A1 hardening).
     const sessions = ctx.sessionManager.getCachedRunningSessions().sessions;
     const schedulerStatus = ctx.scheduler?.getStatus() ?? null;
+    const presentSession = createSessionPresentationResolver({ ...ctx, stateDir: ctx.config.stateDir });
 
     res.json({
       sessions: {
         running: sessions.length,
         max: ctx.config.sessions.maxSessions,
         list: sessions.map(s => {
-          const detected = resolveSessionPlatform(s.tmuxSession, ctx.telegram, ctx.slack);
-          const topicName = ctx.telegram?.getTopicName(s.telegramTopicId ?? 0);
-          const platform = detected.platform === 'headless' && Number.isSafeInteger(s.telegramTopicId)
-            ? { platform: 'telegram', platformId: s.telegramTopicId, ...(isVerifiedChannelName('telegram', s.telegramTopicId!, topicName) ? { platformName: topicName } : {}) }
-            : detected;
-          return { id: s.id, name: sessionDisplayName(s.name, platform), jobSlug: s.jobSlug };
+          return { id: s.id, name: presentSession(s).name, jobSlug: s.jobSlug };
         }),
       },
       scheduler: schedulerStatus,
@@ -11492,6 +11492,7 @@ export function createRoutes(ctx: RouteContext): Router {
       : null;
 
     // Enrich sessions with hook event telemetry and platform info
+    const presentSession = createSessionPresentationResolver({ ...ctx, stateDir: ctx.config.stateDir });
     const enriched = sessions.map(s => {
       const result: Record<string, unknown> = { ...s };
 
@@ -11526,13 +11527,7 @@ export function createRoutes(ctx: RouteContext): Router {
 
       // Add platform indicator and display name (shared with the dashboard
       // WebSocket list so local and pooled rows can never disagree).
-      const detected = resolveSessionPlatform(s.tmuxSession, ctx.telegram, ctx.slack);
-      const topicName = ctx.telegram?.getTopicName(s.telegramTopicId ?? 0);
-      const platform = detected.platform === 'headless' && Number.isSafeInteger(s.telegramTopicId)
-        ? { platform: 'telegram', platformId: s.telegramTopicId, ...(isVerifiedChannelName('telegram', s.telegramTopicId!, topicName) ? { platformName: topicName } : {}) }
-        : detected;
-      Object.assign(result, platform);
-      result.name = sessionDisplayName(s.name, platform);
+      Object.assign(result, presentSession(s));
 
       return result;
     });
@@ -11583,16 +11578,29 @@ export function createRoutes(ctx: RouteContext): Router {
             // re-introduces the finished-session wall into the pool view.
             if (!includeAll && !explicitStatus && !isActiveStatus(s.status)) continue;
             if (explicitStatus && s.status !== explicitStatus) continue;
-            const remoteTopicId = typeof s.telegramTopicId === 'number' && Number.isSafeInteger(s.telegramTopicId) ? s.telegramTopicId : undefined;
+            const remoteTopicId = typeof s.telegramTopicId === 'number' && Number.isSafeInteger(s.telegramTopicId) && s.telegramTopicId > 0 ? s.telegramTopicId : undefined;
             const remotePlatformId = typeof s.platformId === 'number' || typeof s.platformId === 'string' ? s.platformId : remoteTopicId;
-            const remotePlatform: SessionPlatformInfo = s.platform === 'telegram' || s.platform === 'slack'
+            const remotePlatform: SessionPlatformInfo = s.platform === 'telegram' || s.platform === 'slack' || s.platform === 'app'
               ? { platform: s.platform, platformId: remotePlatformId, platformName: typeof s.platformName === 'string' ? s.platformName : undefined }
               : remoteTopicId !== undefined
                 ? { platform: 'telegram', platformId: remoteTopicId }
                 : { platform: 'headless' };
+            // Telegram IDs are pool-wide; negative app/Slack aliases are local
+            // to their owner and must never be looked up on the receiving machine.
+            let presentation = remotePlatform.platform === 'telegram' && Number(remotePlatform.platformId) > 0
+              ? { ...remotePlatform, ...presentSession({ name: sessionDisplayName(s.name, remotePlatform), tmuxSession: '', telegramTopicId: Number(remotePlatform.platformId) }) }
+              : { ...remotePlatform, name: sessionDisplayName(s.name, remotePlatform) };
+            // Renderers prefer platformName. Do not leave a placeholder or ID
+            // there to hide the valid session title we just recovered.
+            if (presentation.platformName) {
+              const title = presentation.platform === 'slack'
+                ? verifiedChannelIdentity('slack', String(presentation.platformId ?? '').split(':')[0], presentation.platformName)?.name
+                : verifiedEntityName(presentation.platformId ?? '__session__', presentation.platformName);
+              presentation = { ...presentation, platformName: title ?? undefined };
+            }
             remote.push({
               ...s,
-              name: sessionDisplayName(s.name, remotePlatform),
+              ...presentation,
               machineId: s.machineId ?? p.machineId,
               // This machine's registry names the machine first, so one dashboard never shows
               // the same machine under two names (2026-11-02: a peer called itself "Mac Lan"
@@ -11887,7 +11895,9 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: '"before" and "limit" must be whole numbers' }); return;
     }
     try {
-      res.json({ ok: true, ...readTranscriptPage(filePath, { before, limit }) });
+      // `redact=device`: the phone's read. Secrets go before each entry is cut, so no cut can leave part of one.
+      const clean = req.query.redact === 'device' ? (s: string) => redactForDevice(s, [ctx.config.authToken, ctx.config.dashboardPin]) : undefined;
+      res.json({ ok: true, ...readTranscriptPage(filePath, { before, limit, clean }) });
     } catch (err) {
       res.status(500).json({ error: `Could not read the conversation record: ${err instanceof Error ? err.message : String(err)}` });
     }
@@ -23047,7 +23057,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'Initiative tracker not configured' });
       return;
     }
-    const { id, title, description, phases, links, nextCheckAt, needsUser, needsUserReason, blockers } = req.body ?? {};
+    const { id, title, description, phases, links, nextCheckAt, needsUser, needsUserReason, blockers, measurement } = req.body ?? {};
     if (typeof id !== 'string' || !initiativeIdRe.test(id)) {
       res.status(400).json({ error: '"id" must be lowercase kebab-case, 1–63 chars' });
       return;
@@ -23067,7 +23077,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       const created = await ctx.initiativeTracker.create({
         id, title, description, phases, links, nextCheckAt,
-        needsUser, needsUserReason, blockers,
+        needsUser, needsUserReason, blockers, measurement,
       });
       res.status(201).json(created);
     } catch (err) {
@@ -35430,7 +35440,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (seen.size !== 3) return null;
     return out;
   };
-  const sanitizeMaturation = (kind: 'summary' | 'trend', raw: unknown): Record<string, unknown> | null => {
+  const sanitizeMaturation = (kind: 'summary' | 'trend', raw: unknown, expectedOrigin: string): Record<string, unknown> | null => {
     if (!raw || typeof raw !== 'object') return null;
     const m = raw as Record<string, unknown>;
     if (kind === 'summary') {
@@ -35498,8 +35508,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (dispositions.some(k => actualCounts[k as keyof typeof actualCounts] !== accountingCounts![k]) ||
             m.eligible !== actualCounts.active + actualCounts.composed + (m.legacyEligible as number)) return null;
       }
+      let outcomeContracts: Record<string, unknown> | undefined;
+      if (m.outcomeContracts !== undefined) {
+        if (!m.outcomeContracts || typeof m.outcomeContracts !== 'object' || Array.isArray(m.outcomeContracts)) return null;
+        const o = m.outcomeContracts as Record<string, unknown>;
+        if (o.scope !== 'current-d7-subjects' || !['subjects', 'declared', 'missing', 'invalid'].every(k => Number.isSafeInteger(o[k]) && (o[k] as number) >= 0) ||
+            o.subjects !== m.eligible || o.subjects !== (o.declared as number) + (o.missing as number) + (o.invalid as number)) return null;
+        outcomeContracts = { scope: o.scope, subjects: o.subjects, declared: o.declared, missing: o.missing, invalid: o.invalid };
+      }
+      if (m.outcomeDetail !== undefined && !validMaturationOutcomeDetail(m.outcomeDetail, expectedOrigin)) return null;
       return { eligible: m.eligible, evaluated: m.evaluated, missedDue: m.missedDue,
         byStatus: Object.fromEntries(statuses.map(k => [k, byStatus[k] ?? 0])), features,
+        ...(outcomeContracts ? { outcomeContracts } : {}),
+        ...(m.outcomeDetail !== undefined ? { outcomeDetail: m.outcomeDetail } : {}),
         ...(accountingCounts ? { accountingCounts: Object.fromEntries(dispositions.map(k => [k, accountingCounts![k]])),
           legacyEligible: m.legacyEligible, accounting } : {}) };
     }
@@ -35509,7 +35530,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   const blockerPoolRead = async (kind: 'summary' | 'trend', query: string, local: Record<string, unknown>) => {
     const cacheKey = `${kind}?${query}`;
     const cached = blockerPoolCache.get(cacheKey);
-    if (cached && Date.now() - cached.at < 60_000) return cached.value;
+    // A verified outcome can cross its freshness deadline within the ordinary
+    // pool cache window. Detail queries re-read and validate the actual proof.
+    if (cached && Date.now() - cached.at < 60_000 && !new URLSearchParams(query).has('feature')) return cached.value;
     const peers = (ctx.resolvePeerUrls?.() ?? []).slice(0, 16);
     const origins: unknown[] = [local];
     const failures: Array<{ machineId: string; reason: string }> = [];
@@ -35541,7 +35564,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           if (!origin || typeof origin !== 'object') { failures.push({ machineId: p.machineId, reason: 'invalid-body' }); return; }
           const candidate = origin as Record<string, unknown>;
           const factors = sanitizeBlockerFactors(kind, candidate.factors);
-          const maturation = sanitizeMaturation(kind, candidate.maturation);
+          const requestedFeature = new URLSearchParams(query).get('feature');
+          if (kind === 'summary' && requestedFeature) {
+            const detail = (candidate.maturation as Record<string, unknown> | undefined)?.outcomeDetail as Record<string, unknown> | undefined;
+            if (!detail) { failures.push({ machineId: p.machineId, reason: 'unsupported-outcome-detail' }); return; }
+            if (detail.featureId !== requestedFeature) { failures.push({ machineId: p.machineId, reason: 'invalid-outcome-subject' }); return; }
+          }
+          const maturation = sanitizeMaturation(kind, candidate.maturation, p.machineId);
           const counters = kind === 'summary' ? sanitizeBlockerCounters(candidate.counters) : null;
           if (!maturation) {
             failures.push({ machineId: p.machineId, reason: 'unsupported-maturation' }); return;
@@ -35562,7 +35591,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }));
     }
     const value = { origins, failures, poolComplete: failures.length === 0 };
-    blockerPoolCache.set(cacheKey, { at: Date.now(), value });
+    if (!new URLSearchParams(query).has('feature')) blockerPoolCache.set(cacheKey, { at: Date.now(), value });
     return value;
   };
 
@@ -35570,11 +35599,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (!ctx.blockerLifecycleService?.available()) { res.status(503).json({ error: 'blocker-lifecycle-unavailable' }); return; }
     const sinceHours = Number(req.query.sinceHours ?? 24);
     const scope = String(req.query.scope ?? 'local');
-    if (!Number.isFinite(sinceHours) || sinceHours < 1 || sinceHours > 168 || !['local', 'pool'].includes(scope)) {
+    const feature = req.query.feature;
+    if (!Number.isFinite(sinceHours) || sinceHours < 1 || sinceHours > 168 || !['local', 'pool'].includes(scope) ||
+        (feature !== undefined && (typeof feature !== 'string' || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(feature)))) {
       res.status(400).json({ error: 'invalid-blocker-lifecycle-query' }); return;
     }
-    const local = ctx.blockerLifecycleService.localSummary(sinceHours);
-    const pool = scope === 'pool' ? await blockerPoolRead('summary', `sinceHours=${sinceHours}`, local)
+    const local = ctx.blockerLifecycleService.localSummary(sinceHours, feature as string | undefined);
+    const pool = scope === 'pool' ? await blockerPoolRead('summary', `sinceHours=${sinceHours}${feature ? `&feature=${feature}` : ''}`, local)
       : { origins: [local], failures: [], poolComplete: true };
     res.json({ schemaVersion: 2, scope, ...pool, generatedAt: new Date().toISOString() });
   });
@@ -38275,7 +38306,42 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Native Permission slips and What I'm allowed to do (docs/specs/mobile-native-permissions.md):
     // trimmed reads (owner phone or bearer; approvals and slips proxied-on-read across peers) and the
     // owner phone's Face ID-confirmed approve, decline and switch, which run the console's own paths.
+    // The session screen's controls (docs/specs/mobile-native-session-controls.md): every control calls the
+    // dashboard's own route, here or on the machine holding the session, so its rules stay in force.
+    const sessionControlCall = async (method: 'GET' | 'POST' | 'DELETE', p: string, body?: unknown, machine?: string | null): Promise<RouteAnswer> => {
+      const init = {
+        method,
+        headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-Request': '1', 'X-Instar-Close-Via': 'mobile-app', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        // Each is inside its own route's budget (middleware.ts MOBILE_SESSION_*_TIMEOUT_MS), so the phone gets a plain answer, not a 408.
+        signal: AbortSignal.timeout(p === '/pool/transfer' ? MOBILE_SESSION_MOVE_TIMEOUT_MS - 13_000 : method === 'GET' ? 12_000 : MOBILE_SESSION_ACTION_TIMEOUT_MS - 5000),
+      };
+      try {
+        let r: globalThis.Response;
+        if (machine && machine !== ctx.meshSelfId) {
+          const peer = (ctx.resolvePeerUrls?.() ?? []).find((x) => x.machineId === machine);
+          if (!peer) return { status: 0, body: null };
+          r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, p, init);
+        } else {
+          r = await fetch(`http://127.0.0.1:${ctx.config.port}${p}`, init);
+        }
+        return { status: r.status, body: await r.json().catch(() => null) }; // @silent-fallback-ok — an unreadable body has no usable shape, and each control words that as a failed read
+      } catch { return { status: 0, body: null }; } // @silent-fallback-ok — status 0 is worded as "couldn't be reached" by each control
+    };
+    mountMobileSessionControlsRoutes(router, {
+      call: sessionControlCall,
+      actions: (req) => mobileActionsState(req, { pairing: () => ctx.mobilePairingService ?? null, config: () => ctx.config }),
+      bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+      selfMachineId: () => ctx.meshSelfId ?? null,
+      nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+      secrets: () => [ctx.config.authToken, ctx.config.dashboardPin],
+    });
     mountMobilePermissionsRoutes(router, {
+      // A route's words can quote a run's goal, so the phone's answer gets the same removal as anything else it reads.
+      sessionAction: async (action) => {
+        const r = await runSessionAction(action, { call: sessionControlCall, selfMachineId: () => ctx.meshSelfId ?? null });
+        return { status: r.status, body: redactDeep(r.body, [ctx.config.authToken, ctx.config.dashboardPin]) };
+      },
       pairing: () => ctx.mobilePairingService ?? null,
       config: () => ctx.config,
       stateDir: ctx.config.stateDir,
