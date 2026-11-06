@@ -302,6 +302,10 @@ export class BlockerLifecycleService {
     const byStatus: Record<MaturationEvaluationStatus, number> = { ready: 0, hold: 0, 'stale-evidence': 0,
       'insufficient-evidence': 0, 'missing-contract': 0, 'invalid-contract': 0, 'missed-cadence': 0 };
     for (const row of rows) byStatus[row.status]++;
+    // Historical counts and latest feature counts have different denominators.
+    // Retain byStatus for existing consumers; never present it as feature coverage.
+    const latestByStatus = Object.fromEntries(Object.keys(byStatus).map(status => [status, 0])) as Record<MaturationEvaluationStatus, number>;
+    for (const row of latest.values()) latestByStatus[row.status]++;
     const features = [...latest.values()].sort((a, b) => a.featureId.localeCompare(b.featureId)).map(r => ({
       featureId: r.featureId, rung: r.rung, status: r.status, evaluatedAt: new Date(r.evaluatedAtMs).toISOString(),
       passingMetrics: r.passingMetrics, totalMetrics: r.totalMetrics,
@@ -327,16 +331,69 @@ export class BlockerLifecycleService {
     const eligibleCount = this.maturationInitiatives.length;
     const legacyEligible = Math.max(0, eligibleCount - accountingCounts.active - accountingCounts.composed);
     return { eligible: eligibleCount, evaluated: latest.size,
-      missedDue: Math.max(0, eligibleCount - latest.size), byStatus, features, accountingCounts, legacyEligible, accounting };
+      missedDue: Math.max(0, eligibleCount - latest.size), byStatus, latestByStatus, features, accountingCounts, legacyEligible, accounting };
   }
 
   private maturationTrend(sinceMs: number): Record<string, unknown> {
     const rows = this.ledger.maturationEvaluations(this.origin, sinceMs);
     const grouped = new Map<string, MaturationEvaluationRecord[]>();
     for (const row of rows) { const values = grouped.get(row.featureId) ?? []; values.push(row); grouped.set(row.featureId, values); }
-    return { features: [...grouped.entries()].slice(0, 512).map(([featureId, values]) => ({ featureId,
-      evaluations: values.slice(-90).map(v => ({ day: new Date(v.dueSlotMs).toISOString().slice(0, 10), rung: v.rung,
-        status: v.status, minNormalizedMargin: v.minNormalizedMargin, contractHash: v.contractHash })) })) };
+    const featureLimit = 512;
+    const evaluationLimit = 90;
+    const entries = [...grouped.entries()];
+    // The peer reader admits 512 KiB for the whole response. Reserve 128 KiB
+    // for existing factor series and the route envelope; never raise that bound
+    // merely because this projection became richer. Raw ledger history is intact.
+    const historyByteLimit = 384 * 1024;
+    const candidates = entries.slice(0, featureLimit).map(([featureId, values]) => ({ featureId,
+      values, points: values.slice(-evaluationLimit).map(v => ({
+        day: new Date(v.dueSlotMs).toISOString().slice(0, 10),
+        dueAt: new Date(v.dueSlotMs).toISOString(),
+        evaluatedAt: new Date(v.evaluatedAtMs).toISOString(), rung: v.rung,
+        status: v.status, passingMetrics: v.passingMetrics, totalMetrics: v.totalMetrics,
+        minNormalizedMargin: v.minNormalizedMargin, contractHash: v.contractHash,
+        newestEvidenceAt: v.newestEvidenceAtMs === null ? null : new Date(v.newestEvidenceAtMs).toISOString(),
+        additionalMissedSlots: v.additionalMissedSlots ?? 0,
+        sameEvaluationSeries: false,
+      })),
+    }));
+    type Point = (typeof candidates)[number]['points'][number];
+    const result = {
+      totalFeatures: entries.length,
+      omittedFeatures: Math.max(0, entries.length - featureLimit),
+      featureLimit, evaluationLimit, historyByteLimit, cadenceContinuity: 'unknown',
+      features: candidates.map(c => ({ featureId: c.featureId, totalEvaluations: c.values.length,
+        omittedEvaluations: c.values.length, evaluations: [] as Point[] })),
+    };
+    let budget = historyByteLimit - Buffer.byteLength(JSON.stringify(result));
+    const exhausted = new Set<number>();
+    // Give each feature its newest point before spending space on older ones.
+    // Only contiguous suffixes are returned; never silently downsample gaps.
+    for (let depth = 0; depth < evaluationLimit; depth++) {
+      for (let index = 0; index < candidates.length; index++) {
+        if (exhausted.has(index)) continue;
+        const points = candidates[index].points;
+        const point = points[points.length - 1 - depth];
+        if (!point) continue;
+        const bytes = Buffer.byteLength(JSON.stringify(point)) + 1; // comma, conservatively also for the first point
+        if (bytes > budget) { exhausted.add(index); continue; }
+        budget -= bytes;
+        result.features[index].evaluations.unshift(point);
+      }
+    }
+    for (const feature of result.features) {
+      feature.omittedEvaluations = feature.totalEvaluations - feature.evaluations.length;
+      feature.evaluations.forEach((v, index) => {
+        const previous = feature.evaluations[index - 1];
+        // Structural compatibility only: missing cadence rows may themselves
+        // be absent after a failed write. This does not prove continuity.
+        v.sameEvaluationSeries = Boolean(previous && previous.contractHash === v.contractHash
+          && previous.rung === v.rung && ['ready', 'hold'].includes(previous.status)
+          && ['ready', 'hold'].includes(v.status)
+          && previous.minNormalizedMargin !== null && v.minNormalizedMargin !== null);
+      });
+    }
+    return result;
   }
 
   guardStatus(): Record<string, unknown> {
