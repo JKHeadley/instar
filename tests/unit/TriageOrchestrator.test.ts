@@ -672,8 +672,8 @@ describe('TriageOrchestrator', () => {
       expect(result.classification).toBe('crashed');
       expect(result.action).toBe('auto_restart');
 
-      // Should have sent message to topic and respawned
-      expect(deps.sendToTopic).toHaveBeenCalledWith(123, expect.stringContaining('🔍'));
+      // Successful recovery stays quiet.
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
       expect(deps.respawnSession).toHaveBeenCalledWith('test-session', 123, { silent: true });
     });
 
@@ -888,20 +888,20 @@ describe('TriageOrchestrator', () => {
 
     it('respawns session on "auto_restart"', async () => {
       const deps = await exec('auto_restart');
-      expect(deps.sendToTopic).toHaveBeenCalled();
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
       expect(deps.respawnSession).toHaveBeenCalledWith('test-session', 123, { silent: true });
     });
 
-    it('sends message for suggest_interrupt without acting', async () => {
+    it('keeps suggest_interrupt internal', async () => {
       const deps = await exec('suggest_interrupt');
-      expect(deps.sendToTopic).toHaveBeenCalled();
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
       expect(deps.sendKey).not.toHaveBeenCalled();
       expect(deps.respawnSession).not.toHaveBeenCalled();
     });
 
-    it('sends message for suggest_restart without acting', async () => {
+    it('keeps suggest_restart internal', async () => {
       const deps = await exec('suggest_restart');
-      expect(deps.sendToTopic).toHaveBeenCalled();
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
       expect(deps.sendKey).not.toHaveBeenCalled();
       expect(deps.respawnSession).not.toHaveBeenCalled();
     });

@@ -130,6 +130,27 @@ describe('thread→session: SessionManager carries the thread_ts', () => {
   });
 });
 
+describe('thread→session: dead-session recovery stays in the conversation', () => {
+  it('the monitor reads the raw channel and filters to the registered thread', () => {
+    const start = SERVER_TS.indexOf('sessionMonitor = new SessionMonitor(');
+    const block = SERVER_TS.slice(start, start + 5500);
+    expect(start).toBeGreaterThan(-1);
+    expect(block).toContain('parseRoutingKey(slackChId)');
+    expect(block).toContain('getChannelMessages(target.channelId');
+    expect(block).toContain('resolveRoutingKey(target.channelId, m.thread_ts, m.ts) === slackChId');
+  });
+
+  it('fresh Slack recovery excludes other channel threads from its bootstrap', () => {
+    const start = SERVER_TS.indexOf('respawnSessionFresh: async (topicId');
+    const end = SERVER_TS.indexOf('if (telegram) {', start);
+    const block = SERVER_TS.slice(start, end);
+    expect(start).toBeGreaterThan(-1);
+    expect(block).toContain('parseRoutingKey(slackChId)');
+    expect(block).toContain('getConversationMessagesWithFallback(slackChId, 30)');
+    expect(block).toContain('registerChannelSession(slackChId, newSessionName)');
+  });
+});
+
 describe('thread→session: reply route resolves the routing key for promise tracking', () => {
   const start = ROUTES_TS.indexOf('const handleSlackReply = async');
   // Bound the window to the ACTUAL /slack/reply route body (up to the next route

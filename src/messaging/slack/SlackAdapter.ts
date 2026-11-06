@@ -813,6 +813,30 @@ export class SlackAdapter implements MessagingAdapter {
     }
   }
 
+  /** Return only messages belonging to a channel or thread routing key. */
+  async getConversationMessagesWithFallback(routingKey: string, limit = 30): Promise<SlackMessage[]> {
+    const target = this.parseRoutingKey(routingKey);
+    const belongs = (m: SlackMessage) =>
+      this.resolveRoutingKey(target.channelId, m.thread_ts, m.ts) === routingKey ||
+      (target.threadTs !== undefined && m.ts === target.threadTs);
+    const cached = this.getChannelMessages(target.channelId, 200).filter(belongs);
+    if (!target.threadTs) {
+      if (cached.length > 0) return cached.slice(-limit);
+      return (await this.getChannelMessagesWithFallback(target.channelId, limit)).filter(belongs);
+    }
+    // A new inbound reply can make the cache nonempty immediately after a
+    // restart, while all preceding thread context is still absent. Read the
+    // thread API for recovery even when that one reply is cached.
+    try {
+      const remote = await this.channelManager.getThreadHistory(target.channelId, target.threadTs, limit);
+      const merged = new Map([...remote, ...cached].map(m => [m.ts, m]));
+      return [...merged.values()].filter(belongs).sort((a, b) => Number(a.ts) - Number(b.ts)).slice(-limit);
+    } catch (err) {
+      console.warn(`[slack] Thread history fallback failed for ${routingKey}: ${(err as Error).message}`);
+      return cached.slice(-limit);
+    }
+  }
+
   /** Get user info (cached for 5 minutes). */
   async getUserInfo(userId: string): Promise<{ id: string; name: string }> {
     const cached = this.userCache.get(userId);
@@ -1076,6 +1100,9 @@ export class SlackAdapter implements MessagingAdapter {
         if (now - entry.injectedAt > timeoutMs) {
           this.pendingStalls.delete(key);
 
+          const alive = this.onIsSessionAlive ? this.onIsSessionAlive(entry.sessionName) : true;
+          if (!alive) continue; // SessionMonitor owns dead-session recovery and failure notice.
+
           // Delegate to triage system if available
           if (this.onStallDetected) {
             this.onStallDetected(entry.channelId, entry.sessionName, entry.text, entry.injectedAt);
@@ -1084,15 +1111,13 @@ export class SlackAdapter implements MessagingAdapter {
 
           // Fallback: LLM-gated user-facing alert
           const minutesAgo = Math.round((now - entry.injectedAt) / 60000);
-          const alive = this.onIsSessionAlive ? this.onIsSessionAlive(entry.sessionName) : true;
           const shouldAlert = await this.confirmStallAlert({
             type: 'stall', sessionName: entry.sessionName,
             messageText: entry.text, minutesElapsed: minutesAgo, sessionAlive: alive,
           });
-          if (shouldAlert) {
-            const status = alive ? 'running but not responding' : 'no longer running';
+          if (shouldAlert && (!this.onIsSessionAlive || this.onIsSessionAlive(entry.sessionName))) {
             this.sendToChannel(entry.channelId,
-              `⚠️ No response after ${minutesAgo} minutes. "${entry.sessionName}" is ${status}.\n\n${alive ? 'Use `!interrupt` to nudge it, or `!restart` to start fresh.' : 'Send another message to start a new session.'}`
+              `No response yet after ${minutesAgo} minutes. I'm checking on it.`
             ).catch(() => {});
           }
         }
@@ -1106,6 +1131,7 @@ export class SlackAdapter implements MessagingAdapter {
 
           promise.alerted = true;
           const alive = this.onIsSessionAlive ? this.onIsSessionAlive(promise.sessionName) : true;
+          if (!alive) continue; // SessionMonitor owns dead-session recovery and failure notice.
 
           // Delegate to triage if available
           if (this.onStallDetected) {
@@ -1119,9 +1145,9 @@ export class SlackAdapter implements MessagingAdapter {
             type: 'promise-expired', sessionName: promise.sessionName,
             messageText: promise.promiseText, minutesElapsed: minutesAgo, sessionAlive: alive,
           });
-          if (shouldAlert) {
+          if (shouldAlert && (!this.onIsSessionAlive || this.onIsSessionAlive(promise.sessionName))) {
             this.sendToChannel(channelId,
-              `⚠️ The agent said "${promise.promiseText.slice(0, 80)}..." ${minutesAgo} minutes ago but hasn't followed up.\n\n${alive ? 'Use `!interrupt` to nudge or `!restart` to start fresh.' : 'Session has ended. Send a new message to start.'}`
+              `I haven't followed up on "${promise.promiseText.slice(0, 80)}" yet. I'm checking on it.`
             ).catch(() => {});
           }
         }

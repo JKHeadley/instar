@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { SessionMonitor, type SessionMonitorDeps } from '../../src/monitoring/SessionMonitor.js';
+import { SessionMonitor, isForeignTopicOwner, type SessionMonitorDeps } from '../../src/monitoring/SessionMonitor.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 /**
@@ -25,6 +25,12 @@ function createMockDeps(overrides: Partial<SessionMonitorDeps> = {}): SessionMon
 }
 
 describe('SessionMonitor', () => {
+  it('treats an offline or transferring foreign owner as foreign until released', () => {
+    expect(isForeignTopicOwner({ ownerMachineId: 'peer', status: 'active' }, 'self')).toBe(true);
+    expect(isForeignTopicOwner({ ownerMachineId: 'peer', status: 'transferring' }, 'self')).toBe(true);
+    expect(isForeignTopicOwner({ ownerMachineId: 'peer', status: 'released' }, 'self')).toBe(false);
+    expect(isForeignTopicOwner({ ownerMachineId: 'self', status: 'active' }, 'self')).toBe(false);
+  });
   let monitor: SessionMonitor;
   let deps: SessionMonitorDeps;
 
@@ -85,7 +91,79 @@ describe('SessionMonitor', () => {
   });
 
   describe('dead session detection', () => {
-    it('detects dead session when user is waiting and triggers triage + notification', async () => {
+    it('does not report an old dead registration while a replacement is starting or alive', async () => {
+      const now = Date.now();
+      let current = 'old';
+      let starting = true;
+      deps = createMockDeps({
+        getActiveTopicSessions: () => new Map([[100, current]]),
+        isSessionAlive: (name) => name === 'replacement',
+        isSessionStarting: () => starting,
+        getTopicHistory: () => [{ text: 'hello', fromUser: true, timestamp: new Date(now - 1000).toISOString() }],
+      });
+      monitor = new SessionMonitor(deps);
+      await monitor.poll();
+      current = 'replacement'; starting = false;
+      await monitor.poll();
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
+      expect(deps.triggerTriage).not.toHaveBeenCalled();
+    });
+
+    it('restarts a genuinely dead unanswered conversation before notifying anyone', async () => {
+      const now = Date.now();
+      let current = 'dead';
+      const restartStoppedConversation = vi.fn(async () => { current = 'fresh'; return true; });
+      deps = createMockDeps({
+        getActiveTopicSessions: () => new Map([[100, current]]),
+        isSessionAlive: (name) => name === 'fresh',
+        getTopicHistory: () => [{ text: 'hello', fromUser: true, timestamp: new Date(now - 1000).toISOString() }],
+        sessionRecovery: { checkAndRecover: async () => ({ recovered: false }), restartStoppedConversation } as any,
+      });
+      monitor = new SessionMonitor(deps);
+      await monitor.poll();
+      expect(restartStoppedConversation).toHaveBeenCalledWith(100, 'dead');
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
+      // If the fresh session dies on the same unanswered turn, the monitor
+      // reports failure once instead of respawning forever.
+      current = 'dead-again';
+      await monitor.poll();
+      expect(restartStoppedConversation).toHaveBeenCalledTimes(1);
+      expect(deps.sendToTopic).toHaveBeenCalledTimes(1);
+      expect(deps.sendToTopic).toHaveBeenCalledWith(100, expect.stringContaining("couldn't restore"));
+    });
+
+    it('retries recovery after an older failure notice without repeating that notice', async () => {
+      const now = Date.now();
+      let current = 'dead';
+      const restartStoppedConversation = vi.fn(async () => { current = 'fresh'; return true; });
+      deps = createMockDeps({
+        getActiveTopicSessions: () => new Map([[100, current]]),
+        isSessionAlive: (name) => name === 'fresh',
+        getTopicHistory: () => [{ text: 'hello', fromUser: true, timestamp: new Date(now - 1000).toISOString() }],
+        sessionRecovery: { checkAndRecover: async () => ({ recovered: false }), restartStoppedConversation } as any,
+      });
+      monitor = new SessionMonitor(deps);
+      (monitor as any).deadNotified.set(100, { sessionName: 'dead', userMessageAt: now - 1000, at: now });
+      await monitor.poll();
+      expect(restartStoppedConversation).toHaveBeenCalledOnce();
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
+    });
+
+    it('does not declare death after a Slack reply omitted from the channel ring', async () => {
+      const now = Date.now();
+      deps = createMockDeps({
+        getActiveTopicSessions: () => new Map([[100, 'dead']]),
+        isSessionAlive: () => false,
+        getTopicHistory: () => [{ text: 'hello', fromUser: true, timestamp: new Date(now - 1000).toISOString() }],
+        hasAgentRepliedSince: () => true,
+      });
+      monitor = new SessionMonitor(deps);
+      await monitor.poll();
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
+      expect(deps.triggerTriage).not.toHaveBeenCalled();
+    });
+
+    it('detects dead session and reports only failed recovery', async () => {
       const now = Date.now();
       deps = createMockDeps({
         getActiveTopicSessions: vi.fn(() => new Map([[100, 'session-a']])),
@@ -110,19 +188,20 @@ describe('SessionMonitor', () => {
 
       expect(events).toContain('recovery');
       expect(events).toContain('notified');
-      expect(deps.triggerTriage).toHaveBeenCalled();
-      expect(deps.sendToTopic).toHaveBeenCalledWith(100, expect.stringContaining('session has stopped'));
+      expect(deps.triggerTriage).not.toHaveBeenCalled();
+      expect(deps.sendToTopic).toHaveBeenCalledWith(100, expect.stringContaining("couldn't restore this conversation"));
     });
 
-    it('does not notify if triage resolves the issue', async () => {
+    it('does not notify if a fresh restart resolves the issue', async () => {
       const now = Date.now();
+      let alive = false;
       deps = createMockDeps({
         getActiveTopicSessions: vi.fn(() => new Map([[100, 'session-a']])),
-        isSessionAlive: vi.fn(() => false),
+        isSessionAlive: vi.fn(() => alive),
         getTopicHistory: vi.fn(() => [
           { text: 'hello', fromUser: true, timestamp: new Date(now - 5 * 60_000).toISOString() },
         ]),
-        triggerTriage: vi.fn(async () => ({ resolved: true })),
+        sessionRecovery: { restartStoppedConversation: vi.fn(async () => { alive = true; }) } as any,
       });
 
       monitor = new SessionMonitor(deps);
@@ -132,8 +211,9 @@ describe('SessionMonitor', () => {
       await monitor.poll();
       await monitor.poll();
 
-      // Triage resolved it, so no user notification
+      // Recovery resolved it, so no user notification.
       expect(events).not.toContain('notified');
+      expect(deps.triggerTriage).not.toHaveBeenCalled();
     });
   });
 
@@ -168,7 +248,7 @@ describe('SessionMonitor', () => {
       monitor = new SessionMonitor(deps);
       await monitor.poll();
       await monitor.poll();
-      expect(deps.sendToTopic).toHaveBeenCalledWith(128732, expect.stringContaining('session has stopped'));
+      expect(deps.sendToTopic).toHaveBeenCalledWith(128732, expect.stringContaining("couldn't restore this conversation"));
     });
 
     it('treats an ownership lookup that throws as owned here (monitors as before)', async () => {
@@ -176,7 +256,7 @@ describe('SessionMonitor', () => {
       monitor = new SessionMonitor(deps);
       await monitor.poll();
       await monitor.poll();
-      expect(deps.triggerTriage).toHaveBeenCalled();
+      expect(deps.sendToTopic).toHaveBeenCalled();
     });
 
     it('starts monitoring again once ownership returns to this machine', async () => {
@@ -188,7 +268,7 @@ describe('SessionMonitor', () => {
       peerOwns = false;
       await monitor.poll();
       await monitor.poll();
-      expect(deps.triggerTriage).toHaveBeenCalled();
+      expect(deps.sendToTopic).toHaveBeenCalled();
     });
   });
 
@@ -417,7 +497,7 @@ describe('SessionMonitor', () => {
       expect(deferredEvents).toHaveLength(1);
     });
 
-    it('genuine failure notifies ONCE per session instance, not once per cooldown window', async () => {
+    it('a live context exhaustion failure stays silent across cooldowns', async () => {
       const mockRecovery = {
         checkAndRecover: vi.fn(async () => ({
           recovered: false, failureType: 'context_exhaustion' as const, message: 'recovery failed',
@@ -431,15 +511,15 @@ describe('SessionMonitor', () => {
       monitor = new SessionMonitor(deps, { pollIntervalSec: 60, notificationCooldownMinutes: 5 });
 
       await monitor.poll();
-      expect(deps.sendToTopic).toHaveBeenCalledTimes(1);
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
 
       // Past the cooldown the SAME dead session must not re-announce its death.
       vi.advanceTimersByTime(6 * 60_000);
       await monitor.poll();
-      expect(deps.sendToTopic).toHaveBeenCalledTimes(1);
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
     });
 
-    it('a successful recovery clears the episode so a later genuine death notifies again', async () => {
+    it('a live recovered context episode remains silent if the error reappears', async () => {
       let mode: 'fail' | 'recover' = 'fail';
       const mockRecovery = {
         checkAndRecover: vi.fn(async () => (mode === 'recover'
@@ -453,8 +533,8 @@ describe('SessionMonitor', () => {
       });
       monitor = new SessionMonitor(deps, { pollIntervalSec: 60, notificationCooldownMinutes: 5 });
 
-      await monitor.poll(); // genuine failure -> notify #1
-      expect(deps.sendToTopic).toHaveBeenCalledTimes(1);
+      await monitor.poll(); // failed recovery, session still alive
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
 
       mode = 'recover';
       vi.advanceTimersByTime(6 * 60_000);
@@ -462,8 +542,8 @@ describe('SessionMonitor', () => {
 
       mode = 'fail';
       vi.advanceTimersByTime(6 * 60_000);
-      await monitor.poll(); // a NEW genuine death -> notify #2
-      expect(deps.sendToTopic).toHaveBeenCalledTimes(2);
+      await monitor.poll(); // same live session remains silent
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
     });
 
     it('presents a previously seen boolean to the same recovery after the banner scrolls away', async () => {
@@ -490,115 +570,6 @@ describe('SessionMonitor', () => {
     });
   });
 
-  describe('context-exhaustion notify ledger persistence (survives server restarts)', () => {
-    // REGRESSION (2026-06-06 residual, topics 16566 + 19437): the dedup map
-    // was in-memory only, so every server restart (update-train churn) forgot
-    // which dead sessions were already announced and re-posted the same
-    // "conversation too long" once per boot — 4 notices in 2h on one topic.
-    const exhaustedOutput = 'Error: Conversation too long. Press esc twice to go up a few messages and try again.';
-    let tmpDir: string;
-    let statePath: string;
-
-    const failingRecovery = () => ({
-      checkAndRecover: vi.fn(async () => ({
-        recovered: false, failureType: 'context_exhaustion' as const, message: 'recovery failed',
-      })),
-    });
-
-    function deadSessionDeps(statePathOverride: string): SessionMonitorDeps {
-      return createMockDeps({
-        getActiveTopicSessions: vi.fn(() => new Map([[300, 'session-dead']])),
-        captureSessionOutput: vi.fn(() => exhaustedOutput),
-        sessionRecovery: failingRecovery() as any,
-        statePath: statePathOverride,
-      });
-    }
-
-    beforeEach(() => {
-      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-ledger-test-'));
-      statePath = path.join(tmpDir, 'state', 'session-monitor-ctx-notified.json');
-    });
-
-    afterEach(() => {
-      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/SessionMonitor.test.ts ledger cleanup' });
-    });
-
-    it('a restarted monitor does NOT re-announce a death the previous instance already announced', async () => {
-      const depsA = deadSessionDeps(statePath);
-      const monitorA = new SessionMonitor(depsA, { pollIntervalSec: 60 });
-      await monitorA.poll();
-      expect(depsA.sendToTopic).toHaveBeenCalledTimes(1); // first (honest) notice
-      expect(fs.existsSync(statePath)).toBe(true);        // persisted
-      monitorA.stop();
-
-      // "Server restart": a brand-new instance, same statePath, same dead session.
-      const depsB = deadSessionDeps(statePath);
-      const monitorB = new SessionMonitor(depsB, { pollIntervalSec: 60 });
-      await monitorB.poll();
-      expect(depsB.sendToTopic).not.toHaveBeenCalled();   // pre-fix: re-announced per boot
-      monitorB.stop();
-    });
-
-    it('a successful recovery clears the persisted episode so a post-restart genuine death notifies again', async () => {
-      const depsA = deadSessionDeps(statePath);
-      const monitorA = new SessionMonitor(depsA, { pollIntervalSec: 60, notificationCooldownMinutes: 5 });
-      await monitorA.poll();
-      expect(depsA.sendToTopic).toHaveBeenCalledTimes(1);
-
-      // Recovery succeeds → episode cleared AND persisted as cleared.
-      (depsA.sessionRecovery!.checkAndRecover as any).mockResolvedValue({
-        recovered: true, failureType: 'context_exhaustion' as const, message: 'recovered',
-      });
-      vi.advanceTimersByTime(6 * 60_000);
-      await monitorA.poll();
-      monitorA.stop();
-
-      // Restart: a NEW genuine death on the same topic must notify.
-      const depsB = deadSessionDeps(statePath);
-      const monitorB = new SessionMonitor(depsB, { pollIntervalSec: 60 });
-      await monitorB.poll();
-      expect(depsB.sendToTopic).toHaveBeenCalledTimes(1);
-      monitorB.stop();
-    });
-
-    it('tolerates a corrupt ledger (starts empty, still notifies once)', async () => {
-      fs.mkdirSync(path.dirname(statePath), { recursive: true });
-      fs.writeFileSync(statePath, '{not json!!');
-      const deps2 = deadSessionDeps(statePath);
-      const monitor2 = new SessionMonitor(deps2, { pollIntervalSec: 60 });
-      await monitor2.poll();
-      expect(deps2.sendToTopic).toHaveBeenCalledTimes(1);
-      monitor2.stop();
-    });
-
-    it('prunes entries older than 7 days at load (stale episodes do not suppress forever)', async () => {
-      fs.mkdirSync(path.dirname(statePath), { recursive: true });
-      fs.writeFileSync(statePath, JSON.stringify({
-        '300': { sessionName: 'session-dead', at: Date.now() - 8 * 24 * 60 * 60 * 1000 },
-      }));
-      const deps2 = deadSessionDeps(statePath);
-      const monitor2 = new SessionMonitor(deps2, { pollIntervalSec: 60 });
-      await monitor2.poll();
-      // The 8-day-old entry was pruned → this death is a fresh episode → notify.
-      expect(deps2.sendToTopic).toHaveBeenCalledTimes(1);
-      monitor2.stop();
-    });
-
-    it('runs without a statePath exactly as before (no file, in-memory dedup only)', async () => {
-      const deps2 = createMockDeps({
-        getActiveTopicSessions: vi.fn(() => new Map([[301, 'session-x']])),
-        captureSessionOutput: vi.fn(() => exhaustedOutput),
-        sessionRecovery: failingRecovery() as any,
-        // no statePath
-      });
-      const monitor2 = new SessionMonitor(deps2, { pollIntervalSec: 60 });
-      await monitor2.poll();
-      expect(deps2.sendToTopic).toHaveBeenCalledTimes(1);
-      expect(fs.existsSync(statePath)).toBe(false);
-      monitor2.stop();
-    });
-  });
-
   describe('mechanical recovery integration', () => {
     it('skips triage when mechanical recovery succeeds', async () => {
       const now = Date.now();
@@ -619,7 +590,7 @@ describe('SessionMonitor', () => {
       expect(deps.triggerTriage).not.toHaveBeenCalled();
     });
 
-    it('falls through to triage when mechanical recovery fails', async () => {
+    it('tries a fresh restart when mechanical recovery fails', async () => {
       const now = Date.now();
       const mockRecovery = { checkAndRecover: vi.fn(async () => ({ recovered: false, failureType: null, message: 'No failure detected' })) };
       deps = createMockDeps({
@@ -635,7 +606,8 @@ describe('SessionMonitor', () => {
       await monitor.poll();
       await monitor.poll();
       expect(mockRecovery.checkAndRecover).toHaveBeenCalled();
-      expect(deps.triggerTriage).toHaveBeenCalled();
+      expect(deps.triggerTriage).not.toHaveBeenCalled();
+      expect(deps.sendToTopic).toHaveBeenCalledWith(902, expect.stringContaining("couldn't restore"));
     });
 
     it('detects context exhaustion in healthy-looking alive session and triggers recovery', async () => {
@@ -664,7 +636,7 @@ describe('SessionMonitor', () => {
       expect(events).toContain('recovery');
     });
 
-    it('notifies user when context exhaustion detected but recovery fails', async () => {
+    it('does not report a live context-exhausted session as stopped after recovery fails', async () => {
       const now = Date.now();
       const mockRecovery = { checkAndRecover: vi.fn(async () => ({ recovered: false, failureType: null, message: 'No recovery' })) };
       deps = createMockDeps({
@@ -680,8 +652,8 @@ describe('SessionMonitor', () => {
 
       await monitor.poll();
 
-      expect(events).toContain('notified');
-      expect(deps.sendToTopic).toHaveBeenCalledWith(905, expect.stringContaining('conversation too long'));
+      expect(events).not.toContain('notified');
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
     });
 
     it('calls recovery for idle sessions when user expects response (context exhaustion check)', async () => {
@@ -721,7 +693,7 @@ describe('SessionMonitor', () => {
       };
 
       deps = createMockDeps({
-        getActiveTopicSessions: vi.fn()
+        getActiveTopicSessions: vi.fn(() => new Map([[906, 'echo-topic-906']]))
           // First poll: session is active
           .mockReturnValueOnce(new Map([[906, 'echo-topic-906']]))
           // Second poll: session was killed (snapshot cleanup happens)
@@ -738,17 +710,17 @@ describe('SessionMonitor', () => {
         notificationCooldownMinutes: 30,
       });
 
-      // First poll: detects context exhaustion, sends notification
+      // First poll: detects context exhaustion but the session is still alive.
       await (monitor as any).poll();
       expect(mockRecovery.checkAndRecover).toHaveBeenCalledTimes(1);
-      expect(deps.sendToTopic).toHaveBeenCalledTimes(1);
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
 
       // Second poll: session is gone, snapshot gets cleaned up
       await (monitor as any).poll();
 
       // Third poll: new session active with same error — should NOT re-notify (topic cooldown)
       await (monitor as any).poll();
-      expect(deps.sendToTopic).toHaveBeenCalledTimes(1); // Still just 1, not 2
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
       expect(mockRecovery.checkAndRecover).toHaveBeenCalledTimes(1); // Still just 1
     });
 
@@ -783,7 +755,7 @@ describe('SessionMonitor', () => {
       // Poll 1: session is dead, user waiting → sends notification
       await monitor.poll();
       expect(deps.sendToTopic).toHaveBeenCalledTimes(1);
-      expect(deps.sendToTopic).toHaveBeenCalledWith(907, expect.stringContaining('session has stopped'));
+      expect(deps.sendToTopic).toHaveBeenCalledWith(907, expect.stringContaining("couldn't restore this conversation"));
 
       // Poll 2: session gone → snapshot deleted
       await monitor.poll();
