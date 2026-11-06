@@ -40,6 +40,8 @@ Instar can show and control a Mac's screen remotely, even while that Mac is lock
 
 **A step of mine did not tidy up after itself.** The new "open a next session" step ended that session by clicking Stop, and did not notice when the click did not go through, so its helper was still running when the test finished. It now checks, says whether a normal click worked, and ends the session for certain.
 
+**And then a fifth of a second.** With the right clock, the test that needs the ten-minute limit to arrive in the middle of typing still started a little too late: the limit arrived just before the first letter. It now starts a fifth of a second sooner. This test aims at a gap a few tenths of a second wide, so it can still miss now and then, and when it does it says so and is run again.
+
 ## What stays the same
 
 The product is unchanged: the web page, the server and the safety guard all behaved correctly. Once the freeze test was fixed, it passed: the guard noticed the frozen server and relocked the Mac. Nothing here reaches any running agent; it only affects the proof tool run by hand on the test Mac.

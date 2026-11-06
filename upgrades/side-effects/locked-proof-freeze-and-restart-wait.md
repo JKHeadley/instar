@@ -25,6 +25,7 @@ Thirteen faults found in the live run on the Mac Mini on 2026-11-05, once the vi
 - **One more refusal is recognised.** `STATUS_REASONS` maps the page's "lock screen is not ready for a password" line to `shield-not-confirmed`.
 - **Deadline cases aim from the server's expiry.** `viewer()` keeps `expiresAt` from the page's `/desktop/` JSON responses; `typePassword` starts 0.6 s ahead of it for before-enter and finishes 1.5 s ahead for after-enter, falling back to the old estimate when no expiry was seen. `runCase` records `grantExpiresAt`.
 - **The extra grant is always ended.** `next-helper-clears-field` records whether an ordinary click on Stop went through (`stopClick`) and falls back to calling the button's handler from script. If the click really cannot go through while the locked-screen password box is showing, that is a page fault a person would hit, and it is recorded here so it can be seen, not worked around silently.
+- **15.3 leads the expiry by 0.8 s.** The target window (ceiling between the first character and Enter) is a few tenths of a second wide, so the case can still miss and report "the password was never typed"; that is an honest miss, not a product result, and the case is run again.
 
 ## 1. Over-block
 

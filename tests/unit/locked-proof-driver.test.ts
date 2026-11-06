@@ -430,7 +430,7 @@ describe('locked-proof launchd kill', () => {
     clock = 0; slept.length = 0;
     const told = realTarget({ main: { page, expiresAt: 599_360 }, mainOpenedAt: 0, cal, password: 'a'.repeat(20), now: () => clock, sleep: async (ms: number) => { slept.push(ms); clock += ms; } });
     await told.typePassword({ timing: 'deadline', inject: [{ action: 'wait-deadline', at: 'before-enter' }] });
-    expect(slept[0]).toBe(599_360 - 600);
+    expect(slept[0]).toBe(599_360 - 800);
   });
 
   it('the deadline-recovery case freezes the owning server too, or its sweep replaces the frozen guard', () => {

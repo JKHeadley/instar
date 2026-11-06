@@ -310,11 +310,14 @@ export class RealTarget {
       const opened = this.mainOpenedAt ?? this.now();
       // The ceiling is the server's own expiry for this grant when the page was told it; the
       // driver's view of "opened + 10 minutes" runs about 0.6 s late (measured over 33 duties).
-      // "Deadline before Enter": start 0.6 s ahead, so the duty exists before the ceiling and the
-      // 0.7 s of typing straddles it. "Deadline after Enter": finish typing 1.5 s ahead.
+      // "Deadline before Enter": start 0.8 s ahead. Measured live, the duty is created about 0.4 s
+      // after the start and Enter follows about 0.65 s later, so the ceiling lands mid-typing. At
+      // 0.6 s the duty was created 0.2 s before the ceiling and no character had been typed yet.
+      // The window is a few tenths of a second wide: a miss shows as "the password was never
+      // typed" and the case is run again. "Deadline after Enter": finish typing 1.5 s ahead.
       const typingMs = this.cal.reserveMs + this.cal.perCharMs * this.password.length;
       const ceiling = this.main?.expiresAt ?? (opened + 600_000);
-      const startAt = ceiling - (c.inject[0].at === 'before-enter' ? 600 : 1_500 + typingMs);
+      const startAt = ceiling - (c.inject[0].at === 'before-enter' ? 800 : 1_500 + typingMs);
       await this.sleep(Math.max(0, startAt - this.now()));
     }
     // Delayed-completion cases need an open duty with the Mac still locked: a refused password
