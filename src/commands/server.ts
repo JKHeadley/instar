@@ -7150,59 +7150,25 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { bootTelegramOrigin } = await import('../messaging/telegram-origin/TelegramOriginBoot.js')
         .catch(error => { releaseOriginLeaseRenewal(); throw error; });
       telegramOriginBoot = await bootTelegramOrigin({ config, notificationGate: selectivityGate, token: typeof originBotToken === 'string' && originBotToken ? originBotToken : undefined,
-        onRecoveredMessage: entry => {
-          telegram?.logRecoveredOriginMessage(entry);
-          // A late acceptance is reported by the durable exception scan. Only
-          // an on-time acceptance can close the held Attention item here.
-          if (entry.acceptedAt - entry.preparedAt >= 300_000) return;
-          const attentionId = `telegram-origin-held-reply:${entry.operationId}`;
-          if (telegram?.clearAttentionCondition({ id: attentionId }, `Telegram accepted recovered message ${entry.messageId}.`).closed === 0) {
-            void telegram?.updateAttentionStatus(attentionId, 'DONE', { silent: true,
-              closedBy: 'cause-cleared', resolution: `Telegram accepted recovered message ${entry.messageId}.` });
-          }
+        onRecoveredMessage: async entry => {
+          if (!telegram) return;
+          const { recordRecoveredSessionDelivery } = await import('../messaging/telegram-origin/SessionDeliveryReporter.js');
+          recordRecoveredSessionDelivery(entry, telegram);
         },
         onSessionDeliveryHeld: async entry => {
           if (!telegram || !entry.chatId) return;
-          const { sessionDeliveryNotice, lateRecoveredReplyNotice } = await import('../messaging/telegram-origin/SessionDeliveryNotice.js');
+          const { reportSessionDelivery } = await import('../messaging/telegram-origin/SessionDeliveryReporter.js');
           const topicId = entry.chatId === String((originTelegramConfig.config as { issuesChatId?: unknown }).issuesChatId)
             ? 10_000_000_000 + (entry.threadId ?? 1) : entry.threadId;
-          const late = entry.state === 'accepted' && entry.preparedAt !== undefined && entry.acceptedAt !== null && entry.acceptedAt !== undefined
-            ? lateRecoveredReplyNotice(entry.preparedAt, entry.acceptedAt, entry.outOfOrder) : null;
-          const attentionId = `telegram-origin-held-reply:${entry.operationId}`;
-          const previous = telegram.getAttentionItem(attentionId);
-          if (entry.state === 'accepted' && !late) {
-            if (previous && previous.status !== 'DONE') await telegram.updateAttentionStatus(attentionId, 'DONE', { silent: true,
-              closedBy: 'cause-cleared', resolution: 'Telegram accepted the original reply.' });
-            return;
-          }
-          const copy = entry.state === 'accepted'
-            ? { summary: 'An earlier reply was confirmed after a delay and may be out of order with newer answers.', topicText: late! }
-            : sessionDeliveryNotice(entry.state ?? 'held', entry.uncertain);
-          if (entry.state === 'accepted' && previous?.status === 'DONE' && previous.summary === copy.summary) return;
-          await telegram.upsertAttentionItem({ id: attentionId,
-            category: 'telegram-origin', priority: 'HIGH', title: 'A reply needs delivery attention',
-            sourceContext: 'telegram-origin-session-hold', summary: copy.summary,
-            description: `Original reply to ${topicRef(topicId)}; delivery state ${entry.state ?? 'held'}.` });
-          if (topicId === null) return;
-          // A stable logical send id lets the origin outbox answer a repeated
-          // notice with its original receipt, including after a server restart.
-          // A held/uncertain notice is retried by the next durable scan.
-          if (!telegramOriginBoot) throw new Error('origin notice sender not ready');
-          const { postOriginAutomationReply } = await import('../messaging/telegram-origin/OriginAutomationReply.js');
-          const noticeState = entry.state === 'accepted' ? 'late'
-            : entry.uncertain || entry.state === 'outcome-unknown' ? 'uncertain'
-              : entry.state === 'expired' || entry.state === 'known-failed' ? 'failed' : 'delayed';
-          const response = await postOriginAutomationReply({ service: telegramOriginBoot.runtime.service,
-            port: config.port, authToken: config.authToken ?? '', producerId: 'reply-delivery-notice',
-            topicId, body: { text: copy.topicText, metadata: { messageKind: 'health-alert' } },
-            logicalSendId: `reply-delivery-notice:${entry.operationId}:${noticeState}` });
-          if (response.status !== 200) throw new Error(`origin notice not confirmed: HTTP ${response.status}`);
-          if (entry.state === 'accepted') {
-            if (telegram.clearAttentionCondition({ id: attentionId }, 'The late reply and its explanation reached the conversation.').closed === 0) {
-              await telegram.updateAttentionStatus(attentionId, 'DONE', { silent: true,
-                closedBy: 'cause-cleared', resolution: 'The late reply and its explanation reached the conversation.' });
-            }
-          }
+          await reportSessionDelivery(entry, topicId, { telegram,
+            sendNotice: async (destination, text, logicalSendId) => {
+              if (!telegramOriginBoot) throw new Error('origin notice sender not ready');
+              const { postOriginAutomationReply } = await import('../messaging/telegram-origin/OriginAutomationReply.js');
+              return postOriginAutomationReply({ service: telegramOriginBoot.runtime.service,
+                port: config.port, authToken: config.authToken ?? '', producerId: 'reply-delivery-notice',
+                topicId: destination, body: { text, metadata: { messageKind: 'health-alert' } }, logicalSendId });
+            },
+          });
         },
         noticeOwner: typeof originBotToken === 'string' && !!originBotToken && !lifelineOwnsTelegramPoll(config.stateDir, originBotToken) && options.telegram !== false,
         holdsLease: () => coordinator.holdsLease(),

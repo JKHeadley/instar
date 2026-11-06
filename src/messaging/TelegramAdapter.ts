@@ -4650,13 +4650,22 @@ export class TelegramAdapter implements MessagingAdapter {
       ...(item.description !== undefined ? { description: fix(item.description) as string } : {}) };
   }
 
-  async createAttentionItem(rawItem: AttentionObservation, routing?: { hubOnly: true }): Promise<AttentionItem> {
+  async createAttentionItem(rawItem: AttentionObservation, routing?: { hubOnly?: true; recordOnly?: true }): Promise<AttentionItem> {
     const item = this.nameAttentionText(rawItem);
     // One row per condition (attention-lifecycle-close-on-cause §3.1): an
     // observation that lands on an existing row refreshes/reopens it instead
     // of creating a sibling. Only a genuinely new condition reaches the
     // routing below.
     const admitted = this.admitAttentionObservation(item);
+    // Reconciliation accepts durable evidence without initiating Telegram work,
+    // independently of selectivity rollout or category push preferences.
+    if (routing?.recordOnly) {
+      const attention = admitted.item;
+      this.attentionItems.set(attention.id, attention);
+      attention.hubHeld = true; attention.coalesced = true;
+      this.saveAttentionItems();
+      return attention;
+    }
     if (this.selectivity?.holdsCategory(categoryForAttention(item.sourceContext, item.lane))) {
       const attention = admitted.item;
       this.attentionItems.set(attention.id, attention);
@@ -4877,11 +4886,11 @@ export class TelegramAdapter implements MessagingAdapter {
    * per-item topic is never re-spawned by an upsert.
    */
   async upsertAttentionItem(
-    item: AttentionObservation,
+    item: AttentionObservation, routing?: { recordOnly: true },
   ): Promise<AttentionItem> {
     // Refresh + reopen now live in the shared admission helper, so this is the
     // hub-only spelling of createAttentionItem (an upsert never spawns a per-item topic).
-    return this.createAttentionItem(item, { hubOnly: true });
+    return this.createAttentionItem(item, { hubOnly: true, ...routing });
   }
 
   /**
@@ -5508,9 +5517,10 @@ export class TelegramAdapter implements MessagingAdapter {
    * closes a security item. `idPrefix` must end in a delimiter so `:ep-1` can
    * never match `:ep-10`.
    */
-  clearAttentionCondition(match: { conditionKey?: string; id?: string; idPrefix?: string }, resolution: string): { closed: number; refusedSticky: number } {
+  clearAttentionCondition(match: { conditionKey?: string; id?: string; idPrefix?: string }, resolution: string, options?: { reconcile: true }): { closed: number; refusedSticky: number } {
     const result = { closed: 0, refusedSticky: 0 };
-    if (!this.attentionLifecycleConfig().enabled) return result;
+    // Receipt-backed producer reconciliation is independent of automatic sweeps.
+    if (!this.attentionLifecycleConfig().enabled && !options?.reconcile) return result;
     if (match.idPrefix !== undefined && !/[:\-_./|]$/.test(match.idPrefix)) {
       throw new Error(`attention clear idPrefix must end in a delimiter (got "${match.idPrefix}")`);
     }
