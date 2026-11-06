@@ -1845,6 +1845,8 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     // is enough. Exactly these two paths: the routes machines use with each other are bearer-only.
     { method: 'POST', re: /^\/mobile\/health-issues\/choices$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'health-choices' },
     { method: 'POST', re: /^\/mobile\/health-issues\/choices\/undo$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'health-choices' },
+    // Done and Ignore for a Needs-you item (docs/specs/mobile-attention-choices.md), in the same bucket.
+    { method: 'POST', re: /^\/mobile\/attention\/(?=[a-z0-9._:-]*[a-z0-9])[a-z0-9._:-]{1,200}\/choice$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'health-choices' },
     // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): read-only
     // trimmed summaries, owner phones only, with one shared bucket of their own (they read peers).
     { method: 'GET', re: /^\/mobile\/proposals$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'proposals-inside-reads' },

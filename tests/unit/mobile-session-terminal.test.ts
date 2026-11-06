@@ -97,6 +97,7 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['POST', '/mobile/sessions/close/a-session-id'],
       ['POST', '/mobile/sessions/new'],
       ['POST', '/mobile/sessions/default'],
+      ['POST', '/mobile/attention/tg-1/choice'],
       // Add a new agent from a phone you already use (mobile-pairing-introducer §3.2).
       ['GET', '/mobile/introducer'],
       ['POST', '/mobile/introductions/challenge'],
