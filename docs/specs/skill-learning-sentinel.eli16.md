@@ -25,7 +25,12 @@ new skill also gets a second opinion from a different model family and, during t
   own homework. New skills get the same second opinion before they exist.
 - Nothing is ever deleted or merged. Old versions are kept. A shelved skill has a one-tap restore.
 - If you edit a skill by hand on any machine, I stop touching it.
-- Hard caps: at most one new skill a day, four a week, forty total, and a byte limit so my prompt never bloats.
+- No hard caps on how many skills I may learn (an earlier draft had "one a day, four a week, forty total"; you struck
+  them). Instead, whether a recurring request deserves a skill is a judgment I make each time, weighing how strong the
+  pattern is, what my skill list already covers, and the measured cost of carrying one more — inside a floor that
+  never moves: at least two real occurrences and one run that demonstrably went well. If I start creating a lot in
+  one week you get told, with my reasons, but nothing refuses.
+- Shelving a skill is a judgment too, with a floor: never on fewer than three measured runs, never deleted.
 - Every judgment call it makes is recorded with its reasoning; if that record cannot be written, it does not act.
 
 **How it rolls out, and why this one will not stall.** It ships off, and it carries a dated trial plan from day

@@ -73,11 +73,36 @@ maturation plan in the gate's exact shape with a test-agent rung first.
 | 4 | security (0), scalability (0), adversarial (1), integration (1), decision-completeness (0), lessons-aware (1), GPT (4); gate 3 flags | 7 | 7 | version attribution in telemetry, persisted baseline, pull-before-write, equal-epoch exemption, one validation pipeline, half-weight inferred, misfire gate |
 | 5 | security (0), scalability (0), adversarial (3), integration (1), decision-completeness (0), lessons-aware (1), GPT (5); gate 3 flags | 10 (5 unique after dedup with GPT) | 6 | no-remote local fence, baseline as synced shard with journaled transitions, authorship/review table, refused revert → pending, operator-edited/version-uncertain buckets, observational metric wording |
 | 6 | adversarial (1 low), GPT (4); security, integration, lessons-aware, scalability+DC: 0; gate 3 flags | 5 (0 safety/security/data-loss) | 15 | post-cap edits listed under Left behind |
+| 7 (operator-directed) | adversarial (4), decision-completeness (2), lessons-aware (1), GPT (4); gate 3 flags | 11 (0 safety/security/data-loss) | 6 | hard caps struck → judgment inside evidence floors with shadow positive controls; durable verdicts; no-time-bound floor; misfire independence; single outcome writer; whole-file hash; retire as its own reconciliation; catch-up provenance |
+
+## Round 7 — operator-directed, after the cap
+
+After convergence the operator read the plain-language overview and struck the spec's hard caps on agent growth
+(one new skill a day, four a week, forty total, byte caps on descriptions and bodies, static retire thresholds):
+*"You tend to VASTLY undercut/limit agent behavior and growth with strict, static, unquestioned caps like this.
+Instar agents should rely on intelligent assessment, not hard caps. This makes me feel like the spec design process
+is NOT enforcing constitutional compliance."* (Justin, topic 139880, 2026-11-06 11:18 PST). He was right, and the
+process failure is recorded here honestly: six rounds, including the decision-completeness and lessons-aware lenses
+and the Standards-Conformance Gate, accepted rows labelled `invariant` with the justification "deterministic counts".
+Judgment Within Floors says a static heuristic at a competing-signals point must state why it is not a judgment
+point; the label's presence satisfied the tag writer and nobody contested the reason. No reviewer template carries
+that question, the lessons index has no entry against static caps, and the gate judges article prose. Fix filed
+upstream (feedback `fb-10cc0a80-caf`): a required contest line in the decision-completeness and lessons-aware
+templates (an `invariant` justification that merely restates the label is refused — the row must name the
+irreversible consequence or the enumerable domain), the ruling added to the lessons index, and a specific question in
+the gate's Judgment-Within-Floors read.
+
+The spec was rewritten (§3.3, §3.8, §3.9, §4, decisions 14/15, config) and a seventh round ran on the rewrite with
+the three lenses that own the question plus the external model. Their findings — every arbiter needs a shadow
+positive control on the disagreement set before it may act; `windowDays` inside the floor was a cap in disguise;
+arbiter verdicts must be durable; misfire verdicts must be independent of the description's author; outcome
+revisions need one writer; write preconditions need a whole-file hash; retirement needs its own reconciliation path;
+caught-up rows need provenance — were all folded in. Round 7 ended with zero safety/security/data-loss findings.
 
 ## Proportion
 
 Tier 2 (new sentinel, fleet-wide hook and migration changes, write authority over skill files): 6 rounds used of
-the 6-round cap, on a spec that grew from 333 to ~550 lines. ⚠ At the cap — the design findings fell 40 → 17 →
+the 6-round cap, plus one operator-directed round, on a spec that grew from 333 to ~550 lines. ⚠ At the cap — the design findings fell 40 → 17 →
 11 → 7 → 5 → 5, and the last rounds were clause-sized; the external model returned "SERIOUS ISSUES"
 every round, with its later findings mostly restating accepted, disclosed limits (git lease without storage
 fencing; user-feedback evidence is not task verification). Those are recorded as accepted risks below, each with
@@ -107,6 +132,8 @@ Design-class items accepted at the cap (none about safety, security or data loss
 - "The git lease is not storage-enforced fencing" (GPT r3–r6, gate Cross-Machine Coherence r4–r6). Accepted and disclosed: pull-before-write on remote media, local fence otherwise, explicit acceptance of the pull→push window, deterministic epoch resolution with the loser's body kept as a proposal. Building a CAS-backed lease is out of this spec's scope and the existing `GitLeaseStore` has the same property.
 - "Gate flag: asserted Slack identity counts toward recurrence" (gate r3–r6). Accepted: asserted rows raise support counts only, never satisfy `minCleanRuns`, never reach a drafter; the alternative (Slack unmeasurable) loses the signal for no trust gain.
 - "Gate flag: hourly sync means a machine can lack what the agent knows" (gate r2–r6). Accepted: the same lag `preferences.json` and memory carry today; the posture is unified.
+
+Left behind from round 7 (precision): the growth notice is silent through shadow and redundant under rung-2 confirms, useful only after rung 2 (adversarial); `casWrite` wording (unchanged). Process fix tracked upstream as `fb-10cc0a80-caf`.
 
 Post-cap edits made after round 6 without a further review round (disclosed, each a few lines): no-remote detected directly rather than via the solo-captain flag (adversarial r6); `version-uncertain` defined by a `render-commit` journal row inside the run (GPT r6, DC r6) and the §8 test wording corrected; ledger files as immutable generation segments with unique event ids and revision ordering (GPT r6); retirement of a locked skill moves the operator-edited rendering out of every discovery path or reports `retire-blocked` (GPT r6); args excerpts declared untrusted with truncation propagated, and the overview's "nobody can plant" claim replaced by the actual mitigation (GPT r6).
 
@@ -1142,8 +1169,96 @@ Scope: review of the inlined specifications only; implementation claims and repo
 4. **Evidence integrity is stronger in the claims than in the mechanism (§3.5; plain-language overview).** Tool arguments may contain copied external text, and each argument excerpt is capped at 256 bytes. A different-family reviewer cannot reconstruct omitted material or establish its trustworthiness merely from agreement. The overview’s claim that nobody can plant instructions is therefore unsupported. **Resolution:** propagate truncation at every field boundary, define which cuts refuse drafting, treat copied arguments as untrusted evidence, and replace the absolute guarantee with the actual mitigation.
 
 
+### Round 7 (operator-directed)
+
+Standards-Conformance Gate: ran (3 flags, unchanged). Internal reviewers: Claude Fable 5.1. External: codex-cli gpt-6-astra, status ok.
+
+#### decision-completeness — round 7
+
+**Decision-completeness review — Round 7 (post-operator-strike)**
+
+**Verdict: MINOR ISSUES** (two DESIGN findings, both in the new judgment points' floors, not re-introduced caps).
+
+**(a) Every remaining number, contested against Judgment Within Floors**
+
+Genuine floors (irreversible consequence or enumerable domain): `minOccurrences 2` (definition of recurrence), `minCorroboratedCleanRuns 1` (no run → nothing to learn from), `retire.minCorroboratedRuns 3` / ≥2 misfire verdicts / one observed request (evidence-before-action, conservative direction), `maxDailyCents 50` (money), bounded-revert 3/2/strictly-above (reversible version write back to a reviewed body), `minCorrectedRunsSameFamily 2`, `revertBreakerPer30d 2` (lock, unlockable), the loader's field limits, the 256 KB transport budget, never-delete/never-merge. Deterministic default rungs (sanctioned as the ladder's last rung): `defaultGate 3/2/2`, `0.4 / 0.3 / 60 d`. Signals only: `createdPerWeekNotice 4`, `measurableFloor 0.2`, Jaccard 0.6, refused-5×, >50 % failures, label-audit 5/week, 7-day label. Mechanics: batch 20, tick 10 min, 4 MB segments, 20 bodies, 200 rows/key, backoff constants, rung thresholds.
+
+**Fails — DESIGN 1: `floor.windowDays 30` is a judgment point in disguise** (§3.3, config, §3.2 retention). Cadence is a competing signal, yet the floor requires both occurrences *inside* 30 days and retention prunes at 90 days, so a monthly-plus-a-few-days or quarterly request (the CI-report-on-the-first-Monday class) can *never* become a skill — a static growth cap the arbiter cannot widen because it sits in the floor. Fix: make the floor count-based with no time bound; move `windowDays` to `defaultGate` (the static rung's recency), and set retention on row count/segment age independent of the gate.
+
+**(b) Floor completeness of the new judgment points**
+
+§3.3 draft/wait/never: action space bounded, conservative default (static rung), ladder ends deterministic, evidence-before-authority named (operator-agreement vs. the default rung). Complete.
+
+§3.8 retire/keep/patch and §3.9 cost-strike: bounded, floored, deterministic fallback — **DESIGN 2: evidence-before-authority is missing.** Nothing logs the reviewer's retire verdict beside the static defaults' verdict during shadow, and a cost-struck draft never reaches the console (the recall sample shows only "not repeatable"), so the reviewer begins *acting* on retire and on cost with no shadow comparison — exactly the arbiter JWF says may not act yet. Fix: rung 1 logs both verdicts per skill/draft; cost-struck and retire-judged items join the operator sample; §3.8/§3.9 arbiters act only after matching the operator at least as often as the static defaults.
+
+PRECISION (left behind): §3.3 "widen" collides with the article's "never widen" — say "act earlier than the default rung, inside the floor"; §3.6 cites `minCleanRuns` (renamed `floor.minCorroboratedCleanRuns`); attention item 1 "below floor" predates the rewrite; row 15 lists ten items but tags ×9.
+
+**(c) Counts:** frontloaded-decisions: 29 · cheap-tags: 22 (by instance; 23 if row 15 is recounted) · contested-then-cleared: 5 · contested-rejected: 0 · open-user-decisions: 0.
+
+**DESIGN findings remaining: 2**
+
+#### lessons-aware — round 7
+
+**Lessons-aware review — round 7 (operator-directed)**
+
+**(a) Compliance of the rewrite**
+
+§3.3, §4 row 3, decision 15 and the config block now comply: deterministic floor (2 occurrences + 1 corroborated verified run, never widened), static default rung (3/2/2) as the fallback the arbiter must beat, named arbiter (`skillLearning.drafter`), shadow logging of both verdicts, and a named success criterion in §7 ("matching the operator at least as often as the default rung"). The growth notice is a signal with no refusal path. No cap survives under another name: `defaultGate` is the deterministic rung JWF *requires*, `revertBreakerPer30d` and never-delete are reversibility floors, the 200-rows-per-key bound is storage.
+
+### F1: Retire/keep/patch arbiter acts without evidence-before-authority — DESIGN, high
+- **Index/standard:** Judgment Within Floors ("an arbiter may begin ACTING only after shadow-phase evidence shows it beats the deterministic default on the decision point's named success criteria").
+- **Spec:** §3.8 — the reviewer retires on its verdict from first live use; static defaults decide "only when the reviewer is unavailable". §7 names a shadow comparison for draft/wait/never only; `grep would-retire` returns nothing.
+- **Resolution:** §3.8 + §7 rung 1/2: log `would-retire` beside the static-default verdict for every scored skill; the reviewer's retire verdict acts only after its agreement with the operator (restore-rate as the criterion) is ≥ the defaults'; until then the defaults act. Same shape applies to the §3.9 index-cost strike (default `accept`, logged in shadow).
+
+### F2: `lint-refusal count 5` in decision 15 has no carrier — PRECISION
+Nothing in §3.5 defines it; a leftover from the struck era. Delete or define.
+
+**(b) Why six rounds missed it**
+
+The lessons index (`docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md`) contains *no* lesson against static caps on agent growth and *no* JWF entry; its only ceiling lesson (L: topic-spam floods, line 415) says a global ceiling is load-bearing. So this lens could not have caught it from its catalog — it would have reinforced the caps. The lens that owned it is the JWF decision-point check (SKILL.md:101: "an `invariant` label on a genuinely competing-signals point is a MATERIAL FINDING"). But no reviewer template carries that question (grep across `templates/*.md`: zero hits for invariant/judgment/floor), and `write-convergence-tag.mjs:190` tests only token presence. The round-6 row "Recurrence gate prongs and caps | invariant | deterministic counts" restated its label as its justification, and nothing weighed it.
+
+One-line fix, two places: in `reviewer-decision-completeness.md` and the tag script — *"An `invariant` justification that merely restates the label (`deterministic`, `deterministic counts`, `as stated`) is refused; the row must name the enumerable action space or the irreversible consequence that makes it a floor."* Plus add the 2026-11-06 ruling to the lessons index so this lens can fire next time.
+
+**(c) Gate result conf7.json**
+
+Unchanged from conf6: the same three possible-violations (multi-machine, Know Your Principal, cross-machine coherence) and fit:`fit`. The 97-article gate never raised JWF in seven rounds — consistent with (b): it judges article prose, and a self-labelled `invariant` reads as compliant.
+
+DESIGN findings remaining: 1
+
+#### adversarial — round 7
+
+**Verdict: SERIOUS ISSUES** (new mechanisms only; the Judgment-Within-Floors shape is sound, its evidence is not yet).
+
+**D1 — The shadow comparison has no positive control and is blind in the sprawl direction (§3.3, §3.4, §7 rung 1).** In shadow the *default rung* produces the proposals the operator taps. The arbiter's `draft` on a key the default would `wait` on is logged but never shown, so its widening decisions get zero operator verdicts. The arbiter is scored only on the default's draft set, where its dominant strategy is to copy the default — "at least as often" then passes on a tie, with 8 samples, having proven nothing. Resolution (an evidence floor, not a cap): surface arbiter-only drafts as proposals too (labelled), and admit the arbiter to `live` only when it beats the default on the **disagreement set** with ≥N disagreements sampled; zero disagreements = not measured, default keeps acting.
+
+**D2 — The only index heal is structurally blocked for the skills that accumulate (§3.8, §3.9).** The unused floor requires "one observed request of its key" — a skill whose key simply stops recurring can never be retired, and that is exactly what piles up (Hermes mode). Meanwhile the reviewer judges cost per draft, where every 200-byte description is individually worth it, with no comparator. Resolution: for the reversible retire action, let "no occurrence of the key within k·windowDays on a telemetry-emitting framework" satisfy the unused floor (restore is one tap, so silence is acceptable here); hand the reviewer measured cost-per-expected-use (index bytes × sessions/week ÷ key occurrence rate) so the judgment has a denominator.
+
+**D3 — Self-reinforcing use accrual via key folding (§3.1, §3.6).** `misfire` = classifier key ≠ skill key, but the classifier folds keys, and a broad drafted description can pull paraphrases into its key; uses accrue, misfire never fires, the skill reads "valuable" to the reviewer. Resolution: misfire verdicts come from a family ≠ the description's author (the §3.5 pattern), and the classifier keys a request before seeing learned-skill descriptions.
+
+**D4 — Arbiter `never`/`wait` is not durable (§3.3).** When the arbiter is unavailable the default rung acts; nothing says a recorded `never` survives that tick, so a flaky arbiter yields the default's more permissive behaviour. Resolution: persist each verdict with a re-ask horizon; the fallback rung never overrides an unexpired arbiter verdict.
+
+Growth signal: fires only on live creates, so silent through shadow and redundant under rung-2 per-skill confirms; useful only post-rung-2 — PRECISION, left behind.
+
+DESIGN findings remaining: 4
+
+#### cross-model (codex-cli gpt-6-astra) — round 7
+
+**Verdict: SERIOUS ISSUES**
+
+Reviewed only the inlined specification and context; implementation claims are unverified.
+
+- **§3.2: outcome replication lacks conflict semantics.** The spec says scoring runs on every machine and outcome revisions are ordered by `(runId, revision)`. It does not assign revision ownership or resolve two machines producing the same revision with different labels. Unique `eventId`s prevent duplicate events, but cannot select the authoritative outcome. **Resolution:** designate one revision writer per run, or specify a deterministic conflict reducer with explicit correction precedence. Test competing revisions and replay in different arrival orders.
+
+- **§§2, 3.5–3.7; Skill concept “User-edit detection”: body hashes do not identify complete skill versions.** The supplied concept explicitly hashes the canonical **body**, while descriptions and learned state reside in frontmatter. A description-only patch can change triggering and misfire rates without changing the telemetry stamp; a metadata-only operator edit can also pass the commit’s body-hash comparison. **Resolution:** distinguish a complete semantic-version hash—including invocation-relevant frontmatter—from rendering hashes, and use a complete canonical-file hash for write preconditions.
+
+- **§§3.2, 3.8; Skill concept “Parity contract”: retirement has incompatible cleanup contracts.** The sentinel specifies `removeOrphans()` for retirement, while the supplied concept defines orphan remediation as removal. The sentinel also promises recoverable retirement, preservation of operator-edited renderings, and zero deletes under learned paths. No ordering or ownership restriction reconciles these operations. **Resolution:** replace generic orphan cleanup with learned-skill retirement reconciliation that archives local files before removing discovery entries; explicitly protect unrelated orphans. Test remote retirement of an edited rendering.
+
+- **§§3.1, 3.5: catch-up provenance is unspecified.** Live admission requires authorship, forwarding, verified operator binding and confirmation-reply checks. The supplied `TopicMemory` description does not establish that it retains all those facts, yet catch-up admits missed messages from it. This is a specification gap, not evidence that the implementation admits unsafe rows. **Resolution:** persist admission provenance with the original message, or make catch-up refuse rows whose original eligibility cannot be established. Current identity alone should not retroactively authenticate historical text.
+
+These are state-integrity problems; additional cross-family model review cannot resolve them.
+
 ## Convergence verdict
 
-Converged at round 6, the Tier-2 cap. The final round found no design finding about safety, security or data loss; the internal reviewers reported 0/0/0/0 design findings and one low-severity design item (no-remote detection), the external model four items — all five addressed by the disclosed post-cap edits above, none architectural. Design findings fell 40 → 17 → 11 → 7 → 5 → 5 across the rounds, the last two rounds being clause-sized. Open questions: none (29 frontloaded decisions, 22 cheap-to-change tags by instance across 12 rows, 5 contested-then-cleared, 1 contested-rejected). Cross-model: codex-cli:gpt-6-astra ran every round. Spec is ready for Justin's review and `approved: true`.
+Converged at round 6, the Tier-2 cap, then re-opened by the operator for a seventh round on the struck caps (above) and closed again with zero safety/security/data-loss findings. The final round found no design finding about safety, security or data loss; the internal reviewers reported 0/0/0/0 design findings and one low-severity design item (no-remote detection), the external model four items — all five addressed by the disclosed post-cap edits above, none architectural. Design findings fell 40 → 17 → 11 → 7 → 5 → 5 across the rounds, the last two rounds being clause-sized. Open questions: none (29 frontloaded decisions, 24 cheap-to-change tags by instance across 12 rows, 5 contested-then-cleared, 1 contested-rejected). Cross-model: codex-cli:gpt-6-astra ran every round. Spec is ready for Justin's review and `approved: true`.
 
 Operator context recorded here because it shaped the spec: on 2026-11-06 (topic 139880) Justin required strong proof that this feature will not ship dark and stall. The spec's maturation plan carries a test-agent rung, a dark window, dated dev-agent rungs with numbers, and fleet promotion by recorded model review; the correction sentinel, maturation ladder, growth analyst and queue-pace were switched on on the development agent the same day (backup `2026-11-06T184832Z`), and a tracked commitment with a beacon deadline (CMT-039) covers the handoff.

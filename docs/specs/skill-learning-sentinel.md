@@ -14,14 +14,14 @@ run-boundaries: "Run A = slices 0+1 (observe, draft to proposals, measure, v1 re
 amends-spec:
   - skill-concept                              # specs/instar-concepts/skill.md — canonical SKILL.md + parity (writer side; lands its deferred backfill)
   - correction-preference-learning-sentinel    # same recurrence-gate shape; this is its procedural twin
-review-convergence: "2026-11-06T18:59:04.824Z"
-review-iterations: 6
-review-completed-at: "2026-11-06T18:59:04.824Z"
+review-convergence: "2026-11-06T19:30:20.632Z"
+review-iterations: 7
+review-completed-at: "2026-11-06T19:30:20.632Z"
 review-report: "docs/specs/reports/skill-learning-sentinel-convergence.md"
 cross-model-review: "codex-cli:gpt-6-astra"
 single-run-completable: true
 frontloaded-decisions: 29
-cheap-to-change-tags: 22
+cheap-to-change-tags: 24
 contested-then-cleared: 5
 ---
 
@@ -69,10 +69,10 @@ originals; skills graded by the same model that wrote them; overlapping skills l
 
 | Hermes failure mode | Rule here | Mechanism |
 |---|---|---|
-| Creates after any complex task → sprawl | Create only on **recurrence** of an operator request | §3.3 gate |
+| Creates after any complex task → sprawl | Create only on **recurrence** of an operator request, judged for value and coherence inside a deterministic evidence floor — never a static ceiling on how many skills an agent may learn | §3.3 |
 | Self-graded by the author model | Grade by **corroborated outcome evidence**; every version (v1 included) reviewed by a **different model family** | §3.6, §3.7 |
 | Destructive merge / delete | **Never merge, never delete**; retire to a recoverable folder; versions kept; bounded per-version auto-revert | §3.8 |
-| Prompt bloat from an ever-growing index | Per-skill and total **byte caps**, library cap, retirement | §3.9 |
+| Prompt bloat from an ever-growing index | The drafter and reviewer **measure** the index cost and judge it; the only hard bounds are the loader's own field limits; retirement is a judged heal | §3.9 |
 | Overlapping skills | Dedupe before drafting; fold into an existing *learned* skill as a patch; hand-written skills are never patched | §3.5 |
 | Silent quality loss | **No-regression metric** on corroborated outcomes, with `unknown` excluded and coverage reported | §7 |
 | Untrusted text becomes standing instructions | Only the **operator's verified** messages and the agent's **tool-call outline** feed a draft; never tool results, never forwarded text | §3.1, §3.5 |
@@ -107,12 +107,14 @@ the hook chain and tick are wired at boot):
 {
   "enabled": false,                 // kill switch; omitted ⇒ off on every agent
   "mode": "shadow",                 // "shadow" | "live"
-  "gate": { "minSupport": 3, "minDistinctDays": 2, "minDistinctSessions": 2, "minCleanRuns": 1, "windowDays": 30 },
-  "caps": { "newPerDay": 1, "newPerWeek": 4, "libraryMax": 40, "descriptionBytesMax": 6144, "descriptionBytesPerSkill": 200, "bodyBytesMax": 12288 },
+  "floor": { "minOccurrences": 2, "minCorroboratedCleanRuns": 1 },                   // the deterministic floor, count-based, no time bound, never widened by a model
+  "defaultGate": { "minSupport": 3, "minDistinctDays": 2, "minDistinctSessions": 2, "windowDays": 30 },  // the static fallback rung (its recency is its own, not the floor's)
+  "shadow": { "minDisagreementsSampled": 5, "verdictReaskDays": 14 },                  // evidence floor for admitting any arbiter to act
+  "growthSignals": { "createdPerWeekNotice": 4 },                                     // a SIGNAL to the operator, never a refusal
   "evidence": { "runSliceBytesPerRun": 98304, "promptBudgetBytes": 262144, "transcriptScanBytes": 4194304 },
-  "retire": { "minUses": 5, "scoreFloor": 0.4, "misfireFloor": 0.3, "unusedDays": 60, "measurableFloor": 0.2 },
+  "retire": { "minCorroboratedRuns": 3, "defaultScoreFloor": 0.4, "defaultMisfireFloor": 0.3, "defaultUnusedDays": 60, "measurableFloor": 0.2 },  // floor + static defaults the reviewer judges against
   "review": { "requireDifferentFamily": true, "minCorrectedRunsSameFamily": 2, "revertBreakerPer30d": 2 },
-  "llm": { "maxDailyCents": 50, "batchSize": 20 },
+  "llm": { "maxDailyCents": 50, "batchSize": 20 },   // the spend ceiling is a money floor (irreversible spend), deliberately static
   "tickMinutes": 10
 }
 ```
@@ -168,7 +170,10 @@ stored cluster representatives is the secondary fold, counted. A classifier outa
 memoized representatives bucketed by key; `clusterId` is persisted; nothing is recomputed over the window.
 
 **Channels:** Telegram and Slack through their hook slots; `TopicMemory` catch-up by watermark for rows the
-seam missed. App conversations reach neither: declared **unmeasurable** in v1 (`channels.app: unmeasurable`).
+seam missed — a caught-up row is admitted with full standing only when the eligibility facts the seam would have
+checked (`fromUser`, `forwarded`, `authorship`, the verified binding) are all present on the stored row; otherwise
+it is admitted as `provenance: unverified-catchup`, which counts toward recurrence support only, never as a clean
+run and never as drafter input (current identity never retroactively authenticates historical text). App conversations reach neither: declared **unmeasurable** in v1 (`channels.app: unmeasurable`).
 
 ### 3.2 Storage, multi-machine posture, and the single writer
 
@@ -217,19 +222,46 @@ separate rows ordered by `(runId, revision)`; the cache reads by `(segment, byte
 simply a new file, so the shrink check is never needed. Request dedupe by `source` applies to observation rows
 only, never to revisions. Rows are bounded per key (200, prune-in-cache).
 
-### 3.3 Recurrence gate (why this does not sprawl)
+### 3.3 Recurrence: a judgment inside an evidence floor (why this does not sprawl — and does not starve)
 
-A `procedureKey` becomes a **draft candidate** only when all hold inside `windowDays`:
+Whether a recurring request deserves a skill is a **judgment call with competing signals** (how strong the
+recurrence is, how much the runs varied, how coherent the resulting library stays, what the index costs each
+session, what the operator agreed with in shadow) — so it is a `judgment-candidate` under Judgment Within
+Floors, not a static ceiling. **The first draft of this spec had hard caps here (one new skill a day, four a week,
+forty total); the operator struck them on 2026-11-06 ("Instar agents should rely on intelligent assessment, not
+hard caps") and they are gone.** What remains:
 
-| Prong | Default | Why |
-|---|---|---|
-| `minSupport` | 3 occurrences | one busy afternoon is not a habit |
-| `minDistinctDays` | 2 | restart-proof: a burst within one day is one occasion |
-| `minDistinctSessions` | 2 | the request survived a fresh conversation |
-| `minCleanRuns` | 1 **corroborated** clean run from a **verified** row (§3.6) | there must be a run to learn from; `unknown` and asserted-identity runs do not count |
-| covered-by check | no existing skill covers the key | `skillUsed` on ≥2 occurrences → **improve** (§3.7) if the skill is learned, or `covered-by-handwritten` (recorded, no action) |
+**The floor (deterministic, never widened by a model, and with no time bound — a quarterly request is still a
+recurrence):** a key has at least `floor.minOccurrences` (2 — one request is not a recurrence) and at least one **corroborated** clean run from a
+**verified** row (§3.6; there must be a run to learn from; `unknown` and asserted-identity runs do not count);
+and no existing skill covers the key (`skillUsed` on ≥2 occurrences → **improve** (§3.7) if the skill is learned,
+or `covered-by-handwritten`, recorded, no action).
 
-Caps apply after the gate: `newPerDay` / `newPerWeek`, and none once the learned library holds `libraryMax`.
+**The default rung (static, the fallback the arbiter must beat):** `defaultGate` — 3 occurrences on 2 distinct
+days across 2 distinct sessions inside its own `windowDays` (30; the recency belongs to this rung, never to the floor,
+so the arbiter may act on a slower cadence the default would miss; ledger retention is by segment age, independent of
+either). This is what runs while the arbiter is in shadow and whenever the arbiter is
+unavailable.
+
+**The arbiter (the drafter call, `skillLearning.drafter`):** above the floor it decides *draft now / wait /
+never* for the key, given the occurrences and their spread, the clean-run outlines, the existing library's
+descriptions, the **measured** index cost (§3.9), and the operator's shadow verdicts so far. It can decline a
+key the default rung would have drafted, and it can act earlier than the default rung inside the floor (two strong
+occurrences the default would have waited on) — never below the floor, which is the one bound a model never
+widens. Its reasoning is recorded (§3). **Verdicts are durable:** each *wait* / *never* is persisted with a re-ask
+horizon (`shadow.verdictReaskDays`); the fallback rung never overrides an unexpired arbiter verdict, so a flaky
+arbiter cannot yield the default's more permissive behaviour by absence. **Evidence before
+authority, with a positive control:** in shadow (§7 rung 1) both the arbiter's decision and the default rung's are
+logged for every key, and **arbiter-only drafts are surfaced as proposals too** (labelled "arbiter would draft;
+default would wait"), so the operator's taps cover the disagreement set, not only the default's picks. The arbiter
+is admitted to act in `live` mode only when it beats the default rung on the **disagreement set** with at least
+`shadow.minDisagreementsSampled` operator verdicts (an evidence floor: the sample must exist); zero disagreements
+means *not measured* and the default keeps acting. The same rule, with its own logged pair, governs the retire
+arbiter (§3.8, criterion: restore rate of its retirements vs. the defaults') and the index-cost strike (§3.9,
+default `accept`, logged in shadow).
+
+**Growth signal, not a wall:** when more than `growthSignals.createdPerWeekNotice` skills are created in a
+week, attention item 6 tells the operator with the list and the arbiter's reasons — visibility, never refusal.
 
 ### 3.4 Shadow mode first
 
@@ -280,8 +312,10 @@ metadata:
 ---
 ```
 
-**Structural lint** (deterministic, `invariant`; a failure discards the draft and logs the rule): `bodyBytesMax`;
-description ≤ `descriptionBytesPerSkill` containing "use when" and "not for/when"; no `scripts/`; credential
+**Structural lint** (deterministic, `invariant`; a failure discards the draft and logs the rule): field sizes within
+what the loader physically accepts (the concept spec's 256-char sanitised description — a prompt-injection bound,
+not a style preference — and each framework's documented body limit, read from `specs/frameworks/*/skills.md`,
+never an invented number); description containing "use when" and "not for/when"; no `scripts/`; credential
 scanner clean; **provenance of references** — every URL, route or path in the body appears in input 1 or in a
 tool-call *target* of input 2; no name collision with canonical, `.claude/skills/` or `.agents/skills/` (the
 patch target exempt); attribution lines carry a source (`src:` ref or `preferences.json` entry id) or are
@@ -319,8 +353,10 @@ untrusted-text class until the gate has proven itself, and it ends.
 
 1. **prepare** row to the machine's journal: `{ name, op, expectedPrevHash, newHash, epoch, at }`, fsync'd;
 2. `pullRebase` (git-with-remote media only; `fence: local` otherwise), then the lease epoch re-read; pull failed → abort (`aborted-unreachable`); stale epoch → abort (`aborted`);
-3. on-disk canonical `bodyHash` must equal `expectedPrevHash` (the last version row); mismatch → the operator
-   edited canonical → `operator-owned`, `locked`, abort;
+3. on-disk canonical **whole-file hash** (`fileHash`: frontmatter + body — a description-only or metadata-only
+   edit is still an edit) must equal `expectedPrevHash` (the last version row's `fileHash`; rows carry both
+   `fileHash` and the parity rule's `bodyHash`); mismatch → the operator edited canonical → `operator-owned`,
+   `locked`, abort;
 4. rendering preflight against the **old** canonical (the stamp only detects edits relative to the current
    canonical); `user-edit-conflict` → lock, abort;
 5. version row appended; canonical written temp + rename; renderings via `skillParityRule.remediate()`;
@@ -346,7 +382,11 @@ symbol / state / corroboration / unmeasurable case:
 | `weak-positive` | a delivered reply and the next operator message is an unrelated request with no correction | nothing claimed — moving on is not satisfaction | — | not in the score; share reported |
 | `unknown` | window closed by timeout, lease move, no reply, app channel, or no signal | nothing claimed | — | excluded from scores, drafter input and the metric |
 
-`minCleanRuns` (§3.3) is met by one `accepted` run or two `accepted-inferred` runs. Label accuracy is audited:
+`floor.minCorroboratedCleanRuns` (§3.3) is met by one `accepted` run or two `accepted-inferred` runs. **Outcome
+revisions have one writer:** labels and their revisions are written only by the lease holder (the single writer of
+§3.2; observation rows are per machine, outcome rows are not), so two machines never produce competing revisions;
+if replay ever presents two revisions for one `(runId, revision)`, the deterministic reducer keeps the one whose
+label ranks higher in `corrected > accepted > accepted-inferred > weak-positive > unknown` and records the conflict. Label accuracy is audited:
 five sampled runs a week, stratified by label, are shown on the console with their label for a one-tap agree/disagree, and the agreement
 rate is a rung-1 number. Every non-`corrected` label (including `weak-positive` and `accepted-inferred`) is revisable.
 
@@ -362,8 +402,8 @@ when the flipped run predates that version), and the skill's evidence line is re
 | Detector | Symbol | State | Corroboration | Unmeasurable → |
 |---|---|---|---|---|
 | `skillUsed` | telemetry row with `session_name` = the run's session (also resolved to the spawn UUID via `findSessionByTmux`), `topic_id` = the run's topic, timestamp inside the window, from any machine's file | the skill ran for this request | the transcript (`RunSlice`, bounded scan) shows the Skill tool call | empty session/topic, or scan bound exceeded → `unknown`, never "not used" |
-| `misfire` | `skillUsed` where the triggering request's key ≠ the skill's key | the description over-triggers | the classifier's key for that message | — |
-| `measurableRate` | corroborated runs ÷ uses | how much of this skill's use the evidence can see | — | reported; below `retire.measurableFloor` with `uses ≥ minUses` → console "unmeasured" + attention item |
+| `misfire` | `skillUsed` where the triggering request's key ≠ the skill's key | the description over-triggers | the classifier keys the request **before** seeing any learned-skill description, and the misfire verdict comes from a family ≠ the description's author (the §3.5 pattern), so a broad description cannot pull paraphrases into its own key | — |
+| `measurableRate` | corroborated runs ÷ uses | how much of this skill's use the evidence can see | — | reported; below `retire.measurableFloor` once `uses ≥ retire.minCorroboratedRuns` → console "unmeasured" + attention item |
 
 Score per skill **and per version** = `(accepted + ½·inferred + 1) / (accepted + ½·inferred + corrected + 2)` — the
 same half weight the gate gives an inferred run — with `accepted` and `accepted-inferred` always shown as separate
@@ -388,12 +428,21 @@ corrected runs before any patch; `revertBreakerPer30d` reverts on one key → lo
 
 ### 3.8 Retire, never delete; never merge; lock is not immunity
 
-A learned skill is **retired** (canonical moved to `.instar/skill-learning/retired/<name>/`, renderings removed
-on every machine by the reconcile, `instar-learned-state: retired`, reason recorded) when
-`uses ≥ retire.minUses` **and the current version has ≥ 3 corroborated runs** (the same minimum the bounded revert
-needs, so the heal can always run first; below it the skill is "unmeasured", never retired for score) and
-`score < retire.scoreFloor`, or (`uses ≥ retire.minUses` and misfires ≥ 2 and misfire rate ≥ `retire.misfireFloor`), or unused for
-`retire.unusedDays` **after at least one observed request of its key on a telemetry-emitting framework**.
+Retirement is a **judgment inside an evidence floor**. The floor: a skill is never retired for score with fewer
+than `retire.minCorroboratedRuns` (3) corroborated runs on its current version (the same minimum the bounded
+revert needs, so the heal can always run first; below it the skill is "unmeasured", never retired), never on a
+single misfire verdict, and for the unused case either one observed request of its key with no use on a telemetry-emitting framework
+**or** no occurrence of the key at all for 3 × `defaultGate.windowDays` (silence is an acceptable floor here
+because restore is one tap) — and never deleted. Above the floor, the reviewer (`skillLearning.reviewer`) is
+asked, with the numbers as signals (score, misfire rate, days unused, **cost per expected use** = index bytes ×
+sessions per week ÷ the key's occurrence rate — so the cost judgment has a denominator — and the static defaults
+`defaultScoreFloor 0.4`, `defaultMisfireFloor 0.3`, `defaultUnusedDays 60` as the fallback rung), whether the
+skill is harming, misfiring, or dead, and answers *retire / keep / patch* with a reason; the static defaults
+decide only when the reviewer is unavailable. A learned skill is **retired** on that verdict through its **own reconciliation path, never the parity rule's
+generic orphan removal**: on every machine, archive first (`.instar/skill-learning/retired/<name>/renderings/<machineId>/`
+receives the local rendering byte-for-byte, edited or not), then remove the discovery entry; canonical moves to
+`.instar/skill-learning/retired/<name>/`; `instar-learned-state: retired`; reason recorded. Orphans unrelated to a
+learned skill are never touched by this path.
 Retirement for harm also posts a learning to `POST /evolution/learnings`. A `locked` (operator-owned) skill is
 never **patched**, but it is still scored and can still be retired for harm — retirement **deactivates**: the
 operator-edited rendering is moved, byte-for-byte, to `.instar/skill-learning/retired/<name>/renderings/<machineId>/`
@@ -405,10 +454,14 @@ deletes a file.
 ### 3.9 Keep the library small and the prompt flat
 
 Learned skills are discovered exactly like hand-written ones (Claude's own skill index, progressive
-disclosure); the session-start hook injects nothing extra. `descriptionBytesPerSkill` bounds one skill;
-`descriptionBytesMax` bounds the sum (34 hand-written descriptions are 8.4 KB today; the cap adds at most
-~1.5 k tokens to each session's index). When a draft would exceed the sum, the lowest-scored unused learned
-skill is retired first (that is the self-heal), or the draft waits. `libraryMax` bounds the count.
+disclosure); the session-start hook injects nothing extra. Prompt cost is **measured, not capped**: on every
+tick the sentinel reads the real size of the skill index (34 hand-written descriptions are 8.4 KB today) and the
+session context budget, and hands the drafter and reviewer the headroom in tokens; description length is judged
+for scope ("use when / not for"), and the reviewer may strike a draft whose cost it judges not worth its value,
+with the reason recorded — after the §3.3 shadow comparison has admitted it (default: accept; struck drafts join
+the operator sample so the strike has a positive control). There is no library count limit. When the index grows, the judged heal is to retire
+the lowest-scored unused learned skill (§3.8) — proposed by the reviewer, never by a counter — and the operator
+sees the measured index cost on the console.
 
 ### 3.10 Surfaces — silent to the operator by default
 
@@ -428,11 +481,12 @@ skill is retired first (that is the self-heal), or the draft waits. `libraryMax`
   declared (Self-Heal Before Notify), class `recoverable`, `dedupe-key` = `procedureKey`, `max-attempts 3`,
   backoff 1 h / 6 h / 24 h, breaker: 3 heals of one key in 7 days → escalate, `max-notification-latency 120s`
   after exhaustion, audit in `logs/skill-learning.jsonl`:
-  1. **retired for harm** — heal = the bounded revert first (§3.7); notify only if the reverted version is also below floor;
-  2. **library cap blocking drafts** — heal = retire the lowest-scored unused skill (§3.9); notify only if nothing can be freed;
+  1. **retired for harm** — heal = the bounded revert first (§3.7); notify only if the reverted version is also judged harmful;
+  2. **index cost judged too high for a wanted draft** — heal = the reviewer's proposed retirement of the lowest-scored unused skill (§3.9); notify only if it judges nothing retirable;
   3. **drafter refused 5× in a row** — heal = swap the drafter family once; then notify;
   4. **classifier failure rate > 50 % over 24 h** — heal = the bounded failure swap; then notify;
-  5. **unmeasured skill** (`measurableRate` below floor at `minUses`), **revert breaker**, or **equal-epoch split-brain** — heal = none possible (evidence, not a fault); notify with the numbers.
+  5. **unmeasured skill** (`measurableRate` below floor at `minCorroboratedRuns`), **revert breaker**, or **equal-epoch split-brain** — heal = none possible (evidence, not a fault); notify with the numbers;
+  6. **growth signal** — more than `growthSignals.createdPerWeekNotice` skills created in a week: no heal (nothing is wrong by definition); the list and the arbiter's reasons, for the operator's eyes.
 
 ## 4. Decision points touched (Judgment Within Floors)
 
@@ -440,13 +494,15 @@ skill is retired first (that is the self-heal), or the draft waits. `libraryMax`
 |---|---|---|
 | Structural pre-filter (§3.1) | `invariant` | provenance facts, not meaning; each drop counted |
 | `repeatable` + `procedureKey` + key folding | `judgment-candidate` | bounded action space (record / fold / not); conservative default: not recorded; fallback: retry next tick → visible backlog → `unknown`; arbiter: the batch classifier |
-| Recurrence gate prongs and caps | `invariant` | deterministic counts |
+| Draft now / wait / never for a recurring key | `judgment-candidate` | floor: ≥2 occurrences + ≥1 corroborated verified clean run + not covered; default rung: 3/2/2; arbiter: the drafter; acts only after shadow evidence beats the default (§3.3); growth is a signal, never a cap |
 | covered-by / patch-vs-new | `judgment-candidate` | floor: patch target carries `instar-learned-origin` (code-enforced); default: no skill |
 | Structural lint (§3.5) | `invariant` | deterministic refusals |
 | Semantic flags: description overlap, policy relaxation, ungrounded step | `judgment-candidate` | the Jaccard / keyword hits are signals; arbiter: the cross-family reviewer must clear or strike each; default: refuse the draft |
 | Outcome labels (§3.6) | `judgment-candidate` | floor: `accepted` needs a delivered reply + a positive signal; `redo` needs a dissatisfaction verdict; default `unknown`; arbiter: the classifier / reviewer |
 | Reviewer patch and v1 review | `judgment-candidate` | every hunk cites a correction; different family or the hold; default `no-change` / discard |
-| Bounded revert, retire thresholds, byte caps, never-delete, never-merge, hand-written read-only, commit protocol | `invariant` | deterministic |
+| Retire / keep / patch | `judgment-candidate` | floor: ≥3 corroborated runs on the version, ≥2 misfire verdicts, one observed request or 3 windows of silence for the unused case, never delete; default rung: the static defaults; arbiter: the reviewer, acting only after its shadow pair beats the defaults on restore rate |
+| Index cost of a draft | `judgment-candidate` | measured headroom and cost-per-expected-use as input; floor: the loader's own field limits; arbiter: the reviewer, after the shadow pair; default: accept |
+| Bounded revert rule, never-delete, never-merge, hand-written read-only, commit protocol, spend ceiling | `invariant` | reversibility and money floors — each stated as a floor because the consequence is irreversible (deleted text, spent money) or the action space is enumerable (a version write) |
 | Operator lock / unlock / retire / restore / confirm / agree | `invariant` | PIN-gated operator authority; a chat "yes" is never approval |
 | Rung-2 pending state | `invariant` while rung 2 is unproven | removed by the ladder, not by a model |
 | Unrecorded judgment → refuse | `invariant` | the provenance record is the precondition of every verdict; no record, no action |
@@ -471,8 +527,8 @@ skill is retired first (that is the self-heal), or the draft waits. `libraryMax`
 | 11 | Route paths, PIN, console section | as §3.10; `checkMandatePin` (signature `(req, res, pinOverride?)`, a message override is a needed change) run on the holder for forwarded writes; holder unreachable → `503 lease-holder-unreachable`; the Learned page section and its `needs-model.js` registration | published interface — not cheap |
 | 12 | File locations | as §3.2; `skill-learning/` and the db created 0700/0600 | on-disk format — not cheap |
 | 13 | Learned-skill metadata | flat `instar-learned-*` string keys | format a loader reads — not cheap |
-| 14 | Retire thresholds | `minUses 5`, `scoreFloor 0.4` with ≥3 corroborated runs on the current version, `misfireFloor 0.3` with ≥2 misfires, `unusedDays 60` with the observed-request precondition, `measurableFloor 0.2` | removes a slash command — not cheap |
-| 15 | Gate prongs, caps, window rules, Jaccard 0.6, Laplace score, lint-refusal count 5, "new" 7 days (contested: a label, not a contract; cleared), batch 20, tick 10 min | as stated | cheap-to-change-after ×9 (shadow-measured) |
+| 14 | Retire floor and defaults | floor `minCorroboratedRuns 3`, ≥2 misfire verdicts, one observed request for the unused case; static defaults `0.4` / `0.3` / `60 d` as the reviewer's fallback rung; `measurableFloor 0.2` | removes a slash command — not cheap |
+| 15 | Evidence floor (2 occurrences, 1 corroborated run; no time bound), default rung 3/2/2 in 30 days, shadow evidence floor (5 disagreements sampled, 14-day verdict re-ask), growth notice 4/week, window rules, Jaccard 0.6, Laplace score, lint-refused-5×-in-a-row (attention item 3), "new" 7 days (contested: a label, not a contract; cleared), batch 20, tick 10 min | as stated; the operator struck the hard caps (1/day, 4/week, 40 total, byte caps) on 2026-11-06 | cheap-to-change-after ×11 (shadow-measured) |
 | 16 | Scheduling | in-process tick, not a `jobs.json` job; `supervision: tier1` = the reviewer validates every write | cheap-to-change-after |
 | 17 | Run boundaries | Run A = slices 0+1 (observe, draft to proposals, measure, v1 review), ends at the rung-1 operator sample; Run B = slices 2+3 | — |
 | 18 | Telemetry hook rewrite | per-machine file, JSON via python, no free text, `session_name` + `topic_id` + `machine_id` (new `INSTAR_MACHINE_ID` tmux export at the four spawn sites), rotation for the directory | fleet-wide hook change — not cheap |
@@ -488,7 +544,7 @@ skill is retired first (that is the self-heal), or the draft waits. `libraryMax`
 | 28 | Rendering baseline shard | `.instar/skill-learning/rendered-baselines/<machineId>.json`, unified per-machine shard (synced, backed up, temp + rename, transitions journaled); missing baseline + stale stamp = conflict | on-disk format — not cheap |
 | 29 | Telemetry `content_hash` | the rendered `x-instar-stamp` read by the hook at invocation; absent → version-unknown | part of the hook rewrite (row 18) — not cheap |
 
-Counts: frontloaded 29; cheap-to-change tags surviving 22 by instance (12 rows; row 15 carries nine, row 27 three); contested-then-cleared 5 (rows 8, 15's label, 23, 24, 27's breaker); contested-rejected 1 (the retire minimum, moved into row 14).
+Counts: frontloaded 29; cheap-to-change tags surviving 24 by instance (12 rows; row 15 carries eleven, row 27 three); contested-then-cleared 5 (rows 8, 15's label, 23, 24, 27's breaker); contested-rejected 1 (the retire minimum, moved into row 14).
 
 ## 6. Slices
 
@@ -512,7 +568,10 @@ Counts: frontloaded 29; cheap-to-change tags surviving 22 by instance (12 rows; 
 - **dark-window:** 7 days on the development agent with the flag on and `mode: shadow`: nothing written anywhere
   but proposals, journal and logs.
 - **dev-agent-live:** rung 1 (shadow, ≥14 days): ≥10 `would-create` decisions from ≥3 distinct keys; operator
-  agreement ≥ 70 % on ≥8 sampled proposals; classifier failure rate < 5 %; zero raw-text rows (weekly self-check
+  agreement ≥ 70 % on ≥8 sampled proposals, **and each arbiter (draft/wait/never, retire/keep/patch, cost strike) beating its static default on the
+  disagreement set with ≥ 5 operator verdicts sampled** (both verdicts logged per key / per skill — evidence before
+  authority with a positive control, §3.3; zero disagreements = not measured, defaults keep acting); classifier
+  failure rate < 5 %; zero raw-text rows (weekly self-check
   + test); `unknown` + `weak-positive` share reported (if > 60 %, the positive-signal design is revisited before
   rung 2). Then rung 2 (`mode: live`, pending/confirm): harm metric = **no-regression on corroborated outcomes** —
   per key with a learned skill, corrected-rate with the skill ≤ corrected-rate of that key before it (paired,
@@ -536,8 +595,13 @@ Counts: frontloaded 29; cheap-to-change tags surviving 22 by instance (12 rows; 
 
 ## 8. Tests (three tiers, per the Testing Integrity Standard)
 
-- **Unit:** structural filter (each reason, counted; Slack asserted rows never reach the drafter); gate prongs
-  each side of the boundary; caps; every structural lint rule with a realistic bad draft; semantic flags are
+- **Unit:** structural filter (each reason, counted; Slack asserted rows never reach the drafter); the evidence
+  floor each side of the boundary; the arbiter can never draft below the floor and acts only after the shadow
+  comparison on the disagreement set (zero disagreements → not admitted); an unexpired `never` survives an arbiter
+  outage; a key recurring quarterly passes the floor; misfire verdicts come from a different family; caught-up rows
+  without eligibility facts never reach the drafter; competing revisions reduce deterministically in any arrival
+  order; a description-only canonical edit trips the precondition; retirement archives before it removes and
+  leaves unrelated orphans alone; the growth notice fires and refuses nothing; every structural lint rule with a realistic bad draft; semantic flags are
   passed, not refused, and the reviewer's strike/clear is honoured with refuse as default; provenance-of-references
   (a URL only in a tool *result* is refused); outcome table (silence → `unknown`; unrelated next request →
   `weak-positive`; routine recurrence → `accepted-inferred`; dissatisfaction verdict → `redo`; late correction flips a
