@@ -35408,10 +35408,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   const sanitizeMaturation = (kind: 'summary' | 'trend', raw: unknown, expectedOrigin: string): Record<string, unknown> | null => {
     if (!raw || typeof raw !== 'object') return null;
     const m = raw as Record<string, unknown>;
+    const statuses = ['ready', 'hold', 'stale-evidence', 'insufficient-evidence', 'missing-contract', 'invalid-contract', 'missed-cadence'];
+    const nonnegativeInteger = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
     if (kind === 'summary') {
       if (!['eligible', 'evaluated', 'missedDue'].every(k => Number.isSafeInteger(m[k]) && (m[k] as number) >= 0) ||
           !m.byStatus || typeof m.byStatus !== 'object' || !Array.isArray(m.features) || m.features.length > 512) return null;
-      const statuses = ['ready', 'hold', 'stale-evidence', 'insufficient-evidence', 'missing-contract', 'invalid-contract', 'missed-cadence'];
       const byStatus = m.byStatus as Record<string, unknown>;
       if (!statuses.filter(k => k !== 'invalid-contract').every(k => Number.isSafeInteger(byStatus[k]) && (byStatus[k] as number) >= 0) ||
           !(byStatus['invalid-contract'] === undefined || (Number.isSafeInteger(byStatus['invalid-contract']) && (byStatus['invalid-contract'] as number) >= 0))) return null;
@@ -35426,6 +35427,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           minNormalizedMargin: f.minNormalizedMargin, newestEvidenceAt: f.newestEvidenceAt ?? null };
       });
       if (features.some(v => v === null)) return null;
+      let latestByStatus: Record<string, number> | undefined;
+      if (m.latestByStatus !== undefined) {
+        if (!m.latestByStatus || typeof m.latestByStatus !== 'object' || Array.isArray(m.latestByStatus)) return null;
+        const counts = m.latestByStatus as Record<string, unknown>;
+        if (m.evaluated !== features.length || !statuses.every(status => nonnegativeInteger(counts[status]) &&
+          counts[status] === features.filter(feature => feature?.status === status).length)) return null;
+        latestByStatus = Object.fromEntries(statuses.map(status => [status, counts[status] as number]));
+      }
       const dispositions = ['active', 'composed', 'excluded'];
       let accounting: unknown[] = []; let accountingCounts: Record<string, unknown> | undefined;
       if (m.accounting !== undefined || m.accountingCounts !== undefined) {
@@ -35484,13 +35493,64 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (m.outcomeDetail !== undefined && !validMaturationOutcomeDetail(m.outcomeDetail, expectedOrigin)) return null;
       return { eligible: m.eligible, evaluated: m.evaluated, missedDue: m.missedDue,
         byStatus: Object.fromEntries(statuses.map(k => [k, byStatus[k] ?? 0])), features,
+        ...(latestByStatus ? { latestByStatus } : {}),
         ...(outcomeContracts ? { outcomeContracts } : {}),
         ...(m.outcomeDetail !== undefined ? { outcomeDetail: m.outcomeDetail } : {}),
         ...(accountingCounts ? { accountingCounts: Object.fromEntries(dispositions.map(k => [k, accountingCounts![k]])),
           legacyEligible: m.legacyEligible, accounting } : {}) };
     }
     if (!Array.isArray(m.features) || m.features.length > 512) return null;
-    return { features: m.features.slice(0, 512) };
+    const metadataKeys = ['totalFeatures', 'omittedFeatures', 'featureLimit', 'evaluationLimit'];
+    const hasMetadata = metadataKeys.some(key => m[key] !== undefined);
+    if (hasMetadata && (!metadataKeys.every(key => nonnegativeInteger(m[key])) ||
+      (m.featureLimit as number) < 1 || (m.featureLimit as number) > 512 ||
+      (m.evaluationLimit as number) < 1 || (m.evaluationLimit as number) > 90 ||
+      m.features.length > (m.featureLimit as number) ||
+      (m.totalFeatures as number) !== m.features.length + (m.omittedFeatures as number))) return null;
+    if (m.cadenceContinuity !== undefined && m.cadenceContinuity !== 'unknown') return null;
+    if (m.historyByteLimit !== undefined && (!nonnegativeInteger(m.historyByteLimit) ||
+      m.historyByteLimit < 1 || m.historyByteLimit > 384 * 1024 ||
+      Buffer.byteLength(JSON.stringify(m), 'utf8') > m.historyByteLimit)) return null;
+    const isoTime = (value: unknown): value is string => typeof value === 'string' &&
+      Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+    for (const value of m.features) {
+      if (!value || typeof value !== 'object') return null;
+      const feature = value as Record<string, unknown>;
+      if (hasMetadata && (typeof feature.featureId !== 'string' || feature.featureId.length < 1 || feature.featureId.length > 63)) return null;
+      if (!Array.isArray(feature.evaluations)) {
+        if (hasMetadata) return null;
+        continue; // Preserve older peers' pre-extension envelope.
+      }
+      if (hasMetadata && (!nonnegativeInteger(feature.totalEvaluations) || !nonnegativeInteger(feature.omittedEvaluations) ||
+        feature.evaluations.length > (m.evaluationLimit as number) ||
+        feature.totalEvaluations !== feature.evaluations.length + feature.omittedEvaluations)) return null;
+      let previousDue: string | null = null;
+      let previousPoint: Record<string, unknown> | null = null;
+      for (const rawPoint of feature.evaluations) {
+        if (!rawPoint || typeof rawPoint !== 'object') return null;
+        const point = rawPoint as Record<string, unknown>;
+        if (point.dueAt === undefined && !hasMetadata) continue;
+        if (!statuses.includes(String(point.status)) ||
+          typeof point.contractHash !== 'string' || point.contractHash.length < 1 || point.contractHash.length > 128 ||
+          !(point.rung === null || (typeof point.rung === 'string' && point.rung.length > 0 && point.rung.length <= 128)) ||
+          !(point.minNormalizedMargin === null || (typeof point.minNormalizedMargin === 'number' && Number.isFinite(point.minNormalizedMargin))) ||
+          !isoTime(point.dueAt) || !isoTime(point.evaluatedAt) ||
+          (point.newestEvidenceAt !== null && !isoTime(point.newestEvidenceAt)) ||
+          point.day !== point.dueAt.slice(0, 10) || (previousDue !== null && point.dueAt <= previousDue) ||
+          !nonnegativeInteger(point.passingMetrics) || !nonnegativeInteger(point.totalMetrics) ||
+          point.passingMetrics > point.totalMetrics || !nonnegativeInteger(point.additionalMissedSlots) ||
+          typeof point.sameEvaluationSeries !== 'boolean') return null;
+        if (point.sameEvaluationSeries && !(previousPoint && previousPoint.contractHash === point.contractHash &&
+          previousPoint.rung === point.rung && ['ready', 'hold'].includes(String(previousPoint.status)) &&
+          ['ready', 'hold'].includes(String(point.status)) && previousPoint.minNormalizedMargin !== null && point.minNormalizedMargin !== null)) return null;
+        previousDue = point.dueAt;
+        previousPoint = point;
+      }
+    }
+    return { features: m.features.slice(0, 512),
+      ...(hasMetadata ? Object.fromEntries(metadataKeys.map(key => [key, m[key]])) : {}),
+      ...(m.historyByteLimit !== undefined ? { historyByteLimit: m.historyByteLimit } : {}),
+      ...(m.cadenceContinuity !== undefined ? { cadenceContinuity: m.cadenceContinuity } : {}) };
   };
   const blockerPoolRead = async (kind: 'summary' | 'trend', query: string, local: Record<string, unknown>) => {
     const cacheKey = `${kind}?${query}`;
