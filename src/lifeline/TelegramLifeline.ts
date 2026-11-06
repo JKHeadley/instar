@@ -89,6 +89,8 @@ import {
   decide as decideRateLimit,
   writeRateLimitState,
   isRestartStorm,
+  markLatestRestartExited,
+  WATCHDOG_DAILY_CAP,
   type RestartBucket,
 } from './rateLimitState.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -178,6 +180,10 @@ export class TelegramLifeline {
   private consecutive409s = 0;
   /** When the last 409 arrived; with the count, says whether the conflict is still current. */
   private last409AtMs = 0;
+  /** One report per process when the watchdog's daily restart cap is reached. */
+  private selfRestartExhaustedReported = false;
+  /** One report per process when the restart-history file is corrupt. */
+  private restartStateCorruptReported = false;
   private consecutive429s = 0;
   /**
    * B1 (multimachine-lease-poll-robustness, Decision 4) — the monotonic ms at
@@ -691,6 +697,8 @@ export class TelegramLifeline {
         ]);
       },
       exitFn: (code) => process.exit(code),
+      // Only restarts that really exit count toward the watchdog daily cap.
+      recordExit: () => markLatestRestartExited(this.projectConfig.stateDir),
       // A stop request that arrived during a keep-server quiesce still stops the server.
       stopServer: () => this.supervisor.stop({ evenIfDetached: true }),
       isSupervised,
@@ -930,6 +938,28 @@ export class TelegramLifeline {
     const dec = decideRateLimit(outcome, bucket);
     if (!dec.allowed) {
       console.log(`[Lifeline] restart suppressed by rate limit: ${dec.reason} (bucket=${bucket} reason=${reason})`);
+      if (dec.reason === 'rate-limit-file-corrupt' && !this.restartStateCorruptReported) {
+        // A corrupt file blocks every self-restart until it is rewritten, so it must be seen.
+        this.restartStateCorruptReported = true;
+        DegradationReporter.getInstance().report({
+          feature: 'TelegramLifeline.restartStateCorrupt',
+          primary: 'Self-restart to clear a stuck lifeline',
+          fallback: 'No self-restarts until the restart-history file is readable again',
+          reason: 'The self-restart history file is unreadable or holds a malformed entry',
+          impact: 'The lifeline cannot restart itself to recover until the file is fixed or removed.',
+        });
+      }
+      if (dec.reason === 'watchdog-daily-cap' && !this.selfRestartExhaustedReported) {
+        // Self-heal has run out for today: say so once, then stay up in the stuck state.
+        this.selfRestartExhaustedReported = true;
+        DegradationReporter.getInstance().report({
+          feature: 'TelegramLifeline.selfRestartExhausted',
+          primary: 'Self-restart to clear a stuck lifeline',
+          fallback: 'No more self-restarts for now; the lifeline stays up as it is',
+          reason: `${WATCHDOG_DAILY_CAP} watchdog restarts in 24h did not clear it; latest signal ${reason}`,
+          impact: 'Messages may not be collected or forwarded until the cause is fixed or the agent is restarted.',
+        });
+      }
       return;
     }
     // Storm escalation signal (fires in addition to the normal restart
