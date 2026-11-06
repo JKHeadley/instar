@@ -127,7 +127,7 @@ What stays unproven until live is listed in the side-effects review.
 - **fleet:** Ships on by default on the next release. The added index builds itself when the store opens.
 - **graduation criterion:** On the Studio for seven days, no reply waits over two minutes from a local fault, and the query never appears in a worker failure.
 - **dark-window:** Zero. This fixes held operator replies, adds no send path, and a revert restores the old behaviour.
-- **ladder:** none: a bug fix to existing delivery, with no new capability to mature.
+- **ladder:** not applicable: no flag, a bug fix to existing delivery with no new capability to mature.
 
 ## Open questions
 
