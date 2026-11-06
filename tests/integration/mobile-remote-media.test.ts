@@ -431,6 +431,22 @@ describe('the owner phone opens a Slack file held by another machine', () => {
     expect(sockets[0]!.timeout).toBeGreaterThan(0);
   }, 30_000);
 
+  it('real sockets: a holder with keepAliveTimeout 0 keeps its own socket policy after a hop', async () => {
+    const { b } = await pair();
+    b.server.keepAliveTimeout = 0;
+    const bytes = jpeg(2_000);
+    const key = await b.held('C0KAZERO1', bytes);
+    const sockets: net.Socket[] = [];
+    b.server.on('connection', (s) => { sockets.push(s); });
+    const raw = rawClient(b);
+    await new Promise<void>((go) => { raw.c.once('connect', () => go()); });
+    raw.c.write(raw.ask(hopRoute(sha(bytes), key)));
+    await raw.until('200 OK');
+    await pause(150);
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]!.timeout ?? 0).not.toBe(HOLDER_MEDIA_HOP_SOCKET_MS);
+  }, 30_000);
+
   it('real sockets: the holder keeps a hop open past its keep-alive, so a slow phone gets the end of the file', async () => {
     const { a, b } = await pair();
     b.server.keepAliveTimeout = 200; // the same race as the default 5 s, at a rate a test can wait for

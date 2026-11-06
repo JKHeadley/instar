@@ -268,8 +268,12 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
       // by then, and its timeout is not this hop's to change: only a socket no response owns (null,
       // Node's own marker, and no public equivalent) is idle. A different value leaves the timeout
       // alone, which at worst is the old 5 s keep-alive.
+      // Only when the server itself keeps idle sockets (keepAliveTimeout > 0): with 0 or an unreadable
+      // value Node never resets an idle socket's timeout, so 330 s would outlive this hop. Fails closed.
       res.once('finish', () => {
-        if ((req.socket as unknown as { _httpMessage?: unknown })._httpMessage === null) req.socket.setTimeout(HOLDER_MEDIA_HOP_SOCKET_MS);
+        const sock = req.socket as unknown as { _httpMessage?: unknown; server?: { keepAliveTimeout?: unknown } };
+        const keepAlive = sock.server?.keepAliveTimeout;
+        if (sock._httpMessage === null && typeof keepAlive === 'number' && keepAlive > 0) req.socket.setTimeout(HOLDER_MEDIA_HOP_SOCKET_MS);
       });
     }
     let start = 0;

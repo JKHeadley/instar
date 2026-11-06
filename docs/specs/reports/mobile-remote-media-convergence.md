@@ -40,3 +40,5 @@ The coordinator then set the limits on streams waiting on a phone: 2 quiet slots
 A further independent re-read found the permits sound and three small items, now fixed. A holder's 5 s keep-alive could cut a very slow phone near the end of a file, so a hop's socket now stays open up to 330 s. A phone already gone before the handler runs takes no permit. Three tests were added so that removing the runnable limit, the quiet retry or the deadline fails them. This patch awaits a fresh independent read.
 
 A fresh read found that the holder's longer socket timeout could land on a pipelined response queued behind a hop. It now applies only when no response owns the socket. This patch awaits a fresh independent read.
+
+The branch then took current main, which carries the admission helper. The longer hop socket timeout now also requires the holder's own keep-alive to be above 0; with 0 or an unreadable value the socket's policy is left alone. This patch awaits an independent re-read.
