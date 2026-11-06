@@ -303,8 +303,8 @@ describe('standdown-guard hook — the authoritative verdict', () => {
 });
 
 describe('wildcard PreToolUse settings wiring (anti-drift)', () => {
-  it('the canonical wildcard set includes the origin and stand-down guards', () => {
-    expect(INSTAR_WILDCARD_PRETOOLUSE_FILENAMES).toEqual(['telegram-origin-guard.js', 'standdown-guard.js']);
+  it('the canonical wildcard set includes the sign-in, origin and stand-down guards', () => {
+    expect(INSTAR_WILDCARD_PRETOOLUSE_FILENAMES).toEqual(['signin-profile-guard.js', 'telegram-origin-guard.js', 'standdown-guard.js']);
     expect(INSTAR_WILDCARD_PRETOOLUSE_HOOKS[0].blocking).toBe(true);
     // Shorter than the lease guard's 6s: this fires on EVERY tool call.
     expect(INSTAR_WILDCARD_PRETOOLUSE_HOOKS[0].timeout).toBe(2000);
@@ -312,8 +312,8 @@ describe('wildcard PreToolUse settings wiring (anti-drift)', () => {
 
   it('creates the `*` matcher when absent and is idempotent', () => {
     const preToolUse: SettingsMatcherEntry[] = [{ matcher: 'Bash', hooks: [] }];
-    expect(ensureInstarWildcardPreToolUseHooks(preToolUse)).toEqual(['telegram-origin-guard.js', 'standdown-guard.js']);
-    expect(preToolUse.find((e) => e.matcher === '*')?.hooks).toHaveLength(2);
+    expect(ensureInstarWildcardPreToolUseHooks(preToolUse)).toEqual(['signin-profile-guard.js', 'telegram-origin-guard.js', 'standdown-guard.js']);
+    expect(preToolUse.find((e) => e.matcher === '*')?.hooks).toHaveLength(3);
     expect(ensureInstarWildcardPreToolUseHooks(preToolUse)).toEqual([]);
   });
 
@@ -322,8 +322,9 @@ describe('wildcard PreToolUse settings wiring (anti-drift)', () => {
     ensureInstarWildcardPreToolUseHooks(preToolUse);
     const hooks = preToolUse[0].hooks!;
     expect(hooks[0].command).toBe('echo mine');
-    expect(hooks[1].command).toContain('telegram-origin-guard.js');
-    expect(hooks[2].command).toContain('standdown-guard.js');
+    expect(hooks[1].command).toContain('signin-profile-guard.js');
+    expect(hooks[2].command).toContain('telegram-origin-guard.js');
+    expect(hooks[3].command).toContain('standdown-guard.js');
   });
 
   it('BOTH the new-agent path and the existing-agent path consume the shared ensure function', () => {
