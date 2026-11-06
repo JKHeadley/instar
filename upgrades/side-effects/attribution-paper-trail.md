@@ -114,3 +114,7 @@ Final ruling: "Concur with the review". Questions on refusal in `record` and on 
 ## After the first Local Verify
 
 Local Verify found census ratchets this change had not met. `AttributionJudge` is now classified on the untrusted-input, judges-claims and injection-exposure axes, its route file is listed for the capability check, two reasoned catches carry their marker, and the default job count moved to 29. No behaviour change.
+
+## Rebase follow-up (2026-11-05 evening)
+
+After a rebase onto main, two conflicts were in hook lists (main added `signin-profile-guard`). Resolving them dropped the explicit 25s Codex timeout on `attribution-gate.js`; it is restored, so the hook passes on its own terms instead of being killed at the 5s default. Three registries are updated for things this change adds: the CLAUDE.md section is listed as shared (both generator and migrator append the same constant), `AttributionJudge` is classified as a pending parser contract (closed verdicts), and one dark-gate row's line number moves by the 7 new attribution default lines. No behaviour beyond the restored timeout changes.

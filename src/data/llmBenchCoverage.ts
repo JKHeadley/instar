@@ -533,6 +533,7 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   MachineWedgeJudge: { contractTest: 'tests/unit/machine-wedge-judge.test.ts' },
   FeedbackTriageSecondOpinion: { contractTest: 'tests/unit/feedback-factory/triage-arbiter.test.ts' },
   GoalPriorityExtractor: { pending: 'contract-wave-2' },
+  AttributionJudge: { pending: 'contract-wave-2' }, // closed own|relayed|unclear + faithful verdicts
   AlignmentReviewer: { pending: 'contract-wave-2' },
 
   // ── Argued false (pinned shrink-only) — no closed-vocabulary verdict parse ──
