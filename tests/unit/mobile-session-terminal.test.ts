@@ -97,6 +97,10 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['POST', '/mobile/sessions/close/a-session-id'],
       ['POST', '/mobile/sessions/new'],
       ['POST', '/mobile/sessions/default'],
+      // Add a new agent from a phone you already use (mobile-pairing-introducer §3.2).
+      ['GET', '/mobile/introducer'],
+      ['POST', '/mobile/introductions/challenge'],
+      ['POST', '/mobile/introductions'],
     ];
     const ownerOnly = DEVICE_ALLOWLIST.filter((r) => r.ownerOnly);
     for (const [method, p] of named) expect(ownerOnly.filter((r) => r.method === method && r.re.test(p)), `${method} ${p}`).toHaveLength(1);
