@@ -14,8 +14,8 @@ export function validArchivedContract(raw: unknown): raw is MaturationEvaluation
   try {
     if (Buffer.byteLength(JSON.stringify(raw)) > 16 * 1024 || !validMaturationPolicy(raw as unknown as MaturationEvaluationContract)) return false;
     const contract = raw as unknown as MaturationEvaluationContract;
-    return validMeasurementBinding(contract) && contract.metrics.every(m => closed(m, ['id', 'source', 'sourceRef', 'direction', 'threshold', 'minSamples'])) &&
-      (contract.outcome === undefined || parseMaturationOutcome(contract.outcome, contract.metrics.map(m => m.id)) !== null);
+    return contract.metrics.every(m => closed(m, ['id', 'source', 'sourceRef', 'direction', 'threshold', 'minSamples'])) &&
+      (contract.outcome === undefined || parseMaturationOutcome(contract.outcome, contract.metrics.map(m => m.id)) !== null) && validMeasurementBinding(contract);
   } catch { /* @silent-fallback-ok — malformed definitions are explicit archive failures */ return false; }
 }
 export interface MeasurementContractVersions {

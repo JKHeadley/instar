@@ -234,12 +234,12 @@ export class BlockerLifecycleService {
     }
     const contractOf = measurementContractOf;
     const memo: ObservationMemo = {};
-    const captured = new Map<string,Set<string>>();
+    const captured = new Map<string,Map<string,MaturationMetricObservation>>();
     for (const initiative of eligible) {
       const contract = contractOf(initiative);
       if (contract && (!genericSubject(initiative) || this.measurementTargetStates.get(initiative.id)==='registered')) captured.set(initiative.id,this.captureBlockerObservations(initiative.id, contract, now, memo));
     }
-    const longestAgeHours = eligible.reduce((max, i) => Math.max(max, contractOf(i)?.evidenceMaxAgeHours ?? 0), 0);
+    const longestAgeHours = featureEligible.reduce((max, i) => Math.max(max, contractOf(i)?.evidenceMaxAgeHours ?? 0), 0);
     const latestByFeature = new Map<string, Map<string, MaturationMetricObservation>>();
     if (longestAgeHours > 0) {
       for (const row of this.ledger.maturationObservations(this.origin, now - longestAgeHours * 3_600_000)) {
@@ -290,7 +290,7 @@ export class BlockerLifecycleService {
       let status: MaturationEvaluationStatus = archived && genericProof && (!genericSubject(initiative) || this.measurementTargetStates.get(initiative.id)==='registered') ? 'ready' : 'insufficient-evidence';
       let passing = 0; let newest: number | null = null; const margins: number[] = [];
       for (const metric of contract.metrics) {
-        const row = latest.get(metric.id);
+        const row = genericSubject(initiative)?captured.get(initiative.id)?.get(metric.id):latest.get(metric.id);
         if (!row || row.samples < metric.minSamples || (genericSubject(initiative) && (row.source!==metric.source || row.sourceRef!==metric.sourceRef || row.observedAtMs>now))) { status = 'insufficient-evidence'; continue; }
         newest = Math.max(newest ?? 0, row.observedAtMs);
         if (now - row.observedAtMs > contract.evidenceMaxAgeHours * 3_600_000) { if (status === 'ready') status = 'stale-evidence'; continue; }
@@ -326,8 +326,8 @@ export class BlockerLifecycleService {
     return crypto.createHash('sha256').update(JSON.stringify(contract)).digest('hex');
   }
 
-  private captureBlockerObservations(featureId: string, contract: MaturationEvaluationContract, now: number, memo: ObservationMemo = {}): Set<string> {
-    const captured = new Set<string>();
+  private captureBlockerObservations(featureId: string, contract: MaturationEvaluationContract, now: number, memo: ObservationMemo = {}): Map<string,MaturationMetricObservation> {
+    const captured = new Map<string,MaturationMetricObservation>();
     const scoped=validGenericMeasurement(contract,featureId);
     // Blocker factors are expensive and few features ask for them: build each map once, on first ask.
     const summariesOf = () => memo.summaries ??= new Map<BlockerFactor, Record<string, unknown>>([
@@ -358,7 +358,7 @@ export class BlockerLifecycleService {
             source: metric.source, sourceRef: metric.sourceRef, observedAtMs: now,
             value: projected.value, samples: projected.samples });
           const stored=scoped?this.ledger.maturationObservation(this.origin,featureId,metric.id,now):null;
-          if(stored && stored.source===metric.source && stored.sourceRef===metric.sourceRef && stored.value===projected.value && stored.samples===projected.samples) captured.add(metric.id);
+          if(stored && stored.source===metric.source && stored.sourceRef===metric.sourceRef && stored.value===projected.value && stored.samples===projected.samples) captured.set(metric.id,stored);
         }
         continue;
       }

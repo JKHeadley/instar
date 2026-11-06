@@ -51,6 +51,15 @@ export function validMeasurementBinding(contract: MaturationEvaluationContract &
     const { rightRateMetricId, unmatchedShareMetricId } = generic.adapter;
     const quality = contract.metrics.find(m => m.id === rightRateMetricId)!;
     const guard = contract.metrics.find(m => m.id === unmatchedShareMetricId)!;
+    const rightBaseline=contract.outcome.baseline.points.find(p=>p.id===rightRateMetricId);
+    const unmatchedBaseline=contract.outcome.baseline.points.find(p=>p.id===unmatchedShareMetricId);
+    if(!rightBaseline||!unmatchedBaseline||rightBaseline.observedAtMs!==unmatchedBaseline.observedAtMs ||
+        rightBaseline.descriptorVersion!==1||unmatchedBaseline.descriptorVersion!==1 ||
+        rightBaseline.samples<=0||unmatchedBaseline.samples<=0||rightBaseline.samples>unmatchedBaseline.samples ||
+        rightBaseline.value<0||rightBaseline.value>1||unmatchedBaseline.value<0||unmatchedBaseline.value>1 ||
+        Math.abs((1-unmatchedBaseline.value)*unmatchedBaseline.samples-rightBaseline.samples)>1e-6 ||
+        Math.abs(rightBaseline.value*rightBaseline.samples-Math.round(rightBaseline.value*rightBaseline.samples))>1e-6) return false;
+
     if (!contract.outcome.outcomeMetricIds.includes(rightRateMetricId) || !contract.outcome.qualityMetricIds.includes(unmatchedShareMetricId) ||
         quality.direction !== 'at-least' || guard.direction !== 'at-most' || quality.threshold < 0 || quality.threshold > 1 || guard.threshold < 0 || guard.threshold > 1) return false;
   }
