@@ -51,3 +51,36 @@ describe('buildSlackHolderRead', () => {
     expect(JSON.stringify(r.body)).not.toContain('secret-host');
   });
 });
+
+describe('owner admission at every transport and emission boundary', () => {
+  it('refuses before the first dial without reporting a rope failure', async () => {
+    let dials = 0, reports = 0;
+    const read = buildSlackHolderRead(deps((async () => { dials++; return good(); }) as typeof fetch,
+      { record: () => { reports++; } }));
+    const answer = await read({ ...ask(), stillOwner: () => false });
+    expect(answer.status).toBe(403); expect(dials).toBe(0); expect(reports).toBe(0);
+  });
+  it.each(['failed-dial', 'edge'])('does not dial another rope after owner loss following %s', async first => {
+    let current = true, dials = 0;
+    const reports: boolean[] = [];
+    const read = buildSlackHolderRead(deps((async () => {
+      dials++; current = false;
+      if (first === 'failed-dial') throw new TypeError('dial failed');
+      return new Response('edge', { status: 530 });
+    }) as typeof fetch, {
+      peers: () => [{ machineId: 'm_b', url: 'http://127.0.0.1:1',
+        kind: first === 'edge' ? 'cloudflare' : 'lan',
+        ropes: [{ url: 'http://127.0.0.1:2', kind: 'lan' }] }],
+      record: (_machine, _kind, ok) => { reports.push(ok); },
+    }));
+    const answer = await read({ ...ask(), stillOwner: () => current });
+    expect(answer.status).toBe(403);
+    expect(dials).toBe(1); expect(reports).toEqual([false]);
+  });
+  it('checks current authority again after body formatting', async () => {
+    let checks = 0;
+    const read = buildSlackHolderRead(deps((async () => good()) as typeof fetch));
+    const answer = await read({ ...ask(), stillOwner: () => ++checks < 3 });
+    expect(checks).toBe(3); expect(answer.status).toBe(403); expect(answer.body.messages).toBeUndefined();
+  });
+});
