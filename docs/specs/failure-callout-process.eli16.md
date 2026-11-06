@@ -11,3 +11,11 @@ Cases remain open until evidence names an implemented repair and shows the origi
 The investigator can see cases across the agent's machines. Scrubbed evidence and its full revision history are copied through the existing authenticated journal. Current reads and changes go to its original holder; if that holder is unavailable, complete copies remain readable with a clear stale label. Copies cannot authorize closure writes. If that machine is unavailable, the answer is unknown, never a claim that the agent has no cases. The process handles only a few cases per run and reserves its attempts before starting any model work. Three unsuccessful attempts pause that case until a new occurrence or substantive recorded evidence; restarting the server does not reset the budget. The unresolved case and its repair work remain visible.
 
 The regression examples cover handing group setup to the person, assuming a locked screen prevents input, and saying an approved change awaits review without a link. Passing process tests does not declare those underlying incidents repaired. This change does not alter the constitution or the existing authority of outgoing-message checks. Justin has authorized completing and merging this infrastructure fix once its checks are green.
+
+The current-main repair preserves notification and retry-controller work merged
+since this branch was opened. It also declares the investigation POST writes in
+the existing write-domain registry and documents the independent feature settings:
+turning off preference promotion does not turn off serious-failure capture. To
+turn both off, explicitly disable both settings. The regression fixtures now do
+that, while the existing default-on tests still exercise automatic capture. The
+full verifier runs the rebased merge tree before this change can merge.

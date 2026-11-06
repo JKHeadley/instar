@@ -60,3 +60,29 @@ Revert code/templates and disable the job through its existing schedule manifest
 ## Second-pass review
 
 Correctness, integration/security and lessons reviewers independently identified and drove fixes for default-off activation, pool ownership, incomplete closure, early diagnosis, truncation, historical deletion, offline continuity, inner-origin spoofing, dropped-origin rollback, metadata leakage and unbounded repeated investigation. Final independent correctness and integration reads concurred with this design; subsequent gate-handoff review corrected capacity retry/consumption/opt-out edges, now covered by real scheduler and script tests. Actual test receipts are recorded in the convergence report; no unavailable model replay is presented as a pass.
+
+## Current-main repair — 2026-11-06
+
+Rebased from current main d1de939e (v1.3.1693) in a fresh isolated clone because
+the shared worktree git directory is read-only in this session. Both main's
+notification imports and self-action controllers survive alongside the callout
+controller. The repair adds the missing POST correction write-domain declaration,
+removes the now-classified analyzer from the shrinking inventory, makes fully-off
+test fixtures explicitly disable both independent features, and documents the
+shipped jobs. Correction analysis writes the local ledger and journal-backed
+preferences; investigation mutations remain origin-only. No new block/allow
+rule, transport, replication path, notification or lifecycle action is added.
+Over-block: no new rejection. Under-block: existing diagnosis/evidence limits
+remain. Layer: existing registry and real API fixtures. Signal/authority: no
+semantic detector gains authority (docs/signal-vs-authority.md). Interactions:
+default-on coverage remains in correctionLearningMode and callout lifecycle tests.
+External surface: accurate feature and job documentation. Multi-machine: existing
+origin-writer/proxied-read design. Rollback: revert this additive repair.
+Repair tier 1; one independent review plus focused unit/integration checks and
+full peer verification before merge. The underlying PR remains tier 2.
+
+Independent repair reviewer: Concur with the review. Actual request paths reach
+WriteAdmission, so a literal parameter prefix would miss runtime writes. The
+broad POST declaration honestly covers the existing analyzer; baseline shrink is
+correct. Documentation, feature-off fixtures, main imports and controllers are
+consistent. No remaining blocking concern.
