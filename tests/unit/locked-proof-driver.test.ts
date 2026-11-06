@@ -425,6 +425,12 @@ describe('locked-proof launchd kill', () => {
     clock = 0; slept.length = 0;
     await target.typePassword({ timing: 'deadline', inject: [{ action: 'wait-deadline', at: 'after-enter' }] });
     expect(slept[0] + typing).toBe(600_000 - 1_500);
+    // When the page was told the grant's own end time, the cases aim from that: measured live,
+    // the server's ceiling comes about 0.6 s before "the moment the driver saw it open, plus 10 minutes".
+    clock = 0; slept.length = 0;
+    const told = realTarget({ main: { page, expiresAt: 599_360 }, mainOpenedAt: 0, cal, password: 'a'.repeat(20), now: () => clock, sleep: async (ms: number) => { slept.push(ms); clock += ms; } });
+    await told.typePassword({ timing: 'deadline', inject: [{ action: 'wait-deadline', at: 'before-enter' }] });
+    expect(slept[0]).toBe(599_360 - 600);
   });
 
   it('the deadline-recovery case freezes the owning server too, or its sweep replaces the frozen guard', () => {

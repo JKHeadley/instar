@@ -160,6 +160,7 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
     const ctx = { sent: false, beforeEnterDue: undefined };
     const grant = await target.openGrant(c);
     evidence.grantOpenedAt = target.now();
+    evidence.grantExpiresAt = grant?.expiresAt ?? null; // the server's own end time for the grant, when the page was told it
     if (c.password) {
       const pace = target.calibration();
       if (pace) ctx.beforeEnterDue = target.now() + pace.reserveMs + pace.perCharMs * Math.max(0, pace.length - 2);

@@ -266,8 +266,14 @@ export class RealTarget {
     // The operator session this page is given. A request can only be revoked by the session that
     // opened it, so an out-of-band revoke has to use the page's session, not one of the driver's own.
     page.on('response', async r => {
-      if (!r.url().includes('/dashboard/unlock')) return;
-      try { v.session = (await r.json()).operatorSessionToken ?? v.session; } catch { /* not this page's unlock answer */ }
+      const url = r.url();
+      if (url.includes('/dashboard/unlock')) {
+        try { v.session = (await r.json()).operatorSessionToken ?? v.session; } catch { /* not this page's unlock answer */ }
+      } else if (url.includes('/desktop/')) {
+        // The server states when this grant ends. The deadline cases aim from that, because the
+        // moment the driver sees the grant open trails the server's start by about half a second.
+        try { const j = await r.json(); if (Number.isSafeInteger(j?.expiresAt)) v.expiresAt = j.expiresAt; } catch { /* not JSON */ }
+      }
     });
     await page.goto(`http://127.0.0.1:${agent.port}/dashboard/desktop.html`);
     await page.fill('#pin', agent.pin);
@@ -302,12 +308,13 @@ export class RealTarget {
     if (c.timing === 'deadline' && this.cal) {
       // Land Enter just after (before-enter case) or just before (after-enter case) the 10-minute ceiling.
       const opened = this.mainOpenedAt ?? this.now();
-      // "Deadline before Enter" needs the ceiling to fall while the password is being typed, so
-      // Enter may trail the ceiling by less than the typing takes. A fixed 1.5 s put the whole
-      // 0.7 s of typing after the ceiling on the Mini, when the page had already closed the box.
+      // The ceiling is the server's own expiry for this grant when the page was told it; the
+      // driver's view of "opened + 10 minutes" runs about 0.6 s late (measured over 33 duties).
+      // "Deadline before Enter": start 0.6 s ahead, so the duty exists before the ceiling and the
+      // 0.7 s of typing straddles it. "Deadline after Enter": finish typing 1.5 s ahead.
       const typingMs = this.cal.reserveMs + this.cal.perCharMs * this.password.length;
-      const enterAt = opened + 600_000 + (c.inject[0].at === 'before-enter' ? Math.min(1_500, typingMs / 2) : -1_500);
-      const startAt = enterAt - this.cal.reserveMs - this.cal.perCharMs * this.password.length;
+      const ceiling = this.main?.expiresAt ?? (opened + 600_000);
+      const startAt = ceiling - (c.inject[0].at === 'before-enter' ? 600 : 1_500 + typingMs);
       await this.sleep(Math.max(0, startAt - this.now()));
     }
     // Delayed-completion cases need an open duty with the Mac still locked: a refused password

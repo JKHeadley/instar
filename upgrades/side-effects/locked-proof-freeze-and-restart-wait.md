@@ -23,6 +23,7 @@ Thirteen faults found in the live run on the Mac Mini on 2026-11-05, once the vi
 - **Case 15.9 checks the clearing in the next grant.** New step `next-helper-clears-field`: opens a grant, waits up to 15 s for the store's `dirty` marker to clear, ends the grant and waits for its helper to go. `runCase` now records `then` steps in `fired`. This follows docs/specs/desktop-locked-screen.md, "Half-typed field": the marker "outlives the request" and "the next helper after a kill" clears it.
 - **Case 12.9 freezes the owning server.** `before: serve-under-launchd`, a `stop-server` step beside `stop-typist` and `stop-guard`, and the tmux-restoring cleanup. This is a reading of the spec's admission rule ("a marker past its deadline with a stale heartbeat stops blocking only after its guard and its recorded typist are SIGKILLed … and the marker moves to `relock-failed`"), which can only apply when nothing has replaced the guard. If the case was meant to cover something else, that needs its author.
 - **One more refusal is recognised.** `STATUS_REASONS` maps the page's "lock screen is not ready for a password" line to `shield-not-confirmed`.
+- **Deadline cases aim from the server's expiry.** `viewer()` keeps `expiresAt` from the page's `/desktop/` JSON responses; `typePassword` starts 0.6 s ahead of it for before-enter and finishes 1.5 s ahead for after-enter, falling back to the old estimate when no expiry was seen. `runCase` records `grantExpiresAt`.
 
 ## 1. Over-block
 
