@@ -1,0 +1,9 @@
+> Historical candidate: the final measurement branch retains the stronger upstream test that copies the real template population and manifest into a disposable directory. This earlier candidate's independent review remains in Git history; its duplicate release fragment was removed.
+
+# Keep a negative test out of the real source tree
+
+One test checks that a new Python template cannot escape the required declaration list. It first checks the real project, then deliberately creates an undeclared Python file and expects the checker to refuse it. Previously that temporary file was created inside the actual source tree. Cleanup then correctly met the protection against deleting source files, so the test failed and left the checkout dirty. This blocked full verification even though the checker itself was behaving correctly.
+
+The corrected test still checks the real project before and after its negative case. It copies the exact existing checker into a temporary directory, gives that directory a small declared and content-pinned Python sample, confirms the sample passes, and adds an undeclared sample there. The checker must refuse that undeclared file by name. Cleanup removes only the temporary directory through the existing safe filesystem helper.
+
+No production checker, safety rule, declaration ceiling or accepted source population changes. The real source tree is never used as scratch space. A failing assertion still triggers cleanup, and a prior file in the actual checkout is never overwritten or removed by this test. This is a test-isolation correction needed to finish the current measurement work's verification; it is not proof that the entire suite or deployment is complete.

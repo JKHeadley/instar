@@ -1187,6 +1187,26 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .hero-link { all: unset; cursor: pointer; color: inherit; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 0.15em; }
 .hero-link:focus-visible { outline: 2px solid currentColor; outline-offset: 4px; border-radius: 4px; }
 
+/* Independent coverage, shared by standalone and console. */
+.mb-coverage { max-width: 880px; margin: 0 0 var(--s-5); padding: 16px; border: 1px solid var(--hairline); border-radius: 12px; overflow-wrap: anywhere; }
+.mb-coverage h2 { margin: 0 0 8px; font-size: 20px; }
+.mb-coverage progress { width: 100%; height: 12px; }
+.mb-coverage details { margin-top: 10px; }
+.mb-coverage summary { cursor: pointer; padding: 6px 0; }
+.mb-coverage-row { border-top: 1px solid var(--hairline); margin-top: 10px; padding-top: 10px; }
+.mb-coverage-row p { margin: 4px 0; }
+
+.mb-measurement-detail { padding-top: 12px; }
+.mb-measurement-metric { border-top: 1px solid var(--hairline); margin-top: 16px; padding-top: 12px; }
+.mb-measurement-metric h4 { margin: 0; font-size: 17px; }
+.mb-measurement-chart { margin: 12px 0; width: 100%; }
+.mb-measurement-chart svg { display: block; width: 100%; max-width: 600px; height: auto; }
+.mb-measurement-chart figcaption { color: var(--text-muted); font-size: 13px; }
+
+.mb-measurement-detail h3 { margin: 0 0 8px; font-size: 18px; }
+.mb-measurement-detail p { margin: 8px 0; }
+.mb-measurement-detail nav { display: flex; flex-direction: column; align-items: flex-start; }
+.mb-measurement-detail nav button { text-align: left; white-space: normal; }
 /* Quick actions on a health problem: wraps on a phone, every target 44px high. */
 .health-choices { margin-top: var(--s-2); padding-top: var(--s-2); border-top: 1px solid var(--hairline); display: flex; flex-direction: column; gap: var(--s-1); }
 .health-choice-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1); }
