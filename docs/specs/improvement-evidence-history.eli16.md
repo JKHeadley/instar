@@ -9,3 +9,5 @@ The stored history is unchanged. The shared view has a measured byte budget beca
 This is a reversible read change: it creates no database, scheduler, promotion rule or blocking authority. A revert restores the old view without rewriting history. The independent review checks both books for matching duties and the local/pool reads for honest counts, timestamps and omissions. This patch alone does not complete baseline contracts, independent universal coverage or the deployed visual verification required by the wider effort.
 
 The constitutional review also records which family of existing rules was checked after the wording changed. That record preserves the previous enforcement floor and says plainly that the new universal obligations are unfinished. An independent semantic review does not substitute for the separate operator approval needed to publish a constitutional change.
+
+The independent audit review has an explicit named review record. It confirms the recorded review, not approval of the constitutional change. The constitutional change still requires the independent operator review and successful verification before it can ship.

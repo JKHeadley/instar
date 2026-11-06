@@ -53,7 +53,9 @@ Proxied-on-read through the existing /blocker-lifecycle?scope=pool envelope. Eac
 
 Code revert restores the old projection. No data migration or repair; all history stays with the same ledger. The separately saved job body has a recorded before-image and manifest-version concurrency check.
 
-## Independent review
+## Second-pass review
+
+**Reviewer:** /root/review_history — independent native Codex same-family reviewer.
 
 Initial review found peer projection stripped new metadata and structural compatibility could overclaim cadence continuity. Both repaired. Live payload sizing then exposed the existing peer byte ceiling; projection is now explicitly bounded rather than increasing that ceiling. Review of paired wording found and repaired loss of the original universal per-feature metrics duty in Rule 39. Final allocation review concurred: the full empty envelope is counted, per-point comma cost is conservative, omission digits can only shrink, and false-to-true series flags shrink. Independent review also confirmed the restored universal metrics duty matches both books. Focused unit checks: 16 passing. Pool integration checks: 13 passing, including older peers, exact times, invalid metadata, and byte-budget validation.
 
@@ -64,3 +66,7 @@ Use the existing ledger, summary/trend service and pooled read; extend the exist
 ## 2026-11-06 Building audit supplement
 
 The only additional change is the content-bound Building-family audit record required by the constitutional edit. Independent same-family Codex review accepted exact candidate digest545426ef273d92449be8cc2189adfb077959bd17a3221ae75e16e0e190d640ff,43unchanged article identities and substantive alignment with pairedRule39. Floor34/40 is preserved with no rebaseline. Actual recorder reports audit-current=true. Protected-base/reference resolution did not certify a fresh enforcement ratio; the report explicitly states that limit. The separate direction approval remains unsatisfied: this audit is not operator ratification. No runtime, control, notification, migration or rollback-cost change. Existing over/under-block, multi-machine and operator-surface assessments remain applicable. Revert restores the old audit fact and its truthful stale state; it cannot authorize a constitutional merge.
+
+## Review-record format correction
+
+The verifier requires the named reviewer inside a Second-pass review section. The existing top-level reviewer label and independent-review prose did not meet that structural contract. This update binds a fresh trace to the unchanged, previously reviewed audit record and this artifact. It adds no review result, operator approval, new audit ratio or runtime behavior; the exact digest and independent review described above remain the evidence. Full verification still fails the known lint-blocking-decisions cleanup test until its existing repair is delivered.
