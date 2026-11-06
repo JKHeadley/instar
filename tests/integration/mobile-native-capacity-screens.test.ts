@@ -127,6 +127,18 @@ describe('owner phone: served, trimmed', () => {
     for (const leak of LEAKS) expect(text, leak).not.toContain(leak);
   });
 
+  it('GET /mobile/accounts does not count an unconfirmed sign-in, and survives an unreadable blocker list', async () => {
+    const quiet = await signedGet(setup({ reloginBlockers: async () => [{ accountId: 'adriana-pro', machineId: 'm_peer', reason: 'no-open-incident' }] }), '/mobile/accounts');
+    expect(quiet.status).toBe(200);
+    expect(quiet.body.needsSignIn).toBe(0);
+    expect(quiet.body.headline).not.toContain('signing in');
+    const adriana = quiet.body.accounts.find((a: { name: string }) => a.name === 'Adriana Pro');
+    expect(adriana.machines[0]).toMatchObject({ state: 'unknown', label: 'sign-in not confirmed; still checking' });
+    const down = await signedGet(setup({ reloginBlockers: async () => { throw new Error('unreachable'); } }), '/mobile/accounts');
+    expect(down.status).toBe(200);
+    expect(down.body.needsSignIn).toBe(1);
+  });
+
   it('GET /mobile/spend gives recorded cost with its basis, limits without the credential reference, token totals', async () => {
     const c = setup();
     const r = await signedGet(c, '/mobile/spend?window=today');

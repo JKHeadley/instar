@@ -89,6 +89,7 @@ export function ownerOrBearer(req: Request, bearerOk: (req: Request) => boolean)
 // ── accounts ──────────────────────────────────────────────────────────────────
 
 const NEEDS_SIGN_IN = new Set(['needs-reauth', 'signed-out', 'expired', 'broken']);
+const WRONG_LOGIN_SETTLE_MS = 24 * 60 * 60 * 1000;
 const KIND_WORDS: Record<string, string> = { 'claude-code': 'Claude', 'codex-cli': 'Codex', 'gemini-cli': 'Gemini', 'grok-build': 'Grok', 'pi-cli': 'Pi' };
 export function kindWord(framework: unknown): string { return (typeof framework === 'string' && KIND_WORDS[framework]) || 'Other'; }
 
@@ -114,9 +115,25 @@ export interface MobileAccount {
  * running an automatic sign-in repair for the row (only known for this machine's own rows). A login
  * check that found the login signed out reads as needing sign-in even while the status says active.
  */
-export function accountCellState(row: Rec, repairing = false): { state: MobileAccountMachine['state']; label: string } {
+export function accountCellState(row: Rec, repairing = false, blockerReason: string | null = null, nowMs = Date.now()): { state: MobileAccountMachine['state']; label: string } {
   const status = str(row.status);
   if (repairing) return { state: 'working', label: 'signing in now' };
+  // A slot proven to hold another account's login. Same rule as the console's accounts-model.js:
+  // a fresh mismatch may correct itself; after a day it needs a new sign-in. The other account's
+  // address stays off the phone.
+  if (row.identityDrifted === true) {
+    const drift = rec(row.identityDrift);
+    if (drift.actualAccountId === 'missing-local-login' || drift.repairState === 'owner-relogin-required') return { state: 'attn', label: 'needs sign-in' };
+    const at = Date.parse(String(drift.detectedAt ?? ''));
+    if (drift.repairState === 'repairing' || (Number.isFinite(at) && nowMs - at < WRONG_LOGIN_SETTLE_MS)) {
+      return { state: 'unknown', label: "holds another account's login; checking if it corrects itself" };
+    }
+    return { state: 'attn', label: "holds another account's login" };
+  }
+  // A repair blocker with no operator-only step is shown, not counted: `unknown` keeps the app's state list.
+  if (status && NEEDS_SIGN_IN.has(status) && blockerReason && blockerReason !== 'device-limit-benched') {
+    return { state: 'unknown', label: blockerReason === 'no-open-incident' ? 'sign-in not confirmed; still checking' : "automatic repair can't start yet" };
+  }
   if (status && NEEDS_SIGN_IN.has(status)) return { state: 'attn', label: 'needs sign-in' };
   if (status === 'active' && row.loginCheck === 'signed-out') return { state: 'attn', label: 'login check failed' };
   if (status === 'active' && row.loginCheck === 'ok') return { state: 'ok', label: 'signed in' };
@@ -156,6 +173,8 @@ export interface AccountsOptions {
   nicknameOf?: (machineId: string) => string | null;
   /** This machine's own repair episodes (accountId + state); remote rows are never matched. */
   localRepairs?: Array<{ accountId: string; state: string }>;
+  /** Repair blockers across machines; a machine with no row here keeps its pool status. */
+  blockers?: Array<{ accountId: string; machineId: string; reason: string }>;
   /** Registered machines the pool does not count as online (not asked): their ids. */
   offlineMachineIds?: string[];
 }
@@ -205,7 +224,7 @@ export function summarizeAccounts(
     groups.set(id, g);
   }
   const accounts = [...groups.values()].map((g): MobileAccount & { _pct: number } => {
-    const machines = g.cells.map((c) => ({ name: c.machine, isSelf: c.isSelf, ...accountCellState(c.row, c.isSelf && repairing.has(g.id)) }));
+    const machines = g.cells.map((c) => ({ name: c.machine, isSelf: c.isSelf, ...accountCellState(c.row, c.isSelf && repairing.has(g.id), (opts.blockers ?? []).find((b) => b.accountId === g.id && b.machineId === String(c.row.machineId ?? ''))?.reason ?? null, opts.now) }));
     const windows = usageWindows(g.reading);
     const top = windows[0] ?? null;
     const signIn: MobileAccount['signIn'] = machines.some((m) => m.state === 'attn') ? 'needs-sign-in'
@@ -589,6 +608,8 @@ export interface MobileCapacityDeps {
   offlineMachineIds?: () => string[];
   /** This machine's sign-in repair episodes (`/subscription-relogin`, local store). */
   localRepairs: () => Array<{ accountId: string; state: string }>;
+  /** Repair blockers across machines; unavailable means cells keep their pool status. */
+  reloginBlockers?: () => Promise<Array<{ accountId: string; machineId: string; reason: string }>>;
   /** This machine's `/routing-spend/summary?grain=day&sinceHours=N` and `/tokens/summary?since=` reads. */
   spendSummary: (sinceHours: number) => SpendPart;
   tokens: (sinceMs: number) => SpendPart;
@@ -664,11 +685,11 @@ export function mountMobileCapacityRoutes(router: Router, deps: MobileCapacityDe
     if (!guard(req, res)) return;
     try {
       const body = await cached('accounts', async () => {
-        const [payload, inUse] = await Promise.all([deps.accountsView(), deps.inUseAccountId().catch(() => null)]);
+        const [payload, inUse, blockers] = await Promise.all([deps.accountsView(), deps.inUseAccountId().catch(() => null), deps.reloginBlockers?.().catch(() => []) ?? Promise.resolve([])]);
         let repairs: Array<{ accountId: string; state: string }> = [];
         try { repairs = deps.localRepairs(); } catch { /* @silent-fallback-ok — no repair evidence: cells show their pool status */ }
         // generatedAt is stamped when the answer is built, so a cached answer keeps its own time.
-        return { ...head(), ...summarizeAccounts(payload, { inUseAccountId: inUse, now: now(), nicknameOf: deps.nicknameOf, localRepairs: repairs, offlineMachineIds: deps.offlineMachineIds?.() ?? [] }) } as unknown as Rec;
+        return { ...head(), ...summarizeAccounts(payload, { inUseAccountId: inUse, now: now(), nicknameOf: deps.nicknameOf, localRepairs: repairs, blockers, offlineMachineIds: deps.offlineMachineIds?.() ?? [] }) } as unknown as Rec;
       });
       res.json(body);
     } catch (err) {

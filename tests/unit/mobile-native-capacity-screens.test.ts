@@ -48,6 +48,19 @@ describe('accounts', () => {
     expect(kindWord('who-knows')).toBe('Other');
   });
 
+  it('a wrong login is attention; an unconfirmed or blocked sign-in is shown but not counted', () => {
+    const stuck = accountCellState({ status: 'active', identityDrifted: true, identityDrift: { actualAccountId: 'e', actualEmail: 'echo@x.io', repairState: 'planned', detectedAt: at(-60 * 24 * 10) } }, false, null, NOW);
+    expect(stuck).toEqual({ state: 'attn', label: "holds another account's login" });
+    expect(accountCellState({ status: 'active', identityDrifted: true, identityDrift: { actualAccountId: 'e', repairState: 'planned', detectedAt: at(-30) } }, false, null, NOW).state).toBe('unknown');
+    expect(accountCellState({ status: 'active', identityDrifted: true, identityDrift: { actualAccountId: 'missing-local-login' } }, false, null, NOW)).toEqual({ state: 'attn', label: 'needs sign-in' });
+    expect(accountCellState({ status: 'needs-reauth' }, false, 'no-open-incident').state).toBe('unknown');
+    expect(accountCellState({ status: 'needs-reauth' }, false, 'profile-unresolved').label).toBe("automatic repair can't start yet");
+    expect(accountCellState({ status: 'needs-reauth' }, false, 'device-limit-benched').state).toBe('attn');
+    const r = summarizeAccounts(pool([row({ status: 'needs-reauth' })]), { now: NOW, blockers: [{ accountId: String(row({}).id), machineId: String(row({}).machineId), reason: 'no-open-incident' }] });
+    expect(r.needsSignIn).toBe(0);
+    expect(r.headline).not.toContain('signing in');
+  });
+
   it('one account across machines: freshest reading wins, a future-dated reading never does', () => {
     const r = summarizeAccounts(pool([
       row({ lastQuota: { fiveHour: { utilizationPct: 40, resetsAt: at(100) }, measuredAt: at(-30) } }),
