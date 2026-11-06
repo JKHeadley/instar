@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "skill-learning-sentinel-slice0",
+  "sessionId": "f1d7515b-8a10-4206-94b6-7c0f689d2d22",
+  "timestamp": "2026-11-06T23:29:19.426Z",
+  "artifactPath": "upgrades/side-effects/skill-learning-sentinel-slice0.md",
+  "artifactSha256": "80dd970e6da8e12657ceaa1d74a5dd7f6026507b6d558d8155747d0a151d5dca",
+  "specPath": "docs/specs/skill-learning-sentinel.md",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/skillCanonicalFrontmatter.ts",
+    "src/monitoring/LearnedSkillReconciler.ts",
+    "upgrades/side-effects/skill-learning-sentinel-slice0.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to the slice-0 PR: the no-silent-fallbacks ratchet flagged 11 new catch blocks; each is a designed fail-safe and now carries an in-window @silent-fallback-ok with its reason; no behaviour change",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -2306,7 +2306,7 @@ export function stampSkillRendering(raw: string, hash: string): string | null {
 function readUtf8OrNull(p: string): string | null {
   try {
     return fs.readFileSync(p, 'utf-8');
-  } catch {
+  } catch { // @silent-fallback-ok — "absent or unreadable" is the normal answer this probe exists to give; the caller logs canonical-backfill-unparseable / skips, never writes on a guess
     return null;
   }
 }

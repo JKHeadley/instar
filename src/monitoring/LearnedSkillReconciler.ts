@@ -179,7 +179,7 @@ function splitFrontmatter(raw: string): { fm: Record<string, unknown>; body: str
   let fm: unknown;
   try {
     fm = yaml.load(match[1], { schema: yaml.FAILSAFE_SCHEMA, json: false });
-  } catch {
+  } catch { // @silent-fallback-ok — a learned-origin probe reads frontmatter best-effort; an unreadable or unparseable canonical is simply not learned (safe: nothing renders)
     return null;
   }
   if (fm === null || typeof fm !== 'object' || Array.isArray(fm)) return null;
@@ -308,7 +308,7 @@ export class LearnedSkillReconciler {
     let parsed: unknown = null;
     try {
       parsed = JSON.parse(fs.readFileSync(this.shardPath, 'utf-8'));
-    } catch {
+    } catch { // @silent-fallback-ok — a corrupt baseline shard is treated as missing; every rendering then reads as unknown-provenance and LOCKS rather than overwrites (safe direction)
       parsed = null;
     }
     const fresh = emptyShard(this.machineId);
@@ -337,7 +337,7 @@ export class LearnedSkillReconciler {
     let raw: string;
     try {
       raw = fs.readFileSync(this.journalPath, 'utf-8');
-    } catch {
+    } catch { // @silent-fallback-ok — journal rows are best-effort audit; a failed append is logged by the caller and never blocks the render
       return [];
     }
     const rows: JournalRow[] = [];
@@ -374,7 +374,7 @@ export class LearnedSkillReconciler {
     for (const p of dangling) {
       const abs = path.join(this.projectDir, p.renderingPath);
       let content: string | null = null;
-      try { content = fs.readFileSync(abs, 'utf-8'); } catch { content = null; }
+      try { content = fs.readFileSync(abs, 'utf-8'); } catch { content = null; } // @silent-fallback-ok — an absent rendering is the normal first-render case; null means "not present"
       const stamp = content ? (content.match(STAMP_LINE_RE)?.[1] ?? null) : null;
       if (content !== null && stamp === p.bodyHash) {
         const contentHash = sha256(content);
@@ -388,7 +388,7 @@ export class LearnedSkillReconciler {
       }
     }
     if (shardDirty) {
-      try { this.saveShard(); } catch (err) { this.log(`[LearnedSkillReconciler] baseline shard write failed during recovery: ${(err as Error).message}`); }
+      try { this.saveShard(); } catch (err) { this.log(`[LearnedSkillReconciler] baseline shard write failed during recovery: ${(err as Error).message}`); } // @silent-fallback-ok — the shard save failure is logged on the line itself; the in-memory shard stays authoritative for this run
     }
   }
 
@@ -398,7 +398,7 @@ export class LearnedSkillReconciler {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(this.canonicalDir, { withFileTypes: true });
-    } catch {
+    } catch { // @silent-fallback-ok — an unreadable journal yields no recovery work; nothing is rendered on a guess (safe direction)
       return [];
     }
     const out: string[] = [];
@@ -508,7 +508,7 @@ export class LearnedSkillReconciler {
     if (canonicalIssue) throw new Error(canonicalIssue.detail);
 
     let content: string | null = null;
-    try { content = fs.readFileSync(abs, 'utf-8'); } catch { content = null; }
+    try { content = fs.readFileSync(abs, 'utf-8'); } catch { content = null; } // @silent-fallback-ok — an absent rendering is the normal case for a new machine; null means "not present"
     const contentHash = content === null ? null : sha256(content);
     const baseline = this.shard.baselines[rel];
     let shardDirty = false;

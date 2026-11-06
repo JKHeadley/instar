@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-06T23:31:13.493Z",
+  "slug": "skill-learning-sentinel-slice0",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 22,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/skillCanonicalFrontmatter.ts",
+      "src/monitoring/LearnedSkillReconciler.ts"
+    ],
+    "addedLines": 11,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "unchanged from the slice-0 commit: learned-skill-reconciler registered in the self-action registry; this follow-up adds comments only"
+    }
+  },
+  "verdict": "pass"
+}
