@@ -23,6 +23,7 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { presenceEnrollMessage } from '../../src/server/mobileConsoleTicket.js';
 import { permissionPresenceMessage, actionLine, buildAction } from '../../src/server/mobilePermissionsRoutes.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
+import { DOOR } from '../../src/server/mobileSessionControlsRoutes.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { allowTestIdentities } from '../helpers/allow-test-identities.js';
 
@@ -131,6 +132,8 @@ describe('session controls — production wiring', () => {
     expect(controls.body.actions).toEqual({ state: 'available', reason: null, presenceKey: true });
     expect(controls.body.session).toMatchObject({ tmuxSession: 'throwaway-session', id: 'throwaway-session-id', kind: 'a conversation', chat: 'none (terminal only)' });
     expect(controls.body.door.state).toBe('not-this-chat');
+    // The word for a door comes from the one constant, through the production route.
+    expect(controls.body.door.reason).toBe(`${DOOR.Word} and machine can be changed for Telegram conversations. This session has no Telegram topic.`);
     expect(controls.body.typing).toEqual({ can: true, reason: null });
     expect((await signed('GET', '/mobile/sessions/controls?name=not-there')).status).toBe(404);
     expect((await signed('GET', '/mobile/sessions/new-options')).status).toBe(200);

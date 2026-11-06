@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { actionLine, buildAction, type PermissionAction, type SessionAction } from '../../src/server/mobilePermissionsRoutes.js';
 import {
   closeAnswer, createBody, doorRows, machineRows, modelOptionWords, modelWords, moveAnswer, newSessionAnswer, regimeWords, runSessionAction,
-  summarizeControls, summarizeNewOptions, type RouteAnswer,
+  summarizeControls, summarizeNewOptions, type RouteAnswer, DOOR,
 } from '../../src/server/mobileSessionControlsRoutes.js';
 import { DEVICE_ALLOWLIST } from '../../src/server/mobilePairingRoutes.js';
 import { AttachmentWindow, DEVICE_KEYS, peerTooOldReason, redactDeep } from '../../src/server/mobileSessionTerminalRoutes.js';
@@ -351,5 +351,16 @@ describe('running an action', () => {
     calls.length = 0;
     await runSessionAction({ kind: 'session-default', target: 'new-topic-default', framework: null, model: null }, deps({ 'POST /topic-profile/new-topic-default': ok({ ok: true }) }));
     expect(calls[0]!.body).toEqual({ clear: true });
+  });
+});
+
+describe('the word for a door', () => {
+  it('lives in one place: every phone sentence reads the constant, so a rename is one edit', async () => {
+    expect(DOOR).toEqual({ word: 'door', Word: 'Door', words: 'doors' });
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../../src/server/mobileSessionControlsRoutes.ts', import.meta.url), 'utf8');
+    // Sentences (string literals with a space) that spell the word out themselves.
+    const spelled = [...src.matchAll(/(['"`])((?:(?!\1)[^\n\\])*)\1/g)].map((m) => m[2].replace(/\$\{[^}]*(\}|$)/g, '')).filter((t) => / /.test(t) && /\b[Dd]oors?\b/.test(t) && !/^\s*[*/]/.test(t));
+    expect(spelled).toEqual([]);
   });
 });

@@ -464,3 +464,76 @@ describe('sessions in a DOM', () => {
     expect(doc.querySelector('.stale-banner')!.textContent).toBe('Live updates paused, reconnecting.');
   });
 });
+
+describe('Session settings (Justin, 2026-11-05: a clear button for the defaults)', () => {
+  let dom: JSDOM;
+  afterEach(() => dom?.window.close());
+
+  it('the word for a door lives in one place, and every label reads it', async () => {
+    const { DOOR } = await import('../../dashboard/console/sessions-model.js');
+    expect(DOOR).toEqual({ word: 'door', Word: 'Door', words: 'doors' });
+    expect(regimeWords({ regime: 'dry-run' })).toContain(`the ${DOOR.word} still switches`);
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../../dashboard/console/sessions.js', import.meta.url), 'utf8');
+    // No text a person reads spells the word out on its own: a rename is one edit. (Attribute names
+    // such as data-door and code between two string literals are not text a person reads.)
+    const shown = [...src.matchAll(/text: (['`])([^'`\n]*)\1|aria-label': (['`])([^'`\n]*)\3|field\((['`])([^'`\n]*)\5/g)].map((m) => m[2] ?? m[4] ?? m[6]);
+    expect(shown.length).toBeGreaterThan(20);
+    expect(shown.filter((t) => /\b[Dd]oors?\b/.test(t))).toEqual([]);
+  });
+
+  it('opens just the defaults from the Sessions page, and saves them with no PIN', async () => {
+    const writes: Array<{ url: string; body: unknown; headers: Record<string, string> }> = [];
+    dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/work/sessions' });
+    const g = globalThis as Record<string, unknown>;
+    Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, requestAnimationFrame: (f: () => void) => setTimeout(f, 0) });
+    dom.window.localStorage.setItem('instar_token', 't');
+    g.WebSocket = class { readyState = 0; constructor() { /* never opens */ } send() {} close() {} };
+    let def: { framework: string | null; model: string | null } = { framework: 'claude-code', model: 'claude-opus-5-5' };
+    const options = () => ({ regime: 'live', doors: [
+      { framework: 'claude-code', label: 'Claude Code', selectable: true, models: ['claude-opus-5-5'], defaultModel: null },
+      { framework: 'codex', label: 'Codex', selectable: true, models: ['gpt-6-astra'], defaultModel: 'gpt-6-astra' },
+    ], newTopicDefault: { ...def, replication: 'local-only' } });
+    g.fetch = async (url: string, opts?: { method?: string; body?: string; headers?: Record<string, string> }) => {
+      if (opts && opts.method === 'POST') {
+        const body = JSON.parse(opts.body || '{}');
+        writes.push({ url, body, headers: opts.headers || {} });
+        def = body.clear ? { framework: null, model: null } : { framework: body.framework, model: body.model };
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }
+      const table: Record<string, unknown> = {
+        '/sessions?scope=pool': { sessions: [sess()], pool: { enabled: false, selfMachineId: 'm-studio', selfMachineNickname: 'Mac Studio', machines: [], failed: [], duplicateTopics: [] } },
+        '/sessions': [sess()],
+        '/topic-profile/options': options(),
+        '/health': { project: { name: 'echo' } },
+      };
+      const body = table[url];
+      return { ok: body !== undefined, status: body !== undefined ? 200 : 404, json: async () => body ?? { error: 'no such route in the test' } };
+    };
+    const flush = async (n = 25) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 20)); };
+    vi.resetModules();
+    await import('../../dashboard/console/console.js');
+    await flush();
+    const doc = dom.window.document;
+    const button = doc.querySelector('button[data-settings]') as HTMLButtonElement;
+    expect(button.textContent).toBe('Session settings');
+    button.click();
+    await flush(10);
+    expect(doc.querySelector('.sheet .sheet-title')!.textContent).toBe('Session settings');
+    const door = doc.querySelector('.sheet select[aria-label="Default door"]') as HTMLSelectElement;
+    const model = doc.querySelector('.sheet select[aria-label="Default model"]') as HTMLSelectElement;
+    expect(door.value).toBe('claude-code');
+    expect(model.value).toBe('claude-opus-5-5');
+    door.value = 'codex';
+    door.dispatchEvent(new dom.window.Event('change'));
+    (doc.querySelector('.sheet button[data-default-save]') as HTMLButtonElement).click();
+    await flush(10);
+    expect(writes).toEqual([{ url: '/topic-profile/new-topic-default', body: { framework: 'codex', model: 'gpt-6-astra' }, headers: expect.objectContaining({ 'X-Instar-Request': '1' }) }]);
+    expect(doc.querySelector('.sheet .action-status')!.textContent).toBe('Saved: Codex · GPT-6 Astra.');
+    (doc.querySelector('.sheet button[data-default-clear]') as HTMLButtonElement).click();
+    await flush(10);
+    expect(writes[1]).toMatchObject({ body: { clear: true } });
+    expect(doc.querySelector('.sheet .action-status')!.textContent).toBe('Cleared. Topics created here start on the agent defaults.');
+    expect(doc.querySelector('.pin-input')).toBeNull();
+  });
+});

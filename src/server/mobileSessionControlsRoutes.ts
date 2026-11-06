@@ -26,6 +26,11 @@ export const ATTACH_MAX_BYTES = 8 * 1024 * 1024;
 export const HISTORY_MAX_ENTRIES = 100;
 export const HISTORY_ENTRY_MAX_CHARS = 8000;
 export const OPEN_CONSOLE = 'To change this, open the console.';
+/**
+ * What a person reads for a door (the AI tool a session runs on). One place, mirroring the console's
+ * sessions-model.js DOOR, so the word can change without touching the API, which keeps `framework`.
+ */
+export const DOOR = { word: 'door', Word: 'Door', words: 'doors' } as const;
 
 type Rec = Record<string, unknown>;
 const rec = (v: unknown): Rec => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Rec) : {});
@@ -68,8 +73,8 @@ export function modelOptionWords(id: string): string {
 }
 
 export function regimeWords(regime: unknown): string | null {
-  if (regime === 'dry-run') return 'On this agent a chosen model is recorded as intent, not applied; the door still switches.';
-  if (regime === 'disabled') return 'On this agent the door switch works, but model choice is turned off; a model will be refused.';
+  if (regime === 'dry-run') return `On this agent a chosen model is recorded as intent, not applied; the ${DOOR.word} still switches.`;
+  if (regime === 'disabled') return `On this agent the ${DOOR.word} switch works, but model choice is turned off; a model will be refused.`;
   return null;
 }
 
@@ -149,9 +154,9 @@ function chatWords(row: Rec): string {
   return 'none (terminal only)';
 }
 
-const NOT_A_TOPIC = 'Door and machine can be changed for Telegram conversations. This session has no Telegram topic.';
+const NOT_A_TOPIC = `${DOOR.Word} and machine can be changed for Telegram conversations. This session has no Telegram topic.`;
 const ONE_MACHINE = 'This agent runs on one machine, so there is nowhere to move it.';
-const CANT_READ_DOORS = "Can't read the doors and models right now.";
+const CANT_READ_DOORS = `Can't read the ${DOOR.words} and models right now.`;
 const CANT_READ_MACHINES = "Can't read the machines right now.";
 
 // ── reads ──────────────────────────────────────────────────────────────────────
@@ -243,7 +248,7 @@ export function summarizeNewOptions(options: RouteAnswer, pool: RouteAnswer, act
     generatedAt: new Date(now).toISOString(),
     actions,
     doorsState: options.status === 200 ? 'ok' : 'unavailable',
-    doorsReason: options.status === 200 ? null : "Can't list the doors right now. The session starts on the agent default.",
+    doorsReason: options.status === 200 ? null : `Can't list the ${DOOR.words} right now. The session starts on the agent default.`,
     doors,
     note: regimeWords(o.regime),
     defaultFramework: str(def.framework),
@@ -342,14 +347,14 @@ export async function runSessionAction(a: SessionAction, deps: Pick<MobileSessio
     case 'session-door': {
       const machine = elsewhere(a.machine) ? a.machine : null;
       const options = await deps.call('GET', '/topic-profile/options', undefined, machine);
-      if (options.status !== 200) return fail(options.status === 503 ? 503 : 502, 'doors-unavailable', "Not switched: can't read the doors and models right now. Try again in a moment.");
+      if (options.status !== 200) return fail(options.status === 503 ? 503 : 502, 'doors-unavailable', `Not switched: can't read the ${DOOR.words} and models right now. Try again in a moment.`);
       const door = doorRows(options.body).find((d) => d.framework === a.framework);
-      if (!door || !door.selectable) return fail(409, 'door-not-offered', `Not switched: ${door ? `${door.label} can't be used here (${door.reason ?? 'unavailable'})` : "that door isn't offered here"}.`);
+      if (!door || !door.selectable) return fail(409, 'door-not-offered', `Not switched: ${door ? `${door.label} can't be used here (${door.reason ?? 'unavailable'})` : `that ${DOOR.word} isn't offered here`}.`);
       if (a.model !== null && !door.models.some((m) => m.id === a.model)) return fail(409, 'model-not-offered', `Not switched: that model isn't offered on ${door.label}.`);
       const r = await deps.call('POST', `/topic-profile/${encodeURIComponent(a.target)}`, { framework: a.framework, model: a.model }, machine);
       const b = rec(r.body);
       if (r.status >= 200 && r.status < 300 && b.ok === true) {
-        return { status: 200, body: { ok: true, noop: b.noop === true, message: str(b.message) ?? (b.noop === true ? 'It is already on that.' : 'Switching. The session restarts on the new door.') } };
+        return { status: 200, body: { ok: true, noop: b.noop === true, message: str(b.message) ?? (b.noop === true ? 'It is already on that.' : `Switching. The session restarts on the new ${DOOR.word}.`) } };
       }
       // The route's own refusal, in its own words (only a bound operator may, cooling down, and so on).
       return fail(r.status || 502, 'door-refused', str(b.message) ?? str(b.error) ?? `Not switched: ${couldNotReach(r.status)}. Try again in a moment.`);
