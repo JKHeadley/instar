@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "measurement-evidence-floor-design",
+  "sessionId": "30384209-0957-44f8-9037-d33d452ffbc6",
+  "timestamp": "2026-11-06T05:42:48.385Z",
+  "artifactPath": "upgrades/side-effects/measurement-evidence-floor-design.md",
+  "artifactSha256": "9964b72f85177e6eccccd6fe6cd810ae89142dbc17027668ec820d98b1e5f823",
+  "coveredFiles": [
+    "docs/specs/measurement-evidence-floor.eli16.md",
+    "docs/specs/measurement-evidence-floor.md",
+    "docs/specs/reports/measurement-evidence-floor-convergence.md",
+    "docs/specs/reports/measurement-evidence-floor-round1.md",
+    "upgrades/side-effects/measurement-evidence-floor-design.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Publication of the reviewed Tier2 proposal only; documentation has no runtime authority. No approved tag, source, deployment or control behavior change.",
+  "eli16Path": "docs/specs/measurement-evidence-floor.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/measurement-evidence-floor-design.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
