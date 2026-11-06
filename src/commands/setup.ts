@@ -2015,6 +2015,12 @@ export function describeLingerOutcome(outcome: LingerOutcome, user: string): str
  * Linux the same behavior. Existing units get it from PostUpdateMigrator.
  */
 export const SYSTEMD_KILL_MODE_LINE = 'KillMode=process';
+/**
+ * Tells the lifeline systemd will start it again. The unit runs the bash boot wrapper, so the
+ * lifeline's parent is bash and the parent-name check cannot see systemd; the macOS plist sets
+ * the same variable for the same reason. Without it the watchdog's self-restart never runs.
+ */
+export const SYSTEMD_SUPERVISED_ENV_LINE = 'Environment=INSTAR_SUPERVISED=1';
 
 /**
  * PATH entries that only make sense while `npx` runs: its cache, which npm may clear at any
@@ -2067,6 +2073,7 @@ WorkingDirectory=${opts.projectDir}
 Restart=always
 RestartSec=10
 Environment=PATH=${withoutNpxCache(opts.envPath) || '/usr/local/bin:/usr/bin:/bin'}
+${SYSTEMD_SUPERVISED_ENV_LINE}
 
 [Install]
 WantedBy=default.target
