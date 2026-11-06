@@ -195,7 +195,7 @@ describe('the menu', () => {
   });
   it('a failed read says it cannot read, never that there are none', () => {
     const c = summarizeControls(parts({ options: { status: 503, body: null }, pool: { status: 0, body: null } }), {}, 0);
-    expect(c.door).toMatchObject({ state: 'unavailable', reason: "Can't read the doors and models right now." });
+    expect(c.door).toMatchObject({ state: 'unavailable', reason: "Can't read the engines and models right now." });
     expect(c.move).toMatchObject({ state: 'unavailable', reason: "Can't read the machines right now." });
   });
   it('one machine has nowhere to move to', () => {
@@ -356,7 +356,7 @@ describe('running an action', () => {
 
 describe('the word for a door', () => {
   it('lives in one place: every phone sentence reads the constant, so a rename is one edit', async () => {
-    expect(DOOR).toEqual({ word: 'door', Word: 'Door', words: 'doors' });
+    expect(DOOR).toEqual({ word: 'engine', Word: 'Engine', words: 'engines' });
     const fs = await import('node:fs');
     const src = fs.readFileSync(new URL('../../src/server/mobileSessionControlsRoutes.ts', import.meta.url), 'utf8');
     // Sentences (string literals with a space) that spell the word out themselves.

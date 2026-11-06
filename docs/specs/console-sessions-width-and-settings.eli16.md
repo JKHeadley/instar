@@ -6,6 +6,6 @@ This change fixes both. On a desktop, the Sessions page now uses the width of th
 
 Next to "+ New session" there is now a "Session settings" button. It opens just the defaults: the default door and the default model that new sessions start on, with Save and Clear. It runs the same route the old link used, with the same rules, so nothing new is allowed. The New session form still has the defaults for anyone who looks there. The iPhone app gets the same button on its sessions list, a gear next to the "+", and its New session sheet now points to it instead of repeating the form.
 
-Justin also asked whether "door" should be renamed, and the coordinator suggested "Engine". He hasn't confirmed a word yet, so the word does not change here. Instead, each place a person reads the word now takes it from one constant, one each in the console, the server's phone answers and the app. When he picks a word, the rename is a one-line change on each side. Tests fail if a new sentence spells the word out instead of using the constant.
+The word "door" also becomes "Engine" everywhere a person reads it, as Justin confirmed. Each place the word appears now takes it from one constant, one each in the console, the server's phone answers and the app, so a later rename is a one-line change on each side. The names in the API and settings stay as they are, so nothing that reads them breaks. Tests fail if a new sentence spells the word out instead of using the constant.
 
-What you need to decide: the word itself, when you're ready. Reverting this change puts the page back as it was.
+What you need to decide: nothing. Reverting this change puts the page and the word back as they were.

@@ -15,7 +15,7 @@ Justin, Telegram topic 134088, 2026-11-05 19:35 PST, with a photo of Work · Ses
 
 - **Width.** At 900 px and wider, the Sessions page gets the 1680 px frame an open session already had, and a grid of `minmax(340px, 480px) minmax(0, 1fr)`. The headline is clamped to 26-34 px. With no session open, the pane is a dashed, full-height card holding the existing "Pick a session" line. With one open, the list is `minmax(300px, 400px)` and the pane keeps its existing height rules. Under 900 px nothing changes.
 - **Session settings.** A button beside "+ New session" opens a sheet with only the new-topic default: a door picker, a model picker, Save and Clear. It runs `POST /topic-profile/new-topic-default` with the intent header, the same as the existing control. The form is one function, `defaultsForm`, shared by this sheet and New session. The app adds `SessionSettingsSheet`, opened by a gear on the sessions list and from New session. It runs the existing Face ID `session-default` action. No route, permission or proof changes.
-- **The word.** `DOOR = { word, Word, words }` in `dashboard/console/sessions-model.js`, `DOOR` in `src/server/mobileSessionControlsRoutes.ts` (the phone answers' sentences) and `SessionWords` in the app. Every sentence a person reads takes the word from there. Its value stays "door" until Justin chooses. API, config and field names (`framework`, `door` in JSON) are unchanged.
+- **The word.** `DOOR = { word, Word, words }` in `dashboard/console/sessions-model.js`, `DOOR` in `src/server/mobileSessionControlsRoutes.ts` (the phone answers' sentences) and `SessionWords` in the app. Every sentence a person reads takes the word from there. Its value is "engine" (Justin, topic 134088, 2026-11-06 07:58: "Engine" replaces "door/doorway"). API, config and field names (`framework`, `door` in JSON) are unchanged.
 
 ## Decision points touched
 
@@ -31,7 +31,7 @@ None. Layout, a second entry point to an existing control, and string sourcing. 
 
 ## Open questions
 
-*(none; the word is Justin's, and the constant waits for it)*
+*(none)*
 
 ## 4. Security
 

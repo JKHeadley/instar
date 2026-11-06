@@ -431,7 +431,7 @@ describe('sessions in a DOM', () => {
     expect(doc.querySelector('.sheet .action-status')!.textContent).toBe('Give it a name.');
     (doc.querySelector('.sheet input[aria-label="Name"]') as HTMLInputElement).value = 'Bug: cache';
     (doc.querySelector('.sheet select[aria-label="Where to talk to it"]') as HTMLSelectElement).value = 'telegram';
-    const doorSel = doc.querySelector('.sheet select[aria-label="Door"]') as HTMLSelectElement;
+    const doorSel = doc.querySelector('.sheet select[aria-label="Engine"]') as HTMLSelectElement;
     expect(doorSel.value).toBe(''); // no default set: "Agent default", so an untouched create sends no pick
     doorSel.value = 'claude-code';
     doorSel.dispatchEvent(new dom.window.Event('change'));
@@ -471,7 +471,7 @@ describe('Session settings (Justin, 2026-11-05: a clear button for the defaults)
 
   it('the word for a door lives in one place, and every label reads it', async () => {
     const { DOOR } = await import('../../dashboard/console/sessions-model.js');
-    expect(DOOR).toEqual({ word: 'door', Word: 'Door', words: 'doors' });
+    expect(DOOR).toEqual({ word: 'engine', Word: 'Engine', words: 'engines' });
     expect(regimeWords({ regime: 'dry-run' })).toContain(`the ${DOOR.word} still switches`);
     const fs = await import('node:fs');
     const src = fs.readFileSync(new URL('../../dashboard/console/sessions.js', import.meta.url), 'utf8');
@@ -520,7 +520,7 @@ describe('Session settings (Justin, 2026-11-05: a clear button for the defaults)
     button.click();
     await flush(10);
     expect(doc.querySelector('.sheet .sheet-title')!.textContent).toBe('Session settings');
-    const door = doc.querySelector('.sheet select[aria-label="Default door"]') as HTMLSelectElement;
+    const door = doc.querySelector('.sheet select[aria-label="Default engine"]') as HTMLSelectElement;
     const model = doc.querySelector('.sheet select[aria-label="Default model"]') as HTMLSelectElement;
     expect(door.value).toBe('claude-code');
     expect(model.value).toBe('claude-opus-5-5');

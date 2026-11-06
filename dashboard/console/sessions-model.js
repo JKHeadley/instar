@@ -13,7 +13,7 @@ import { sessionTopicName } from './topic-names.js';
  * What a person reads for a "door" (an AI tool a session runs on: Claude Code, Codex...). One place,
  * so the word can change without touching the API or config, which keep `framework`.
  */
-export const DOOR = { word: 'door', Word: 'Door', words: 'doors' };
+export const DOOR = { word: 'engine', Word: 'Engine', words: 'engines' };
 
 export const WORKING_MS = 2 * 60_000;   // activity under 2 min reads "working"
 export const QUIET_MS = 10 * 60_000;    // 10+ min without activity reads "quiet" (never "stuck")

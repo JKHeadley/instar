@@ -30,7 +30,7 @@ export const OPEN_CONSOLE = 'To change this, open the console.';
  * What a person reads for a door (the AI tool a session runs on). One place, mirroring the console's
  * sessions-model.js DOOR, so the word can change without touching the API, which keeps `framework`.
  */
-export const DOOR = { word: 'door', Word: 'Door', words: 'doors' } as const;
+export const DOOR = { word: 'engine', Word: 'Engine', words: 'engines' } as const;
 
 type Rec = Record<string, unknown>;
 const rec = (v: unknown): Rec => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Rec) : {});
