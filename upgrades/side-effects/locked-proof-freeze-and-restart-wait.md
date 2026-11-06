@@ -21,6 +21,7 @@ Thirteen faults found in the live run on the Mac Mini on 2026-11-05, once the vi
 - **Security item is given time to arrive.** `extraEvidence` polls the attention list for up to 15 s when a sample shows `relock-failed`. It has no unit test (the function shells out to `log show`); the live rerun of 12.18 is its evidence.
 - **What the page said.** `typePassword` returns the last distinct status lines (`pageSaid`, at most six) when no answer is recognised. Status lines are the page's own plain messages and carry no secret.
 - **Case 15.9 checks the clearing in the next grant.** New step `next-helper-clears-field`: opens a grant, waits up to 15 s for the store's `dirty` marker to clear, ends the grant and waits for its helper to go. `runCase` now records `then` steps in `fired`. This follows docs/specs/desktop-locked-screen.md, "Half-typed field": the marker "outlives the request" and "the next helper after a kill" clears it.
+- **Case 12.9 freezes the owning server.** `before: serve-under-launchd`, a `stop-server` step beside `stop-typist` and `stop-guard`, and the tmux-restoring cleanup. This is a reading of the spec's admission rule ("a marker past its deadline with a stale heartbeat stops blocking only after its guard and its recorded typist are SIGKILLed … and the marker moves to `relock-failed`"), which can only apply when nothing has replaced the guard. If the case was meant to cover something else, that needs its author.
 
 ## 1. Over-block
 

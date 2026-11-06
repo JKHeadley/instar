@@ -367,7 +367,7 @@ describe('locked-proof launchd kill', () => {
 
   it('every case that freezes the server serves it under launchd first, and puts it back in tmux', () => {
     const freezing = CASES.filter((c: { inject: { action: string }[] }) => c.inject.some(i => i.action === 'stop-server'));
-    expect(freezing.map((c: { id: string }) => c.id)).toEqual(['12.1', '12.6']);
+    expect(freezing.map((c: { id: string }) => c.id)).toEqual(['12.1', '12.6', '12.9']);
     for (const c of freezing) {
       expect(c.before).toEqual(['serve-under-launchd']);
       expect(c.cleanup.slice(0, 3)).toEqual(['cont-server', 'end-launchd-serve', 'start-server']);
@@ -423,6 +423,14 @@ describe('locked-proof launchd kill', () => {
     clock = 0; slept.length = 0;
     await target.typePassword({ timing: 'deadline', inject: [{ action: 'wait-deadline', at: 'after-enter' }] });
     expect(slept[0] + typing).toBe(600_000 - 1_500);
+  });
+
+  it('the deadline-recovery case freezes the owning server too, or its sweep replaces the frozen guard', () => {
+    // Live: with the server alive a replacement guard appeared 9 s later, relocked at the deadline,
+    // and the other agent was refused relock-pending. The recovery under test was never reached.
+    const c = CASES.find((x: { id: string }) => x.id === '12.9');
+    expect(c.inject.map((i: { action: string }) => i.action)).toEqual(['stop-typist', 'stop-guard', 'stop-server', 'grant-other-agent', 'cont-typist']);
+    expect(c.markerEnd).toEqual(['relock-failed']);
   });
 
   it('the deadline-recovery case watches past the 10-minute deadline it waits for', () => {
