@@ -65,6 +65,12 @@ describe('maturation board — production wiring', () => {
     // The console tile probe answers.
     const probe = await request(server.getApp()).get('/maturation/board?part=probe');
     expect(probe.status).toBe(200);
+    const coverage = await request(server.getApp()).get('/maturation/board?part=coverage');
+    expect(coverage.status).toBe(200);
+    expect(coverage.body.schema).toBe('measurement-coverage/1');
+    expect(coverage.body.counts.feature.total).toBeGreaterThan(0);
+    expect(coverage.body.counts.decision.total).toBeGreaterThan(0);
+    expect(coverage.body.sources).toContainEqual(expect.objectContaining({ name: 'loaded-scheduler-jobs', ok: false }));
   });
 
   it('is off on a fleet agent: 503', async () => {

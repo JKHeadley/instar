@@ -12,6 +12,7 @@ import { FeatureRolloutReconciler } from '../../src/core/FeatureRolloutReconcile
 import { scanSpecArtifacts } from '../../src/core/featureRolloutScan.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
+import { readMeasurementCoverage } from '../../src/server/measurementCoverageRead.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const roots: string[] = []; const services: BlockerLifecycleService[] = [];
@@ -42,6 +43,21 @@ describe('existing maturation read carries outcome proof', () => {
     expect(m.outcomeContracts).toEqual({ scope: 'current-d7-subjects', subjects: 1, declared: 1, missing: 0, invalid: 0 });
     expect(m.outcomeDetail).toMatchObject({ featureId: 'one', subjectKnown: true, evidence: { state: 'verified', owner: 'recovery-owner', metrics: [{ delta: 2, baseline: { samples: 40 }, current: { samples: 40 } }] } });
     expect((await request(app).get('/blocker-lifecycle/summary?feature=bad.path').set('Authorization', 'Bearer test')).status).toBe(400);
+  });
+
+  it('coverage reads the edited owner baseline rather than proof from the previous D7 contract', () => {
+    const { ledger, svc } = setup();
+    ledger.recordMaturationObservation({ origin: 'local', featureId: 'one', metricId: metric.id, source: metric.source, sourceRef: metric.sourceRef, observedAtMs: at, value: 4, samples: 40 });
+    svc.registerMaturationProjection(metric.sourceRef, () => ({ value: 6, samples: 40 }));
+    const ini = { id: 'one', title: 'One', status: 'active', rollout: { flagPath: 'newFeature.enabled', stage: 'live', maturationEvaluation: contract } } as Initiative;
+    svc.evaluateMaturation([ini]);
+    expect(svc.maturationOutcome('one').evidence.state).toBe('verified');
+    const edited = { ...contract, outcome: { ...outcome, version: 'v2', baseline: { ...outcome.baseline, points: [{ ...outcome.baseline.points[0], value: 999 }] } } };
+    const current = { ...ini, rollout: { ...ini.rollout!, maturationEvaluation: edited } };
+    const coverage = readMeasurementCoverage({ config: { newFeature: { enabled: true } }, meshSelfId: 'local',
+      initiativeTracker: { list: () => [current] }, blockerLifecycleService: svc } as never, now);
+    expect(coverage.rows.find(r => r.kind === 'feature' && r.id === 'newFeature')).toMatchObject({ declaration: 'declared', state: 'incompatible' });
+    expect(svc.maturationOutcome('one').evidence.state).toBe('verified');
   });
 
   it('preserves malformed scanner metadata through legacy reconciliation instead of calling it missing', async () => {

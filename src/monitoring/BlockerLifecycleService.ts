@@ -306,6 +306,14 @@ export class BlockerLifecycleService {
         this.now(), (metricId, at) => this.ledger.maturationObservation(this.origin, featureId, metricId, at)) };
   }
 
+  /** Read proof against the exact current owner's retained contract, independently
+   * of the contract cached at the last D7 pass. No capture/evaluation writes. */
+  maturationOutcomeForContract(featureId: string, contract: MaturationEvaluationContract) {
+    return { featureId, subjectKnown: this.maturationInitiatives.some(i => i.id === featureId),
+      evidence: projectMaturationOutcome(contract, this.origin, featureId, this.now(),
+        (metricId, at) => this.ledger.maturationObservation(this.origin, featureId, metricId, at)) };
+  }
+
   private maturationSummary(sinceMs: number, outcomeFeatureId?: string): Record<string, unknown> {
     const rows = this.ledger.maturationEvaluations(this.origin, sinceMs);
     const latest = new Map<string, MaturationEvaluationRecord>();

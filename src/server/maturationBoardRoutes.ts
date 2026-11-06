@@ -47,6 +47,8 @@ import {
   type SourceStatus,
 } from '../monitoring/MaturationBoard.js';
 import type { RouteContext } from './routes.js';
+import { readMeasurementCoverage } from './measurementCoverageRead.js';
+import { validMeasurementCoverage, type MeasurementCoverage } from '../monitoring/MeasurementCoverage.js';
 
 export const DEFAULT_REVIEWS_DIR = 'docs/research/feature-maturation/reviews';
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -65,6 +67,7 @@ const FORBIDDEN_SEGMENTS = ['.instar', '.git', '.ssh', 'node_modules'];
 type BoardCtx = Pick<RouteContext,
   'config' | 'meshSelfId' | 'machinePoolRegistry' | 'resolvePeerUrls' | 'recordRopeResult'
   | 'commitmentTracker' | 'initiativeTracker' | 'blockerLifecycleService' | 'guardRegistry'
+  | 'scheduler' | 'featureRegistry' | 'capabilityRegistry'
 > & { darkFlagRegistry?: DarkFlagMaturationRegistry | null; maturationLadder?: () => MaturationLadderService | null };
 
 interface MaturationBoardConfig { enabled?: boolean; reviewsDir?: string }
@@ -499,6 +502,34 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
     const part = typeof req.query.part === 'string' ? req.query.part : 'board';
     const now = Date.now();
     if (part === 'probe') { res.json({ schema: BOARD_SCHEMA, part: 'probe', enabled: true }); return; }
+    if (part === 'coverage') {
+      const local = readMeasurementCoverage(ctx, now);
+      if (scope === 'local') { res.json(local); return; }
+      if (!poolLimiter(now)) { res.status(429).json({ error: 'rate-limited' }); return; }
+      const origins: MeasurementCoverage[] = [local];
+      const failed: Array<{ machineId: string; reason: string }> = [];
+      const allPeers = (ctx.resolvePeerUrls?.() ?? []).filter(p => p.machineId !== ctx.meshSelfId);
+      const peers = [...new Map(allPeers.map(p => [p.machineId, p])).values()].slice(0, 16);
+      await Promise.all(peers.map(async peer => {
+        try {
+          if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist).ok) throw Error('peer-refused');
+          const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, '/maturation/board?part=coverage', {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` }, redirect: 'manual', signal: AbortSignal.timeout(REVIEW_TIMEOUT_MS),
+          });
+          if (!response.ok) throw Error('peer-unavailable');
+          const text = await response.text();
+          if (Buffer.byteLength(text) > 128 * 1024) throw Error('peer-too-large');
+          const body: unknown = JSON.parse(text);
+          if (!validMeasurementCoverage(body, peer.machineId, now)) throw Error('peer-unsupported-or-invalid');
+          origins.push(body);
+        } catch { failed.push({ machineId: peer.machineId, reason: 'unavailable-or-unsupported' }); }
+      }));
+      res.json({ schema: 'measurement-coverage-pool/1', advisory: true, authority: 'none', scope: 'pool', generatedAt: new Date(now).toISOString(),
+        poolComplete: allPeers.length <= 16 && failed.length === 0 && origins.every(o => o.sourcesComplete), origins: origins.sort((a, b) => a.origin.localeCompare(b.origin)), failed,
+        peersOmitted: Math.max(0, allPeers.length - peers.length) });
+      return;
+    }
+
     try {
       if (scope === 'local' && part === 'owners') {
         const { owners, sources } = collectLocalOwners(ctx, now);
