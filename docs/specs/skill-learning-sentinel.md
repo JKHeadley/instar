@@ -2,7 +2,10 @@
 title: "Skill Learning Sentinel — procedural memory: repeated requests become skills that earn their keep"
 slug: "skill-learning-sentinel"
 author: "echo"
-status: draft
+status: approved
+approved: true
+approved-by: "Justin, Telegram topic 139880, 2026-11-06 11:40 PST (\"Perfect, yes approved\"), after reading the revised plain-language overview"
+approved-at: "2026-11-06T19:40:37Z"
 parent-principle: "Never-Waste Feedback — corrections compound"
 lessons-engaged: "Structure beats Willpower; Verify the State, Not Its Symbol; Signal vs. Authority; An Instar Agent Is Always a Multi-Machine Entity; Never Silently Cut the Data a Decision Depends On; Maturation Path; Decision Provenance & Outcome Review; Know Your Principal — An Unverified Identity Is a Guess; Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions"
 eli16-overview: "docs/specs/skill-learning-sentinel.eli16.md"
