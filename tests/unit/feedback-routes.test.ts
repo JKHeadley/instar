@@ -64,6 +64,15 @@ describe('Feedback Routes', () => {
 
     feedback = new FeedbackManager(fakeConfig.feedback);
     updateChecker = new UpdateChecker(project.stateDir);
+    // check() queries the npm registry; on CI that call can hang past the 10s
+    // test timeout. These tests cover the route, not the registry, so answer
+    // with a fixed result.
+    vi.spyOn(updateChecker, 'check').mockResolvedValue({
+      currentVersion: '1.0.0',
+      latestVersion: '1.0.0',
+      updateAvailable: false,
+      checkedAt: new Date().toISOString(),
+    });
 
     server = new AgentServer({
       config: fakeConfig,
