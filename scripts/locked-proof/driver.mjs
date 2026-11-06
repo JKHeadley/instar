@@ -546,10 +546,15 @@ export class RealTarget {
         }
         const ms = this.now() - t0;
         // End the extra grant and wait for its helper to go, so the case's own leftover checks see a quiet Mac.
-        await v.page.click('#stopButton').catch(() => {});
-        const until = this.now() + 10_000;
+        // First the way a person would stop it, with a short wait, and say whether that worked: in
+        // the first live run of this step an ordinary click on Stop did not go through within 30 s
+        // while the locked-screen password box was showing. Then stop it for certain.
+        const stopClick = await v.page.click('#stopButton', { timeout: 3_000 }).then(() => 'clicked', err => String(err?.message ?? err).split('\n').slice(0, 6).join(' | ').slice(0, 400));
+        if (stopClick !== 'clicked') await v.page.evaluate(() => document.getElementById('stopButton')?.click()).catch(() => {});
+        const until = this.now() + 15_000;
         while (this.now() < until && this.processes().some(p => p.command.includes('input-stream'))) await this.sleep(250);
-        return { dirtyBefore: before, cleared: !dirty, ms };
+        const helperGone = !this.processes().some(p => p.command.includes('input-stream'));
+        return { dirtyBefore: before, cleared: !dirty, ms, stopClick, helperGone };
       }
       case 'open-next-grant': {
         await this.main.page.click('#stopButton').catch(() => {});

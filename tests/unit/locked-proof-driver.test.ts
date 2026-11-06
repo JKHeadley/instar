@@ -461,7 +461,7 @@ describe('locked-proof launchd kill', () => {
     expect(c.then).toEqual(['next-helper-clears-field']);
     expect(c.fieldClearedBeforeNextEnter).toBe(true);
     let clock = 0, reads = 0; const clicks: string[] = [];
-    const page = { waitForSelector: async () => {}, click: async (sel: string) => { clicks.push(sel); }, isVisible: async () => false };
+    const page = { waitForSelector: async () => {}, click: async (sel: string) => { clicks.push(sel); }, isVisible: async () => false, evaluate: async () => { clicks.push('evaluate'); } };
     const procs = [[{ pid: 5, command: 'instar-desktop-host input-stream' }], []];
     const target = realTarget({
       now: () => clock, sleep: async (ms: number) => { clock += ms; }, a: { port: 4098 },
@@ -469,8 +469,16 @@ describe('locked-proof launchd kill', () => {
       processes: () => procs[Math.min(1, clicks.length ? 1 : 0)],
     });
     const r = await target.act('next-helper-clears-field');
-    expect(r).toMatchObject({ dirtyBefore: true, cleared: true });
+    expect(r).toMatchObject({ dirtyBefore: true, cleared: true, stopClick: 'clicked', helperGone: true });
     expect(clicks).toEqual(['#stopButton']);
+    // If an ordinary click on Stop does not go through, the step says so and stops the grant anyway.
+    const blocked: string[] = [];
+    const stubborn = { ...page, click: async () => { throw new Error('Timeout 3000ms exceeded.\n<div id="lockedPassword"> intercepts pointer events'); }, evaluate: async () => { blocked.push('evaluate'); } };
+    const viaScript = realTarget({ now: () => clock, sleep: async (ms: number) => { clock += ms; }, a: { port: 4098 }, readStore: () => ({}), viewer: async () => ({ page: stubborn }), requestGrant: async () => ({}), processes: () => [] });
+    const forced = await viaScript.act('next-helper-clears-field');
+    expect(forced.stopClick).toContain('intercepts pointer events');
+    expect(blocked).toEqual(['evaluate']);
+    expect(forced.helperGone).toBe(true);
     const stuck = realTarget({ now: () => clock, sleep: async (ms: number) => { clock += ms; }, a: { port: 4098 }, readStore: () => ({ dirty: { at: 1 } }), viewer: async () => ({ page }), requestGrant: async () => ({}), processes: () => [] });
     expect(await stuck.act('next-helper-clears-field')).toMatchObject({ dirtyBefore: true, cleared: false });
   });

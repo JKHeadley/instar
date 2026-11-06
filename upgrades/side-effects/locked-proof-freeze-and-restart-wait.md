@@ -24,6 +24,7 @@ Thirteen faults found in the live run on the Mac Mini on 2026-11-05, once the vi
 - **Case 12.9 freezes the owning server.** `before: serve-under-launchd`, a `stop-server` step beside `stop-typist` and `stop-guard`, and the tmux-restoring cleanup. This is a reading of the spec's admission rule ("a marker past its deadline with a stale heartbeat stops blocking only after its guard and its recorded typist are SIGKILLed … and the marker moves to `relock-failed`"), which can only apply when nothing has replaced the guard. If the case was meant to cover something else, that needs its author.
 - **One more refusal is recognised.** `STATUS_REASONS` maps the page's "lock screen is not ready for a password" line to `shield-not-confirmed`.
 - **Deadline cases aim from the server's expiry.** `viewer()` keeps `expiresAt` from the page's `/desktop/` JSON responses; `typePassword` starts 0.6 s ahead of it for before-enter and finishes 1.5 s ahead for after-enter, falling back to the old estimate when no expiry was seen. `runCase` records `grantExpiresAt`.
+- **The extra grant is always ended.** `next-helper-clears-field` records whether an ordinary click on Stop went through (`stopClick`) and falls back to calling the button's handler from script. If the click really cannot go through while the locked-screen password box is showing, that is a page fault a person would hit, and it is recorded here so it can be seen, not worked around silently.
 
 ## 1. Over-block
 

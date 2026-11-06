@@ -38,6 +38,8 @@ Instar can show and control a Mac's screen remotely, even while that Mac is lock
 
 **Its clock was half a second off.** Two tests have to type the password at an exact moment around the ten-minute limit. The driver measured that limit from when it saw the session open, but the server starts its clock about half a second earlier, which is enough to miss. The server tells the page exactly when the session ends, so the driver now uses that time.
 
+**A step of mine did not tidy up after itself.** The new "open a next session" step ended that session by clicking Stop, and did not notice when the click did not go through, so its helper was still running when the test finished. It now checks, says whether a normal click worked, and ends the session for certain.
+
 ## What stays the same
 
 The product is unchanged: the web page, the server and the safety guard all behaved correctly. Once the freeze test was fixed, it passed: the guard noticed the frozen server and relocked the Mac. Nothing here reaches any running agent; it only affects the proof tool run by hand on the test Mac.
