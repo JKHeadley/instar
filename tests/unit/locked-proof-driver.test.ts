@@ -445,21 +445,20 @@ describe('locked-proof launchd kill', () => {
     expect(startOf()).toBe(599_360 - 800);
   });
 
-  it('wakes the display the way touching the mouse would, a few seconds before a grant opens', async () => {
+  it('wakes the display the way touching the mouse would, and only ahead of deadline typing', async () => {
     const calls: string[][] = [];
     const target = realTarget({ wakeDisplay: undefined, asProof: (args: string[]) => { calls.push(args); return ''; } });
     delete (target as Record<string, unknown>).wakeDisplay;
     target.wakeDisplay(2);
     expect(calls).toEqual([['caffeinate', '-u', '-t', '2']]);
-    // A locked Mac's display sleeps again about 30 s after waking, so the wake belongs right before
-    // the grant, with time for the lock screen to be ready: live, a password typed one second after
-    // the grant itself woke the display was refused "lock screen is not ready".
+    // It is not used before a grant opens: measured live, a nudge there made the "lock screen is
+    // not ready" refusal more frequent. Opening a grant goes straight to the viewer.
     let clock = 0; const order: string[] = [];
     const page = { waitForSelector: async () => { order.push(`control@${clock}`); } };
     const opening = realTarget({ now: () => clock, sleep: async (ms: number) => { clock += ms; }, wakeDisplay: () => { order.push(`wake@${clock}`); return ''; },
       viewer: async () => { order.push(`viewer@${clock}`); return { page }; }, requestGrant: async () => ({ clicked: false }) });
     await opening.openGrant({});
-    expect(order).toEqual(['wake@0', 'viewer@3000', 'control@3000']);
+    expect(order).toEqual(['viewer@0', 'control@0']);
   });
 
   it('the deadline-recovery case freezes the owning server too, or its sweep replaces the frozen guard', () => {
@@ -517,6 +516,28 @@ describe('locked-proof launchd kill', () => {
     const target = new FakeTarget(c);
     const ev = await runCase(c, target, { pollMs: 50 });
     expect(ev.fired.filter((f: { at: string }) => f.at === 'then').map((f: { action: string }) => f.action)).toEqual(c.then);
+  });
+
+  it('tries again when the lock screen is momentarily not ready, as the page tells a person to', async () => {
+    // Measured live: a few seconds after a lock or a display wake, loginwindow lets go of secure
+    // input for about half a second, and a password arriving then is refused before any attempt
+    // is spent. In one run that refused 6 of 16 passwords.
+    const notReady = "This Mac's lock screen is not ready for a password right now. Wake the screen and try again.";
+    let clock = 0, fills = 0;
+    const timing = { now: () => clock, sleep: async (ms: number) => { clock += ms; } };
+    const flaky = { waitForSelector: async () => {}, fill: async () => { fills++; }, press: async () => {}, isVisible: async () => fills >= 2, textContent: async () => (fills >= 2 ? 'Remote desktop is live.' : notReady) };
+    expect(await realTarget({ main: { page: flaky }, password: 'abc', ...timing }).typePassword({ inject: [] })).toEqual({ sent: true, notReadyRetries: 1 });
+    expect(fills).toBe(2);
+    // A lock screen that stays not ready is still a refusal, after two more tries.
+    clock = 0; fills = 0;
+    const stuck = { waitForSelector: async () => {}, fill: async () => { fills++; }, press: async () => {}, isVisible: async () => false, textContent: async () => notReady };
+    expect(await realTarget({ main: { page: stuck }, password: 'abc', ...timing }).typePassword({ inject: [] })).toEqual({ refused: 'shield-not-confirmed', notReadyRetries: 2 });
+    expect(fills).toBe(3);
+    // The deadline cases type once, at their moment: a retry would land after the ceiling.
+    clock = 0; fills = 0;
+    const timed = realTarget({ main: { page: stuck }, mainOpenedAt: 0, cal: { reserveMs: 38, perCharMs: 34.75 }, password: 'abc', ...timing });
+    expect(await timed.typePassword({ timing: 'deadline', inject: [{ action: 'wait-deadline', at: 'before-enter' }] })).toEqual({ refused: 'shield-not-confirmed' });
+    expect(fills).toBe(1);
   });
 
   it('a revoke with nothing to revoke fails the case', async () => {

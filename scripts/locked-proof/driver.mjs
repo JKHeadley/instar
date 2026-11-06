@@ -246,9 +246,9 @@ export class RealTarget {
 
   /**
    * What a person touching the mouse does: declares user activity for a moment, which wakes a
-   * sleeping display. Seen live: a password typed within a few seconds of the display waking, or
-   * as the Mac reaches ten idle minutes, is refused "lock screen is not ready". That refusal is
-   * the product's and is safe, but it is not what these cases are about.
+   * sleeping display. Used only ahead of deadline typing, where ten idle minutes is also this
+   * Mac's display-sleep time. It is NOT used before a grant opens: measured live, that made the
+   * "lock screen is not ready" refusal more frequent, not less.
    */
   wakeDisplay(seconds = 1) { return this.asProof(['caffeinate', '-u', '-t', String(seconds)]); }
 
@@ -303,11 +303,6 @@ export class RealTarget {
   }
 
   async openGrant(c) {
-    // A locked Mac's display sleeps again about 30 s after it wakes, and a grant opening on a
-    // sleeping display wakes it only a second before the password is typed. Wake it here and give
-    // the lock screen a few seconds, so the password does not meet a lock screen still waking up.
-    this.wakeDisplay(5);
-    await this.sleep(3_000);
     const v = await this.viewer(this.a);
     await this.requestGrant(v);
     await v.page.waitForSelector('#control:not([hidden])', { timeout: 30_000 });
@@ -346,15 +341,36 @@ export class RealTarget {
     // What the page said while we waited, in order. When nothing is recognised as an answer,
     // this is the only record of what the person would have seen.
     const said = [];
+    // Measured live: a few seconds after the Mac locks or its display wakes, loginwindow lets go
+    // of secure input for about half a second and takes it back. A password that arrives in that
+    // moment is refused "lock screen is not ready", before any attempt is spent. The page tells
+    // the person to try again; so does this, at most twice, and the row says how often.
+    let notReadyRetries = 0;
     while (this.now() < until) {
-      if (await page.isVisible('#leaveUnlockedButton')) return { sent: true };
+      if (await page.isVisible('#leaveUnlockedButton')) return { sent: true, ...(notReadyRetries ? { notReadyRetries } : {}) };
       const text = ((await page.textContent('#status').catch(() => '')) ?? '').trim();
       if (text && said[said.length - 1] !== text) said.push(text);
       const refused = refusalFromStatus(text);
-      if (refused) return { refused };
+      if (refused === 'shield-not-confirmed' && notReadyRetries < 2 && c.timing !== 'deadline') {
+        notReadyRetries++;
+        await this.sleep(1_500);
+        await page.fill('#lockedPasswordInput', c.wrongPassword ? `${this.password}x` : this.password);
+        await page.press('#lockedPasswordInput', 'Enter');
+        // The old refusal stays on the page until the new attempt answers. Wait for the page to
+        // say something else (or for the unlock) before judging again, so one retry is one try.
+        const answered = this.now() + 6_000;
+        while (this.now() < answered) {
+          if (await page.isVisible('#leaveUnlockedButton')) return { sent: true, notReadyRetries };
+          const next = ((await page.textContent('#status').catch(() => '')) ?? '').trim();
+          if (next !== text) break;
+          await this.sleep(200);
+        }
+        continue;
+      }
+      if (refused) return { refused, ...(notReadyRetries ? { notReadyRetries } : {}) };
       await this.sleep(200);
     }
-    return { sent: false, refused: 'no-result-within-60s', pageSaid: said.slice(-6) };
+    return { sent: false, refused: 'no-result-within-60s', pageSaid: said.slice(-6), ...(notReadyRetries ? { notReadyRetries } : {}) };
   }
 
   /** The proof user's listening process on the port, and only that user's (lsof -a ANDs the filters). */

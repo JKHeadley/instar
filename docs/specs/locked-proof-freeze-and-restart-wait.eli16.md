@@ -42,9 +42,9 @@ Instar can show and control a Mac's screen remotely, even while that Mac is lock
 
 **And then a fifth of a second.** With the right clock, the test that needs the ten-minute limit to arrive in the middle of typing still started a little too late: the limit arrived just before the first letter. It now starts a fifth of a second sooner. This test aims at a gap a few tenths of a second wide, so it can still miss now and then, and when it does it says so and is run again. The unit test that pins this timing is updated to match.
 
-**The screen was asleep.** A password typed a few seconds after the Mac's display wakes, or just as it is about to sleep after ten quiet minutes, is turned away with "lock screen is not ready, wake the screen and try again". That is the product being careful, and a person would just try again. But two of the timed tests type at exactly the ten-minute mark, so they kept being turned away. The driver now nudges the Mac awake first, the way moving the mouse would.
+**The lock screen blinks.** A few seconds after the Mac locks, or after its screen wakes, the lock screen stops accepting secure typing for about half a second and then starts again. A password that arrives in that half second is turned away with "lock screen is not ready, try again". That is the product being careful, and a person would just try again. The driver now tries again too, up to twice, and writes down how often it had to.
 
-**The nudge came too early.** I had the driver wake the screen at the start of each test, but a locked Mac's screen goes back to sleep after about thirty seconds, which is before some tests get to the password. The nudge now comes just before the remote session opens. And the check for leftover helpers now looks only at the helpers a relock duty actually recorded.
+**Two wrong turns of mine.** I first thought the screen being asleep caused those refusals, and had the driver nudge the Mac awake at the start of each test, then just before each session. Measuring showed that was not the cause and made it worse, so both nudges are gone; one remains before the two tests that type at the ten-minute mark. Separately, the check for leftover helpers now looks only at the helpers a relock duty actually recorded.
 
 ## What stays the same
 
