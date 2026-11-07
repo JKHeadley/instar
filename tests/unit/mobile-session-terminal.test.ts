@@ -98,6 +98,16 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['POST', '/mobile/sessions/new'],
       ['POST', '/mobile/sessions/default'],
       ['POST', '/mobile/attention/tg-1/choice'],
+      // Team access: the owner's phone writes, and reads the whole team (team-roles-and-access §4.1).
+      ['GET', '/mobile/team/context'],
+      ['GET', '/mobile/team/activity'],
+      ['GET', '/mobile/team/invites/mia'],
+      ['POST', '/mobile/team/invites'],
+      ['POST', '/mobile/team/grants'],
+      ['POST', '/mobile/team/people/mia'],
+      ['POST', '/mobile/team/off'],
+      ['POST', '/mobile/team/restore'],
+      ['POST', '/mobile/team/memory-privacy'],
       // Add a new agent from a phone you already use (mobile-pairing-introducer §3.2).
       ['GET', '/mobile/introducer'],
       ['POST', '/mobile/introductions/challenge'],

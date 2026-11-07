@@ -706,6 +706,28 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({
     kind: 'route',
     method: 'POST',
+    pathPrefix: '/mobile/team/',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'step 2a of team-roles-and-access: one machine only, a second machine is refused at the join, so the signed access log is this machine\'s; replication is step 2b.',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/team/people/',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'the agent lowering a person writes a machine-signed row to this machine\'s access log; same one-machine story as /mobile/team/.',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
     pathPrefix: '/mobile/media/',
     domain: 'machine-local',
     story: {

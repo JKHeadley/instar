@@ -76,6 +76,10 @@ export interface MobilePushDeps {
    * Absent ⇒ every phone, as before.
    */
   mayNotify?: (deviceId: string, conversationKey: string) => boolean;
+  /** Whether a phone gets anything but reply pushes. A team phone does not (team-roles-and-access §3.7). */
+  receivesNotices?: (deviceId: string) => boolean;
+  /** Is this phone's person still here? A held aggregate is dropped if not. */
+  phoneStillCounts?: (deviceId: string) => boolean;
 }
 
 const emptyDevice = (): DeviceState => ({ sendLog: [], urgentLog: [], lastSendAt: null, pending: null, dueAt: null, backoffUntil: null, lastSend: null });
@@ -182,6 +186,7 @@ export class MobilePushService {
         try { may = this.deps.mayNotify(d.id, t.conversationKey); } catch { may = false; } // @silent-fallback-ok — fail closed: an unanswerable check sends nothing to that phone
         if (!may) continue;
       }
+      if (t.kind !== 'reply' && this.deps.receivesNotices && !this.deps.receivesNotices(d.id)) continue;
       const ds = this.dev(st, d.id);
       prune(ds, t0);
       if (!ds.pending && this.dueFor(ds, urgent) <= t0) {
@@ -205,6 +210,7 @@ export class MobilePushService {
     const t0 = this.now();
     for (const [id, ds] of Object.entries(st.devices)) {
       if (!ds.pending || ds.dueAt === null || ds.dueAt > t0) continue;
+      if (this.deps.phoneStillCounts && !this.deps.phoneStillCounts(id)) { ds.pending = null; ds.dueAt = null; this.save(); continue; }
       const held = ds.pending;
       const dueAt = ds.dueAt;
       const urgentBypass = held.hasUrgent && this.throttled(ds);

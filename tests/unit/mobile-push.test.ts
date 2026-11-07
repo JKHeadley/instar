@@ -231,6 +231,48 @@ describe('MobilePushService — app conversation replies', () => {
     expect(asked).toHaveLength(1);
   });
 
+  it('team access: an attention notice skips a phone that does not receive notices, and a reply still reaches it', async () => {
+    const c = setup();
+    const mk = (receives: boolean) => new MobilePushService({
+      stateDir: c.dir, registry: c.reg, agentId: 'echo', agentName: 'Echo', machineId: 'm1',
+      enabled: () => true, credentials: () => ({ keyPem: KEY, keyId: 'KEY1', teamId: 'T' }),
+      transport: async (_e, _t, headers, body) => { c.sent.push({ headers, body: JSON.parse(body) }); return { status: 200 }; },
+      now: () => c.clock.t, mayNotify: () => true, receivesNotices: () => receives,
+    });
+    await mk(false).receive({ kind: 'item', itemId: 'ATT-9', dedupeKey: 'item:ATT-9', sourceMachine: 'm1' }, false);
+    expect(c.sent).toHaveLength(0);
+    await mk(false).receive({ kind: 'reply', conversationKey: KEY_A, messageId: 'm-y', dedupeKey: 'app-reply:m-y', sourceMachine: 'm1' }, false);
+    expect(c.sent).toHaveLength(1);
+    c.clock.t += 3_600_000;
+    await mk(true).receive({ kind: 'item', itemId: 'ATT-10', dedupeKey: 'item:ATT-10', sourceMachine: 'm1' }, false);
+    expect(c.sent).toHaveLength(2);
+  });
+
+  it('team access: a held aggregate is dropped for a phone whose person has gone, and sent otherwise', async () => {
+    const c = setup();
+    const mk = (counts: boolean) => new MobilePushService({
+      stateDir: c.dir, registry: c.reg, agentId: 'echo', agentName: 'Echo', machineId: 'm1',
+      enabled: () => true, credentials: () => ({ keyPem: KEY, keyId: 'KEY1', teamId: 'T' }),
+      transport: async (_e, _t, headers, body) => { c.sent.push({ headers, body: JSON.parse(body) }); return { status: 200 }; },
+      now: () => c.clock.t, phoneStillCounts: () => counts,
+    });
+    const hold = async (svc: MobilePushService, n: number) => {
+      await svc.receive(trig(n), false);
+      await svc.receive(trig(n + 1), false);
+      c.clock.t += 3_600_000;
+    };
+    const gone = mk(false);
+    await hold(gone, 20);
+    const before = c.sent.length;
+    await gone.tick();
+    expect(c.sent.length).toBe(before);
+    const here = mk(true);
+    await hold(here, 30);
+    const mid = c.sent.length;
+    await here.tick();
+    expect(c.sent.length).toBeGreaterThan(mid);
+  });
+
   it('onAppReply sends one push per reply, fans out, and a repeat of the same message is deduped', async () => {
     const c = setup();
     const fanned: unknown[] = [];

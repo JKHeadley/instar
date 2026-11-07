@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "team-2a",
+  "sessionId": "01d20012-6a42-483e-af23-beab1eb3aaad",
+  "timestamp": "2026-11-07T05:52:24.761Z",
+  "artifactPath": "upgrades/side-effects/team-2a.md",
+  "artifactSha256": "7e1bc1cb34c4499f20f652a2ab6f814c193c0088b3f8566575c9d5964cecbcad",
+  "specPath": "docs/specs/team-roles-and-access.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-07T05-51-32-803Z-team-2a.json",
+    ".instar/instar-dev-decisions/2026-11-07T05-51-54-694Z-team-2a.json",
+    ".instar/instar-dev-decisions/2026-11-07T05-52-17-425Z-team-2a.json",
+    ".instar/instar-dev-traces/2026-11-07T05-50-35-952Z-team-2a-77c2839c.json",
+    ".instar/instar-dev-traces/2026-11-07T05-51-12-640Z-team-2a-ffafc86d.json",
+    ".instar/instar-dev-traces/2026-11-07T05-51-59-940Z-team-2a-c909974e.json",
+    "docs/specs/team-roles-and-access.eli16.md",
+    "docs/specs/team-roles-and-access.md",
+    "src/core/TeamAccessEvents.ts",
+    "src/core/TeamAccessLog.ts",
+    "src/permissions/TeamAccess.ts",
+    "tests/unit/team-access-log.test.ts",
+    "upgrades/side-effects/team-2a.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1535,13 +1535,15 @@ export async function spawnSessionForTopic(
   // for injection into the bootstrap message. This gives the agent awareness
   // of who it's talking to: permissions, preferences, relationship history.
   let userContextBlock = '';
+  let shapedForAudience: string | undefined;
+  let reducedUserContext = '';
   if (userProfile && hasUserContext(userProfile)) {
     // Memory privacy: in a shared place the others can ask about what is loaded, so
     // a person's bio, interests and relationship notes stay out of it.
-    const shared = ['place', 'none'].includes(sessionManager.memoryAudienceKind({ telegramTopicId: topicId }));
-    userContextBlock = shared
-      ? `[USER CONTEXT — ${userProfile.name} (${userProfile.id})]\n[SYSTEM-ENFORCED PERMISSIONS: ${userProfile.permissions.join(', ')}]`
-      : formatUserContextForSession(userProfile);
+    shapedForAudience = sessionManager.memoryAudienceKind({ telegramTopicId: topicId });
+    const shared = ['place', 'none'].includes(shapedForAudience);
+    reducedUserContext = `[USER CONTEXT — ${userProfile.name} (${userProfile.id})]\n[SYSTEM-ENFORCED PERMISSIONS: ${userProfile.permissions.join(', ')}]`;
+    userContextBlock = shared ? reducedUserContext : formatUserContextForSession(userProfile);
   }
 
   // Build the bootstrap message with inline context.
@@ -1762,6 +1764,10 @@ export async function spawnSessionForTopic(
   const profileEffort = resolvedProfile?.effort;
 
   const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, sessionName, {
+    shapedForAudience,
+    // A grant can land between shaping this message and the spawn: the entry reshapes it under the lock.
+    reshapeForAudience: (kind, message) => (['place', 'none'].includes(kind) && userContextBlock && reducedUserContext
+      ? message.replace(userContextBlock, reducedUserContext) : message),
     telegramTopicId: topicId,
     resumeSessionId,
     framework,
@@ -2765,6 +2771,7 @@ export function wireTelegramRouting(
     if (_memoryInbound) {
       const memoryFacts: InboundFacts = {
         placeKey: telegram.memoryPlaceKey,
+        placeInput: { telegramTopicId: topicId, memoryPlaceKey: telegram.memoryPlaceKey ?? undefined },
         placeKind: 'shared',
         senderKey: resolvedUser ? `user:${resolvedUser.id}` : telegramUserId ? `telegram:${telegramUserId}` : null,
         personId: resolvedUser?.id ?? null,
@@ -2846,7 +2853,10 @@ export function wireTelegramRouting(
     // own poll loop never runs, so its handleCommand() never fires on forwarded
     // messages. Route slash-commands through it here so /route, /sessions, /claim,
     // /flush, etc. behave identically whether the server polls or lifeline does.
-    if (text.startsWith('/')) {
+    // A team phone's message is never a command: it goes straight to delivery past every intercept
+    // below, which act on the whole agent (team-roles-and-access §4.1).
+    const teamPhone = msg.metadata?.teamPhone === true;
+    if (text.startsWith('/') && !teamPhone) {
       const handled = await telegram.handleCommand(text, topicId, telegramUserId);
       if (handled) return;
     }
@@ -2857,7 +2867,7 @@ export function wireTelegramRouting(
     // now"). Parsed HERE — where the authenticated sender uid is first-party —
     // never by the agent. Non-triggers fall through to normal routing.
     try {
-      if (await handleTopicProfileIngress(telegram, topicId, text, telegramUserId, msg)) {
+      if (!teamPhone && await handleTopicProfileIngress(telegram, topicId, text, telegramUserId, msg)) {
         return;
       }
     } catch (err) {
@@ -2871,7 +2881,7 @@ export function wireTelegramRouting(
     // session exit: spawning with a meta-message ("new session started") gives
     // Claude nothing real to do, so it responds and exits. The user's actual
     // message then arrives to a dead session.
-    const newMatch = text.match(/^\/new(?:\s+(.+))?$/);
+    const newMatch = teamPhone ? null : text.match(/^\/new(?:\s+(.+))?$/);
     if (newMatch) {
       const sessionName = newMatch[1]?.trim() || null;
       const topicName = sessionName || `session-${new Date().toISOString().slice(5, 16).replace('T', '-').replace(':', '')}`;
@@ -2909,7 +2919,7 @@ export function wireTelegramRouting(
     // (never swallowed); the classifier still runs on a dev agent and LOGS
     // would-swallow vs would-pass for the soak. Fail-OPEN on any uncertainty.
     // FAIL-OPEN: any error falls through to normal routing.
-    const hubDeps = getHubDeps?.() ?? null;
+    const hubDeps = teamPhone ? null : getHubDeps?.() ?? null;
     if (hubDeps) {
       try {
         let hubTopicId: number | undefined;
@@ -3011,7 +3021,7 @@ export function wireTelegramRouting(
     // that command" help list — which is exactly why typing "restart sessions"
     // in a stuck session's own topic never reached the session. Outside the
     // attention topic the message now falls through to session routing below.
-    if (fixCommandHandler && shouldInterceptFixCommand(text, topicId, getAttentionTopicId?.())) {
+    if (fixCommandHandler && !teamPhone && shouldInterceptFixCommand(text, topicId, getAttentionTopicId?.())) {
       (async () => {
         try {
           const handled = await fixCommandHandler(topicId, text);
@@ -7122,6 +7132,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     });
     _reachablePeople = _memoryWiring.reachablePeople;
     const _memoryPrivacyWired = _memoryWiring.privacy;
+    sessionManager.conversationResumeDropper = (ref) => {
+      if (ref.startsWith('telegram:')) _topicResumeMap?.remove(Number(ref.slice('telegram:'.length)));
+    };
     _memoryInbound = _memoryWiring.tracker;
     _memoryUserResolver = {
       // The org permission system's own resolver, so a person registered there is the
@@ -8550,6 +8563,10 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     if (config.scheduler.enabled && coordinator.isAwake) {
       scheduler = new JobScheduler(config.scheduler, sessionManager, state, config.stateDir);
+      scheduler.confinedTopicCheck = (topicId) => {
+        const confinement = _memoryPrivacyWired.confinement;
+        return confinement ? confinement.isConfined(`telegram:${topicId}`) : false;
+      };
       scheduler.notifyDestinationHasOtherReaders = (job) => {
         const topicId = (job as { topicId?: number }).topicId;
         const kind = sessionManager.memoryAudienceKind(telegramConfiguredForMemory(config) ? { telegramTopicId: topicId ?? 0 } : { memoryPlace: { kind: 'system' } });
@@ -9826,20 +9843,24 @@ export async function startServer(options: StartOptions): Promise<void> {
         }) : null;
         const appSvc = new AppConversationService({
           signer: appSigner, keyLookup: appKeyLookup, keyLedger: appKeyLedger,
+          // Replaced once the pairing service exists. Until then a recovery pass stops here and the
+          // next one retries, so a team person's create never lands unconfined.
+          confineStranded: () => { throw new Error('pairing-not-ready'); },
           stateDir: config.stateDir,
           machineId: () => _meshSelfId ?? os.hostname(),
           registry: conversationRegistry,
           requests: new MobileChatRequestStore(config.stateDir),
           holdsLease: () => (coordinator.enabled ? coordinator.holdsLease() : true),
           ownerName: () => appOwnerName(config),
+          confinedInbox: (key) => sessionManager.confinedInboxFor(key),
           dispatch: () => appDispatch,
           killSession: (name) => sessionManager.killSessionByTmuxName(name),
           pauseSession: (name) => { sessionManager.sendKey(name, 'Escape'); },
           // The same stop side effects as the Telegram path: pause the resume queue, cancel this
           // conversation's queued revivals, clear its autonomous run, record the operator stop.
           // (resumeQueue / recordOperatorStop are bound later in boot; this runs at request time.)
-          onEmergencyStop: (alias) => {
-            try { resumeQueue?.pause('message-sentinel emergency stop'); resumeQueue?.cancelByTopic(alias); } catch { /* @silent-fallback-ok — the kill itself already ran */ }
+          onEmergencyStop: (alias, scope) => {
+            try { if (scope !== 'conversation') resumeQueue?.pause('message-sentinel emergency stop'); resumeQueue?.cancelByTopic(alias); } catch { /* @silent-fallback-ok — the kill itself already ran */ }
             try { stopAutonomousTopic(config.stateDir, String(alias)); } catch { /* @silent-fallback-ok — best-effort, as on the Telegram path */ }
             try { recordOperatorStop(alias); } catch { /* @silent-fallback-ok — the stop record is observability */ }
           },
@@ -9871,6 +9892,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             return verdict === 'deliver';
           },
           sessions: sessionManager, channels: appSvc.channels, store: appSvc.store, stateDir: config.stateDir,
+          ownerDisplayName: () => appOwnerName(config),
+          confinedInbox: (key) => sessionManager.confinedInboxFor(key),
           spawnAdmission: () => _spawnAdmission,
           // session-swap-any-conversation §3.1: spawn on the conversation's own engine and model.
           profile: (key) => {
@@ -17944,7 +17967,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (beforeCorrectionCb) beforeCorrectionCb(entry);
               // Layer 0 (SYNC, free) — classify on the seam. No signal → stop at
               // ~zero cost on the vast majority of messages.
-              const verdict = entry.fromUser && entry.text
+              // A team member's words never become the owner's learned preferences.
+              const verdict = entry.fromUser && entry.text && !entry.teamPhone
                 ? HumanAsDetectorLog.getInstance().classify(entry.text)
                 : null;
               // Fire-and-forget — capture/distill latency must NEVER reach the
