@@ -17,7 +17,8 @@ import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 import { resolveCliFlag } from './models.js';
 import { assertClaudeAllowed } from './claudeForbiddenGuard.js';
 import { guardChildStdin } from './pipeErrorGuard.js';
-import { applyClaudeChildAuth, classifyClaudeAuthFailure, reportClaudeCallOutcome } from './claudeChildAuth.js';
+import { applyClaudeChildAuth, classifyClaudeAuthFailure, reportClaudeCallOutcome, reportClaudeUsageLimited } from './claudeChildAuth.js';
+import { isUsageLimitOutput } from './claudeKeyProbe.js';
 
 const DEFAULT_MODEL = 'fast';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -180,6 +181,7 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
           // The auth verdict is only in stdout. It is logged as a category, never as CLI text.
           const authFailure = classifyClaudeAuthFailure(stdout);
           if (authFailure) reportClaudeCallOutcome(authFailure);
+          if (isUsageLimitOutput(stdout)) reportClaudeUsageLimited();
           reject(new Error(`Claude CLI error: ${error.message}${stderr ? ` — ${stderr.slice(0, 600)}` : ''}${authFailure ? ` — auth: ${authFailure}` : ''}`));
           return;
         }

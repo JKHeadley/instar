@@ -16,6 +16,8 @@
 
 import { execFile } from 'node:child_process';
 import { classifyClaudeAuthFailure } from './claudeChildAuth.js';
+import { USAGE_WALL_PATTERNS } from '../monitoring/rateLimitDetection.js';
+import type { UsageProbeResult } from './UsageLimitWatch.js';
 import type { ClaudeKeyProbeResult } from './ClaudeKeyHealth.js';
 import { resolveCliFlag } from './models.js';
 import { wrapIntelligenceWithSpawnCap } from './SpawnCapIntelligenceProvider.js';
@@ -30,6 +32,17 @@ export function interpretProbe(failed: boolean, stdout: string): ClaudeKeyProbeR
   try {
     return (JSON.parse(stdout) as { is_error?: unknown }).is_error === false ? 'ok' : 'inconclusive';
   } catch { return 'inconclusive'; } // @silent-fallback-ok: unreadable output concludes nothing, by design
+}
+
+/**
+ * Whether this call's stdout says the account is out of usage. A 429 alone can be a server throttle,
+ * so it also needs the banner's own wording (USAGE_WALL_PATTERNS, real panes and real CLI output).
+ */
+export function isUsageLimitOutput(stdout: string): boolean {
+  try {
+    const parsed = JSON.parse(stdout) as { is_error?: unknown; result?: unknown };
+    return parsed?.is_error === true && typeof parsed.result === 'string' && USAGE_WALL_PATTERNS.some((p) => p.test(parsed.result as string));
+  } catch { return false; } // @silent-fallback-ok: unreadable output says nothing about usage
 }
 
 function runProbe(claudePath: string, key: string, baseUrl: string | undefined): Promise<ClaudeKeyProbeResult> {
@@ -57,6 +70,37 @@ export function buildClaudeKeyProbe(deps: { claudePath: () => string | null; bas
     });
     try { await capped?.evaluate('claude-key-probe'); }
     catch { return 'inconclusive'; } // @silent-fallback-ok: a cap shed concludes nothing, by design
+    return result;
+  };
+}
+
+function runUsageProbe(claudePath: string, key: string | undefined, baseUrl: string | undefined): Promise<UsageProbeResult> {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (key) { env.CLAUDE_CODE_OAUTH_TOKEN = key; delete env.ANTHROPIC_API_KEY; }
+  delete env.CLAUDECODE;
+  delete env.CLAUDE_SESSION_ID;
+  if (baseUrl) env.ANTHROPIC_BASE_URL = baseUrl;
+  const args = ['-p', 'Reply with OK.', '--model', resolveCliFlag('fast'), '--max-turns', '1', '--tools', '', '--output-format', 'json', '--setting-sources', 'user'];
+  return new Promise((resolve) => {
+    const child = execFile(claudePath, args, { timeout: PROBE_TIMEOUT_MS, maxBuffer: 1024 * 1024, env }, (error, stdout) => {
+      if (isUsageLimitOutput(stdout)) { resolve('limited'); return; }
+      resolve(interpretProbe(Boolean(error), stdout) === 'ok' ? 'ok' : 'other');
+    });
+    child.stdin?.end();
+  });
+}
+
+/** One real call on the login in use (the configured key, else the default login), for UsageLimitWatch. */
+export function buildUsageProbe(deps: { claudePath: () => string | null; key: () => string | undefined; baseUrl: () => string | undefined }): () => Promise<UsageProbeResult> {
+  return async () => {
+    const claudePath = deps.claudePath();
+    if (!claudePath) return 'other';
+    let result: UsageProbeResult = 'other';
+    const capped = wrapIntelligenceWithSpawnCap({
+      evaluate: async () => { result = await runUsageProbe(claudePath, deps.key(), deps.baseUrl()); return result; },
+    });
+    try { await capped?.evaluate('claude-usage-probe'); }
+    catch { return 'other'; } // @silent-fallback-ok: a cap shed concludes nothing, by design
     return result;
   };
 }

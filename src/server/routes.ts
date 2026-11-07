@@ -88,6 +88,7 @@ import { emergencyStopUserMessage } from '../messaging/shared/emergencyStopUserM
 import { verifiedChannelIdentity, isVerifiedChannelName, verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import { execFileSync } from 'node:child_process';
+import { activeUsageLimitWatch } from '../core/UsageLimitWatch.js';
 import { activeClaudeKeyHealth } from '../core/ClaudeKeyHealth.js';
 import { createHash, createHmac, timingSafeEqual, randomBytes, randomUUID } from 'node:crypto';
 import { governor as selfActionGovernorSurface } from '../monitoring/selfaction/governor.js';
@@ -5611,6 +5612,8 @@ export function createRoutes(ctx: RouteContext): Router {
     if (isAuthed) {
       const claudeKey = activeClaudeKeyHealth()?.status();
       if (claudeKey) base.claudeKey = claudeKey;
+      const claudeUsage = activeUsageLimitWatch()?.status();
+      if (claudeUsage) base.claudeUsage = claudeUsage;
       // job-cost-reduction §5.3: the stable feature ids behind degradationSummary.
       // The narrative strings carry per-occurrence values, so they are evidence
       // only; health-check keys its `degradation:<feature>` reasons on these.

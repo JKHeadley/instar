@@ -93,6 +93,17 @@ export function reportClaudeCallOutcome(outcome: ClaudeCallOutcome): void {
   try { outcomeListener?.(outcome); } catch { /* @silent-fallback-ok: a signal must never break the model call */ }
 }
 
+/** Heard by UsageLimitWatch: an internal call was refused for usage. A signal only. */
+let usageLimitedListener: (() => void) | null = null;
+
+export function setClaudeUsageLimitedListener(listener: (() => void) | null): void {
+  usageLimitedListener = listener;
+}
+
+export function reportClaudeUsageLimited(): void {
+  try { usageLimitedListener?.(); } catch { /* @silent-fallback-ok: a signal must never break the model call */ }
+}
+
 /**
  * Write a private file a shell can source to pick up the key, for children started through a shell
  * string or tmux, where an env option cannot reach the child and argv is not acceptable. The caller's
