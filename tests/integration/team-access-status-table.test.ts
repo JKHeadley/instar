@@ -127,10 +127,10 @@ async function teamOn(e: Env, owner: Phone) {
   const status = await post(e, owner, '/mobile/team/invites', { events: [
     { type: 'team-on' }, { type: 'owner-pin', personKey: 'owner-1' },
     { type: 'person-add', personKey: 'p-member', name: 'M', role: 'member' },
-    { type: 'person-add', personKey: 'p-guest', name: 'G', role: 'guest' },
   ] });
+  const second = await post(e, owner, '/mobile/team/invites', { events: [{ type: 'person-add', personKey: 'p-guest', name: 'G', role: 'guest' }] });
   e.live.setup = false;
-  expect(status).toBe(200);
+  expect([status, second]).toEqual([200, 200]);
   expect(e.svc.teamStanding('p-member')?.tier).toBe('member');
 }
 /** The real Face ID route, so the signed `team-off` row is the real one. */

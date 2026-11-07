@@ -115,3 +115,6 @@ The first review of the code by another model family. Fixed: restore rebuilt the
 - Added: Outside-family review fixes.
 
 An invite carries exactly one person, so a used key cannot hide behind a new one.
+
+## Outside-family code review, second pass, 2026-11-07
+Confirmed the earlier fixes on the real code. Fixed: with no list left at all, restore now confines every conversation, because a log cannot prove it lost nothing (a lost last row leaves no gap); access changes now run one at a time, so a check is still true when its row is written; restore ends every session first, under the locks. Over-block, accepted: a restore with no list locks every conversation to its audience and ends every session. It is a rare repair and fails in the strict direction.

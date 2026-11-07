@@ -31,7 +31,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/team-access-routes.test.ts' });
 });
 
-async function setup(overrides: Record<string, unknown> = {}) {
+async function setup(overrides: Record<string, unknown> = {}, conversations: string[] = []) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-int-'));
   dirs.push(dir);
   fs.writeFileSync(path.join(dir, 'users.json'), JSON.stringify([{ id: 'mo', name: 'Mo', channels: [], permissions: ['user'] }]));
@@ -73,7 +73,7 @@ async function setup(overrides: Record<string, unknown> = {}) {
     isSystemTopic: (id) => id === 1, isJobTopic: (id) => id === 2, isUnconfinableTopic: (id) => id === 3,
     ownerProfile: () => ({ userId: 'owner-1', several: false, links: {} }),
     logsDir: path.join(dir, 'logs'),
-    restoreRefs: () => ({ teamRefs: [], allRefs: () => [] }),
+    restoreRefs: () => ({ teamRefs: [], allRefs: () => conversations.map((ref) => ({ ref })) }),
     requireMemoryPrivacy: () => { spy.privacy++; return true; },
   };
   const app = express();
@@ -349,6 +349,45 @@ describe('restoring a lost list', () => {
     const list = e.svc.teamLog()!.readConfined()!;
     expect(list.find((x) => x.ref === 'telegram:50')).toBeTruthy();
     expect(list.find((x) => x.ref === '-77')).toMatchObject({ personKey: 'p-1' });
+  });
+});
+
+describe('restoring with damaged history', () => {
+  const lose = (e: Env) => {
+    const dir = path.join(e.dir, 'state');
+    SafeFsExecutor.safeRmSync(path.join(dir, 'team-access', 'confined.json'), { force: true, operation: 'test' });
+    SafeFsExecutor.safeRmSync(path.join(dir, 'team-access-last-good'), { recursive: true, force: true, operation: 'test' });
+  };
+
+  it('a log with a row missing cannot release anything, so every conversation is confined', async () => {
+    const e = await setup({}, ['telegram:50', 'telegram:60']);
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1'));
+    await send(e, owner, 'POST', '/mobile/team/grants', { events: [grant('telegram:50', 'read')] });
+    lose(e);
+    const log = path.join(e.dir, 'state', 'team-access', 'log.jsonl');
+    const rows = fs.readFileSync(log, 'utf8').trim().split('\n');
+    fs.writeFileSync(log, `${rows.slice(0, -1).join('\n')}\n`); // the grant row is gone
+    e.svc.teamLog()!.load();
+    expect((await faceId(e, owner, 'team-restore', '/mobile/team/restore')).status).toBe(200);
+    expect(e.svc.teamLog()!.readConfined()!.map((x) => x.ref).sort()).toEqual(['telegram:50', 'telegram:60']);
+  });
+
+  it('with a list still there, only what it and the log show is confined', async () => {
+    const e = await setup({}, ['telegram:50', 'telegram:60']);
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1', [grant('telegram:50', 'read')]));
+    await faceId(e, owner, 'team-restore', '/mobile/team/restore');
+    expect(e.svc.teamLog()!.readConfined()!.map((x) => x.ref)).toEqual(['telegram:50']);
+  });
+
+  it('ends every session first, under the lock', async () => {
+    const e = await setup({}, ['telegram:50', 'telegram:60']);
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    e.spy.changed.length = 0;
+    await faceId(e, owner, 'team-restore', '/mobile/team/restore');
+    expect(e.spy.changed.sort()).toEqual(['telegram:50', 'telegram:60']);
   });
 });
 

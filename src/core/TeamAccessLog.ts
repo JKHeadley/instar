@@ -467,9 +467,9 @@ export class TeamAccessLog {
 
   /**
    * The owner's restore: every parseable row of the log and last-good, merged, and the confined list
-   * rebuilt from what remains plus `teamRefs` (conversations with stored team-phone messages). With
-   * both the list and the log lost, `allRefs` is confined too, because a read-only grantee leaves no
-   * message behind.
+   * rebuilt from what remains, what the log shows, and `teamRefs` (conversations with stored team-phone
+   * messages). With no list left at all, `allRefs` is confined too: a read-only grantee leaves no
+   * message behind, and a log cannot prove it lost nothing.
    */
   restore(input: { teamRefs: ConfinedEntry[]; allRefs: () => ConfinedEntry[] }): { logLost: boolean; listLost: boolean } {
     const readRows = (file: string): TeamAccessRow[] => {
@@ -508,7 +508,10 @@ export class TeamAccessLog {
     // The log says what was ever shared or owned, even where nothing was said there: a read-only grant
     // leaves no message, so a list rebuilt from messages alone would drop it.
     const fromLog = confinedFromRows(merged, this.opts.verify);
-    const sources = [...(current ?? []), ...lastGood, ...fromLog, ...input.teamRefs, ...(logLost && listLost ? input.allRefs() : [])];
+    // With no list left, nothing may be released. A log cannot prove it is whole, because a lost last
+    // row leaves no gap in the numbering, so every conversation is confined.
+    const noList = listLost && lastGood.length === 0;
+    const sources = [...(current ?? []), ...lastGood, ...fromLog, ...input.teamRefs, ...(noList ? input.allRefs() : [])];
     for (const e of sources) if (!byRef.has(e.ref)) byRef.set(e.ref, e);
 
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });

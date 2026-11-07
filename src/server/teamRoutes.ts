@@ -139,6 +139,14 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
 
   const send = (res: Response, r: Refusal): void => { res.status(r.status).json({ error: r.error, detail: r.detail }); };
 
+  // One access change at a time: each check below must still be true when its row is written.
+  let writes: Promise<unknown> = Promise.resolve();
+  const inTurn = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = writes.then(fn, fn);
+    writes = run.catch(() => undefined);
+    return run;
+  };
+
   /** A write that fails answers plainly: an access change must never leave a request hanging. */
   const write = (handler: (req: Request, res: Response) => Promise<void>) => (req: Request, res: Response): void => {
     if (svc.teamLog()?.healthState() === 'unreadable') { send(res, LOG_UNREADABLE); return; }
@@ -148,7 +156,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
       res.status(400).json({ error: 'bad-path', detail: 'That address is not one this change can be signed for.' });
       return;
     }
-    handler(req, res).catch((err: unknown) => {
+    inTurn(() => handler(req, res)).catch((err: unknown) => {
       console.warn(`[team-access] ${req.path} failed: ${err instanceof Error ? err.message : String(err)}`);
       if (!res.headersSent) res.status(500).json({ error: 'team-access-write-failed', detail: 'That change was not saved. Try again.' });
     });
@@ -230,7 +238,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     return null;
   };
 
-  svc.teamActionRunner = async (kind, req, deviceId) => {
+  svc.teamActionRunner = (kind, req, deviceId) => inTurn(async () => {
     const log = svc.teamLog();
     if (!log) return { status: 503, body: { error: 'team-access-unavailable' } };
     if (kind === 'team-memory-privacy') {
@@ -238,8 +246,11 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
       return { status: restarting ? 200 : 503, body: restarting ? { ok: true, restarting: true } : { error: 'restart-unavailable', detail: 'Memory privacy is set, but this machine could not restart itself.' } };
     }
     if (kind === 'team-restore') {
-      const result = log.restore(deps.restoreRefs());
-      return { status: 200, body: { ok: true, ...result } };
+      // Restoring can confine any conversation, so every session ends first: a rare repair, and strict.
+      const refs = deps.restoreRefs();
+      let result: ReturnType<typeof log.restore> | null = null;
+      await underLocks(refs.allRefs().map((entry) => entry.ref), () => { result = log.restore(refs); });
+      return { status: 200, body: { ok: true, ...(result as unknown as object) } };
     }
     if (log.healthState() === 'unreadable') return { status: 409, body: { error: LOG_UNREADABLE.error, detail: LOG_UNREADABLE.detail } };
     const events = parseSignedEvents(req.body);
@@ -247,7 +258,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     await underLocks((log.readConfined() ?? []).map((entry) => entry.ref), () => appendRequest(req, deviceId));
     svc.revokePersonPhones(null);
     return { status: 200, body: { ok: true } };
-  };
+  });
 
   router.get('/mobile/team/context', (req, res) => {
     if (!ownerDevice(req, res)) return;

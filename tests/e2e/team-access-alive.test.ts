@@ -143,6 +143,10 @@ describe('team access — production wiring', () => {
     expect(lowered.status).toBe(200);
     expect((await mia('GET', '/mobile/conversations')).status).toBe(401); // the phone itself is revoked
     expect(server.mobilePairing!.teamLog()!.isConfined(shared)).toBe(true);
+    // Two invites at once for one new key: the second sees the first.
+    const twin = { events: [{ type: 'person-add', personKey: 'twin', name: 'Twin', role: 'member' }] };
+    const both = await Promise.all([owner('POST', '/mobile/team/invites', twin), owner('POST', '/mobile/team/invites', twin)]);
+    expect(both.map((x) => x.status).sort()).toEqual([200, 409]);
     // A removed person cannot come back under the same key, alone or hidden behind a new one.
     const reuse = await owner('POST', '/mobile/team/invites', { events: [{ type: 'person-add', personKey: 'mia', name: 'Mia', role: 'member' }] });
     expect(reuse.body.error).toBe('person-key-used');
