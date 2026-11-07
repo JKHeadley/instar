@@ -1250,7 +1250,7 @@ let _appConversationService: import('../core/AppConversationService.js').AppConv
 /** session-swap-any-conversation §3.3: starts an app conversation's session with no new message (null until wired). */
 /** The Slack respawner SessionRefresh uses, shared with the profile orchestrator (spec §3.2; null until wired). */
 let _slackConversationRespawner: ((sessionName: string, routingKey: string, followUpPrompt: string | undefined, accountSwap?: { configHome?: string; accountId?: string }) => Promise<string>) | null = null;
-let _appSessionStarter: ((conversationKey: string, resolved: { framework: string | null; model: string | null }) => Promise<{ framework: string | null; model: string | null } | null>) | null = null;
+let _appSessionStarter: ((conversationKey: string, resolved: import('../core/appInboundDispatch.js').AppProfile) => Promise<import('../core/appInboundDispatch.js').AppProfile | null>) | null = null;
 let _ecosystemLedger: import('../ecosystem/EcosystemLedger.js').EcosystemLedger | null = null;
 let _recommendedServicesLedger: import('../recommended/RecommendedServicesLedger.js').RecommendedServicesLedger | null = null;
 // trustworthy-machine-load C5: one fixed holding notice per topic per overload
@@ -9866,7 +9866,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // session-swap-any-conversation §3.1: spawn on the conversation's own engine and model.
           profile: (key) => {
             const r = conversationSpawnProfile(`app:${key}`);
-            return r.resolved ? { framework: r.options.framework ?? null, model: r.options.defaultModel ?? null } : null;
+            return r.resolved ? { framework: r.options.framework ?? null, model: r.options.defaultModel ?? null, thinkingMode: r.options.thinkingMode ?? null, effort: r.options.effort ?? null } : null;
           },
           startInFlight: (profileKey) => _orchestratorSpawnInFlight.has(profileKey),
           spawned: (profileKey, applied) => recordConversationSpawn(profileKey, conversationSpawnProfile(profileKey).resolved, applied),

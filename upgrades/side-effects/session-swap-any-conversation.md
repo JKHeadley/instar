@@ -43,7 +43,7 @@ Change: an app or Slack conversation can switch its engine and model from the da
 3. **Topic 1 (Telegram's General topic) was newly offered a switch on the phone.** It no longer is, as before.
 4. **The legacy restart could throw on a resolver fault.** It now fails softly with words.
 
-**Otherwise concur:** the authority checks, the allowlist and refusal of `%`, Telegram paths unchanged, the spawn option names, and no double-recording. One parity gap is noted, not fixed here: app spawns pass engine and model but not the thinking-mode and effort pins, which Slack and Telegram spawns pass. That's a follow-up.
+**Otherwise concur:** the authority checks, the allowlist and refusal of `%`, Telegram paths unchanged, the spawn option names, and no double-recording. It also noted a parity gap: app spawns passed engine and model but not the thinking-mode and effort pins that Slack and Telegram spawns pass. That's now closed: both the inbound spawn and the message-free restart carry them, with tests.
 
 ## Class-Closure Declaration
 

@@ -48,7 +48,7 @@ export interface AppDispatchSessions {
   waitForClaudeReady?(tmuxSession: string, timeoutMs?: number): Promise<boolean>;
   injectMessage(tmuxSession: string, text: string, opts?: { conversationId?: string }): boolean;
   killSession?(sessionId: string): boolean;
-  spawnInteractiveSession(initialMessage?: string, name?: string, options?: { memoryPlaceKey?: string; bootstrapConversationIds?: number[]; framework?: string; defaultModel?: string }): Promise<string>;
+  spawnInteractiveSession(initialMessage?: string, name?: string, options?: { memoryPlaceKey?: string; bootstrapConversationIds?: number[]; framework?: string; defaultModel?: string; thinkingMode?: string; effort?: string }): Promise<string>;
 }
 
 export interface AppDispatchAdmission {
@@ -56,7 +56,13 @@ export interface AppDispatchAdmission {
 }
 
 /** The engine and model a conversation is set to (session-swap-any-conversation §3.1); null fields mean the agent default. */
-export interface AppProfile { framework: string | null; model: string | null }
+export interface AppProfile {
+  framework: string | null;
+  model: string | null;
+  /** The conversation's thinking-mode and effort pins, as the Telegram and Slack spawns pass them. */
+  thinkingMode?: string | null;
+  effort?: string | null;
+}
 
 export interface AppInboundDispatchDeps {
   sessions: AppDispatchSessions;
@@ -113,15 +119,22 @@ async function waitForStart(deps: AppInboundDispatchDeps, profileKey: string): P
 }
 
 /** The spawn options carrying the conversation's engine and model. */
-function engineOptions(deps: AppInboundDispatchDeps, conversationKey: string): { framework?: string; defaultModel?: string } {
+function engineOptions(deps: AppInboundDispatchDeps, conversationKey: string): SpawnEngine {
   let p: AppProfile | null = null;
   try { p = deps.profile?.(conversationKey) ?? null; } catch { p = null; } // @silent-fallback-ok — an unreadable profile starts on the agent default, as before this change
   return toSpawnOptions(p);
 }
 
-/** A profile as spawn options (the session manager's names: `framework`, `defaultModel`). */
-function toSpawnOptions(p: AppProfile | null): { framework?: string; defaultModel?: string } {
-  return { ...(p?.framework ? { framework: p.framework } : {}), ...(p?.model ? { defaultModel: p.model } : {}) };
+type SpawnEngine = { framework?: string; defaultModel?: string; thinkingMode?: string; effort?: string };
+
+/** A profile as spawn options (the session manager's names: `framework`, `defaultModel`, `thinkingMode`, `effort`). */
+function toSpawnOptions(p: AppProfile | null): SpawnEngine {
+  return {
+    ...(p?.framework ? { framework: p.framework } : {}),
+    ...(p?.model ? { defaultModel: p.model } : {}),
+    ...(p?.thinkingMode ? { thinkingMode: p.thinkingMode } : {}),
+    ...(p?.effort ? { effort: p.effort } : {}),
+  };
 }
 
 const HISTORY = 30;
@@ -264,7 +277,7 @@ export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInbou
 }
 
 /** Tell the orchestrator what landed, except while its own start is under way (it records that one). */
-function reportSpawned(deps: AppInboundDispatchDeps, conversationKey: string, tmuxSession: string, engine: { framework?: string; defaultModel?: string }): AppProfile {
+function reportSpawned(deps: AppInboundDispatchDeps, conversationKey: string, tmuxSession: string, engine: SpawnEngine): AppProfile {
   const applied = deps.launchedOn?.(tmuxSession) ?? { framework: engine.framework ?? null, model: engine.defaultModel ?? null };
   const key = `app:${conversationKey}`;
   if (!deps.startInFlight?.(key)) {

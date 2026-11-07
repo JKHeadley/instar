@@ -11,6 +11,7 @@ function world(over: { owner?: boolean; noApp?: boolean; noSlack?: boolean; kill
   const running = new Set(['app-s', 'slack-s', 'tg-s']);
   const log: string[] = [];
   const inFlight = new Set<string>();
+  const wants: unknown[] = [];
   const deps: ConversationPortsDeps = {
     runningNames: () => [...running],
     killByTmuxName: (n) => { log.push(`kill ${n}`); if (over.killOk === false) return false; running.delete(n); return true; },
@@ -19,7 +20,7 @@ function world(over: { owner?: boolean; noApp?: boolean; noSlack?: boolean; kill
       sessionFor: (k) => (k === KEY ? 'app-s' : null),
       isOwner: () => over.owner !== false,
       conversationOfSession: (t) => (t === 'app-s' ? KEY : null),
-      start: async (k, want) => { log.push(`app-start ${k} ${want.framework} inflight=${inFlight.has(APP)}`); running.add('app-s2'); return want; },
+      start: async (k, want) => { log.push(`app-start ${k} ${want.framework} inflight=${inFlight.has(APP)}`); wants.push(want); running.add('app-s2'); return { framework: want.framework, model: want.model }; },
       disclose: async (k, text) => { log.push(`app-say ${k} ${text}`); },
     },
     slack: () => over.noSlack ? null : {
@@ -30,7 +31,7 @@ function world(over: { owner?: boolean; noApp?: boolean; noSlack?: boolean; kill
       send: async (rk, text) => { log.push(`slack-say ${rk} ${text}`); },
     },
   };
-  return { ports: createConversationPorts(deps), log, running, inFlight };
+  return { ports: createConversationPorts(deps), log, running, inFlight, wants };
 }
 
 describe('conversation ports', () => {
@@ -54,6 +55,11 @@ describe('conversation ports', () => {
     expect(await w.ports.start(APP, { framework: 'codex-cli', model: 'x', modelTier: 'opus' })).toEqual({ framework: 'codex-cli', model: null });
     expect(await w.ports.start('134088', { framework: 'codex-cli' })).toBeNull();
     expect(w.log).toContain('slack-respawn C0ABC true');
+  });
+  it('an app start is asked for the thinking-mode and effort pins too', async () => {
+    const w = world();
+    await w.ports.start(APP, { framework: 'claude-code', thinkingMode: 'off', effort: 'high' });
+    expect(w.wants).toEqual([{ framework: 'claude-code', model: null, thinkingMode: 'off', effort: 'high' }]);
   });
   it('restart: kill by tmux name, start with the in-flight mark set, then clear it', async () => {
     const w = world();

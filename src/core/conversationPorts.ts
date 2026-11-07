@@ -9,7 +9,9 @@
 import { appKeyOf, slackRoutingKeyOf } from './conversationKeys.js';
 
 export interface Landed { framework: string | null; model: string | null }
-export interface ResolvedLike { framework?: string | null; model?: string | null; modelTier?: unknown }
+export interface ResolvedLike { framework?: string | null; model?: string | null; modelTier?: unknown; thinkingMode?: string | null; effort?: string | null }
+/** What a start is asked for: the engine and model, plus the thinking-mode and effort pins. */
+export interface Want extends Landed { thinkingMode?: string | null; effort?: string | null }
 
 export interface ConversationPortsDeps {
   /** Running sessions by tmux name. */
@@ -22,7 +24,7 @@ export interface ConversationPortsDeps {
     isOwner(): boolean;
     /** The conversation key a running session serves, or null. */
     conversationOfSession(tmuxSession: string): string | null;
-    start(conversationKey: string, want: Landed): Promise<Landed | null>;
+    start(conversationKey: string, want: Want): Promise<Landed | null>;
     disclose(conversationKey: string, text: string): Promise<void>;
   } | null;
   slack: () => {
@@ -58,7 +60,12 @@ export function createConversationPorts(deps: ConversationPortsDeps): Conversati
       return null;
     },
     start: async (profileKey, resolved) => {
-      const want: Landed = { framework: resolved.framework ?? null, model: resolved.modelTier ? null : (resolved.model ?? null) };
+      const want: Want = {
+        framework: resolved.framework ?? null,
+        model: resolved.modelTier ? null : (resolved.model ?? null),
+        thinkingMode: resolved.thinkingMode ?? null,
+        effort: resolved.effort ?? null,
+      };
       const app = appKeyOf(profileKey);
       if (app) { const a = deps.app(); return a ? a.start(app, want) : null; }
       const slack = slackRoutingKeyOf(profileKey);

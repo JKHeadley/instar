@@ -46,6 +46,13 @@ describe('an app message spawns on the conversation\'s engine', () => {
     expect(spawns[0].opts).toMatchObject({ framework: 'codex', defaultModel: 'gpt-5.5', bootstrapConversationIds: [-5] });
     expect(recorded).toEqual([{ key: `app:${KEY}`, applied: { framework: 'codex', model: 'gpt-5.5' } }]);
   });
+  it('carries the thinking-mode and effort pins, as the Telegram and Slack spawns do', async () => {
+    await createAppInboundDispatch(deps({ profile: () => ({ framework: 'claude-code', model: null, thinkingMode: 'off', effort: 'high' }) }))(input);
+    expect(spawns[0].opts).toMatchObject({ framework: 'claude-code', thinkingMode: 'off', effort: 'high' });
+    expect(spawns[0].opts.defaultModel).toBeUndefined();
+    await createAppSessionStarter(deps(), startDeps({ aliasFor: () => -9 }))(KEY, { framework: 'claude-code', model: 'claude-opus-5-5', thinkingMode: 'adaptive', effort: 'low' });
+    expect(spawns[1].opts).toMatchObject({ defaultModel: 'claude-opus-5-5', thinkingMode: 'adaptive', effort: 'low' });
+  });
   it('no profile, or an unreadable one: the agent default, as before', async () => {
     await createAppInboundDispatch(deps())(input);
     await createAppInboundDispatch(deps({ profile: () => { throw new Error('bad'); } }))({ ...input, alias: -6 });
