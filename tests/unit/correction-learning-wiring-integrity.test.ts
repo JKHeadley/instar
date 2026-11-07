@@ -84,7 +84,7 @@ describe('Correction-learning wiring integrity (Slice 1b)', () => {
         stateDir: path.join(dir, '.instar'),
         port: 0,
         authToken: AUTH,
-        ...(enabled ? { monitoring: { correctionLearning: { enabled: true } } } : {}),
+        monitoring: { correctionLearning: { enabled }, failureCallouts: { enabled } },
       } as InstarConfig);
       onServer = new AgentServer({ config: mk(onDir, true), sessionManager: createMockSessionManager() as any, state: new StateManager(path.join(onDir, '.instar')) });
       offServer = new AgentServer({ config: mk(offDir, false), sessionManager: createMockSessionManager() as any, state: new StateManager(path.join(offDir, '.instar')) });

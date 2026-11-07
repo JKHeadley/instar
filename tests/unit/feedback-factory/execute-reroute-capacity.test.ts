@@ -30,6 +30,21 @@ describe('reroute capacity', () => {
     expect((await h.exec.tick()).started).toBe(1);
   });
 
+  it('a capacity refusal after the lease moved during the spawn still refunds the start', async () => {
+    h = await createExecHarness();
+    await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n' });
+    const refusal = new RerouteRefusedError('rerouted-session cap reached (6/6)');
+    Object.defineProperty(h.spawnError, 'value', { configurable: true, get: () => {
+      h.epoch.value = 2;
+      h.execStore.fenced(2, () => undefined);
+      return refusal;
+    } });
+    await h.exec.tick();
+    expect(h.execStore.all().at(-1)).toMatchObject({ state: 'stopped', reason: 'reroute-capacity' });
+    expect(h.execStore.startsToday()).toBe(0);
+  });
+
   it('a RerouteRefusedError stops the attempt as reroute-capacity, refunds the start once, and never holds the item', async () => {
     h = await createExecHarness();
     const initiativeId = await h.workItem('c1');

@@ -571,6 +571,11 @@ export class JournalSyncApplier {
       return 'forged';
     }
 
+    // Failure evidence namespaces are origin-qualified. Bind the inner origin
+    // as well as the transport entry, so a peer cannot impersonate another
+    // case's sole writer. Other historical kinds keep their existing contract.
+    if (kind === 'failure-callout-chunk' && entry.data?.origin !== senderMachineId) return 'forged';
+
     // Size cap (parseable ≤ cap). The line we'd write is the serialized entry.
     let line: string;
     try {

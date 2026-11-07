@@ -29,6 +29,7 @@ import { SandboxRuntimeRunner } from './ConfinedRunner.js';
 import { DepsCache } from './depsCache.js';
 import { GhGateway, SafeAttemptGit, type AttemptGit, type GitHubGateway } from './executorPorts.js';
 import { SecretStore } from '../../core/SecretStore.js';
+import { createAuthenticatedGitHubCliRuntimeResolver } from '../../core/githubRuntime.js';
 import { secretKeyPaths } from '../../core/SecretSync.js';
 import { OPEN_PR_STATES } from './FeedbackExecuteStore.js';
 
@@ -180,8 +181,8 @@ export function buildFeedbackExecutor(input: {
   const deps = input.overrides?.deps ?? new DepsCache({
     root: path.join(agentHome, '.worktrees', '.feedback-deps'), agentHome, trashRoot: path.join(executeStateDir, 'trash'), runner, testRunnerHoldersFile,
   });
-  const ghPath = 'gh';
-  const github = input.overrides?.github ?? new GhGateway({ ghPath, cwd: config.stateDir, safeMergeScript: path.join(resolveConfig().sourceRepoPath ?? agentHome, 'scripts', 'safe-merge.mjs') });
+  const githubRuntime = createAuthenticatedGitHubCliRuntimeResolver({ stateDir: config.stateDir });
+  const github = input.overrides?.github ?? new GhGateway({ resolveRuntime: githubRuntime, cwd: config.stateDir, safeMergeScript: path.join(resolveConfig().sourceRepoPath ?? agentHome, 'scripts', 'safe-merge.mjs') });
 
   const sm = input.sessionManager;
   let cachedFrameworkVersion: { value: string | null; at: number } | null = null;
@@ -253,7 +254,7 @@ export function buildFeedbackExecutor(input: {
     review,
     processing: input.processing,
     initiatives: input.initiativeTracker,
-    git: input.overrides?.git ?? new SafeAttemptGit(),
+    git: input.overrides?.git ?? new SafeAttemptGit(githubRuntime),
     github,
     runner,
     deps,
@@ -269,7 +270,8 @@ export function buildFeedbackExecutor(input: {
     ownerEpoch: input.ownerEpoch,
     isCanonicalOwner: input.isCanonicalOwner,
     commitIdentity: identity,
-    ghCredentialHelper: `!${ghPath} auth git-credential`,
+    // The trusted git port derives its helper from the same explicit per-agent runtime.
+    ghCredentialHelper: null,
     raiseAttention: input.raiseAttention,
     reportDegradation: (event) => DegradationReporter.getInstance().report(event),
     dashboardLink: () => `${input.tunnelUrl() ?? `http://localhost:${config.port}`}/dashboard?tab=feedback-drain`,

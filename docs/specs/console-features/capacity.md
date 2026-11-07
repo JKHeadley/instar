@@ -41,6 +41,7 @@ Why these merges:
   different time windows (24 h, 7 d, daily grain). LLM activity promises "what it cost" and never
   shows it (`index.html:3733`). One view with one time control and a named source on every
   number fixes all of that.
+- **"Needs you" means an action only the operator can take.** An unconfirmed sign-in, or a repair blocked by something the agent owns, is shown but not counted. A wrong login in a slot counts after a day; a login gone from the machine and a device-limit stop always count.
 - **Accounts stays on its own.** It is the action-heavy screen (sign-in repair, setup, approve),
   and money is a different decision from allowance. The cost view links to it for "covered by
   your subscription".
@@ -365,8 +366,14 @@ does any sign-in need me?"*
 - "Tap Switch account" refers to a button on the provider's page without saying so.
 
 **The new design.**
-- *Arrival (glance):* **"Plenty left: the busiest account is at 62% of its 5-hour limit."** /
-  **"1 sign-in needs you."** / **"Claude is nearly out until 4:10pm; Codex has room."** Facts:
+- *Arrival (glance):* **"1 sign-in needs you."** when one does, else just **"Accounts"**. Under it,
+  the notice spot (operator 2026-11-06, topic 134088: "only show a message if it's actually useful
+  and important"): empty and hidden unless a machine has no signed-in account ("Mac Mini has no
+  signed-in account, so nothing can run there.", action: the sign-in) or every usable account, or
+  every usable account of one kind, is at or over 90% ("All 2 Claude accounts are used up." with
+  when room returns, action: ask the agent). One account full while others have room is on its
+  row and is never a notice, and a sign-in that is only waiting gets no line at the top either. Same rules as the phone's `notices` (`accountNotices` in
+  `src/server/mobileCapacityRoutes.ts`). Facts:
   *Needs you* (sign-ins, approvals; hidden at zero), *Most used* (account + % + resets in),
   *Accounts* (n working of m), *In use now* (which account this machine is serving with).
 - *Layout:*
