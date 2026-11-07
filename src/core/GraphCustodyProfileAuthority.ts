@@ -292,6 +292,22 @@ export class GraphCustodyProfileAuthority {
   const raw={v:1 as const,kind:'member-loss-survivor-hold' as const,agentId:this.agentId,intentHash:canonicalHash(intent),previousMembershipHash:canonicalHash(current),newMembershipHash:canonicalHash(context.newMembership),machineId,heldAt:new Date().toISOString()},hold={...raw,signature:signGraphRecord(GRAPH_MEMBER_LOSS_HOLD_DOMAIN,raw,signingKey)};if(!verifyGraphMemberLossSurvivorHold(hold,intent,trusted))throw new Error('graph-custody-member-loss-recipient-invalid');
   this.failedHold=true;this.failedHoldEpoch=context.newMembership.epoch;this.persist('loss-intent-'+context.newMembership.epoch,{v:1,intent,previousMembership:current,newMembership:context.newMembership,nativeIdentities:context.nativeIdentities});const name='loss-hold-'+context.newMembership.epoch+'-'+canonicalHash(machineId),prior=this.read(name) as GraphMemberLossSurvivorHold|null;if(prior){if(!verifyGraphMemberLossSurvivorHold(prior,intent,trusted))throw new Error('graph-custody-member-loss-hold-conflict');this.syncRetained(name,prior);return prior;}this.persist(name,hold);return hold;
  }
+ /** Lifts a removal hold the owner decided against. The caller proves nothing irreversible
+  * has started. Holds go first, so a crash part way leaves an intent that can be finished
+  * or withdrawn again, never a hold that would conflict with a later intent. */
+ /** Durable before the snapshot naming the held intent leaves this machine. A peer that saw
+  * it stops serving until it can verify that intent, and nothing tells it the intent went
+  * away, so from here on a removal can only be finished. */
+ recordMemberLossDisclosure():void{const epoch=this.currentMembership().epoch+1,row=this.memberLossHold(epoch);if(row&&!this.read('loss-disclosed-'+epoch))this.persist('loss-disclosed-'+epoch,{v:1,intentHash:canonicalHash(row.intent)});}
+ memberLossDisclosed():boolean{return this.read('loss-disclosed-'+(this.currentMembership().epoch+1))!==null;}
+ withdrawMemberLossHold(intent:GraphMemberLossIntentProof):void{
+  const current=this.currentMembership(),epoch=current.epoch+1,row=this.memberLossHold(epoch);
+  if(!row||canonicalHash(row.intent)!==canonicalHash(intent)||canonicalHash(row.previousMembership)!==canonicalHash(current)||this.read('loss-activation-'+epoch)||this.read('loss-disclosed-'+epoch))throw new Error('graph-custody-member-loss-withdraw-invalid');
+  for(const name of fs.readdirSync(this.directory))if(name.startsWith('loss-hold-'+epoch+'-')&&name.endsWith('.json'))SafeFsExecutor.safeUnlinkSync(path.join(this.directory,name),{operation:'graph-custody:withdraw-member-loss-hold'});
+  SafeFsExecutor.safeUnlinkSync(this.file('loss-intent-'+epoch),{operation:'graph-custody:withdraw-member-loss-intent'});
+  const directory=fs.openSync(this.directory,'r');try{fs.fsyncSync(directory);}finally{fs.closeSync(directory);}
+  this.retainedFlushes.clear();if(this.failedHoldEpoch===epoch){this.failedHold=false;this.failedHoldEpoch=null;}
+ }
  assertMemberLossHeld(intent:GraphMemberLossIntentProof):void{const current=this.currentMembership(),row=this.memberLossHold(current.epoch+1);if(!row||canonicalHash(row.intent)!==canonicalHash(intent)||canonicalHash(row.previousMembership)!==canonicalHash(current))throw new Error('graph-custody-member-loss-not-held');this.syncRetainedRead('loss-intent-'+row.newMembership.epoch,row);}
 
 }

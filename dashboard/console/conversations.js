@@ -6,6 +6,7 @@ import { mountPending } from './conversation-pending.js';
 import { correctionControls } from './conversation-corrections.js';
 import { effortActionControls } from './conversation-effort-actions.js';
 import { erasureControls } from './conversation-erasure.js';
+import { machineControls } from './conversation-machines.js';
 
 const PAGE = '#/work/conversations';
 const ROOTS = '/conversation-graph/roots';
@@ -347,6 +348,8 @@ export async function renderConversations(main) {
     send: (path, body) => read(path, controller.signal, body), current,
     unlock: () => unlock(main, retry), refresh: () => { remember(); retry(); } });
   if (effortActions) body.insertBefore(effortActions, rows);
+  if (state.view === 'overview') void machineControls({ send: (path, sent) => read(path, controller.signal, sent), current,
+    unlock: () => unlock(main, retry), refresh: () => { remember(); retry(); } }).then(controls => { if (controls && current()) body.append(controls); }).catch(() => {});
   if (!model.items.length) rows.append(el('p', { class: 'empty-line', text: state.q ? 'No conversations match this search.'
     : state.view === 'overview' ? 'No efforts are organized yet. Your conversations are in All.' : 'No conversations are available.' }));
   if (state.view === 'overview' && (!model.items.length || model.hasMore)) body.append(nav('All conversations', href({ view: 'all' })));

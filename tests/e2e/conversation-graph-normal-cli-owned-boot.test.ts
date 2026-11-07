@@ -42,6 +42,8 @@ it('boots the real CLI and preserves owner-created effort across a same-file col
  try{
   await start();expect((await request('/conversation-graph/roots',undefined,undefined,false)).status).toBeGreaterThanOrEqual(400);expect((await request('/conversation-graph/roots')).status).toBe(403);
   let unlock=await request('/dashboard/unlock',{pin});expect(unlock.status).toBe(200);let proof=unlock.data.operatorSessionToken;expect(typeof proof).toBe('string');
+  // Removing a lost machine is reachable on the real server, for the owner only.
+  expect((await request('/conversation-graph/member-loss/status')).status).toBe(403);const removal=await request('/conversation-graph/member-loss/status',undefined,proof);expect(removal.status,JSON.stringify(removal.data)).toBe(200);expect(removal.data.state).toBe('none');expect(removal.data.members).toHaveLength(1);expect(removal.data.members[0].self).toBe(true);
   const roots=await request('/conversation-graph/roots?view=overview',undefined,proof);expect(roots.status).toBe(200);expect(Array.isArray(roots.data.items)).toBe(true);
   const requestId=crypto.randomUUID(),create=await request('/conversation-graph/changes',{requestId,change:{kind:'create-effort',projectScope:[]}},proof);expect([200,202]).toContain(create.status);let status=create;
   for(let i=0;i<60&&status.data.state!=='committed';i++){await pause(100);status=await request(`/conversation-graph/changes/${requestId}`,undefined,proof);}expect(status.data.state).toBe('committed');

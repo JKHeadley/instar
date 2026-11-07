@@ -83,11 +83,15 @@ describe('actual graph source runtime + authenticated installed peer transport',
   expect(()=>restored.retainedProjection()).toThrow('retained-unavailable');expect(await restored.refreshReadiness()).toBe(false);
   await runtime.close();expect(runtime.isReady()).toBe(false);await expect(member.receiveSource(record)).rejects.toThrow();
  });
- it('withdraws availability when installed identity membership changes or the real lifetime lock is released',async()=>{
+ it('withdraws availability when a signed member is lost or the real lifetime lock is released, but not for a machine paired later',async()=>{
   const {runtime,options,managers}=await setup();expect(await runtime.refreshReadiness()).toBe(true);
   const registry=managers[0].loadRegistry();registry.machines.extra={...Object.values(registry.machines)[0],name:'extra',status:'active'};managers[0].saveRegistry(registry);
+  // A machine paired later is not a member yet, so it must not stop the members.
+  expect(runtime.isReady()).toBe(true);delete registry.machines.extra;managers[0].saveRegistry(registry);
+  // Losing a signed member does stop them.
+  const peerId=managers[1].loadIdentity().machineId,peerRow=registry.machines[peerId];delete registry.machines[peerId];managers[0].saveRegistry(registry);
   expect(runtime.isReady()).toBe(false);expect(()=>runtime.actuation()).toThrow('write-fenced');
-  delete registry.machines.extra;managers[0].saveRegistry(registry);expect(runtime.isReady()).toBe(true);
+  registry.machines[peerId]=peerRow;managers[0].saveRegistry(registry);expect(runtime.isReady()).toBe(true);
   options[0].instanceLock.release();expect(runtime.isReady()).toBe(false);expect(()=>runtime.projection()).toThrow('not-ready');
  });
  it('uses one actual mutation queue, durable reservation allocator and authenticated allmember coordinator for producer intake',async()=>{

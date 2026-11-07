@@ -12,11 +12,13 @@ import type {GraphViewer} from '../core/conversationGraphRead.js';
 import type {ConversationGraphDefault} from './ConversationGraphDefault.js';
 import {createConversationGraphSurface} from './ConversationGraphSurface.js';
 import {createConversationGraphViewerResolver} from './conversationGraphViewer.js';
+import {ConversationGraphMemberLossSurface} from './ConversationGraphMemberLossSurface.js';
 import type {ConversationGraphReplicationRuntime} from './ConversationGraphReplicationRuntime.js';
 export function createConversationGraphDefaultSurface(options:Omit<Parameters<typeof createConversationGraphSurface>[0],'agentId'|'runtime'|'identity'> & {manager:ConversationGraphDefault;onRuntime?(runtime:ConversationGraphReplicationRuntime):void}):Router{
  const router=Router();if(options.readEnabled!==true)return router;
  const resolveViewer=createConversationGraphViewerResolver({...options,agentId:options.manager.agentId});let mounted:Router|null=null,mountedRuntime:ConversationGraphReplicationRuntime|null=null;
  const grants=options.dashboardPolicy?new ConversationGraphOwnerGrantStore({stateDir:options.stateDir,agentId:options.manager.agentId,secrets:new SecretStore({stateDir:options.stateDir,forceFileKey:options.forceFileKey}),dashboardPolicy:options.dashboardPolicy}):null;
+ const memberLoss=grants&&options.correctionsEnabled===true?new ConversationGraphMemberLossSurface({manager:options.manager,stateDir:options.stateDir,forceFileKey:options.forceFileKey,grants,pairing:options.pairing??null,verifyDashboardOwner:options.verifyDashboardOwner??(()=>false),initializeDashboardPolicy:options.initializeDashboardPolicy}):null;
  const mount=(runtime:ConversationGraphReplicationRuntime)=>{
   if(mounted&&mountedRuntime===runtime)return;
   const identity=options.manager.identity;if(!identity)throw new Error('graph-default-identity-unavailable');
@@ -63,7 +65,9 @@ export function createConversationGraphDefaultSurface(options:Omit<Parameters<ty
    if(surface==='dashboard')options.initializeDashboardPolicy?.();if(!isCurrent())return void res.status(403).json({code:'hierarchy-owner-only'});
    const runtime=await options.manager.ensureOwner({principalKey:owner.principalKey,authenticationMethod:surface==='mobile'?'owner-device':'owner-dashboard',requestId:crypto.randomUUID(),isCurrent});
    if(!isCurrent())return void res.status(403).json({code:'hierarchy-owner-only'});const identity=options.manager.identity;if(!identity)throw new Error('graph-default-identity-unavailable');
-   mount(runtime);return mounted!(req,res,next);
+   mount(runtime);
+   if(memberLoss&&ConversationGraphMemberLossSurface.handles(req.path)&&await memberLoss.handle(req,res,surface))return;
+   return mounted!(req,res,next);
   }catch{if(!isCurrent())return void res.status(403).json({code:'hierarchy-owner-only'});try{if(await provisional(req,res,surface,owner,isCurrent,()=>{recordLocal=true;}))return;}catch{if(!isCurrent())return void res.status(403).json({code:'hierarchy-owner-only'});}res.status(503).json({code:'conversation-graph-pending',reason:'owned-custody-pending',capabilities:{recordLocal,canonical:false},...(options.manager.awaitingJoin?{awaitingJoin:true}:{})});}
  });return router;
 }
