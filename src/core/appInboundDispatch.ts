@@ -121,7 +121,7 @@ async function waitForStart(deps: AppInboundDispatchDeps, profileKey: string): P
 /** The spawn options carrying the conversation's engine and model. */
 function engineOptions(deps: AppInboundDispatchDeps, conversationKey: string): SpawnEngine {
   let p: AppProfile | null = null;
-  try { p = deps.profile?.(conversationKey) ?? null; } catch { p = null; } // @silent-fallback-ok — an unreadable profile starts on the agent default, as before this change
+  try { p = deps.profile?.(conversationKey) ?? null; } catch { /* @silent-fallback-ok — an unreadable profile starts on the agent default, as before this change */ p = null; }
   return toSpawnOptions(p);
 }
 

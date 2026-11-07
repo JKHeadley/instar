@@ -111,7 +111,7 @@ export function createConversationPorts(deps: ConversationPortsDeps): Conversati
       try {
         const landed = await ports.start(profileKey, resolved);
         return landed ? { respawned: true } : { respawned: false, error: 'the new session was not started' };
-      } catch (err) {
+      } catch (err) { // @silent-fallback-ok — answered as a failed restart with its reason; the write surface reports it in words
         return { respawned: false, error: err instanceof Error ? err.message : String(err) };
       } finally {
         deps.inFlight.delete(profileKey);
