@@ -99,8 +99,10 @@ function executorEdge(root: string, clock: { now: number }) {
     },
     runner: {
       available: () => ({ ok: true as const, version: '0.0.77' }),
-      run: async (cmd: { command: string; cwd: string; settings: { filesystem: { denyWrite: string[] } } }) => {
+      run: async (cmd: { command: string; cwd: string; settings: { filesystem: { denyWrite: string[] }; network: { allowedDomains: string[]; allowMachLookup?: string[] } } }) => {
         expect(cmd.settings.filesystem.denyWrite).toContain(path.join(cmd.cwd, '.instar'));
+        expect(cmd.settings.network.allowedDomains).toEqual([]);
+        expect(cmd.settings.network.allowMachLookup).toEqual(process.platform === 'darwin' ? ['com.apple.SystemConfiguration.DNSConfiguration'] : undefined);
         state.confinedGuardChecks++;
         const c = cmd.command;
         // The (a) base-check clone still has the crashing source; every other tree has the fix.
@@ -119,10 +121,12 @@ function executorEdge(root: string, clock: { now: number }) {
     sessions: {
       spawnConfined: async (input: { name: string; prompt: string; cwd: string; settingsPath: string }) => {
         const settings = JSON.parse(fs.readFileSync(input.settingsPath, 'utf8')) as {
-          sandbox: { filesystem: { denyWrite: string[] } };
+          sandbox: { filesystem: { denyWrite: string[] }; network: { allowedDomains: string[]; allowMachLookup?: string[] } };
           permissions: { deny: string[] };
         };
         expect(settings.sandbox.filesystem.denyWrite).toContain(path.join(input.cwd, '.instar'));
+        expect(settings.sandbox.network.allowedDomains).toEqual([]);
+        expect(settings.sandbox.network.allowMachLookup).toEqual(process.platform === 'darwin' ? ['com.apple.SystemConfiguration.DNSConfiguration'] : undefined);
         expect(settings.permissions.deny).toContain(`Edit(/${path.resolve(input.cwd, '.instar')}/**)`);
         state.confinedGuardChecks++;
         state.spawned.push(input.name);

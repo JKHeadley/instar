@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "feedback-sandbox-dns-mach",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-04T12:32:05.323Z",
+  "artifactPath": "upgrades/side-effects/feedback-sandbox-dns-mach.md",
+  "artifactSha256": "4abd8e1efdc9c0d7927a43f599102f28911304c7421e9ed78b18e0f1d320b71a",
+  "specPath": "docs/specs/feedback-triage-and-execution.md",
+  "coveredFiles": [
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/e2e/feedback-execute-lifecycle.test.ts",
+    "tests/integration/feedback-execute-dns-sandbox.test.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/feedback-sandbox-dns-mach.md",
+    "upgrades/side-effects/feedback-sandbox-dns-mach.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
