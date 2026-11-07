@@ -66,7 +66,7 @@ export function verifyGraphCustodyRetirement(proof:GraphCustodyRetirementProof,s
 export interface GraphCustodyActivationRow {v:1;stage:GraphCustodyProfileStage;certificate:GraphMembershipActivationCertificate;holds:GraphCustodyProfileHold[];retirement:GraphCustodyRetirementProof;pins:GraphCustodyActivationPin[]}
 export interface GraphMemberLossHeldIntent {v:1;intent:GraphMemberLossIntentProof;previousMembership:GraphMembershipEpoch;newMembership:GraphMembershipEpoch;nativeIdentities:GraphMemberLossNativeIdentity[];holds:GraphMemberLossSurvivorHold[];planRevision?:GraphMemberLossPlanRevision;planRevisionHashes?:string[]}
 export class GraphCustodyProfileAuthority {
- private readDurabilityScope:Map<string,string>|null=null;
+ private readonly retainedFlushes=new Map<string,string>();
  private pagedStoreValue:GraphPagedCustodyStageStore|null=null;private pagedMetadataBytes:number|null=null;private pagedPrepared=new Map<string,GraphPreparedCustodyStageV2>();
  private failedHold=false;private failedHoldEpoch:number|null=null;private readonly root:string;private readonly directory:string;private readonly publication:GraphCustodyBootstrapPublication;
  constructor(private readonly options:{stateDir:string;agentId:string;publication:GraphCustodyBootstrapPublication}){
@@ -76,10 +76,11 @@ export class GraphCustodyProfileAuthority {
  }
  private file(name:string){const file=path.join(this.directory,name+'.json');assertGraphLocalPath(this.root,file);return file;}
  private read(name:string):unknown|null{const file=this.file(name);try{const stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.size>32*1024*1024)throw new Error('graph-custody-active-file-invalid');return JSON.parse(fs.readFileSync(file,'utf8'));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return null;throw error;}}
- /** Coalesce only duplicate flushes inside one synchronous lineage read.
-  * Fresh bytes, identities and negative signatures are still checked; no
-  * durability memo survives this public read or supplies authority. */
- private withReadDurabilityScope<T>(read:()=>T):T{if(this.readDurabilityScope)return read();this.readDurabilityScope=new Map();try{return read();}finally{this.readDurabilityScope=null;}}
+ /** Reads happen constantly, so a repeat read does not flush a file or directory this
+  * instance already flushed unchanged. Fresh bytes, identities and negative signatures
+  * are still checked on every read; the memo supplies no authority. Any change to the
+  * file or its parents flushes again, a failed flush forgets everything, and a restart
+  * starts empty. */
  private syncRetainedRead(name:string,value:unknown):void{this.syncRetained(name,value,true);}
  private syncRetained(name:string,value:unknown,readOnly=false):void{
   const file=this.file(name),expected=canonicalHash(value),before=fs.lstatSync(file,{bigint:true}),fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)),parents:Array<{file:string;fd:number;identity:string}>=[];
@@ -88,12 +89,13 @@ export class GraphCustodyProfileAuthority {
   try{
    const opened=fs.fstatSync(fd,{bigint:true});if(!opened.isFile()||before.isSymbolicLink()||opened.size>32n*1024n*1024n||identity(opened)!==identity(before))throw new Error('graph-custody-active-durability-file-changed');
    for(let parent=this.directory;;parent=path.dirname(parent)){const descriptor=fs.openSync(parent,'r');try{const stat=fs.fstatSync(descriptor,{bigint:true});if(!stat.isDirectory())throw new Error('graph-custody-active-durability-directory-changed');parents.push({file:parent,fd:descriptor,identity:directoryIdentity(parent,stat)});}catch(error){fs.closeSync(descriptor);throw error;}if(path.dirname(parent)===parent)break;}
-   const stamp=canonicalHash({expected,file:identity(opened),parents:parents.map(row=>[row.file,row.identity])}),memo=readOnly?this.readDurabilityScope:null;
-   if(memo?.get('file:'+name)!==stamp)fs.fsyncSync(fd);for(const parent of parents)if(memo?.get('dir:'+parent.file)!==parent.identity)fs.fsyncSync(parent.fd);
+   const stamp=canonicalHash({expected,file:identity(opened),parents:parents.map(row=>[row.file,row.identity])}),memo=readOnly?this.retainedFlushes:null;
+   // One changed parent flushes them all: a directory swapped in underneath changes itself but not the stamp of the parent that holds the swap.
+   if(memo?.get('file:'+name)!==stamp)fs.fsyncSync(fd);if(parents.some(parent=>memo?.get('dir:'+parent.file)!==parent.identity))for(const parent of parents)fs.fsyncSync(parent.fd);
    const bytes=Buffer.alloc(Number(opened.size)+1),read=fs.readSync(fd,bytes,0,bytes.length,0);if(read!==Number(opened.size)||canonicalHash(JSON.parse(bytes.subarray(0,read).toString('utf8')))!==expected||identity(fs.fstatSync(fd,{bigint:true}))!==identity(opened)||identity(fs.lstatSync(file,{bigint:true}))!==identity(opened))throw new Error('graph-custody-active-readback-invalid');
    for(const parent of parents)if(directoryIdentity(parent.file,fs.fstatSync(parent.fd,{bigint:true}))!==parent.identity||directoryIdentity(parent.file,fs.lstatSync(parent.file,{bigint:true}))!==parent.identity)throw new Error('graph-custody-active-durability-directory-changed');
    if(memo){if(memo.size<4096||memo.has('file:'+name))memo.set('file:'+name,stamp);for(const parent of parents)if(memo.size<4096||memo.has('dir:'+parent.file))memo.set('dir:'+parent.file,parent.identity);}
-  }catch(error){this.readDurabilityScope?.clear();throw error;}finally{for(const parent of parents)fs.closeSync(parent.fd);fs.closeSync(fd);}
+  }catch(error){this.retainedFlushes.clear();throw error;}finally{for(const parent of parents)fs.closeSync(parent.fd);fs.closeSync(fd);}
  }
 
  private persist(name:string,value:unknown){ensureGraphLocalDirectory(this.root,this.directory);const bytes=canonicalJson(value);if(Buffer.byteLength(bytes)>32*1024*1024)throw new Error('graph-custody-active-capacity');const file=this.file(name),temporary=file+'.'+crypto.randomUUID()+'.pending',fd=fs.openSync(temporary,'wx',0o600);try{fs.writeFileSync(fd,bytes);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}try{try{fs.linkSync(temporary,file);}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST'||canonicalJson(this.read(name))!==bytes)throw new Error('graph-custody-active-conflict');}}finally{SafeFsExecutor.safeUnlinkSync(temporary,{operation:'graph-custody-active:publication-scratch'});}this.syncRetained(name,value);}
@@ -145,14 +147,14 @@ export class GraphCustodyProfileAuthority {
  get publicationHash():string{return canonicalHash(this.publication);}
  get ownerPublicKey():string{return this.publication.ownerPublicKey;}
  get agentId():string{return this.options.agentId;}
- currentMembership():GraphMembershipEpoch{return this.withReadDurabilityScope(()=>{const current=this.currentMembershipCore();this.assertPagedStageRows(current);return current;});}
+ currentMembership():GraphMembershipEpoch{const current=this.currentMembershipCore();this.assertPagedStageRows(current);return current;}
  private currentMembershipCore():GraphMembershipEpoch{
   let current=this.publication.membership;for(let epoch=2;epoch<=129;epoch++){const row=this.read('activation-'+epoch) as GraphCustodyActivationRow|null,loss=this.memberLossActivation(current);if(row&&loss)throw new Error('graph-custody-active-competing-activation');if(loss){if(!this.memberLossCompletion(loss))return JSON.parse(canonicalJson(current));current=loss.certificate.newMembership;continue;}if(!row)return JSON.parse(canonicalJson(current));this.validRow(row,current);this.syncRetainedRead('intent-'+epoch,row.stage.holdIntent);this.syncRetainedRead('stage-'+epoch+'-'+row.stage.revision,row.stage);this.syncRetainedRead('activation-'+epoch,row);current=row.certificate.newMembership;}throw new Error('graph-custody-active-chain-capacity');
  }
  /** Read-only negative inventory. This verifies existing pinned authority and
   * durable lineage even during STAGING; it never calls positive admission or
   * clears a hold. Returned proposed roles are not activated authority. */
- verifiedNegativeRoleLineage():{genesis:GraphMembershipEpoch;current:GraphMembershipEpoch;positiveCurrent:GraphMembershipEpoch;activations:GraphCustodyActivationRow[];memberLossActivations:GraphMemberLossActivationRow[];memberLossIntents:GraphMemberLossHeldIntent[];stages:GraphCustodyProfileStage[];pagedStages?:GraphCustodyProfileStageV2[];pendingIntent:GraphCustodyHoldIntent|null}{return this.withReadDurabilityScope(()=>this.verifiedNegativeRoleLineageCore());}
+ verifiedNegativeRoleLineage():{genesis:GraphMembershipEpoch;current:GraphMembershipEpoch;positiveCurrent:GraphMembershipEpoch;activations:GraphCustodyActivationRow[];memberLossActivations:GraphMemberLossActivationRow[];memberLossIntents:GraphMemberLossHeldIntent[];stages:GraphCustodyProfileStage[];pagedStages?:GraphCustodyProfileStageV2[];pendingIntent:GraphCustodyHoldIntent|null}{return this.verifiedNegativeRoleLineageCore();}
  private verifiedNegativeRoleLineageCore():{genesis:GraphMembershipEpoch;current:GraphMembershipEpoch;positiveCurrent:GraphMembershipEpoch;activations:GraphCustodyActivationRow[];memberLossActivations:GraphMemberLossActivationRow[];memberLossIntents:GraphMemberLossHeldIntent[];stages:GraphCustodyProfileStage[];pagedStages?:GraphCustodyProfileStageV2[];pendingIntent:GraphCustodyHoldIntent|null}{
   const positiveCurrent=this.currentMembership();let current=positiveCurrent;const activations:GraphCustodyActivationRow[]=[],memberLossActivations:GraphMemberLossActivationRow[]=[],memberLossIntents:GraphMemberLossHeldIntent[]=[],stages:GraphCustodyProfileStage[]=[];
   let previous=this.publication.membership;
@@ -290,6 +292,6 @@ export class GraphCustodyProfileAuthority {
   const raw={v:1 as const,kind:'member-loss-survivor-hold' as const,agentId:this.agentId,intentHash:canonicalHash(intent),previousMembershipHash:canonicalHash(current),newMembershipHash:canonicalHash(context.newMembership),machineId,heldAt:new Date().toISOString()},hold={...raw,signature:signGraphRecord(GRAPH_MEMBER_LOSS_HOLD_DOMAIN,raw,signingKey)};if(!verifyGraphMemberLossSurvivorHold(hold,intent,trusted))throw new Error('graph-custody-member-loss-recipient-invalid');
   this.failedHold=true;this.failedHoldEpoch=context.newMembership.epoch;this.persist('loss-intent-'+context.newMembership.epoch,{v:1,intent,previousMembership:current,newMembership:context.newMembership,nativeIdentities:context.nativeIdentities});const name='loss-hold-'+context.newMembership.epoch+'-'+canonicalHash(machineId),prior=this.read(name) as GraphMemberLossSurvivorHold|null;if(prior){if(!verifyGraphMemberLossSurvivorHold(prior,intent,trusted))throw new Error('graph-custody-member-loss-hold-conflict');this.syncRetained(name,prior);return prior;}this.persist(name,hold);return hold;
  }
- assertMemberLossHeld(intent:GraphMemberLossIntentProof):void{const current=this.currentMembership(),row=this.memberLossHold(current.epoch+1);if(!row||canonicalHash(row.intent)!==canonicalHash(intent)||canonicalHash(row.previousMembership)!==canonicalHash(current))throw new Error('graph-custody-member-loss-not-held');this.syncRetained('loss-intent-'+row.newMembership.epoch,row);}
+ assertMemberLossHeld(intent:GraphMemberLossIntentProof):void{const current=this.currentMembership(),row=this.memberLossHold(current.epoch+1);if(!row||canonicalHash(row.intent)!==canonicalHash(intent)||canonicalHash(row.previousMembership)!==canonicalHash(current))throw new Error('graph-custody-member-loss-not-held');this.syncRetainedRead('loss-intent-'+row.newMembership.epoch,row);}
 
 }

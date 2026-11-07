@@ -191,7 +191,7 @@ describe('owner corrections through actual native admission, witness HTTP and tw
   const titled=await changes.submit(req,'dashboard','capture-title-0001',{kind:'set-effort-title',effort:created.body.effort,baseVersion:0,title:'Synthetic contract capture'});
   expect(titled.body.state).toBe('committed');
   const model=new ConversationGraphReadModel(new ConversationGraphRuntimeReadSource(runtime,custody,{correctionsEnabled:true,erasureEnabled:true}));
-  const viewer={principalKey:'owner:echo',grantVersion:'synthetic-capture-owner',mayView:()=>true};
+  const viewer={principalKey:'owner:echo',grantVersion:'synthetic-capture-owner',mayView:()=>true,hasFullCorrectionScope:()=>true};
   const app=express();app.use(createConversationGraphRouter({model,resolveViewer:()=>viewer}));
   const roots=await request(app).get('/mobile/conversation-graph/roots?view=overview');
   const ref=Buffer.from(JSON.stringify(Object.fromEntries(Object.entries(created.body.effort as object).sort(([a],[b])=>a.localeCompare(b))))).toString('base64url');

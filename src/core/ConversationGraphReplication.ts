@@ -1,5 +1,5 @@
 // RULE 3: EXEMPT — these classes read signed, hash-checked graph records from disk; none infers agent or provider state from output.
-import {flushDescriptorOnce} from './GraphDurableFileMemo.js';
+import {durableStamp,flushDescriptorOnce,isDurablyUnchanged,rememberDurable} from './GraphDurableFileMemo.js';
 import {GraphMemberLossNegativeTransferPermit,type GraphMemberLossNegativeTransferEvidence} from './GraphMemberLossNegativeTransfer.js';
 import {verifyGraphOwnerMemberLossConsent,type GraphOwnerMemberLossConsent,type GraphOwnerMemberLossContext} from './GraphOwnerMemberLoss.js';
 import {verifyGraphMemberLossIntent} from './GraphMemberLossNativeProof.js';
@@ -435,6 +435,7 @@ export class ConversationGraphReplication {
   private readonly deliveryCompletionReceipts=new Map<string,Map<string,GraphDeliveryCompletionReceipt>>();
   private readonly deliveryReceipts = new Map<string, Map<string, GraphCommitProofDeliveryReceipt>>();
   private durableGeneration=0;
+  private historicalAncestorsFlushed=false;
   private readonly heldSourceReaders=new Set<WeakRef<GraphHeldSourceReader>>();
   private readonly heldImports=new Map<string,{name:string;eventId:string;stageHash:string;priorCanonical:boolean;hash:string}>();
   private heldCatalogMetadataBytes=0;
@@ -1295,7 +1296,8 @@ export class ConversationGraphReplication {
     const contextName=path.join('contexts',reference.contextHash+'.json'),contextPath=path.join(this.options.directory,contextName),stat=await fs.lstat(contextPath,{bigint:true});const stamp=`${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
     if(!stat.isFile()||stat.isSymbolicLink())throw new Error('graph-history-import-context-invalid');if(this.historicalContextFiles.get(reference.contextHash)!==stamp){const actual=await this.syncHistoricalFile(contextName,GRAPH_CONTEXT_MAX_BYTES);if(actual.hash!==reference.contextHash)throw new Error('graph-history-import-context-invalid');this.historicalContextFiles.set(reference.contextHash,actual.stamp);while(this.historicalContextFiles.size>2)this.historicalContextFiles.delete(this.historicalContextFiles.keys().next().value!);}
     if(!denied&&record.encryptedSourceBundle){const plaintext=reopened.openVerifiedPayload(record);try{if(this.isErased(record.packet.erasureIdentity))throw new Error('graph-history-import-erasure-race');}finally{plaintext.fill(0);}}
-    for(let parent=this.options.directory;;parent=path.dirname(parent)){const dir=await fs.open(parent,'r');try{await dir.sync();}finally{await dir.close();}if(path.dirname(parent)===parent)break;}
+    // The row's own directory always flushes, and an instance's first row flushes every ancestor because creating the chain did not. After that ancestors rarely change, so flush them only when they did.
+    for(let parent=this.options.directory;;parent=path.dirname(parent)){if(parent===this.options.directory||!this.historicalAncestorsFlushed||!isDurablyUnchanged(parent)){const stamp=durableStamp(parent),dir=await fs.open(parent,'r');try{rememberDurable(parent,null);await dir.sync();rememberDurable(parent,stamp);}finally{await dir.close();}}if(path.dirname(parent)===parent)break;}this.historicalAncestorsFlushed=true;
     if(this.durableGeneration!==generation||(this.isErased(record.packet.erasureIdentity)||reopened.isErased(record.packet.erasureIdentity))!==denied)throw new Error('graph-history-import-state-changed');
     if(record.materialization?.activation.memberLoss)this.historicalImportAuthority!.assertCurrentMemberLossActivation(record.materialization.activation);if(!this.validMaterialization(record,true)||!reopened.validMaterialization(record,true))throw new Error('graph-history-import-authority-changed');
     return canonicalHash({v:1,machineId:this.options.machineId,eventId,packetHash:canonicalHash(record.packet),activationHash,manifestHash,contextHash:reference.contextHash,state:proof.state,body:denied?'erased':record.encryptedSourceBundle?'verified':'terminal-without-body',files});

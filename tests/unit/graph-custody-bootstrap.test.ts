@@ -36,42 +36,46 @@ function readDurabilityFixture(){
  const f=fixture();f.pinAll();const authority=new GraphCustodyProfileAuthority({stateDir:f.dir,agentId:f.membership.agentId,publication:f.publication});
  const directory=path.join(f.dir,'conversation-graph','active-custody',canonicalHash(f.membership.agentId));fs.mkdirSync(directory,{recursive:true});
  const value={v:1,probe:'opaque'},file=path.join(directory,'durability-probe.json');fs.writeFileSync(file,JSON.stringify(value));
- const io=authority as unknown as {withReadDurabilityScope<T>(read:()=>T):T;syncRetainedRead(name:string,value:unknown):void;persist(name:string,value:unknown):void};
+ const io=authority as unknown as {syncRetainedRead(name:string,value:unknown):void;persist(name:string,value:unknown):void};
  return{...f,authority,directory,value,file,io};
 }
 describe('bounded synchronous read durability',()=>{
- it('coalesces duplicate flushes only within one call and preserves explicit publication barriers',()=>{
+ it('does not re-flush an unchanged file on later reads and preserves explicit publication barriers',()=>{
   const f=readDurabilityFixture(),real=fs.fsyncSync;let fileFlushes=0;const flush=vi.spyOn(fs,'fsyncSync').mockImplementation(fd=>{if(fs.fstatSync(fd).isFile())fileFlushes++;return real(fd);});let initial=0;
-  f.io.withReadDurabilityScope(()=>{f.io.syncRetainedRead('durability-probe',f.value);initial=flush.mock.calls.length;expect(initial).toBeGreaterThan(1);expect(fileFlushes).toBe(1);f.io.syncRetainedRead('durability-probe',f.value);expect(flush).toHaveBeenCalledTimes(initial);f.io.persist('durability-probe',f.value);expect(flush.mock.calls.length).toBeGreaterThan(initial);expect(fileFlushes).toBeGreaterThan(1);});
-  const before=flush.mock.calls.length;f.io.syncRetainedRead('durability-probe',f.value);expect(flush.mock.calls.length).toBeGreaterThan(before);expect(f.authority.currentMembership()).toEqual(f.membership);
+  {f.io.syncRetainedRead('durability-probe',f.value);initial=flush.mock.calls.length;expect(initial).toBeGreaterThan(1);expect(fileFlushes).toBe(1);f.io.syncRetainedRead('durability-probe',f.value);expect(flush).toHaveBeenCalledTimes(initial);f.io.persist('durability-probe',f.value);expect(flush.mock.calls.length).toBeGreaterThan(initial);expect(fileFlushes).toBeGreaterThan(1);}
+  f.io.syncRetainedRead('durability-probe',f.value);const settled=flush.mock.calls.length;f.io.syncRetainedRead('durability-probe',f.value);expect(flush).toHaveBeenCalledTimes(settled);expect(f.authority.currentMembership()).toEqual(f.membership);
+  // One changed parent re-flushes the file and every parent (the file stamp includes them), so a swap underneath cannot leave the holding directory unflushed.
+  fs.utimesSync(f.dir,new Date(1000),new Date(1000));f.io.syncRetainedRead('durability-probe',f.value);expect(flush.mock.calls.length-settled).toBe(initial);const reflushed=flush.mock.calls.length;f.io.syncRetainedRead('durability-probe',f.value);expect(flush).toHaveBeenCalledTimes(reflushed);
+  // A fresh instance has no memory of earlier flushes, which is what a restart looks like.
+  (new GraphCustodyProfileAuthority({stateDir:f.dir,agentId:f.membership.agentId,publication:f.publication}) as unknown as typeof f.io).syncRetainedRead('durability-probe',f.value);expect(flush.mock.calls.length).toBeGreaterThan(reflushed);
  });
- it('flushes every new file while sharing only unchanged parent barriers within the call',()=>{
+ it('flushes every new file while sharing only unchanged parent barriers',()=>{
   const f=readDurabilityFixture(),other={v:1,probe:'other'};fs.writeFileSync(path.join(f.directory,'other-probe.json'),JSON.stringify(other));const flush=vi.spyOn(fs,'fsyncSync');
-  f.io.withReadDurabilityScope(()=>{f.io.syncRetainedRead('durability-probe',f.value);const before=flush.mock.calls.length;f.io.syncRetainedRead('other-probe',other);expect(flush.mock.calls.length-before).toBe(1);});
+  {f.io.syncRetainedRead('durability-probe',f.value);const before=flush.mock.calls.length;f.io.syncRetainedRead('other-probe',other);expect(flush.mock.calls.length-before).toBe(1);}
  });
  it('reflushes a same-content inode replacement and refuses changed bytes',()=>{
   const f=readDurabilityFixture(),flush=vi.spyOn(fs,'fsyncSync');
-  f.io.withReadDurabilityScope(()=>{f.io.syncRetainedRead('durability-probe',f.value);const before=flush.mock.calls.length;const replacement=f.file+'.replacement';fs.writeFileSync(replacement,JSON.stringify(f.value));fs.renameSync(replacement,f.file);f.io.syncRetainedRead('durability-probe',f.value);expect(flush.mock.calls.length).toBeGreaterThan(before);fs.writeFileSync(f.file,JSON.stringify({v:1,probe:'changed'}));expect(()=>f.io.syncRetainedRead('durability-probe',f.value)).toThrow('readback-invalid');});
+  {f.io.syncRetainedRead('durability-probe',f.value);const before=flush.mock.calls.length;const replacement=f.file+'.replacement';fs.writeFileSync(replacement,JSON.stringify(f.value));fs.renameSync(replacement,f.file);f.io.syncRetainedRead('durability-probe',f.value);expect(flush.mock.calls.length).toBeGreaterThan(before);fs.writeFileSync(f.file,JSON.stringify({v:1,probe:'changed'}));expect(()=>f.io.syncRetainedRead('durability-probe',f.value)).toThrow('readback-invalid');}
  });
  it('binds parent identity and refuses a missing retained file',()=>{
   const f=readDurabilityFixture(),flush=vi.spyOn(fs,'fsyncSync');
-  f.io.withReadDurabilityScope(()=>{f.io.syncRetainedRead('durability-probe',f.value);const before=flush.mock.calls.length;fs.renameSync(f.directory,f.directory+'.old');fs.mkdirSync(f.directory);fs.writeFileSync(f.file,JSON.stringify(f.value));f.io.syncRetainedRead('durability-probe',f.value);expect(flush.mock.calls.length).toBeGreaterThan(before);SafeFsExecutor.safeUnlinkSync(f.file,{operation:'graph-read-durability-test:missing-file'});expect(()=>f.io.syncRetainedRead('durability-probe',f.value)).toThrow();});
+  {f.io.syncRetainedRead('durability-probe',f.value);const before=flush.mock.calls.length;fs.renameSync(f.directory,f.directory+'.old');fs.mkdirSync(f.directory);fs.writeFileSync(f.file,JSON.stringify(f.value));f.io.syncRetainedRead('durability-probe',f.value);expect(flush.mock.calls.length).toBeGreaterThan(before);SafeFsExecutor.safeUnlinkSync(f.file,{operation:'graph-read-durability-test:missing-file'});expect(()=>f.io.syncRetainedRead('durability-probe',f.value)).toThrow();}
  });
- it('does not retain a successful scope after a thrown callback or a failed barrier',()=>{
+ it('forgets every earlier flush after a failed barrier',()=>{
   const f=readDurabilityFixture(),real=fs.fsyncSync,flush=vi.spyOn(fs,'fsyncSync').mockImplementation(real);
-  expect(()=>f.io.withReadDurabilityScope(()=>{f.io.syncRetainedRead('durability-probe',f.value);throw new Error('callback-failed');})).toThrow('callback-failed');
-  const before=flush.mock.calls.length;f.io.syncRetainedRead('durability-probe',f.value);expect(flush.mock.calls.length).toBeGreaterThan(before);
-  f.io.withReadDurabilityScope(()=>{flush.mockImplementationOnce(()=>{throw new Error('barrier-failed');});expect(()=>f.io.syncRetainedRead('durability-probe',f.value)).toThrow('barrier-failed');const failedAt=flush.mock.calls.length;f.io.syncRetainedRead('durability-probe',f.value);expect(flush.mock.calls.length).toBeGreaterThan(failedAt);});
+  f.io.syncRetainedRead('durability-probe',f.value);const settled=flush.mock.calls.length;f.io.syncRetainedRead('durability-probe',f.value);expect(flush).toHaveBeenCalledTimes(settled);
+  const later=new Date(Date.now()+60000);fs.utimesSync(f.file,later,later);flush.mockImplementationOnce(()=>{throw new Error('barrier-failed');});expect(()=>f.io.syncRetainedRead('durability-probe',f.value)).toThrow('barrier-failed');
+  const failedAt=flush.mock.calls.length;f.io.syncRetainedRead('durability-probe',f.value);expect(flush.mock.calls.length).toBeGreaterThan(failedAt+1);
  });
- it('never caches a positive lineage when a new negative control appears in the same scope',()=>{
+ it('never caches a positive lineage when a new negative control appears between reads',()=>{
   const f=readDurabilityFixture();
-  f.io.withReadDurabilityScope(()=>{expect(f.authority.verifiedNegativeRoleLineage().pendingIntent).toBeNull();fs.writeFileSync(path.join(f.directory,'intent-2.json'),JSON.stringify({v:1,signature:'invalid'}));expect(()=>f.authority.verifiedNegativeRoleLineage()).toThrow('intent-invalid');});
+  {expect(f.authority.verifiedNegativeRoleLineage().pendingIntent).toBeNull();fs.writeFileSync(path.join(f.directory,'intent-2.json'),JSON.stringify({v:1,signature:'invalid'}));expect(()=>f.authority.verifiedNegativeRoleLineage()).toThrow('intent-invalid');}
   expect(()=>f.authority.verifiedNegativeRoleLineage()).toThrow('intent-invalid');
  });
  it('does not confuse unrelated ancestor sibling activity with a change in the owned root',()=>{
   const f=readDurabilityFixture(),real=fs.readSync,sibling=f.dir+'.unrelated';directories.push(sibling);let changed=false;
   vi.spyOn(fs,'readSync').mockImplementation(((...args:unknown[])=>{const read=Reflect.apply(real,fs,args);if(!changed){changed=true;fs.mkdirSync(sibling);}return read;}) as typeof fs.readSync);
-  expect(()=>f.io.withReadDurabilityScope(()=>f.io.syncRetainedRead('durability-probe',f.value))).not.toThrow();expect(changed).toBe(true);
+  expect(()=>f.io.syncRetainedRead('durability-probe',f.value)).not.toThrow();expect(changed).toBe(true);
  });
 });
 describe('first owner-admitted custody publication',()=>{

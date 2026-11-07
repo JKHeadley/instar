@@ -13,7 +13,7 @@ async function capture(x:Awaited<ReturnType<typeof setup>>,id:string,topicId=42)
  const base=x.f.record(id),core={...base.core,subject:{kind:'conversation',platform:'telegram',chatId:'-1001',topicId}};
  const receipt=signGraphAuthorizationReceipt({...unsigned(base.authorizationProof.receipt),coreHash:canonicalHash(core)},x.f.members[0].signing.privateKey),proof={...base.authorizationProof,receipt};
  const bytes=Buffer.from(`Private captured body ${id}`);try{
-  const result=await x.runtime.withMutation(token=>x.runtime.submitPrepared({coreType:'graph-event',idempotencyKey:receipt.idempotencyKey,requestHash:canonicalHash({id}),core,authorizationProof:proof,plaintextSource:bytes},token));expect(result.state,JSON.stringify(result)).toBe('committed');
+  const result=await x.runtime.withSourceMutation(token=>x.runtime.submitPrepared({coreType:'graph-event',idempotencyKey:receipt.idempotencyKey,requestHash:canonicalHash({id}),core,authorizationProof:proof,plaintextSource:bytes},token));expect(result.state,JSON.stringify(result)).toBe('committed');
  }finally{bytes.fill(0);}return x.runtime.source.lookupByIdempotencyKey(receipt.idempotencyKey)!;
 }
 const owner=(requestId:string,target:ReturnType<typeof canonicalTarget>)=>({requestId,target,principalKey:'owner',authenticationMethod:'owner-dashboard' as const});
