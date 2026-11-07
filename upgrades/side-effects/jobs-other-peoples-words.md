@@ -6,3 +6,6 @@
 **Signal vs authority:** signal only. It holds no blocking authority.
 **Interactions:** prepended before the job's own prompt, like the existing blocks, so skill jobs keep their slash command last.
 **Rollback:** remove the wiring line in `server.ts`; the check is then null and no line is added.
+
+## Carried repair
+The one line from PR 2927, so this PR passes on its own while main is broken by PR 2916 (hub 14:58): the session context file name gains a random part, since two writes in one millisecond collided.
