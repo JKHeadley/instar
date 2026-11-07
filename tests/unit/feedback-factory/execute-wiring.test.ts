@@ -147,6 +147,9 @@ describe('the update-pending admission brake', () => {
     expect(executorUpdatePending({ config: { autoApply: true }, pendingUpdate: '1.3.2' })).toBe(true);
     // The live failure (2026-10-23): auto-apply paused by an operator, a newer version detected,
     // and every executor tick refused as update-pending although no restart would ever come.
+    expect(executorUpdatePending({ config: { autoApply: true }, pendingUpdate: null, restartDeferral: { active: true } })).toBe(true);
+    expect(executorUpdatePending({ config: { autoApply: true }, pendingUpdate: null, restartDeferral: { active: false } })).toBe(false);
+    expect(executorUpdatePending({ config: { autoApply: true }, pendingUpdate: null, updateActivationPendingSince: '2026-11-06T00:00:00.000Z' })).toBe(true);
     expect(executorUpdatePending({ config: { autoApply: false }, pendingUpdate: '1.3.2' })).toBe(false);
     expect(executorUpdatePending({ config: {}, pendingUpdate: '1.3.2' })).toBe(false);
     expect(executorUpdatePending({ config: { autoApply: true }, pendingUpdate: null })).toBe(false);
