@@ -14,7 +14,7 @@ it('awaits first owner publication, derives real solo CAS, retries failed direct
  const state=new StateManager(dir),auth=createConversationBindAuth(dir),conversations=new ConversationRegistry({stateDir:dir,machineId:()=>manager.nativeDelegationDependencies!.identity.loadIdentity().machineId});
  const telegram=new TelegramAdapter({token:'',chatId:'-1001'},dir,{suppressLifelineAutoCreate:true});
  const scope=new ScopeVerifier({projectName:'instar',projectDir:dir,topicProjects:{'42':{projectName:'instar',projectDir:dir},'43':{projectName:'instar',projectDir:dir}}});
- const manager=new ConversationGraphDefault({stateDir:dir,agentId:'lazy-agent',instanceLock:lock,secrets:new SecretStore({stateDir:dir,forceFileKey:true}),bootstrapBearer:'isolated-test-bearer',scopeVerifier:scope,telegramChatId:'-1001'});
+ const manager=new ConversationGraphDefault({stateDir:dir,agentId:'lazy-agent',instanceLock:lock,secrets:new SecretStore({stateDir:dir,forceFileKey:true}),scopeVerifier:scope,telegramChatId:'-1001'});
  const lazy=new ConversationGraphDelegationManager();const stop=manager.subscribeRuntime(runtime=>lazy.publish(runtime));
  lazy.setFactory(createConversationGraphDelegationFactory({state,bindAuth:auth,conversations,scopeVerifier:scope,telegram,telegramChatId:'-1001',tmuxPath:tmux,native:()=>manager.nativeDelegationDependencies,ownership:()=>null}));
  try{

@@ -17,7 +17,7 @@ it('does not advertise local intake after the actual default manager has closed'
  const stateDir=fs.mkdtempSync(path.join(os.tmpdir(),'graph-local-capability-'));
  const lock=new SingleInstanceLock({stateDir});
  expect((await lock.acquire()).acquired).toBe(true);
- const manager=new ConversationGraphDefault({stateDir,agentId:'echo',instanceLock:lock,secrets:new SecretStore({stateDir,forceFileKey:true}),bootstrapBearer:'capability-fixture-token'});
+ const manager=new ConversationGraphDefault({stateDir,agentId:'echo',instanceLock:lock,secrets:new SecretStore({stateDir,forceFileKey:true}),});
  try{
   const app=express();app.use(express.json());
   app.use(createConversationGraphDefaultSurface({manager,stateDir,readEnabled:true,correctionsEnabled:true,
@@ -40,7 +40,7 @@ it('advertises actual self-sealed intake without inventing a profile when enroll
  await local.generateIdentity();await other.generateIdentity();
  const remote=other.loadIdentity();new IdentityStore({stateDir}).apply({identity:remote,scope:'remote',actor:'pairing-trust',path:'pair'});local.registerMachine(remote,'standby');
  const lock=new SingleInstanceLock({stateDir});expect((await lock.acquire()).acquired).toBe(true);
- const manager=new ConversationGraphDefault({stateDir,agentId:'echo',instanceLock:lock,secrets:new SecretStore({stateDir,forceFileKey:true}),bootstrapBearer:'capability-fixture-token'});
+ const manager=new ConversationGraphDefault({stateDir,agentId:'echo',instanceLock:lock,secrets:new SecretStore({stateDir,forceFileKey:true}),});
  try{
   const app=express();app.use(express.json());
   app.use(createConversationGraphDefaultSurface({manager,stateDir,readEnabled:true,correctionsEnabled:true,

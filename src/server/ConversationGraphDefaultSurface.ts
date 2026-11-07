@@ -19,6 +19,7 @@ export function createConversationGraphDefaultSurface(options:Omit<Parameters<ty
  const resolveViewer=createConversationGraphViewerResolver({...options,agentId:options.manager.agentId});let mounted:Router|null=null,mountedRuntime:ConversationGraphReplicationRuntime|null=null;
  const grants=options.dashboardPolicy?new ConversationGraphOwnerGrantStore({stateDir:options.stateDir,agentId:options.manager.agentId,secrets:new SecretStore({stateDir:options.stateDir,forceFileKey:options.forceFileKey}),dashboardPolicy:options.dashboardPolicy}):null;
  const memberLoss=grants&&options.correctionsEnabled===true?new ConversationGraphMemberLossSurface({manager:options.manager,stateDir:options.stateDir,forceFileKey:options.forceFileKey,grants,pairing:options.pairing??null,verifyDashboardOwner:options.verifyDashboardOwner??(()=>false),initializeDashboardPolicy:options.initializeDashboardPolicy}):null;
+ let lastOpenFailure:string|null=null;
  const mount=(runtime:ConversationGraphReplicationRuntime)=>{
   if(mounted&&mountedRuntime===runtime)return;
   const identity=options.manager.identity;if(!identity)throw new Error('graph-default-identity-unavailable');
@@ -68,6 +69,6 @@ export function createConversationGraphDefaultSurface(options:Omit<Parameters<ty
    mount(runtime);
    if(memberLoss&&ConversationGraphMemberLossSurface.handles(req.path)&&await memberLoss.handle(req,res,surface))return;
    return mounted!(req,res,next);
-  }catch{if(!isCurrent())return void res.status(403).json({code:'hierarchy-owner-only'});try{if(await provisional(req,res,surface,owner,isCurrent,()=>{recordLocal=true;}))return;}catch{if(!isCurrent())return void res.status(403).json({code:'hierarchy-owner-only'});}res.status(503).json({code:'conversation-graph-pending',reason:'owned-custody-pending',capabilities:{recordLocal,canonical:false},...(options.manager.awaitingJoin?{awaitingJoin:true}:{})});}
+  }catch(error){const reason=error instanceof Error&&/^[a-z0-9-]{1,96}$/.test(error.message)?error.message:'graph-owner-open-failed';if(reason!==lastOpenFailure){lastOpenFailure=reason;console.warn(`[conversation-graph] shared graph not open yet: ${reason}`);}if(!isCurrent())return void res.status(403).json({code:'hierarchy-owner-only'});try{if(await provisional(req,res,surface,owner,isCurrent,()=>{recordLocal=true;}))return;}catch{if(!isCurrent())return void res.status(403).json({code:'hierarchy-owner-only'});}res.status(503).json({code:'conversation-graph-pending',reason:'owned-custody-pending',capabilities:{recordLocal,canonical:false},...(options.manager.awaitingJoin?{awaitingJoin:true}:{})});}
  });return router;
 }
