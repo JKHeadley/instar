@@ -27,6 +27,9 @@ export function scrubbedEnv(env: NodeJS.ProcessEnv = process.env): Record<string
   return out;
 }
 
+/** A full page means the list may be cut short, so it is not used as a complete list. */
+const OPEN_PR_LIST_LIMIT = 1000;
+
 export interface DefaultServiceSeamOpts {
   repo: string;
   /** Stable per-agent claim key; absent in isolated tests. */
@@ -87,6 +90,16 @@ export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<Loc
       const out = await gh(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'state']);
       if (!out) return null;
       try { return (JSON.parse(out) as { state?: string }).state === 'OPEN'; } catch { return null; }
+    },
+    async listOpenPrs(): Promise<ReadonlySet<number> | null> {
+      const out = await gh(['pr', 'list', '--repo', opts.repo, '--state', 'open', '--limit', String(OPEN_PR_LIST_LIMIT), '--json', 'number']);
+      if (!out) return null;
+      try {
+        const rows = JSON.parse(out) as Array<{ number?: unknown }>;
+        if (!Array.isArray(rows) || rows.length >= OPEN_PR_LIST_LIMIT) return null; // may be cut short
+        const numbers = rows.map((row) => row.number);
+        return numbers.every((n): n is number => typeof n === 'number') ? new Set(numbers) : null;
+      } catch { return null; } // @silent-fallback-ok: the caller falls back to per-PR reads
     },
     spawnRun(a): ChildHandle {
       const fd = fs.openSync(a.logFile, 'a', 0o600);

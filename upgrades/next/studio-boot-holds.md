@@ -1,0 +1,17 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Three things that held up the agent's server on a busy machine are gone. Local-verify startup now reads all open pull requests in one GitHub call instead of one call per pull request in its history, which took about 105 seconds on Echo before the server could start listening. The project map now reads each worktree's branch and remote from git's own files instead of running git twice per worktree, which blocked the server for 17 to 59 seconds at boot. Applying an update no longer freezes the server while it clears file attributes and checks the new install: that work now runs alongside everything else, and a bad install is still refused before it is used.
+
+## What to Tell Your User
+
+Restarts should be shorter on a busy machine, and updates should stop briefly freezing me while they install. You may notice fewer moments right after an update or restart when I am slow to answer. There is nothing for you to do.
+
+## Summary of New Capabilities
+
+None. The server starts faster and stays responsive while an update installs.
+
+## Evidence
+
+Measured on the Studio on 2026-11-06. Three boots took 211s, 340s and 144s from process start to listening. Local-verify startup held 124s, 163s and 106s of them: 275 journal pull requests at about 0.38s per call, against 0.40s for one list call. The project map held 33s, 59s and 17s: 40.5s of a 41.4s offline run was two git calls for each of about 510 worktrees. The 1.3.1700 update blocked the server 39.8s in xattr plus about 13s in candidate checks, failing health checks and lapsing the lease (62s against a 60s limit). Before and after timings of the project map are in the side-effects review.
