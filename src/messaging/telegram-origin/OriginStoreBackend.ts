@@ -821,7 +821,8 @@ export class OriginStoreBackend {
       } else this.db.prepare('UPDATE telegram_origin_operations SET state=? WHERE operation_id=?').run(input.state, input.operationId);
       if (input.state === 'suppressed') {
         this.db.prepare("UPDATE telegram_origin_children SET state='suppressed' WHERE operation_id=? AND state='queued'").run(input.operationId);
-        this.db.prepare("UPDATE entries SET state='delivered-tone-gated' WHERE origin_child_id IN (SELECT child_id FROM telegram_origin_children WHERE operation_id=?) AND state='queued'").run(input.operationId);
+        // Nothing reached Telegram: the notice was recorded in the quiet feed.
+        this.db.prepare("UPDATE entries SET state='quiet-recorded' WHERE origin_child_id IN (SELECT child_id FROM telegram_origin_children WHERE operation_id=?) AND state='queued'").run(input.operationId);
       }
       this.event(`${input.operationId}:${input.state}`, `operation:${input.state}`);
       return true;
