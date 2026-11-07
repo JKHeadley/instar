@@ -10,7 +10,7 @@ There is one product defect as well. Agent-owned memory used the configured temp
 
 ## What changes
 
-The throwaway tests now create their agents in `/tmp`, the fixed OS temp root supported on both macOS and Linux. The memory fixture declares its own project root so a surrounding checkout does not change the test. The media test waits for the copy completion result instead of racing an arbitrary 125 ms window. Agent-owned memory uses the same temp-root classification as the throwaway guard. No test is skipped, deleted, or limited by platform.
+The throwaway tests now create their agents in `/tmp`, the fixed OS temp root supported on both macOS and Linux. The memory fixture declares its own project root so a surrounding checkout does not change the test. The media test waits for the copy completion result instead of racing an arbitrary 125 ms window. Agent-owned memory uses the same temp-root classification as the throwaway guard. A source-tree test pins its own git root instead of inheriting an ambient `/tmp/.git`, an idle-backoff test records actual sleep calls instead of treating host scheduling delay as a deliberate sleep, and a config-reader test counts source byte reads instead of metadata polls. Its deliberately blocked read still times out; its later healthy worker read has enough time on a busy host. No test is skipped, deleted, or limited by platform.
 
 ## Safeguards and decision
 

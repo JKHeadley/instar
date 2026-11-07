@@ -2,7 +2,7 @@
 
 ## What Changed
 
-Fixed unit test fixtures and timing assumptions so Linux results do not depend on `TMPDIR`. Agent-owned memory now uses the established fixed OS temp-root rule instead of treating a configured home-based `TMPDIR` as a throwaway location.
+Fixed unit test fixtures and timing assumptions so Linux results do not depend on `TMPDIR`, ambient temp-parent git directories, host scheduling delay, or source-poller cadence. Agent-owned memory now uses the established fixed OS temp-root rule instead of treating a configured home-based `TMPDIR` as a throwaway location.
 
 ## What to Tell Your User
 
