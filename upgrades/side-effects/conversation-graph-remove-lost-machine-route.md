@@ -34,7 +34,7 @@ Yes. This exposes an irreversible action. The route holds no authority of its ow
 1. **Primary action first:** a held removal shows its state and "Finish removing" as the section's first content. Otherwise the section is a closed Machines disclosure below the efforts, because removal is rare.
 2. **No raw internals:** machine names and plain sentences. Refusal codes are not shown.
 3. **Destructive action de-emphasized:** Remove is a quiet inline button behind the disclosure, then a sheet with the warning before anything is sent. It is never offered for this machine.
-4. **Plain language at phone width:** the wording is plain. Width is not checked: the section has run only in JSDOM, because a real two-machine server needs joining, which does not exist yet. The sheet is the same component used by the other Conversations sheets, which were checked at 320, 390 and 1280 wide.
+4. **Plain language at phone width:** checked in a real browser against a real two-machine pair at 1280, 390 and 320 wide, light and dark. That first look found the Remove button stretched across the row, the warning styled like a loading note, and the two sheet buttons touching. All three were fixed and rechecked.
 
 ## Evidence
 
@@ -42,6 +42,7 @@ Yes. This exposes an irreversible action. The route holds no authority of its ow
 - The sequence on a graph already past epoch 1: the historical test now runs `removeLostMachine` itself, epoch 2 to 3, in 164 s on the Studio under load. That is over its own 120 s limit.
 - Real CLI server: status answers 403 without owner proof, and 200 with it. Run as a unit copy.
 - Eight dashboard tests in JSDOM.
+- Real dashboard, real machines, phone size: with the M5 stopped, Remove then Remove Proof M5 showed "Checking…", "Removing the machine…", then "Machine removed." after 45 s. The section then disappears and a new change commits. One 503 on a status poll during the switchover was ridden through.
 - Removal with a paired machine outside the signed membership: planning and the native roster checks used to refuse this, which would have blocked any chosen pair. Now every survivor must be active and every removed member must not be; other paired machines do not count. The refused case stays covered by the native store test.
 
 ## Second-pass review
@@ -54,8 +55,7 @@ Remaining limits of paired machines outside the membership: CMT-1437.
 
 ## Not established
 
-- The dashboard section rendered on a real server with two machines. That needs real joining, which does not exist yet.
-- A real second machine actually gone. The fixture stops responding by design but runs in one process.
+- Whether "Some original history is unavailable" clears on an agent with native conversations on. It stayed on the test pair, which had them off; it was not checked with Echo's settings.
 - The mobile app has no control for this yet; the routes exist.
 - A fleet where this machine is not the host.
 - The full suite on this code.

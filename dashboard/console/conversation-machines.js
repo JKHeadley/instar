@@ -24,10 +24,10 @@ export async function machineControls({ send, current, unlock, refresh }) {
   const start = (machine, requestId, cancellable = false) => {
     let open = true;
     const status = el('p', { class: 'need-sub', role: 'status', 'aria-live': 'polite' });
-    const actions = el('div');
+    const actions = el('div', { style: 'display:flex;flex-wrap:wrap;gap:12px' });
     const close = () => { open = false; clearInterval(timer); };
     const panel = sheet({ title: `Remove ${machine.name}?`, onClose: close },
-      note(`Only do this if ${machine.name} is gone for good. Changes that exist only on that machine may be lost. Changes still waiting will be refused. This cannot be undone.`),
+      el('p', { text: `Only do this if ${machine.name} is gone for good. Changes that exist only on that machine may be lost. Changes still waiting will be refused. This cannot be undone.` }),
       status, actions);
     panel.classList.add('conversation-correction-sheet');
     let timer = 0;
@@ -88,8 +88,8 @@ else if (reply.data?.failure === 'member-loss-restart-needed') { clearInterval(t
   const details = el('details', { class: 'conversation-details conversation-machines' }, el('summary', { text: 'Machines' }));
   const removable = data.members.length === 2;
   for (const machine of data.members) {
-    details.append(el('div', { class: 'row' }, el('span', { text: machine.self ? `${machine.name} (this machine)` : machine.name }),
-      !machine.self && removable ? el('button', { type: 'button', class: 'btn-quiet btn-inline', text: 'Remove', onclick: () => start(machine, `remove-${machine.machineId}-${newId()}`) }) : null));
+    details.append(el('div', { class: 'row', style: 'display:flex;justify-content:space-between;align-items:center;gap:12px' }, el('span', { style: 'min-width:0;overflow-wrap:anywhere', text: machine.self ? `${machine.name} (this machine)` : machine.name }),
+      !machine.self && removable ? el('button', { type: 'button', class: 'btn-quiet btn-inline', style: 'flex:none;width:auto', text: 'Remove', onclick: () => start(machine, `remove-${machine.machineId}-${newId()}`) }) : null));
   }
   if (!removable) details.append(note('A machine can be removed only when two remain.'));
   return details;
