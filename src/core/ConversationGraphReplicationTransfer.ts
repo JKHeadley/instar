@@ -174,6 +174,7 @@ export class ConversationGraphReplicationTransfer {
   }
 
   bindCustodyAuthority(authority:GraphCustodyProfileAuthority):void{this.assertLocalCustodyContext({stateRoot:authority.stateRoot,agentId:authority.agentId,machineId:this.options.machineId,authority});}
+  forgetUnreachedStageIndex(agentId:string,recoveryId:string):Promise<void>{return this.serial(()=>this.custody.forgetUnreachedStageIndex(agentId,recoveryId));}
   storageCapacity():Promise<{quotaBytes:number;usedBytes:number;availableBytes:number}>{return this.serial(()=>this.custody.capacity());}
 
   /** Same authoritative v1 manifest/receipt, with one actual held original

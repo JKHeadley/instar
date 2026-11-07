@@ -117,6 +117,15 @@ export class ConversationGraphTransferCustody {
   for(const proof of index.metadata.revalidations){const record=controls.get(proof.idempotencyKey);if(!record||!verifyPendingRevalidation(proof,record.packet,index.metadata.newMembership,index.metadata.currentLease))throw new Error('graph-stage-preparation-revalidation-invalid');}await this.syncFile(file,MAX_INDEX);if(canonicalHash(await this.read(file,MAX_INDEX))!==canonicalHash(index))throw new Error('graph-stage-preparation-metadata-changed');return structuredClone(index.metadata);
  }
  async persist(stage:GraphSourceTransferStage):Promise<string>{const {records,rewraps,...metadata}=stage;const keys=new Map(rewraps.map(row=>[row.eventId,row.rewrap]));async function* rows(){for(const record of records)yield{record,newRewrap:keys.get(record.packet.eventId)??null};}return this.persistStream(metadata,rows());}
+ /** Drops the index an earlier attempt left, for a caller that has proof nothing reached the
+  * witness. A new attempt's metadata differs, and the index holds no data. Parts are named by
+  * content, so the new attempt reuses them. */
+ async forgetUnreachedStageIndex(agentId:string,recoveryId:string):Promise<void>{
+  const file=path.join(this.directory,`${canonicalHash({agentId,recoveryId})}.stage.json`);
+  try{await fs.lstat(file);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return;throw error;}
+  SafeFsExecutor.safeUnlinkSync(file,{operation:'graph-stage:replace-unreached-index'});
+  const directory=await fs.open(this.directory,'r');try{await directory.sync();}finally{await directory.close();}this.used=null;
+ }
  /** Writes identical existing custody files one verified record at a time.
   * No source or transfer ACK is produced by this storage operation. */
  async persistStream(metadata:GraphTransferStageMetadata,records:AsyncIterable<{record:ConversationGraphReplicationRecord;newRewrap:GraphBundleRewrap|null;heldOriginal?:GraphHeldOriginalPromotionProof;heldSenderStage?:GraphHeldSenderStage}>):Promise<string>{

@@ -32,7 +32,7 @@ The acquisition refresh and the reservation check sit on decision paths. Both st
 
 - `unbounded-self-action`: closure n/a. No new trigger. The sync tick logs a fixed-format reason only when it changes.
 
-- **Plan origin.** An origin with no creation file is an attempt that stopped early, so a retry starts over. Partial: if staging already finished, a retry can conflict with its stage file.
+- **Plan origin and stage index.** An origin with no creation file is an attempt that stopped before reaching the witness, so a retry starts over: the unused origin and stage index are replaced, and content-addressed parts are reused. With a creation file present nothing changes.
 - **Prepared envelope proof.** Its time bound compared only the proof's own timestamps against a snapshot that can be a minute old. Removed; the native epoch check stays.
 
 ## Evidence
@@ -45,9 +45,11 @@ On the Studio and M5 with real pairing, a real network and different API tokens:
 
 Regression tests added for the reservation check (both sides), origin rows, the acquisition refresh, the keychain memo, and recovery existing without Telegram.
 
+The retry fix used the commit gate's one-off end-to-end bypass. It can only be reached by stopping partway through a real removal, which the integration mode `surface-route-after-stage` does; it failed with `graph-stage-part-conflict` before the fix. The route itself has an end-to-end test.
+
 ## Not established
 
-- **A slow or interrupted removal does not finish.** With 40 rows on a loaded machine, a removal interrupted by a kill took 259 s after restart and ended at `member-loss-role-initial-proof-invalid`. The signed plan carries a lease snapshot that expires before the witness sees it, and the witness's freshness check is deliberate. A retry can then also hit `graph-stage-part-conflict` on an existing stage. Writes stay on hold in that state. This is a blocker for relying on removal at scale and needs a design: bind these proofs to the lease epoch rather than the clock, and make removal much faster (every row check rebuilds `certifiedUnion`). Refreshing the lease after staging was tried and reverted, because revalidations and plan revisions are bound to the snapshot.
+- **A slow or interrupted removal does not finish.** With 40 rows on a loaded machine, a removal interrupted by a kill took 259 s after restart and ended at `member-loss-role-initial-proof-invalid`. The signed plan carries a lease snapshot that expires before the witness sees it, and the witness's freshness check is deliberate. A retry is safe if nothing reached the witness, but it would fail the same way if the machine is still that slow, and writes stay on hold meanwhile. This is a blocker for relying on removal at scale and needs a design: bind these proofs to the lease epoch rather than the clock, and make removal much faster (every row check rebuilds `certifiedUnion`). Refreshing the lease after staging was tried and reverted, because revalidations and plan revisions are bound to the snapshot.
 - The dashboard in a browser against a real pair.
 - A real Echo-sized load.
 - The full suites on this code.

@@ -43,7 +43,7 @@ import {StateManager} from '../../src/core/StateManager.js';
 import {InitiativeTracker} from '../../src/core/InitiativeTracker.js';
 import type {InstarConfig} from '../../src/core/types.js';
 
-export type GraphLossExecutionMode='surface-route'|'surface-route-resume'|'surface-route-restart'|'surface-route-before-native'|'surface-route-cancel'|'surface-route-shown'|'surface-route-left-out'|'empty'|'pending'|'committed'|'denied-pending'|'committed-lost-host'|'refused-committed-local-deny'|'cold-native-pending'|'renewed-native-pending'|'post-act-pending'|'pin-priority-deny'|'creation-erasure-resume'|'stream-final-mutation'|'stream-final-missing'|'stream-final-barrier'|'settlement-owner-revocation'|'upload-owner-revocation';
+export type GraphLossExecutionMode='surface-route'|'surface-route-resume'|'surface-route-restart'|'surface-route-before-native'|'surface-route-cancel'|'surface-route-shown'|'surface-route-left-out'|'surface-route-after-stage'|'empty'|'pending'|'committed'|'denied-pending'|'committed-lost-host'|'refused-committed-local-deny'|'cold-native-pending'|'renewed-native-pending'|'post-act-pending'|'pin-priority-deny'|'creation-erasure-resume'|'stream-final-mutation'|'stream-final-missing'|'stream-final-barrier'|'settlement-owner-revocation'|'upload-owner-revocation';
 export async function runGraphMemberLossProductionEntry(mode:GraphLossExecutionMode){
  let methodTiming:ReturnType<typeof startGraphSyncMethodTiming>|undefined,methodTimer:ReturnType<typeof setInterval>|undefined;
  const performanceObserver=process.env.GRAPH_LOSS_STREAM_PERF==='1'?observeFixturePerformance(fs.mkdtempSync(path.join(process.cwd(),'.instar/state/build/graph-loss-stream-perf-'))):null;try{
@@ -124,6 +124,12 @@ export async function runGraphMemberLossProductionEntry(mode:GraphLossExecutionM
     expect((await auth(request(app).get('/conversation-graph/member-loss/status'))).body.cancellable).toBe(false);
     const refused=await auth(request(app).post('/conversation-graph/member-loss/cancel')).send({});expect(refused.status).toBe(409);expect(refused.body.code).toBe('member-loss-must-finish');expect(()=>actual.authority.withdrawMemberLossHold(actual.authority.verifiedNegativeRoleLineage().memberLossIntents.at(-1)!.intent)).toThrow('graph-custody-member-loss-withdraw-invalid');
    }
+   if(mode==='surface-route-after-stage'){
+    // Staged, then stopped before anything reached the witness. The lease moves on, so the retry's plan differs from the one on disk.
+    const stop=vi.spyOn(GraphWitnessBootstrapStream,'prepare').mockRejectedValueOnce(new Error('test-stop-after-stage'));
+    const first=await auth(request(app).post('/conversation-graph/member-loss/confirm')).send(confirmation);expect(first.status,JSON.stringify(first.body)).toBe(202);expect(await settled()).toMatchObject({state:'failed',held:true,failure:'test-stop-after-stage'});stop.mockRestore();
+    await new Promise(resolve=>setTimeout(resolve,5));expect(await native.leaseCoordinator.renew()).toBe(true);
+   }
    if(mode==='surface-route-before-native'){
     const stop=vi.spyOn(GraphNativeMemberLossStore.prototype,'beginNativeOperation').mockImplementationOnce(()=>{throw new Error('test-stop-before-native');});
     const first=await auth(request(app).post('/conversation-graph/member-loss/confirm')).send(confirmation);expect(first.status,JSON.stringify(first.body)).toBe(202);const stopped=await settled();stop.mockRestore();
@@ -137,7 +143,7 @@ export async function runGraphMemberLossProductionEntry(mode:GraphLossExecutionM
     expect(await settled()).toMatchObject({state:'interrupted',held:true,failure:null,resume:{requestId:'surface-route-loss-0001',removedMachineIds:removed}});
    }
    // The dashboard's Finish button prepares again with the same request, as it would after a restart.
-   const again=mode==='surface-route-resume'||mode==='surface-route-restart'||mode==='surface-route-before-native'||mode==='surface-route-shown'?await auth(request(app).post('/conversation-graph/member-loss/prepare')).send({requestId:'surface-route-loss-0001',removedMachineIds:removed}):{status:200,body:{draftHash:prepared.body.draftHash,challenge:confirmation.challenge}};expect(again.status,JSON.stringify(again.body)).toBe(200);expect(again.body.draftHash).toBe(prepared.body.draftHash);
+   const again=mode==='surface-route-resume'||mode==='surface-route-restart'||mode==='surface-route-before-native'||mode==='surface-route-shown'||mode==='surface-route-after-stage'?await auth(request(app).post('/conversation-graph/member-loss/prepare')).send({requestId:'surface-route-loss-0001',removedMachineIds:removed}):{status:200,body:{draftHash:prepared.body.draftHash,challenge:confirmation.challenge}};expect(again.status,JSON.stringify(again.body)).toBe(200);expect(again.body.draftHash).toBe(prepared.body.draftHash);
    const confirmed=await auth(request(app).post('/conversation-graph/member-loss/confirm')).send({...confirmation,challenge:again.body.challenge});expect(confirmed.status,JSON.stringify(confirmed.body)).toBe(202);expect(confirmed.body.removed).toEqual(removed);
    const finished=await settled();expect(finished.state,JSON.stringify(finished)).toBe('done');expect(finished.failure).toBeNull();
    expect(finished).toMatchObject({held:false,resume:null,cancellable:false});expect(liveManager.runtime!.installedMembership.epoch).toBe(before.epoch+1);
