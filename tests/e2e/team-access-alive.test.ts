@@ -142,6 +142,26 @@ describe('team access — production wiring', () => {
     expect((await mia('POST', `/mobile/chat/app/${secret}`, { text: 'x', requestId: rid() })).status).toBe(404);
     expect((await mia('POST', '/mobile/team/invites', invite)).status).toBe(403);
 
+    // A reply from a machine that had not heard of her grant: held from her, shown to the owner as held.
+    const store = server.appConversations!.store;
+    store.ingestReplicated({
+      eventId: 'held-1', kind: 'message', conversationKey: shared, at: new Date().toISOString(), machineId: 'laptop',
+      messageId: 'held-msg', role: 'agent', text: 'Words from before she joined',
+      accessStamp: { origin: 'laptop', incarnation: 'i1', seq: 1, access: {} },
+    });
+    const hers = await mia('GET', `/mobile/chat/app/${shared}/messages`);
+    expect(hers.status).toBe(200);
+    expect(JSON.stringify(hers.body)).not.toContain('Words from before');
+    expect(JSON.stringify((await mia('GET', `/mobile/chat/app/${shared}/events`)).body)).not.toContain('Words from before');
+    expect((await mia('GET', `/mobile/chat/app/${shared}/preview/held-msg`)).status).toBe(404);
+    expect(server.mobilePairing!.deviceMayReadMessage(redeemed.body.deviceId, shared, 'held-msg')).toBe(false); // no push about it either
+    const theirs = await owner('GET', `/mobile/chat/app/${shared}/messages`);
+    expect(theirs.body.messages.find((m: { messageId?: string }) => m.messageId === 'held-msg').heldFrom).toEqual(['Mia']);
+    // The owner chooses to show it: a new grant, signed after this machine held the row.
+    expect((await owner('POST', '/mobile/team/grants', { events: [{ type: 'grant', personKey: 'mia', ref: shared, access: 'use' }] })).status).toBe(200);
+    expect(JSON.stringify((await mia('GET', `/mobile/chat/app/${shared}/messages`)).body)).toContain('Words from before');
+    expect(server.mobilePairing!.deviceMayReadMessage(redeemed.body.deviceId, shared, 'held-msg')).toBe(true);
+
     // The agent can take access away, and it is gone at once.
     const lowered = await auth(request(app).post('/team/people/mia/lower')).send({ remove: true });
     expect(lowered.status).toBe(200);

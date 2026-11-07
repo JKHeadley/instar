@@ -1,3 +1,4 @@
+import type { AccessStamp } from '../core/TeamAccessMerge.js';
 import type { TeamAccessPuller } from '../core/TeamAccessSync.js';
 import type { TeamActionKind } from './mobilePermissionsRoutes.js';
 import { verifiedInboundMirrorEnvelope, isQuietReceipt, QuietRecordedError } from '../messaging/NotificationSelectivityGate.js';
@@ -419,7 +420,8 @@ export class MobilePairingService {
   readonly grants: MspGrantStore;
 
   /** Wire the app conversation store as the owner lookup (AgentServer; tests use the same call). */
-  useAppConversationStore(store: { getConversation(key: string): { ownerPerson: ConversationOwner | null } | null }): void {
+  useAppConversationStore(store: { getConversation(key: string): { ownerPerson: ConversationOwner | null } | null; getMessageEvent?(key: string, messageId: string): object | null }): void {
+    this.storedMessage = (key, id) => (store.getMessageEvent?.(key, id) ?? null) as StampedRow | null;
     this.appConversationOwner = (key) => {
       const c = store.getConversation(key);
       return c ? c.ownerPerson : undefined;
@@ -544,6 +546,39 @@ export class MobilePairingService {
 
   reportTeamFault(feature: string, err: unknown): void { this.deps.reportDegradation?.(feature, err); }
 
+  private storedMessage: (key: string, messageId: string) => StampedRow | null = () => null;
+
+  /** The person's key, if a team phone is reading; everyone else reads by the existing rules. */
+  private teamReaderKey(person: ResolvedPerson | null): string | null {
+    return person?.role === 'team' && person.userId ? person.userId : null;
+  }
+
+  /** May this reader see this stored message? Rows with no stamp predate the rule, and every grant opens them. */
+  mayReadStored(person: ResolvedPerson | null, ref: string, row: StampedRow): boolean {
+    const key = this.teamReaderKey(person);
+    if (!key || !row.accessStamp) return true;
+    const log = this.teamLog();
+    return !!log && log.mayRead(key, ref, row.accessStamp, row.senderPerson?.userId ?? null);
+  }
+
+  /** May this reader see the message with this id? One not held here yet is not shown. */
+  mayReadMessageId(person: ResolvedPerson | null, ref: string, messageId: string): boolean {
+    if (!this.teamReaderKey(person)) return true;
+    const row = this.storedMessage(ref, messageId);
+    return !!row && this.mayReadStored(person, ref, row);
+  }
+
+  /** The current readers a message is held from, by name, for the owner's view. */
+  heldFrom(ref: string, row: StampedRow): string[] {
+    const log = this.teamLog();
+    if (!log || !row.accessStamp || !log.state().on) return [];
+    const s = log.state();
+    const readers = new Set<string>([...s.grants].filter(([, refs]) => refs.has(ref)).map(([key]) => key));
+    const owner = s.owned.get(ref);
+    if (owner) readers.add(owner);
+    return [...readers].filter((key) => !log.mayRead(key, ref, row.accessStamp!, row.senderPerson?.userId ?? null)).map((key) => s.people.get(key)?.name ?? key);
+  }
+
   /** The exchange with peers; absent on an agent with no machine identity. */
   teamPuller: TeamAccessPuller | null = null;
 
@@ -602,6 +637,14 @@ export class MobilePairingService {
     if (!d) return false;
     const p = this.personOfDevice(d);
     return p.ok && this.mayUse(p, ref);
+  }
+
+  /** May this phone be told about this message? With no id named, the conversation decides. */
+  deviceMayReadMessage(deviceId: string, ref: string, messageId: string | undefined): boolean {
+    const d = this.devices.get(deviceId);
+    if (!d) return false;
+    const p = this.personOfDevice(d);
+    return p.ok && (messageId === undefined || this.mayReadMessageId(p, ref, messageId));
   }
 
   /** Validate a requested person for a pairing link or a reassignment (spec §3.2). */
@@ -2278,6 +2321,9 @@ export function devicePersonOf(req: Request): ResolvedPerson | null {
  * The shared conversation check for a device-signed (or notify-token) request: a bearer request
  * (no device person) may use everything, as before. Spec §3.4.
  */
+/** A stored message, as much of it as the reading rule needs. */
+export interface StampedRow { accessStamp?: AccessStamp; senderPerson?: ConversationOwner }
+
 export function deviceMayUse(svc: MobilePairingService, req: Request, ref: string, op: ConversationOp = 'read'): boolean {
   if (principalOf(req).kind === 'token') return true;
   const p = devicePersonOf(req);

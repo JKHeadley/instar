@@ -179,14 +179,18 @@ export function findGaps(input: ReadonlyArray<MergeRow>, firstIncarnation: (orig
   return gaps;
 }
 
-export interface MessageStamp {
-  /** The person who wrote it, if a person did. */
-  authorKey: string | null;
+/** What a message carries so every machine can judge who may read it. */
+export interface AccessStamp {
   origin: string;
   incarnation: string;
   seq: number;
-  /** An agent's row: what its session knew at launch. A person's row: the receiving machine's log. */
+  /** An agent's row: what its session knew of the log. A person's row: the receiving machine's log. */
   access: Vector;
+}
+
+export interface MessageStamp extends AccessStamp {
+  /** The person who wrote it, if a person did. */
+  authorKey: string | null;
 }
 
 export interface ReaderGrant {

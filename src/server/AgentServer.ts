@@ -546,7 +546,10 @@ export class AgentServer {
   /** Rows arrived from a peer: end what they changed here, and re-check this machine's phones. */
   private async afterTeamRows(touched: string[]): Promise<void> {
     for (const ref of touched) {
-      try { await this.teamConversationChange?.(ref, () => undefined); } catch (err) {
+      try {
+        await this.teamConversationChange?.(ref, () => undefined);
+        this.mobilePairing?.teamLog()?.releaseAccess(ref);
+      } catch (err) {
         // @silent-fallback-ok — reported; the spawn check reads the same confined list either way.
         this.mobilePairing?.reportTeamFault('TeamAccess.endSession', err);
       }
@@ -1948,7 +1951,7 @@ export class AgentServer {
         machineId: options.coordinator?.identity?.machineId ?? 'local',
         enabled: () => isMobilePushEnabled(this.config),
         // People and roles: a reply push goes only to phones that may use that conversation.
-        mayNotify: (deviceId, conversationKey) => mp.deviceMayUseConversation(deviceId, conversationKey),
+        mayNotify: (deviceId, conversationKey, messageId) => mp.deviceMayUseConversation(deviceId, conversationKey) && mp.deviceMayReadMessage(deviceId, conversationKey, messageId),
         receivesNotices: (deviceId) => mp.devices.get(deviceId)?.role !== 'team',
         phoneStillCounts: (deviceId) => {
           const d = mp.devices.get(deviceId);
@@ -6172,6 +6175,7 @@ export class AgentServer {
           });
           const created = svc;
           dispatch = createAppInboundDispatch({
+            heldFromAReader: (key, message) => (this.mobilePairing?.heldFrom(key, message).length ?? 0) > 0,
             sessions: sm as unknown as Parameters<typeof createAppInboundDispatch>[0]['sessions'],
             channels: created.channels, store: created.store, stateDir: options.config.stateDir,
             spawnAdmission: () => options.spawnAdmission ?? null,
@@ -6187,6 +6191,12 @@ export class AgentServer {
         const keyLedger = svc.deps.keyLedger ?? null;
         this.mobilePairing.keyLedger = keyLedger;
         this.startTeamPuller(options);
+        const teamSvc = this.mobilePairing;
+        svc.store.useAccessStamps({
+          // Stamped once there could be a reader, and on any agent with peers: a cut-off machine cannot know of a first invite.
+          stamp: (ev) => (teamSvc.teamOn() || (options.resolvePeerUrls?.() ?? []).length > 0 ? teamSvc.teamLog()?.stampMessage(ev.conversationKey, ev.role) ?? null : null),
+          saw: (stamp) => teamSvc.teamLog()?.noteMessage(stamp),
+        });
         // People and roles §3.4: who owns each app conversation (undefined ⇒ no such conversation).
         this.mobilePairing.useAppConversationStore(svc.store);
         // Set here on every path: production builds the service before this server exists.

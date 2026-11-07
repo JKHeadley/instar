@@ -41,6 +41,7 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { canonicalConversationKey, cleanConversationTitle, derivedEventId } from './appConversationText.js';
 import { type AppAttachment, validateAttachments, MAX_PURGE_BATCH, mediaPreview } from './appMediaTypes.js';
 import { validConversationOwner, type ConversationOwner } from './MobilePeople.js';
+import type { AccessStamp } from './TeamAccessMerge.js';
 
 export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media' | 'transcript';
 export type DeliveryEventState = 'delivered' | 'refused' | 'intercepted' | 'unknown';
@@ -106,6 +107,8 @@ export interface MessageEvent extends AppEventBase {
    * recorded in the same append as the reply. Information only; nothing decides on it.
    */
   agentOrigin?: MessageOriginEvidence;
+  /** team-roles-and-access, "Step 2b": what lets any machine judge who may read this. Absent on older events, which every grant opens. */
+  accessStamp?: AccessStamp;
 }
 export interface DeliveryEvent extends AppEventBase { kind: 'delivery'; messageId: string; state: DeliveryEventState }
 /** A message with files (media spec §4.1): every field of `message` plus 1-10 attachments. */
@@ -172,7 +175,9 @@ export interface BrowsedMessage {
   attachments?: AppAttachment[];
   senderName?: string;
   senderRole?: 'owner' | 'msp' | 'team';
+  senderPerson?: ConversationOwner;
   agentOrigin?: MessageOriginEvidence;
+  accessStamp?: AccessStamp;
 }
 
 /** One attachment reference as the index holds it. */
@@ -270,6 +275,8 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       if (receivedAt) out.receivedAt = receivedAt;
       const receipt = validateReceipt(r.receipt);
       if (receipt) out.receipt = receipt;
+      const accessStamp = validateAccessStamp(r.accessStamp);
+      if (accessStamp) out.accessStamp = accessStamp;
       const senderName = typeof r.senderName === 'string' && r.senderName.length > 0 && r.senderName.length <= 128 ? r.senderName : null;
       if (senderName) out.senderName = senderName;
       if (r.senderRole === 'owner' || r.senderRole === 'msp' || r.senderRole === 'team') out.senderRole = r.senderRole;
@@ -360,6 +367,19 @@ function validateReceipt(raw: unknown): MachineReceipt | undefined {
   return { machineId, signerKeyHash, sig };
 }
 
+export interface AccessStamps {
+  stamp(event: MessageEvent | MediaMessageEvent): AccessStamp | null;
+  saw(stamp: AccessStamp): void;
+}
+
+function validateAccessStamp(raw: unknown): AccessStamp | null {
+  const r = raw as { origin?: unknown; incarnation?: unknown; seq?: unknown; access?: unknown } | null;
+  if (!r || typeof r !== 'object') return null;
+  if (typeof r.origin !== 'string' || typeof r.incarnation !== 'string' || !Number.isSafeInteger(r.seq)) return null;
+  if (!r.access || typeof r.access !== 'object' || Object.values(r.access).some((v) => typeof v !== 'number')) return null;
+  return { origin: r.origin, incarnation: r.incarnation, seq: r.seq as number, access: r.access as Record<string, number> };
+}
+
 export interface AppConversationStoreOptions {
   stateDir: string;
   machineId: () => string;
@@ -377,6 +397,7 @@ export class AppConversationStore {
   private readonly now: () => number;
   private readonly reported = new Set<string>();
   private onLocalAppend: ((event: AppEvent) => void) | undefined;
+  private stamps: AccessStamps | null = null;
 
   constructor(private readonly opts: AppConversationStoreOptions) {
     this.dir = path.join(opts.stateDir, 'app-conversations');
@@ -524,7 +545,9 @@ export class AppConversationStore {
   }
 
   /** Append a locally-created event (dedup by eventId). The replication hook fires on a new commit. */
-  append(event: AppEvent): { appended: boolean; ingestSeq: number } {
+  append(input: AppEvent): { appended: boolean; ingestSeq: number } {
+    const stamp = (input.kind === 'message' || input.kind === 'media-message') && !input.accessStamp ? this.stamps?.stamp(input) ?? null : null;
+    const event = stamp ? { ...input, accessStamp: stamp } as AppEvent : input;
     const r = this.write(event);
     if (r.appended) { try { this.onLocalAppend?.(event); } catch { /* @silent-fallback-ok — replication emit is best-effort, the local commit already landed */ } }
     return r;
@@ -534,8 +557,13 @@ export class AppConversationStore {
   ingestReplicated(raw: unknown): { appended: boolean; ingestSeq: number } | null {
     const ev = validateAppEvent(raw);
     if (!ev) return null;
-    return this.write(ev);
+    const r = this.write(ev);
+    if (r.appended && (ev.kind === 'message' || ev.kind === 'media-message') && ev.accessStamp) this.stamps?.saw(ev.accessStamp);
+    return r;
   }
+
+  /** Team access stamps messages once it knows there is something to protect. */
+  useAccessStamps(stamps: AccessStamps): void { this.stamps = stamps; }
 
   private write(event: AppEvent): { appended: boolean; ingestSeq: number } {
     const canonicalKey = canonicalConversationKey(event.conversationKey);
@@ -925,7 +953,9 @@ export class AppConversationStore {
         ...(ev.receipt ? { receipt: ev.receipt } : {}),
         ...(ev.kind === 'media-message' ? { attachments: ev.attachments } : {}),
         ...(ev.senderName ? { senderName: ev.senderName } : {}), ...(ev.senderRole ? { senderRole: ev.senderRole } : {}),
+        ...(ev.senderPerson ? { senderPerson: ev.senderPerson } : {}),
         ...(ev.agentOrigin ? { agentOrigin: ev.agentOrigin } : {}),
+        ...(ev.accessStamp ? { accessStamp: ev.accessStamp } : {}),
       });
     }
     out.reverse();

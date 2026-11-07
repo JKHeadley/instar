@@ -538,3 +538,120 @@ describe('the regular exchange', () => {
     expect(local.allRows()).toHaveLength(before);
   });
 });
+
+describe('who may read a message', () => {
+  const grantTo = (log: TeamAccessLog, ref = 'c1') => log.appendSignedRequest(signed([{ type: 'grant', personKey: 'p', ref, access: 'use' }]));
+
+  it('a reply written by a machine that had not heard of the grant is held, and a later grant that saw it opens it', () => {
+    const studio = machine('A'); const laptop = machine('B');
+    start(studio); sync(studio, laptop);
+    const stale = laptop.stampMessage('c1', 'agent')!;
+    grantTo(studio);
+    studio.noteMessage(stale); // the reply replicates after the grant
+    expect(studio.mayRead('p', 'c1', stale, null)).toBe(false);
+    grantTo(studio);
+    expect(studio.mayRead('p', 'c1', stale, null)).toBe(true);
+  });
+
+  it('the answer is the same on both machines, whatever arrived when', () => {
+    const studio = machine('A'); const laptop = machine('B');
+    start(studio); sync(studio, laptop);
+    const stale = laptop.stampMessage('c1', 'agent')!;
+    grantTo(studio);
+    sync(studio, laptop);
+    expect(laptop.mayRead('p', 'c1', stale, null)).toBe(studio.mayRead('p', 'c1', stale, null));
+    expect(laptop.mayRead('p', 'c1', stale, null)).toBe(false);
+  });
+
+  it('a message older than the grant is open, because the grant had seen it: a grant opens history', () => {
+    const studio = machine('A');
+    start(studio);
+    const old = studio.stampMessage('c1', 'agent')!;
+    grantTo(studio);
+    expect(studio.mayRead('p', 'c1', old, null)).toBe(true);
+  });
+
+  it('a message written after a machine knew of the grant is open', () => {
+    const studio = machine('A'); const laptop = machine('B');
+    start(studio);
+    grantTo(studio);
+    sync(studio, laptop);
+    laptop.releaseAccess('c1'); // its sessions have ended
+    const fresh = laptop.stampMessage('c1', 'agent')!;
+    expect(studio.mayRead('p', 'c1', fresh, null)).toBe(true);
+  });
+
+  it('an author always sees their own words, and no one else gets through on that', () => {
+    const studio = machine('A'); const laptop = machine('B');
+    start(studio); sync(studio, laptop);
+    const stale = laptop.stampMessage('c1', 'operator')!;
+    grantTo(studio);
+    expect(studio.mayRead('p', 'c1', stale, 'p')).toBe(true);
+    expect(studio.mayRead('p', 'c1', stale, 'someone-else')).toBe(false);
+  });
+
+  it('owning a conversation counts as a grant', () => {
+    const studio = machine('A');
+    start(studio);
+    const old = studio.stampMessage('c9', 'agent')!;
+    expect(studio.mayRead('p', 'c9', old, null)).toBe(false);
+    studio.appendMachineEvents([{ type: 'conversation-own', ref: 'c9', personKey: 'p' }]);
+    expect(studio.mayRead('p', 'c9', old, null)).toBe(true);
+  });
+
+  it('a grant for another conversation or another person opens nothing', () => {
+    const studio = machine('A');
+    start(studio);
+    const old = studio.stampMessage('c1', 'agent')!;
+    grantTo(studio, 'c2');
+    expect(studio.mayRead('p', 'c1', old, null)).toBe(false);
+    grantTo(studio);
+    expect(studio.mayRead('q', 'c1', old, null)).toBe(false);
+  });
+
+  it('only the owner\'s phone opens anything, however the row is signed', () => {
+    const studio = machine('A');
+    start(studio);
+    const old = studio.stampMessage('c1', 'agent')!;
+    const forged = signed([{ type: 'grant', personKey: 'p', ref: 'c1', access: 'use' }]);
+    forged.signedOrigin = { ...forged.signedOrigin, keyHash: 'stranger' };
+    studio.appendSignedRequest(forged);
+    expect(studio.mayRead('p', 'c1', old, null)).toBe(false);
+  });
+
+  it('a grant from a machine the owner declared gone opens nothing past the settled row', () => {
+    const studio = machine('A'); const laptop = machine('B');
+    start(studio); sync(studio, laptop);
+    const old = studio.stampMessage('c1', 'agent')!;
+    laptop.noteMessage(old);
+    bind(laptop);
+    const row = grantTo(laptop);
+    sync(laptop, studio);
+    expect(studio.mayRead('p', 'c1', old, null)).toBe(true);
+    studio.appendSignedRequest(signed([{ type: 'origin-gone', machine: 'B', incarnation: row.incarnation as string, throughSeq: row.seq - 1 }]));
+    expect(studio.mayRead('p', 'c1', old, null)).toBe(false);
+  });
+
+  it('a reply racing the end of its session keeps what the session knew, until the session has ended', () => {
+    const studio = machine('A'); const laptop = machine('B');
+    start(studio); sync(studio, laptop);
+    const row = grantTo(studio);
+    laptop.ingest(studio.rowsBeyond(laptop.vector()));
+    const racing = laptop.stampMessage('c1', 'agent')!;
+    expect(racing.access[`A/${row.incarnation}`]).toBeLessThan(row.seq);
+    const person = laptop.stampMessage('c1', 'operator')!;
+    expect(person.access[`A/${row.incarnation}`]).toBe(row.seq);
+    laptop.releaseAccess('c1');
+    expect(laptop.stampMessage('c1', 'agent')!.access[`A/${row.incarnation}`]).toBe(row.seq);
+  });
+
+  it('message numbers keep rising, and survive a restart', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-msg-'));
+    const a = new TeamAccessLog({ stateDir: dir, signer: signerFor('A'), verify });
+    const one = a.stampMessage('c', 'agent')!;
+    const two = a.stampMessage('c', 'agent')!;
+    expect(two.seq).toBe(one.seq + 1);
+    const again = new TeamAccessLog({ stateDir: dir, signer: signerFor('A'), verify });
+    expect(again.stampMessage('c', 'agent')!.seq).toBe(two.seq + 1);
+  });
+});

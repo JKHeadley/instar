@@ -75,7 +75,7 @@ export interface MobilePushDeps {
    * not use the conversation gets no push for it at all (not even "New reply" with its id).
    * Absent ⇒ every phone, as before.
    */
-  mayNotify?: (deviceId: string, conversationKey: string) => boolean;
+  mayNotify?: (deviceId: string, conversationKey: string, messageId?: string) => boolean;
   /** Whether a phone gets anything but reply pushes. A team phone does not (team-roles-and-access §3.7). */
   receivesNotices?: (deviceId: string) => boolean;
   /** Is this phone's person still here? A held aggregate is dropped if not. */
@@ -183,7 +183,7 @@ export class MobilePushService {
     for (const d of this.pushDevices()) {
       if (t.kind === 'reply' && t.conversationKey && this.deps.mayNotify) {
         let may = false;
-        try { may = this.deps.mayNotify(d.id, t.conversationKey); } catch { may = false; } // @silent-fallback-ok — fail closed: an unanswerable check sends nothing to that phone
+        try { may = this.deps.mayNotify(d.id, t.conversationKey, t.messageId); } catch { may = false; } // @silent-fallback-ok — fail closed: an unanswerable check sends nothing to that phone
         if (!may) continue;
       }
       if (t.kind !== 'reply' && this.deps.receivesNotices && !this.deps.receivesNotices(d.id)) continue;

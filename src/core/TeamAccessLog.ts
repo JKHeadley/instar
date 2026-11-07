@@ -23,7 +23,7 @@ import {
   type LedgerView, type MachineKeyLookup, type MachineSignature, type MachineSigner,
 } from './AppRecordSignatures.js';
 import { DEVICE_TIME_WINDOW_MS, isStrictLowSDer, parseDevicePublicKey } from './MobileDeviceKeys.js';
-import { UNCHAINED_INCARNATION, findGaps, mergeRows, streamKey, type Gap, type MergeEvent, type MergeRow } from './TeamAccessMerge.js';
+import { UNCHAINED_INCARNATION, findGaps, mayReadMessage, mergeRows, streamKey, type AccessStamp, type Gap, type ReaderGrant, type MergeEvent, type MergeRow } from './TeamAccessMerge.js';
 import type { GrantAccess } from '../permissions/TeamAccess.js';
 import type { OrgRole } from '../permissions/types.js';
 
@@ -100,6 +100,9 @@ export function rowPayload(row: Omit<RequestRow, 'machineSig'> | Omit<MachineRow
 }
 
 export { UNCHAINED_INCARNATION };
+
+/** A signed row's `seen` also says which messages its machine held, under this prefix. */
+const MESSAGE_STREAM = 'msg:';
 
 /** One row as the merge rules see it (`TeamAccessMerge`). */
 export function toMergeRow(row: TeamAccessRow, events: ReadonlyArray<MergeEvent>): MergeRow {
@@ -392,6 +395,9 @@ export class TeamAccessLog {
   private refoldPending = false;
   private incarnationCache: string | null = null;
   private gapsCache: Gap[] | null = null;
+  private messageSeen: Record<string, number> | null = null;
+  /** Conversations whose sharing just changed here, with the log as it stood before. */
+  private readonly frozen = new Map<string, Record<string, number>>();
   /** Rows that reached this machine from a peer since it started. */
   private readonly foreign = new WeakSet<TeamAccessRow>();
 
@@ -431,7 +437,8 @@ export class TeamAccessLog {
     const mine = this.rows.filter((r) => r.origin === origin && r.incarnation === incarnation);
     const last = mine[mine.length - 1];
     const ownEarlier = this.rows.filter((r) => originOf(r) === origin);
-    return { origin, incarnation, prev: last ? rowHash(last) : (ownEarlier.length > 0 ? prefixHash(ownEarlier) : null), seen: this.vector() };
+    const messages = Object.entries(this.messagesSeen()).map(([stream, seq]) => [`${MESSAGE_STREAM}${stream}`, seq]);
+    return { origin, incarnation, prev: last ? rowHash(last) : (ownEarlier.length > 0 ? prefixHash(ownEarlier) : null), seen: { ...this.vector(), ...Object.fromEntries(messages) } };
   }
 
   private lastGoodLog(): string { return path.join(this.lastGoodDir, 'log.jsonl'); }
@@ -545,6 +552,71 @@ export class TeamAccessLog {
     return this.gapsCache;
   }
 
+  private messagesSeen(): Record<string, number> {
+    if (this.messageSeen) return this.messageSeen;
+    try {
+      this.messageSeen = JSON.parse(fs.readFileSync(path.join(this.dir, 'message-seen.json'), 'utf8')) as Record<string, number>;
+    } catch {
+      // @silent-fallback-ok — none yet, or lost: a grant then records seeing less, so less is shown, never more.
+      this.messageSeen = {};
+    }
+    return this.messageSeen;
+  }
+
+  /** Note a message's place. A grant signed from here on says it had seen it. */
+  noteMessage(stamp: AccessStamp): void {
+    const seen = this.messagesSeen();
+    const stream = streamKey(stamp.origin, stamp.incarnation);
+    if ((seen[stream] ?? 0) >= stamp.seq) return;
+    seen[stream] = stamp.seq;
+    try {
+      fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(this.dir, 'message-seen.json'), JSON.stringify(seen), { mode: 0o600 });
+    } catch (err) { // @silent-fallback-ok — the count stays in memory; losing it can only hide a message, not show one
+      console.warn(`[team-access] message record not written: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * The stamp for a new message. An agent's reply carries what its session knew: if rows arrived and
+   * its session is not yet ended, that is the log from before they came.
+   */
+  stampMessage(ref: string, role: 'operator' | 'agent'): AccessStamp | null {
+    const origin = this.opts.signer?.machineId();
+    if (!origin) return null;
+    const incarnation = this.incarnation();
+    const seq = (this.messagesSeen()[streamKey(origin, incarnation)] ?? 0) + 1;
+    const stamp = { origin, incarnation, seq, access: (role === 'agent' ? this.frozen.get(ref) : undefined) ?? this.vector() };
+    this.noteMessage(stamp);
+    return stamp;
+  }
+
+  /** The conversation's sessions have ended, so new replies know the current log. */
+  releaseAccess(ref: string): void { this.frozen.delete(ref); }
+
+  /** Every signed fact that opens this conversation to this person, leaving out what the owner voided. */
+  private readerGrants(personKey: string, ref: string): ReaderGrant[] {
+    const plain = this.state();
+    const out: ReaderGrant[] = [];
+    const owners = (r: TeamAccessRow): r is RequestRow => this.opts.verify(r) === 'verified' && r.kind === 'request' && plain.bindings.get(r.signedOrigin.keyHash) === 'owner';
+    const gone = this.rows.flatMap((r) => (owners(r) ? (bodyEvents(r) ?? []).flatMap((e) => (e.type === 'origin-gone' ? [e] : [])) : []));
+    for (const r of this.rows) {
+      const opens = r.kind === 'machine'
+        ? this.opts.verify(r) === 'verified' && r.events.some((e) => e.type === 'conversation-own' && e.ref === ref && e.personKey === personKey)
+        : owners(r) && (bodyEvents(r) ?? []).some((e) => e.type === 'grant' && e.ref === ref && e.personKey === personKey);
+      if (!opens) continue;
+      if (gone.some((g) => g.machine === originOf(r) && g.incarnation === (r.incarnation ?? UNCHAINED_INCARNATION) && r.seq > g.throughSeq)) continue;
+      const seenMessages = Object.fromEntries(Object.entries(r.seen ?? {}).filter(([k]) => k.startsWith(MESSAGE_STREAM)).map(([k, v]) => [k.slice(MESSAGE_STREAM.length), v]));
+      out.push({ stream: streamOf(r), seq: r.seq, seenMessages });
+    }
+    return out;
+  }
+
+  /** May this person read a stamped message in this conversation? */
+  mayRead(personKey: string, ref: string, stamp: AccessStamp, authorKey: string | null): boolean {
+    return mayReadMessage({ ...stamp, authorKey }, personKey, this.readerGrants(personKey, ref));
+  }
+
   /** Each machine numbers its own rows. Rows from before chains share the sequence they always had. */
   private nextSeq(): number {
     const own = this.opts.signer?.machineId();
@@ -588,6 +660,7 @@ export class TeamAccessLog {
    */
   ingest(incoming: ReadonlyArray<TeamAccessRow>): { added: number; refused: number; touched: string[] } {
     const before = grantPairs(this.state());
+    const vectorBefore = this.vector();
     const touched = new Set<string>();
     const held = new Set(this.rows.map((r) => `${streamOf(r)}#${r.seq}#${rowHash(r)}`));
     let added = 0;
@@ -617,6 +690,7 @@ export class TeamAccessLog {
       const after = grantPairs(this.folded);
       for (const [pair, ref] of [...before, ...after]) if (before.has(pair) !== after.has(pair)) touched.add(ref);
     }
+    for (const ref of touched) if (!this.frozen.has(ref)) this.frozen.set(ref, vectorBefore);
     return { added, refused, touched: [...touched] };
   }
 

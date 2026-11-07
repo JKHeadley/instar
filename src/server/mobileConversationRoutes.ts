@@ -828,7 +828,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
     const key = String(req.params.key);
     if (!allowed(req, res, key)) return;
-    const pool = req.query.scope === 'pool';
+    const reader = devicePersonOf(req);
+    // A peer's rows cannot be judged here, so a team phone reads what this machine holds.
+    const pool = req.query.scope === 'pool' && reader?.role !== 'team';
     const live = svc!.liveConversation(key);
     // §4.8: a pool read also covers what has not replicated here yet, so a conversation this
     // machine has never seen is read from the peers. One it knows is deleted stays a 404.
@@ -837,9 +839,14 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 100));
     const before = typeof req.query.before === 'string' ? req.query.before : null;
     const page = live ? svc!.store.browseMessages(key, before, limit) : { messages: [], nextBefore: null };
+    const shown = page.messages.filter((m) => deps.pairing.mayReadStored(reader, key, m));
     const display = deps.originDisplay?.() ?? { ...DEFAULT_ORIGIN_DISPLAY };
     const originCtx = { display, selfMachineId: deps.machineId() };
-    const rows = page.messages.map((m) => historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!, originCtx));
+    const rows = shown.map((m) => {
+      const row = historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!, originCtx);
+      const heldFrom = reader?.role === 'team' ? [] : deps.pairing.heldFrom(key, m);
+      return heldFrom.length > 0 ? { ...row, heldFrom } : row;
+    });
     if (!pool) { res.json({ conversationKey: key, messages: rows, nextBefore: page.nextBefore }); return; }
     // Pool read (§4.5/§4.8): each machine's page before the same boundary, merged by eventId
     // (this machine's row wins). A row only a peer holds is not yet replicated here, so this
@@ -893,7 +900,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // A deleted conversation, or a reply not replicated to this machine yet: the phone keeps the generic text.
     const ev = svc.liveConversation(key) ? svc.store.getMessageEvent(key, messageId) : null;
     const m = ev as unknown as { role?: string; text?: unknown; attachments?: AppAttachment[] } | null;
-    if (!m || m.role !== 'agent') { res.status(404).json({ error: 'not-found' }); return; }
+    if (!m || m.role !== 'agent' || !deps.pairing.mayReadMessageId(devicePersonOf(req), key, messageId)) { res.status(404).json({ error: 'not-found' }); return; }
     const name = deps.config.projectName ?? 'agent';
     res.json({ title: name.charAt(0).toUpperCase() + name.slice(1), body: pushPreviewBody(m.attachments ?? [], typeof m.text === 'string' ? m.text : '') });
   });
@@ -908,7 +915,11 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const page = svc!.store.syncEvents(key, typeof req.query.cursor === 'string' ? req.query.cursor : null, limit);
     res.json({
       conversationKey: key,
-      events: page.events.map((e) => {
+      events: page.events.filter((e) => {
+        // A message, and anything about one, such as its transcript.
+        const about = (e as { messageId?: unknown }).messageId;
+        return typeof about !== 'string' || !svc!.store.hasMessage(about) || deps.pairing.mayReadMessageId(devicePersonOf(req), key, about);
+      }).map((e) => {
         const { origin: _origin, receipt: _receipt, ingestSeq: _seq, ...rest } = e as typeof e & { origin?: DeviceSignedOrigin; receipt?: MachineReceipt };
         return {
           ...rest,

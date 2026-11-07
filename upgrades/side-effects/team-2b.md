@@ -33,3 +33,12 @@ A team phone is bound in the log at activation, with a pass at boot for 2a's pho
 **Over-block:** team phones wait for the first exchange after boot or sleep, and a peer shown awake that stops answering for 15 minutes refuses them. Both only with the team on and at least one peer.
 **Under-block:** a machine cut off from every peer keeps serving, the stated limit in §5. `mobilePairing.team.strictStaleness` closes it at 24 hours, off by default.
 **Rollback:** nothing starts the exchange without a machine identity and peers; removing `startTeamPuller` stops it.
+
+## Who may read a message
+Once a team is on, or an agent has peers, each new message carries a stamp: where it came from and what its writer knew of the access log. A reader sees a stamped message if a grant to them had seen it, if the message's stamp includes a grant to them, or if they wrote it. Every read path applies this to a team phone: the message list, sync events, reply previews, pushes, file downloads and the history a shared session is given. A team phone reads only what this machine holds, because a peer's rows cannot be judged here.
+**Over-block:** a reply written by a machine that had not heard of a grant is held from that person until the owner re-grants. The owner's view marks it with `heldFrom`. A message replicated later can be hidden for a moment if its grant arrives first; that is the design.
+**Under-block:** Telegram topics cannot be held, a stated limit in the spec. Messages with no stamp predate this rule and every grant opens them.
+**Not proved by a test:** the file download check, which is one line calling the same rule.
+**Signal vs authority:** this is authority over what a team phone reads. It changes nothing for the owner, an MSP phone or the bearer token.
+
+**Found on the way:** two session contexts written in one millisecond collided on their file name and failed. The name now carries a short random part.
