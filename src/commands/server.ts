@@ -788,6 +788,8 @@ let _topicProfileCtxRef: {
 let _inboundQueue: import('../core/QueueDrainLoop.js').QueueDrainLoop | null = null;
 /** May this team person still send here? A queued or forwarded message can outlive a removal. Absent answers no. */
 let _teamMayDeliver: ((personKey: string, ref: string) => boolean) | null = null;
+/** Is a stored message held from any current reader? Set once the server exists. */
+let _teamHeldFromAReader: ((key: string, message: { accessStamp?: import('../core/TeamAccessMerge.js').AccessStamp }) => boolean) | null = null;
 /** Memory privacy (docs/specs/memory-privacy.md): set in startServer, read at every inbound. */
 let _memoryInbound: import('../users/MemoryInboundTracker.js').MemoryInboundTracker | null = null;
 let _reachablePeople: import('../users/ReachablePeople.js').ReachablePeople | null = null;
@@ -9980,6 +9982,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           }),
         });
         const appDispatchDeps: Parameters<typeof createAppInboundDispatch>[0] = {
+          // Until the server is up, a stamped row is left out rather than guessed at.
+          heldFromAReader: (key, message) => _teamHeldFromAReader?.(key, message) ?? !!message.accessStamp,
           // Memory privacy: an app conversation belongs to one phone's person. The owner's
           // own phone carries no person id, so it resolves to the owner.
           memoryInbound: async (input) => {
@@ -33581,6 +33585,14 @@ export async function startServer(options: StartOptions): Promise<void> {
     // no per-session write admission.
     sessionManager.startMonitoring();
     _teamMayDeliver = (personKey, ref) => server.mobilePairing?.teamMayDeliver(personKey, ref) ?? false;
+    _teamHeldFromAReader = (key, message) => (server.mobilePairing?.heldFrom(key, message).length ?? 0) > 0;
+    if (server.appConversations) {
+      const convs = server.appConversations;
+      convs.useHeldCheck((key, messageId) => {
+        const row = convs.store.getMessageEvent(key, messageId) as { accessStamp?: import('../core/TeamAccessMerge.js').AccessStamp } | null;
+        return !!row && (_teamHeldFromAReader?.(key, row) ?? false);
+      });
+    }
     await server.start();
     // After the port is bound: installs the Linux Chrome driver's packages on a new agent. All
     // asynchronous and detached, so it cannot delay or fail this boot.

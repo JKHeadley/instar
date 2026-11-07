@@ -40,7 +40,8 @@ import { requestIdAgeOk, requestIdTime, type ChatLookup } from '../core/MobileCh
 import {
   cleanConversationTitle, derivedEventId, isAppConversationKey, newAppConversationKey, removeAuthorityTokens,
 } from '../core/appConversationText.js';
-import type { BrowsedMessage, DeviceSignedOrigin, MachineReceipt, MediaMessageEvent, MessageEvent } from '../core/AppConversationStore.js';
+import { isOwnerPerson } from '../core/MobilePeople.js';
+import { messagePreview, type BrowsedMessage, type DeviceSignedOrigin, type MachineReceipt, type MediaMessageEvent, type MessageEvent } from '../core/AppConversationStore.js';
 import { signReceipt, signRedaction, signRedactionV2, sha256Hex, type MachineSigner, type OriginVerdict } from '../core/AppRecordSignatures.js';
 import {
   MAX_ATTACHMENTS, pushPreviewBody, type AppAttachment,
@@ -475,12 +476,20 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const ownerNote = local.slackOwnerUnset && deviceMayUse(deps.pairing, req, 'slack:') ? { slackOwnerUnset: true } : {};
     // People and roles §3.4: an MSP phone sees Telegram topics and its own app conversations only
     // (filtered after the merge, so the cursor still advances over rows it does not see).
+    const reader = devicePersonOf(req);
+    /** A team phone's list line is the newest message it may read, so a held one is not shown there. */
+    const shownPreview = (r: ConversationListRow): ConversationListRow => {
+      if (reader?.role !== 'team' || r.platform !== 'app') return r;
+      const newest = svc!.store.browseMessages(String(r.id), null, 100).messages.filter((m) => deps.pairing.mayReadStored(reader, String(r.id), m)).pop();
+      return { ...r, lastPreview: newest ? messagePreview(newest) : null };
+    };
     const visible = (rows: ConversationListRow[]): ConversationListRow[] => rows.filter((r) => {
       if (r.platform === 'telegram') return deviceMayUse(deps.pairing, req, `telegram:${String(r.id)}`);
       if (r.platform === 'slack') return deviceMayUse(deps.pairing, req, 'slack:');
       return deviceMayUse(deps.pairing, req, String(r.id));
-    });
-    if (req.query.scope !== 'pool') {
+    }).map(shownPreview);
+    // A peer's preview cannot be judged here, so a team phone lists what this machine holds.
+    if (req.query.scope !== 'pool' || reader?.role === 'team') {
       const m = mergeConversationPages([local], limit);
       res.json({ conversations: visible(m.rows), nextCursor: m.nextCursor, ...ownerNote });
       return;
@@ -844,7 +853,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const originCtx = { display, selfMachineId: deps.machineId() };
     const rows = shown.map((m) => {
       const row = historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!, originCtx);
-      const heldFrom = reader?.role === 'team' ? [] : deps.pairing.heldFrom(key, m);
+      const heldFrom = reader === null || isOwnerPerson(reader) ? deps.pairing.heldFrom(key, m) : [];
       return heldFrom.length > 0 ? { ...row, heldFrom } : row;
     });
     if (!pool) { res.json({ conversationKey: key, messages: rows, nextBefore: page.nextBefore }); return; }
@@ -918,7 +927,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       events: page.events.filter((e) => {
         // A message, and anything about one, such as its transcript.
         const about = (e as { messageId?: unknown }).messageId;
-        return typeof about !== 'string' || !svc!.store.hasMessage(about) || deps.pairing.mayReadMessageId(devicePersonOf(req), key, about);
+        // Text about a message that has not reached this machine waits for it.
+        if (typeof about !== 'string' || (e.kind !== 'transcript' && !svc!.store.hasMessage(about))) return true;
+        return deps.pairing.mayReadMessageId(devicePersonOf(req), key, about);
       }).map((e) => {
         const { origin: _origin, receipt: _receipt, ingestSeq: _seq, ...rest } = e as typeof e & { origin?: DeviceSignedOrigin; receipt?: MachineReceipt };
         return {

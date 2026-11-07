@@ -158,7 +158,14 @@ describe('team access — production wiring', () => {
     expect(JSON.stringify(hers.body)).not.toContain('Words from before');
     expect(JSON.stringify((await mia('GET', `/mobile/chat/app/${shared}/events`)).body)).not.toContain('Words from before');
     expect((await mia('GET', `/mobile/chat/app/${shared}/preview/held-msg`)).status).toBe(404);
+    // Nor on the list line, whichever way it is asked for.
+    expect(JSON.stringify((await mia('GET', '/mobile/conversations')).body)).not.toContain('Words from before');
+    expect(JSON.stringify((await mia('GET', '/mobile/conversations?scope=pool')).body)).not.toContain('Words from before');
+    expect(JSON.stringify((await owner('GET', '/mobile/conversations')).body)).toContain('Words from before');
     expect(server.mobilePairing!.deviceMayReadMessage(redeemed.body.deviceId, shared, 'held-msg')).toBe(false); // no push about it either
+    // A push has no text, so a reply still on its way from a peer may announce itself, and a topic cannot be held.
+    expect(server.mobilePairing!.deviceMayReadMessage(redeemed.body.deviceId, shared, 'not-here-yet')).toBe(true);
+    expect(server.mobilePairing!.mayReadMessageId(server.mobilePairing!.personOfDevice(server.mobilePairing!.devices.get(redeemed.body.deviceId)!) as never, 'telegram:50', 'topic-50-1')).toBe(true);
     const theirs = await owner('GET', `/mobile/chat/app/${shared}/messages`);
     expect(theirs.body.messages.find((m: { messageId?: string }) => m.messageId === 'held-msg').heldFrom).toEqual(['Mia']);
     // The owner chooses to show it: a new grant, signed after this machine held the row.

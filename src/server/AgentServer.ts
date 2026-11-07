@@ -6203,9 +6203,13 @@ export class AgentServer {
         this.mobilePairing.keyLedger = keyLedger;
         this.startTeamPuller(options);
         const teamSvc = this.mobilePairing;
+        // The registry, not the dialable list: a peer with no usable address still counts.
+        const severalMachines = (): boolean => {
+          try { return (options.coordinator?.managers?.identityManager?.getActiveMachines().length ?? 0) > 1 || (options.resolvePeerUrls?.() ?? []).length > 0; } catch { return true; } // @silent-fallback-ok — an unreadable registry stamps, the safe direction
+        };
         svc.store.useAccessStamps({
           // Stamped once there could be a reader, and on any agent with peers: a cut-off machine cannot know of a first invite.
-          stamp: (ev) => (teamSvc.teamOn() || (options.resolvePeerUrls?.() ?? []).length > 0 ? teamSvc.teamLog()?.stampMessage(ev.conversationKey, ev.role) ?? null : null),
+          stamp: (ev) => (teamSvc.teamOn() || severalMachines() ? teamSvc.teamLog()?.stampMessage(ev.conversationKey, ev.role) ?? null : null),
           saw: (stamp) => teamSvc.teamLog()?.noteMessage(stamp),
         });
         // People and roles §3.4: who owns each app conversation (undefined ⇒ no such conversation).

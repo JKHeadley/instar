@@ -367,6 +367,11 @@ function validateReceipt(raw: unknown): MachineReceipt | undefined {
   return { machineId, signerKeyHash, sig };
 }
 
+/** The line a conversation list shows for a message. */
+export function messagePreview(m: { text: string; attachments?: AppAttachment[] }): string {
+  return (m.attachments ? mediaPreview(m.attachments, m.text) : m.text.replace(/\s+/g, ' ').trim()).slice(0, PREVIEW_CHARS);
+}
+
 export interface AccessStamps {
   stamp(event: MessageEvent | MediaMessageEvent): AccessStamp | null;
   saw(stamp: AccessStamp): void;
@@ -374,9 +379,12 @@ export interface AccessStamps {
 
 function validateAccessStamp(raw: unknown): AccessStamp | null {
   const r = raw as { origin?: unknown; incarnation?: unknown; seq?: unknown; access?: unknown } | null;
-  if (!r || typeof r !== 'object') return null;
-  if (typeof r.origin !== 'string' || typeof r.incarnation !== 'string' || !Number.isSafeInteger(r.seq)) return null;
-  if (!r.access || typeof r.access !== 'object' || Object.values(r.access).some((v) => typeof v !== 'number')) return null;
+  if (r === undefined) return null;
+  // A stamp that cannot be read is held from every reader, never taken as no stamp at all.
+  const bad = { origin: 'unreadable', incarnation: 'unreadable', seq: Number.MAX_SAFE_INTEGER, access: {} };
+  if (!r || typeof r !== 'object') return bad;
+  if (typeof r.origin !== 'string' || typeof r.incarnation !== 'string' || !Number.isSafeInteger(r.seq) || (r.seq as number) < 1) return bad;
+  if (!r.access || typeof r.access !== 'object' || Object.values(r.access).some((v) => typeof v !== 'number')) return bad;
   return { origin: r.origin, incarnation: r.incarnation, seq: r.seq as number, access: r.access as Record<string, number> };
 }
 
@@ -676,7 +684,7 @@ export class AppConversationStore {
       case 'message':
       case 'media-message': {
         const state = this.reduceFor(ev.messageId);
-        const preview = (ev.kind === 'media-message' ? mediaPreview(ev.attachments, ev.text) : ev.text.replace(/\s+/g, ' ').trim()).slice(0, PREVIEW_CHARS);
+        const preview = messagePreview(ev.kind === 'media-message' ? ev : { text: ev.text });
         if (ev.kind === 'media-message') this.indexMediaRefs(canonicalKey, ev);
         this.db.prepare('INSERT OR IGNORE INTO messages (messageId, canonicalKey, eventId, at, deliveryState, lastPreview) VALUES (?, ?, ?, ?, ?, ?)')
           .run(ev.messageId, canonicalKey, ev.eventId, ev.at, state, preview);

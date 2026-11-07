@@ -807,3 +807,49 @@ describe('a machine that has only received rows', () => {
     expect(new TeamAccessLog({ stateDir: dir, signer: signerFor('B'), verify }).healthState()).toBe('ok');
   });
 });
+
+describe('what must survive a crash', () => {
+  it('a lost message record starts a new stream, so an old grant cannot pass a reused number', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-seen-'));
+    const a = new TeamAccessLog({ stateDir: dir, signer: signerFor('A'), verify });
+    start(a);
+    a.stampMessage('c', 'agent'); a.stampMessage('c', 'agent');
+    a.appendSignedRequest(signed([{ type: 'grant', personKey: 'p', ref: 'c', access: 'use' }]));
+    const file = path.join((a as unknown as { dir: string }).dir, 'message-seen.json');
+    fs.writeFileSync(file, '{"torn');
+    const back = new TeamAccessLog({ stateDir: dir, signer: signerFor('A'), verify });
+    const stale = { ...back.stampMessage('c', 'agent')!, access: {} };
+    expect(stale.seq).toBe(1);
+    expect(back.mayRead('p', 'c', stale, null)).toBe(false);
+  });
+
+  it('what a session knew survives a restart, and its end is tried again until it works', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-frz-'));
+    const studio = machine('A');
+    start(studio);
+    const b = new TeamAccessLog({ stateDir: dir, signer: signerFor('B'), verify });
+    b.ingest(studio.allRows() as TeamAccessRow[]);
+    b.releaseAccess('c1');
+    const row = studio.appendSignedRequest(signed([{ type: 'grant', personKey: 'p', ref: 'c1', access: 'use' }]));
+    b.ingest([row]);
+    const back = new TeamAccessLog({ stateDir: dir, signer: signerFor('B'), verify });
+    expect(back.pendingEnds()).toEqual(['c1']);
+    expect(back.stampMessage('c1', 'agent')!.access[`A/${row.incarnation}`]).toBeLessThan(row.seq);
+    const seen: string[][] = [];
+    const p = new TeamAccessPuller({ log: () => back, peers: () => [], afterIngest: (t) => { seen.push(t); } });
+    await p.tick();
+    expect(seen).toEqual([['c1']]);
+    back.releaseAccess('c1');
+    await p.tick();
+    expect(seen).toHaveLength(1);
+  });
+
+  it('a grant added after a read is counted at once, though answers are remembered', () => {
+    const a = machine('A');
+    start(a);
+    const old = a.stampMessage('c1', 'agent')!;
+    expect(a.mayRead('p', 'c1', old, null)).toBe(false);
+    a.appendSignedRequest(signed([{ type: 'grant', personKey: 'p', ref: 'c1', access: 'use' }]));
+    expect(a.mayRead('p', 'c1', old, null)).toBe(true);
+  });
+});

@@ -376,6 +376,12 @@ describe('what a confined session feeds agent-wide', () => {
     expect(at).toBeGreaterThan(-1);
     expect(src.lastIndexOf('feedsAgentDigests(session)', at)).toBeGreaterThan(at - 200);
   });
+  it('production gives a session\'s history the held check, not only the fallback dispatch', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf8');
+    expect(src).toContain('heldFromAReader: (key, message) => _teamHeldFromAReader');
+    expect(src).toContain('_teamHeldFromAReader = (key, message) =>');
+    expect(src).toContain('convs.useHeldCheck(');
+  });
   it('a team member\'s words are kept out of the owner\'s learned corrections', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf8');
     expect(src).toContain('entry.fromUser && entry.text && !entry.teamPhone');

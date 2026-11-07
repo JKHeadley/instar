@@ -562,9 +562,9 @@ export class MobilePairingService {
     return !!log && log.mayRead(key, ref, row.accessStamp, row.senderPerson?.userId ?? null);
   }
 
-  /** May this reader see the message with this id? One not held here yet is not shown. */
+  /** May this reader see the message with this id? One not held here yet is not shown. Telegram cannot be held. */
   mayReadMessageId(person: ResolvedPerson | null, ref: string, messageId: string): boolean {
-    if (!this.teamReaderKey(person)) return true;
+    if (!this.teamReaderKey(person) || ref.startsWith('telegram:')) return true;
     const row = this.storedMessage(ref, messageId);
     return !!row && this.mayReadStored(person, ref, row);
   }
@@ -655,7 +655,10 @@ export class MobilePairingService {
     const d = this.devices.get(deviceId);
     if (!d) return false;
     const p = this.personOfDevice(d);
-    return p.ok && (messageId === undefined || this.mayReadMessageId(p, ref, messageId));
+    if (!p.ok) return false;
+    // A push carries no text, and a peer's fan-out usually arrives before its row, so that one goes out.
+    if (messageId === undefined || !this.storedMessage(ref, messageId)) return true;
+    return this.mayReadMessageId(p, ref, messageId);
   }
 
   /** Validate a requested person for a pairing link or a reassignment (spec §3.2). */

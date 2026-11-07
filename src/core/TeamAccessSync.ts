@@ -177,7 +177,9 @@ export class TeamAccessPuller {
       }
       if (result.lastAnsweredAt !== null) this.lastAnsweredAt = result.lastAnsweredAt;
       this.settled = true;
-      if (result.touched.length > 0 || result.outcomes.some((o) => o.added > 0)) await this.deps.afterIngest(result.touched);
+      // Conversations whose sessions a crash or a failure left running are tried again each time.
+      const pending = [...new Set([...result.touched, ...log.pendingEnds()])];
+      if (pending.length > 0 || result.outcomes.some((o) => o.added > 0)) await this.deps.afterIngest(pending);
       return result;
     } catch (err) {
       this.deps.reportError?.(err);

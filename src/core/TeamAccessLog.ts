@@ -401,9 +401,10 @@ export class TeamAccessLog {
   private refoldPending = false;
   private incarnationCache: string | null = null;
   private gapsCache: Gap[] | null = null;
-  private messageSeen: Record<string, number> | null = null;
+  private messageState: { stream: string; seen: Record<string, number> } | null = null;
   /** Conversations whose sharing just changed here, with the log as it stood before. */
-  private readonly frozen = new Map<string, Record<string, number>>();
+  private frozen: Map<string, Record<string, number>> | null = null;
+  private readonly grantsCache = new Map<string, ReaderGrant[]>();
   /** Rows that reached this machine from a peer since it started. */
   private readonly foreign = new WeakSet<TeamAccessRow>();
 
@@ -443,7 +444,7 @@ export class TeamAccessLog {
     const mine = this.rows.filter((r) => r.origin === origin && r.incarnation === incarnation);
     const last = mine[mine.length - 1];
     const ownEarlier = this.rows.filter((r) => originOf(r) === origin);
-    const messages = Object.entries(this.messagesSeen()).map(([stream, seq]) => [`${MESSAGE_STREAM}${stream}`, seq]);
+    const messages = Object.entries(this.messageRecord().seen).map(([stream, seq]) => [`${MESSAGE_STREAM}${stream}`, seq]);
     return { origin, incarnation, prev: last ? rowHash(last) : (ownEarlier.length > 0 ? prefixHash(ownEarlier) : null), seen: { ...this.vector(), ...Object.fromEntries(messages) } };
   }
 
@@ -559,29 +560,43 @@ export class TeamAccessLog {
     return this.gapsCache;
   }
 
-  private messagesSeen(): Record<string, number> {
-    if (this.messageSeen) return this.messageSeen;
+  /**
+   * Message numbers and what has been seen. The numbers run on their own stream: if this record is
+   * lost a new one starts, because a reused number would pass as something an old grant had seen.
+   */
+  private messageRecord(): { stream: string; seen: Record<string, number> } {
+    if (this.messageState) return this.messageState;
     try {
-      this.messageSeen = JSON.parse(fs.readFileSync(path.join(this.dir, 'message-seen.json'), 'utf8')) as Record<string, number>;
+      const r = JSON.parse(fs.readFileSync(path.join(this.dir, 'message-seen.json'), 'utf8')) as { stream?: unknown; seen?: unknown };
+      if (typeof r.stream === 'string' && r.seen && typeof r.seen === 'object') {
+        this.messageState = { stream: r.stream, seen: r.seen as Record<string, number> };
+        return this.messageState;
+      }
     } catch {
-      // @silent-fallback-ok — none yet, or lost: a grant then records seeing less, so less is shown, never more.
-      this.messageSeen = {};
+      // @silent-fallback-ok — none yet or lost: a grant then records seeing less, and a new stream starts.
     }
-    return this.messageSeen;
+    this.messageState = { stream: crypto.randomBytes(8).toString('hex'), seen: {} };
+    return this.messageState;
+  }
+
+  private saveMessageRecord(): void {
+    try {
+      fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+      const file = path.join(this.dir, 'message-seen.json');
+      fs.writeFileSync(`${file}.tmp`, JSON.stringify(this.messageRecord()), { mode: 0o600 });
+      fs.renameSync(`${file}.tmp`, file);
+    } catch (err) { // @silent-fallback-ok — the count stays in memory; a lost record starts a new stream
+      console.warn(`[team-access] message record not written: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /** Note a message's place. A grant signed from here on says it had seen it. */
   noteMessage(stamp: AccessStamp): void {
-    const seen = this.messagesSeen();
+    const { seen } = this.messageRecord();
     const stream = streamKey(stamp.origin, stamp.incarnation);
     if ((seen[stream] ?? 0) >= stamp.seq) return;
     seen[stream] = stamp.seq;
-    try {
-      fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-      fs.writeFileSync(path.join(this.dir, 'message-seen.json'), JSON.stringify(seen), { mode: 0o600 });
-    } catch (err) { // @silent-fallback-ok — the count stays in memory; losing it can only hide a message, not show one
-      console.warn(`[team-access] message record not written: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    this.saveMessageRecord();
   }
 
   /**
@@ -591,31 +606,63 @@ export class TeamAccessLog {
   stampMessage(ref: string, role: 'operator' | 'agent'): AccessStamp | null {
     const origin = this.opts.signer?.machineId();
     if (!origin) return null;
-    const incarnation = this.incarnation();
-    const seq = (this.messagesSeen()[streamKey(origin, incarnation)] ?? 0) + 1;
-    const stamp = { origin, incarnation, seq, access: (role === 'agent' ? this.frozen.get(ref) : undefined) ?? this.vector() };
+    const record = this.messageRecord();
+    const seq = (record.seen[streamKey(origin, record.stream)] ?? 0) + 1;
+    const stamp = { origin, incarnation: record.stream, seq, access: (role === 'agent' ? this.frozenAccess().get(ref) : undefined) ?? this.vector() };
     this.noteMessage(stamp);
     return stamp;
   }
 
+  /** Sessions outlive this server, so what they knew is kept on disk until they have ended. */
+  private frozenAccess(): Map<string, Record<string, number>> {
+    if (this.frozen) return this.frozen;
+    this.frozen = new Map();
+    try {
+      const saved = JSON.parse(fs.readFileSync(path.join(this.dir, 'frozen.json'), 'utf8')) as Record<string, Record<string, number>>;
+      for (const [ref, v] of Object.entries(saved)) this.frozen.set(ref, v);
+    } catch {
+      // @silent-fallback-ok — none is the normal state.
+    }
+    return this.frozen;
+  }
+
+  private saveFrozen(): void {
+    const file = path.join(this.dir, 'frozen.json');
+    try {
+      fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(`${file}.tmp`, JSON.stringify(Object.fromEntries(this.frozenAccess())), { mode: 0o600 });
+      fs.renameSync(`${file}.tmp`, file);
+    } catch (err) { // @silent-fallback-ok — held in memory; lost only if this server also stops
+      console.warn(`[team-access] session record not written: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** Conversations whose sessions have not yet been ended after a change. Retried at each exchange. */
+  pendingEnds(): string[] { return [...this.frozenAccess().keys()]; }
+
   /** The conversation's sessions have ended, so new replies know the current log. */
-  releaseAccess(ref: string): void { this.frozen.delete(ref); }
+  releaseAccess(ref: string): void { if (this.frozenAccess().delete(ref)) this.saveFrozen(); }
 
   /** Every signed fact that opens this conversation to this person, leaving out what the owner voided. */
   private readerGrants(personKey: string, ref: string): ReaderGrant[] {
+    const key = `${personKey}\u0000${ref}`;
+    const cached = this.grantsCache.get(key);
+    if (cached) return cached;
     const plain = this.state();
+    const verified = new Map(this.rows.map((r) => [r, this.opts.verify(r) === 'verified'] as const));
     const out: ReaderGrant[] = [];
-    const owners = (r: TeamAccessRow): r is RequestRow => this.opts.verify(r) === 'verified' && r.kind === 'request' && plain.bindings.get(r.signedOrigin.keyHash) === 'owner';
+    const owners = (r: TeamAccessRow): r is RequestRow => !!verified.get(r) && r.kind === 'request' && plain.bindings.get(r.signedOrigin.keyHash) === 'owner';
     const gone = this.rows.flatMap((r) => (owners(r) ? (bodyEvents(r) ?? []).flatMap((e) => (e.type === 'origin-gone' ? [e] : [])) : []));
     for (const r of this.rows) {
       const opens = r.kind === 'machine'
-        ? this.opts.verify(r) === 'verified' && r.events.some((e) => e.type === 'conversation-own' && e.ref === ref && e.personKey === personKey)
+        ? !!verified.get(r) && r.events.some((e) => e.type === 'conversation-own' && e.ref === ref && e.personKey === personKey)
         : owners(r) && (bodyEvents(r) ?? []).some((e) => e.type === 'grant' && e.ref === ref && e.personKey === personKey);
       if (!opens) continue;
       if (gone.some((g) => g.machine === originOf(r) && g.incarnation === (r.incarnation ?? UNCHAINED_INCARNATION) && r.seq > g.throughSeq)) continue;
       const seenMessages = Object.fromEntries(Object.entries(r.seen ?? {}).filter(([k]) => k.startsWith(MESSAGE_STREAM)).map(([k, v]) => [k.slice(MESSAGE_STREAM.length), v]));
       out.push({ stream: streamOf(r), seq: r.seq, seenMessages });
     }
+    this.grantsCache.set(key, out);
     return out;
   }
 
@@ -689,6 +736,7 @@ export class TeamAccessLog {
     }
     // A row that could not be placed may be placeable now, so this is worked out afresh after a pull.
     this.gapsCache = null;
+    this.grantsCache.clear();
     if (added > 0) {
       this.folded = foldLog(this.rows, this.opts.verify);
       this.refoldPending = this.rows.some((r) => this.opts.verify(r) === 'unknown');
@@ -699,7 +747,10 @@ export class TeamAccessLog {
       const after = grantPairs(this.folded);
       for (const [pair, ref] of [...before, ...after]) if (before.has(pair) !== after.has(pair)) touched.add(ref);
     }
-    for (const ref of touched) if (!this.frozen.has(ref)) this.frozen.set(ref, vectorBefore);
+    const frozen = this.frozenAccess();
+    let newlyFrozen = false;
+    for (const ref of touched) if (!frozen.has(ref)) { frozen.set(ref, vectorBefore); newlyFrozen = true; }
+    if (newlyFrozen) this.saveFrozen();
     return { added, refused, touched: [...touched] };
   }
 
@@ -730,6 +781,7 @@ export class TeamAccessLog {
     this.writeLine(row);
     this.rows.push(row);
     this.gapsCache = null;
+    this.grantsCache.clear();
     if (new Set(this.rows.map(originOf)).size > 1) this.folded = foldLog(this.rows, this.opts.verify);
     else foldRowInto(this.folded, row, this.opts.verify);
     // A row that cannot be placed yet (a key cache after an identity change) must not be lost.
@@ -748,7 +800,7 @@ export class TeamAccessLog {
     for (const file of [this.logFile, this.confinedFile]) {
       if (fs.existsSync(file)) fs.renameSync(file, `${file}.damaged-${stamp}`);
     }
-    this.rows = []; this.folded = emptyState(); this.gapsCache = null; this.refoldPending = false;
+    this.rows = []; this.folded = emptyState(); this.gapsCache = null; this.grantsCache.clear(); this.refoldPending = false;
     this.seedSeq = 0;
     this.health = 'ok';
     this.mintIncarnation();
