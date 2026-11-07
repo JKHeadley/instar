@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
+import { performance } from 'node:perf_hooks';
 import { OriginDetectorCanary } from '../../../src/messaging/telegram-origin/OriginDetectorCanary.js';
 import { DegradationReporter } from '../../../src/monitoring/DegradationReporter.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
@@ -96,17 +97,38 @@ it('rejects a late cleanup acknowledgement even when its deadline callback is de
 });
 
 it('accepts cleanup completed before its deadline when parent receipt is event-loop delayed', async () => {
+  // Hold only the parent's receipt. The worker still removes its real fixture
+  // and reports its real monotonic completion time. Advancing the parent's
+  // clock avoids assuming a loaded worker can finish filesystem cleanup in
+  // 100 ms (that assumption failed in the full suite).
+  const realNow = performance.now.bind(performance);
+  let parentClockOffset = 0;
+  vi.spyOn(performance, 'now').mockImplementation(() => realNow() + parentClockOffset);
+  const realEmit = Worker.prototype.emit;
+  const cleanupQueued = gate();
+  let deliverCleanup: (() => void) | undefined;
+  vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (this: Worker, event: string | symbol, ...args: unknown[]) {
+    const message = args[0] as { type?: string } | undefined;
+    if (event === 'message' && message?.type === 'cleanup') {
+      deliverCleanup = () => { realEmit.call(this, event, ...args); };
+      cleanupQueued.release();
+      return true;
+    }
+    return realEmit.call(this, event, ...args);
+  });
   const canary = await fixture(`
     const {performance}=await import('node:perf_hooks');
     const {rm}=await import('node:fs/promises');
     const {workerData}=await import('node:worker_threads');
     parentPort.postMessage({type:'checks',passed:true,checks,checkedAt:performance.now()});
-    setTimeout(async()=>{await rm(workerData.directory,{recursive:true,force:true});parentPort.postMessage({type:'cleanup',verified:true,fixtureRemoved:true,completedAt:performance.now()})},50);`,
-  { cleanupTimeoutMs: 100 });
+    setTimeout(async()=>{await rm(workerData.directory,{recursive:true,force:true});parentPort.postMessage({type:'cleanup',verified:true,fixtureRemoved:true,completedAt:performance.now()})},0);
+    setInterval(()=>{},1000);`,
+  { cleanupTimeoutMs: 5000 });
   const run = canary.run();
   await vi.waitFor(() => expect(canary.getHealth().reason).toBe('canary-cleanup-running'), { interval: 1 });
-  const stalledUntil = performance.now() + 200;
-  while (performance.now() < stalledUntil) { /* Deliberately stall only the parent thread. */ }
+  await cleanupQueued.promise;
+  parentClockOffset = 6000;
+  deliverCleanup?.();
   await run;
   expect(canary.getHealth().state, JSON.stringify(report.mock.calls)).toBe('pass');
   expect(canary.getHealth().attempts).toBe(1);

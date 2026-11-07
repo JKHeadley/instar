@@ -6,6 +6,7 @@
  * `legacy`), and the triage projection (JobState untouched).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
@@ -13,6 +14,7 @@ import { createTempProject, createMockSessionManager, type TempProject } from '.
 import { hashBody, hashFrontmatter, hashScriptBytes } from '../../../src/scheduler/AgentMdLockFile.js';
 import type { JobSchedulerConfig } from '../../../src/core/types.js';
 import type { ScriptRunContext } from '../../../src/scheduler/scriptRunObservers.js';
+import { fixedCertificateBody, type FixedResultCertificate } from '../../../src/scheduler/JobFixedResultCertificate.js';
 
 const lockState: { value: unknown } = { value: { state: 'absent' } };
 vi.mock('../../../src/scheduler/AgentMdLockFile.js', async (importOriginal) => {
@@ -454,6 +456,103 @@ describe('rollback projection (§8.4)', () => {
     expect(s.scriptRunnersActiveFor('probe')).toBe(false);
     await s.triggerJob('probe', 'test');
     await waitFor(() => sm._spawnCount === 1);
+  });
+
+  it('a transient registry hold releases in the same running scheduler while a safety hold stays closed', () => {
+    project = createTempProject();
+    addScriptJob(project.stateDir, 'probe', "console.log('JOB_RESULT ok')\n");
+    const { s } = mkScheduler(project);
+    scheduler = s;
+    s.start();
+    expect(s.scriptRunnersActiveFor('probe')).toBe(true);
+    const store = s.getJobSupervisionStore();
+    store.holdSlug('probe', 'registry-unreadable');
+    expect(s.scriptRunnersActiveFor('probe')).toBe(false);
+    expect(store.clearHoldSlugIfReason('probe', 'registry-unreadable')).toBe(true);
+    expect(s.scriptRunnersActiveFor('probe')).toBe(true);
+    store.holdSlug('probe', 'certificate-revoked');
+    expect(s.scriptRunnersActiveFor('probe')).toBe(false);
+    expect(store.clearHoldSlugIfReason('probe', 'registry-unreadable')).toBe(false);
+    expect(s.scriptRunnersActiveFor('probe')).toBe(false);
+  });
+
+  it('checks a fresh pool revocation before admitting a script fire', async () => {
+    project = createTempProject();
+    addScriptJob(project.stateDir, 'probe', "console.log('JOB_RESULT ok')\n");
+    const { s, sm } = mkScheduler(project);
+    scheduler = s;
+    s.start();
+    s.setFixedRegistryReader({ read: async () => ({
+      authority: { epoch: 2, ownerPublicKeys: {}, reviewerPublicKeys: {},
+        activeIds: new Set<string>(), revokedIds: new Set(['probe-cert']), now: Date.now() },
+      certificates: new Map([['probe-cert', { id: 'probe-cert', slug: 'probe' }]]),
+    }) } as unknown as import('../../../src/scheduler/JobFixedRegistryReader.js').JobFixedRegistryReader);
+    await s.triggerJob('probe', 'revoked-peer-test');
+    await waitFor(() => sm._spawnCount === 1);
+    expect(s.getJobSupervisionStore().slugHoldReason('probe')).toBe('certificate-revoked');
+    expect(lastRun(s, 'probe')?.runner).not.toBe('script');
+  });
+
+  it('holds script admission when an active cohort has no configured authority reader', async () => {
+    project = createTempProject();
+    addScriptJob(project.stateDir, 'probe', "console.log('JOB_RESULT ok')\n");
+    const { s, sm } = mkScheduler(project);
+    scheduler = s;
+    s.start();
+    s.setFixedRegistryReader(null, true);
+    await s.triggerJob('probe', 'missing-authority');
+    await waitFor(() => sm._spawnCount === 1);
+    expect(s.getJobSupervisionStore().slugHoldReason('probe')).toBe('registry-unreadable');
+    expect(lastRun(s, 'probe')?.runner).not.toBe('script');
+  });
+
+  it('holds a script before admission when its signed canary has expired', async () => {
+    project = createTempProject();
+    addScriptJob(project.stateDir, 'probe', "console.log('JOB_RESULT ok')\n");
+    const { s, sm } = mkScheduler(project);
+    scheduler = s;
+    s.start();
+    const owner = crypto.generateKeyPairSync('ed25519');
+    const reviewer = crypto.generateKeyPairSync('ed25519');
+    const cert: FixedResultCertificate = { id: 'probe-cert', version: 1, registryEpoch: 1,
+      slug: 'probe', templateDigest: 'digest', featureStateHash: 'features', result: 'success',
+      summary: 'ok', reasonCode: 'ok', fields: {}, observedOutcomes: 300,
+      gradableOutcomes: 300, confirmedMisses: 0, reviewedMissEpoch: 0, testEvidenceId: 'tests',
+      shadowEvidenceId: 'shadow', canaryAssertionId: 'canary',
+      canaryPassedAt: new Date(Date.now() - 37 * 60 * 60_000).toISOString(),
+      owner: 'owner', reviewer: 'reviewer', ownerSignature: '', reviewerSignature: '' };
+    const body = fixedCertificateBody(cert);
+    cert.ownerSignature = crypto.sign(null, Buffer.from(body), owner.privateKey).toString('base64');
+    cert.reviewerSignature = crypto.sign(null, Buffer.from(body), reviewer.privateKey).toString('base64');
+    s.setFixedRegistryReader({ read: async () => ({
+      authority: { epoch: 1, ownerPublicKeys: { owner: owner.publicKey.export({ type: 'spki', format: 'pem' }).toString() },
+        reviewerPublicKeys: { reviewer: reviewer.publicKey.export({ type: 'spki', format: 'pem' }).toString() },
+        activeIds: new Set([cert.id]), revokedIds: new Set<string>(), now: Date.now() },
+      certificates: new Map([[cert.id, cert]]),
+    }) } as unknown as import('../../../src/scheduler/JobFixedRegistryReader.js').JobFixedRegistryReader);
+    await s.triggerJob('probe', 'expired-canary');
+    await waitFor(() => sm._spawnCount === 1);
+    expect(s.getJobSupervisionStore().slugHoldReason('probe')).toBe('canary-stale');
+    expect(lastRun(s, 'probe')?.runner).not.toBe('script');
+  });
+
+  it('fails closed if the scheduler stops while a registry read is in flight', async () => {
+    project = createTempProject();
+    const flag = path.join(project.stateDir, 'should-not-run');
+    addScriptJob(project.stateDir, 'probe', `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(flag)}, 'ran');\n`);
+    const { s } = mkScheduler(project);
+    scheduler = s;
+    s.start();
+    let finishRead!: (value: unknown) => void;
+    s.setFixedRegistryReader({ read: () => new Promise(resolve => { finishRead = resolve; })
+    } as unknown as import('../../../src/scheduler/JobFixedRegistryReader.js').JobFixedRegistryReader);
+    const admission = s.triggerJob('probe', 'shutdown-race');
+    await waitFor(() => typeof finishRead === 'function');
+    s.stop();
+    s.setFixedRegistryReader(null);
+    finishRead({ authority: { epoch: 0, activeIds: new Set(), revokedIds: new Set() }, certificates: new Map() });
+    await admission;
+    expect(fs.existsSync(flag)).toBe(false);
   });
 });
 

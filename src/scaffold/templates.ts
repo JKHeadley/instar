@@ -2321,6 +2321,7 @@ Rule: I do not state that work landed inside another agent's state unless I have
 `;
 
   content += directJobSupervisionQualityAwareness(port);
+  content += fixedJobResultRegistryAwareness(port);
   return content;
 }
 
@@ -2329,6 +2330,13 @@ export function directJobSupervisionQualityAwareness(port: number): string {
   return `\n\n### Direct Job-Supervision Call Quality (audit view; Jev decisions still off)
 
 When asked whether Jev or its outage replacement is performing well for scheduled script results, read \`GET /decision-quality?sinceHours=24\` (Bearer, port ${port}) and its \`directJobSupervision\` section. \`?scope=pool\` adds machine-tagged \`remoteDirectJobSupervision\` and names missing peers. The section gives each direct call's attempt ID, actual provider/model, prompt hash, verdict, cost, and independent grade when known; it also reports missing journal records and incomplete coverage. These calls are separate from the router's \`points\` and are marked \`routerEnrollment: pending\`. Never count unknown grades as accuracy or claim Jev result decisions are active from this read surface. The code-owned result-triage gate remains off until the benchmark, independent grading, and rollout checks pass.\n`;
+}
+
+/** Shared by new installs and the update migration. */
+export function fixedJobResultRegistryAwareness(port: number): string {
+  return `\n\n### Fixed Job-Result Certificate Registry (dark until reviewed)
+
+When asked whether a repeated script result can close without a model call, read \`GET /jobs/fixed-registry\` (Bearer, port ${port}) on the pinned authority and \`GET /jobs/triage\` for local and pool coverage. The registry returns a signed, fresh snapshot of reviewed exact-result certificates and revocations. A reader must verify the pinned machine signature and monotonic epoch at each decision; an old local copy is diagnostic only. \`POST /jobs/fixed-registry/issue\` requires the certificate's independent owner and reviewer signatures. A canary assertion older than 36 hours holds script admission; \`POST /jobs/fixed-registry/renew\` atomically replaces the same exact shape after a new canary assertion and both fresh signatures. A false routine independent grade writes a local hold and a durable revocation request. The authority accepts \`POST /jobs/fixed-registry/revoke\` only with a signed false-routine proof from an enrolled machine. Missing writer, stale signature, or ambiguous match stays unchecked and held. These routes do not activate Jev result decisions; the code-owned rollout gate remains off until the full benchmark and joined rollout evidence pass.\n`;
 }
 
 /**

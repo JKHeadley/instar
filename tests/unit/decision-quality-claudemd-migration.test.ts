@@ -12,12 +12,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { directJobSupervisionQualityAwareness, generateClaudeMd } from '../../src/scaffold/templates.js';
+import { directJobSupervisionQualityAwareness, fixedJobResultRegistryAwareness, generateClaudeMd } from '../../src/scaffold/templates.js';
 import { DECISION_QUALITY_CLAUDEMD_SECTION, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const MARKER = 'LLM-Decision Quality Meter';
 const DIRECT_MARKER = '### Direct Job-Supervision Call Quality';
+const FIXED_MARKER = '### Fixed Job-Result Certificate Registry';
 
 describe('Decision-quality CLAUDE.md awareness (Agent Awareness Standard)', () => {
   it('generateClaudeMd (new-install path) includes the awareness section with the read + grade-pass surfaces', () => {
@@ -43,6 +44,14 @@ describe('Decision-quality CLAUDE.md awareness (Agent Awareness Standard)', () =
     expect(md).toContain(DIRECT_MARKER);
     expect(md).toContain('routerEnrollment: pending');
     expect(md).toContain('Jev decisions still off');
+  });
+
+  it('teaches new agents to verify the pinned fixed-result authority and the rollout gate', () => {
+    const md = generateClaudeMd('my-proj', 'echo', 9999, true);
+    expect(md).toContain(fixedJobResultRegistryAwareness(9999));
+    expect(md).toContain(FIXED_MARKER);
+    expect(md).toContain('/jobs/fixed-registry/revoke');
+    expect(md).toContain('rollout gate remains off');
   });
 
   it('aggregates are presented evidence-strength-first with the insufficient-evidence honesty marker', () => {
@@ -80,11 +89,13 @@ describe('migrateClaudeMd appends the decision-quality section for existing agen
     new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0' } as any).migrate();
     expect(countMarker()).toBe(1);
     expect(fs.readFileSync(claudeMdPath, 'utf-8').split(DIRECT_MARKER)).toHaveLength(2);
+    expect(fs.readFileSync(claudeMdPath, 'utf-8').split(FIXED_MARKER)).toHaveLength(2);
     expect(fs.readFileSync(claudeMdPath, 'utf-8')).toContain('/decision-quality/grade-pass');
     // Second run must not double-append.
     new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0' } as any).migrate();
     expect(countMarker()).toBe(1);
     expect(fs.readFileSync(claudeMdPath, 'utf-8').split(DIRECT_MARKER)).toHaveLength(2);
+    expect(fs.readFileSync(claudeMdPath, 'utf-8').split(FIXED_MARKER)).toHaveLength(2);
   });
 
   it('does NOT re-append when the section is already present', () => {
