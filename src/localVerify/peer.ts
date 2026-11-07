@@ -155,6 +155,8 @@ export function importRefusal(
 /** Per-peer health for dispatch: a breaker over transport/execution failures only. */
 export interface PeerHealth {
   consecutiveFailures: number;
+  /** Last peer/coordinator version pair recorded as mismatched; audit dedupe only. */
+  skewKey?: string | null;
   openUntil: number | null;
   status: PeerStatus | null;
   statusAt: number;

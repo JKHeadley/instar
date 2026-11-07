@@ -99,6 +99,26 @@ mode, and the foundation-not-audited gap — the Slack-permission-gate
 brittle-enum-as-authority that a harness convergence cleared because it audited
 only the harness, 2026-06-09.)
 
+<!-- FIXED_LIMIT_CONTEST -->
+**Fixed-limit contest (Judgment Within Floors).** Inventory EVERY fixed limit on
+what/how much an agent may do, anywhere in the spec: rates, counts, sizes, growth
+ceilings, retirement thresholds and qualitative quotas. Each is a
+**judgment-candidate by default**. For each, report: location + boundary, claimed
+basis, independent evidence, a legitimate counterexample it rejects (or explicitly
+"no legitimate counterexample found" for a genuine floor), and verdict.
+An `invariant` row must declare `basis: irreversible-consequence`,
+`basis: enumerable-domain`, or `basis: external-constraint`, followed by
+`; evidence: <specific consequence, domain or source>`. Independently verify why
+this exact boundary follows from that evidence. The fields alone prove nothing.
+"Deterministic counts", "fixed cap", "bounded by design", or repeating the limit
+is a circular justification: REJECT it as **MATERIAL / DESIGN**, blocking
+convergence until resolved. If evidence does not establish a real floor, require
+intelligent assessment inside a deterministic floor (bounded action space,
+conservative default, fallback ladder ending deterministically), with the arbiter
+named. Do not invent replacement caps. Preserve evidenced safety/protocol/type
+constraints; measurements, examples and advisory defaults are not caps unless
+they actually gate behavior. Explicitly report `fixed-limits: none` when absent.
+
 ## Output format
 
 Produce a structured finding list. For each finding:

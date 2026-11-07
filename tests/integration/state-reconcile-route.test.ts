@@ -1,3 +1,4 @@
+import { FAILURE_CALLOUT_KIND_REGISTRATION } from '../../src/core/FailureCalloutReplicatedStore.js';
 // safe-fs-allow: test fixture teardown uses SafeFsExecutor.safeRmSync on tmp dirs only.
 /**
  * Integration — GET /state/reconcile (docs/specs/statesync-writer-agnostic-reconciler.md §7):
@@ -64,6 +65,7 @@ describe('GET /state/reconcile', () => {
 
   function build(): { reconciler: ReplicatedStoreReconciler; appended: Record<string, unknown>[] } {
     const registry = new ReplicatedKindRegistry();
+    registry.register(FAILURE_CALLOUT_KIND_REGISTRATION);
     for (const r of [PREF_KIND_REGISTRATION, RELATIONSHIP_KIND_REGISTRATION, KNOWLEDGE_KIND_REGISTRATION, USER_KIND_REGISTRATION, LEARNING_KIND_REGISTRATION, EVOLUTION_ACTION_KIND_REGISTRATION]) {
       registry.register(r);
     }
@@ -119,7 +121,7 @@ describe('GET /state/reconcile', () => {
     expect(body.enabled).toBe(true);
     expect(typeof body.intervalMs).toBe('number');
     expect(body.lastTickAt).not.toBeNull();
-    expect(Object.keys(body.stores).sort()).toEqual(['evolutionActions', 'knowledge', 'learnings', 'preferences', 'relationships', 'userRegistry']);
+    expect(Object.keys(body.stores).sort()).toEqual(['evolutionActions', 'failureCallout', 'knowledge', 'learnings', 'preferences', 'relationships', 'userRegistry']);
 
     const kb = body.stores.knowledge;
     expect(kb).toMatchObject({ seeded: true, emittedPuts: 1, present: true, putsOnly: false, gitCarried: false, lastError: null });

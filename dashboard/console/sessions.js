@@ -11,7 +11,7 @@ import {
   buildSessions, sessionsHeadline, sessionsFacts, partialWords, titleLine, closeRequest, closeConfirmWords,
   closeResultWords, doorChoices, modelChoices, doorModelWords, regimeWords, machineChoices, PLATFORMS,
   platformAllowsDoor, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded,
-  canSwitchDoor, DOOR, attachmentMessage, historyUrl, historyErrorWords, historyText, topicOf, topicHistoryUrl, topicHistoryEntry, TOPIC_HISTORY_PAGE, KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, modelWords, HISTORY_FIRST,
+  canSwitchDoor, profileKeyOf, DOOR, attachmentMessage, historyUrl, historyErrorWords, historyText, topicOf, topicHistoryUrl, topicHistoryEntry, TOPIC_HISTORY_PAGE, KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, modelWords, HISTORY_FIRST,
 } from './sessions-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, details, note, noteLinked, cantTell, MACHINES_PAGE } from './ui.js';
 import { legacyHref } from './nav-model.js';
@@ -535,7 +535,7 @@ function moreSheet(view) {
     { label: 'Machine', text: s.machineNickname || 'This machine' },
     { label: 'Model', text: modelWords(s.model) || 'not recorded' },
     { label: 'Kind', text: s.type === 'job' ? 'a scheduled job' : 'a conversation' },
-    { label: 'Chat', text: s.platform === 'telegram' ? 'a Telegram topic' : s.platform === 'slack' ? 'Slack' : s.platform === 'whatsapp' ? 'WhatsApp' : 'none (terminal only)' },
+    { label: 'Chat', text: String(s.conversationRef || '').startsWith('app:') ? 'an Instar app conversation' : s.platform === 'telegram' ? 'a Telegram topic' : s.platform === 'slack' ? 'Slack' : s.platform === 'whatsapp' ? 'WhatsApp' : 'none (terminal only)' },
   ])];
   const actions = el('div', { class: 'sheet-actions sess-actions' });
   if (canSwitchDoor(s)) actions.append(el('button', { class: 'btn-primary btn-inline', type: 'button', text: `Switch ${DOOR.word} and model`, 'data-door': '1', onclick: () => doorSheet(view) }));
@@ -590,14 +590,14 @@ const WRITE = { 'X-Instar-Request': '1' };
 
 async function doorSheet(view) {
   const s = view.s;
-  const now = el('p', { class: 'card-line', text: `Reading this topic’s ${DOOR.word}…` });
+  const now = el('p', { class: 'card-line', text: `Reading this conversation’s ${DOOR.word}…` });
   const door = el('select', { class: 'reason-input', 'aria-label': DOOR.Word });
   const model = el('select', { class: 'reason-input', 'aria-label': 'Model' });
   const regime = el('p', { class: 'card-note', hidden: true });
   const status = el('p', { class: 'action-status', role: 'status' });
   const go = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Switch', 'data-switch': '1', disabled: true });
   sheet({ title: `${DOOR.Word} and model` }, now, field(DOOR.Word, door), field('Model', model), regime, go, status);
-  const [opt, prof] = await Promise.all([st.ctx.get('/topic-profile/options'), st.ctx.get(`/topic-profile/${encodeURIComponent(String(s.platformId))}`)]);
+  const [opt, prof] = await Promise.all([st.ctx.get('/topic-profile/options'), st.ctx.get(`/topic-profile/${encodeURIComponent(profileKeyOf(s))}`)]);
   if (!opt.ok || !prof.ok) { now.textContent = `Can’t tell what it is on now: ${(!opt.ok ? opt : prof).reason}.`; return; }
   const options = opt.data; const p = prof.data;
   now.textContent = `Now: ${doorModelWords(options, p.resolved.framework, p.resolved.model)} (${profileSourceWords(p)}).`;
@@ -609,11 +609,11 @@ async function doorSheet(view) {
   go.addEventListener('click', async () => {
     go.disabled = true; status.textContent = 'Working…';
     const pick = { framework: door.value, model: model.value || null };
-    const x = await send('POST', `/topic-profile/${encodeURIComponent(String(s.platformId))}`, pick, WRITE);
+    const x = await send('POST', `/topic-profile/${encodeURIComponent(profileKeyOf(s))}`, pick, WRITE);
     const d = x.data || {};
     status.textContent = d.message || d.error || (x.ok ? 'Done.' : 'Refused.');
     go.disabled = false;
-    if (x.ok && !d.noop) watchSwitch({ topicId: String(s.platformId), model: pick.model, since: Date.now(), tmuxSession: s.tmuxSession, status });
+    if (x.ok && !d.noop) watchSwitch({ topicId: profileKeyOf(s), model: pick.model, since: Date.now(), tmuxSession: s.tmuxSession, status });
   });
 }
 

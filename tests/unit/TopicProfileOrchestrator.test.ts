@@ -633,6 +633,9 @@ describe('kill-path precision', () => {
     expect(h.orch.claudeResumeWriteGate(7).allowed).toBe(false);
     expect(h.orch.claudeResumeWriteGate(7).reason).toBe('mid-framework-switch');
     expect(h.orch.codexResumeWriteGate(7).allowed).toBe(false);
+    // session-swap-any-conversation §3.1: the engine-aware gate the Slack writers use.
+    expect(h.orch.resumeWriteGateFor(7, 'claude-code').allowed).toBe(false);
+    expect(h.orch.resumeWriteGateFor(7, 'grok-build')).toEqual({ allowed: false, reason: 'mid-framework-switch' });
     // Successful spawn clears suppression; gates then follow the resolved framework.
     h.spawnImpl.fn = null;
     h.orch.recordSpawnSuccess('7', {
@@ -643,6 +646,9 @@ describe('kill-path precision', () => {
     });
     expect(h.orch.suppressionActive('7')).toBe(false);
     expect(h.orch.codexResumeWriteGate(7).allowed).toBe(true);
+    expect(h.orch.resumeWriteGateFor(7, 'codex-cli').allowed).toBe(true);
+    expect(h.orch.resumeWriteGateFor(7, 'claude-code').allowed).toBe(false);
+    expect(h.orch.resumeWriteGateFor(7, 'grok-build').allowed).toBe(true);
     expect(h.orch.claudeResumeWriteGate(7).allowed).toBe(false); // framework mismatch
   });
 
