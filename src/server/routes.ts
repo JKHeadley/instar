@@ -334,6 +334,8 @@ import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding, resolveTopicSpawnProfile } from './sessionSpawnTopicBinding.js';
+import { acceptedHeavy, classifySpawnRefusal, heavyReservations, previewPlacement, heavyPlacementExecutor, forwardHeavySpawn } from '../core/heavyWorkPlacement.js';
+import { isWorkWeight } from '../core/machineResourceProfile.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
 import { formatLivenessLine } from '../core/machineLiveness.js';
 import { decorateWithRopeCondition } from './poolRopeCondition.js';
@@ -12437,7 +12439,13 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   router.post('/sessions/spawn', spawnLimiter, async (req, res) => {
-    const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole } = req.body;
+    const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole, workWeight } = req.body;
+    // resource-aware placement §6: a heavy helper forwarded by POST /pool/heavy-work/spawn
+    // says so, and this machine counts it in its advertised `heavyPending`.
+    if (workWeight !== undefined && workWeight !== 'light' && workWeight !== 'standard' && workWeight !== 'heavy') {
+      res.status(400).json({ error: '"workWeight" must be "light", "standard" or "heavy"' });
+      return;
+    }
 
     if (!name || !prompt) {
       res.status(400).json({ error: '"name" and "prompt" are required' });
@@ -12615,11 +12623,20 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         }
       }
+      if (workWeight === 'heavy') acceptedHeavy.record('self');
       res.status(201).json({
         ...session,
         ...(parsedTopicId !== undefined ? { topicId: parsedTopicId, topicBound: true, ownership: topicOwnership } : {}),
       });
     } catch (err) {
+      // resource-aware placement §6: a DEFINITE refusal is a 409 with a code, so a caller
+      // (the heavy-work forwarder) can tell "refused" from "outcome unknown" (any other 5xx).
+      const refusal = classifySpawnRefusal(err);
+      if (refusal) {
+        // #2184: never echo credential-bearing spawn argv back to the caller.
+        res.status(409).json({ error: redactSpawnError(err), code: refusal });
+        return;
+      }
       // #2184: never echo credential-bearing spawn argv back to the caller.
       res.status(500).json({ error: redactSpawnError(err) });
     }
@@ -25049,6 +25066,124 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ...pinnedByBlock,
       ...(ownershipLeaseState ? { ownershipLeaseState } : {}),
       answeredBy: holderUrl ? 'local-fallback' : 'local',
+    });
+  });
+
+  // GET /pool/placement/preview — resource-aware placement §6: a READ-ONLY dry run of
+  // PlacementExecutor.decide() for a piece of work of the given weight, on this
+  // machine's pool view, with one evidence row per machine. Writes nothing, claims
+  // nothing. `command` (≤ 2,000 chars) adds the signal-only weight guess; the command
+  // text is never logged or echoed.
+  router.get('/pool/placement/preview', (req, res) => {
+    if (!ctx.machinePoolRegistry) {
+      res.status(503).json({ error: 'session pool not available (dark / single-machine install)' });
+      return;
+    }
+    const w = typeof req.query.workWeight === 'string' ? req.query.workWeight.trim() : 'standard';
+    if (!isWorkWeight(w)) {
+      res.status(400).json({ error: 'workWeight must be "light", "standard" or "heavy"' });
+      return;
+    }
+    const command = typeof req.query.command === 'string' ? req.query.command : undefined;
+    if (command !== undefined && command.length > 2000) {
+      res.status(400).json({ error: 'command must be 2,000 characters or fewer' });
+      return;
+    }
+    res.json(previewPlacement({
+      capacities: ctx.machinePoolRegistry.getCapacities(),
+      selfMachineId: ctx.meshSelfId ?? null,
+      workWeight: w,
+      ...(command !== undefined ? { command } : {}),
+    }));
+  });
+
+  // POST /pool/heavy-work/spawn — resource-aware placement §6: place and start a
+  // HEADLESS helper session (no Telegram topic) on the machine the decision picks, via
+  // that machine's own POST /sessions/spawn (this machine too, over loopback), so the
+  // target's validation, rate limit, caps and admission always apply. Outcomes:
+  // started (201) / refused (502) / unconfirmed (504, never auto-retried) / queued (409).
+  router.post('/pool/heavy-work/spawn', spawnLimiter, async (req, res) => {
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'Starting a placed helper requires the X-Instar-Request: 1 intent header' });
+      return;
+    }
+    if (!ctx.machinePoolRegistry) {
+      res.status(503).json({ error: 'session pool not available (dark / single-machine install)' });
+      return;
+    }
+    if (refuseUnsupportedFields(res, req.body, ['name', 'prompt', 'workWeight', 'framework', 'model'])) return;
+    const { name, prompt, framework, model } = (req.body ?? {}) as Record<string, unknown>;
+    const weight = (req.body ?? {}).workWeight ?? 'heavy';
+    if (weight !== 'heavy' && weight !== 'standard') {
+      res.status(400).json({ error: 'workWeight must be "heavy" (default) or "standard"' });
+      return;
+    }
+    // The target's own request checks, applied up front so nothing passes here and fails there.
+    if (typeof name !== 'string' || !SESSION_NAME_RE.test(name)) {
+      res.status(400).json({ error: '"name" must contain only letters, numbers, hyphens, underscores (max 200)' });
+      return;
+    }
+    if (typeof prompt !== 'string' || prompt.length === 0 || prompt.length > 500_000) {
+      res.status(400).json({ error: '"prompt" is required and must be a string under 500KB' });
+      return;
+    }
+    const binding = resolveSessionSpawnTopicBinding({ name });
+    if (!binding.ok) {
+      res.status(400).json({ error: `${binding.error} — a placed helper is headless, so use a name that needs no topic` });
+      return;
+    }
+    if (framework !== undefined && !(SUPPORTED_FRAMEWORKS as readonly string[]).includes(framework as string)) {
+      res.status(400).json({ error: `"framework" must be one of: ${SUPPORTED_FRAMEWORKS.join(', ')}` });
+      return;
+    }
+    if (model !== undefined) {
+      const allowed = typeof model === 'string' ? spawnModelAllowlist((framework as string | undefined) ?? 'claude-code') : [];
+      if (typeof model !== 'string' || !allowed.includes(model)) {
+        res.status(400).json({ error: `"model" must be one of: ${allowed.join(', ')}` });
+        return;
+      }
+    }
+    const capacities = ctx.machinePoolRegistry.getCapacities();
+    const selfId = ctx.meshSelfId ?? null;
+    const preview = previewPlacement({ capacities, selfMachineId: selfId, workWeight: weight, executor: heavyPlacementExecutor() });
+    const d = preview.decision;
+    if (d.outcome !== 'placed' || !d.chosenMachine) {
+      res.status(409).json({ ok: false, code: 'heavy-work-no-machine', decision: d, machines: preview.machines });
+      return;
+    }
+    const target = d.chosenMachine;
+    const isSelf = target === selfId;
+    // Self goes over loopback to this server's own bind address (a specific non-
+    // wildcard host when configured); a peer goes through poolPeerFetch so a dead
+    // rope is recorded (a POST never falls through to a second path).
+    const selfHost = ctx.config.host && ctx.config.host !== '0.0.0.0' && ctx.config.host !== '::' ? ctx.config.host : '127.0.0.1';
+    const peerTarget = isSelf ? null : (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === target) ?? null;
+    const url = isSelf ? `http://${selfHost.includes(':') ? `[${selfHost}]` : selfHost}:${ctx.config.port}` : peerTarget?.url ?? null;
+    if (!url) {
+      res.status(502).json({ ok: false, code: 'target-unreachable', error: `No address is known for ${d.chosenNickname ?? target}, so nothing was sent.`, decision: d });
+      return;
+    }
+    const token = weight === 'heavy' ? heavyReservations.record(target) : null;
+    const out = await forwardHeavySpawn({
+      url,
+      authHeader: `Bearer ${ctx.config.authToken}`,
+      headers: { 'X-Instar-AgentId': ctx.config.projectName },
+      body: { name, prompt, workWeight: weight, ...(framework !== undefined ? { framework } : {}), ...(model !== undefined ? { model } : {}) },
+      ...(peerTarget ? { dial: (init: RequestInit) => poolPeerFetch(ctx.recordRopeResult ?? undefined, peerTarget, '/sessions/spawn', init) } : {}),
+    });
+    const who = { machine: target, nickname: d.chosenNickname };
+    if (out.kind === 'started') {
+      res.status(201).json({ ok: true, outcome: 'started', ...who, sessionName: (out.body as { tmuxSession?: string }).tmuxSession ?? (out.body as { name?: string }).name ?? name, decision: d });
+      return;
+    }
+    if (out.kind === 'refused') {
+      if (token !== null) heavyReservations.release(token);
+      res.status(502).json({ ok: false, outcome: 'refused', code: 'target-refused', ...who, targetStatus: out.status, targetCode: out.code, targetError: typeof out.body.error === 'string' ? out.body.error.slice(0, 500) : null, decision: d });
+      return;
+    }
+    res.status(504).json({
+      ok: false, outcome: 'unconfirmed', code: 'target-unconfirmed', ...who, sessionName: name, detail: out.detail, decision: d,
+      next: 'Do not retry. Read GET /sessions?scope=pool&include=all for this machine to learn whether the helper started.',
     });
   });
 

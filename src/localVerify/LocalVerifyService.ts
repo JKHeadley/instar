@@ -67,6 +67,11 @@ import {
   type PeerClient, type PeerHealth, type PeerResult, type PeerRunAnswer, type PeerRunRequest, type PeerStatus, type PeerTarget, type RemoteMarker,
 } from './peer.js';
 
+/** A verify peer's fit for a full verify (resource-aware placement §4). */
+export interface PeerFit { eligible: boolean; reason: string; score: number | null }
+/** A peer skipped for the same reason is audited at most this often. */
+export const PEER_SKIP_AUDIT_MS = 10 * 60_000;
+
 /** Repeat-flake escalation (one tracked item per file, re-raised when the flake keeps recurring). */
 export const FLAKY_REPEAT = Object.freeze({ count: 3, windowMs: 7 * 24 * 60 * 60_000, keep: 20 });
 
@@ -689,6 +694,8 @@ export class LocalVerifyService {
   /** Coordinator: the configured peers (`monitoring.localVerify.peers`; absent ⇒ none). */
   private peersSetting: (() => unknown) | null = null;
   private peerClient: PeerClient | null = null;
+  private peerFitFn: ((machineId: string) => PeerFit) | null = null;
+  private readonly peerSkipAudited = new Map<string, number>();
   private leaseView: { holdsLease(): boolean; leaseEpoch(): number | null; holderMachineId(): string | null } | null = null;
   private readonly peerHealth = new Map<string, PeerHealth>();
   private readonly remotePolledAt = new Map<string, number>();
@@ -1504,7 +1511,10 @@ export class LocalVerifyService {
     peers?: (() => unknown) | null;
     client?: PeerClient | null;
     lease?: { holdsLease(): boolean; leaseEpoch(): number | null; holderMachineId(): string | null } | null;
+    /** Resource-aware placement §4: a peer's fit for a full verify (heavy work). Absent ⇒ today's order, no filter. */
+    peerFit?: ((machineId: string) => PeerFit) | null;
   }): void {
+    if (o.peerFit !== undefined) this.peerFitFn = o.peerFit;
     if (o.peerRoleEnabled !== undefined) this.peerRoleEnabled = o.peerRoleEnabled;
     if (o.peers !== undefined) this.peersSetting = o.peers;
     if (o.client !== undefined) this.peerClient = o.client;
@@ -1515,6 +1525,34 @@ export class LocalVerifyService {
 
   private peerRoleOn(): boolean {
     try { return this.peerRoleEnabled ? this.peerRoleEnabled() === true : false; } catch { return false; } // @silent-fallback-ok: an unreadable switch reads as off (no peer runs)
+  }
+
+  /**
+   * Resource-aware placement §4: drop peers too small, too busy or unmeasurable for a
+   * full verify, and try the rest least-loaded first. A skip is audited at most once
+   * per peer per reason per PEER_SKIP_AUDIT_MS. Seam absent ⇒ the configured order.
+   */
+  private fitPeers(peers: PeerTarget[]): PeerTarget[] {
+    const fitFn = this.peerFitFn;
+    if (!fitFn || peers.length === 0) return peers;
+    const now = this.now();
+    const kept: Array<{ peer: PeerTarget; score: number; i: number }> = [];
+    peers.forEach((peer, i) => {
+      let fit: PeerFit;
+      try { fit = fitFn(peer.machineId); } catch { fit = { eligible: true, reason: 'fit-unreadable', score: null }; } // @silent-fallback-ok: an unreadable fit keeps today's behaviour for that peer (no filter), never a silent drop
+      if (fit.eligible) {
+        kept.push({ peer, score: typeof fit.score === 'number' && Number.isFinite(fit.score) ? fit.score : Number.POSITIVE_INFINITY, i });
+        return;
+      }
+      const key = `${peer.machineId}:${fit.reason}`;
+      const last = this.peerSkipAudited.get(key) ?? 0;
+      if (now - last >= PEER_SKIP_AUDIT_MS) {
+        this.peerSkipAudited.set(key, now);
+        this.audit({ event: 'peer-skipped-resource', machineId: peer.machineId, reason: fit.reason });
+      }
+    });
+    kept.sort((a, b) => (a.score - b.score) || (a.i - b.i));
+    return kept.map((k) => k.peer);
   }
 
   private configuredPeers(): PeerTarget[] {
@@ -1748,7 +1786,7 @@ export class LocalVerifyService {
   /* @self-action-controller: local-verify-peer-dispatch */
   private async dispatchOnce(): Promise<void> {
     if (this.dispatchRunning) return;
-    const peers = this.configuredPeers();
+    const peers = this.fitPeers(this.configuredPeers());
     const client = this.peerClient;
     if (!client || peers.length === 0) return;
     if (this.stopped || this.restoring || this.blockedBy || this.mergeHold || this.verifierHold) return;
