@@ -42,10 +42,15 @@ Yes. This exposes an irreversible action. The route holds no authority of its ow
 - The sequence on a graph already past epoch 1: the historical test now runs `removeLostMachine` itself, epoch 2 to 3, in 164 s on the Studio under load. That is over its own 120 s limit.
 - Real CLI server: status answers 403 without owner proof, and 200 with it. Run as a unit copy.
 - Eight dashboard tests in JSDOM.
+- Removal with a paired machine outside the signed membership: planning and the native roster checks used to refuse this, which would have blocked any chosen pair. Now every survivor must be active and every removed member must not be; other paired machines do not count. The refused case stays covered by the native store test.
 
 ## Second-pass review
 
 One fresh Claude reviewer, read-only. First read: do not ship, six blocking findings, including a missing archive step that would freeze any graph past epoch 1 and completed removals reported as held. All fixed. The reviewer missed a seventh, `installCompletedMemberLoss`, found by comparing with the historical test. Second read of the fixes and the cancel path: one critical finding, fixed. A peer shown the hold stops serving and nothing tells it the hold went away, so cancelling after that would have stopped writes for good. The disclosure is now recorded durably before the snapshot leaves, and cancel refuses after it. Three mediums and the lows also fixed. This last round has not had a further read.
+
+## Tracking
+
+Remaining limits of paired machines outside the membership: CMT-1437.
 
 ## Not established
 

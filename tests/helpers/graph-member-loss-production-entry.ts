@@ -34,6 +34,7 @@ import {GraphWitnessService} from '../../src/core/GraphWitnessService.js';
 import {GraphNativeMemberLossStore,GraphNativeMemberLossProgress} from '../../src/core/GraphNativeMemberLossStore.js';
 import {SafeFsExecutor} from '../../src/core/SafeFsExecutor.js';
 import {SecretStore} from '../../src/core/SecretStore.js';
+import {MachineIdentityManager} from '../../src/core/MachineIdentity.js';
 import {readConversationGraphOwnerPolicy,initializeConversationGraphOwnerPolicy} from '../../src/core/ConversationGraphOwnerPolicy.js';
 import {canonicalHash,signGraphRecord,witnessActionPayload,verifyGraphRecord,unsigned} from '../../src/core/GraphWitnessTypes.js';
 import {createGraphControlCapsule} from '../../src/core/GraphWitnessControl.js';
@@ -42,7 +43,7 @@ import {StateManager} from '../../src/core/StateManager.js';
 import {InitiativeTracker} from '../../src/core/InitiativeTracker.js';
 import type {InstarConfig} from '../../src/core/types.js';
 
-export type GraphLossExecutionMode='surface-route'|'surface-route-resume'|'surface-route-restart'|'surface-route-before-native'|'surface-route-cancel'|'surface-route-shown'|'empty'|'pending'|'committed'|'denied-pending'|'committed-lost-host'|'refused-committed-local-deny'|'cold-native-pending'|'renewed-native-pending'|'post-act-pending'|'pin-priority-deny'|'creation-erasure-resume'|'stream-final-mutation'|'stream-final-missing'|'stream-final-barrier'|'settlement-owner-revocation'|'upload-owner-revocation';
+export type GraphLossExecutionMode='surface-route'|'surface-route-resume'|'surface-route-restart'|'surface-route-before-native'|'surface-route-cancel'|'surface-route-shown'|'surface-route-left-out'|'empty'|'pending'|'committed'|'denied-pending'|'committed-lost-host'|'refused-committed-local-deny'|'cold-native-pending'|'renewed-native-pending'|'post-act-pending'|'pin-priority-deny'|'creation-erasure-resume'|'stream-final-mutation'|'stream-final-missing'|'stream-final-barrier'|'settlement-owner-revocation'|'upload-owner-revocation';
 export async function runGraphMemberLossProductionEntry(mode:GraphLossExecutionMode){
  let methodTiming:ReturnType<typeof startGraphSyncMethodTiming>|undefined,methodTimer:ReturnType<typeof setInterval>|undefined;
  const performanceObserver=process.env.GRAPH_LOSS_STREAM_PERF==='1'?observeFixturePerformance(fs.mkdtempSync(path.join(process.cwd(),'.instar/state/build/graph-loss-stream-perf-'))):null;try{
@@ -93,6 +94,11 @@ export async function runGraphMemberLossProductionEntry(mode:GraphLossExecutionM
    const settled=async()=>{let reply:request.Response;await vi.waitFor(async()=>{reply=await auth(request(app).get('/conversation-graph/member-loss/status'));expect(reply.body.state).not.toBe('running');},{timeout:100000,interval:100});return reply!.body;};
    // Nothing the removal path could not finish may place a hold, because a hold cannot be withdrawn.
    const unsupported=await auth(request(app).post('/conversation-graph/member-loss/prepare')).send({requestId:'surface-refused-0001',removedMachineIds:['m_not_a_member']});expect(unsupported.status).toBe(409);expect(unsupported.body.code).toBe('member-loss-one-survivor-only');const idle=(await auth(request(app).get('/conversation-graph/member-loss/status'))).body;expect(idle).toMatchObject({state:'none',held:false,removed:[],failure:null,resume:null});expect(idle.members.map((member:{machineId:string;self:boolean})=>[member.machineId,member.self]).sort()).toEqual([[identity.loadIdentity().machineId,true],[f.managers[otherIndex].loadIdentity().machineId,false]].sort());
+   if(mode==='surface-route-left-out'){
+    // A chosen pair among more paired machines: the others hold no signed place and must not block removal.
+    const extraDir=fs.mkdtempSync(path.join(path.dirname(stateDir),'left-out-')),extra=new MachineIdentityManager(extraDir);await extra.generateIdentity({role:'standby'});const extraIdentity=extra.loadIdentity();
+    native.identities.apply({identity:extraIdentity,scope:'remote',actor:'pairing-trust',path:'pair'});identity.registerMachine(extraIdentity,'standby');
+   }
    const before=actual.authority.currentMembership(),removed=[f.managers[otherIndex].loadIdentity().machineId],prepared=await auth(request(app).post('/conversation-graph/member-loss/prepare')).send({requestId:'surface-route-loss-0001',removedMachineIds:removed});expect(prepared.status,JSON.stringify(prepared.body)).toBe(200);
    const confirmation={requestId:'surface-route-loss-0001',draftHash:prepared.body.draftHash,challenge:prepared.body.challenge,confirmedMachineIds:removed,lossAcknowledgement:'removed-local-unshared-edits-may-be-lost',pendingDisposition:'refuse-all-uncommitted'};
    if(mode==='surface-route-resume'){
