@@ -282,6 +282,17 @@ describe('what a route answered, in plain words', () => {
     expect(newSessionAnswer(ok({ started: 'unknown' }), 'Bug', null).body).toMatchObject({ ok: true, warn: true });
     expect(newSessionAnswer({ status: 429, body: { error: 'Too many' } }, 'Bug', null).body).toMatchObject({ ok: false, message: 'Too many' });
   });
+  it('new session with an app conversation: started, or created and waiting, in the server\'s words', () => {
+    // session-conversation-for-every-session §2.5
+    expect((newSessionAnswer(ok({ platform: 'app', started: true, session: 's' }), 'Plans', null).body as { message: string }).message).toBe('Started "Plans". Open it in Conversations to talk to it.');
+    const waiting = newSessionAnswer(ok({ platform: 'app', started: false, message: 'Another of your machines runs your app conversations; its first message starts the session there.' }), 'Plans', null).body;
+    expect(waiting).toMatchObject({ ok: true, warn: true });
+    expect((waiting as { message: string }).message).toContain('Another of your machines');
+  });
+  it('the create body for an app conversation carries engine and model, never a machine', () => {
+    const body = createBody({ kind: 'session-new', target: 'new', name: 'Plans', platform: 'app', framework: 'codex-cli', model: null, machine: 'm_b' } as Extract<SessionAction, { kind: 'session-new' }>, null);
+    expect(body).toEqual({ name: 'Plans', headless: false, platform: 'app', framework: 'codex-cli', model: null });
+  });
   it('the create body: an unchanged pick sends nothing, and Slack carries no door', () => {
     const a = (over: Partial<Extract<SessionAction, { kind: 'session-new' }>>): Extract<SessionAction, { kind: 'session-new' }> => ({ kind: 'session-new', target: 'new', name: 'x', platform: 'auto', framework: null, model: null, machine: null, ...over });
     const def = { framework: 'codex', model: 'gpt-6' };

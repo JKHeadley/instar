@@ -10,7 +10,7 @@
 import {
   buildSessions, sessionsHeadline, sessionsFacts, partialWords, titleLine, closeRequest, closeConfirmWords,
   closeResultWords, doorChoices, modelChoices, doorModelWords, regimeWords, machineChoices, PLATFORMS,
-  platformAllowsDoor, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded,
+  platformAllowsDoor, platformAllowsMachine, newRequestId, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded,
   canSwitchDoor, profileKeyOf, DOOR, attachmentMessage, historyUrl, historyErrorWords, historyText, topicOf, topicHistoryUrl, topicHistoryEntry, TOPIC_HISTORY_PAGE, KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, modelWords, HISTORY_FIRST,
 } from './sessions-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, details, note, noteLinked, cantTell, MACHINES_PAGE } from './ui.js';
@@ -703,8 +703,8 @@ async function newSessionSheet() {
   const sync = () => {
     const allow = platformAllowsDoor(platform.value) && options;
     door.disabled = !allow; model.disabled = !allow || !door.value;
-    doorHint.textContent = !allow && options ? `${DOOR.Word} and model apply to Telegram topics only.` : 'You can change this again after the topic’s first message.';
-    machineField.hidden = !(machines && platformAllowsDoor(platform.value));
+    doorHint.textContent = !allow && options ? `${DOOR.Word} and model apply to a Telegram topic or an Instar app conversation.` : 'You can change this again later, from the session.';
+    machineField.hidden = !(machines && platformAllowsMachine(platform.value));
     if (machineField.hidden && machine.value) { machine.value = ''; onMachine(); }
     defLine.textContent = defaultWords(options);
   };
@@ -737,11 +737,15 @@ async function newSessionSheet() {
     });
   });
 
+  // One id per intended create: a retry after a timeout reuses it, so it never makes a second conversation.
+  let requestId = newRequestId();
   go.addEventListener('click', async () => {
-    const req = createBody({ name: name.value, platform: platform.value, framework: door.disabled ? '' : door.value, model: model.disabled ? '' : model.value, machine: machineField.hidden ? '' : machine.value }, options);
+    const req = createBody({ name: name.value, platform: platform.value, framework: door.disabled ? '' : door.value, model: model.disabled ? '' : model.value, machine: machineField.hidden ? '' : machine.value, requestId }, options);
     if (!req.ok) { status.textContent = req.problems.join(' '); name.focus(); return; }
     go.disabled = true; status.textContent = 'Starting…';
     const x = await send('POST', '/sessions/create', req.body, WRITE);
+    // A definite answer ends this create; a timeout or a server fault keeps the id for the retry.
+    if (x.status >= 200 && x.status < 500) requestId = newRequestId();
     const w = createResultWords(x.status, x.data, req.body.name);
     status.textContent = w.text;
     go.disabled = false;
