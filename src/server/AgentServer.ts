@@ -1,3 +1,4 @@
+import {GraphSourceInventoryBinding} from './GraphSourceInventoryBinding.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/AgentServer.ts');
 const stampSpendNotification = notificationStamper('src/server/AgentServer.ts', 'spend-alert-dispatcher');
@@ -463,9 +464,7 @@ export interface LiveTestRunnerWiring {
 }
 
 export class AgentServer {
-  private graphSourceInventory: import('./ConversationGraphSourceInventoryRuntime.js').ConversationGraphSourceInventoryRuntime | null = null;
-  private graphSourceInventoryOpening:Promise<void>|null=null;
-  private graphSourceInventoryStopped=false;
+  private readonly graphSourceInventory=new GraphSourceInventoryBinding<import('./ConversationGraphReplicationRuntime.js').ConversationGraphReplicationRuntime,import('./ConversationGraphSourceInventoryRuntime.js').ConversationGraphSourceInventoryRuntime>();
   private app: Express;
   private server: Server | null = null;
   private wsManager: WebSocketManager | null = null;
@@ -6611,12 +6610,11 @@ export class AgentServer {
       };
       this.app.use(createMobileConversationRouter(conversationFlatDeps));
       if(routeCtx.conversationRegistry){
-        startOwnedGraphInventory=(runtime,identity)=>{if(this.graphSourceInventory||this.graphSourceInventoryOpening||this.graphSourceInventoryStopped)return;this.graphSourceInventoryOpening=import('./ConversationGraphSourceInventoryRuntime.js').then(({ConversationGraphSourceInventoryRuntime})=>{
-          if(this.graphSourceInventory||this.graphSourceInventoryStopped)return;
+        startOwnedGraphInventory=(runtime,identity)=>{this.graphSourceInventory.use(runtime,async active=>{const {ConversationGraphSourceInventoryRuntime}=await import('./ConversationGraphSourceInventoryRuntime.js');
           // Without a paired phone the flat layer still calls this machine 'local'; the producer check compares real ids, so name it here. A different real id stays refused.
-          this.graphSourceInventory=new ConversationGraphSourceInventoryRuntime({flatDeps:{...conversationFlatDeps,machineId:()=>{const flat=conversationFlatDeps.machineId();return flat==='local'?identity.loadIdentity().machineId:flat;}},conversations:routeCtx.conversationRegistry!,runtime,identity,membership:()=>runtime.installedMembership,ownerPublicKey:runtime.ownerPublicKey,
-            telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??'')||null});this.graphSourceInventory.start();
-        }).catch(()=>{/* @silent-fallback-ok: reported below; coverage stays partial and no certified rows are inferred */console.warn('Conversations source inventory is unavailable; no certified rows are inferred.');DegradationReporter.getInstance().report({feature:'Conversations.sourceInventory',primary:'Record which conversations this machine has',fallback:'Keep coverage marked partial',reason:'graph-source-inventory-unavailable',impact:'Conversations shows that some history could not be checked'});}).finally(()=>{this.graphSourceInventoryOpening=null;});};
+          return new ConversationGraphSourceInventoryRuntime({flatDeps:{...conversationFlatDeps,machineId:()=>{const flat=conversationFlatDeps.machineId();return flat==='local'?identity.loadIdentity().machineId:flat;}},conversations:routeCtx.conversationRegistry!,runtime:active,identity,membership:()=>active.installedMembership,ownerPublicKey:active.ownerPublicKey,
+            telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??'')||null});
+        },()=>{/* @silent-fallback-ok: reported below; coverage stays partial and no certified rows are inferred */console.warn('Conversations source inventory is unavailable; no certified rows are inferred.');DegradationReporter.getInstance().report({feature:'Conversations.sourceInventory',primary:'Record which conversations this machine has',fallback:'Keep coverage marked partial',reason:'graph-source-inventory-unavailable',impact:'Conversations shows that some history could not be checked'});});};
         const existing=options.conversationGraphReplicationRuntime??options.conversationGraphDefault?.runtime,identity=options.conversationGraphDefault?.identity??options.coordinator?.managers?.identityManager;
         if(existing&&identity)startOwnedGraphInventory(existing,identity);
       }
@@ -8590,7 +8588,7 @@ export class AgentServer {
    * Stop the HTTP server gracefully.
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
-  async stopGraphSourceInventory():Promise<void>{this.graphSourceInventoryStopped=true;await this.graphSourceInventoryOpening;await this.graphSourceInventory?.close();this.graphSourceInventory=null;}
+  async stopGraphSourceInventory():Promise<void>{await this.graphSourceInventory.close();}
   /** Attribution paper trail: built only when the dev-agent gate resolves it on. Null means every route 503s. */
   private createAttribution(options: ConstructorParameters<typeof AgentServer>[0], routeCtx: import('./routes.js').RouteContext): AttributionRuntime | null {
     const config = options.config;

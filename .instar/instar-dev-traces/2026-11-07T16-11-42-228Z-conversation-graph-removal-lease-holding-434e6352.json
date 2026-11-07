@@ -25,5 +25,10 @@
   ],
   "phase": "complete",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One owner-driven action per attempt, with no new loop or trigger."
+  }
 }
