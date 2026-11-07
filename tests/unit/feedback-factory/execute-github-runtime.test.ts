@@ -1,9 +1,11 @@
+import { type ChildProcess, spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 // safe-fs-allow: temporary test fixtures only.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { GhGateway, SafeAttemptGit } from '../../../src/feedback-factory/execute/executorPorts.js';
+import { GhGateway, runGitWithoutBlocking, SafeAttemptGit } from '../../../src/feedback-factory/execute/executorPorts.js';
 import { SecretStore } from '../../../src/core/SecretStore.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { SafeGitExecutor } from '../../../src/core/SafeGitExecutor.js';
@@ -82,6 +84,11 @@ describe('feedback GitHub explicit runtime', () => {
     const git = new SafeAttemptGit(resolve);
     const sha = 'a'.repeat(40);
     const writes = vi.spyOn(SafeGitExecutor, 'execSync').mockReturnValue('');
+    const spawned = vi.spyOn(SafeGitExecutor, 'spawn').mockImplementation(() => {
+      const child = new EventEmitter() as unknown as ChildProcess;
+      setImmediate(() => child.emit('close', 0, null));
+      return child;
+    });
     const reads = vi.spyOn(SafeGitExecutor, 'readSync').mockImplementation((args) => {
       if (args.includes('ls-remote')) return `${sha}\trefs/tags/v1.0.0\n`;
       if (args.includes('log')) return '2026-11-06T12:00:00Z';
@@ -91,7 +98,7 @@ describe('feedback GitHub explicit runtime', () => {
     expect(await git.fetchBase('/fixture-source')).toBe(sha);
     expect(await git.commitAndPush('/fixture-publish', { branch: 'feedback/item-a1', message: 'fixture', remoteUrl: 'https://github.com/fixture-owner/repo.git', authorName: 'Fixture', authorEmail: 'fixture@example.test', credentialHelper: '!wrong-seat' })).toBe(sha);
     expect(await git.firstReleaseContaining('/fixture-source', sha)).toMatchObject({ tag: 'v1.0.0' });
-    const network = [...writes.mock.calls, ...reads.mock.calls].filter(([args]) => ['fetch', 'push', 'ls-remote'].some((verb) => args.includes(verb)));
+    const network = [...writes.mock.calls, ...spawned.mock.calls, ...reads.mock.calls].filter(([args]) => ['fetch', 'push', 'ls-remote'].some((verb) => args.includes(verb)));
     expect(network).toHaveLength(3);
     for (const [args, opts] of network) {
       expect(opts.env).toMatchObject({ GH_TOKEN: 'fixture-current-seat', GITHUB_TOKEN: 'fixture-current-seat', GIT_TERMINAL_PROMPT: '0' });
@@ -103,10 +110,59 @@ describe('feedback GitHub explicit runtime', () => {
   });
 
   it('does not stage or fetch when the production network runtime has no identity', async () => {
-    const writes = vi.spyOn(SafeGitExecutor, 'execSync').mockReturnValue('');
+    const writes = vi.spyOn(SafeGitExecutor, 'spawn');
     const git = new SafeAttemptGit(() => { throw new GitHubAuthUnavailableError(); });
     await expect(git.fetchBase('/fixture-source')).rejects.toThrow('github-auth-unavailable');
     await expect(git.commitAndPush('/fixture-publish', { branch: 'feedback/item-a1', message: 'fixture', remoteUrl: 'https://github.com/fixture-owner/repo.git', authorName: 'Fixture', authorEmail: 'fixture@example.test', credentialHelper: null })).rejects.toThrow('github-auth-unavailable');
     expect(writes).not.toHaveBeenCalled();
+  });
+});
+
+describe('git in the server process does not stop its event loop', () => {
+  it('createClone lets other work run while git runs and still produces the checkout', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'feedback-nonblocking-'));
+    try {
+      const source = path.join(root, 'source');
+      fs.mkdirSync(source);
+      const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
+      const git = (...args: string[]) => SafeGitExecutor.execSync(args, { cwd: source, env, operation: 'feedback nonblocking test fixture' });
+      git('init', '--quiet', '-b', 'main');
+      fs.writeFileSync(path.join(source, 'file.txt'), 'content\n');
+      git('add', '.');
+      git('commit', '--quiet', '-m', 'init');
+      let turned = false;
+      setImmediate(() => { turned = true; });
+      const dest = path.join(root, 'feedback-dest');
+      await new SafeAttemptGit().createClone(source, dest, SafeGitExecutor.readSync(['rev-parse', 'HEAD'], { cwd: source, operation: 'feedback nonblocking test fixture' }).trim());
+      expect(turned).toBe(true);
+      expect(fs.readFileSync(path.join(dest, 'file.txt'), 'utf8')).toBe('content\n');
+    } finally {
+      SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'feedback nonblocking test cleanup' });
+    }
+  });
+
+  it('a failed command rejects with the git error', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'feedback-nonblocking-'));
+    try {
+      await expect(runGitWithoutBlocking(['clone', '--quiet', path.join(root, 'missing'), path.join(root, 'dest')],
+        { cwd: root, operation: 'feedback nonblocking failure test', timeout: 60_000 })).rejects.toThrow(/does not exist/);
+    } finally {
+      SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'feedback nonblocking test cleanup' });
+    }
+  });
+
+  it('the timeout settles even when a leftover process keeps the error pipe open', async () => {
+    // A credential helper that outlives git holds stderr, so `close` would not fire for 30 s.
+    const child = spawn('sh', ['-c', 'sleep 30 & wait'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    const spawned = vi.spyOn(SafeGitExecutor, 'spawn').mockReturnValue(child);
+    const started = Date.now();
+    try {
+      await expect(runGitWithoutBlocking(['fetch', 'origin'], { cwd: os.tmpdir(), operation: 'feedback nonblocking timeout test', timeout: 200 }))
+        .rejects.toMatchObject({ signal: 'SIGTERM', message: expect.stringContaining('timed out after 200 ms') });
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(spawned).toHaveBeenCalledOnce();
+    } finally {
+      child.kill('SIGKILL');
+    }
   });
 });
