@@ -233,3 +233,21 @@ describe('what a gone machine\'s rows can still do', () => {
     expect(merged.grants.get('p')?.has('c') ?? false).toBe(false);
   });
 });
+
+describe('roles that are members by tier', () => {
+  it('a contributor set by one machine and a guest by another settle on guest, and a contributor beats nothing narrower', () => {
+    const on: MergeEvent = { type: 'team-on' };
+    const merged = mergeRows([
+      row('A', 1, [on, { type: 'person-add', personKey: 'p', role: 'member' }]),
+      row('A', 2, [{ type: 'person-set', personKey: 'p', role: 'contributor' }]),
+      row('B', 1, [{ type: 'person-set', personKey: 'p', role: 'guest' }], { [streamKey('A', 'i1')]: 1 }),
+    ]);
+    expect(merged.people.get('p')?.role).toBe('guest');
+    const two = mergeRows([
+      row('A', 1, [on, { type: 'person-add', personKey: 'p', role: 'member' }]),
+      row('A', 2, [{ type: 'person-set', personKey: 'p', role: 'admin' }]),
+      row('B', 1, [{ type: 'person-set', personKey: 'p', role: 'contributor' }], { [streamKey('A', 'i1')]: 1 }),
+    ]);
+    expect(two.people.get('p')?.role).toBe('contributor');
+  });
+});

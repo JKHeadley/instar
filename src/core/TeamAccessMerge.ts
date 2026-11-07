@@ -5,7 +5,8 @@
  * Every answer here depends only on the set of rows, never on the order they arrived in, because
  * two machines holding the same rows must reach the same access.
  */
-import type { GrantAccess } from '../permissions/TeamAccess.js';
+import { tierOfRole, type GrantAccess } from '../permissions/TeamAccess.js';
+import type { OrgRole } from '../permissions/types.js';
 
 export type Vector = Readonly<Record<string, number>>;
 
@@ -45,8 +46,11 @@ export function hasSeen(by: MergeRow, row: MergeRow): boolean {
   return (by.seen[streamOf(row)] ?? 0) >= row.seq;
 }
 
-const ROLE_RANK: Readonly<Record<string, number>> = { guest: 0, member: 1, admin: 2 };
-export const rankOf = (role: string): number => ROLE_RANK[role] ?? 0;
+/** A role's place by its tier, so operator and contributor rank as the members they are. */
+export const rankOf = (role: string): number => {
+  const tier = tierOfRole(role as OrgRole);
+  return tier === 'guest' ? 0 : tier === 'member' ? 1 : tier === 'admin' ? 2 : 3;
+};
 
 /** What stands without the rows a gone machine wrote past its last good one. */
 interface Standing { roleRank: ReadonlyMap<string, number> }
