@@ -22,7 +22,8 @@ describe('listOpenPrs default seam', () => {
     expect([...(await seams.listOpenPrs!())!].sort()).toEqual([3, 7]);
     const calls = fs.readFileSync(log, 'utf-8').trim().split('\n');
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toContain('pr list --repo o/r --state open');
+    // Without --limit, gh stops at 30 rows and every later open PR would read as closed.
+    expect(calls[0]).toContain('pr list --repo o/r --state open --limit 1000 --json number');
   });
 
   it('returns an empty set when nothing is open: a complete answer, not a failure', async () => {

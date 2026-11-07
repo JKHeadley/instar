@@ -12,12 +12,12 @@ Tier 1, about 120 lines of source across 4 files plus tests. One PR at the hub's
 ## Decision-point inventory
 
 - `validateCandidate` (refuses a bad update): unchanged checks, timeouts and order; only async. Modified in mechanism, not in decision.
-- `rebuildIndex` open/closed classification: same meaning, different source. It decides journal retention and index membership, not whether anything may merge. `restoreQueue` and request paths still read per-PR.
+- `rebuildIndex` open/closed classification: same meaning, different source. It decides journal retention and index membership, and index membership is a merge-authority input: `getRecord` feeds `hasPassingRecord`, so the green-PR watcher, `StatusReconciler` and the `request()` short-circuits all read it. The safety argument is that both sides of the classification stay correct: a PR is indexed at boot only if a complete open list contains it or, when no complete list is available, its own read says OPEN, and a wrong "closed" costs a re-verify, never a merge. Merge inputs stay keyed to the exact head and base. `restoreQueue` and request paths still read per-PR.
 - No new decision point.
 
 ## 1. Over-block
 
-No issue identified. A PR opened after the list call cannot be in the journal read at boot, because no verify for it has run. A PR reopened between list and use is corrected by per-PR reads on later requests.
+No issue identified. A PR opened after the list call cannot be in the journal read at boot, because no verify for it has run. A PR reopened between list and use has no record in the index until a new verify completes or the next boot, so `request()` runs a new verify. Its `closedSeen` entry also stays until the next boot, because only `rebuildIndex` clears it. That fails safe and matches the old path.
 
 ## 2. Under-block
 
@@ -39,7 +39,7 @@ No judgment points added or changed.
 
 ## 5. Interactions
 
-- `rebuildIndex` also runs through `closedSeen` retention. A PR missing from a complete list counts as closed. A truncated page or failed call never starts retention expiry. One difference from the per-PR path: a journal PR number GitHub cannot resolve (a moved repository, say) used to read as unknown and was kept forever; it now counts as closed and leaves after the normal retention window, which is the better outcome for a record nobody can act on.
+- `rebuildIndex` also runs through `closedSeen` retention. A PR missing from a complete list counts as closed. A truncated page or failed call never starts retention expiry. One difference from the per-PR path: a journal PR number GitHub cannot resolve (a moved repository, say) used to read as unknown and was kept forever; it now counts as closed and leaves after the normal retention window, which is the better outcome for a record nobody can act on. A second difference: on the per-PR path a transient `gh pr view` failure read as unknown and kept that open PR's record out of the index until next boot; on the list path the PR is indexed, so `hasRecord` can answer true where it did not before. That is correct, since the PR is open, but index membership is wider.
 - `applyUpdate` was already async around npm steps, so overlapping-update handling is unchanged; validation adding awaits does not open a new kind of window.
 - `withSyncOp` was removed from these calls because they no longer block.
 - The xattr `spawn` is bounded: two per update, each with a 10-minute limit. It is not a loop or a retry. If the limit is hit, it warns and validation continues, so a candidate could be promoted with attributes unstripped; the old call had no limit and would have frozen the server instead. A boot wrapper guards against the crash loop that unstripped attributes can cause.
@@ -63,11 +63,15 @@ A plain revert. No state format, migration or config changes.
 
 ## Conclusion
 
-Safe to ship. It removes measured holds without changing any decision. It does not fix the unplanned restart under load: the exact stalls before 14:17:40 were not caught, and the steady sync tmux and ps load is filed separately.
+Safe to ship. It removes measured holds. The only decisions that change are the two named under Interactions: an unresolvable PR now counts as closed, and an open PR is no longer left out of the index by a transient read failure. It does not fix the unplanned restart under load: the exact stalls before 14:17:40 were not caught, and the steady sync tmux and ps load is filed separately.
 
 ## Second-pass review (if required)
 
-Reviewer: independent subagent, read the diff without my conclusion. Found no promotion without validation, missing await or new update race. Raised six low-severity points: an inaccurate retention claim, a list call on an empty journal, quoted URLs, a reftable placeholder, a 120s xattr limit that could cut cleanup short, and an inaccurate claim that the map runs only at boot. All addressed in this change, or recorded above where the new behaviour is acceptable.
+**Reviewer:** independent subagent (echo-land-three, 2026-11-07), on the `src/localVerify` change at head 5dca1d998, with the author's review in hand, as the brief asked, tracing the code independently.
+
+The verify record for that head was flagged as harness-changing, and the earlier review below no longer matched this file, so this review was run fresh. It traced `rebuildIndex` to its merge consumers, ran the list against real gh, compared list and per-PR state on the live journal (281 PRs, no disagreements) and found no way for this change to authorize a wrong merge. It raised concerns about this file's accuracy (the claim that the index does not affect merging, an unnamed second difference, the word "corrected") and missing tests (`--limit`, `closedSeen` on the list path). All were fixed here; 12 mutations of the code were each caught by the tests. Not confirmed: that gh always fails the whole call if pagination breaks partway. If it did not, the cost would be a re-verify and a retention clock the next complete list clears, not a false authorization. Also not observed: gh's real output for an empty list, which only a stub covers; an empty result is a complete answer, so the risk is low.
+
+Earlier review, by an independent subagent who read the diff without my conclusion: Found no promotion without validation, missing await or new update race. Raised six low-severity points: an inaccurate retention claim, a list call on an empty journal, quoted URLs, a reftable placeholder, a 120s xattr limit that could cut cleanup short, and an inaccurate claim that the map runs only at boot. All addressed in this change, or recorded above where the new behaviour is acceptable.
 
 ## Evidence pointers
 

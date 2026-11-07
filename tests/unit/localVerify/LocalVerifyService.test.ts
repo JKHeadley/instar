@@ -299,6 +299,65 @@ describe('automatic full-suite replay after enforced preflight red', () => {
       viaPerPr.svc.shutdown();
     });
 
+    const closedSeenOf = (h: ReturnType<typeof setup>) => (h.svc as unknown as { readClosedSeen(): Record<number, number> }).readClosedSeen();
+    const journalPrs = (h: ReturnType<typeof setup>) => fs.readFileSync(h.svc.journalPath, 'utf-8').trim().split('\n').filter(Boolean).map((l) => (JSON.parse(l) as { record: { pr: number } }).record.pr).sort();
+
+    it('starts the retention clock for a PR missing from the list, and writes the same state as the per-PR path', async () => {
+      const viaList = setup();
+      seed(viaList, [1, 2, 3]);
+      seamsOf(viaList).listOpenPrs = async () => new Set([1, 3]);
+      const viaPerPr = setup({ open: { 2: false } });
+      seed(viaPerPr, [1, 2, 3]);
+      await viaList.svc.rebuildIndex();
+      await viaPerPr.svc.rebuildIndex();
+      expect(Object.keys(closedSeenOf(viaList))).toEqual(['2']);
+      expect(closedSeenOf(viaList)).toEqual(closedSeenOf(viaPerPr));
+      expect(journalPrs(viaList)).toEqual(journalPrs(viaPerPr));
+      const key = (h: ReturnType<typeof setup>, pr: number) => h.svc.getRecord(pr, record({ pr }).headSha, 'main') !== null;
+      for (const h of [viaList, viaPerPr]) expect([1, 2, 3].map((pr) => key(h, pr))).toEqual([true, false, true]);
+      viaList.svc.shutdown();
+      viaPerPr.svc.shutdown();
+    });
+
+    it('clears the clock when a later list shows the PR open again', async () => {
+      const h = setup();
+      seed(h, [1, 2]);
+      seamsOf(h).listOpenPrs = async () => new Set([1]);
+      await h.svc.rebuildIndex();
+      expect(closedSeenOf(h)[2]).toBeDefined();
+      seamsOf(h).listOpenPrs = async () => new Set([1, 2]);
+      await h.svc.rebuildIndex();
+      expect(closedSeenOf(h)[2]).toBeUndefined();
+      h.svc.shutdown();
+    });
+
+    it('drops a listed-missing PR from the journal only after the retention window', async () => {
+      const h = setup();
+      seed(h, [1, 2]);
+      seamsOf(h).listOpenPrs = async () => new Set([1]);
+      await h.svc.rebuildIndex();
+      expect(journalPrs(h)).toEqual([1, 2]);
+      h.advance(LOCAL_VERIFY_LIMITS.retentionAfterCloseMs + 1);
+      await h.svc.rebuildIndex();
+      expect(journalPrs(h)).toEqual([1]);
+      expect(closedSeenOf(h)[2]).toBeUndefined();
+      h.svc.shutdown();
+    });
+
+    it('a PR GitHub cannot resolve: unknown and kept on the per-PR path, closed on the list path', async () => {
+      const perPr = setup({ open: { 2: null } });
+      seed(perPr, [1, 2]);
+      await perPr.svc.rebuildIndex();
+      expect(closedSeenOf(perPr)[2]).toBeUndefined();
+      const viaList = setup();
+      seed(viaList, [1, 2]);
+      seamsOf(viaList).listOpenPrs = async () => new Set([1]);
+      await viaList.svc.rebuildIndex();
+      expect(closedSeenOf(viaList)[2]).toBeDefined();
+      perPr.svc.shutdown();
+      viaList.svc.shutdown();
+    });
+
     it.each([
       ['returns null', async () => null],
       ['throws', async () => { throw new Error('gh down'); }],
