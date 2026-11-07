@@ -4,7 +4,7 @@
  * message (docs/specs/session-swap-any-conversation.md §3.1, §3.3).
  */
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -111,6 +111,16 @@ describe('restarting an app conversation on a new engine (startApp)', () => {
     expect(spawns).toHaveLength(1);
     expect(injected).toEqual([]);
   });
+  it('two context files in the same millisecond do not collide', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_794_000_000_000);
+    try {
+      const d = deps();
+      d.sessions.injectMessage = () => true;
+      await createAppInboundDispatch(d)(input);
+      await expect(createAppInboundDispatch(d)(input)).resolves.toBe('delivered');
+    } finally { clock.mockRestore(); }
+  });
+
   it('a start in progress, then a message: the message is injected into the started session', async () => {
     const injected: string[] = [];
     const d = deps();
