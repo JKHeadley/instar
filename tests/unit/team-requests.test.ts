@@ -80,7 +80,11 @@ describe('eventsMatchChange', () => {
 describe('requestSummary', () => {
   it('is built from typed fields, so a reason cannot change what it says', () => {
     const line = requestSummary({ requester: mia, change: grant }, () => 'Mia', () => 'Client work');
-    expect(line).toBe('Mia asks that Mia can read Client work');
+    expect(line).toBe('Mia asks to read Client work');
+  });
+  it('names the other person when someone asks on their behalf', () => {
+    const agent = { kind: 'agent' as const, key: 'agent', label: 'The agent' };
+    expect(requestSummary({ requester: agent, change: grant }, () => 'Mia', () => 'Client work')).toBe('The agent asks that Mia can read Client work');
   });
 });
 

@@ -78,6 +78,7 @@ export function requestSummary(r: Pick<TeamRequest, 'requester' | 'change'>, nam
   const who = r.requester.label;
   if (r.change.kind === 'grant') {
     const verb = r.change.access === 'use' ? 'use' : 'read';
+    if (r.requester.kind === 'person' && r.requester.key === r.change.personKey) return `${who} asks to ${verb} ${titleOf(r.change.ref)}`;
     return `${who} asks that ${nameOf(r.change.personKey)} can ${verb} ${titleOf(r.change.ref)}`;
   }
   if (r.change.kind === 'role') return `${who} asks to make ${nameOf(r.change.personKey)} a ${r.change.role}`;

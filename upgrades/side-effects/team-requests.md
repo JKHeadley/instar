@@ -9,3 +9,5 @@
 
 ## What the app needed
 From building against the routes: redeem says the code is with the inviter, `GET /mobile/device` carries `standing`, gate refusals carry words and a failed Face ID action no longer returns exception text, and context reports record health and the MSP phones an invite will affect. All additive. `detail` beside an `error` changes nothing for a client reading only `error`.
+
+A person asking for themselves reads "Sam asks to use X", from typed fields as before.

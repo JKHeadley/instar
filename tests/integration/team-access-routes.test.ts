@@ -578,7 +578,7 @@ describe('requests to the owner', () => {
     expect(e.svc.teamLog()!.isConfined('telegram:50')).toBe(false);
     const list = (await send(e, owner, 'GET', '/mobile/team/requests')).body.requests;
     expect(list).toHaveLength(1);
-    expect(list[0].summary).toBe('Mia asks that Mia can read Client work');
+    expect(list[0].summary).toBe('Mia asks to read Client work');
     expect(list[0].reason).toBe('Needs the client notes');
     expect((await send(e, owner, 'GET', '/mobile/team/context')).body.openRequests).toBe(1);
   });
