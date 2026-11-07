@@ -1113,7 +1113,7 @@ function conversationSpawnProfile(profileKey: string): {
   options: { framework?: IntelligenceFramework; defaultModel?: string; thinkingMode?: import('../core/topicProfileValidation.js').ThinkingMode; effort?: import('../core/topicProfileValidation.js').EffortLevel };
 } {
   let resolved: ResolvedTopicProfile | null = null;
-  try { resolved = _topicProfileResolver?.resolve(profileKey) ?? null; } catch { resolved = null; } // @silent-fallback-ok — an unreadable profile spawns on the agent default, as before
+  try { resolved = _topicProfileResolver?.resolve(profileKey) ?? null; } catch { /* @silent-fallback-ok — an unreadable profile spawns on the agent default, as before */ resolved = null; }
   if (!resolved) return { resolved: null, options: {} };
   const model = resolved.model && resolved.sources.model !== 'local-model-binding' ? resolved.model : undefined;
   return {
@@ -7595,7 +7595,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               try {
                 const resolved = _topicProfileResolver?.resolve(topicKey);
                 return _conversationPorts && resolved ? await _conversationPorts.restart(topicKey, resolved) : { respawned: false };
-              } catch (err) {
+              } catch (err) { // @silent-fallback-ok — answered as a failed restart with its reason; the write surface reports it in words
                 return { respawned: false, error: err instanceof Error ? err.message : String(err) };
               }
             }
@@ -32662,6 +32662,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   },
                 };
               } catch (err) {
+                // @silent-fallback-ok — not silent: the failure class is returned to the orchestrator, which feeds its breaker and discloses the failed spawn
                 const msg = err instanceof Error ? err.message : String(err);
                 let cls: ProfileSpawnFailureClass = 'unknown';
                 if (/not found|ENOENT|command not found/i.test(msg)) cls = 'cli-not-found';
