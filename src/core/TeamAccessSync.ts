@@ -149,9 +149,13 @@ export class TeamAccessPuller {
 
   async tick(): Promise<PullResult | null> {
     const log = this.deps.log();
-    if (this.running || !log || log.healthState() === 'unreadable') return null;
+    if (this.running || !log) return null;
     this.running = true;
     try {
+      if (log.healthState() === 'unreadable' || log.listDamaged()) {
+        await this.repair(log);
+        if (log.healthState() === 'unreadable' || log.listDamaged()) return null;
+      }
       const result = await pullFromPeers(log, this.deps.peers(), () => this.now());
       const now = this.now();
       for (const o of result.outcomes) {
@@ -180,6 +184,22 @@ export class TeamAccessPuller {
       return null;
     } finally {
       this.running = false;
+    }
+  }
+
+  /** Any peer's rows rebuild a damaged log. With none answering, the owner's restore is the way forward. */
+  private async repair(log: TeamAccessLog): Promise<void> {
+    for (const peer of this.deps.peers()) {
+      try {
+        const { rows } = await peer.fetchRows({}, {});
+        if (rows.length === 0) continue;
+        const { touched } = log.rebuildFromPeer(rows);
+        await this.deps.afterIngest(touched);
+        return;
+      } catch (err) {
+        // @silent-fallback-ok — the next peer may answer; reported so a machine stuck damaged is seen.
+        this.deps.reportError?.(err);
+      }
     }
   }
 

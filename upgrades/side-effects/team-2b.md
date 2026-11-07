@@ -54,3 +54,6 @@ With native off a machine still keeps the log and the locks, starts nothing in a
 A machine row with an event this build does not know is kept and holds every team phone, so an older machine waits for its update and never loses its log. A team phone's message carries its person, and the machine that delivers it judges them on what it knows, at the drain and when a peer hands it over: a queued message can outlive a removal.
 **Under-block:** a request row of a kind this build does not know is refused on arrival, and shows as a gap until the machine updates.
 **Not built, on purpose:** `place-applied`. The spec keeps it only as a signal that sessions ended, and nothing reads it, so a machine ending its own sessions on a fold covers what it was for. `eventId` is not built either: one signed request cannot reach two machines, and the spec says so.
+
+## A damaged machine repairs itself
+A machine with a damaged log or lock list rebuilds from any peer that answers: what was there is set aside, not deleted, and it carries on under a new stream. That new stream holds every team phone until the owner settles it, which they can do from a phone on that machine, because naming its earlier stream is allowed. With no peer answering the owner's restore applies as before.

@@ -268,8 +268,8 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (kind === 'team-origin-gone') {
       const gone = events?.length === 1 && events[0].type === 'origin-gone' ? events[0] : null;
       if (!gone) return { status: 400, body: { error: 'bad-events' } };
-      // Only a machine this log has rows from can be gone, and a machine cannot settle its own gap.
-      if (gone.machine === deps.signer()?.machineId()) return { status: 409, body: { error: 'origin-is-this-machine', detail: 'This is the machine you are connected to, so it cannot be marked as gone.' } };
+      // Only a stream this log has rows from can be gone. This machine's earlier stream can, its current one cannot.
+      if (gone.machine === deps.signer()?.machineId() && gone.incarnation === log.currentIncarnation()) return { status: 409, body: { error: 'origin-is-this-machine', detail: 'This is the machine you are connected to, so it cannot be marked as gone.' } };
       const held = log.vector()[streamKey(gone.machine, gone.incarnation)];
       if (held === undefined || gone.throughSeq > held) return { status: 409, body: { error: 'unknown-origin', detail: 'This machine holds no such record to settle.' } };
       appendRequest(req, deviceId);

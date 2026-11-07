@@ -733,3 +733,64 @@ describe('an event from a newer build', () => {
     expect(view(a)).toBe(before);
   });
 });
+
+describe('a damaged machine', () => {
+  const pair = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-dmg-'));
+    const a = new TeamAccessLog({ stateDir: dir, signer: signerFor('A'), verify });
+    const b = machine('B');
+    start(a);
+    a.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+    sync(a, b);
+    b.appendMachineEvents([{ type: 'confine', ref: 'c2' }]);
+    sync(a, b);
+    const peers = [{ machineId: 'B', fetchRows: async (have: Record<string, number>) => ({ rows: b.rowsBeyond(have), vector: b.vector() }) }];
+    return { a, b, peers, files: a as unknown as { logFile: string; confinedFile: string } };
+  };
+
+  it('with a damaged log rebuilds from a peer, keeps the locks, and tells of what it touched', async () => {
+    const { a, b, peers, files } = pair();
+    fs.writeFileSync(files.logFile, 'not json\n{}\n');
+    a.load();
+    expect(a.healthState()).toBe('unreadable');
+    const touched: string[][] = [];
+    await new TeamAccessPuller({ log: () => a, peers: () => peers, afterIngest: (t) => { touched.push(t); } }).tick();
+    expect(a.healthState()).toBe('ok');
+    expect(view(a)).toBe(view(b));
+    expect(a.isConfined('c1')).toBe(true);
+    expect(a.isConfined('c2')).toBe(true);
+    expect(touched[0]).toEqual(expect.arrayContaining(['c1', 'c2']));
+    expect(fs.readdirSync(path.dirname(files.logFile)).some((f) => f.startsWith('log.jsonl.damaged-'))).toBe(true);
+  });
+
+  it('with only its lock list lost gets that back too', async () => {
+    const { a, peers, files } = pair();
+    fs.writeFileSync(files.confinedFile, 'broken');
+    expect(a.readConfined()).toBeNull();
+    await new TeamAccessPuller({ log: () => a, peers: () => peers, afterIngest: () => undefined }).tick();
+    expect(a.isConfined('c1')).toBe(true);
+  });
+
+  it('writes on a new stream, which holds until the owner settles it', async () => {
+    const { a, b, peers, files } = pair();
+    const old = a.currentIncarnation();
+    fs.writeFileSync(files.logFile, 'not json\n{}\n');
+    a.load();
+    await new TeamAccessPuller({ log: () => a, peers: () => peers, afterIngest: () => undefined }).tick();
+    expect(a.currentIncarnation()).not.toBe(old);
+    a.appendMachineEvents([{ type: 'confine', ref: 'c3' }]);
+    expect(a.gaps().map((g) => g.kind)).toContain('new-incarnation');
+    a.appendSignedRequest(signed([{ type: 'origin-gone', machine: 'A', incarnation: old, throughSeq: 3 }]));
+    expect(a.gaps()).toEqual([]);
+    sync(a, b);
+    expect(b.gaps()).toEqual([]);
+  });
+
+  it('with no peer answering stays damaged, for the owner\'s restore', async () => {
+    const { a, files } = pair();
+    fs.writeFileSync(files.logFile, 'not json\n{}\n');
+    a.load();
+    await new TeamAccessPuller({ log: () => a, afterIngest: () => undefined, peers: () => [{ machineId: 'B', fetchRows: async () => { throw new Error('no'); } }] }).tick();
+    expect(a.healthState()).toBe('unreadable');
+  });
+});

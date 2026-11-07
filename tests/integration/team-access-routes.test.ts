@@ -754,7 +754,7 @@ describe('when a machine\'s record has a gap', () => {
     expect((await send(e, member, 'POST', '/mobile/team/origin-gone', body)).status).toBe(403);
     expect((await send(e, owner, 'POST', '/mobile/team/origin-gone', body)).status).toBe(401);
     const self = loadMachineSigner(e.dir)!.machineId();
-    expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone(self, 'i1', 0))).body.error).toBe('origin-is-this-machine');
+    expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone(self, e.svc.teamLog()!.currentIncarnation(), 0))).body.error).toBe('origin-is-this-machine');
     expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone('peer-c', 'i1', 0))).body.error).toBe('unknown-origin');
     expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone('peer-b', 'i1', 9))).body.error).toBe('unknown-origin');
     expect((await send(e, member, 'GET', '/mobile/team/people')).status).toBe(403);

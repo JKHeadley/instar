@@ -736,6 +736,33 @@ export class TeamAccessLog {
     this.snapshot();
   }
 
+  /**
+   * A damaged machine repairs itself from a peer before asking the owner (Step 2b). What was here is
+   * set aside, the peer's rows and locks replace it, and this machine carries on under a new stream,
+   * because it can no longer say what it wrote.
+   */
+  rebuildFromPeer(rows: ReadonlyArray<TeamAccessRow>): { added: number; refused: number; touched: string[] } {
+    const stamp = (this.opts.now ?? Date.now)();
+    for (const file of [this.logFile, this.confinedFile]) {
+      if (fs.existsSync(file)) fs.renameSync(file, `${file}.damaged-${stamp}`);
+    }
+    this.rows = []; this.folded = emptyState(); this.gapsCache = null; this.refoldPending = false;
+    this.seedSeq = 0;
+    this.health = 'ok';
+    this.mintIncarnation();
+    this.ensureConfinedFile();
+    return this.ingest(rows);
+  }
+
+  /** Is this machine's lock list broken, or gone though rows here locked something? A new agent has none, and that is fine. */
+  listDamaged(): boolean {
+    if (this.readConfined() !== null) return false;
+    return fs.existsSync(this.confinedFile) || this.rows.some((r) => confinesIn(r).length > 0);
+  }
+
+  /** Which stream this machine is writing now. */
+  currentIncarnation(): string { return this.incarnation(); }
+
   /** The snapshot a rollback is judged against. Failing to take one never undoes a change. */
   private snapshot(): void {
     try { this.writeLastGood(); } catch (err) { // @silent-fallback-ok — the snapshot is a second copy; the change itself is saved
