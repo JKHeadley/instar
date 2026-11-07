@@ -183,7 +183,7 @@ const TERMINAL_KEEP_MS = 24 * 60 * 60_000;
 const MAX_TOMBSTONES = 200;
 
 /** Which proof approved a phone: the owner's private chat, a dashboard PIN session, or an owner phone's Face ID. */
-export type ApprovedVia = 'telegram-dm' | 'dashboard-pin' | 'owner-phone';
+export type ApprovedVia = 'telegram-dm' | 'dashboard-pin' | 'owner-phone' | 'owner-agent';
 
 export interface DeviceRecord {
   id: string;

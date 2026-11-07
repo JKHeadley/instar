@@ -96,7 +96,6 @@
     "POST /commitments/verify",
     "POST /config/telemetry",
     "POST /corrections",
-    "POST /corrections/analyze",
     "POST /credentials/livetest",
     "POST /credentials/restore-enrollment",
     "POST /credentials/set-default",

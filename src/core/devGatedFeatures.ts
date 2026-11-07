@@ -930,6 +930,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Own names come only from local configuration and are proven by the per-process pairing ping (echoed Host, local-TLS arrival, no sibling claim); a request is accepted only on a still-configured own name that arrived through this machine\'s own TLS front, and a captured signature names its exact host. Probes are bounded (one in flight, 3 s, backoff to 15 min, breaker after 8). The serve step never overwrites an existing 443 config. Switching it off restores the single paired host exactly.',
   },
   {
+    name: 'mobilePairingOwnerPresence',
+    configPath: 'mobilePairing.ownerPresence.enabled',
+    description: 'Remote Desktop with Face ID and the Dashboard PIN page on the owner\'s phone (docs/specs/mobile-owner-presence-pin.md): a fresh presence-key signature over a single-use, purpose-bound challenge mints a desktop-only, phone-bound 15-minute session (POST /mobile/desktop-unlock) or reveals the dashboard PIN this server compares against (POST /mobile/dashboard-pin/reveal).',
+    justification: 'The desktop session is narrower than the PIN unlock: accepted only by the desktop routes, re-checked against the phone on every use, cleared on a PIN change, and the phone never holds the API token. The reveal is owner-phone only, never returns a placeholder, and needs the owner\'s private chat, which is told (without the PIN) at most once per phone per 10 minutes while every reveal is audited. Bearer, MSP and shared phones are refused; every use and refusal is audited. Dark on the fleet until the development-agent live proof and a physical-phone check pass.',
+  },
+  {
     name: 'mobilePairingPermissionActions',
     configPath: 'mobilePairing.permissionActions.enabled',
     description: 'Face ID-confirmed permission writes from the owner\'s phone (docs/specs/mobile-native-permissions.md): approve or decline a waiting authorization request held on this machine, and turn a feature switch on or off, each with a fresh presence-key signature over a single-use challenge bound to the device, Host and exact action (POST /mobile/permissions/challenge, /requests/:id/approve|decline, /features/:id).',

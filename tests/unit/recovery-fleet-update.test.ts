@@ -1,6 +1,8 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import crypto from 'node:crypto';
+import {execFileSync} from 'node:child_process';
 import {installAutoStart,installFleetWatchdog} from '../../src/commands/setup.js';
+import {PostUpdateMigrator} from '../../src/core/PostUpdateMigrator.js';
 import {recoveryFleetUpdatePhase,resumeAbandonedRecoveryFleetUpdate} from '../../src/recovery/RecoveryFleetUpdate.js';
 import {RecoveryAdmission} from '../../src/recovery/RecoveryAdmission.js';
 import {LaunchdRecoveryControl} from '../../src/recovery/RecoveryEngine.js';
@@ -8,6 +10,7 @@ import {installRecoveryServices} from '../../src/recovery/RecoveryInstallation.j
 import {recoveryKeyPair} from '../../src/recovery/RecoveryProtocol.js';
 import {SafeFsExecutor} from '../../src/core/SafeFsExecutor.js';
 vi.mock('node:child_process',async original=>{const actual=await original<typeof import('node:child_process')>();return{...actual,execFileSync:vi.fn((command:string,args:string[],options:any)=>command==='plutil'||args?.some(a=>String(a).endsWith('recovery-update-entrypoint.mjs'))?Buffer.alloc(0):actual.execFileSync(command,args,options))};});
+vi.mock('../../src/core/ThrowawayAgentGuard.js',async original=>({...await original<object>(),autoStartRefusalReason:()=>null}));
 vi.mock('../../src/core/processIdentity.js',()=>({processStartMs:()=>1000}));
 vi.mock('../../src/recovery/RecoveryEngine.js',async original=>({...await original<object>(),recoveryHostBootId:async()=>'test-boot'}));
 vi.mock('../../src/recovery/RecoveryInstallation.js',async original=>({...await original<object>(),installRecoveryServices:vi.fn(async()=>({state:'awaiting-peer-proofs',labels:[]}))}));
@@ -47,6 +50,44 @@ function fixture(memberCount=1){
  expect(transaction.members).toHaveLength(memberCount);fs.writeFileSync(script,previousScript,{mode:0o755});fs.writeFileSync(plist,previousPlist);
  return{home,project,config,configFile,script,plist,file,transaction,previousScript,previousPlist,memberAdmission:(index:number)=>{const c=JSON.parse(transaction.members[index].previousConfig);return new RecoveryAdmission({stateDir:c.stateDir,agentId:c.agentId,machineId:c.machineId,certificationRoot:c.certificationRoot,bootId:'test-boot',processStart:()=>1000});},admission:()=>new RecoveryAdmission({stateDir:config.stateDir,agentId:'agent',machineId:'machine',certificationRoot:root.publicKey,bootId:'test-boot',processStart:()=>1000})};
 }
+/** Runs the path existing agents update through, recording each recovery phase and the script bytes it saw. */
+function migrateFleet(f:ReturnType<typeof fixture>,plutilFails=false){
+ SafeFsExecutor.safeRmSync(f.file,{force:true,operation:'recovery-fleet-update.test:reset'});
+ const original=vi.mocked(execFileSync).getMockImplementation()??((()=>Buffer.alloc(0))as never as typeof execFileSync),phases:Array<{phase:string;script:string}>=[];
+ vi.mocked(execFileSync).mockImplementation(((command:string,args:string[],options:any)=>{
+  const at=args?.findIndex(a=>String(a).endsWith('recovery-update-entrypoint.mjs'))??-1;
+  if(at>=0)phases.push({phase:String(args[at+1]),script:fs.readFileSync(f.script,'utf8')});
+  if(command==='plutil'&&plutilFails)throw new Error('invalid plist');
+  return original(command,args,options);
+ })as never);
+ const result={upgraded:[] as string[],errors:[] as string[],skipped:[] as string[]};
+ try{(new PostUpdateMigrator({projectDir:f.project,stateDir:path.join(f.project,'.instar'),port:4040,hasTelegram:false,projectName:'agent'})as never as {migrateFleetWatchdog(r:typeof result):void}).migrateFleetWatchdog(result);}
+ finally{vi.mocked(execFileSync).mockImplementation(original);}
+ return{result,phases};
+}
+describe('update-path fleet watchdog rewrite',()=>{
+ it('prepares the protected transaction before writing and commits it after',()=>{
+  const f=fixture(),{result,phases}=migrateFleet(f);
+  expect(result.errors).toEqual([]);expect(result.upgraded.join(' ')).toMatch(/fleet-watchdog: updated/);
+  const next=fs.readFileSync(f.script,'utf8');expect(next).not.toBe(f.previousScript);
+  expect(phases).toEqual([{phase:'fleet-prepare',script:f.previousScript},{phase:'fleet-commit',script:next}]);
+  const t=JSON.parse(fs.readFileSync(f.file,'utf8'));
+  expect(t.members.map((m:{configFile:string})=>m.configFile)).toEqual([f.configFile]);expect(t.previousScript).toBe(f.previousScript);expect(t.nextScript).toBe(next);
+ });
+ it('rolls the transaction back when the new plist fails validation',()=>{
+  const f=fixture(),{result,phases}=migrateFleet(f,true);
+  expect(result.errors.join(' ')).toMatch(/plist validation failed/);
+  expect(phases.map(p=>p.phase)).toEqual(['fleet-prepare','fleet-rollback']);
+ });
+ it('writes nothing when another update holds the fleet guard',()=>{
+  const f=fixture();fs.writeFileSync(f.script,f.previousScript,{mode:0o755});
+  const pending=JSON.stringify({...f.transaction,phase:'prepared',ownerPid:process.pid,ownerBirth:1000});
+  const before=fs.readFileSync(f.script,'utf8'),original=SafeFsExecutor.safeRmSync;
+  vi.spyOn(SafeFsExecutor,'safeRmSync').mockImplementationOnce((target,opts)=>{original(target,opts);fs.writeFileSync(target as string,pending,{mode:0o600});});
+  const {result,phases}=migrateFleet(f);
+  expect(result.errors.join(' ')).toMatch(/recovery-fleet-update-operation-busy/);expect(phases).toEqual([]);expect(fs.readFileSync(f.script,'utf8')).toBe(before);
+ });
+});
 describe('trusted fleet watchdog installer binding refresh',()=>{
  it('restores own hold before global rewrite and rotates only matching watchdog digests',async()=>{
   const f=fixture(),a=f.admission();a.beginHold({deadline:Date.now()+60_000,monotonicDeadline:Number(process.hrtime.bigint()/1000000n)+60_000,bootId:'test-boot',original:f.config.watchdog});a.close();

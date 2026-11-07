@@ -124,3 +124,17 @@ The lifecycle integration fixture now also owns its protected interpreter and in
 Authoritative M5 qualification resolved the local native-exec uncertainty: the exact staged candidate (patch SHA-256 `47c5cf47512171fe8ec9d39f3ac338dd145435291506d5537678c3a09185e027` over `436f189b4952b0ac2410b0bb166147967d0bd4f4`) built successfully and passed the entire normal-config lifecycle/cold-slot run, 23/23, exit 0 (221.94 seconds). This includes all 17 installation cases and all six native cold-runtime cases. The two earlier local timeout cases pass in that complete run. The production 15-second child qualification bound, all security checks and all test assertions remain intact. No agents or production services were started for this qualification.
 
 The same M5 candidate then passed its focused unit qualification, 115/115 across 11 files, exit 0 (45.52 seconds), covering registry wiring, admission, rollout evidence, updater/enrollment/main bindings, mobile projection and the empty-catch ratchet. Root accepts the unchanged-source M5 native and unit qualification; subsequent edits are this evidence record and commit provenance.
+
+## Second-pass review
+
+**Reviewer:** independent reviewer subagent (Claude Opus 5.5, fresh context, author of neither the feature nor this fix), 2026-11-06.
+
+**Scope.** Read in full: this artifact, the spec, RecoveryAdmission, RecoveryEngine, RecoveryEntrypoint, RecoveryInstallation, RecoveryEnrollment, RecoveryRepairCoordinator, RecoveryRuntime, RecoveryFleetUpdate, RecoveryAutostartUpdate, RecoveryProtocol, RecoverySshEnvironment, RecoverySetupRuntime, RecoveryControlPlane and recovery-entrypoint.mjs. Read as diffs: instar-watchdog.sh, setup.ts, UpdateChecker, PostUpdateMigrator, CaffeinateManager and the merge of templates.ts. Not covered: RecoveryClient transport and socket logic, RecoveryRuntimeSlot, RecoveryMainBindings, RecoveryPoolHealth, RecoveryPhonePage and WebCrypto, the RelayServer and RegistryStore wiring, the routes.ts and server.ts wiring, the certification workflow, most tests, and Linux. Every finding comes from tracing the code; the reviewer ran nothing.
+
+**First pass: Concern raised.** `PostUpdateMigrator.migrateFleetWatchdog`, the path existing agents update through, overwrote the fleet watchdog outside `beginRecoveryFleetUpdate`. The next template change would leave enrolled agents' pinned digests stale, so the watchdog would skip them and `collect-diagnostics` would fail, and repair would never start. This contradicted section 5 above.
+
+**Fix.** The migrator now prepares the same transaction before writing, commits after plist validation, and rolls back on failure. `tests/unit/recovery-fleet-update.test.ts` covers phase order, rollback and refusal; those tests mock the bridge, and the existing phase tests cover the rebinding itself.
+
+**Second pass: Concur with the review.** The fix closes the routine-update path. No remaining finding blocks merging, because enrollment is explicit and no agent is exposed when this lands.
+
+**Must land before the first production or dev-soak enrollment:** an enrolled agent that is down for over an hour can drop out of the agent registry, be skipped by a sibling's fleet update, and keep stale pins. Membership selection, stale-pin repair, drift evidence in `collect-diagnostics` and in readiness, and the lesser findings are all recorded in that feedback item. <!-- tracked: fb-b9b55cb1-355 -->
