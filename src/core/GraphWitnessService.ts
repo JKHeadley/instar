@@ -1,6 +1,6 @@
 import {verifyGraphMemberLossPlanRevision,verifyGraphMemberLossPlanRevisionSuccessor,GRAPH_MEMBER_LOSS_REVISION_RECEIPT_DOMAIN,type GraphMemberLossPlanRevision,type GraphMemberLossRevisionReceipt} from './GraphMemberLossPlanRevision.js';
 import {verifyGraphMemberLossNegativeCustody} from './GraphMemberLossNegativeCustody.js';
-import {graphMemberLossActivationDomain,GRAPH_MEMBER_LOSS_SETTLED_DOMAIN,verifyGraphMemberLossActivationPins,verifyGraphMemberLossSettlement,verifyGraphMemberLossActivationAuthority,type GraphMemberLossActivationPin,type GraphMemberLossSettlementProof,type GraphMemberLossActivationAuthority} from './GraphMemberLossActivation.js';
+import {graphMemberLossActivationDomain,GRAPH_MEMBER_LOSS_SETTLED_DOMAIN,verifyGraphMemberLossActivationPins,verifyGraphMemberLossSettlement,verifyGraphMemberLossActivationHolding,verifyGraphMemberLossPlanAuthority,type GraphMemberLossActivationHolding,type GraphMemberLossActivationPin,type GraphMemberLossSettlementProof,type GraphMemberLossActivationAuthority} from './GraphMemberLossActivation.js';
 import {GRAPH_CUSTODY_ALLOCATION_HOLD_DOMAIN,verifyGraphCustodyAllocationHold,verifyGraphCustodyHoldIntent,type GraphCustodyHoldIntent,type GraphCustodyAllocationHold} from './GraphCustodyProfileAuthority.js';
 import {GRAPH_NATIVE_UPLOAD_DOMAIN,validateGraphNativeSourceUpload,decodeGraphNativeSourceUpload,GRAPH_NATIVE_UPLOAD_CHUNK_BYTES,type GraphNativeSourceUpload} from './GraphNativeSourceUpload.js';
 import {GRAPH_WITNESS_LOCAL_ERASURE_SCHEMA,enforceGraphWitnessTargetErasure,purgeGraphWitnessStagedTarget,purgeGraphWitnessStagedBundle} from './GraphWitnessErasureStorage.js';
@@ -473,7 +473,7 @@ export class GraphWitnessService {
    * here grants Source custody, membership activation or operation acceptance. */
   registerMemberLossPlanRevision(agentId:string,revision:GraphMemberLossPlanRevision,loss:GraphMemberLossActivationAuthority):{kind:'revision';receipt:GraphMemberLossRevisionReceipt}|{kind:'activation';activation:GraphMembershipActivationCertificate}{
     const owner=this.options.enrollments[agentId]?.ownerPublicKey,plan=revision.plan,context={ownerPublicKey:owner!,previousPublicationHash:loss.consent.payload.previousPublicationHash,previousMembership:plan.previousMembership,newMembership:plan.newMembership,nativeIdentities:loss.nativeIdentities};
-    if(!owner||agentId!==revision.agentId||plan.newMembership.witnessId!==this.options.witnessId||plan.newMembership.custodyProfile?.witnessPublicKey!==this.publicKey||!verifyGraphMemberLossPlanRevision(revision,loss.consent,canonicalHash(loss.intent),context)||!verifyGraphMemberLossActivationAuthority(loss,{agentId,previousMembership:plan.previousMembership,newMembership:plan.newMembership,ownerAuthorization:plan.authorization,activatedAt:this.timestamp()},owner)||canonicalHash(loss.currentLease)!==canonicalHash(plan.currentLease)||canonicalHash(loss.originalLease)!==canonicalHash(plan.originalCurrentLease))throw new GraphWitnessError('member-loss-plan-revision-invalid',403);
+    if(!owner||agentId!==revision.agentId||plan.newMembership.witnessId!==this.options.witnessId||plan.newMembership.custodyProfile?.witnessPublicKey!==this.publicKey||!verifyGraphMemberLossPlanRevision(revision,loss.consent,canonicalHash(loss.intent),context)||!verifyGraphMemberLossPlanAuthority(loss,{agentId,previousMembership:plan.previousMembership,newMembership:plan.newMembership,ownerAuthorization:plan.authorization,activatedAt:this.timestamp()},owner)||canonicalHash(loss.currentLease)!==canonicalHash(plan.currentLease)||canonicalHash(loss.originalLease)!==canonicalHash(plan.originalCurrentLease))throw new GraphWitnessError('member-loss-plan-revision-invalid',403);
     return this.db.transaction(()=>{
       const activated=this.db.prepare('SELECT body FROM membershipActivations WHERE agentId=? AND epoch=?').get(agentId,plan.newMembership.epoch) as {body:string}|undefined;
       if(activated){const activation=JSON.parse(activated.body) as GraphMembershipActivationCertificate;if(!activation.memberLoss||canonicalHash(activation.memberLoss.consent)!==revision.consentHash||!verifyMembershipActivation(activation,owner,this.publicKey))throw new GraphWitnessError('member-loss-plan-activation-conflict');return {kind:'activation' as const,activation};}
@@ -488,7 +488,7 @@ export class GraphWitnessService {
   }
   /** Decommission/replacement is an owner-signed ceremony. Activation waits for
    * every NEW installed member's verified full-state transfer receipt. */
-  recoverPending(agentId: string, request: GraphWitnessRecoveryRequest): { activation: GraphMembershipActivationCertificate; adoptions: GraphAdoptionCertificate[] } {
+  recoverPending(agentId: string, request: GraphWitnessRecoveryRequest, activationHolding?: GraphMemberLossActivationHolding): { activation: GraphMembershipActivationCertificate; adoptions: GraphAdoptionCertificate[] } {
     if(!exactFields(request,['newMembership','authorization','currentLease','originalCurrentLease','revalidations','stateTransferReceipts','sourceManifest',...(request.historicalRewraps===undefined?[]:['historicalRewraps']),...(request.ownedTransition===undefined?[]:['ownedTransition']),...(request.memberLoss===undefined?[]:['memberLoss']),...(request.lossControls===undefined?[]:['lossControls'])]))throw new GraphWitnessError('recovery-request-fields-invalid',400);
     const authorization = request.authorization;
     const requestHash = this.stagedRecoveryRows.get(request)?.hash??canonicalHash(request);
@@ -503,7 +503,9 @@ export class GraphWitnessService {
       if (!owner || !verifyRecoveryAuthorization(authorization, previous, next, owner) || next.witnessId !== this.options.witnessId
         || next.failureDomain !== this.options.failureDomain || request.currentLease.leaseEpoch !== authorization.fenceEpoch
         || !verifyFencedLeaseBridge(request.currentLease, request.originalCurrentLease, next)
-        || !verifyWitnessLease(request.currentLease, next, this.now())) throw new GraphWitnessError('owner-recovery-proof-invalid', 403);
+        || (request.memberLoss === undefined && !verifyWitnessLease(request.currentLease, next, this.now()))) throw new GraphWitnessError('owner-recovery-proof-invalid', 403);
+      // Member loss: the plan's lease is a snapshot that may be long expired. The separate proof of holding, checked against now, is the freshness.
+      const holding=this.assertActivationHolding(request,activationHolding);
       const fence = this.db.prepare('SELECT leaseEpoch,leaseHash,certifiedSequence,certifiedCoreHash FROM agents WHERE agentId=?').get(agentId) as { leaseEpoch: number;leaseHash:string|null; certifiedSequence: number; certifiedCoreHash: string | null };
       const revisionHead=this.db.prepare('SELECT revisionHash FROM memberLossPlanRevisions WHERE agentId=? AND epoch=? ORDER BY generation DESC LIMIT 1').get(agentId,next.epoch) as {revisionHash:string}|undefined;
       if(revisionHead&&(!request.memberLoss?.planRevision||canonicalHash(request.memberLoss.planRevision)!==revisionHead.revisionHash))throw new GraphWitnessError('member-loss-plan-revision-stale');
@@ -511,7 +513,7 @@ export class GraphWitnessService {
       const loss=request.memberLoss;
       if(loss!==undefined){
         this.assertPositiveMembershipActive(agentId,previous,loss.planRevision);
-        if(request.ownedTransition!==undefined||!verifyGraphMemberLossActivationAuthority(loss,{agentId,previousMembership:previous,newMembership:next,ownerAuthorization:authorization,activatedAt:this.timestamp()},owner)||canonicalHash(loss.currentLease)!==canonicalHash(request.currentLease)||canonicalHash(loss.originalLease)!==canonicalHash(request.originalCurrentLease))throw new GraphWitnessError('member-loss-authority-invalid',403);
+        if(request.ownedTransition!==undefined||!verifyGraphMemberLossPlanAuthority(loss,{agentId,previousMembership:previous,newMembership:next,ownerAuthorization:authorization,activatedAt:this.timestamp()},owner)||canonicalHash(loss.currentLease)!==canonicalHash(request.currentLease)||canonicalHash(loss.originalLease)!==canonicalHash(request.originalCurrentLease))throw new GraphWitnessError('member-loss-authority-invalid',403);
         const operations=loss.consent.payload.operations,entries=request.sourceManifest.entries;
         if(operations.length!==entries.length||operations.some(op=>{const entry=entries.find(row=>row.eventId===op.eventId);return !entry||entry.operationHash!==op.operationHash||entry.coreHash!==op.coreHash||entry.sourceSequence!==op.sourceSequence||(op.outcome==='pending'?(entry.certificateHash!==null||entry.cancellationCertificateHash!==(loss.negativeAdvancements.find(row=>row.eventId===op.eventId)?.terminalHash??null)):op.terminalHash!==(op.outcome==='committed'?entry.certificateHash:entry.cancellationCertificateHash));})||request.sourceManifest.highestAcknowledgedSequence<loss.consent.payload.acknowledgedPrefix.sourceSequence)throw new GraphWitnessError('member-loss-known-cut-mismatch',403);
         for(const advance of loss.negativeAdvancements){const entry=entries.find(row=>row.eventId===advance.eventId),operation=entry?this.operation(agentId,entry.idempotencyKey):null,certificate=operation?.cancellationCertificate,original=operation?this.membership(agentId,operation.packet.membershipEpoch):null,key=certificate?.adoption?.newMembership.custodyProfile?.witnessPublicKey??original?.custodyProfile?.witnessPublicKey??(certificate?this.options.historicalWitnessPublicKeys?.[certificate.witnessId]:undefined);if(!operation||operation.certificate||!certificate||!original||!key||canonicalHash(operation.packet)!==advance.operationHash||canonicalHash(certificate)!==advance.terminalHash||certificate.outcome!==advance.outcome||!verifyCancellationCertificate(certificate,operation.packet,original,key,owner))throw new GraphWitnessError('member-loss-negative-advancement-invalid',403);}
@@ -542,14 +544,14 @@ export class GraphWitnessService {
       }
       const rewrapInventory=this.recoveryRewrapInventory(agentId,request);
       if(graphTransferContextCapacityBytes({previousMembership:previous,newMembership:next,authorization,manifest:request.sourceManifest,rewrapInventory,currentLease:request.currentLease,originalCurrentLease:request.originalCurrentLease})>32*1024*1024)throw new GraphWitnessError('graph-transfer-context-capacity',413);
-      const activation = this.signed(loss===undefined?D.membershipActivation:graphMemberLossActivationDomain(loss), { ...(loss===undefined?{}:{memberLoss:loss}), v: 1 as const, agentId, previousMembership: previous, newMembership: next,
+      const activation = this.signed(loss===undefined?D.membershipActivation:graphMemberLossActivationDomain(loss), { ...(loss===undefined?{}:{memberLoss:loss,activationHolding:holding!}), v: 1 as const, agentId, previousMembership: previous, newMembership: next,
         ownerAuthorization: authorization, stateTransferReceipts: [...request.stateTransferReceipts].sort((a, b) => a.machineId.localeCompare(b.machineId)),
         witnessId: this.options.witnessId, activatedAt: this.timestamp() });
       if (!verifyMembershipActivation(activation, owner, this.publicKey)) throw new GraphWitnessError('membership-activation-invalid', 403);
       if(loss!==undefined)this.db.prepare('INSERT INTO memberLossMaintenance(agentId,epoch,activationHash,body) VALUES(?,?,?,?) ON CONFLICT(agentId) DO UPDATE SET epoch=excluded.epoch,activationHash=excluded.activationHash,body=excluded.body').run(agentId,next.epoch,canonicalHash(activation),canonicalJson(activation));
       this.installMembership(next, true);
       this.db.prepare('INSERT INTO membershipActivations(agentId,epoch,body) VALUES(?,?,?)').run(agentId, next.epoch, canonicalJson(activation));
-      this.admission(agentId, request.currentLease, request.originalCurrentLease);
+      this.admission(agentId, holding?.lease??request.currentLease, holding?.originalLease??request.originalCurrentLease);
       const context:GraphWitnessRecoveryContext={activation,manifest:request.sourceManifest,rewrapInventory,currentLease:request.currentLease,originalCurrentLease:request.originalCurrentLease};
       this.db.prepare('INSERT INTO recoveryContexts(agentId,epoch,body) VALUES(?,?,?)').run(agentId,next.epoch,canonicalJson(context));
       const historic=this.historicalRewrapAccess(request);
@@ -565,6 +567,12 @@ export class GraphWitnessService {
       this.db.prepare('INSERT INTO recoveryLog(agentId,recoveryId,requestHash,response) VALUES(?,?,?,?)').run(agentId, authorization.recoveryId, requestHash, canonicalJson(response));
       return response;
     }).immediate();
+  }
+  /** Returns the checked proof for a member loss, undefined for any other recovery. The proof is outside the hashed request, so replay needs none. */
+  private assertActivationHolding(request:Pick<GraphWitnessRecoveryRequest,'memberLoss'|'newMembership'>,holding:GraphMemberLossActivationHolding|undefined):GraphMemberLossActivationHolding|undefined{
+    if(request.memberLoss===undefined){if(holding!==undefined)throw new GraphWitnessError('activation-holding-unexpected',403);return undefined;}
+    if(holding===undefined||!verifyGraphMemberLossActivationHolding(holding,request.memberLoss,request.newMembership,this.now()))throw new GraphWitnessError('member-loss-activation-holding-invalid',403);
+    return holding;
   }
   private recoveryContext(agentId:string,epoch:number):GraphWitnessRecoveryContext {
     const row=this.db.prepare('SELECT body FROM recoveryContexts WHERE agentId=? AND epoch=?').get(agentId,epoch) as {body:string}|undefined;
@@ -635,7 +643,7 @@ export class GraphWitnessService {
   }
   private assertLossSourceImport(agentId:string,row:GraphWitnessBootstrapOperation,recovery:GraphWitnessRecoveryRequest,previous:GraphMembershipEpoch,owner:string):void{
     const loss=recovery.memberLoss,op=row.operation,packet=op.packet;
-    if(row.kind!=='member-loss-source'||op.stateProof!==undefined||!Array.isArray(op.certificatePersistenceReceipts)||!loss||!verifyGraphMemberLossActivationAuthority(loss,{agentId,previousMembership:previous,newMembership:recovery.newMembership,ownerAuthorization:recovery.authorization,activatedAt:this.timestamp()},owner))throw new GraphWitnessError('loss-source-import-authority-invalid',403);
+    if(row.kind!=='member-loss-source'||op.stateProof!==undefined||!Array.isArray(op.certificatePersistenceReceipts)||!loss||!verifyGraphMemberLossPlanAuthority(loss,{agentId,previousMembership:previous,newMembership:recovery.newMembership,ownerAuthorization:recovery.authorization,activatedAt:this.timestamp()},owner))throw new GraphWitnessError('loss-source-import-authority-invalid',403);
     const known=loss.consent.payload.operations.find(entry=>entry.eventId===packet.eventId),advance=loss.negativeAdvancements.find(entry=>entry.eventId===packet.eventId);
     if(!known||known.operationHash!==canonicalHash(packet)||known.sourceSequence!==packet.sourceSequence||known.predecessorHash!==packet.predecessorHash||known.coreHash!==packet.coreHash)throw new GraphWitnessError('loss-source-import-outside-cut',403);
     if(op.certificate){if(known.outcome!=='committed'||known.terminalHash!==canonicalHash(op.certificate))throw new GraphWitnessError('loss-source-unadmitted-positive',403);}else if(known.outcome==='committed')throw new GraphWitnessError('loss-source-known-commit-missing',403);
@@ -643,7 +651,7 @@ export class GraphWitnessService {
     const derived=op.certificate?'certified':op.cancellationCertificate?.outcome??(op.cancellation?'canceled':op.erasure?'erased':'prepared');if(op.state!==derived)throw new GraphWitnessError('loss-source-state-not-proven',403);
   }
   private importMemberLossControls(agentId:string,request:GraphWitnessRecoveryRequest,owner:string):void{
-    const loss=request.memberLoss;if(request.lossControls!==undefined&&(!loss||!verifyGraphMemberLossActivationAuthority(loss,{agentId,previousMembership:this.membership(agentId),newMembership:request.newMembership,ownerAuthorization:request.authorization,activatedAt:this.timestamp()},owner)))throw new GraphWitnessError('member-loss-controls-authority-invalid',403);
+    const loss=request.memberLoss;if(request.lossControls!==undefined&&(!loss||!verifyGraphMemberLossPlanAuthority(loss,{agentId,previousMembership:this.membership(agentId),newMembership:request.newMembership,ownerAuthorization:request.authorization,activatedAt:this.timestamp()},owner)))throw new GraphWitnessError('member-loss-controls-authority-invalid',403);
       if(request.lossControls!==undefined){
         if(loss===undefined||!Array.isArray(request.lossControls)||request.lossControls.length>512)throw new GraphWitnessError('member-loss-controls-invalid',403);
         const seenControls=new Set<string>();
@@ -722,11 +730,13 @@ export class GraphWitnessService {
   }
   beginRecoveryUpload(agentId:string,plan:GraphRecoveryUploadPlan):{transferId:string}{
     const header=plan?.header,previous=this.membership(agentId,header?.newMembership?.epoch?header.newMembership.epoch-1:undefined),owner=this.options.enrollments[agentId]?.ownerPublicKey;
-    if(!owner||!exactFields(plan,['kind','transferId','requestHash','header','counts','hasHistoricalRewraps'])||plan.kind!=='recovery'||!hash(plan.requestHash)||plan.transferId!==graphRecoveryUploadId(header)||!exactFields(header,['newMembership','authorization','currentLease','originalCurrentLease','sourceManifest',...(header.ownedTransition===undefined?[]:['ownedTransition']),...(header.memberLoss===undefined?[]:['memberLoss']),...(header.lossControls===undefined?[]:['lossControls'])])||!verifyRecoveryAuthorization(header.authorization,previous,header.newMembership,owner)||!verifyFencedLeaseBridge(header.currentLease,header.originalCurrentLease,header.newMembership)||!verifyWitnessLease(header.currentLease,header.newMembership,this.now())||!validateRecoverySourceManifest(header.sourceManifest)||header.sourceManifest.entries.length||!exactFields(plan.counts,['entry','revalidation','receipt','historical-rewrap'])||Object.values(plan.counts).some(n=>!Number.isSafeInteger(n)||n<0)||typeof plan.hasHistoricalRewraps!=='boolean')throw new GraphWitnessError('recovery-upload-plan-invalid',403);
+    if(!owner||!exactFields(plan,['kind','transferId','requestHash','header','counts','hasHistoricalRewraps'])||plan.kind!=='recovery'||!hash(plan.requestHash)||plan.transferId!==graphRecoveryUploadId(header)||!exactFields(header,['newMembership','authorization','currentLease','originalCurrentLease','sourceManifest',...(header.ownedTransition===undefined?[]:['ownedTransition']),...(header.memberLoss===undefined?[]:['memberLoss']),...(header.lossControls===undefined?[]:['lossControls'])])||!verifyRecoveryAuthorization(header.authorization,previous,header.newMembership,owner)||!verifyFencedLeaseBridge(header.currentLease,header.originalCurrentLease,header.newMembership)||(header.memberLoss===undefined&&!verifyWitnessLease(header.currentLease,header.newMembership,this.now()))||!validateRecoverySourceManifest(header.sourceManifest)||header.sourceManifest.entries.length||!exactFields(plan.counts,['entry','revalidation','receipt','historical-rewrap'])||Object.values(plan.counts).some(n=>!Number.isSafeInteger(n)||n<0)||typeof plan.hasHistoricalRewraps!=='boolean')throw new GraphWitnessError('recovery-upload-plan-invalid',403);
     const prior=this.db.prepare('SELECT requestHash FROM recoveryLog WHERE agentId=? AND recoveryId=?').get(agentId,header.authorization.recoveryId) as {requestHash:string}|undefined;
     if(prior){if(prior.requestHash!==plan.requestHash)throw new GraphWitnessError('recovery-idempotency-conflict');return {transferId:plan.transferId};}
     const own=this.recoveryManifest(agentId);
-    const loss=header.memberLoss,validLoss=!!loss&&verifyGraphMemberLossActivationAuthority(loss,{agentId,previousMembership:previous,newMembership:header.newMembership,ownerAuthorization:header.authorization,activatedAt:this.timestamp()},owner)&&canonicalHash(loss.currentLease)===canonicalHash(header.currentLease)&&canonicalHash(loss.originalLease)===canonicalHash(header.originalCurrentLease)&&Array.isArray(header.lossControls)&&header.lossControls.length<=512;
+    const loss=header.memberLoss,validLoss=!!loss&&verifyGraphMemberLossPlanAuthority(loss,{agentId,previousMembership:previous,newMembership:header.newMembership,ownerAuthorization:header.authorization,activatedAt:this.timestamp()},owner)&&canonicalHash(loss.currentLease)===canonicalHash(header.currentLease)&&canonicalHash(loss.originalLease)===canonicalHash(header.originalCurrentLease)&&Array.isArray(header.lossControls)&&header.lossControls.length<=512;
+    // Only a verified member-loss plan defers its freshness to the proof of holding at commit.
+    if(header.memberLoss!==undefined&&!validLoss&&!verifyWitnessLease(header.currentLease,header.newMembership,this.now()))throw new GraphWitnessError('recovery-upload-plan-invalid',403);
     if((validLoss?plan.counts.entry!==loss!.consent.payload.operations.length:canonicalHash(own)!==header.authorization.sourceManifestHash||plan.counts.entry!==own.entries.length)||plan.counts.entry>20000||plan.counts.revalidation!==header.authorization.pendingOutcomes.length||plan.counts.revalidation>512||plan.counts.receipt!==header.newMembership.members.length||plan.counts['historical-rewrap']>own.entries.length||(!plan.hasHistoricalRewraps&&plan.counts['historical-rewrap']))throw new GraphWitnessError('recovery-upload-count-or-manifest-invalid',403);
     if(validLoss){const ids=new Set<string>();for(const control of header.lossControls!){const id=control?.packet?.idempotencyKey;if(ids.has(id)||!this.stagedLossControl(agentId,plan,id))throw new GraphWitnessError('recovery-upload-loss-control-invalid',403);ids.add(id);}}
     const old=this.db.prepare('SELECT plan FROM witnessTransfers WHERE agentId=? AND transferId=?').get(agentId,plan.transferId) as {plan:string}|undefined,body=canonicalJson(plan);if(old&&old.plan!==body)throw new GraphWitnessError('recovery-upload-conflict');
@@ -740,7 +750,7 @@ export class GraphWitnessService {
    * existing final loss importer may durably introduce its exact old sequence. */
   private stagedLossControl(agentId:string,plan:GraphRecoveryUploadPlan,idempotencyKey:string):NonNullable<GraphWitnessRecoveryRequest['lossControls']>[number]|null{
     if(typeof idempotencyKey!=='string')return null;const h=plan.header,loss=h.memberLoss,owner=this.options.enrollments[agentId]?.ownerPublicKey;
-    if(!loss||!owner||!verifyGraphMemberLossActivationAuthority(loss,{agentId,previousMembership:this.membership(agentId,h.newMembership.epoch-1),newMembership:h.newMembership,ownerAuthorization:h.authorization,activatedAt:this.timestamp()},owner)||canonicalHash(loss.currentLease)!==canonicalHash(h.currentLease)||canonicalHash(loss.originalLease)!==canonicalHash(h.originalCurrentLease)||!Array.isArray(h.lossControls)||h.lossControls.length>512)return null;
+    if(!loss||!owner||!verifyGraphMemberLossPlanAuthority(loss,{agentId,previousMembership:this.membership(agentId,h.newMembership.epoch-1),newMembership:h.newMembership,ownerAuthorization:h.authorization,activatedAt:this.timestamp()},owner)||canonicalHash(loss.currentLease)!==canonicalHash(h.currentLease)||canonicalHash(loss.originalLease)!==canonicalHash(h.originalCurrentLease)||!Array.isArray(h.lossControls)||h.lossControls.length>512)return null;
     const matches=h.lossControls.filter(row=>row?.packet?.idempotencyKey===idempotencyKey);if(matches.length!==1)return null;const c=matches[0],p=c.packet,admitted=loss.consent.payload.operations.find(row=>row.eventId===p.eventId);
     if(!exactFields(c,['packet','packetSignature','controlCapsule'])||!validatePacket(p)||p.agentId!==agentId||!verifyGraphControlCapsule(c.controlCapsule,p,owner)||!admitted||admitted.outcome!=='pending'||admitted.terminalHash!==null||admitted.operationHash!==canonicalHash(p)||admitted.predecessorHash!==p.predecessorHash||admitted.sourceSequence!==p.sourceSequence||admitted.coreHash!==p.coreHash)return null;
     const historical=this.membership(agentId,p.membershipEpoch),writer=historical.members.find(row=>row.machineId===p.writerId);if(!writer||canonicalHash(c.controlCapsule.authorizationProof.membership)!==canonicalHash(historical)||!verifyGraphRecord(D.packet,p,c.packetSignature,writer.signingPublicKey))return null;return c;
@@ -771,12 +781,13 @@ export class GraphWitnessService {
       if(packet&&rewrap){this.db.prepare('INSERT INTO witnessTransferBindings(agentId,transferId,section,rowIndex,bundleHash) VALUES(?,?,?,?,?)').run(agentId,transferId,section,index,packet.sourceBundleHash);this.db.prepare('INSERT INTO witnessTransferTargets(agentId,transferId,section,rowIndex,sourceKind,sourceId,bundleHash) VALUES(?,?,?,?,?,?,?)').run(agentId,transferId,section,index,packet.erasureIdentity.sourceKind,packet.erasureIdentity.sourceId,packet.sourceBundleHash);}
       this.db.prepare('INSERT INTO witnessTransferUsage(agentId,transferId,bytes) VALUES(?,?,?) ON CONFLICT(agentId,transferId) DO UPDATE SET bytes=bytes+excluded.bytes').run(agentId,transferId,bytes);return {hash:digest};}).immediate();
   }
-  finishRecoveryUpload(agentId:string,transferId:string):{activation:GraphMembershipActivationCertificate;adoptionCount:number}{
+  finishRecoveryUpload(agentId:string,transferId:string,activationHolding?:GraphMemberLossActivationHolding):{activation:GraphMembershipActivationCertificate;adoptionCount:number}{
     const plan=this.recoveryUploadPlan(agentId,transferId),prior=this.db.prepare('SELECT requestHash,response FROM recoveryLog WHERE agentId=? AND recoveryId=?').get(agentId,plan.header.authorization.recoveryId) as {requestHash:string;response:string}|undefined;
     if(prior){if(prior.requestHash!==plan.requestHash)throw new GraphWitnessError('recovery-idempotency-conflict');const response=JSON.parse(prior.response);return {activation:response.activation,adoptionCount:response.adoptions.length};}
+    this.assertActivationHolding(plan.header,activationHolding);
     for(const [section,count]of Object.entries(plan.counts)){const row=this.db.prepare('SELECT COUNT(*) AS n FROM witnessTransferRows WHERE agentId=? AND transferId=? AND section=?').get(agentId,transferId,section) as {n:number};if(row.n!==count)throw new GraphWitnessError('recovery-upload-incomplete');}
     const values=(section:GraphRecoveryUploadSection)=>Array.from(this.transferValues(agentId,transferId,section));const request:GraphWitnessRecoveryRequest={...plan.header,sourceManifest:{...plan.header.sourceManifest,entries:values('entry') as GraphRecoverySourceManifest['entries']},revalidations:values('revalidation') as GraphWitnessRecoveryRequest['revalidations'],stateTransferReceipts:values('receipt') as GraphWitnessRecoveryRequest['stateTransferReceipts'],...(plan.hasHistoricalRewraps?{historicalRewraps:[]}:{})};
-    const apply=()=>this.db.transaction(()=>{const result=this.recoverPending(agentId,request);this.db.prepare("UPDATE witnessTransferRows SET body='null' WHERE agentId=? AND transferId=? AND section IN ('revalidation','historical-rewrap')").run(agentId,transferId);this.recountTransferBytes(agentId,transferId);return {activation:result.activation,adoptionCount:result.adoptions.length};}).immediate();
+    const apply=()=>this.db.transaction(()=>{const result=this.recoverPending(agentId,request,activationHolding);this.db.prepare("UPDATE witnessTransferRows SET body='null' WHERE agentId=? AND transferId=? AND section IN ('revalidation','historical-rewrap')").run(agentId,transferId);this.recountTransferBytes(agentId,transferId);return {activation:result.activation,adoptionCount:result.adoptions.length};}).immediate();
     if(plan.hasHistoricalRewraps)return this.withStagedRecoveryRows(agentId,transferId,request,plan.counts['historical-rewrap'],plan.requestHash,apply);
     if(canonicalHash(request)!==plan.requestHash)throw new GraphWitnessError('recovery-upload-manifest-mismatch');return apply();
   }
@@ -906,13 +917,14 @@ export class GraphWitnessService {
       return {hash:digest};
     }).immediate();
   }
-  finishBootstrapTransfer(agentId:string,transferId:string):{activation:GraphMembershipActivationCertificate;adoptions:GraphAdoptionCertificate[]} {
+  finishBootstrapTransfer(agentId:string,transferId:string,activationHolding?:GraphMemberLossActivationHolding):{activation:GraphMembershipActivationCertificate;adoptions:GraphAdoptionCertificate[]} {
     const plan=this.transferPlan(agentId,transferId);
     const applied=this.db.prepare('SELECT requestHash,response FROM bootstrapRequests WHERE agentId=?').get(agentId) as {requestHash:string;response:string}|undefined;
     if(applied?.requestHash===canonicalHash({payload:plan.payload,signature:plan.bootstrapSignature}))return JSON.parse(applied.response);
     for(const [section,count]of Object.entries(plan.counts)){const row=this.db.prepare('SELECT COUNT(*) AS n FROM witnessTransferRows WHERE agentId=? AND transferId=? AND section=?').get(agentId,transferId,section) as {n:number};if(row.n!==count)throw new GraphWitnessError('bootstrap-transfer-incomplete');}
     const values=(section:GraphBootstrapSection)=>Array.from(this.transferValues(agentId,transferId,section));
     const recovery=values('control')[0] as GraphWitnessRecoveryRequest;
+    this.assertActivationHolding(recovery,activationHolding);
     recovery.revalidations=values('revalidation') as GraphWitnessRecoveryRequest['revalidations'];recovery.stateTransferReceipts=values('receipt') as GraphWitnessRecoveryRequest['stateTransferReceipts'];recovery.sourceManifest.entries=values('entry') as GraphRecoverySourceManifest['entries'];
     if(plan.counts['historical-rewrap']!==undefined)recovery.historicalRewraps=[];
     const memberships=values('membership') as GraphMembershipEpoch[],erasures=values('erasure') as GraphWitnessErasure[];
@@ -925,7 +937,7 @@ export class GraphWitnessService {
     const operationRows=()=>this.transferValues(agentId,transferId,'operation') as Iterable<GraphWitnessBootstrapRequest['operations'][number]>;
     const digest=crypto.createHash('sha256');digest.update('[');let first=true;for(const row of operationRows()){if(!first)digest.update(',');digest.update(canonicalJson(row));first=false;}digest.update(']');const operationsHash=digest.digest('hex');
     const apply=()=>{if((this.stagedRecoveryRows.get(recovery)?.hash??canonicalHash(recovery))!==plan.payload.recoveryHash||canonicalHash(memberships)!==plan.payload.membershipsHash||canonicalHash(erasures)!==plan.payload.erasuresHash||operationsHash!==plan.payload.operationsHash)throw new GraphWitnessError('bootstrap-transfer-manifest-mismatch');
-    return this.db.transaction(()=>{const response=this.bootstrap(agentId,{recovery,memberships,erasures,...(archive?{archive:{activations:[],contexts:[]}}:{}),...(backupAttestations?{backupAttestations}:{}),operations:[],previousFenceEpoch:plan.payload.previousFenceEpoch,bootstrapSignature:plan.bootstrapSignature},{operationCount:plan.counts.operation,operationsHash,operations:operationRows,...(archive?{archive}:{})});
+    return this.db.transaction(()=>{const response=this.bootstrap(agentId,{recovery,memberships,erasures,...(archive?{archive:{activations:[],contexts:[]}}:{}),...(backupAttestations?{backupAttestations}:{}),operations:[],previousFenceEpoch:plan.payload.previousFenceEpoch,bootstrapSignature:plan.bootstrapSignature},{operationCount:plan.counts.operation,operationsHash,operations:operationRows,...(archive?{archive}:{})},activationHolding);
       this.db.prepare("UPDATE witnessTransferRows SET body='null' WHERE agentId=? AND transferId=? AND section IN ('operation','revalidation','historical-rewrap')").run(agentId,transferId);this.recountTransferBytes(agentId,transferId);return response;}).immediate();};
     return plan.counts['historical-rewrap']===undefined?apply():this.withStagedRecoveryRows(agentId,transferId,recovery,plan.counts['historical-rewrap'],plan.payload.recoveryHash,apply);
   }
@@ -944,7 +956,7 @@ export class GraphWitnessService {
   }
   /** Empty-disk replacement only. No imported bytes become admitted until the
    * owner-signed higher fence AND all new members' real source transfer verify. */
-  bootstrap(agentId:string, request:GraphWitnessBootstrapRequest, staged?:{operationCount:number;operationsHash:string;operations:()=>Iterable<GraphWitnessBootstrapRequest['operations'][number]>;archive?:{hash:string;counts:Record<string,number>;activations:()=>Iterable<GraphMembershipActivationCertificate>;contexts:()=>Iterable<GraphWitnessRecoveryContext>}}):{activation:GraphMembershipActivationCertificate;adoptions:GraphAdoptionCertificate[]} {
+  bootstrap(agentId:string, request:GraphWitnessBootstrapRequest, staged?:{operationCount:number;operationsHash:string;operations:()=>Iterable<GraphWitnessBootstrapRequest['operations'][number]>;archive?:{hash:string;counts:Record<string,number>;activations:()=>Iterable<GraphMembershipActivationCertificate>;contexts:()=>Iterable<GraphWitnessRecoveryContext>}},activationHolding?:GraphMemberLossActivationHolding):{activation:GraphMembershipActivationCertificate;adoptions:GraphAdoptionCertificate[]} {
     const owner=this.options.enrollments[agentId]?.ownerPublicKey;
     const operationCount=staged?.operationCount??request.operations.length;
     const operations=staged?.operations??(()=>request.operations);
@@ -1051,7 +1063,7 @@ export class GraphWitnessService {
       const chain=Array.from(operations(),row=>({packet:row.operation.packet,terminal:!!(row.operation.certificate||row.operation.cancellationCertificate)})).sort((a,b)=>a.packet.sourceSequence-b.packet.sourceSequence);
       for(const item of chain){const op={packet:item.packet,certificate:item.terminal,cancellationCertificate:false};if(!op.certificate&&!op.cancellationCertificate)continue;if(op.packet.sourceSequence!==seq+1||op.packet.predecessorHash!==core)throw new GraphWitnessError('bootstrap-certified-chain-gap');seq=op.packet.sourceSequence;core=op.packet.coreHash;}
       if(seq!==actual.highestCertifiedSequence||core!==actual.highestCertifiedCoreHash)throw new GraphWitnessError('bootstrap-certified-watermark-invalid');
-      const response=this.recoverPending(agentId,request.recovery);
+      const response=this.recoverPending(agentId,request.recovery,activationHolding);
       this.db.prepare('INSERT INTO bootstrapRequests(agentId,requestHash,response) VALUES(?,?,?)').run(agentId,bootstrapHash,canonicalJson(response));
       return response;
     }).immediate();

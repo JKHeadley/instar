@@ -31,6 +31,8 @@ const PROGRESS_DOMAIN='native-owner-member-loss-progress-v2';
 const PROGRESS_MAX_BYTES=32*1024*1024;
 export class GraphNativeMemberLossStore {
  readonly stateRoot:string;private readonly directory:string;
+ /** False once this process no longer holds the machine's instance lock. */
+ instanceLockCurrent():boolean{return this.options.instanceLock.revalidate();}
  constructor(private readonly options:{stateDir:string;identity:MachineIdentityManager;identities:IdentityStore;instanceLock:SingleInstanceLock;authority:GraphCustodyProfileAuthority}){
   if(!(options.identity instanceof MachineIdentityManager)||!(options.identities instanceof IdentityStore)||!(options.instanceLock instanceof SingleInstanceLock)||!(options.authority instanceof GraphCustodyProfileAuthority))throw new Error('native-member-loss-real-authorities-required');this.stateRoot=fs.realpathSync(options.stateDir);if(fs.realpathSync(options.identity.baseDir)!==this.stateRoot||options.authority.stateRoot!==this.stateRoot||path.resolve(options.identities.epochPath)!==path.join(path.resolve(options.stateDir),'state','identity-epochs.json'))throw new Error('native-member-loss-authority-scope-mismatch');this.directory=path.join(this.stateRoot,'conversation-graph','member-loss-native',canonicalHash(options.authority.agentId));
  }

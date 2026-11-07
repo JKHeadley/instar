@@ -1,5 +1,5 @@
 import {verifyEd25519Memoized} from './VerifiedSignatureMemo.js';
-import {graphMemberLossActivationDomain,verifyGraphMemberLossActivationAuthority,type GraphMemberLossActivationAuthority} from './GraphMemberLossActivation.js';
+import {graphMemberLossActivationDomain,verifyGraphMemberLossActivationAuthority,verifyGraphMemberLossActivationHolding,verifyGraphMemberLossPlanAuthority,type GraphMemberLossActivationAuthority,type GraphMemberLossActivationHolding} from './GraphMemberLossActivation.js';
 import {verifyGraphCustodyProfile} from './GraphCustodyProfile.js';
 /** Cryptographic wire contract for the independent Conversations witness.
  * Spec: conversation-effort-hierarchy-v3 §7.2. No title/transcript plaintext belongs here.
@@ -140,7 +140,7 @@ export function canonicalGraphRewrapInventory(entries:GraphRewrapInventoryEntry[
 }
 export function graphRewrapInventoryHash(entries:GraphRewrapInventoryEntry[]):string{return canonicalHash(canonicalGraphRewrapInventory(entries));}
 export interface GraphMembershipActivationCertificate {
-  memberLoss?:GraphMemberLossActivationAuthority;
+  memberLoss?:GraphMemberLossActivationAuthority;activationHolding?:GraphMemberLossActivationHolding;
   v: 1; agentId: string; previousMembership: GraphMembershipEpoch; newMembership: GraphMembershipEpoch;
   ownerAuthorization: GraphRecoveryAuthorization; stateTransferReceipts: GraphMembershipTransferReceipt[];
   witnessId: string; activatedAt: string; signature: string;
@@ -407,7 +407,7 @@ export function validateRecoverySourceManifest(manifest: GraphRecoverySourceMani
 }
 export function verifyMembershipActivation(certificate: GraphMembershipActivationCertificate, ownerPublicKey: crypto.KeyLike, witnessPublicKey: crypto.KeyLike): boolean {
   try {
-    if (!exactFields(certificate, ['v','agentId','previousMembership','newMembership','ownerAuthorization','stateTransferReceipts','witnessId','activatedAt','signature',...(certificate.memberLoss===undefined?[]:['memberLoss'])])
+    if (!exactFields(certificate, ['v','agentId','previousMembership','newMembership','ownerAuthorization','stateTransferReceipts','witnessId','activatedAt','signature',...(certificate.memberLoss===undefined?[]:['memberLoss']),...(certificate.activationHolding===undefined?[]:['activationHolding'])])
       || certificate.v !== 1 || certificate.agentId !== certificate.newMembership.agentId || certificate.witnessId !== certificate.newMembership.witnessId
       || !iso(certificate.activatedAt) || !verifyRecoveryAuthorization(certificate.ownerAuthorization, certificate.previousMembership, certificate.newMembership, ownerPublicKey)
       || !Array.isArray(certificate.stateTransferReceipts) || certificate.stateTransferReceipts.length !== certificate.newMembership.members.length) return false;
@@ -416,7 +416,9 @@ export function verifyMembershipActivation(certificate: GraphMembershipActivatio
       if (seen.has(receipt.machineId) || !verifyMembershipTransferReceipt(receipt, certificate.ownerAuthorization, certificate.newMembership)) return false;
       seen.add(receipt.machineId);
     }
-    if(certificate.memberLoss!==undefined&&!verifyGraphMemberLossActivationAuthority(certificate.memberLoss,certificate,ownerPublicKey))return false;
+    // Only the signed activatedAt is compared, never the current clock, so a stored certificate verifies forever.
+    if(certificate.activationHolding!==undefined){if(certificate.memberLoss===undefined||!verifyGraphMemberLossPlanAuthority(certificate.memberLoss,certificate,ownerPublicKey)||!verifyGraphMemberLossActivationHolding(certificate.activationHolding,certificate.memberLoss,certificate.newMembership,Date.parse(certificate.activatedAt)))return false;}
+    else if(certificate.memberLoss!==undefined&&!verifyGraphMemberLossActivationAuthority(certificate.memberLoss,certificate,ownerPublicKey))return false;
     return verifyGraphRecord(certificate.memberLoss?graphMemberLossActivationDomain(certificate.memberLoss):GRAPH_SIGNATURE_DOMAINS.membershipActivation, unsigned(certificate), certificate.signature, witnessPublicKey);
   } catch { /* @silent-fallback-ok: malformed activation or member receipt is rejected, never activates proposed membership */ return false; }
 }

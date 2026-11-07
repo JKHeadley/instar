@@ -36,20 +36,21 @@ import {SafeFsExecutor} from '../../src/core/SafeFsExecutor.js';
 import {SecretStore} from '../../src/core/SecretStore.js';
 import {MachineIdentityManager} from '../../src/core/MachineIdentity.js';
 import {readConversationGraphOwnerPolicy,initializeConversationGraphOwnerPolicy} from '../../src/core/ConversationGraphOwnerPolicy.js';
-import {canonicalHash,signGraphRecord,witnessActionPayload,verifyGraphRecord,unsigned} from '../../src/core/GraphWitnessTypes.js';
+import {canonicalHash,signGraphRecord,witnessActionPayload,verifyGraphRecord,verifyMembershipActivation,unsigned} from '../../src/core/GraphWitnessTypes.js';
 import {createGraphControlCapsule} from '../../src/core/GraphWitnessControl.js';
 import {LiveConfig} from '../../src/config/LiveConfig.js';
 import {StateManager} from '../../src/core/StateManager.js';
 import {InitiativeTracker} from '../../src/core/InitiativeTracker.js';
 import type {InstarConfig} from '../../src/core/types.js';
 
-export type GraphLossExecutionMode='surface-route'|'surface-route-resume'|'surface-route-restart'|'surface-route-before-native'|'surface-route-cancel'|'surface-route-shown'|'surface-route-left-out'|'surface-route-after-stage'|'empty'|'pending'|'committed'|'denied-pending'|'committed-lost-host'|'refused-committed-local-deny'|'cold-native-pending'|'renewed-native-pending'|'post-act-pending'|'pin-priority-deny'|'creation-erasure-resume'|'stream-final-mutation'|'stream-final-missing'|'stream-final-barrier'|'settlement-owner-revocation'|'upload-owner-revocation';
+export type GraphLossExecutionMode='surface-route'|'surface-route-resume'|'surface-route-restart'|'surface-route-before-native'|'surface-route-cancel'|'surface-route-shown'|'surface-route-left-out'|'surface-route-after-stage'|'surface-route-slow'|'surface-route-slow-lapsed'|'committed-lost-host-slow'|'empty'|'pending'|'committed'|'denied-pending'|'committed-lost-host'|'refused-committed-local-deny'|'cold-native-pending'|'renewed-native-pending'|'post-act-pending'|'pin-priority-deny'|'creation-erasure-resume'|'stream-final-mutation'|'stream-final-missing'|'stream-final-barrier'|'settlement-owner-revocation'|'upload-owner-revocation';
+const RealDateOf=(value:string)=>Date.parse(value);
 export async function runGraphMemberLossProductionEntry(mode:GraphLossExecutionMode){
  let methodTiming:ReturnType<typeof startGraphSyncMethodTiming>|undefined,methodTimer:ReturnType<typeof setInterval>|undefined;
  const performanceObserver=process.env.GRAPH_LOSS_STREAM_PERF==='1'?observeFixturePerformance(fs.mkdtempSync(path.join(process.cwd(),'.instar/state/build/graph-loss-stream-perf-'))):null;try{
  const phaseStarted=Date.now();const phase=(value:string)=>{if(performanceObserver||mode==='cold-native-pending'||mode==='renewed-native-pending'||mode==='post-act-pending'||mode==='creation-erasure-resume')console.info('[member-loss-cold-phase]',JSON.stringify({phase:value,elapsedMs:Date.now()-phaseStarted}));};
  if(mode==='creation-erasure-resume'){methodTiming=startGraphSyncMethodTiming([{label:'NativeStore',prototype:GraphNativeMemberLossStore.prototype,methods:['assertDurableReceipt']},{label:'NativeProgress',prototype:GraphNativeMemberLossProgress.prototype,methods:['assertCurrent','assertCurrentNativeContext']},{label:'SourceSnapshot',prototype:GraphMemberLossSourceSnapshot.prototype,methods:['assertCurrent']},{label:'HeldPreflight',prototype:GraphMemberLossHeldPreflight.prototype,methods:['assertCurrent']},{label:'Core',prototype:GraphCustodyProfileAuthority.prototype,methods:['currentMembership','verifiedNegativeRoleLineage','assertMemberLossHeld']}]);methodTimer=setInterval(()=>console.info('[loss-revision-method-timing]',JSON.stringify(methodTiming!.snapshot())),15000);methodTimer.unref();}
- const f=await setupGraphRuntimeFixture({ownedCustodyHostIndex:0}),index=mode==='committed-lost-host'?1:0,otherIndex=index===0?1:0,identity=f.managers[index],stateDir=identity.baseDir,secrets=new SecretStore({stateDir,forceFileKey:true}),publicKey=f.f.owner.publicKey.export({format:'pem',type:'spki'}).toString();
+ const f=await setupGraphRuntimeFixture({ownedCustodyHostIndex:0}),index=mode.startsWith('committed-lost-host')?1:0,otherIndex=index===0?1:0,identity=f.managers[index],stateDir=identity.baseDir,secrets=new SecretStore({stateDir,forceFileKey:true}),publicKey=f.f.owner.publicKey.export({format:'pem',type:'spki'}).toString();
  // The shared fixture's real prior publication/envelope is matched by its vault.
  // No capability for the new human removal is supplied by this fixture.
  if(index===0){secrets.set(GRAPH_OWNER_CONTROL_SECRET,{v:1,agentId:'echo',privateKey:f.f.owner.privateKey.export({format:'pem',type:'pkcs8'}).toString(),publicKey,createdAt:new Date().toISOString()});secrets.set(GRAPH_CUSTODY_ROLE_SECRET,f.f.witness.privateKey.export({format:'pem',type:'pkcs8'}).toString());}secrets.set(GRAPH_PEER_BEARER_SECRET,'x'.repeat(43));secrets.set('conversation_graph_peer_bearer_scope',{v:1,agentId:'echo',ownerPublicKeyHash:canonicalHash(publicKey),purpose:'owned-default-peer-bearer'});secrets.syncDurably();
@@ -130,6 +131,24 @@ export async function runGraphMemberLossProductionEntry(mode:GraphLossExecutionM
     const first=await auth(request(app).post('/conversation-graph/member-loss/confirm')).send(confirmation);expect(first.status,JSON.stringify(first.body)).toBe(202);expect(await settled()).toMatchObject({state:'failed',held:true,failure:'test-stop-after-stage'});stop.mockRestore();
     await new Promise(resolve=>setTimeout(resolve,5));expect(await native.leaseCoordinator.renew()).toBe(true);
    }
+   let shiftClock:(ms:number)=>void=()=>{};
+   if(mode==='surface-route-slow'||mode==='surface-route-slow-lapsed'){
+    // A removal slower than one lease: the signed plan's snapshot passes its expiry during staging while the coordinator keeps renewing the same epoch. The clock is shifted, not slept.
+    const RealDate=Date;let skew=0;class ShiftedDate extends RealDate{constructor(...args:unknown[]){if(args.length)super(...args as [string]);else super(RealDate.now()+skew);}static now(){return RealDate.now()+skew;}}
+    globalThis.Date=ShiftedDate as DateConstructor;restoreMocks.push(()=>{globalThis.Date=RealDate;});
+    const stageActual=ConversationGraphReplicationTransfer.prototype.stageHeldSource;
+    const slow=vi.spyOn(ConversationGraphReplicationTransfer.prototype,'stageHeldSource').mockImplementationOnce(async function(this:ConversationGraphReplicationTransfer,...args:Parameters<ConversationGraphReplicationTransfer['stageHeldSource']>){
+     const receipt=await stageActual.apply(this,args),snapshotExpiry=RealDate.parse(args[0].currentLease.expiresAt);
+     const step=Math.floor((snapshotExpiry-Date.now())*0.6)+1000;
+     for(let i=0;i<3;i++){skew+=step;expect(await native.leaseCoordinator.renew()).toBe(true);}
+     expect(Date.now()).toBeGreaterThan(snapshotExpiry);return receipt;
+    });restoreMocks.push(()=>slow.mockRestore());
+    shiftClock=ms=>{skew+=ms;};
+    if(mode==='surface-route-slow-lapsed'){
+     // Everything up to the last moment was fine; then the live lease lapses with nothing renewing it. The stream's own barrier refuses first; the mint behind it has its own test.
+     const finishActual=GraphWitnessStagedUpload.prototype.finish,lapse=vi.spyOn(GraphWitnessStagedUpload.prototype,'finish').mockImplementationOnce(function(this:GraphWitnessStagedUpload){skew+=RealDate.parse(native.leaseCoordinator.currentLease()!.expiresAt)-Date.now()+1000;return finishActual.call(this);});restoreMocks.push(()=>lapse.mockRestore());
+    }
+   }
    if(mode==='surface-route-before-native'){
     const stop=vi.spyOn(GraphNativeMemberLossStore.prototype,'beginNativeOperation').mockImplementationOnce(()=>{throw new Error('test-stop-before-native');});
     const first=await auth(request(app).post('/conversation-graph/member-loss/confirm')).send(confirmation);expect(first.status,JSON.stringify(first.body)).toBe(202);const stopped=await settled();stop.mockRestore();
@@ -145,10 +164,20 @@ export async function runGraphMemberLossProductionEntry(mode:GraphLossExecutionM
    // The dashboard's Finish button prepares again with the same request, as it would after a restart.
    const again=mode==='surface-route-resume'||mode==='surface-route-restart'||mode==='surface-route-before-native'||mode==='surface-route-shown'||mode==='surface-route-after-stage'?await auth(request(app).post('/conversation-graph/member-loss/prepare')).send({requestId:'surface-route-loss-0001',removedMachineIds:removed}):{status:200,body:{draftHash:prepared.body.draftHash,challenge:confirmation.challenge}};expect(again.status,JSON.stringify(again.body)).toBe(200);expect(again.body.draftHash).toBe(prepared.body.draftHash);
    const confirmed=await auth(request(app).post('/conversation-graph/member-loss/confirm')).send({...confirmation,challenge:again.body.challenge});expect(confirmed.status,JSON.stringify(confirmed.body)).toBe(202);expect(confirmed.body.removed).toEqual(removed);
+   if(mode==='surface-route-slow-lapsed'){const refused=await settled();expect(refused.state,JSON.stringify(refused)).toBe('failed');expect(refused.failure).toBe('native-member-loss-current-acquisition-required');expect(refused.held).toBe(true);expect(actual.authority.currentMembership()).toEqual(before);expect(actual.authority.verifiedNegativeRoleLineage().memberLossActivations).toHaveLength(0);return;}
    const finished=await settled();expect(finished.state,JSON.stringify(finished)).toBe('done');expect(finished.failure).toBeNull();
    expect(finished).toMatchObject({held:false,resume:null,cancellable:false});expect(liveManager.runtime!.installedMembership.epoch).toBe(before.epoch+1);
    surface=makeSurface(liveManager);expect((await auth(request(app).get('/conversation-graph/member-loss/status'))).body).toMatchObject({state:'none',held:false,resume:null});expect((await auth(request(app).post('/conversation-graph/member-loss/prepare')).send({requestId:'surface-after-done-1',removedMachineIds:removed})).body.code).toBe('member-loss-plan-roster-invalid');
    const after=liveManager.memberLossPlanningComponents()!.authority.currentMembership();expect(after.epoch).toBe(before.epoch+1);expect(after.members.map(member=>member.machineId)).toEqual([identity.loadIdentity().machineId]);expect(native.identities.getEpoch(removed[0]).revokedAt).toBeTruthy();
+   if(mode==='surface-route-slow'){
+    // The stored certificate keeps verifying, later and after a restart, with every lease in it long expired.
+    const lineage=liveManager.memberLossPlanningComponents()!.authority.verifiedNegativeRoleLineage(),activation=lineage.memberLossActivations.find(row=>row.certificate.newMembership.epoch===after.epoch)!.certificate,witnessKey=after.custodyProfile!.witnessPublicKey;
+    expect(activation.activationHolding).toBeTruthy();expect(RealDateOf(activation.activationHolding!.lease.expiresAt)).toBeGreaterThan(RealDateOf(activation.memberLoss!.currentLease.expiresAt));expect(RealDateOf(activation.activatedAt)).toBeGreaterThan(RealDateOf(activation.memberLoss!.currentLease.expiresAt));
+    shiftClock(24*60*60000);expect(verifyMembershipActivation(activation,actual.authority.ownerPublicKey,witnessKey)).toBe(true);expect(await native.leaseCoordinator.renew()).toBe(true);
+    await liveManager.close();reopened=new ConversationGraphDefault({stateDir,agentId:'echo',secrets,fleet,instanceLock:f.options[index].instanceLock,scopeVerifier:f.options[index].scopeVerifier!,telegramChatId:'-1001',});
+    await reopened.ensureOwner({principalKey:'owner:echo',authenticationMethod:'owner-dashboard',requestId:'slow-removal-cold-reopen',isCurrent:()=>true});
+    const coldAuthority=reopened.memberLossPlanningComponents()!.authority;expect(coldAuthority.currentMembership()).toEqual(after);expect(canonicalHash(coldAuthority.verifiedNegativeRoleLineage().memberLossActivations.find(row=>row.certificate.newMembership.epoch===after.epoch)!.certificate)).toBe(canonicalHash(activation));
+   }
    return;
   }
   let intent:GraphOwnerMemberLossIntent|undefined,resumedCapabilities:Awaited<ReturnType<GraphOwnerMemberLossActionService['resume']>>|undefined,resumeProgress:ReturnType<GraphNativeMemberLossStore['progress']>=null;
@@ -263,6 +292,12 @@ export async function runGraphMemberLossProductionEntry(mode:GraphLossExecutionM
    const settle=GraphWitnessClient.prototype.settleMemberLoss,priorPolicy=readConversationGraphOwnerPolicy({stateDir,forceFileKey:true});let settled=false;
    const revoked=vi.spyOn(GraphWitnessClient.prototype,'settleMemberLoss').mockImplementationOnce(async function(this:GraphWitnessClient,...args:Parameters<GraphWitnessClient['settleMemberLoss']>){const result=await settle.apply(this,args);settled=true;liveConfig.set('dashboardPin','765432');return result;});restoreMocks.push(()=>revoked.mockRestore());
    await expect(new GraphOwnerMemberLossExecution(executionManager).execute({intent:executionIntent,action:executionAction,preflight:currentPreflight,snapshot:currentSnapshot,nativeStore:executionStore,native:executionNative})).rejects.toThrow();expect(settled).toBe(true);expect(readConversationGraphOwnerPolicy({stateDir,forceFileKey:true})?.generation).not.toBe(priorPolicy?.generation);const held=executionManager.memberLossPlanningComponents()!.authority;expect(held.currentMembership()).toEqual(scope.previousMembership);expect(()=>held.assertPositiveWrites(scope.newMembership)).toThrow();expect(executionManager.runtime!.isReady()).toBe(false);return;
+  }
+  if(mode==='committed-lost-host-slow'){
+   // The new-witness path, slower than one lease. The shifted clock runs until cleanup, so the proof of holding has to be what carries the commit.
+   const RealDate=Date;let skew=0;class ShiftedDate extends RealDate{constructor(...args:unknown[]){if(args.length)super(...args as [string]);else super(RealDate.now()+skew);}static now(){return RealDate.now()+skew;}}
+   globalThis.Date=ShiftedDate as DateConstructor;restoreMocks.push(()=>{globalThis.Date=RealDate;});
+   const stageActual=ConversationGraphReplicationTransfer.prototype.stageHeldSource,slow=vi.spyOn(ConversationGraphReplicationTransfer.prototype,'stageHeldSource').mockImplementationOnce(async function(this:ConversationGraphReplicationTransfer,...args:Parameters<ConversationGraphReplicationTransfer['stageHeldSource']>){const receipt=await stageActual.apply(this,args),snapshotExpiry=RealDate.parse(args[0].currentLease.expiresAt),step=Math.floor((snapshotExpiry-Date.now())*0.6)+1000;for(let i=0;i<3;i++){skew+=step;expect(await native.leaseCoordinator.renew()).toBe(true);}expect(Date.now()).toBeGreaterThan(snapshotExpiry);return receipt;});restoreMocks.push(()=>slow.mockRestore());
   }
   phase('execute');const completed=await new GraphOwnerMemberLossExecution(executionManager).execute({intent:executionIntent,action:executionAction,preflight:currentPreflight,snapshot:currentSnapshot,nativeStore:executionStore,native:executionNative});phase('executed');if(retainedCreation)expect(fs.readFileSync(retainedCreation.file,'utf8')).toBe(retainedCreation.bytes);if(mode==='pending')expect(stagedUnknownControlExercised).toBe(true);if(mode==='denied-pending')expect(negativeStreamingExercised).toBe(true);verifyRetainedStreaming();expect(completed.state).toBe('completed');expect(completed.pins).toHaveLength(1);expect(executionManager.memberLossPlanningComponents()!.authority.currentMembership()).toEqual(scope.newMembership);await executionAction.assertCurrentForNative({intentHash:canonicalHash(admitted.intentProof),consentHash:canonicalHash(action.consent),previousPublicationHash:scope.previousPublicationHash,previousMembershipHash:canonicalHash(scope.previousMembership),newMembershipHash:canonicalHash(scope.newMembership),nativeRosterHash:canonicalHash(scope.nativeIdentities)});
   if(mode==='pending'){

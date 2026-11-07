@@ -6,6 +6,7 @@ import {GraphMemberLossHeldPreflight} from './GraphMemberLossHeldPreflight.js';
 import {GraphPreparedTransferEnvelopes} from './GraphPreparedTransferEnvelopes.js';
 import {GraphWitnessService,graphRecoveryUploadId,graphWitnessBootstrapCounts,type GraphWitnessBootstrapRequest,type GraphWitnessRecoveryRequest,type GraphBootstrapTransferPlan,type GraphBootstrapSection} from './GraphWitnessService.js';
 import {graphMemberLossSourceImport} from './GraphMemberLossSourceImport.js';
+import type {GraphMemberLossActivationHolding} from './GraphMemberLossActivation.js';
 import {canonicalHash,canonicalJson,signGraphRecord,type GraphMembershipActivationCertificate,type GraphAdoptionCertificate} from './GraphWitnessTypes.js';
 type Metadata=Omit<GraphWitnessBootstrapRequest,'operations'|'bootstrapSignature'|'recovery'>&{recovery:Omit<GraphWitnessRecoveryRequest,'historicalRewraps'>};
 const TOKEN=Symbol('actual-held-witness-bootstrap');const UPLOAD_TOKEN=Symbol('actual-staged-witness-upload');
@@ -14,17 +15,18 @@ function freezePublic(value:unknown):void{if(value&&typeof value==='object'&&!Ob
 /** Mechanical staged bytes only. This handle grants no fresh human authority.
  * The server must recheck its actual Action after stage() and before finish(). */
 export class GraphWitnessStagedUpload {
- #closed=false;#result:Result|null=null;#stream:GraphWitnessBootstrapStream;#service:GraphWitnessService;#complete:(()=>Result)|null;
+ #closed=false;#result:Result|null=null;#stream:GraphWitnessBootstrapStream;#service:GraphWitnessService;#complete:((holding:GraphMemberLossActivationHolding)=>Result)|null;#mintHolding:()=>GraphMemberLossActivationHolding;
  readonly agentId:string;readonly intentHash:string;readonly consentHash:string;readonly recoveryId:string;readonly stateRoot:string;
- constructor(token:symbol,stream:GraphWitnessBootstrapStream,service:GraphWitnessService,complete:()=>Result){
-  if(token!==UPLOAD_TOKEN)throw new Error('witness-upload-actual-stage-required');this.#stream=stream;this.#service=service;this.#complete=complete;const loss=stream.metadata.recovery.memberLoss!;this.agentId=stream.metadata.recovery.newMembership.agentId;this.intentHash=canonicalHash(loss.intent);this.consentHash=canonicalHash(loss.consent);this.recoveryId=stream.metadata.recovery.authorization.recoveryId;this.stateRoot=stream.stateRoot;Object.freeze(this);
+ constructor(token:symbol,stream:GraphWitnessBootstrapStream,service:GraphWitnessService,complete:(holding:GraphMemberLossActivationHolding)=>Result,mintHolding:()=>GraphMemberLossActivationHolding){
+  if(token!==UPLOAD_TOKEN)throw new Error('witness-upload-actual-stage-required');this.#stream=stream;this.#service=service;this.#complete=complete;this.#mintHolding=mintHolding;const loss=stream.metadata.recovery.memberLoss!;this.agentId=stream.metadata.recovery.newMembership.agentId;this.intentHash=canonicalHash(loss.intent);this.consentHash=canonicalHash(loss.consent);this.recoveryId=stream.metadata.recovery.authorization.recoveryId;this.stateRoot=stream.stateRoot;Object.freeze(this);
  }
  assertFor(stream:GraphWitnessBootstrapStream,service:GraphWitnessService):void{if(this.#closed||stream!==this.#stream||service!==this.#service)throw new Error('witness-upload-stage-scope-invalid');this.#stream.assertCurrent();}
  finish():Result{
   if(this.#closed)throw new Error('witness-upload-stage-closed');if(this.#result)return this.#result;
   // No await is permitted between the server's fresh admission check and this
-  // final physical/native barrier plus the real SQLite finish transaction.
-  this.#stream.assertFinalized();this.#stream.assertCurrent();const result=this.#complete!();freezePublic(result);this.#result=result;return result;
+  // final physical/native barrier plus the real SQLite finish transaction. The
+  // proof of holding is minted here, from the live lease, for that same reason.
+  this.#stream.assertFinalized();this.#stream.assertCurrent();const result=this.#complete!(this.#mintHolding());freezePublic(result);this.#result=result;return result;
  }
  close():void{this.#closed=true;this.#complete=null;}
 }
@@ -46,7 +48,7 @@ export class GraphWitnessBootstrapStream {
  assertCurrent():void{if(this.session){this.session.assertForSource(this.source,this.preflight,this.prepared);return;}this.preflight.assertCurrent();this.source.assertCurrent();this.prepared.assertForSource(this.source,this.metadata.recovery.authorization.recoveryId,this.metadata.recovery.newMembership);}
  get stateRoot():string{return this.source.stateRoot;}
  assertFinalized():void{if(this.session)this.session.assertFinalized();else this.source.assertFinalized();}
- async stage(service:GraphWitnessService,mode:'bootstrap'|'recover'):Promise<GraphWitnessStagedUpload>{
+ async stage(service:GraphWitnessService,mode:'bootstrap'|'recover',mintHolding:()=>GraphMemberLossActivationHolding):Promise<GraphWitnessStagedUpload>{
   if(!(service instanceof GraphWitnessService))throw new Error('witness-bootstrap-actual-service-required');this.assertCurrent();const m=this.metadata,r=m.recovery,reader=this.session??this.source;
   const {revalidations,stateTransferReceipts,sourceManifest,...control}=r;
   const upload=(section:GraphBootstrapSection,index:number,value:unknown)=>{this.assertCurrent();const receipt=service.putBootstrapRow(r.newMembership.agentId,this.plan.transferId,section,index,value);if(receipt.hash!==canonicalHash(value))throw new Error('witness-bootstrap-stream-row-mismatch');};
@@ -56,13 +58,13 @@ export class GraphWitnessBootstrapStream {
    if(m.archive){for(let i=0;i<m.archive.activations.length;i++)upload('activation',i,m.archive.activations[i]);let offset=0;for(const context of m.archive.contexts){const count=context.manifest.entries.length,pages=Math.max(1,Math.ceil(count/16)),epoch=context.activation.newMembership.epoch;upload('context',epoch-2,{epoch,context:{...context,manifest:{...context.manifest,entries:[]},rewrapInventory:[]},entryCount:count,pageOffset:offset,pageCount:pages});for(let i=0;i<pages;i++)upload('context-page',offset+i,{epoch,index:i,entries:context.manifest.entries.slice(i*16,i*16+16),rewrapInventory:context.rewrapInventory.slice(i*16,i*16+16)});offset+=pages;}}
    upload('control',0,{...control,sourceManifest:{...sourceManifest,entries:[]}});let i=0;
    for(const descriptor of reader.descriptors()){const record=await reader.readRecord(descriptor.eventId);try{if(record.preparationProof||record.erasedControlProof||record.certificate||record.cancellationCertificate)upload('operation',i++,graphMemberLossSourceImport(record));}finally{reader.releasePrivateViews();}}
-   for(let i=0;i<m.erasures.length;i++)upload('erasure',i,m.erasures[i]);for(let i=0;i<(m.backupAttestations?.length??0);i++)upload('backup',i,m.backupAttestations![i]);for(let i=0;i<sourceManifest.entries.length;i++)upload('entry',i,sourceManifest.entries[i]);for(let i=0;i<revalidations.length;i++)upload('revalidation',i,revalidations[i]);for(let i=0;i<stateTransferReceipts.length;i++)upload('receipt',i,stateTransferReceipts[i]);i=0;for await(const row of (this.session??this.prepared).envelopes())if(row.rewrap)upload('historical-rewrap',i++,row);this.assertFinalized();this.assertCurrent();return new GraphWitnessStagedUpload(UPLOAD_TOKEN,this,service,()=>service.finishBootstrapTransfer(r.newMembership.agentId,this.plan.transferId));
+   for(let i=0;i<m.erasures.length;i++)upload('erasure',i,m.erasures[i]);for(let i=0;i<(m.backupAttestations?.length??0);i++)upload('backup',i,m.backupAttestations![i]);for(let i=0;i<sourceManifest.entries.length;i++)upload('entry',i,sourceManifest.entries[i]);for(let i=0;i<revalidations.length;i++)upload('revalidation',i,revalidations[i]);for(let i=0;i<stateTransferReceipts.length;i++)upload('receipt',i,stateTransferReceipts[i]);i=0;for await(const row of (this.session??this.prepared).envelopes())if(row.rewrap)upload('historical-rewrap',i++,row);this.assertFinalized();this.assertCurrent();return new GraphWitnessStagedUpload(UPLOAD_TOKEN,this,service,holding=>service.finishBootstrapTransfer(r.newMembership.agentId,this.plan.transferId,holding),mintHolding);
   }
   const request={...r,historicalRewraps:[]},transferId=graphRecoveryUploadId(request),plan={kind:'recovery' as const,transferId,requestHash:this.recoveryHash,header:{...control,sourceManifest:{...sourceManifest,entries:[]}},hasHistoricalRewraps:true,counts:{entry:sourceManifest.entries.length,revalidation:revalidations.length,receipt:stateTransferReceipts.length,'historical-rewrap':this.plan.counts['historical-rewrap']!}};service.beginRecoveryUpload(r.newMembership.agentId,plan);
-  const put=(section:'entry'|'revalidation'|'receipt'|'historical-rewrap',index:number,value:unknown)=>{this.assertCurrent();const receipt=service.putRecoveryUpload(r.newMembership.agentId,transferId,section,index,value);if(receipt.hash!==canonicalHash(value))throw new Error('witness-recovery-stream-row-mismatch');};for(let i=0;i<sourceManifest.entries.length;i++)put('entry',i,sourceManifest.entries[i]);for(let i=0;i<revalidations.length;i++)put('revalidation',i,revalidations[i]);for(let i=0;i<stateTransferReceipts.length;i++)put('receipt',i,stateTransferReceipts[i]);let i=0;for await(const row of (this.session??this.prepared).envelopes())if(row.rewrap)put('historical-rewrap',i++,row);this.assertFinalized();this.assertCurrent();return new GraphWitnessStagedUpload(UPLOAD_TOKEN,this,service,()=>{const result=service.finishRecoveryUpload(r.newMembership.agentId,transferId);return {activation:result.activation,adoptions:Array.from({length:result.adoptionCount},(_,i)=>service.recoveryUploadAdoption(r.newMembership.agentId,transferId,i))};});
+  const put=(section:'entry'|'revalidation'|'receipt'|'historical-rewrap',index:number,value:unknown)=>{this.assertCurrent();const receipt=service.putRecoveryUpload(r.newMembership.agentId,transferId,section,index,value);if(receipt.hash!==canonicalHash(value))throw new Error('witness-recovery-stream-row-mismatch');};for(let i=0;i<sourceManifest.entries.length;i++)put('entry',i,sourceManifest.entries[i]);for(let i=0;i<revalidations.length;i++)put('revalidation',i,revalidations[i]);for(let i=0;i<stateTransferReceipts.length;i++)put('receipt',i,stateTransferReceipts[i]);let i=0;for await(const row of (this.session??this.prepared).envelopes())if(row.rewrap)put('historical-rewrap',i++,row);this.assertFinalized();this.assertCurrent();return new GraphWitnessStagedUpload(UPLOAD_TOKEN,this,service,holding=>{const result=service.finishRecoveryUpload(r.newMembership.agentId,transferId,holding);return {activation:result.activation,adoptions:Array.from({length:result.adoptionCount},(_,i)=>service.recoveryUploadAdoption(r.newMembership.agentId,transferId,i))};},mintHolding);
  }
  /** Mechanical compatibility helper; production server orchestration uses
   * stage(), then actual fresh owner admission, then synchronous finish(). */
- async apply(service:GraphWitnessService,mode:'bootstrap'|'recover'):Promise<Result>{const staged=await this.stage(service,mode);try{return staged.finish();}finally{staged.close();}}
+ async apply(service:GraphWitnessService,mode:'bootstrap'|'recover',mintHolding:()=>GraphMemberLossActivationHolding):Promise<Result>{const staged=await this.stage(service,mode,mintHolding);try{return staged.finish();}finally{staged.close();}}
  close():void{this.session?.close();this.source.close();this.prepared.close();}
 }
