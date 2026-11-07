@@ -3440,7 +3440,8 @@ export class PostUpdateMigrator {
     const files: Array<{ rel: string[]; marker: string; fingerprint: string; label: string }> = [
       {
         rel: ['skills', 'spec-converge', 'SKILL.md'],
-        marker: 'Decision-point classification (Judgment Within Floors',
+        // Refresh even copies that already carry the original classification question.
+        marker: 'FIXED_LIMIT_CONTEST',
         fingerprint: '# /spec-converge',
         label: 'spec-converge SKILL (decision-point classification question)',
       },

@@ -168,7 +168,9 @@ export function findOpenQuestions(specBody) {
  * emergency-allowlist precedent: code can't add to it at runtime).
  *
  * Returns { ok: true } | { ok: false, reason: 'missing-section' } |
- *         { ok: false, reason: 'unclassified', rows: string[] }.
+ *         { ok: false, reason: 'unclassified' | 'missing-invariant-evidence', rows: string[] }.
+ * Invariant rows also declare basis + evidence. This validates declaration shape,
+ * never whether the evidence justifies the limit; reviewers must contest that.
  */
 export const GRANDFATHERED_SLUGS = [
   // Specs mid-review (past round 1) at gate-land time. Extend only by PR.
@@ -187,7 +189,17 @@ export function findDecisionPointGaps(specBody, slug) {
   const nextHeading = restAfter.search(/^##\s+/m);
   const section = nextHeading === -1 ? restAfter : restAfter.slice(0, nextHeading);
   const NONE_RE = /^\s*[*_]*\(?\s*(none|n\/a)\s*\.?\)?[*_]*\s*$/i;
-  const CLASSIFIED_RE = /\binvariant\b|\bjudgment-candidate\b/i;
+  // Read the classification field, never a token in the decision's name or rationale.
+  // Tables: second cell. Bullets: after the decision delimiter, or classification first.
+  const classification = (row) => {
+    const plain = row.replace(/[`*_]/g, '');
+    const field = plain.startsWith('|') ? plain.split('|')[2]?.trim() : null;
+    const match = field != null
+      ? field.match(/^(invariant|judgment-candidate)\b/i)
+      : (plain.match(/^[-+]\s+(invariant|judgment-candidate)(?=\s*[:;(]|$)/i)
+        ?? plain.match(/(?:—\s*|–\s*|\s-\s|:\s+)(invariant|judgment-candidate)\b/i));
+    return match?.[1].toLowerCase();
+  };
   const lines = section
     .split('\n')
     .map((l) => l.trim())
@@ -199,8 +211,17 @@ export function findDecisionPointGaps(specBody, slug) {
     .filter((l) => !/^\|\s*Decision\b/i.test(l));
   if (lines.length === 0) return { ok: false, reason: 'missing-section' };
   if (lines.length === 1 && NONE_RE.test(lines[0])) return { ok: true };
-  const unclassified = lines.filter((l) => !NONE_RE.test(l)).filter((l) => !CLASSIFIED_RE.test(l));
+  const unclassified = lines.filter((l) => !NONE_RE.test(l)).filter((l) => !classification(l));
   if (unclassified.length > 0) return { ok: false, reason: 'unclassified', rows: unclassified };
+  // FIXED_LIMIT_CONTEST: a classification token alone is not an evidence declaration.
+  // Structural only: no regex decides whether an arbitrary numeric cap is justified.
+  const unjustified = lines.filter((l) => classification(l) === 'invariant').filter((l) => {
+    const plain = l.replace(/[`*_]/g, '');
+    const basis = /\bbasis:\s*(irreversible-consequence|enumerable-domain|external-constraint)\s*(?:;|\||$)/i.test(plain);
+    const evidence = /\bevidence:\s*([^;|]+)/i.exec(plain)?.[1].trim();
+    return !basis || !evidence;
+  });
+  if (unjustified.length > 0) return { ok: false, reason: 'missing-invariant-evidence', rows: unjustified };
   return { ok: true };
 }
 
@@ -307,6 +328,13 @@ if (!dpGate.ok) {
         `point it touches as \`invariant\` (with justification) or \`judgment-candidate\`\n` +
         `(floor + arbiter declared, or an argued exemption). A spec with no decision-point\n` +
         `surface satisfies this with a section reading "*(none)*". Then re-run.`,
+    );
+  } else if (dpGate.reason === 'missing-invariant-evidence') {
+    console.error(
+      `Spec ${specArg} has invariant row(s) without a declared basis and evidence:\n` +
+        dpGate.rows.map((r) => `  • ${r.slice(0, 160)}`).join('\n') +
+        `\nDeclare basis: irreversible-consequence | enumerable-domain | external-constraint; evidence: <specific consequence, domain or source>.\n` +
+        `A label or "deterministic counts" is not a justification. Reviewers must independently contest the evidence and why this exact boundary is necessary, or reclassify as judgment-candidate.`,
     );
   } else {
     console.error(
