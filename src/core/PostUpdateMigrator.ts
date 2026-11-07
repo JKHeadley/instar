@@ -110,6 +110,8 @@ import {
   INTERACTIVE_LOGIN_EXPIRED_MARKER,
   CLAUDE_KEY_HEALTH_BULLET,
   CLAUDE_KEY_HEALTH_MARKER,
+  USAGE_LIMIT_WATCH_BULLET,
+  USAGE_LIMIT_WATCH_MARKER,
   STANDING_SESSIONS_BULLET,
   STANDING_SESSIONS_MARKER,
   CONSOLE_BULLET,
@@ -13694,6 +13696,16 @@ A silent **decision audit** records every keep/kill decision *change* (logged on
       result.upgraded.push('CLAUDE.md: added sign-in key health bullet');
     } else {
       result.skipped.push('CLAUDE.md: sign-in key health bullet already present');
+    }
+    if (!content.includes(USAGE_LIMIT_WATCH_MARKER)) {
+      const keyIdx = content.indexOf(CLAUDE_KEY_HEALTH_BULLET);
+      content = keyIdx >= 0
+        ? content.slice(0, keyIdx + CLAUDE_KEY_HEALTH_BULLET.length) + '\n' + USAGE_LIMIT_WATCH_BULLET + content.slice(keyIdx + CLAUDE_KEY_HEALTH_BULLET.length)
+        : content + '\n' + USAGE_LIMIT_WATCH_BULLET + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added usage limit bullet');
+    } else {
+      result.skipped.push('CLAUDE.md: usage limit bullet already present');
     }
 
     // Self-Heal: Update Restart Behavior — explains restart-cascade dampener
