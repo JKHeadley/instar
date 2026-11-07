@@ -78,7 +78,7 @@ export class GraphWitnessRecoveryCoordinator {
   // actual certified tree, never through a proposed conversation binding.
   const dependencies=dependencyIds.map(id=>({eventId:id,hash:byId.has(id)?canonicalHash(byId.get(id)):null}));
   const bindingSnapshot=o.scopeVerifier.currentTopicBindings();
-  const project=(ref:NodeRef):string|null|undefined=>ref.kind==='effort'?null:ref.platform==='telegram'&&ref.chatId===o.telegramChatId?(bindingSnapshot[String(ref.topicId)]?.projectName??null):undefined;
+  let chatNeeded=false;const project=(ref:NodeRef):string|null|undefined=>{if(ref.kind==='effort')return null;if(!o.telegramChatId){chatNeeded=true;return undefined;}return ref.platform==='telegram'&&ref.chatId===o.telegramChatId?(bindingSnapshot[String(ref.topicId)]?.projectName??null):undefined;};
   const subjectProject=project(core.subject);
   if(subjectProject===undefined)reason='dependency-refused';
   const requireEffort=(ref:NodeRef)=>{if(ref.kind==='effort'&&!reduced.efforts.has(nodeKey(ref)))reason='dependency-refused';};
@@ -95,6 +95,8 @@ export class GraphWitnessRecoveryCoordinator {
   if(core.op==='set-front-door'&&core.frontDoor&&project(core.frontDoor)===undefined)reason='dependency-refused';
   const candidate=reduceGraph([...events,core],{verify:e=>e.eventId===core.eventId?o.source.verifyHistoricalRecord(record):byId.has(e.eventId)});
   if(candidate.setAside.some(e=>e.eventId===core.eventId)||candidate.conflicts.some(c=>c.heads.includes(core.eventId)))reason=reason==='ok'?'dependency-refused':reason;
+  // With no chat configured a conversation cannot be checked. That may only be a config problem, and refusing would cancel the change for good, so it waits.
+  if(chatNeeded)return {state:'held',reason:'telegram-scope-unavailable'};
   return this.complete(record,{membership,lease,originalLease},now,reason,heads,canonicalHash({dependencies,bindingSnapshotHash:canonicalHash(bindingSnapshot),graphRevision:reduced.revision}));
  }
  private complete(record:ConversationGraphReplicationRecord,actuation:ReturnType<GraphRecoveryCoordinatorOptions['actuation']>,now:number,reason:GraphPendingRevalidation['reason'],heads:string[],dependenciesHash:string):GraphPendingValidationResult {

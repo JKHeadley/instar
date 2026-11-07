@@ -112,6 +112,32 @@ export interface EncryptedSecretPayload {
 // ── Master Key Management ────────────────────────────────────────────
 
 /**
+ * On macOS a keychain read launches a child process and blocks the thread for
+ * tens of milliseconds, and every secret read asks for two accounts. A long
+ * operation reading secrets in a loop can block the agent for a minute. A found key
+ * and a genuine "not found" are remembered briefly in this process. A failure is
+ * never remembered, because acting on a false "no key" could overwrite a real one,
+ * and anything that might write re-reads the keychain first.
+ */
+const KEYCHAIN_READ_TTL_MS = 60_000;
+const KEYCHAIN_NOT_FOUND_EXIT = 44;
+const keychainReads = new Map<string, { value: Buffer | null; at: number }>();
+let keychainReadSaidNotFound = false;
+export function readKeychainMemoized(service: string, account: string, read: () => Buffer | null): Buffer | null {
+  const key = service + '\u0000' + account, now = Date.now(), known = keychainReads.get(key);
+  if (known && now - known.at >= 0 && now - known.at < KEYCHAIN_READ_TTL_MS) return known.value ? Buffer.from(known.value) : null;
+  if (known) { known.value?.fill(0); keychainReads.delete(key); }
+  keychainReadSaidNotFound = false;
+  const value = read();
+  if (value || keychainReadSaidNotFound) keychainReads.set(key, { value: value ? Buffer.from(value) : null, at: now });
+  return value;
+}
+/** Test seam: what the macOS read does when `security` says the item is absent. */
+export function noteKeychainNotFound(): void { keychainReadSaidNotFound = true; }
+/** Before anything that may write a key, and after any keychain write. */
+export function forgetKeychainReads(): void { for (const entry of keychainReads.values()) entry.value?.fill(0); keychainReads.clear(); }
+
+/**
  * Store/retrieve the master key from the OS keychain.
  * Falls back to file-based storage if keychain is unavailable.
  */
@@ -133,8 +159,8 @@ export class MasterKeyManager {
     this.forceFile = forceFile || inTestRun;
     this.keyFilePath = path.join(stateDir, 'machine', 'secrets-master.key');
     this.kc = keychainOps ?? (inTestRun ? { read: () => null, write: () => false } : {
-      read: (service, account) => this.readOsKeychain(service, account),
-      write: (service, account, key) => this.writeOsKeychain(service, account, key),
+      read: (service, account) => readKeychainMemoized(service, account, () => this.readOsKeychain(service, account)),
+      write: (service, account, key) => { forgetKeychainReads(); const written = this.writeOsKeychain(service, account, key); forgetKeychainReads(); return written; },
     });
   }
 
@@ -153,6 +179,10 @@ export class MasterKeyManager {
       const account = perAgentKeychainAccount(this.stateDir);
       const own = this.tryRead(account);
       if (own) return own;
+      // Everything below can write a key, so it must not act on a remembered answer.
+      forgetKeychainReads();
+      const fresh = this.tryRead(account);
+      if (fresh) return fresh;
       const legacy = this.tryRead(KEYCHAIN_ACCOUNT_LEGACY);
       if (legacy) {
         // Adoption: persist under the per-agent account so this agent's key
@@ -237,8 +267,9 @@ export class MasterKeyManager {
           '-w', // Print password only
         ], { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
         return Buffer.from(result, 'base64');
-      } catch {
+      } catch (error) {
         // @silent-fallback-ok — platform keychain read
+        if ((error as { status?: unknown }).status === KEYCHAIN_NOT_FOUND_EXIT) noteKeychainNotFound();
         return null;
       }
     } else if (process.platform === 'linux') {

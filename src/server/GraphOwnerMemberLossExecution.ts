@@ -65,7 +65,8 @@ export class GraphOwnerMemberLossExecution {
   const {authority,secrets}=components,scope=action.scope,consent=action.consent,proof=intent.intentProof;
   const context={ownerPublicKey:authority.ownerPublicKey,previousPublicationHash:authority.publicationHash,previousMembership:scope.previousMembership,newMembership:scope.newMembership,nativeIdentities:scope.nativeIdentities};
   const check={intentHash:canonicalHash(proof),consentHash:canonicalHash(consent),previousPublicationHash:context.previousPublicationHash,previousMembershipHash:canonicalHash(context.previousMembership),newMembershipHash:canonicalHash(context.newMembership),nativeRosterHash:canonicalHash(context.nativeIdentities)};
-  const fresh=async()=>{await intent.assertCurrentForNative(check);await action.assertCurrentForNative(check);};
+  // These awaits can resolve without touching the loop. Yield for real, so a long removal cannot starve the lease renewal timer or the rest of the agent.
+  const fresh=async()=>{await new Promise(resolve=>setImmediate(resolve));await intent.assertCurrentForNative(check);await action.assertCurrentForNative(check);};
   await fresh();this.assertSupportedPreflight(preflight);snapshot.assertCurrent();
   if(nativeStore.custodyAuthority!==authority||nativeStore.stateRoot!==authority.stateRoot||nativeStore.machineId!==native.identity.loadIdentity().machineId||preflight.stateRoot!==authority.stateRoot||preflight.intentHash!==check.intentHash||preflight.inventoryHash!==snapshot.inventoryHash||preflight.erasureInventoryHash!==snapshot.erasureInventoryHash||canonicalHash(preflight.newMembership)!==check.newMembershipHash||canonicalHash(preflight.operations)!==canonicalHash(consent.payload.operations)||context.newMembership.members.length!==1)throw new Error('member-loss-execution-scope-mismatch');
   const historical=context.previousMembership.epoch===1?null:this.historicalArchive(preflight);

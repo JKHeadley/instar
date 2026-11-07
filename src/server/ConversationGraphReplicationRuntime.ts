@@ -146,10 +146,11 @@ export class ConversationGraphReplicationRuntime {
   this.coordinator=new ConversationGraphCommitCoordinator({source,witness:this.config.witness,machineId,member:id=>this.member(id),actuation:()=>this.actuation()});
   this.reader=new ReplicatedStoreReader({registry:options.registry,stores:{conversationGraph:{enabled:true}},tierOf:()=> 'high',
    droppedOrigins:options.droppedOrigins,conflictStore:options.conflictStore,
-   listRecordKeys:store=>store===CONVERSATION_GRAPH_STORE?[...new Set([...options.peerStreams.listRecordKeys(store),...source.originRecords().map(row=>row.envelope.recordKey)])]:[],
-   loadOriginRecords:(store,id)=>store===CONVERSATION_GRAPH_STORE?[...options.peerStreams.loadOriginRecords(store,id),...source.originRecords().filter(row=>row.envelope.recordKey===id)]:[]});
+   listRecordKeys:store=>store===CONVERSATION_GRAPH_STORE?[...new Set([...options.peerStreams.listRecordKeys(store),...source.originRecordKeys()])]:[],
+   loadOriginRecords:(store,id)=>store===CONVERSATION_GRAPH_STORE?[...options.peerStreams.loadOriginRecords(store,id),...source.originRecordsFor(id)]:[]});
   source.bindHeldNegativeContext(this.reader,options.droppedOrigins);
-  if(options.scopeVerifier&&options.telegramChatId)this.recovery=new GraphWitnessRecoveryCoordinator({source,reader:this.reader,dropped:options.droppedOrigins,
+  // No Telegram chat is valid: no Telegram subject can match it, and efforts need none. Requiring one left owner changes unrecoverable on agents without Telegram.
+  if(options.scopeVerifier&&options.telegramChatId!==undefined)this.recovery=new GraphWitnessRecoveryCoordinator({source,reader:this.reader,dropped:options.droppedOrigins,
    machineId,signingPrivateKey:signingKey,sealingPrivateKey:options.identity.loadEncryptionKey(),ownerPublicKey:this.config.ownerPublicKey,writeAdmission:options.writeAdmission,
    legacyReadOnly:()=>!options.leaseCoordinator.holdsLease()||!options.instanceLock.revalidate(),liveAdmission:()=>this.liveAdmission(),
    actuation:()=>({membership:this.config.membership,...this.actuation()}),scopeVerifier:options.scopeVerifier,telegramChatId:options.telegramChatId});
@@ -231,8 +232,10 @@ export class ConversationGraphReplicationRuntime {
  }
  setQueuedOwnerIntentPromoter(execute:(intent:GraphLocalOwnerIntent,token:symbol)=>Promise<GraphCommitOutcome|{refused:GraphQueuedRefusal}>):void{if(this.queuedOwnerPromoter)throw new Error('graph-queued-promoter-already-configured');this.queuedOwnerPromoter=execute;}
  async retryLocalOwnerIntents():Promise<void>{
+  
   if(!this.queuedOwnerPromoter||!this.alive()||!this.isReady())return;
   const page=await this.intake.ownerQueue.pendingPage(this.queuedOwnerCursor);this.queuedOwnerCursor=page.nextCursor;
+  
   for(const intent of page.intents){if(!this.alive()||!this.isReady())return;await this.promoteQueuedOwnerIntent(intent.idempotencyKey,intent.principalKey,this.queuedOwnerPromoter);}
  }
  localOwnerIntent(key:string,principalKey:string):Promise<GraphQueuedIntentView|null>{if(!this.recordingAlive())return Promise.reject(new Error('graph-runtime-stopped'));return this.intake.ownerQueue.status(key,principalKey);}
@@ -260,7 +263,7 @@ export class ConversationGraphReplicationRuntime {
  async promoteQueuedOwnerIntent(key:string,principalKey:string,execute:(intent:GraphLocalOwnerIntent,token:symbol)=>Promise<GraphCommitOutcome|{refused:GraphQueuedRefusal}>):Promise<GraphCommitOutcome|GraphQueuedIntentView>{
   if(!this.options.leaseCoordinator.holdsLease())return this.forwardQueuedOwnerIntent(key,principalKey);
   const view=await this.intake.ownerQueue.status(key,principalKey);if(!view)throw new Error('graph-queued-owner-unavailable');if(!view.mayServeDetails())return view;
-  try{await this.prepareNativeTailClosure();}catch{/* DegradationReporter internalOnly via reportUnavailable; no global slot is allocated while any old installed tail is unknown. */this.reportUnavailable('graph-native-tail-closure-unavailable');return view;}
+  try{await this.prepareNativeTailClosure();}catch(error){/* DegradationReporter internalOnly via reportUnavailable; no global slot is allocated while any old installed tail is unknown. */this.noteTailClosure(error);this.reportUnavailable('graph-native-tail-closure-unavailable');return view;}
   return this.withMutation(token=>this.promoteQueuedOwnerIntentCore(key,principalKey,execute,token));
  }
  private async promoteQueuedOwnerIntentCore(key:string,principalKey:string,execute:(intent:GraphLocalOwnerIntent,token:symbol)=>Promise<GraphCommitOutcome|{refused:GraphQueuedRefusal}>,token:symbol):Promise<GraphCommitOutcome|GraphQueuedIntentView>{
@@ -384,7 +387,7 @@ export class ConversationGraphReplicationRuntime {
  }
  private liveAdmission(){const native=this.options.leaseCoordinator.currentLease();return {admitted:this.alive()&&this.positiveCustodyAllowed()&&this.nativeTailAdmissionAllowed(native)&&this.options.leaseCoordinator.holdsLease()&&this.nativeTailFloor.allows(native),writerId:native?.holder??null,
   leaseEpoch:native?.epoch??0,membershipEpoch:this.config.membership.epoch,fencedLeaseHash:native?canonicalHash(native):null};}
- async reconcilePending():Promise<Array<{eventId:string;state:string}>>{if(this.options.leaseCoordinator.holdsLease()&&this.isReady()){try{await this.prepareNativeTailClosure();}catch{/* DegradationReporter internalOnly via reportUnavailable; missing closed tails keep recovery held without blocking local queue custody. */this.reportUnavailable('graph-native-tail-closure-unavailable');return [];}}return this.withMutation(async()=>{
+ async reconcilePending():Promise<Array<{eventId:string;state:string}>>{if(this.options.leaseCoordinator.holdsLease()&&this.isReady()){try{await this.prepareNativeTailClosure();}catch(error){/* DegradationReporter internalOnly via reportUnavailable; missing closed tails keep recovery held without blocking local queue custody. */this.noteTailClosure(error);this.reportUnavailable('graph-native-tail-closure-unavailable');return [];}}return this.withMutation(async()=>{
   const results:Array<{eventId:string;state:string}>=[];if(!this.options.leaseCoordinator.holdsLease()||!await this.refreshReadinessCore())return results;
   const records=this.source.recordsForRepair().filter(record=>!record.certificate&&!record.cancellationCertificate).sort((a,b)=>a.packet.sourceSequence-b.packet.sourceSequence);
   for(const record of records){if(!this.alive())break;
@@ -425,7 +428,7 @@ export class ConversationGraphReplicationRuntime {
      const operation=await this.config.witness.recoverPositiveSource({packet:record.packet,packetSignature:record.packetSignature,controlCapsule:createGraphControlCapsule(record.coreType,record.core,record.authorizationProof),encryptedSourceBundle:record.encryptedSourceBundle,...sourceCustody,closedTails:structuredClone(this.closedNativeTailProof),revalidation:checked.proof,rewrap:checked.rewrap,...current},plan=>signGraphRecord('graph-native-source-upload-v1',plan,this.signingKey));
      if(!operation.prepareProof||!operation.adoption||canonicalHash(operation.packet)!==canonicalHash(record.packet))return null;
      await this.source.attachPreparation(record.packet.eventId,operation.prepareProof);await this.source.receive({...record,preparationProof:operation.prepareProof,adoption:operation.adoption,...(operation.rewrap?{rewrap:operation.rewrap}:{})},record.packet.writerId);return this.source.repairRecord(record.packet.eventId);
-    }catch{/* DegradationReporter internalOnly via reportUnavailable; recovery debt retains the exact original packet without allocating another sequence. */this.reportUnavailable('graph-native-tail-positive-recovery-unavailable');return null;}
+    }catch(error){/* DegradationReporter internalOnly via reportUnavailable; recovery debt retains the exact original packet without allocating another sequence. */this.reportUnavailable('graph-native-tail-positive-recovery-unavailable');return null;}
    }
    try{const proof=await this.config.witness.prepare({controlCapsule:createGraphControlCapsule(record.coreType,record.core,record.authorizationProof),packet:record.packet,packetSignature:record.packetSignature,encryptedSourceBundle:record.encryptedSourceBundle,...current});await this.source.attachPreparation(record.packet.eventId,proof);record=this.source.repairRecord(record.packet.eventId)!;}catch{/* DegradationReporter internalOnly via reportUnavailable; caught payload is never persisted. */this.reportUnavailable('graph-continuation-authority-unavailable');return null;}
   }
@@ -437,7 +440,7 @@ export class ConversationGraphReplicationRuntime {
    const operation=await this.config.witness.operation(record.packet.idempotencyKey);
    const pending={...record,adoption,...(operation.rewrap?{rewrap:operation.rewrap}:{}),...(operation.cancellation?{cancellation:operation.cancellation}:{}),...(operation.erasure?{erasure:operation.erasure,encryptedSourceBundle:null}:{})};
    if(pending.erasure)await this.applyInventoryErasures([pending.erasure]);await this.source.receive(pending,record.packet.writerId);return pending;
-  }catch{/* DegradationReporter internalOnly via reportUnavailable; caught payload is never persisted. */this.reportUnavailable('graph-continuation-authority-unavailable');return null;}
+  }catch(error){/* DegradationReporter internalOnly via reportUnavailable; caught payload is never persisted. */this.reportUnavailable('graph-continuation-authority-unavailable');return null;}
  }
  private trustedInstalledSet():boolean{
   if(this.memberLossOpenOnly)return false;
@@ -567,7 +570,8 @@ export class ConversationGraphReplicationRuntime {
  }
  private async ensureNativeTailClosed(forRecovery=false):Promise<void>{
   const current=this.actuation();if(this.closedNativeTail!==this.nativeTailKey(current.lease))throw new Error('graph-native-tail-closure-required');
-  if(!forRecovery)for(const record of [...this.source.recordsForRepair(),...await this.source.controlIntents(),...await this.intake.frozenReservations()])if((record.packet.leaseEpoch!==current.lease.leaseEpoch||record.packet.writerId!==this.machineId)&&!record.preparationProof&&!record.erasedControlProof&&!record.certificate&&!record.cancellationCertificate)throw new Error('graph-native-tail-recovery-required');
+  // A reservation is the copy taken before the witness answered. Once Source holds the row, Source's copy is the one that carries the proof.
+  if(!forRecovery){const controlRows=await this.source.controlIntents(),frozen=await this.intake.frozenReservations();for(const record of [...this.source.recordsForRepair(),...controlRows,...frozen.filter(row=>!this.source.repairRecord(row.packet.eventId))])if((record.packet.leaseEpoch!==current.lease.leaseEpoch||record.packet.writerId!==this.machineId)&&!record.preparationProof&&!record.erasedControlProof&&!record.certificate&&!record.cancellationCertificate)throw new Error('graph-native-tail-recovery-required');}
  }
  private authenticate(request:PeerRequest):void{
   if(!this.alive()||!exactFields(request,['v','agentId','membershipHash','sender','target','action','requestId','issuedAt','body','signature'])
@@ -709,6 +713,8 @@ export class ConversationGraphReplicationRuntime {
  }
  private lastLoggedReadiness:string|null=null;
  private lastBackgroundFailure:string|null=null;
+ private lastTailClosureFailure:string|null=null;
+ private noteTailClosure(error:unknown):void{const code=error instanceof Error&&/^[a-z0-9-]{1,96}$/.test(error.message)?error.message:'unknown';if(code!==this.lastTailClosureFailure){this.lastTailClosureFailure=code;console.warn(`[conversation-graph] cannot close the previous writer's tail yet: ${code}`);}}
  private async refreshReadinessCore():Promise<boolean>{const ready=await this.refreshReadinessSteps();const step=ready?null:this.lastReadinessFailure;if(step!==this.lastLoggedReadiness){this.lastLoggedReadiness=step;console.warn(step?`[conversation-graph] not ready yet, stopped at: ${step}`:'[conversation-graph] ready');}return ready;}
  private async refreshReadinessSteps():Promise<boolean>{this.lastReadinessFailure='lifetime';this.readyAt=0;if(!this.alive())return false;try{this.assertPositiveCustody();}catch(error){this.lastReadinessFailure='custody:'+(error instanceof Error&&/^[a-z0-9-]{1,96}$/.test(error.message)?error.message:'unknown');return false;}
   try{this.lastReadinessFailure='initial-inventory';const checkpoint=await this.config.witness.inventory(crypto.randomBytes(32).toString('base64url'));

@@ -94,6 +94,27 @@ describe('actual graph source runtime + authenticated installed peer transport',
   registry.machines[peerId]=peerRow;managers[0].saveRegistry(registry);expect(runtime.isReady()).toBe(true);
   options[0].instanceLock.release();expect(runtime.isReady()).toBe(false);expect(()=>runtime.projection()).toThrow('not-ready');
  });
+ it('judges a reserved row by what Source holds now, not by the copy taken before the witness answered',async()=>{
+  const {f,runtime,peer}=await setup();expect(await runtime.refreshReadiness()).toBe(true);expect(await peer.refreshReadiness()).toBe(true);await runtime.prepareNativeTailClosure();
+  const record=f.record('reserved-older-lease'),input={coreType:'graph-event' as const,idempotencyKey:record.packet.idempotencyKey,requestHash:canonicalHash({core:record.core,source:'reserved'}),core:record.core,authorizationProof:record.authorizationProof,plaintextSource:Buffer.from('reserved source')};
+  const outcome=await runtime.withSourceMutation(token=>runtime.submitPrepared(input,token));const held=runtime.source.repairRecord(outcome.eventId)!;expect(held.preparationProof).toBeTruthy();
+  const ensure=(runtime as unknown as {ensureNativeTailClosed():Promise<void>}),olderCopy={...held,packet:{...held.packet,leaseEpoch:held.packet.leaseEpoch-1}};delete (olderCopy as Partial<typeof olderCopy>).preparationProof;delete (olderCopy as Partial<typeof olderCopy>).certificate;
+  const frozen=vi.spyOn(runtime.intake,'frozenReservations').mockResolvedValue([olderCopy as never]);
+  try{
+   await expect(ensure.ensureNativeTailClosed()).resolves.toBeUndefined();
+   // The same row with nothing in Source really is unfinished work from an older lease.
+   const unknown={...olderCopy,packet:{...olderCopy.packet,eventId:'not-in-source-event'}};frozen.mockResolvedValue([unknown as never]);
+   await expect(ensure.ensureNativeTailClosed()).rejects.toThrow('graph-native-tail-recovery-required');
+  }finally{frozen.mockRestore();}
+ });
+ it('builds one origin row without building every other row',async()=>{
+  const {f,runtime,peer}=await setup();expect(await runtime.refreshReadiness()).toBe(true);expect(await peer.refreshReadiness()).toBe(true);await runtime.prepareNativeTailClosure();
+  const record=f.record('origin-row'),input={coreType:'graph-event' as const,idempotencyKey:record.packet.idempotencyKey,requestHash:canonicalHash({core:record.core,source:'origin'}),core:record.core,authorizationProof:record.authorizationProof,plaintextSource:Buffer.from('origin source')};
+  const outcome=await runtime.withSourceMutation(token=>runtime.submitPrepared(input,token)),all=runtime.source.originRecords();
+  expect(runtime.source.originRecordKeys().sort()).toEqual(all.map(row=>row.envelope.recordKey).sort());
+  expect(runtime.source.originRecordsFor(outcome.eventId)).toEqual(all.filter(row=>row.envelope.recordKey===outcome.eventId));expect(runtime.source.originRecordsFor('unknown-event')).toEqual([]);
+  const describe=vi.spyOn(runtime.source,'descriptorFor');try{runtime.source.originRecordsFor(outcome.eventId);expect(describe.mock.calls.length).toBeLessThanOrEqual(2);}finally{describe.mockRestore();}
+ });
  it('uses one actual mutation queue, durable reservation allocator and authenticated allmember coordinator for producer intake',async()=>{
   const {f,runtime,peer}=await setup();expect(await runtime.refreshReadiness()).toBe(true);expect(await peer.refreshReadiness()).toBe(true);
   const record=f.record();const input={coreType:'graph-event' as const,idempotencyKey:record.packet.idempotencyKey,requestHash:canonicalHash({core:record.core,source:'actual producer'}),core:record.core,authorizationProof:record.authorizationProof,plaintextSource:Buffer.from('actual producer source')};
@@ -105,8 +126,8 @@ describe('actual graph source runtime + authenticated installed peer transport',
   expect(await runtime.refreshReadiness()).toBe(true);expect(runtime.projection().records).toHaveLength(1);
  });
 
- it('takes over witnessed pending source under a real new native lease without changing membership or original authority',async()=>{
-  const {f,runtime,peer,managers,leaseStores}=await setup();expect(await runtime.refreshReadiness()).toBe(true);expect(await peer.refreshReadiness()).toBe(true);
+ it.each([{withoutTelegram:false},{withoutTelegram:true}])('takes over witnessed pending source under a real new native lease without changing membership or original authority: %j',async({withoutTelegram})=>{
+  const {f,runtime,peer,managers,leaseStores}=await setup({withoutTelegram});expect(await runtime.refreshReadiness()).toBe(true);expect(await peer.refreshReadiness()).toBe(true);
   await runtime.prepareNativeTailClosure();
   const registry=managers[0].loadRegistry();const old=registry.machines[peer.machineId].endpoints;registry.machines[peer.machineId].endpoints=[];delete registry.machines[peer.machineId].lastKnownUrl;managers[0].saveRegistry(registry);
   const record=f.record();const input={coreType:'graph-event' as const,idempotencyKey:record.packet.idempotencyKey,requestHash:canonicalHash({core:record.core,source:'takeover'}),core:record.core,authorizationProof:record.authorizationProof,plaintextSource:Buffer.from('takeover source')};
@@ -114,7 +135,10 @@ describe('actual graph source runtime + authenticated installed peer transport',
   const saved=runtime.source.repairRecord(record.packet.eventId)!;await peer.source.receive(saved,runtime.machineId);
   registry.machines[peer.machineId].endpoints=old;managers[0].saveRegistry(registry);
   const native=f.actuation(peer.machineId,2).originalLease;leaseStores[0].casWrite(native);leaseStores[1].casWrite(native);
-  expect(await peer.refreshReadiness()).toBe(true);const results=await peer.reconcilePending();expect(results).toContainEqual({eventId:record.packet.eventId,state:'committed'});
+  expect(await peer.refreshReadiness()).toBe(true);const results=await peer.reconcilePending();
+  // Without Telegram the recovery path must still exist. This row's subject is a Telegram topic, which nothing can verify there, so it stays held rather than being adopted.
+  if(withoutTelegram){expect((peer as unknown as {recovery?:unknown}).recovery).toBeTruthy();expect(results).toContainEqual({eventId:record.packet.eventId,state:'held'});return;}
+  expect(results).toContainEqual({eventId:record.packet.eventId,state:'committed'});
   const recovered=peer.source.repairRecord(record.packet.eventId)!;expect(recovered.packet).toEqual(saved.packet);expect(recovered.authorizationProof).toEqual(saved.authorizationProof);
   expect(recovered.adoption?.newMembership.epoch).toBe(1);expect(recovered.adoption?.currentLease.leaseEpoch).toBe(2);expect(peer.source.allCommitProofDelivered(record.packet.eventId)).toBe(true);
  });
