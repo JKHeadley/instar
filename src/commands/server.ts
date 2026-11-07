@@ -1252,7 +1252,11 @@ let _appConversationService: import('../core/AppConversationService.js').AppConv
 /** session-swap-any-conversation §3.3: starts an app conversation's session with no new message (null until wired). */
 /** The Slack respawner SessionRefresh uses, shared with the profile orchestrator (spec §3.2; null until wired). */
 let _slackConversationRespawner: ((sessionName: string, routingKey: string, followUpPrompt: string | undefined, accountSwap?: { configHome?: string; accountId?: string }) => Promise<string>) | null = null;
-let _appSessionStarter: ((conversationKey: string, resolved: import('../core/appInboundDispatch.js').AppProfile) => Promise<import('../core/appInboundDispatch.js').AppProfile | null>) | null = null;
+/** Whether the app reply relay is installed and current (null until app conversations are wired). */
+let _appRelayReady: (() => { ready: true } | { ready: false; reason: string }) | null = null;
+/** The last reason a message-free start refused, per conversation (words for the create answer). */
+const _appStartRefusals = new Map<string, import('../core/appInboundDispatch.js').AppStartRefusal>();
+let _appSessionStarter: ((conversationKey: string, resolved: import('../core/appInboundDispatch.js').AppProfile, opts?: import('../core/appInboundDispatch.js').AppStartOptions) => Promise<import('../core/appInboundDispatch.js').AppProfile | null>) | null = null;
 let _ecosystemLedger: import('../ecosystem/EcosystemLedger.js').EcosystemLedger | null = null;
 let _recommendedServicesLedger: import('../recommended/RecommendedServicesLedger.js').RecommendedServicesLedger | null = null;
 // trustworthy-machine-load C5: one fixed holding notice per topic per overload
@@ -9884,12 +9888,28 @@ export async function startServer(options: StartOptions): Promise<void> {
           log: (line) => console.log(pc.dim(`  ${line}`)),
         };
         appDispatch = createAppInboundDispatch(appDispatchDeps);
+        _appRelayReady = () => appDispatchDeps.relayReady?.() ?? { ready: true };
         // session-swap-any-conversation §3.3: restart a conversation's session on a new engine, no new message.
         _appSessionStarter = createAppSessionStarter(appDispatchDeps, {
           isOwner: () => appSvc.isOwner(),
           aliasFor: (key) => conversationRegistry.appAliasFor(key),
           titleFor: (key) => (appSvc.liveConversation(key) as { title?: string } | null)?.title ?? null,
           ownerName: () => appOwnerName(config),
+          // session-conversation-for-every-session §2.1 step 4: record the place as its messages do.
+          memoryPlace: async (key) => {
+            if (!_memoryInbound) return true;
+            const owner = (appSvc.liveConversation(key) as { ownerPerson?: { userId?: string } } | null)?.ownerPerson?.userId ?? null;
+            const verdict = await _memoryInbound.onInbound({
+              placeKey: `app:${key}`,
+              placeKind: 'private',
+              senderKey: owner ? `user:${owner}` : null,
+              personId: owner ?? _memoryPrivacyWired.ownerUserId(),
+              liveSession: () => null,
+            });
+            return verdict === 'deliver';
+          },
+          // Read once by the create that asked; an engine-switch restart's entry is replaced by the next start.
+          onRefused: (key, why) => { if (_appStartRefusals.size > 500) _appStartRefusals.clear(); _appStartRefusals.set(key, why); },
         });
         // Replication (§4.8): emit every local event; land peers' events already on disk.
         if (replicatedRecordEmitter) {
@@ -30888,7 +30908,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       orchestrator: TopicProfileOrchestrator | null;
       carrier: import('../core/TopicProfileTransferCarrier.js').TopicProfileTransferCarrier | null;
     } & Pick<NonNullable<import('../server/routes.js').RouteContext['topicProfile']>,
-      'newTopicDefault' | 'audit' | 'discloseCreationSeed' | 'spawnForTopic' | 'sessionPoolLocalClaim' | 'startTopicOnMachine' | 'pinReplicationLive' | 'startSeamWired' | 'probeMachineReachable' | 'spawnBriefs'> | null =
+      'newTopicDefault' | 'audit' | 'discloseCreationSeed' | 'spawnForTopic' | 'startAppSession' | 'appSessionReady' | 'sessionPoolLocalClaim' | 'startTopicOnMachine' | 'pinReplicationLive' | 'startSeamWired' | 'probeMachineReachable' | 'spawnBriefs'> | null =
       (_topicProfileStore && _topicProfileResolver && _topicProfileWriteSurface && _topicProfileConfirmSlots)
         ? {
             store: _topicProfileStore,
@@ -30904,6 +30924,18 @@ export async function startServer(options: StartOptions): Promise<void> {
             discloseCreationSeed: async (topicKey, text) => {
               if (!telegram) return undefined;
               return sendDeterministicTelegramNotice(telegram, 'topic-profile-creation-seed', Number(topicKey), text);
+            },
+            // session-conversation-for-every-session §2.1: a new session with its own app conversation.
+            appSessionReady: () => (_appRelayReady ? _appRelayReady() : { ready: false, reason: 'app conversations are not wired' }),
+            startAppSession: async (key) => {
+              if (!_appSessionStarter) return { session: null, refusal: 'not-served' };
+              const o = conversationSpawnProfile(`app:${key}`).options;
+              _appStartRefusals.delete(key);
+              const landed = await _appSessionStarter(key, { framework: o.framework ?? null, model: o.defaultModel ?? null, thinkingMode: o.thinkingMode ?? null, effort: o.effort ?? null }, { reason: 'new' });
+              const refusal = _appStartRefusals.get(key) ?? null;
+              _appStartRefusals.delete(key);
+              const session = landed ? (_appConversationService?.sessionFor(key) ?? null) : null;
+              return session ? { session, refusal: null } : { session: null, refusal: refusal ?? 'spawn-failed' };
             },
             // §3.3 step 4/5: the ONE spawn chokepoint + adapter registration under
             // ONE spawningTopics token. The guard ref is null until Telegram

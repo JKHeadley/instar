@@ -31,6 +31,7 @@ import type { Request, Response, Router } from 'express';
 import { ownerOrBearer, rowKey } from './mobileCapacityRoutes.js';
 import { cleanText } from './mobilePlansPeopleRoutes.js';
 import { conversationKeys } from '../core/conversationKeys.js';
+import { cleanConversationTitle } from '../core/appConversationText.js';
 import { TOKEN_RUN } from './mobileSecretsRoutes.js';
 import { activeOwnerPhone, isConsoleTicketEnabled, normalHost, verifyPresenceSignature } from './mobileConsoleTicket.js';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
@@ -93,7 +94,7 @@ export type PermissionAction =
   | { kind: 'session-new'; target: 'new'; name: string; platform: SessionPlatformChoice; framework: string | null; model: string | null; machine: string | null }
   | { kind: 'session-default'; target: 'new-topic-default'; framework: string | null; model: string | null };
 
-export type SessionPlatformChoice = 'auto' | 'telegram' | 'slack' | 'headless';
+export type SessionPlatformChoice = 'auto' | 'telegram' | 'slack' | 'app' | 'headless';
 export type SessionAction = Extract<PermissionAction, { kind: `session-${string}` }>;
 export const MAX_SESSION_NAME_CHARS = 120;
 /** A door, model or machine as an action line can carry it: one word, nothing a line could be split on. */
@@ -210,9 +211,13 @@ function buildSessionAction(kind: SessionAction['kind'], target: string, x: { fr
   if (name !== name.trim() || name.length > MAX_SESSION_NAME_CHARS) return { ok: false, error: 'bad-name' };
   if (CONTROL_CHARS.test(name) || holdsToken(name)) return { ok: false, error: 'bad-name' };
   const platform = x.platform ?? 'auto';
-  if (platform !== 'auto' && platform !== 'telegram' && platform !== 'slack' && platform !== 'headless') return { ok: false, error: 'bad-platform' };
-  // Door, model and machine apply to Telegram topics only. A signed line never names a choice the route would drop.
+  if (platform !== 'auto' && platform !== 'telegram' && platform !== 'slack' && platform !== 'app' && platform !== 'headless') return { ok: false, error: 'bad-platform' };
+  // Engine, model and machine never apply to Slack or terminal-only. A signed line never names a choice the route would drop.
   if ((platform === 'slack' || platform === 'headless') && (framework !== null || model !== null || machine !== null)) return { ok: false, error: 'bad-platform' };
+  // An app conversation takes an engine and model, but no machine until part 3.
+  if (platform === 'app' && machine !== null) return { ok: false, error: 'bad-platform' };
+  // An app conversation's title is at most 80 characters: refused here, before Face ID, not after.
+  if (platform === 'app' && cleanConversationTitle(name) !== name) return { ok: false, error: 'bad-name' };
   if (framework === null && model !== null) return { ok: false, error: 'bad-framework' };
   return { ok: true, action: { kind, target, name, platform, framework, model, machine } };
 }
