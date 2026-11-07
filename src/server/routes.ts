@@ -92,6 +92,8 @@ import { execFileSync } from 'node:child_process';
 import { activeClaudeKeyHealth } from '../core/ClaudeKeyHealth.js';
 import { createHash, createHmac, timingSafeEqual, randomBytes, randomUUID } from 'node:crypto';
 import { createMandatePinCheck } from './mandatePin.js';
+import { isSlackConversationKey } from '../core/SlackForwardBridge.js';
+import { conversationKeys } from '../core/conversationKeys.js';
 import { governor as selfActionGovernorSurface } from '../monitoring/selfaction/governor.js';
 import { classifyActionClaim, classifyApprovalRequest, excerptAround } from '../core/action-claim.js';
 import { sharedG3SoakLedger, decideLeaseGatedSpawn } from '../core/leaseGatedSpawn.js';
@@ -11473,6 +11475,24 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.sleepWakeDetector.getStats(sinceMs));
   });
 
+  /** The conversation reference a running session serves (spec §2), or null for none. */
+  const conversationRefForSession = (tmuxSession: string, platform: { platform: string; platformId?: number | string }): string | null => {
+    if (platform.platform === 'telegram' && platform.platformId != null && /^\d+$/.test(String(platform.platformId))) return `telegram:${platform.platformId}`;
+    try {
+      const reg = ctx.appConversations?.deps.registry;
+      if (platform.platform === 'slack' && typeof platform.platformId === 'string' && reg) {
+        const d = reg.resolveByKey(platform.platformId);
+        if (d && d.platform === 'slack') return d.key;
+      }
+      const alias = ctx.appConversations?.channels.getChannelForSession(tmuxSession);
+      if (alias && reg && /^-?\d+$/.test(alias)) {
+        const d = reg.resolve(Number(alias));
+        if (d && d.platform === 'app') return `app:${d.conversationKey}`;
+      }
+    } catch { /* @silent-fallback-ok — a lookup fault leaves the row without a reference: no switch offered */ }
+    return null;
+  };
+
   router.get('/sessions', async (req, res) => {
     const status = req.query.status as string | undefined;
     const validStatuses = ['starting', 'running', 'completed', 'failed', 'killed'];
@@ -11556,6 +11576,9 @@ export function createRoutes(ctx: RouteContext): Router {
       // Add platform indicator and display name (shared with the dashboard
       // WebSocket list so local and pooled rows can never disagree).
       Object.assign(result, presentSession(s));
+      // session-swap-any-conversation §3.5: the conversation this session serves, for every kind.
+      const ref = conversationRefForSession(s.tmuxSession, result as { platform: string; platformId?: number | string });
+      if (ref) result.conversationRef = ref;
 
       return result;
     });
@@ -11998,7 +12021,8 @@ export function createRoutes(ctx: RouteContext): Router {
   // recorded as `updatedBy:'api-token'`, NEVER operator-attributed; a
   // body-supplied updatedBy is ignored by construction. The §12.5 key clamp:
   // numeric Telegram topic id, or `slack:<channel>[:<thread>]`.
-  const TOPIC_PROFILE_KEY_RE = /^(?:\d{1,16}|slack:[A-Za-z0-9._-]{1,64}(?::[0-9.]{1,32})?)$/;
+  // session-swap-any-conversation §2: an app conversation's profile key is `app:<uuid>`.
+  const TOPIC_PROFILE_KEY_RE = /^(?:\d{1,16}|slack:[A-Za-z0-9._-]{1,64}(?::[0-9.]{1,32})?|app:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
 
   const topicProfileRefusalStatus = (reason: string | undefined): number => {
     switch (reason) {
@@ -12151,7 +12175,7 @@ export function createRoutes(ctx: RouteContext): Router {
 
   router.get('/topic-profile/:topicId', (req, res) => {
     if (!TOPIC_PROFILE_KEY_RE.test(req.params.topicId)) {
-      res.status(400).json({ error: 'Invalid topic key — numeric topic id or slack:<channel>[:<thread>]' });
+      res.status(400).json({ error: 'Invalid topic key — numeric topic id, slack:<channel>[:<thread>] or app:<conversation key>' });
       return;
     }
     if (!ctx.topicProfile) {
@@ -12207,7 +12231,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return null;
     }
     if (!TOPIC_PROFILE_KEY_RE.test(req.params.topicId)) {
-      res.status(400).json({ error: 'Invalid topic key — numeric topic id or slack:<channel>[:<thread>]' });
+      res.status(400).json({ error: 'Invalid topic key — numeric topic id, slack:<channel>[:<thread>] or app:<conversation key>' });
       return null;
     }
     if (!ctx.topicProfile) {
@@ -24984,6 +25008,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: 'topic and to are required, e.g. {"topic":13481,"to":"Laptop"}' });
       return;
     }
+    // slack-conversations-stay-with-connection §2.2: a Slack conversation stays with its Slack
+    // connection. Refused before proxying or planning; the drain runner refuses it too, for every mover.
+    {
+      const slackRaw = topicId.startsWith('slack:') ? topicId.slice('slack:'.length) : topicId;
+      const slackKey = isSlackConversationKey(topicId) ? slackRaw : (() => {
+        const k = conversationKeys(topicId);
+        return k && k.kind === 'slack' ? k.id : null;
+      })();
+      if (slackKey) {
+        const ownerId = ctx.sessionOwnershipRegistry?.ownerOf(slackKey) ?? null;
+        const nick = ownerId ? (ctx.machinePoolRegistry?.getCapacities().find((c) => c.machineId === ownerId)?.nickname ?? null) : null;
+        res.status(409).json({
+          ok: false,
+          code: 'slack-stays-with-connection',
+          error: nick
+            ? `This Slack conversation stays on ${nick}, which holds your Slack connection.`
+            : 'This Slack conversation stays on the machine that holds your Slack connection.',
+        });
+        return;
+      }
+    }
     if (!ctx.sessionOwnershipRegistry || !ctx.topicPinStore) {
       res.status(503).json({ error: 'session pool not available (dark / single-machine install)' });
       return;
@@ -25218,6 +25263,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             // not un-suspended on abort (same as the emergency-stop abort).
             autonomousRunSuspended: drainRunSuspended,
           });
+          return;
+        }
+        // slack-conversations-stay-with-connection §2.1: the owner refused a Slack conversation. Never
+        // fall through to the pin — that is the split this refusal exists to prevent.
+        if (r.status === 'refused-slack-stays') {
+          res.status(409).json({ ok: false, code: 'slack-stays-with-connection', error: 'This Slack conversation stays on the machine that holds your Slack connection.', drain: drainLeg });
           return;
         }
       }

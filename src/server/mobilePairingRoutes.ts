@@ -1891,7 +1891,9 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     { method: 'GET', re: /^\/mobile\/sessions\/new-options$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'session-controls-reads' },
     { method: 'GET', re: /^\/mobile\/sessions\/history$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'session-history-reads' },
     // What ends, moves or starts a session: the Face ID-confirmed path and bucket above.
-    { method: 'POST', re: /^\/mobile\/sessions\/door\/[1-9][0-9]{0,15}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // Any conversation (session-swap-any-conversation §3.5): the path is lower-cased here, so a Slack
+    // reference's uppercase ids match [a-z0-9]; the route re-checks the reference with its real case.
+    { method: 'POST', re: /^\/mobile\/sessions\/door\/(?:(?:telegram:)?[1-9][0-9]{0,15}|app:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|slack:[a-z0-9._:-]{1,190})$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/sessions\/move\/[1-9][0-9]{0,15}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/sessions\/close\/[a-z0-9._:-]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/sessions\/new$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },

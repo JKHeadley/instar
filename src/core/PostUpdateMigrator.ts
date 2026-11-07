@@ -1165,6 +1165,14 @@ export function MOBILE_SESSION_CONTROLS_LINE(port: number): string {
 }
 export const MOBILE_SESSION_CONTROLS_MARKER = 'GET /mobile/sessions/controls';
 /**
+ * Engine and model changes for every conversation (docs/specs/session-swap-any-conversation.md), one
+ * bullet after the session controls bullet. Sniff: `conversation reference`.
+ */
+export function MOBILE_SESSION_SWAP_ANY_LINE(port: number): string {
+  return `- Engine and model switching works for every conversation, not only Telegram: app (\`app:<key>\`) and Slack (\`slack:<channel>[:<thread>]\`) keys work on \`POST /topic-profile/<key>\` on http://localhost:${port}, and \`GET /sessions\` rows carry \`conversationRef\` (\`telegram:N\`, \`app:<key>\`, \`slack:<team>:<channel>[:<thread>]\`), the conversation reference the phone's \`POST /mobile/sessions/door/<reference>\` takes. A switch restarts the session on the new engine with the conversation kept; app and Slack spawns start on their conversation's engine. Moving to another machine is still Telegram-only. **When to use**: the operator asks to put an app or Slack conversation on another engine or model — switch it; don't say it only works for Telegram.`;
+}
+export const MOBILE_SESSION_SWAP_ANY_MARKER = 'conversation reference the phone';
+/**
  * The native Proposals / How I'm doing inside screens (docs/specs/mobile-native-proposals-inside.md),
  * one bullet in the Mobile app routes block after the permissions bullet. Sniff: `GET /mobile/proposals`.
  */
@@ -1334,6 +1342,7 @@ ${MOBILE_CONSOLE_PAGES_LINE(port)}
 ${MOBILE_HEALTH_ISSUES_LINE(port)}
 ${MOBILE_HEALTH_CHOICES_LINE(port)}
 ${MOBILE_SESSION_CONTROLS_LINE(port)}
+${MOBILE_SESSION_SWAP_ANY_LINE(port)}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }
@@ -3562,7 +3571,8 @@ export class PostUpdateMigrator {
     const files: Array<{ rel: string[]; marker: string; fingerprint: string; label: string }> = [
       {
         rel: ['skills', 'spec-converge', 'SKILL.md'],
-        marker: 'Decision-point classification (Judgment Within Floors',
+        // Refresh even copies that already carry the original classification question.
+        marker: 'FIXED_LIMIT_CONTEST',
         fingerprint: '# /spec-converge',
         label: 'spec-converge SKILL (decision-point classification question)',
       },
@@ -10488,6 +10498,21 @@ setTimeout(() => process.exit(0), 2000);
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added the session screen controls line');
+    }
+
+    // Engine and model changes for every conversation (docs/specs/session-swap-any-conversation.md):
+    // one bullet after the session controls bullet of an existing Mobile app routes block.
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_SESSION_SWAP_ANY_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_SESSION_CONTROLS_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_SESSION_SWAP_ANY_LINE(port));
+        content = lines.join('\n');
+      } else {
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_SESSION_SWAP_ANY_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the switch-any-conversation line');
     }
 
     // Mobile app routes (docs/specs/mobile-multi-route.md) — Agent Awareness + Migration Parity.
