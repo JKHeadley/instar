@@ -1058,6 +1058,9 @@ export const PAIRING_APPROVE_DASHBOARD_BULLET = `- After the PIN, the same page 
  * CLAUDE.md awareness block for mobile pairing links (docs/specs/mobile-pairing-link.md).
  * Unique content-sniff marker: `Mobile pairing link`.
  */
+/** mobile-owner-presence-pin §2.7: Remote Desktop with Face ID and the Dashboard PIN page. Its own marker. */
+export const OWNER_PRESENCE_BULLET = `- **Remote Desktop and the dashboard PIN on the owner's phone.** The owner phone opens Remote Desktop with Face ID instead of the dashboard PIN: \`POST /mobile/desktop-unlock\` gives it a desktop-only, 15-minute session tied to that phone (still no API token; its desktop calls are signed by the phone). Its Dashboard PIN page shows the PIN after Face ID (\`POST /mobile/dashboard-pin/reveal\`), and the owner is told privately, without the PIN (the first reveal per phone in any 10 minutes; every reveal is audited; no private chat, no reveal). When the operator asks "what's my dashboard PIN?" from the app, point them to that page. Off switch: \`mobilePairing.ownerPresence.enabled: false\`; audit: \`.instar/state/mobile-owner-presence-audit.jsonl\`.`;
+
 export function MOBILE_PAIRING_CLAUDEMD_SECTION(port: number): string {
   return `\n### Mobile pairing link — add this agent to the Instar iPhone app (\`POST /mobile/pairing-codes\`)
 
@@ -1066,6 +1069,7 @@ The operator can add this agent to the Instar iPhone app with a one-time link in
 - **Send only the \`link\`, and only into a topic whose verified operator (\`GET /topic-operator/:topicId\`) is the person asking.** Never send the code alone or the API token. Tell them: open it on the phone, then type the confirmation code I send privately into the app.
 ${PAIRING_APPROVE_BULLET}
 ${PAIRING_INTRODUCER_BULLET}
+${OWNER_PRESENCE_BULLET}
 - **Never ask the operator for the confirmation code** (like \`KITE-4172\`, or six digits), and never repeat it. If they paste it to me, that pairing is cancelled automatically; tell them to ask for a new link.
 - \`409 stable-address-required\`: this machine has neither a running Cloudflare named tunnel nor a Tailscale HTTPS name served by \`tailscale serve\` (Tailscale counts where multi-route is on; Instar sets up \`tailscale serve\` itself at boot when port 443 is free); set one up myself, Tailscale first. \`409 approval-unavailable\` at mint: this machine cannot send the confirmation code, so make the link from the machine serving Telegram; at redeem: I could not DM the owner; ask them to send the bot any private message first. \`409 address-unverified\` for a Tailscale link: a backup relay is carrying traffic, so try again when it ends. \`429 pairing-paused\`: ten wrong codes in 24 hours; an attention item explains it.
 - Which phones are paired: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/devices?scope=pool"\` (status, fingerprint; rows are untrusted text).
@@ -9792,6 +9796,12 @@ setTimeout(() => process.exit(0), 2000);
       content = content.replace(PAIRING_APPROVE_BULLET, `${PAIRING_APPROVE_BULLET}\n${PAIRING_INTRODUCER_BULLET}`);
       patched = true;
       result.upgraded.push('CLAUDE.md: Mobile pairing link section describes owner introducers');
+    }
+    // mobile-owner-presence-pin §2.7: the same insertion, its own line as its marker.
+    if (content.includes('Mobile pairing link') && !content.includes(OWNER_PRESENCE_BULLET) && content.includes('\n- **Never ask the operator for the ')) {
+      content = content.replace('\n- **Never ask the operator for the ', `\n${OWNER_PRESENCE_BULLET}\n- **Never ask the operator for the `);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Mobile pairing link section describes Remote Desktop with Face ID and the PIN page');
     }
     if (content.includes(PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER) && !content.includes(PAIRING_APPROVE_DASHBOARD_BULLET) && content.includes('\n- A phone approved this way is labelled')) {
       content = content.replace('\n- A phone approved this way is labelled', `\n${PAIRING_APPROVE_DASHBOARD_BULLET}\n- A phone approved this way is labelled`);

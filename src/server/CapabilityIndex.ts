@@ -488,6 +488,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobileOwnerPresence',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Remote Desktop with Face ID and the Dashboard PIN page for the owner\'s phone (docs/specs/mobile-owner-presence-pin.md): POST /mobile/desktop-unlock/challenge and POST /mobile/desktop-unlock mint a desktop-only, phone-bound 15-minute session after a fresh presence-key (Face ID / passcode) signature; POST /mobile/dashboard-pin/challenge and POST /mobile/dashboard-pin/reveal show the dashboard PIN this machine compares against and tell the owner privately. Owner phone only; the bearer is refused. Dev-gated (mobilePairing.ownerPresence.enabled).',
+    build: () => ({
+      configured: true,
+      endpoints: ['POST /mobile/desktop-unlock/challenge', 'POST /mobile/desktop-unlock', 'POST /mobile/dashboard-pin/challenge', 'POST /mobile/dashboard-pin/reveal'],
+    }),
+  },
+  {
     key: 'mobilePermissionsScreens',
     // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
     prefixes: [],
