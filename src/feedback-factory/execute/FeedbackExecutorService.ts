@@ -1008,7 +1008,7 @@ export class FeedbackExecutorService {
       return;
     }
     if (alive) {
-      if (row.workspace && row.tmpDir && treeBytes(row.workspace, WORKSPACE_DISK_CAP_BYTES) + treeBytes(row.tmpDir, WORKSPACE_DISK_CAP_BYTES) > WORKSPACE_DISK_CAP_BYTES) {
+      if (row.workspace && row.tmpDir && await treeBytes(row.workspace, WORKSPACE_DISK_CAP_BYTES) + await treeBytes(row.tmpDir, WORKSPACE_DISK_CAP_BYTES) > WORKSPACE_DISK_CAP_BYTES) {
         await this.stopSession(row);
         this.endAttempt(row, epoch, 'failed', 'limit:workspace-disk');
         await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
@@ -1127,7 +1127,7 @@ export class FeedbackExecutorService {
     }
     if (result.outcome === 'gave-up') { this.endAttempt(row, epoch, 'failed', 'gave-up'); await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed'); return; }
     let changeSet: ChangeSet;
-    try { changeSet = buildChangeSet(workspace, row.publishClone!); } catch (error) {
+    try { changeSet = await buildChangeSet(workspace, row.publishClone!); } catch (error) {
       const reason = error instanceof ChangeSetError ? error.reason : 'changeset-unreadable';
       this.endAttempt(row, epoch, 'failed', reason);
       await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
@@ -1204,7 +1204,7 @@ export class FeedbackExecutorService {
     const testCmd = groupTestFilesByConfig(result.testFiles)
       .map((g) => `./node_modules/.bin/vitest run --no-cache --config ${shq(g.config)} ${g.files.map(shq).join(' ')} -t ${shq(testNamePattern(result.testName))}`)
       .join(' && ');
-    const diskOk = (clone: string) => treeBytes(clone, WORKSPACE_DISK_CAP_BYTES) + treeBytes(p.tmpDir, WORKSPACE_DISK_CAP_BYTES) <= WORKSPACE_DISK_CAP_BYTES;
+    const diskOk = async (clone: string) => await treeBytes(clone, WORKSPACE_DISK_CAP_BYTES) + await treeBytes(p.tmpDir, WORKSPACE_DISK_CAP_BYTES) <= WORKSPACE_DISK_CAP_BYTES;
     // Each run gets its own clone AND its own temp directory, and its sandbox may write only those:
     // a process left behind by one run (attempt test code) can never reach a tree a later check reads.
     const run = async (cwd: string, label: string, command: string, timeoutMs = CONFINED_COMMAND_TIMEOUT_MS) => {
@@ -1254,7 +1254,7 @@ export class FeedbackExecutorService {
       if (limit(head)) return limited('head', head);
       if (head.exitCode !== 0) return failed('head-check:test-fails-at-head', head);
       if (vitestPassedTestCount(`${head.stdout}\n${head.stderr}`) === 0) return failed('head-check:test-not-run-at-head', head);
-      if (!diskOk(p.headClone)) return { ok: false, reason: 'limit:workspace-disk' };
+      if (!(await diskOk(p.headClone))) return { ok: false, reason: 'limit:workspace-disk' };
       // (c) a THIRD fresh clone for the gates: the head run executed attempt test code, which could
       // have rewritten its clone to make lint or the related tests pass. The lint gate first (it
       // runs only the base tooling), then the unit tests related to the changed sources.

@@ -92,6 +92,35 @@ describe('GET /sessions/reaper (integration)', () => {
     return app;
   }
 
+  it('GET /sessions probes the reaper by ids only: no per-session child processes, and a mismatch is still logged', async () => {
+    const live: Session = {
+      id: 's1', name: 'sess', status: 'running', tmuxSession: 't1',
+      startedAt: new Date(0).toISOString(), framework: 'claude-code', claudeSessionId: 'c1',
+    };
+    const extra: Session = { ...live, id: 's2', name: 'other', tmuxSession: 't2' };
+    let captures = 0;
+    let processChecks = 0;
+    const deps: SessionReaperDeps = {
+      ...reaperDeps([live, extra]),
+      captureOutput: () => { captures += 1; return 'output'; },
+      hasActiveProcesses: () => { processChecks += 1; return false; },
+    };
+    const reaper = new SessionReaper(deps, { enabled: true });
+    const state = { getJobState: () => null, getSession: () => null, listSessions: () => [live] } as any;
+    const res = await request(appWith(reaper, { state })).get('/sessions');
+    expect(res.status).toBe(200);
+    expect(captures).toBe(0);
+    expect(processChecks).toBe(0);
+    const row = JSON.parse(fs.readFileSync(path.join(stateDir, 'logs', 'sessions-read-discrepancies.jsonl'), 'utf8').trim());
+    expect(row.reaperSessionIds).toEqual(['s1', 's2']);
+    expect(row.reaperCount).toBe(2);
+    expect(row.sessionsCount).toBe(1);
+
+    // The other side: the full snapshot still evaluates each session.
+    await request(appWith(reaper, { state })).get('/sessions/reaper');
+    expect(captures + processChecks).toBeGreaterThan(0);
+  });
+
   it('returns 503 when the reaper is not wired', async () => {
     const res = await request(appWith(null)).get('/sessions/reaper');
     expect(res.status).toBe(503);

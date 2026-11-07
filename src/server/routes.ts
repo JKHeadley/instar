@@ -11538,12 +11538,12 @@ export function createRoutes(ctx: RouteContext): Router {
     // JSONL file; probe I/O is fail-open and cannot break this read route.
     if (!explicitStatus && !includeAll && ctx.sessionReaper) {
       try {
-        const reaperSessions = ctx.sessionReaper.snapshot().sessions;
+        const reaperSessionIds = ctx.sessionReaper.trackedSessionIds();
         recordSessionsReadDiscrepancy(ctx.config.stateDir, {
           sessionsCount: sessions.length,
-          reaperCount: reaperSessions.length,
+          reaperCount: reaperSessionIds.length,
           sessionIds: sessions.map((s) => s.id),
-          reaperSessionIds: reaperSessions.map((s) => s.sessionId),
+          reaperSessionIds,
         });
       } catch { /* @silent-fallback-ok — an observability probe must not break the read it observes */ }
     }

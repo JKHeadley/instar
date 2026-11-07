@@ -148,18 +148,19 @@ export function runCapped(bin: string, args: string[], command: Pick<ConfinedCom
   });
 }
 
-/** Total bytes under `dir` (lstat; links are not followed). Bounded by `limit` for an early stop. */
-export function treeBytes(dir: string, limit: number = Number.MAX_SAFE_INTEGER): number {
+/** Total bytes under `dir` (lstat; links are not followed). Bounded by `limit` for an early stop.
+ *  Asynchronous on purpose: it walks a whole repository on every executor tick (see buildChangeSet). */
+export async function treeBytes(dir: string, limit: number = Number.MAX_SAFE_INTEGER): Promise<number> {
   let total = 0;
   const stack = [dir];
   while (stack.length > 0 && total <= limit) {
     const current = stack.pop()!;
     let names: string[] = [];
-    try { names = fs.readdirSync(current); } catch { continue; } // @silent-fallback-ok: an unreadable or vanished directory adds nothing to the measured size
+    try { names = await fs.promises.readdir(current); } catch { continue; } // @silent-fallback-ok: an unreadable or vanished directory adds nothing to the measured size
     for (const name of names) {
       const full = path.join(current, name);
       let st: fs.Stats;
-      try { st = fs.lstatSync(full); } catch { continue; } // @silent-fallback-ok: vanished between readdir and lstat
+      try { st = await fs.promises.lstat(full); } catch { continue; } // @silent-fallback-ok: vanished between readdir and lstat
       if (st.isSymbolicLink()) continue;
       if (st.isDirectory()) { if (name !== 'node_modules') stack.push(full); continue; }
       total += st.size;

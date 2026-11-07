@@ -56,11 +56,11 @@ export function isGitDirName(name: string): boolean {
 
 interface Walked { kind: 'file' | 'link'; mode: number; size: number; linkTarget?: string }
 
-function walk(root: string, opts: { skipClaude: boolean }): Map<string, Walked> {
+async function walk(root: string, opts: { skipClaude: boolean }): Promise<Map<string, Walked>> {
   const out = new Map<string, Walked>();
-  const visit = (relDir: string) => {
+  const visit = async (relDir: string): Promise<void> => {
     let names: string[];
-    try { names = fs.readdirSync(path.join(root, relDir)); } catch (error) {
+    try { names = await fs.promises.readdir(path.join(root, relDir)); } catch (error) {
       throw new ChangeSetError('unreadable', `${relDir || '.'}: ${(error as NodeJS.ErrnoException).code ?? 'error'}`);
     }
     for (const name of names.sort()) {
@@ -69,9 +69,9 @@ function walk(root: string, opts: { skipClaude: boolean }): Map<string, Walked> 
       if (!relDir && name === '.claude' && opts.skipClaude) continue;
       if (isGitDirName(name)) throw new ChangeSetError('special-file', `${rel} (nested git directory)`);
       const full = path.join(root, rel);
-      const st = fs.lstatSync(full);
-      if (st.isSymbolicLink()) { out.set(rel, { kind: 'link', mode: st.mode, size: 0, linkTarget: fs.readlinkSync(full) }); continue; }
-      if (st.isDirectory()) { visit(rel); continue; }
+      const st = await fs.promises.lstat(full);
+      if (st.isSymbolicLink()) { out.set(rel, { kind: 'link', mode: st.mode, size: 0, linkTarget: await fs.promises.readlink(full) }); continue; }
+      if (st.isDirectory()) { await visit(rel); continue; }
       if (!st.isFile()) throw new ChangeSetError('special-file', rel);
       // A hard link shares its bytes with a file elsewhere (possibly one the sandbox denies
       // reading): never publish one, whatever its name.
@@ -79,19 +79,19 @@ function walk(root: string, opts: { skipClaude: boolean }): Map<string, Walked> 
       out.set(rel, { kind: 'file', mode: st.mode, size: st.size });
     }
   };
-  visit('');
+  await visit('');
   return out;
 }
 
 /** Read a regular file without following a link swapped in after the walk. */
-function readNoFollow(full: string): Buffer {
-  const fd = fs.openSync(full, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+async function readNoFollow(full: string): Promise<Buffer> {
+  const file = await fs.promises.open(full, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
-    const st = fs.fstatSync(fd);
+    const st = await file.stat();
     if (!st.isFile()) throw new ChangeSetError('special-file', path.basename(full));
     if (st.nlink > 1) throw new ChangeSetError('special-file', `${path.basename(full)} (hard link)`);
-    return fs.readFileSync(fd);
-  } finally { fs.closeSync(fd); }
+    return await file.readFile();
+  } finally { await file.close(); }
 }
 
 /** The one directory Claude Code itself creates under `.claude/` when its sandboxed shell runs. */
@@ -137,12 +137,16 @@ export function claudeDirBreach(workspace: string): string | null {
 /**
  * Build the change set: workspace bytes vs the publish clone. Throws ChangeSetError for a
  * special file, an over-cap set, or a `.claude/` breach in the workspace (see claudeDirBreach).
+ *
+ * Asynchronous on purpose: this reads every file of two whole repository trees. Done with sync
+ * calls it held the server's event loop for over 84 s on 2026-11-07 until the supervisor killed
+ * the server. Keep every per-file call in this path off the sync fs API.
  */
-export function buildChangeSet(workspace: string, publishClone: string): ChangeSet {
+export async function buildChangeSet(workspace: string, publishClone: string): Promise<ChangeSet> {
   const breach = claudeDirBreach(workspace);
   if (breach) throw new ChangeSetError('sandbox-breach', breach);
-  const ws = walk(workspace, { skipClaude: true });
-  const base = walk(publishClone, { skipClaude: true });
+  const ws = await walk(workspace, { skipClaude: true });
+  const base = await walk(publishClone, { skipClaude: true });
   const entries: ChangeEntry[] = [];
   let totalBytes = 0;
   const skipOutput = (rel: string) => GENERATED_OUTPUT_SKIP.has(rel) || OUTPUT_SKIP.some((re) => re.test(rel));
@@ -153,10 +157,10 @@ export function buildChangeSet(workspace: string, publishClone: string): ChangeS
       throw new ChangeSetError('special-file', `${rel} (symlink)`);
     }
     if (skipOutput(rel) && !b) continue;
-    const bytes = readNoFollow(path.join(workspace, rel));
+    const bytes = await readNoFollow(path.join(workspace, rel));
     const executable = (w.mode & 0o111) !== 0;
     if (b && b.kind === 'file') {
-      const before = readNoFollow(path.join(publishClone, rel));
+      const before = await readNoFollow(path.join(publishClone, rel));
       if (before.equals(bytes) && ((b.mode & 0o111) !== 0) === executable) continue;
       entries.push({ path: rel, kind: 'modified', bytes, executable });
     } else {
