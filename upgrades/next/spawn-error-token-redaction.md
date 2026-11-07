@@ -1,0 +1,13 @@
+# Failed session starts no longer echo credentials
+
+## What Changed
+When tmux refused to start a session, the error SessionManager threw quoted Node's `Command failed: <full tmux argv>` message, which includes the credentials passed as `-e GH_TOKEN=…`, `-e INSTAR_AUTH_TOKEN=…` and similar. `POST /sessions/spawn` and `POST /sessions/refresh` returned that text to the HTTP caller, and it could reach logs (#2184). A new `redactSpawnError` helper now drops the argv line and reports only the exit status/signal plus a scrubbed, length-bounded stderr excerpt. All four tmux spawn sites go through it via `originSpawnError`, and both routes apply it again before answering. The anthropic-headless and openai-codex provider transports, which leaked the same way, use it too and no longer attach the raw error as the cause.
+
+## What to Tell Your User
+If a session ever fails to start, the error you see now says why (for example "duplicate session") without including any GitHub or API token. If you saw a spawn error earlier that contained a token, rotate that token.
+
+## Summary of New Capabilities
+- Spawn failure messages are credential-free and still say why tmux refused.
+
+## Evidence
+Unit: tests/unit/redactSpawnError.test.ts (real child-process failure; fails on raw message, passes redacted). Spawn path: tests/unit/spawn-error-token-leak.test.ts drives SessionManager.spawnSession with a failing tmux new-session and a GH_TOKEN in argv; it fails on the original code (token in the thrown error) and passes with the fix.
