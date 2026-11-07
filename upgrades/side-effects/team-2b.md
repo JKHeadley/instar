@@ -81,3 +81,5 @@ A last reader found that some fixes above went too far, and each is corrected wi
 
 ## Release note
 `upgrades/next/team-access-machines.md`.
+
+The merge rules are listed as outside the Stage-B canary's reach in `src/data/stageBCertifiedSet.ts`, as the rest of team access is.
