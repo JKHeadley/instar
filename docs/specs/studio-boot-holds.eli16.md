@@ -13,3 +13,5 @@ Third, when an update installs, it clears some macOS file attributes across the 
 What this does not fix: the steady stream of short tmux and ps calls on the main thread during normal running. Those are a separate, larger job, filed as its own item with the measurements. They may have contributed to the unplanned restart at 14:17 that day, whose exact cause was not caught, so restarts under heavy load may still happen.
 
 Nothing here adds a new decision or gate, and undoing it is a plain revert with no data to repair.
+
+The update tests also changed: they now fake only the package install, so the real checks of a new install still run in them.
