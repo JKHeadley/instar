@@ -32,6 +32,7 @@ export interface ExecHarness extends Harness {
   cfg: ExecuteLiveConfig;
   enabled: { value: boolean };
   epoch: { value: number };
+  canonical: { value: boolean };
   repo: { info: RepoInfo | null; viewer: string | null; accounts: string[] | null };
   identity: { profileAccounts: Array<{ service: string; identity: string; vaultRefs: string[] }>; ownedIdentities: Array<{ service: string; identity: string }>; vaultNames: string[] | null };
   admission: { saturated: boolean; shedding: boolean; updatePending: boolean; rerouteSaturated?: boolean };
@@ -103,7 +104,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   fs.writeFileSync(path.join(h.sourceRepo, '.claude', 'settings.json'), '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"evil"}]}]}}');
   h.cfg = { dryRun: false, sourceRepoPath: h.sourceRepo, maxConcurrent: 2, maxStartsPerDay: 6, maxOpenPrs: 4, lintCommand: 'npm run lint', baseSmokeTests: ['tests/unit/smoke.test.ts'], maxDurationMinutes: 300, publishRepo: 'agent-bot/repo', reviewGate: 'independent', reviewFailedGraceHours: 24, ...(opts.config ?? {}) };
   h.enabled = { value: true };
-  h.epoch = { value: 1 };
+  h.epoch = { value: 1 }; h.canonical = { value: true };
   h.repo = { info: { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: true }, viewer: 'agent-bot', accounts: ['agent-bot'] };
   h.identity = { profileAccounts: [], ownedIdentities: [], vaultNames: [] };
   h.admission = { saturated: false, shedding: false, updatePending: false, rerouteSaturated: false };
@@ -256,7 +257,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
     enabled: () => h.enabled.value,
     config: () => h.cfg,
     paths: { agentHome: h.agentHome, stateDir: path.join(h.agentHome, '.instar'), configPath: path.join(h.agentHome, '.instar', 'config.json'), testRunnerHoldersFile: path.join(base.dir, 'holders.json'), homeDir: base.dir },
-    selfMachineId: 'm1', ownerMachineId: () => 'm1', ownerEpoch: () => h.epoch.value, isCanonicalOwner: () => true,
+    selfMachineId: 'm1', ownerMachineId: () => 'm1', ownerEpoch: () => h.epoch.value, isCanonicalOwner: () => h.canonical.value,
     commitIdentity: () => ({ name: 'Echo', email: 'echo@example.com' }),
     ghCredentialHelper: '!gh auth git-credential',
     raiseAttention: async (item) => { h.attentionExec.push(item); },

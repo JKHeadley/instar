@@ -17,6 +17,8 @@ import type { BuildRecordData } from './ReplicatedRecordEmitter.js';
 import { stableJson } from './stableJson.js';
 import { readDeletionIntents } from './DeletionIntentLog.js';
 import { redactForLiveTail } from './liveTailRedaction.js';
+import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
+import { FAILURE_CALLOUT_STORE_KEY, failureSnapshotChunks, buildFailureChunkData } from './FailureCalloutReplicatedStore.js';
 import { PreferencesManager } from './PreferencesManager.js';
 import { PREF_STORE_KEY, buildPrefRecordData } from './PreferencesReplicatedStore.js';
 import { RelationshipManager } from './RelationshipManager.js';
@@ -79,6 +81,30 @@ export interface ReconcilerSeamDeps {
 export function buildReconcilerSeams(deps: ReconcilerSeamDeps): ReconcileStoreSeam[] {
   const { stateDir } = deps;
   const seams: ReconcileStoreSeam[] = [];
+
+  // Full forensic snapshots and immutable episodes retry via the existing
+  // durable reconciler fingerprint/emit receipt, not a second retry controller.
+  seams.push({ store: FAILURE_CALLOUT_STORE_KEY, paths: [path.join(stateDir, 'correction-ledger.db')], snapshot: () => {
+    const file = path.join(stateDir, 'correction-ledger.db');
+    if (!fs.existsSync(file)) return { rows: [], skipped: 0, present: false };
+    const ledger = new CorrectionLedger({ dbPath: file });
+    try {
+      const rows: ReconcileRow[] = [];
+      for (const record of ledger.ownFailureSnapshots()) {
+        const chunks = failureSnapshotChunks(record);
+        let before: number | undefined;
+        while (true) {
+          const episodes = ledger.listFailureEpisodes(record.id, before, 1000);
+          for (const episode of episodes) chunks.push(...failureSnapshotChunks(record, episode));
+          if (episodes.length < 1000) break;
+          before = episodes[episodes.length - 1].version;
+        }
+        for (const chunk of chunks) rows.push({ recordKey: chunk.key, sourceFp: sourceFp(chunk.data),
+          build: (hlc, origin, observed) => buildFailureChunkData(chunk, hlc, origin, observed) });
+      }
+      return { rows, skipped: 0, present: true };
+    } finally { ledger.close(); }
+  } });
 
   // preferences — sole writer is the correction loop; puts-only (no delete path).
   seams.push({

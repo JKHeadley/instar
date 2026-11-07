@@ -89,7 +89,8 @@ describe('Approve instead of a code — production wiring', () => {
     const { app, mp } = await boot();
     expect(mp.approvalPath()).toBe('dashboard');
     const w = await redeemNew(app);
-    expect(w.body).toMatchObject({ status: 'pending', approval: 'dashboard', confirmWith: ['dashboard', 'code'] });
+    // The pairing page is not open yet, so it is not named (mobile-pairing-introducer §3.4).
+    expect(w.body).toMatchObject({ status: 'pending', approval: 'dashboard', confirmWith: ['code'] });
     expect(w.body.fingerprint).toBe(mp.devices.get(w.deviceId)!.fingerprint);
     expect((await send(app, w.dev, w.deviceId, 'GET', '/mobile/device')).body.status).toBe('pending');
     expect((await auth(request(app).post(`/mobile/pairing-approvals/${w.deviceId}/approve`)).send({})).status).toBe(403);
@@ -135,7 +136,7 @@ describe('Approve instead of a code — production wiring', () => {
     const presence = makeDevice();
     expect(mp.devices.setPresenceKey(first.deviceId, presence.publicKey)).toBe('set');
     const second = await redeemNew(app);
-    expect(second.body.confirmWith).toEqual(['telegram', 'owner-phone', 'code']);
+    expect(second.body.confirmWith).toEqual(['owner-phone', 'telegram', 'code']);
     const fp = mp.devices.get(second.deviceId)!.fingerprint!;
     const c = await send(app, first.dev, first.deviceId, 'POST', `/mobile/pairing-requests/${second.deviceId}/challenge`, { action: 'approve' });
     expect(c.status).toBe(200);

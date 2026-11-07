@@ -19,6 +19,7 @@ import { readLatestCodexUsage } from '../../providers/adapters/openai-codex/obse
 import { buildIntelligenceProvider, type IntelligenceFramework } from '../../core/intelligenceProviderFactory.js';
 import { LlmCircuitBreaker } from '../../core/LlmCircuitBreaker.js';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
+import { createAuthenticatedGitHubCliRuntimeResolver } from '../../core/githubRuntime.js';
 import { FeedbackTriageArbiter } from './FeedbackTriageArbiter.js';
 import { FeedbackTriageStore } from './FeedbackTriageStore.js';
 import { FeedbackTriageAuditLog } from './FeedbackTriageAuditLog.js';
@@ -134,11 +135,13 @@ export function buildFeedbackTriage(input: {
     observe: (deadlineAt) => selector ? selector.select(deadlineAt) : Promise.resolve({ state: 'unreadable' }),
   };
 
+  const githubRuntime = createAuthenticatedGitHubCliRuntimeResolver({ stateDir: config.stateDir });
   const listMergedPrs = input.overrides?.listMergedPrs ?? (async (): Promise<MergedPr[] | null> => {
     try {
+      const runtime = githubRuntime();
       const since = new Date(clock() - 30 * 24 * 60 * 60_000).toISOString().slice(0, 10);
-      const { stdout } = await execFileAsync('gh', ['pr', 'list', '--state', 'merged', '--search', `merged:>=${since}`, '--limit', '200', '--json', 'number,title,body,commits'],
-        { cwd: config.projectDir, timeout: 20_000, maxBuffer: 16 * 1024 * 1024 });
+      const { stdout } = await execFileAsync(runtime.executable, ['pr', 'list', '--state', 'merged', '--search', `merged:>=${since}`, '--limit', '200', '--json', 'number,title,body,commits'],
+        { cwd: config.projectDir, env: runtime.env, timeout: 20_000, maxBuffer: 16 * 1024 * 1024 });
       // RULE 3: EXEMPT — not a provider/CLI state-detector: this parses gh's documented --json output (a
       // stable, versioned data contract) into a list of merged PRs; any parse error yields `unknown`.
       const parsed = JSON.parse(stdout) as Array<{ number: number; title?: string; body?: string; commits?: Array<{ messageHeadline?: string; messageBody?: string }> }>;
