@@ -185,6 +185,12 @@ export interface LocalVerifyServiceSeams {
   prView(pr: number): Promise<PrView | null>;
   /** true/false, or null when it cannot be read (the entry is then kept out of the index but not deleted). */
   isPrOpen(pr: number): Promise<boolean | null>;
+  /**
+   * Every open PR in one read, or null when a complete list cannot be read (including a list
+   * that may be cut short). Lets boot avoid one network call per journal PR. Absent or null ⇒
+   * the per-PR `isPrOpen` path is used.
+   */
+  listOpenPrs?(): Promise<ReadonlySet<number> | null>;
   /** Spawn the run child DETACHED (its own process group); stdio to `logFile`. */
   spawnRun(a: { command: string; args: string[]; env: NodeJS.ProcessEnv; logFile: string }): ChildHandle;
   isGroupAlive(pgid: number): boolean;
@@ -1257,12 +1263,15 @@ export class LocalVerifyService {
     const closedSeen = this.readClosedSeen();
     const nowMs = this.now();
     const openByPr = new Map<number, boolean | null>();
+    // One list call instead of one call per PR: this runs before the server listens, and 275
+    // journal PRs held boot for about 105s. A PR absent from a complete open list is not open.
+    const openPrs = latest.size > 0 ? await (this.seams.listOpenPrs?.() ?? Promise.resolve(null)).catch(() => null) : null;
     let skippedVersion = 0;
     let skippedClosed = 0;
     const keep: JournalLine[] = [];
     for (const [k, l] of latest) {
       const r = l.record;
-      if (!openByPr.has(r.pr)) openByPr.set(r.pr, await this.seams.isPrOpen(r.pr).catch(() => null));
+      if (!openByPr.has(r.pr)) openByPr.set(r.pr, openPrs ? openPrs.has(r.pr) : await this.seams.isPrOpen(r.pr).catch(() => null));
       const open = openByPr.get(r.pr)!;
       if (open === false && closedSeen[r.pr] === undefined) closedSeen[r.pr] = nowMs;
       if (open === true) delete closedSeen[r.pr];

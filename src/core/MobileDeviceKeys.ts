@@ -218,7 +218,7 @@ export interface DeviceRecord {
    * (every phone paired before people and roles was approved by the owner alone as the owner's).
    */
   userId?: string;
-  role?: 'owner' | 'msp';
+  role?: 'owner' | 'msp' | 'team';
   /**
    * The phone's presence key (docs/specs/mobile-console-device-signin.md §3.1): a second Secure
    * Enclave P-256 public key that signs only after the device owner authenticates. Set once.
@@ -298,7 +298,7 @@ export class DeviceRegistry {
   pairingPaused(): boolean { return (this.normalize(this.read()).wrongCodeTimes ?? []).length >= WRONG_BUDGET; }
 
   /** Adds a pending device. Refuses a duplicate key, too many pending, or a paused budget. */
-  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string; userId?: string | null; role?: 'owner' | 'msp' }):
+  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string; userId?: string | null; role?: 'owner' | 'msp' | 'team' }):
     { ok: true; device: DeviceRecord } | { ok: false; reason: 'duplicate-key' | 'too-many-pending' | 'pairing-paused' } {
     const f = this.normalize(this.read());
     if ((f.wrongCodeTimes ?? []).length >= WRONG_BUDGET) return { ok: false, reason: 'pairing-paused' };
@@ -324,7 +324,7 @@ export class DeviceRegistry {
    * (the absent-means-owner shape). Returns null when this machine holds no such device; a revoked
    * device is never reassigned.
    */
-  setPerson(id: string, person: { userId: string | null; role: 'owner' | 'msp' }): DeviceRecord | null {
+  setPerson(id: string, person: { userId: string | null; role: 'owner' | 'msp' | 'team' }): DeviceRecord | null {
     const f = this.normalize(this.read());
     const d = f.devices.find((x) => x.id === id);
     if (!d || d.status === 'revoked') return null;

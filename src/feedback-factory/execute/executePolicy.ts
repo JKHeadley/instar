@@ -138,7 +138,7 @@ export const DEPS_STATUS_LATENCY_MS = 300_000;
 export const EXECUTE_TICK_MIN_INTERVAL_MS = 30_000;
 /** Bump when a canary probe changes: a new stamp forces a fresh full-gate base canary. */
 // A launch-path change must invalidate the full-gate stamp so deployed agents rehearse it.
-export const CANARY_VERSION = 'feedback-canary-v4';
+export const CANARY_VERSION = 'feedback-canary-v5';
 /** The exact sandbox runtime version this feature is pinned to (package.json pins the same). */
 export const SANDBOX_RUNTIME_PACKAGE = '@anthropic-ai/sandbox-runtime';
 export const SANDBOX_RUNTIME_VERSION = '0.0.77';
@@ -296,7 +296,7 @@ export function credentialReadDenies(homeDir: string = os.homedir()): string[] {
 }
 
 export interface SandboxRuntimeSettings {
-  network: { allowedDomains: string[]; deniedDomains: string[]; allowLocalBinding: boolean; allowUnixSockets: string[] };
+  network: { allowedDomains: string[]; deniedDomains: string[]; allowLocalBinding: boolean; allowUnixSockets: string[]; allowMachLookup?: string[] };
   filesystem: { denyRead: string[]; allowRead: string[]; allowWrite: string[]; denyWrite: string[] };
   enableWeakerNestedSandbox: false;
   enableWeakerNetworkIsolation: false;
@@ -309,12 +309,17 @@ export interface SandboxRuntimeSettings {
  * (sandbox-runtime gives allowRead precedence inside a denied region; the publish clone and
  * credential paths are more specific denies and stay denied). Writes: only the workspace, its
  * temp directory and the test-runner holders file, never its .git/ or the evidence file.
- * Network: empty allowlist (strict), unless the caller is the native-rebuild step.
+ * Network: empty allowlist (strict), unless the caller is the native-rebuild step. On macOS,
+ * Node's dns module needs the local DNSConfiguration Mach service even before any lookup. Without
+ * that exact service Vitest can hang in ares_init_options until the confined command times out.
+ * This permission reads resolver configuration; it does not allow outbound network traffic.
  */
-export function buildSandboxRuntimeSettings(p: ConfinementPaths, opts: { network?: readonly string[]; extraWrite?: string[] } = {}): SandboxRuntimeSettings {
+export function buildSandboxRuntimeSettings(p: ConfinementPaths, opts: { network?: readonly string[]; extraWrite?: string[]; platform?: NodeJS.Platform } = {}): SandboxRuntimeSettings {
   const workspaceGit = path.join(p.workspace, '.git');
+  const platform = opts.platform ?? process.platform;
   return {
-    network: { allowedDomains: [...(opts.network ?? [])], deniedDomains: [], allowLocalBinding: false, allowUnixSockets: [] },
+    network: { allowedDomains: [...(opts.network ?? [])], deniedDomains: [], allowLocalBinding: false, allowUnixSockets: [],
+      ...(platform === 'darwin' ? { allowMachLookup: ['com.apple.SystemConfiguration.DNSConfiguration'] } : {}) },
     filesystem: {
       // The WHOLE home directory and the shared temp directories are read-denied (other agents'
       // homes, follow-me config homes, sign-in files, shell history, other users' temp files);
@@ -450,7 +455,7 @@ export function buildClaudeSandboxSettings(input: ClaudeSettingsInput): Record<s
       failIfUnavailable: true,
       allowUnsandboxedCommands: false,
       autoAllowBashIfSandboxed: true,
-      network: { allowedDomains: [], allowLocalBinding: false, allowUnixSockets: [] },
+      network: { ...runtime.network },
       filesystem,
     },
     permissions: {

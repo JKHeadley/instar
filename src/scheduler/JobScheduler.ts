@@ -2803,7 +2803,22 @@ export class JobScheduler {
     });
   }
 
+  /** Set at boot. True or null (cannot tell) means a job must keep out of this topic (team-roles-and-access §4.1). */
+  confinedTopicCheck: ((topicId: number) => boolean | null) | null = null;
+
+  /**
+   * A job runs with owner reach, so it stays out of a confined topic: its summary is member-steered
+   * text, and its posts would land where members read them. Runs at spawn and again before posting.
+   */
+  private dropConfinedTopic(job: JobDefinition): void {
+    if (!job.topicId || !this.confinedTopicCheck) return;
+    if (this.confinedTopicCheck(job.topicId) === false) return;
+    console.warn(`[scheduler] job ${job.slug} is bound to a confined topic; running without it`);
+    job.topicId = undefined;
+  }
+
   private spawnJobSession(job: JobDefinition, reason: string): string {
+    this.dropConfinedTopic(job);
     // job-cost-reduction §8.4: a script-runner job that reaches the session
     // path (rollback, or a queued drain) always runs as its agentmd
     // projection — never the legacy "Run this script:" full-tools path.
@@ -3202,6 +3217,9 @@ export class JobScheduler {
 
     const job = this.jobs.find(j => j.slug === session.jobSlug);
     if (!job) return;
+    // First, before anything below reads its topic: it may have become confined since the job loaded,
+    // and a run holds its own copy of the job.
+    this.dropConfinedTopic(job);
 
     // A prompt job can declare its own run failed (spec feedback-inbox-vault-token
     // §B). Read synchronously, before any await, from the file named by this
@@ -3564,9 +3582,10 @@ export class JobScheduler {
    */
   async ensureJobTopic(job: JobDefinition): Promise<number | null> {
     const live = this.jobs.find(j => j.slug === job.slug) ?? job;
+    this.dropConfinedTopic(live);
     if (live.topicId) return live.topicId;
     const mapped = this.state.get<Record<string, number>>('job-topic-mappings')?.[live.slug];
-    if (mapped) { live.topicId = mapped; return mapped; }
+    if (mapped && this.confinedTopicCheck?.(mapped) !== true && this.confinedTopicCheck?.(mapped) !== null) { live.topicId = mapped; return mapped; }
     if (!this.telegram) return null;
     try {
       const topic = await this.telegram.findOrCreateForumTopic(

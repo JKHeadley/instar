@@ -34,7 +34,7 @@ export interface PersonRow {
 
 export interface ReachNotice { conditionKey: string; title: string; text: string; count: number }
 
-export interface PhoneFact { userId: string | null; role: 'owner' | 'msp'; name: string; deviceName: string }
+export interface PhoneFact { userId: string | null; role: 'owner' | 'msp' | 'team'; name: string; deviceName: string }
 
 type ReachableLists = Omit<ReachablePeopleInput, 'users' | 'observedSenderKeys' | 'operatorKeys' | 'sharedMemoryPeople'>;
 
@@ -316,9 +316,8 @@ export class ReachablePeople {
 
     for (const p of this.deps.phones()) {
       if (p.role === 'owner') { owner.reach.push({ via: 'phone', detail: `Phone: ${p.deviceName}` }); continue; }
-      const r = row(`user:${p.userId ?? p.name}`, p.name, 'admin');
-      r.tier = 'admin';
-      r.relationship = 'msp';
+      const r = row(`user:${p.userId ?? p.name}`, p.name, p.role === 'msp' ? 'admin' : 'member');
+      if (p.role === 'msp') { r.tier = 'admin'; r.relationship = 'msp'; }
       r.reach.push({ via: 'phone', detail: `Phone: ${p.deviceName}` });
     }
 
@@ -361,6 +360,7 @@ const TIER_ORDER: PersonTier[] = ['owner', 'admin', 'member', 'guest', 'unknown'
 function seesFor(r: PersonRow): string {
   if (r.tier === 'owner') return 'Everything.';
   if (r.relationship === 'msp') return 'All Telegram topics, sessions and alerts, and their own app chats.';
+  if (r.reach.some((x) => x.via === 'phone')) return 'Only the conversations you gave them, and their own.';
   const parts: string[] = [];
   if (r.reach.some((x) => x.via === 'telegram')) parts.push('every topic in the Telegram group');
   if (r.reach.some((x) => x.via === 'slack')) parts.push('Slack channels they are in');

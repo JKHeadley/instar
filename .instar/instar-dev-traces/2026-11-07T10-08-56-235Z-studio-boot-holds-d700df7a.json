@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "studio-boot-holds",
+  "sessionId": "220ff7db-8651-46b9-8d85-8536f15e29a6",
+  "timestamp": "2026-11-07T10:08:56.235Z",
+  "artifactPath": "upgrades/side-effects/studio-boot-holds.md",
+  "artifactSha256": "eb8ca602efc373f68476fd8a17bfbd4c4c6ea9e437fd0ae4ffa13e34c747c8b0",
+  "coveredFiles": [
+    "docs/specs/studio-boot-holds.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/serviceSeams.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/serviceSeams-listOpenPrs.test.ts",
+    "upgrades/side-effects/studio-boot-holds.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Review record and tests only; the source reviewed is unchanged",
+  "eli16Path": "docs/specs/studio-boot-holds.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/studio-boot-holds.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

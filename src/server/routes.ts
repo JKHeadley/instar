@@ -25,7 +25,7 @@ import type { OriginDisplaySettings, TelegramOriginProducer } from '../messaging
 import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyOriginDeps } from './replyOrigin.js';
 import { consolePageUrl } from './dashboardPaths.js';
 import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
-import { stripViewSignatures } from './mobilePairingRoutes.js';
+import { deviceMayUse, filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
@@ -91,6 +91,8 @@ import type { Request as ExpressRequest, Response as ExpressResponse } from 'exp
 import { execFileSync } from 'node:child_process';
 import { activeClaudeKeyHealth } from '../core/ClaudeKeyHealth.js';
 import { createHash, createHmac, timingSafeEqual, randomBytes, randomUUID } from 'node:crypto';
+import { cleanConversationTitle, newAppConversationKey } from '../core/appConversationText.js';
+import { requestIdAgeOk } from '../core/MobileChatRequests.js';
 import { isSlackConversationKey } from '../core/SlackForwardBridge.js';
 import { conversationKeys } from '../core/conversationKeys.js';
 import { governor as selfActionGovernorSurface } from '../monitoring/selfaction/governor.js';
@@ -1119,7 +1121,7 @@ export interface MobileInboundTrust {
    * People and roles (docs/specs/mobile-app-people-and-roles.md): the authenticated phone's role and
    * registry person (MSP only, namespaced by machine). Absent ⇒ an owner phone (older callers).
    */
-  sender?: { role: 'owner' | 'msp'; person?: { machineId: string; userId: string } };
+  sender?: { role: 'owner' | 'msp' | 'team'; person?: { machineId: string; userId: string } };
 }
 
 export interface RouteContext {
@@ -1388,6 +1390,14 @@ export interface RouteContext {
      *  both under one spawningTopics token. Absent/not-wired ⇒ the
      *  `telegram-routing-not-wired` refusal. A spawn throw propagates. */
     spawnForTopic?: (topicId: number, name: string) => Promise<import('../core/dashboardTopicProfile.js').SpawnForTopicResult>;
+    /**
+     * session-conversation-for-every-session §2.1: start a new session for a just-created app
+     * conversation, on its profile, with no message. Null when nothing was started (not served
+     * here, admission or relay refused); `session` is the registered tmux name.
+     */
+    /** Whether a session for an app conversation could start here now (the app reply relay is ready). */
+    appSessionReady?: () => { ready: true } | { ready: false; reason: string };
+    startAppSession?: (conversationKey: string) => Promise<{ session: string | null; refusal: import('../core/appInboundDispatch.js').AppStartRefusal | null }>;
     /** §3.3 2b — the pool seam, evaluated at call time. Absent ⇒ `dark`. */
     sessionPoolLocalClaim?: () => import('../core/dashboardTopicProfile.js').SessionPoolLocalClaimAnswer;
     /** dashboard-new-session-machine-choice §3.4 step 3 — place a new topic on a
@@ -11792,7 +11802,7 @@ export function createRoutes(ctx: RouteContext): Router {
       }
 
       res.json({
-        sessions: allSessionsMerged,
+        sessions: maskSessionsForPhone(ctx.mobilePairingService, req, allSessionsMerged as unknown as Array<Record<string, unknown>>),
         pool: {
           enabled: !!ctx.machinePoolRegistry,
           selfMachineId,
@@ -11813,7 +11823,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    res.json(enriched);
+    res.json(maskSessionsForPhone(ctx.mobilePairingService, req, enriched as Array<Record<string, unknown>>));
   });
 
   router.post('/sessions/cleanup-stale', (_req, res) => {
@@ -13009,6 +13019,108 @@ export function createRoutes(ctx: RouteContext): Router {
   // Create an interactive session from the dashboard.
   // Set platform to 'telegram', 'slack', or 'headless'.
   // Legacy: headless=true is equivalent to platform='headless'.
+  /** session-conversation-for-every-session §2.1: a create in flight, so a concurrent repeat waits for it. */
+  const appCreateInFlight = new Map<string, { hash: string; answer: Promise<{ status: number; body: Record<string, unknown> }> }>();
+  /** One create request's identity: its name and its engine pick. */
+  const appCreateHash = (a: { title: string; framework?: unknown; model?: unknown }): string =>
+    createHash('sha256').update(`dashboard-create\u0000${a.title}\u0000${typeof a.framework === 'string' ? a.framework : ''}\u0000${typeof a.model === 'string' ? a.model : ''}`).digest('hex');
+
+  /**
+   * session-conversation-for-every-session §2.1 steps 3–6: the conversation (durably keyed by the
+   * request), its engine seed, and its session. A repeat of a finished create resumes it: same
+   * conversation, no second seed, and the start finds the session already running.
+   */
+  async function createAppSession(
+    svc: NonNullable<RouteContext['appConversations']>,
+    tp: NonNullable<RouteContext['topicProfile']>,
+    a: { rid: string; title: string; served: boolean; hasPreference: boolean; framework: unknown; model: unknown },
+  ): Promise<{ status: number; body: Record<string, unknown> }> {
+    const DEVICE = 'dashboard';
+    // The request is its name and engine pick: the same id with either changed is a different request.
+    const hash = appCreateHash(a);
+    const requests = svc.deps.requests;
+    const prior = requests.lookup(DEVICE, a.rid, hash);
+    let conversationKey: string;
+    let resumed = false;
+    if (prior.kind === 'done') {
+      const key = (prior.body as { conversationKey?: unknown }).conversationKey;
+      if (prior.status !== 200 || typeof key !== 'string') {
+        const b = prior.body as { error?: string; detail?: string };
+        return { status: prior.status, body: { ok: false, code: b.error ?? 'conversation-unavailable', error: b.detail ?? 'The conversation could not be created on this machine. Try again.' } };
+      }
+      conversationKey = key; resumed = true;
+    } else if (prior.kind === 'in-progress') {
+      return { status: 202, body: { ok: true, state: 'in-progress', message: `"${a.title}" is still being created. Check the sessions list in a moment.` } };
+    } else if (prior.kind === 'outcome-unknown') {
+      return { status: 409, body: { ok: false, code: 'outcome-unknown', error: `"${a.title}" may or may not have been created. Check your app conversations before trying again.` } };
+    } else if (prior.kind === 'request-id-reused') {
+      return { status: 409, body: { ok: false, code: 'request-id-reused', error: 'This request was already used for a different session. Try again.' } };
+    } else {
+      // Step 3 — the conversation, as the phone's create route makes one (the key is in the reservation first).
+      conversationKey = newAppConversationKey();
+      const r = requests.reserve(DEVICE, a.rid, hash, 0, { op: 'create', conversationKey, title: a.title });
+      if (r.kind === 'full') return { status: 429, body: { ok: false, code: 'too-many-requests', error: 'Too many sessions are being created right now. Try again in a moment.' } };
+      if (r.kind !== 'reserved') return createAppSession(svc, tp, a);
+      let created: { status: number; body: Record<string, unknown> };
+      try { created = svc.applyCreate(DEVICE, a.rid, conversationKey, a.title, null); } catch (err) {
+        requests.markUnknown(DEVICE, a.rid);
+        svc.deps.reportDegradation?.('AppConversations.mutation', err instanceof Error ? err.message : String(err));
+        return { status: 409, body: { ok: false, code: 'outcome-unknown', error: `"${a.title}" may or may not have been created. Check your app conversations before trying again.` } };
+      }
+      // A refused create wrote nothing: release the request, so a retry runs again rather than replaying it.
+      if (created.status === 200) requests.finish(DEVICE, a.rid, created);
+      else requests.release(DEVICE, a.rid);
+      if (created.status !== 200) {
+        const b = created.body as { error?: string; detail?: string };
+        return { status: created.status, body: { ok: false, step: 'create-conversation', code: b.error ?? 'conversation-unavailable', error: b.detail ?? 'The conversation could not be created on this machine. Try again.' } };
+      }
+    }
+
+    // Step 4 — seed its engine, only where it is served. The seed writes only if nothing is recorded
+    // yet, so a resumed create (after a seed failure or a crash) seeds what the first try missed.
+    let pinRetained = false;
+    if (a.served) {
+      const def = a.hasPreference ? null : (tp.newTopicDefault?.read() ?? null);
+      const source = a.hasPreference ? 'dashboard-create' as const : (def ? 'new-topic-default' as const : null);
+      if (source) {
+        try {
+          const seed = await seedTopicProfileAtCreation({
+            ...dashboardChoiceDeps(tp),
+            store: tp.store,
+            regime: () => tp.surface.currentRegime(),
+            audit: (event) => tp.audit?.(event),
+            // No separate creation notice: the conversation's first line is the session's own.
+            disclose: () => Promise.resolve(undefined),
+          }, `app:${conversationKey}`, source, a.hasPreference ? { framework: a.framework, model: a.model } : { framework: def!.framework, model: def!.model });
+          pinRetained = seed.outcome === 'seeded';
+          if (pinRetained && source === 'new-topic-default') newTopicDefaultSeedsSinceBoot++;
+        } catch (err) {
+          return { status: 500, body: { ok: false, step: 'seed', conversationKey, error: `The conversation was created, but its starting engine couldn't be recorded: ${err instanceof Error ? err.message : String(err)}. Its first message runs on the default.` } };
+        }
+      }
+    }
+    if (resumed && !pinRetained) pinRetained = tp.store.resolve(`app:${conversationKey}`) != null;
+    const base = { ok: true, name: a.title, platform: 'app', conversationKey, pinRetained, topicId: null, slackChannelId: null, headless: false };
+
+    // A standby leaves the session to the machine that serves app conversations.
+    if (!a.served) {
+      return { status: 201, body: { ...base, started: false, refusal: 'not-served', message: `"${a.title}" was created as an app conversation. Another of your machines runs your app conversations; its first message starts the session there.` } };
+    }
+
+    // Step 5 — the session (memory place first; the starter finds a session already running on a resume).
+    let started: { session: string | null; refusal: string | null } = { session: null, refusal: 'spawn-failed' };
+    try { started = await tp.startAppSession!(conversationKey); } catch { /* @silent-fallback-ok — answered below as not started */ }
+    if (!started.session) {
+      const why = started.refusal;
+      const message = why === 'memory'
+        ? `"${a.title}" was created as an app conversation, but it needs private memory, which isn't available on this agent yet, so no session started.`
+        : why === 'relay'
+          ? `"${a.title}" was created as an app conversation, but sessions can't start here until the reply helper is updated. Restart the agent, then send it a message.`
+          : `"${a.title}" was created as an app conversation, but its session didn't start yet. Its first message will start it.`;
+      return { status: 201, body: { ...base, started: false, refusal: why, message } };
+    }
+    return { status: 201, body: { ...base, started: true, session: started.session } };
+  }
   router.post('/sessions/create', spawnLimiter, async (req, res) => {
     const { name, headless, platform } = req.body;
     // dashboard-door-model-controls §3.3 — an optional door (framework) + model.
@@ -13027,7 +13139,11 @@ export function createRoutes(ctx: RouteContext): Router {
     const topicName = name.trim();
     let topicId: number | undefined;
     let slackChannelId: string | undefined;
-    const resolvedPlatform = platform || (headless ? 'headless' : (ctx.telegram ? 'telegram' : (ctx.slack ? 'slack' : 'headless')));
+    // session-conversation-for-every-session §2.2: with no Telegram or Slack, the automatic choice is
+    // a native app conversation wherever app conversations run; terminal-only only where they don't.
+    const appAvailable = !!ctx.appConversations && !!ctx.topicProfile?.startAppSession;
+    const resolvedPlatform = (platform && platform !== 'auto' ? platform : null)
+      || (headless ? 'headless' : (ctx.telegram ? 'telegram' : (ctx.slack ? 'slack' : (appAvailable ? 'app' : 'headless'))));
     const tp = ctx.topicProfile;
 
     // dashboard-new-session-machine-choice §3.2 — a machine pick is a placement
@@ -13046,7 +13162,9 @@ export function createRoutes(ctx: RouteContext): Router {
           ok: false,
           code: 'machine-needs-telegram',
           error: resolvedPlatform !== 'telegram'
-            ? `Choosing a machine needs a Telegram topic — "${resolvedPlatform}" sessions don't support it`
+            ? (resolvedPlatform === 'app'
+              ? 'Choosing a machine works for Telegram topics today; an app conversation starts on the machine that runs your app conversations.'
+              : `Choosing a machine needs a Telegram topic — "${resolvedPlatform}" sessions don't support it`)
             : 'Choosing a machine needs a Telegram topic, and Telegram is not connected on this server',
         });
         return;
@@ -13155,7 +13273,7 @@ export function createRoutes(ctx: RouteContext): Router {
         res.status(403).json({ error: 'Choosing a door/model requires the X-Instar-Request: 1 intent header' });
         return;
       }
-      if (resolvedPlatform !== 'telegram' || !ctx.telegram) {
+      if (resolvedPlatform !== 'app' && (resolvedPlatform !== 'telegram' || !ctx.telegram)) {
         // Never a silent headless fallback that drops the choice.
         res.status(400).json({
           error: resolvedPlatform !== 'telegram'
@@ -13174,6 +13292,57 @@ export function createRoutes(ctx: RouteContext): Router {
         res.status(400).json({ ok: false, code: valid.code, error: valid.reason, ...(valid.chatPinAllowed ? { chatPinAllowed: true } : {}) });
         return;
       }
+    }
+
+    // session-conversation-for-every-session §2.1 — a session with its own native app conversation.
+    if (resolvedPlatform === 'app') {
+      const svc = ctx.appConversations;
+      if (!svc || !tp?.startAppSession) {
+        res.status(503).json({ ok: false, code: 'app-conversations-unavailable', error: 'App conversations aren\'t running on this agent, so a session can\'t get one. Pick Telegram, Slack or terminal-only.' });
+        return;
+      }
+      // Step 1 — everything that would refuse, before anything is created.
+      const title = cleanConversationTitle(topicName);
+      if (!title) {
+        res.status(400).json({ ok: false, code: 'bad-conversation-name', error: 'An app conversation\'s name must be 80 characters or fewer, and not only quotes or brackets. Give it a shorter name.' });
+        return;
+      }
+      const served = svc.isOwner();
+      // A standby's profile store isn't read by the serving machine, so a pick made here would be lost.
+      if (!served && hasPreference) {
+        res.status(400).json({ ok: false, code: 'engine-choice-needs-serving-machine', error: 'Pick the engine from the machine that runs your app conversations, or leave it on Automatic.' });
+        return;
+      }
+      if (served) {
+        const ready = tp.appSessionReady?.() ?? { ready: true as const };
+        if (!ready.ready) {
+          res.status(503).json({ ok: false, code: 'app-relay-not-ready', error: 'Sessions for app conversations can\'t start on this machine until its reply helper is updated. Restart the agent, or pick Telegram, Slack or terminal-only.' });
+          return;
+        }
+      }
+      // Step 2 — repeat protection. The create goes through the phone's durable request store (device
+      // 'dashboard'): a retry, even after a restart, finds the first create and resumes it; a create cut off
+      // mid-way is finished at boot by `recoverStranded`. A concurrent repeat waits for the one in flight.
+      const rid = typeof body.requestId === 'string' && requestIdAgeOk(body.requestId, Date.now()) ? body.requestId : `${Date.now()}-${randomUUID()}`;
+      const want = { title, framework: body.framework, model: body.model };
+      const inFlight = appCreateInFlight.get(rid);
+      if (inFlight) {
+        if (inFlight.hash !== appCreateHash(want)) { res.status(409).json({ ok: false, code: 'request-id-reused', error: 'This request was already used for a different session. Try again.' }); return; }
+        const p = await inFlight.answer; res.status(p.status).json(p.body); return;
+      }
+      let settle!: (a: { status: number; body: Record<string, unknown> }) => void;
+      appCreateInFlight.set(rid, { hash: appCreateHash(want), answer: new Promise((r) => { settle = r; }) });
+      let outcome: { status: number; body: Record<string, unknown> } = { status: 500, body: { ok: false, error: 'The session could not be created. Try again.' } };
+      try {
+        outcome = await createAppSession(svc, tp, { rid, title, served, hasPreference, framework: body.framework, model: body.model });
+      } catch (err) { // @silent-fallback-ok — answered in words; the request record says what landed
+        outcome = { status: 500, body: { ok: false, error: `The session could not be created: ${err instanceof Error ? err.message : String(err)}. Try again.` } };
+      } finally {
+        settle(outcome);
+        appCreateInFlight.delete(rid);
+      }
+      res.status(outcome.status).json(outcome.body);
+      return;
     }
 
     // Telegram — the create saga (§3.3): the seed, once written, is retained;
@@ -19631,7 +19800,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     const local = ctx.telegram?.getAllTopicMappings() ?? [];
     if (req.query.scope !== 'pool') {
-      res.json({ topics: local, serving: ctx.telegramOrigin?.options.holdsLease?.() === true });
+      res.json({ topics: filterTopicsForTeam(ctx.mobilePairingService, req, local, (t) => (t as { topicId?: unknown }).topicId), serving: ctx.telegramOrigin?.options.holdsLease?.() === true });
       return;
     }
     // A session can run on a standby whose local registry still says
@@ -19684,7 +19853,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
     res.json({
-      topics: [...named.values()].sort((a, b) => a.topicId - b.topicId),
+      topics: filterTopicsForTeam(ctx.mobilePairingService, req, [...named.values()].sort((a, b) => a.topicId - b.topicId), (t) => t.topicId),
       pool: { failed, unresolved: [...knownIds].filter(id => !named.has(id)).sort((a, b) => a - b) },
     });
   });
@@ -19863,6 +20032,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   router.post('/telegram/reply/:topicId', async (req, res) => {
+    // A reply that went out tells the team phones holding this topic (team-roles-and-access §4.1).
+    res.on('finish', () => {
+      const id = parseInt(req.params.topicId, 10);
+      if (res.statusCode < 300 && id > 0) ctx.mobilePairingService?.teamTopicReply(id);
+    });
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
       return;
@@ -20735,6 +20909,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const topicId = parseInt(req.params.topicId, 10);
     if (isNaN(topicId)) {
       res.status(400).json({ error: 'topicId must be a number' });
+      return;
+    }
+    // The gate checked the path; this checks the number the handler will actually serve (§3.5).
+    if (ctx.mobilePairingService && !deviceMayUse(ctx.mobilePairingService, req, `telegram:${topicId}`, 'read')) {
+      res.status(404).json({ error: 'unknown-conversation' });
       return;
     }
     if (req.query.scope !== undefined && req.query.scope !== 'pool') {
@@ -22316,7 +22495,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       copied = await app.media.sessionCopy(ref.messageId, attachment);
     }
     if (!copied) { res.status(404).json({ error: 'not-on-this-machine', detail: `this file hasn't been copied over yet; ${app.replicator.whyNotHere(attachment.sha256)}` }); return; }
-    res.json({ path: copied });
+    try {
+      res.json({ path: app.intoConfinedInbox(key, copied) });
+    } catch (err) {
+      console.warn(`[app-media] copy refused: ${err instanceof Error ? err.message : String(err)}`);
+      res.status(409).json({ error: 'copy-refused', detail: 'This file could not be placed where the session can read it.' });
+    }
   });
 
   router.post('/internal/slack-forward', async (req, res) => {
@@ -22765,7 +22949,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const localStatus = requestedStatus ? (normalizeAttentionStatus(requestedStatus) ?? requestedStatus) : undefined;
         const localLimit = parseAttentionLimit(req.query as Record<string, unknown>);
         const all = ctx.localAttention.list(localStatus).map((it) => ({ ...it, machineId: ctx.meshSelfId ?? undefined }));
-        const items = localLimit === undefined ? all : all.slice(0, localLimit);
+        const shown = filterAttentionForPhone(ctx.mobilePairingService, req, all);
+        const items = localLimit === undefined ? shown : shown.slice(0, localLimit);
         res.json({ items, count: items.length, surface: 'local' });
         return;
       }
@@ -22808,16 +22993,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         });
       }
       const merged = await attentionPoolMerge(localItems, status);
+      const shown = filterAttentionForPhone(ctx.mobilePairingService, req, merged.items as Array<Record<string, unknown>>);
       if (limit === undefined) {
-        res.json(merged);
+        res.json({ ...merged, items: shown, count: shown.length });
       } else {
-        const items = (merged.items as Array<Record<string, unknown>>).slice(0, limit);
+        const items = shown.slice(0, limit);
         res.json({ ...merged, items, count: items.length });
       }
       return;
     }
 
-    const items = limit === undefined ? localItems : localItems.slice(0, limit);
+    const shownLocal = filterAttentionForPhone(ctx.mobilePairingService, req, localItems);
+    const items = limit === undefined ? shownLocal : shownLocal.slice(0, limit);
     res.json({ items, count: items.length });
   });
 
@@ -28847,7 +29034,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             // topic's queued resumes — the killed session must not be
             // auto-resurrected out from under the user's explicit stop.
             try {
-              ctx.resumeQueue?.pause('message-sentinel emergency stop');
+              // A team phone's stop is for its own conversation: it never pauses the agent's queue.
+              if (trust?.sender?.role !== 'team') ctx.resumeQueue?.pause('message-sentinel emergency stop');
               ctx.resumeQueue?.cancelByTopic(Number(topicId));
               ctx.operatorStopRecorder?.(Number(topicId));
             } catch { /* the stop must succeed regardless */ }
@@ -28894,6 +29082,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         senderName: fromFirstName,
         senderUsername: fromUsername,
         telegramUserId: fromUserId,
+        ...(trust?.sender?.role === 'team' ? { teamPhone: true } : {}),
         // BIAS-TO-ACTION-SPEC D10: persist the lifeline's forward marker so the
         // standing-authorization resolver can prove non-forwarded provenance.
         // An app message is recorded with forwarded UNKNOWN, so no durable-evidence
@@ -29077,6 +29266,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           messageThreadId: topicId,
           viaLifeline: !trust,
           ...(trust ? { viaMobileDevice: true, deviceId: trust.deviceId, eventId: trust.eventId } : {}),
+          // A team phone's words are never a command (team-roles-and-access §4.1). Set only here, from
+          // the authenticated phone: onTopicMessage reads it to skip every intercept.
+          ...(trust?.sender?.role === 'team' ? { teamPhone: true } : {}),
           // Explicit, so the message pipeline can refuse authority by the
           // flag as well as by the missing id.
           ...(senderUntrusted ? { senderUnverified: true } : {}),
@@ -30388,13 +30580,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
    * List all topics with metadata.
    * GET /topic/list
    */
-  router.get('/topic/list', (_req, res) => {
+  router.get('/topic/list', (req, res) => {
     if (!ctx.topicMemory) {
       res.status(503).json({ error: 'TopicMemory not initialized' });
       return;
     }
 
-    const topics = ctx.topicMemory.listTopics();
+    const topics = filterTopicsForTeam(ctx.mobilePairingService, req, ctx.topicMemory.listTopics(), (t) => (t as { topicId?: unknown }).topicId);
     res.json({ topics, total: topics.length });
   });
 
@@ -38923,6 +39115,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     mountMobilePermissionsRoutes(router, {
       selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
+      teamAction: async (kind, req, deviceId) => {
+        const run = ctx.mobilePairingService?.teamActionRunner;
+        return run ? await run(kind, req, deviceId) as Awaited<ReturnType<NonNullable<Parameters<typeof mountMobilePermissionsRoutes>[1]['teamAction']>>> : { status: 503, body: { error: 'team-access-unavailable' } };
+      },
       // A route's words can quote a run's goal, so the phone's answer gets the same removal as anything else it reads.
       sessionAction: async (action) => {
         const r = await runSessionAction(action, { call: sessionControlCall, selfMachineId: () => ctx.meshSelfId ?? null });

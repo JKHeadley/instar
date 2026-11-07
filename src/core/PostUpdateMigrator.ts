@@ -1175,6 +1175,14 @@ export function MOBILE_SESSION_SWAP_ANY_LINE(port: number): string {
 }
 export const MOBILE_SESSION_SWAP_ANY_MARKER = 'conversation reference the phone';
 /**
+ * A native conversation for every session (docs/specs/session-conversation-for-every-session.md), one
+ * bullet after the switch-any-conversation bullet. Sniff: `platform: 'app'`.
+ */
+export function MOBILE_SESSION_APP_NEW_LINE(port: number): string {
+  return `- A New session can start with its own Instar app conversation: \`POST /sessions/create\` with \`{"name":"…","platform":"app"}\` on http://localhost:${port} creates the conversation, sets its engine and model if you pick them, and starts a session attached to it (\`conversationKey\` in the answer; \`started:false\` with a reason when the session couldn't start yet). With no Telegram or Slack it is the automatic choice; terminal-only stays available as \`platform:"headless"\`. Jobs and helper sessions never get one. **When to use**: the operator wants a new session they can talk to from the app — start it this way rather than terminal-only.`;
+}
+export const MOBILE_SESSION_APP_NEW_MARKER = `"platform":"app"`;
+/**
  * The native Proposals / How I'm doing inside screens (docs/specs/mobile-native-proposals-inside.md),
  * one bullet in the Mobile app routes block after the permissions bullet. Sniff: `GET /mobile/proposals`.
  */
@@ -1345,6 +1353,7 @@ ${MOBILE_HEALTH_ISSUES_LINE(port)}
 ${MOBILE_HEALTH_CHOICES_LINE(port)}
 ${MOBILE_SESSION_CONTROLS_LINE(port)}
 ${MOBILE_SESSION_SWAP_ANY_LINE(port)}
+${MOBILE_SESSION_APP_NEW_LINE(port)}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }
@@ -9316,6 +9325,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added channel registry Registry First awareness');
     }
 
+    if (!content.includes('Registry First — team access:')) {
+      content += '\n- **Registry First — team access:** the owner gives access only from their own phone in the Instar app, and each change is a signed record. On a one-machine agent the owner can invite people, share chosen conversations and set a role (member or guest); a person\'s phone sees only what they were given. I can read `GET /team/people` and I can only take access away (`POST /team/people/:personKey/lower`), never give it. Tell people plainly: scheduled jobs run for the owner and can read messages in shared conversations; once a conversation has been shared it stays locked to that audience; and an agent that has had team members cannot add a second machine until multi-machine team support lands.';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added team access Registry First awareness');
+    }
+
     if (!content.includes('Registry First — people:')) {
       content += '\n- **Registry First — people:** before answering who can reach this agent or what someone can see, read `GET /team/people` (add `?scope=pool` on several machines). It lists each person, how they reach the agent and what they can see, and it names any machine that did not answer. When the owner asks in their own chat to turn on memory privacy, set `memoryPrivacy.enabled: true` in the config on every machine and restart.\n';
       patched = true;
@@ -10201,6 +10216,21 @@ setTimeout(() => process.exit(0), 2000);
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added the switch-any-conversation line');
+    }
+
+    // A native conversation for every session (docs/specs/session-conversation-for-every-session.md):
+    // one bullet after the switch-any-conversation bullet of an existing Mobile app routes block.
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_SESSION_APP_NEW_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_SESSION_SWAP_ANY_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_SESSION_APP_NEW_LINE(port));
+        content = lines.join('\n');
+      } else {
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_SESSION_APP_NEW_LINE(port)}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the app-conversation New session line');
     }
 
     // Mobile app routes (docs/specs/mobile-multi-route.md) — Agent Awareness + Migration Parity.
@@ -15667,6 +15697,8 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       '**Registry First — channel registry:',
       // team-roles-and-access: the question "who has access?" is framework-agnostic.
       '**Registry First — people:',
+      // team-roles-and-access: "add someone" must reach the owner's phone, on every framework.
+      '**Registry First — team access:',
       // decision-journal: a Codex/Gemini agent that does not learn the new
       // requirement will POST without `principle`, take a 400 it cannot explain,
       // and fall back to recording decisions somewhere nothing reads — which is

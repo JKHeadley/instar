@@ -474,7 +474,8 @@ describe('recommended services setup', () => {
       const server = source('src/commands/server.ts');
       expect(server.slice(server.indexOf('telegram.onSentinelKillSession ='), server.indexOf('telegram.onSentinelKillSession =') + 200)).toContain('holdSetupForSession');
       const slack = server.indexOf("'🛑 Emergency stop — all sessions killed.'");
-      expect(server.slice(slack - 400, slack)).toContain('holdAllSetups');
+      expect(slack).toBeGreaterThan(0);
+      expect(server.slice(server.lastIndexOf("classification.category === 'emergency-stop'", slack), slack)).toContain('holdAllSetups');
       const agentServer = source('src/server/AgentServer.ts');
       expect(agentServer.slice(agentServer.indexOf('killAllSessions: () => {'), agentServer.indexOf('killAllSessions: () => {') + 200)).toContain('holdAllSetups');
       const routes = source('src/server/routes.ts');

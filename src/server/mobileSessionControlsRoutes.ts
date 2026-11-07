@@ -169,6 +169,7 @@ export function topicOf(row: Rec): number | null {
 }
 
 function chatWords(row: Rec): string {
+  if (typeof row.conversationRef === 'string' && row.conversationRef.startsWith('app:')) return 'an Instar app conversation';
   if (row.platform === 'telegram') return 'a Telegram topic';
   if (row.platform === 'slack') return 'Slack';
   if (row.platform === 'whatsapp') return 'WhatsApp';
@@ -343,11 +344,14 @@ export function newSessionAnswer(r: RouteAnswer, name: string, machineLabel: str
   if (d.ownership === 'superseded' || d.ownership === 'not-confirmed') return { status: 200, body: { ok: true, warn: true, message: `"${name}" was created, but which machine owns it isn't settled yet. Send it a message and it starts.` } };
   if (d.started === 'unknown') return { status: 200, body: { ok: true, warn: true, message: `"${name}" may still be starting on ${where}. Pull to refresh the list in a moment.` } };
   if (d.started === 'requested' && d.machine) return { status: 200, body: { ok: true, message: `Starting "${name}" on ${where}.` } };
+  if (d.platform === 'app' && d.started === false) return { status: 200, body: { ok: true, warn: true, message: typeof d.message === 'string' && d.message ? d.message : `"${name}" was created as an app conversation, but its session didn't start yet. Its first message will start it.` } };
+  if (d.platform === 'app') return { status: 200, body: { ok: true, message: `Started "${name}". Open it in Conversations to talk to it.` } };
   return { status: 200, body: { ok: true, message: `Started "${name}"${d.machine ? ` on ${where}` : ''}.` } };
 }
 
-/** Door and model apply to Telegram topics only; so does the machine choice. */
+/** Engine and model apply to a Telegram topic or an app conversation; the machine choice stays Telegram-only (part 3). */
 const platformAllowsDoor = (p: string): boolean => p !== 'headless' && p !== 'slack';
+const platformAllowsMachine = (p: string): boolean => p === 'auto' || p === 'telegram';
 
 /** The exact POST /sessions/create body (the console's createBody). An unchanged pick sends nothing, so the server seeds its own default. */
 export function createBody(a: Extract<SessionAction, { kind: 'session-new' }>, newTopicDefault: unknown): Rec {
@@ -358,7 +362,7 @@ export function createBody(a: Extract<SessionAction, { kind: 'session-new' }>, n
     const differs = !def.framework || def.framework !== a.framework || (def.model ?? null) !== a.model;
     if (differs) { body.framework = a.framework; body.model = a.model; }
   }
-  if (platformAllowsDoor(a.platform) && a.machine) body.machine = a.machine;
+  if (platformAllowsMachine(a.platform) && a.machine) body.machine = a.machine;
   return body;
 }
 
