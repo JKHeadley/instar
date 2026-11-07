@@ -67,15 +67,24 @@ So the rule is: **every `team` phone, at every tier, requires memory privacy**, 
 
 **`POST /sessions/:name/input`, keys and attachments stay owner-only.** They bypass attribution and the per-message check.
 
-**Stated limit.** The agent runs as the same computer user as these files. A session the owner runs could delete log rows. The log stops persuasion, confusion and forged rows: a row without a valid signature is ignored. It does not stop a hostile owner-reach session from removing a row, which shows as a gap in the signed sequence numbers and raises an attention item.
+**Stated limit.** The agent runs as the same computer user as these files. A session the owner runs could delete log rows. The log stops persuasion, confusion and forged rows: a row without a valid signature is ignored. It does not stop a hostile owner-reach session on the machine. Such a session could delete rows, including a latest revocation, with no visible trace, or use the machine's key to bind a rogue phone. Replication makes a lone deletion come back from peers, but on a one-machine agent nothing detects it. The same limit is stated in owner-authentication.
 
 ### 3.3 The access log
 
 A new append-only file `state/team-access/log.jsonl`, separate from `mobile-msp-grants.json`, so an older build never rewrites it. A new replicated store kind `teamAccess`, on whenever native conversations are on, the same way as `appConversations`, so every machine holds it. There is no second copy of the same fact: MSP switches stay in their file for `msp` phones, and a converted person moves to the log.
 
-Each event stores the phone's whole signed request as `origin`, plus the accepting machine's `receipt`, the existing §4.6 format. Any machine re-verifies with `verifyRecordedOrigin` against the replicated key ledger. No new signature format and no app crypto are needed. A row that verifies as anything but `verified` is ignored. `seq` per signer detects gaps.
+Each event stores the phone's whole signed request as `origin`, plus the accepting machine's `receipt`, the existing §4.6 format and crypto. The app needs nothing new. The existing `verifyRecordedOrigin` is message-specific, so a new `verifyAccessEvent` reuses its signature, ledger and receipt checks and adds the rest: the method and path must be an access route, and **every event field is parsed from the signed body**, never from fields stored beside it. A row that does not verify is ignored.
 
-Events: `owner-pin`, `person-add { personKey, name, tier, relationship?, links }`, `person-set`, `person-remove`, `grant { personKey, ref, access }`, `grant-remove`, `place-applied { ref, rev, machineId }` (machine-signed, §3.5), `lower` (machine-signed, below).
+**Who a key belongs to.** The key ledger proves a key was active, not whose it is. So at phone activation the machine writes a machine-signed `phone-bind { keyHash, personKey or 'owner' }` event. The fold reads a signer's standing from that binding plus the log.
+
+**Order.** Events carry the store's hybrid logical clock and an `eventId`, and the fold is a deterministic reducer, so replicas that receive the same events in any order reach the same state:
+
+- Duplicates collapse by `eventId`.
+- Per person, and per person and conversation, the highest clock wins. On a tie, removal or the lower access wins.
+- Owner events are folded first. An admin event then counts only if the admin held the needed standing in the owner-only state at that event's clock. So an owner's removal beats that admin's concurrent grant.
+- An event naming an unknown person or key is held aside with no effect until its predecessor arrives.
+
+Events: `phone-bind`, `owner-pin`, `person-add { personKey, name, tier, relationship?, links }`, `person-set`, `person-remove`, `grant { personKey, ref, access }`, `grant-remove`, `place-applied { ref, rev, machineId }` (machine-signed, §3.5), `lower` (machine-signed, below). `phone-bind` is described below.
 
 **Identity.** `personKey` is a random id minted at invite, the same on every machine. Folding the log writes a local `UserProfile` with that id and a channel `{ type: 'instar-app', identifier: personKey }`, and sets `orgRole`, so Slack on that machine agrees. An existing person is linked by their Slack or Telegram id in `links`.
 
@@ -89,7 +98,7 @@ Events: `owner-pin`, `person-add { personKey, name, tier, relationship?, links }
 |---|---|---|---|
 | Add or change an admin, capabilities | yes, Face ID | no | no |
 | Add a member or guest | yes | yes | no |
-| Grant a conversation | yes | only one the admin may read, to a member or guest | no |
+| Grant a conversation | yes | only one the admin owns or holds by its own grant, at no more than the access it holds, to a member or guest. Never one opened by an owner capability | no |
 | Remove a grant, lower a tier, remove a person | yes | members and guests | yes |
 
 The bearer path for removal writes a machine-signed `lower` event: it can take access away, never give it. An admin can never touch an owner or another admin.
@@ -225,7 +234,7 @@ Steps 2 and 3 are useful together, not separately. A user-facing step is done on
 
 ## Verify the state, not its symbol
 
-- **Tier.** Symbol: a log row. State: "the owner or an allowed admin chose this". Corroboration: `verifyRecordedOrigin` against the replicated key ledger, and the fold's standing check. Unmeasurable: the row is ignored, or a failed log admits no team phone. Both directions: a removed row is seen as a `seq` gap; a valid but stale row is bounded by replication.
+- **Tier.** Symbol: a log row. State: "the owner or an allowed admin chose this". Corroboration: `verifyAccessEvent` against the replicated key ledger, and the fold's standing check. Unmeasurable: the row is ignored, or a failed log admits no team phone. Both directions: a deleted row is not detectable on one machine (§3.2), and a valid but stale row is bounded by replication.
 - **Reach.** Symbol: allowlists, phones, observed senders. State: "this person can reach the agent". A silent reader in a Telegram group is not a sender, so the row says the list is incomplete. One human with two unlinked ids can read as two, and marking it fine covers that.
 - **Grant applied.** Symbol: `place-applied`. State: the conversation's session is confined. Corroboration: it is written after the session ended and the place recomputed, and the spawn fails if confinement cannot apply. Unmeasurable: the grant stays pending.
 - **Privacy required.** Symbol: `enabled` and the probe, read live, and each peer's report. State: team sessions are confined. Unknown refuses.
@@ -236,7 +245,7 @@ Steps 2 and 3 are useful together, not separately. A user-facing step is done on
 2. `msp` phones change only when the owner converts them. No automatic widening or narrowing, except the read-only rule the owner's own invite turns on.
 3. Guest exists, as read-only.
 4. New admins start with no conversation access, and owner capabilities open read only. This is my reading of the brief's "what of the owner's conversations and memory it may see is owner-granted".
-5. `manageTeam` defaults on for a new admin, limited to members and guests and to conversations the admin may read. Adding teammates is agent management, and an owner can switch it off.
+5. `manageTeam` defaults on for a new admin, limited to members and guests and to what the admin may delegate (§3.3). Adding teammates is agent management, and an owner can switch it off.
 6. Every team phone requires memory privacy and the `claude-code` framework.
 7. A grant opens past and future history.
 8. The dashboard stays the owner's surface, with a People tab. No non-owner gets a PIN or console pass, and a per-person console is not built, because the native app is the team's interface.
@@ -280,7 +289,7 @@ Step 1 is a plain revert. From step 2 on, older builds since v1.3.1631 refuse a 
 
 ## 9. Tests
 
-- Unit: tier map; lower-of, including no `orgRole` and an `msp` phone untouched; a banned-literal test; every allowlist entry has a tier; notify-token tier; `mayDo` for each tier, op and ref form; log fold with bad signature, standing exceeded, `seq` gap; owner pin beats `orgRole`; `alwaysPerson`; place with grants; `ReachablePeople` with privacy off.
+- Unit: tier map; lower-of, including no `orgRole` and an `msp` phone untouched; a banned-literal test; every allowlist entry has a tier; notify-token tier; `mayDo` for each tier, op and ref form; log fold with bad signature, fields changed beside the signed body, standing exceeded, the same events in shuffled orders, an owner removal concurrent with an admin grant, a missing predecessor; an admin with `read` cannot grant `use`; owner pin beats `orgRole`; `alwaysPerson`; place with grants; `ReachablePeople` with privacy off.
 - Integration (HTTP): a status table across owner, `msp` with no `orgRole`, admin, member, guest and removed person on every route; bearer cannot raise; admin limits; invite refusals; `426` from an older app; two-step grant; second-person item once, updated in place, suppressed for shared people.
 - E2E: production init path, `/team/people` 200 with real wiring; a member reaches a granted conversation and gets `404` on another.
 - Live: a real session proving a member cannot get another member's fact, or the owner's, in a granted conversation.
