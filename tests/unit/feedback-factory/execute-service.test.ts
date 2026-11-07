@@ -577,6 +577,46 @@ describe('verification and publication', () => {
     expect(row.sessionName ?? null).toBeNull();
   });
 
+  it('a lasting GitHub outage is reported once per outage, and a short one stays quiet', async () => {
+    h = await createExecHarness();
+    const notices = () => h.attentionExec.filter((a) => a.id.startsWith('feedback-execute:github-unavailable'));
+    const info = h.repo.info;
+    h.repo.info = null;
+    await h.exec.tick();
+    h.now.value += 2 * 60 * 60_000 - 1;
+    await h.exec.tick();
+    expect(notices()).toHaveLength(0);
+    h.now.value += 1;
+    expect((await h.exec.tick()).reason).toBe('github-unavailable');
+    await h.exec.tick();
+    expect(notices()).toHaveLength(1);
+    expect(notices()[0].summary).toContain('no new fixes are starting');
+    // Access returns: a later outage is a new one with its own full wait.
+    h.repo.info = info;
+    await h.exec.tick();
+    h.repo.info = null;
+    await h.exec.tick();
+    expect(notices()).toHaveLength(1);
+    h.now.value += 2 * 60 * 60_000;
+    await h.exec.tick();
+    expect(new Set(notices().map((a) => a.id)).size).toBe(2);
+  });
+
+  it('a check stopped by its time limit keeps its reason and records which check it was', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    h.runScript.fn = (cmd) => (cmd.command === 'npm run lint' && /-gate$/.test(cmd.cwd)
+      ? { exitCode: 124, stdout: 'still linting', stderr: '', timedOut: true }
+      : null);
+    finishSessions(h);
+    await h.exec.tick();
+    expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'limit:command-wall-clock' });
+    const last = h.exec.summary().lastCheckFailure as { reason: string; detail: string };
+    expect(last.reason).toBe('limit:command-wall-clock');
+    expect(last.detail).toContain('during the lint check');
+    expect(last.detail).toContain('still linting');
+  });
+
   it('a failed check run records its OWN output, so the failure is diagnosable after the clones are gone', async () => {
     h = await createExecHarness();
     const { initiativeId } = await startOne();
