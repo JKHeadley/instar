@@ -5,7 +5,7 @@ import { filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone } fr
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { eventsFitPath, foldRowInto, foldRows, emptyState } from '../../src/core/TeamAccessLog.js';
+import { TeamAccessLog, eventsFitPath, foldRowInto, foldRows, emptyState } from '../../src/core/TeamAccessLog.js';
 import { prepareSessionCurlHome, safeInboxTarget, setAsideUnlessRealFolder } from '../../src/core/memorySessionPolicy.js';
 import { isSafeSessionRef } from '../../src/core/claudeResumeTranscript.js';
 import { TopicResumeMap } from '../../src/core/TopicResumeMap.js';
@@ -368,5 +368,45 @@ describe('what a confined session feeds agent-wide', () => {
     expect(src).toContain('entry.fromUser && entry.text && !entry.teamPhone');
     const routes = fs.readFileSync(path.join(process.cwd(), 'src/server/routes.ts'), 'utf8');
     expect(routes).toContain("...(trust?.sender?.role === 'team' ? { teamPhone: true } : {}),\n        ");
+  });
+});
+
+describe('wiring that production actually uses', () => {
+  const server = () => fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf8');
+  const agent = () => fs.readFileSync(path.join(process.cwd(), 'src/server/AgentServer.ts'), 'utf8');
+
+  it('the service production builds cannot skip confinement before pairing is ready', () => {
+    const s = server();
+    const built = s.indexOf('const appSvc = new AppConversationService({');
+    expect(built).toBeGreaterThan(-1);
+    expect(s.slice(built, built + 500)).toContain('confineStranded: () => { throw new Error(\'pairing-not-ready\'); }');
+  });
+  it('the real hook is set where every path passes, after the ledger', () => {
+    const a = agent();
+    const ledger = a.indexOf('this.mobilePairing.keyLedger = keyLedger;');
+    const hook = a.indexOf('svc.deps.confineStranded = (key, personKey, deviceId)');
+    expect(ledger).toBeGreaterThan(-1);
+    expect(hook).toBeGreaterThan(ledger);
+  });
+  it('the resume dropper does not depend on the scheduler', () => {
+    const s = server();
+    const wired = s.indexOf('sessionManager.conversationResumeDropper =');
+    expect(wired).toBeGreaterThan(-1);
+    expect(wired).toBeLessThan(s.indexOf('if (config.scheduler.enabled && coordinator.isAwake) {'));
+  });
+});
+
+describe('a log row that cannot be placed yet', () => {
+  it('counts as soon as it can, without waiting for a restart', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-refold-'));
+    let known = false;
+    const log = new TeamAccessLog({
+      stateDir: dir, verify: () => (known ? 'verified' : 'unknown'),
+      signer: { machineId: () => 'm', signerKeyHash: () => 'k', sign: () => ({ machineId: 'm', signerKeyHash: 'k', sig: 's' }) } as never,
+    });
+    log.appendMachineEvents([{ type: 'conversation-own', ref: 'r', personKey: 'p' }]);
+    expect(log.state().owned.get('r')).toBeUndefined();
+    known = true;
+    expect(log.state().owned.get('r')).toBe('p');
   });
 });

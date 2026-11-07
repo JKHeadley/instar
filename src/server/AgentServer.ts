@@ -6051,11 +6051,7 @@ export class AgentServer {
           const keyLedger = signer ? new MobileDeviceKeyLedger({ stateDir: options.config.stateDir, signer, keyLookup }) : null;
           svc = new AppConversationService({
             signer, keyLookup, keyLedger,
-            // Runs at boot, before the log is ready: it throws, and the next recovery pass retries, so
-            // a team person's create never lands unconfined.
-            confineStranded: (key, personKey, deviceId) => {
-              if (this.mobilePairing?.devices.get(deviceId)?.role === 'team') this.mobilePairing.confineOwnConversation(key, personKey);
-            },
+            confineStranded: () => { throw new Error('pairing-not-ready'); },
             stateDir: options.config.stateDir,
             machineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
             registry: routeCtx.conversationRegistry!,
@@ -6100,6 +6096,11 @@ export class AgentServer {
         this.mobilePairing.keyLedger = keyLedger;
         // People and roles §3.4: who owns each app conversation (undefined ⇒ no such conversation).
         this.mobilePairing.useAppConversationStore(svc.store);
+        // Set here on every path: production builds the service before this server exists.
+        const pairingForRecovery = this.mobilePairing;
+        svc.deps.confineStranded = (key, personKey, deviceId) => {
+          if (pairingForRecovery.devices.get(deviceId)?.role === 'team') pairingForRecovery.confineOwnConversation(key, personKey);
+        };
         if (keyLedger) {
           try {
             const rec = keyLedger.reconcile(this.mobilePairing.devices);

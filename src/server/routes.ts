@@ -6854,6 +6854,8 @@ export function createRoutes(ctx: RouteContext): Router {
     // A scoped session speaks only for itself, whatever the query names.
     const scopedSession = (res.locals.memorySession as { sessionId?: string } | undefined)?.sessionId;
     const instarSid = scopedSession ?? (typeof req.query.instar_sid === 'string' ? req.query.instar_sid : '');
+    // Consumers read these as paths on the unsandboxed server. A scoped session supplies none of them.
+    if (scopedSession) for (const field of ['transcript_path', 'agent_transcript_path', 'cwd']) delete (payload as Record<string, unknown>)[field];
     const stored = dispatchHookEvent(hookEventDispatchDeps(), payload, instarSid);
     if (!stored) {
       res.status(500).json({ error: 'Failed to store event' });

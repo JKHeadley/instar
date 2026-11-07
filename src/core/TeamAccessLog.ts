@@ -237,6 +237,7 @@ export class TeamAccessLog {
   private folded: TeamAccessState = emptyState();
   private health: LogHealth = 'absent';
   private seedSeq = 0;
+  private refoldPending = false;
 
   constructor(private readonly opts: TeamAccessLogOptions) {
     this.dir = path.join(opts.stateDir, TEAM_ACCESS_DIR);
@@ -308,7 +309,13 @@ export class TeamAccessLog {
 
   healthState(): LogHealth { return this.health; }
   allRows(): ReadonlyArray<TeamAccessRow> { return this.rows; }
-  state(): TeamAccessState { return this.folded; }
+  state(): TeamAccessState {
+    if (this.refoldPending) {
+      this.folded = foldRows(this.rows, this.opts.verify);
+      this.refoldPending = this.rows.some((r) => this.opts.verify(r) === 'unknown');
+    }
+    return this.folded;
+  }
 
   private nextSeq(): number { return Math.max(this.folded.highestSeq, this.seedSeq) + 1; }
 
@@ -323,6 +330,8 @@ export class TeamAccessLog {
     }
     this.rows.push(row);
     foldRowInto(this.folded, row, this.opts.verify);
+    // A row that cannot be placed yet (a key cache after an identity change) must not be lost.
+    if (this.opts.verify(row) === 'unknown') this.refoldPending = true;
     this.health = 'ok';
     this.snapshot();
   }

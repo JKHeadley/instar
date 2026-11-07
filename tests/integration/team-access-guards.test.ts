@@ -276,6 +276,27 @@ describe('hook events from a scoped session', () => {
     await request(app).post('/hooks/events?instar_sid=someone-else').send(body);
     expect(set).toEqual([['mine', 'new-id'], ['someone-else', 'new-id']]);
   });
+
+  it('carry no file paths from a scoped session; other callers keep theirs', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const app = express();
+    app.use(express.json());
+    app.use((req, res, next) => { if (req.headers['x-scoped']) res.locals.memorySession = { sessionId: 'mine' }; next(); });
+    app.use(createRoutes({
+      config: { projectName: 'x', stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'team-hook-')), sessions: {}, scheduler: {} },
+      startTime: new Date(), scheduler: null,
+      hookEventReceiver: { receive: (e: Record<string, unknown>) => { seen.push(e); return true; }, storeEvent: (e: Record<string, unknown>) => { seen.push(e); return true; } },
+      sessionManager: { listRunningSessions: () => [], getSessionById: () => null, setClaudeSessionId: () => undefined },
+      state: { getJobState: () => null, getSession: () => null, queryEvents: () => [], getCoherenceJournal: () => undefined, get: () => undefined },
+    } as unknown as RouteContext));
+    const body = { event: 'PostToolUse', session_id: 'x', transcript_path: '/etc/passwd', agent_transcript_path: '/etc/hosts', cwd: '/scope' };
+    await request(app).post('/hooks/events').set('x-scoped', '1').send(body);
+    expect(JSON.stringify(seen)).not.toContain('/etc/passwd');
+    expect(JSON.stringify(seen)).not.toContain('/scope');
+    seen.length = 0;
+    await request(app).post('/hooks/events').send(body);
+    expect(JSON.stringify(seen)).toContain('/etc/passwd');
+  });
 });
 
 describe('a second machine', () => {

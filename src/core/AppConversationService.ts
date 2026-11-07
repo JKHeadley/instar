@@ -577,8 +577,9 @@ export class AppConversationService {
     for (const r of rows) {
       try {
         const a = this.store.getMediaAttachments(r.conversationKey, r.messageId)?.find((x) => x.attachmentId === r.attachmentId);
-        const copy = a ? await this.media.sessionCopy(r.messageId, a) : null;
-        if (!copy) continue;
+        const held = a ? await this.media.sessionCopy(r.messageId, a) : null;
+        if (!held) continue;
+        const copy = this.intoConfinedInbox(r.conversationKey, held);
         // Claim the row first, so two landings never produce two lines (§4.12: de-duplicated by attachment).
         const claimed = this.media.indexDb.prepare(`UPDATE pending_deliveries SET state = 'ready', path = ? WHERE attachmentId = ? AND state = 'waiting'`).run(copy, r.attachmentId);
         if (claimed.changes !== 1) continue;
