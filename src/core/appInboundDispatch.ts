@@ -165,7 +165,7 @@ export function createAppFollowUpInjector(deps: { sessions: Pick<AppDispatchSess
 }
 
 /** The session context: recent history and the relay instructions, written to a private file. */
-function writeContext(deps: AppInboundDispatchDeps, input: Pick<AppDispatchInput, 'conversationKey' | 'alias' | 'ownerName' | 'notes'> & { messageId: string | null }): { ctxPath: string; contextData: string; tmpDir: string } {
+function writeContext(deps: AppInboundDispatchDeps, input: Pick<AppDispatchInput, 'conversationKey' | 'alias' | 'ownerName' | 'notes'> & { messageId: string | null }): { ctxPath: string; contextData: string; fileFor: (name: string) => string } {
     // Context: recent history from the conversation store (never a platform API).
     const history = deps.store.browseMessages(input.conversationKey, null, HISTORY).messages
       .filter((m) => m.messageId !== input.messageId);

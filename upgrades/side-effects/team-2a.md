@@ -133,3 +133,5 @@ A lost live log takes no writes until restored, so a new row cannot hide the los
 The team access awareness section is tracked in the completeness test.
 
 A sweep of 480 related test files before the PR found the bookkeeping these changes needed: closure entries, owner-only route lists, spies that follow the unlocked spawn, and catch annotations.
+
+Rebased onto main after its engine-change work: the safe inbox path now sits in `writeContext`, which the new session-switch path also uses.
