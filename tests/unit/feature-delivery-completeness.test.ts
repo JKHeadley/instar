@@ -149,6 +149,7 @@ describe('Feature Delivery Completeness', () => {
       '**A2A cross-route copies are labelled:**', // ACT-061 cross-namespace label addendum to the inbound-id ledger card — template + migrateClaudeMd (own sniff key) + Codex/Gemini shadow marker.
       'inbound message-id ledger', // a2a-inbound-id-ledger: the "### A2A inbound message-id ledger" card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key per the spec's Migration parity), framework-shadowed.
       '### Jev Memory Picker', // jev-memory-picker: the session-start memory ranking card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (content-sniffed on the heading).
+      '### Jev First Decisions', // jev-first: server-side shadow gateway and read-only summary — full template, migration, and framework-shadow parity.
       '### Jev Correction Shadow', // jev-correction-shadow: the log-only correction-recall card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (content-sniffed on the heading).
       '### Machine Load Second Opinion', // trustworthy-machine-load B4: the advisory load-assessment card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (content-sniffed on the heading).
       '### Jev Circles Shadow', // jev-circles-shadow: the log-only measurement card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (content-sniffed on the heading).
