@@ -103,7 +103,7 @@ They found over thirty real defects the spec rounds and a full route-by-role tab
 - The conversation list showed every topic's name and a preview.
 - A person's own conversation was never confined.
 - A confined session could plant a link and have the unsandboxed server overwrite an owner's file.
-- A confined session could report a flag-shaped session id that reached `--resume` at the next launch. This and the Linux `.curlrc` write were on main for any confined session, so they shipped separately in PR 2910.
+- A confined session could report a flag-shaped session id that reached `--resume` at the next launch. This and the Linux `.curlrc` write were on main for any confined session, so they went into their own PR, 2910.
 - On an ordinary agent the owner could invite people but not turn team access off.
 - A restore could lock an owner out of every conversation.
 - A row lost from the middle of the log could quietly give back what it took away.
