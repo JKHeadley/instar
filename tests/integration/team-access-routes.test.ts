@@ -421,6 +421,43 @@ describe('restoring with damaged history', () => {
   });
 });
 
+describe('order within a change', () => {
+  it('a grant listed before its person is refused, not silently dropped', async () => {
+    const e = await setup();
+    const r = await send(e, phone(e), 'POST', '/mobile/team/invites', { events: [
+      { type: 'team-on' }, { type: 'owner-pin', personKey: 'owner-1' }, grant('telegram:50', 'use', 'p-1'), { type: 'person-add', personKey: 'p-1', name: 'Mia', role: 'member' },
+    ] });
+    expect(r.status).toBe(404);
+    expect(e.svc.teamOn()).toBe(false);
+    expect(e.svc.teamLog()!.isConfined('telegram:50')).toBe(false);
+  });
+
+  it('a link that cannot be made leaves nothing saved or confined', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    e.svc.mintTeamLink = () => ({ ok: false, status: 429, error: 'too-many-mints' });
+    const r = await send(e, owner, 'POST', '/mobile/team/invites', { events: [{ type: 'person-add', personKey: 'p-2', name: 'Bo', role: 'guest' }, grant('telegram:50', 'read', 'p-2')] });
+    expect(r.status).toBe(429);
+    expect(e.svc.teamStanding('p-2')).toBeNull();
+    expect(e.svc.teamLog()!.isConfined('telegram:50')).toBe(false);
+  });
+});
+
+describe('a live log lost with its snapshot intact', () => {
+  it('reads as damaged, and restore brings the team back', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    SafeFsExecutor.safeRmSync(path.join(e.dir, 'state', 'team-access', 'log.jsonl'), { force: true, operation: 'test' });
+    e.svc.teamLog()!.load();
+    expect(e.svc.teamLog()!.healthState()).toBe('unreadable');
+    expect(e.svc.teamOn()).toBe(true);
+    expect((await faceId(e, owner, 'team-restore', '/mobile/team/restore')).status).toBe(200);
+    expect(e.svc.teamStanding('p-1')?.tier).toBe('member');
+  });
+});
+
 describe('a log with a row missing from the middle', () => {
   const dropMiddleRow = (e: Env) => {
     const log = path.join(e.dir, 'state', 'team-access', 'log.jsonl');

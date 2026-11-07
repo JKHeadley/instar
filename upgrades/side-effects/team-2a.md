@@ -124,3 +124,6 @@ No path to more access. Fixed: restore could lock an owner out of everything on 
 
 ## Outside-family code review, third pass, 2026-11-07
 Fixed: a non-standard topic reference such as `telegram:01` could sit apart from the topic the handler served (refused at grant, and a send now names the topic by number); a row lost from the middle of the log could quietly give back what it took away (past the last accepted restore, every row must be present and verify, or the log reads as unreadable and team phones are refused; a restore records what it accepted, so its gap does not read as damage at the next boot).
+
+## Outside-family code review, last pass, 2026-11-07
+No access gain raised. Fixed: a link is now made before anything is saved or confined; a grant listed before its person is refused rather than dropped; a live log lost with its snapshot intact now reads as damaged, so restore works. Review stopped here: the last rounds raised ordering and recovery edges only.

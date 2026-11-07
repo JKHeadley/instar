@@ -146,6 +146,11 @@ describe('team access — production wiring', () => {
     // A topic reference that is not the standard form is refused before anything is written.
     const odd = await owner('POST', '/mobile/team/grants', { events: [{ type: 'grant', personKey: 'mia', ref: 'telegram:01', access: 'use' }] });
     expect(odd.status).toBeGreaterThanOrEqual(400);
+    // A grant cannot come before its person.
+    const early = await owner('POST', '/mobile/team/invites', { events: [
+      { type: 'grant', personKey: 'later', ref: `telegram:77`, access: 'use' }, { type: 'person-add', personKey: 'later', name: 'L', role: 'member' },
+    ] });
+    expect(early.status).toBe(404);
     // Two invites at once for one new key: the second sees the first.
     const twin = { events: [{ type: 'person-add', personKey: 'twin', name: 'Twin', role: 'member' }] };
     const both = await Promise.all([owner('POST', '/mobile/team/invites', twin), owner('POST', '/mobile/team/invites', twin)]);

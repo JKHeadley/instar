@@ -228,9 +228,13 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     const grants = events.filter((e): e is Extract<RequestEvent, { type: 'grant' }> => e.type === 'grant');
     const log = svc.teamLog();
     if (!log) return { status: 503, error: 'team-access-unavailable', detail: 'Team access is not available on this agent.' };
-    const added = new Set(events.flatMap((e) => (e.type === 'person-add' ? [e.personKey] : [])));
+    // In order, as the log will apply them: a grant before its person would silently do nothing.
+    const added = new Set<string>();
+    for (const e of events) {
+      if (e.type === 'person-add') added.add(e.personKey);
+      if (e.type === 'grant' && !added.has(e.personKey) && !log.state().people.has(e.personKey)) return { status: 404, error: 'unknown-person', detail: 'That person is not on this agent.' };
+    }
     for (const g of grants) {
-      if (!added.has(g.personKey) && !log.state().people.has(g.personKey)) return { status: 404, error: 'unknown-person', detail: 'That person is not on this agent.' };
       const r = grantRefusal(svc, deps, g.ref);
       if (r) return r;
     }
@@ -307,12 +311,12 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
       return;
     }
     if (keysEverAdded(log.allRows()).has(add.personKey)) { res.status(409).json({ error: 'person-key-used', detail: 'That person was on this agent before. Invite them as someone new.' }); return; }
-    const refused = await applyGrants(events);
-    if (refused) { send(res, refused); return; }
     // The link first: its code means nothing until the person is in the log, and a mint that fails here
-    // leaves nothing saved, so a plain retry works.
+    // leaves nothing saved or confined, so a plain retry works.
     const link = svc.mintTeamLink(add.personKey, typeof body.label === 'string' ? body.label : null);
     if (!link.ok) { res.status(link.status).json({ error: link.error }); return; }
+    const refused = await applyGrants(events);
+    if (refused) { send(res, refused); return; }
     await underLocks(grantRefs(events), () => appendRequest(req, deviceId));
     res.json({ personKey: add.personKey, link: link.link, expiresAt: link.expiresAt, disclosure: TEAM_DISCLOSURE });
   }));

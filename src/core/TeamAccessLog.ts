@@ -298,7 +298,8 @@ export class TeamAccessLog {
   load(): void {
     this.seedSeq = this.readLastGoodHighestSeq();
     if (!fs.existsSync(this.logFile)) {
-      this.rows = []; this.folded = emptyState(); this.health = 'absent';
+      // A snapshot with no live log means the log was lost, not that there never was one.
+      this.rows = []; this.folded = emptyState(); this.health = this.seedSeq > 0 ? 'unreadable' : 'absent';
       return;
     }
     try {
