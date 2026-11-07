@@ -33,6 +33,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { summarizeControls } from '../../src/server/mobileSessionControlsRoutes.js';
 import type { InstarConfig } from '../../src/core/types.js';
 
 interface Machine {
@@ -339,14 +340,14 @@ describe('production wiring', () => {
     for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/app-conversations-pool-alive.test.ts' });
   });
 
-  it('is alive: the routes are mounted on a real AgentServer and answer 503 while the pool is off, never 404', async () => {
+  const boot = (developmentAgent: boolean) => {
     const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'app-pool-e2e-'));
     dirs.push(dir);
     const stateDir = path.join(dir, '.instar');
     for (const d of ['state/sessions', 'state/jobs', 'logs']) fs.mkdirSync(path.join(stateDir, d), { recursive: true });
     fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
     const config = {
-      projectName: 'app-pool-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent: true,
+      projectName: 'app-pool-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent,
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 4, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
       scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
     } as unknown as InstarConfig;
@@ -355,11 +356,31 @@ describe('production wiring', () => {
     sessionManager.on = () => undefined;
     const server = new AgentServer({ config, sessionManager, state, initiativeTracker: new InitiativeTracker(stateDir) } as never);
     servers.push(server);
-    const auth = (r: request.Test) => r.set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'app-pool-e2e');
-    const app = server.getApp();
+    return server.getApp();
+  };
+  const auth = (r: request.Test) => r.set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'app-pool-e2e');
+
+  it('is alive: the routes are mounted on a real AgentServer and answer 503 while the pool is off, never 404', async () => {
+    const app = boot(true);
     expect((await auth(request(app).post('/pool/bring-back')).send({ conversation: `app:${KEY}` })).status).toBe(503);
     expect((await auth(request(app).post('/pool/bring-back')).send({ conversation: '7' })).status).toBe(400);
     const t = await auth(request(app).post('/pool/transfer')).send({ topic: `app:${KEY}`, to: 'Laptop' });
     expect(t.status).toBe(503);
+  }, 60_000);
+
+  it('off for the fleet: an agent that is not a development agent gets no move, and the menu says so without blaming an update', async () => {
+    const app = boot(false);
+    const t = await auth(request(app).post('/pool/transfer')).send({ topic: `app:${KEY}`, to: 'Laptop' });
+    expect(t.status).toBe(503);
+    expect((await auth(request(app).post('/pool/bring-back')).send({ conversation: `app:${KEY}` })).status).toBe(503);
+    const server = fs.readFileSync('src/commands/server.ts', 'utf-8');
+    const at = server.indexOf('const appActive = (): boolean =>');
+    expect(server.slice(at, server.indexOf('\n', at))).toContain('resolveDevAgentGate(config.multiMachine?.sessionPool?.appConversations?.enabled, config)');
+    const c = summarizeControls({
+      row: { tmuxSession: 's', id: 'i', name: 'n', machineId: 'm1', platform: 'headless', conversationRef: `app:${KEY}` }, remote: false, options: null, profile: null, peerInput: null,
+      pool: { status: 200, body: { selfMachineId: 'm1', machines: [{ machineId: 'm1', nickname: 'One', online: true, seamlessnessFlags: { appConversationsPool: false } }, { machineId: 'm2', nickname: 'Two', online: true, seamlessnessFlags: {} }] } },
+    } as never, {}, 0);
+    expect(c.move).toMatchObject({ state: 'not-yet', choices: [] });
+    expect((c.move as { reason: string }).reason).toContain('isn\'t turned on for this agent yet');
   }, 60_000);
 });

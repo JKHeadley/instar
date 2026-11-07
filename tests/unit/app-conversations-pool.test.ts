@@ -1067,6 +1067,12 @@ describe('the phone (§2.5)', () => {
     expect((c.move as { note: string }).note).toContain('starts empty');
   });
 
+  it('off on this agent: no machine is flagged, and it doesn\'t blame an update', () => {
+    const c = controls(ROW, [m(SELF, { seamlessnessFlags: {} }), m(PEER, { seamlessnessFlags: {} })]);
+    expect(c.move).toMatchObject({ state: 'not-yet', choices: [], bringBack: { can: false } });
+    expect((c.move as { reason: string }).reason).toContain('isn\'t turned on for this agent yet');
+  });
+
   it('an older machine online: said plainly, nothing offered', () => {
     const c = controls(ROW, [m(SELF), m(PEER, { seamlessnessFlags: {} })]);
     expect(c.move).toMatchObject({ state: 'not-yet', reason: NEEDS_UPDATE, choices: [] });

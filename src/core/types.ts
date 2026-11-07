@@ -3266,6 +3266,8 @@ export interface WriteAdmissionConfig {
 }
 
 export interface SessionPoolConfig {
+  /** App conversations move between machines (docs/specs/app-conversations-in-the-pool.md). Unset: on for a development agent, off for the fleet (DEV_GATED_FEATURES). */
+  appConversations?: { enabled?: boolean };
   /** Master switch. Default false — the entire session-pool layer is inert when false. */
   enabled?: boolean;
   /**

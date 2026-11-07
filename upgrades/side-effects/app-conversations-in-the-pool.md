@@ -74,6 +74,10 @@ The phone's menu and refusal words are plain sentences with no internals; a comm
 
 **Replicated.** Ownership: the coherence journal's `topic-placement` kind (`emitAppPlacement`) materialized by `OwnershipApplier`. Conversation events: the existing `appConversations` store. Aliases are per-machine, derived from the key and minted on demand. Delivery custody moves by the existing ledger hand-off. Memory scope is machine-local BY DESIGN (spec decision 6), and the move says so. One-voice: the bring-home notice is raised by the lease holder only. Durable state doesn't strand on a move: a `transferring` record is resolved by its owner past the drain deadline.
 
+## 7b. Rollout gate
+
+Off for the fleet, on for development agents: `multiMachine.sessionPool.appConversations.enabled` through `resolveDevAgentGate`, registered in `DEV_GATED_FEATURES`, on top of the pool's stage. With it off, `active()` is false, so the flag isn't advertised and the service, router arms, moves and enforcer all keep today's lease-holder rule. The named duplicate limit below can't reach a user until this is turned on, which follows the first real two-machine move.
+
 ## 8. Rollback cost
 
 Revert and release; no data migration. Older code serves every app conversation from the lease holder and ignores `app:` records for serving. Leftover records are inert for serving, though an older machine's shed, stranded notice, reconciler or stale-owner engine may read them (spec §8). Before a deliberate downgrade, move every app conversation back to the lease holder; the release note says so.

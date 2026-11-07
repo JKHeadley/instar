@@ -2,7 +2,9 @@
 
 ## What Changed
 
-An app conversation, and its session, can now move to another machine the way a Telegram topic does: `POST /pool/transfer` with `app:<key>`, and the phone's Face ID Move. Part 3b of Justin's 2026-11-06 ask (topic 134088).
+An app conversation, and its session, can move to another machine the way a Telegram topic does: `POST /pool/transfer` with `app:<key>`, and the phone's Face ID Move. Part 3b of Justin's 2026-11-06 ask (topic 134088).
+
+**On for development agents only** (`multiMachine.sessionPool.appConversations.enabled`, resolved through the development-agent gate). With it off, this machine doesn't advertise `appConversationsPool`, and the lease holder serves every app conversation exactly as before. It stays off for the fleet until a real two-machine move has run, because a duplicate is still possible when an attempt reached another machine before its delivery event replicates.
 
 - **One owner per conversation.** Each moved conversation has a fenced `SessionOwnershipRegistry` record keyed `app:<key>`. A conversation that never moved has no record, and the lease holder serves it exactly as before. `AppConversationService.isOwner()` is gone: `serves(key)`, `mayReply(key)` and `currentOwner(key)` replace it.
 - **Only two things move one.** A completed drain, or the operator's "Bring it back here" (`POST /pool/bring-back`, Face ID on the phone). No pins, no router placement, no overload shed, no automatic takeover.
@@ -19,7 +21,7 @@ Rollback: revert. Before a deliberate downgrade, move every app conversation bac
 
 ## What to Tell Your User
 
-You can now move a conversation from the Instar app to another of your machines, the same way you move a Telegram topic: open the session's menu and choose Move. If that machine stops answering, the menu offers "Bring it back here". All your machines need the latest update first; until then the menu says so. What I've learned in that conversation doesn't follow it to the new machine.
+Moving a conversation from the Instar app to another of your machines is being built and proven on development agents first. Nothing changes for your agent yet: your app conversations keep working as they do now, and the app's menu says moving isn't turned on.
 
 ## Summary of New Capabilities
 

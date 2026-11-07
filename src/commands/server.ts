@@ -29556,7 +29556,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           {
             const appHoldsLease = (): boolean => (coordinator.enabled ? coordinator.holdsLease() : true);
             const appCaps = (): MachineCapacity[] => machinePoolRegistry?.getCapacities() ?? [];
-            const appActive = (): boolean => _sessionPoolStage() !== 'dark' && !!durableOwnershipStore && _placementReplicationOn === true && !!_appConversationService && !!_sessionRouter;
+            const appActive = (): boolean => resolveDevAgentGate(config.multiMachine?.sessionPool?.appConversations?.enabled, config) && _sessionPoolStage() !== 'dark' && !!durableOwnershipStore && _placementReplicationOn === true && !!_appConversationService && !!_sessionRouter;
             _appPoolAdvertised = () => appActive() && !!_drainRunner && !!_inboundQueue;
             const appFlags = new AppFlagTracker({ now: () => Date.now(), holdsLease: appHoldsLease, selfId: () => meshSelfId });
             const appGate = new AppLeaseGate({

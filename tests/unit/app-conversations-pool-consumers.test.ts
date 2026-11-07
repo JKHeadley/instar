@@ -153,6 +153,8 @@ describe('every other reader (§2.2, §2.7)', () => {
     const line = server.slice(at, server.indexOf('\n', at));
     expect(server).toContain('_refreshPoolHeartbeat(); }'); // it re-advertises the moment it turns on
     expect(line).toContain("_sessionPoolStage() !== 'dark'");
+    // Off for the fleet, on for development agents: the gate comes first, and `active()` decides everything else.
+    expect(line).toContain('resolveDevAgentGate(config.multiMachine?.sessionPool?.appConversations?.enabled, config)');
     expect(line).toContain('!!durableOwnershipStore');
     expect(line).toContain('_placementReplicationOn === true');
   });

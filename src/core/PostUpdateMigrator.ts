@@ -1184,7 +1184,7 @@ export const MOBILE_SESSION_APP_NEW_MARKER = `"platform":"app"`;
  * after the New session bullet. Sniff: `POST /pool/transfer\` with \`app:<key>`.
  */
 export function MOBILE_APP_POOL_LINE(): string {
-  return '- App conversations move like Telegram topics (`POST /pool/transfer` with `app:<key>`, when all your machines are updated); Slack conversations stay with the machine that holds the Slack connection.';
+  return '- App conversations move like Telegram topics (`POST /pool/transfer` with `app:<key>`, when all your machines are updated). This is on for development agents first: elsewhere that call answers 503 and the conversation stays on the machine holding the lease. Slack conversations stay with the machine that holds the Slack connection.';
 }
 export const MOBILE_APP_POOL_MARKER = 'with `app:<key>`, when all your machines';
 /**

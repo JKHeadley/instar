@@ -169,6 +169,7 @@ function chatWords(row: Rec): string {
 
 const NOT_A_TOPIC = `${DOOR.Word} and machine can be changed for a session that has a conversation. This session has none, so there is nothing to switch.`;
 /** app-conversations-in-the-pool §2.6: an older machine keeps every app conversation where it is. */
+const MOVE_NOT_ON = 'Moving app conversations to another machine isn\'t turned on for this agent yet, so this one stays on its machine.';
 const MOVE_NEEDS_UPDATE = 'Your machines need the latest Instar update before app conversations can move.';
 /** A Slack conversation stays with its Slack connection (slack-conversations-stay-with-connection §2.4). */
 const SLACK_STAYS = 'This Slack conversation stays on the machine that holds your Slack connection.';
@@ -202,6 +203,8 @@ function appMoveRow(ref: string, rows: MobileMachine[], pool: unknown, owner: st
   const ownerLiveness = rec(rec(raw.find((m) => m.machineId === owner)).liveness).state;
   const ownerGone = !!ownerRow && !ownerRow.here && (!ownerRow.selectable || ownerLiveness === 'unreachable' || ownerLiveness === 'stale');
   const bringBack = ownerGone ? { can: true, confirm: `If ${ownerRow.label} is actually still running this conversation, its session will be stopped as soon as it reconnects.` } : { can: false };
+  // No machine flagged: the feature is off on this agent, and an update wouldn't change that.
+  if (!raw.some((m) => flagged(String(m.machineId)))) return { state: 'not-yet', reason: MOVE_NOT_ON, choices: [], bringBack: { can: false } };
   if (!everyOnlineFlagged) return { state: 'not-yet', reason: MOVE_NEEDS_UPDATE, choices: [], bringBack };
   return {
     state: 'ok', reason: null, topic: ref,
