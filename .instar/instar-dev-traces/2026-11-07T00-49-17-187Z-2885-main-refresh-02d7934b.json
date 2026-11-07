@@ -1,0 +1,53 @@
+{
+  "version": 3,
+  "slug": "2885-main-refresh",
+  "sessionId": "35ffb454-1d96-497c-8de3-21ea95ad530b",
+  "timestamp": "2026-11-07T00:49:17.187Z",
+  "artifactPath": "upgrades/side-effects/2885-main-refresh.md",
+  "artifactSha256": "3d17c05cc48acc16c080c45a1f83251793588d11108f239d358abe614adaa54f",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-06T20-35-13-684Z-executor-check-timeout-stage.json",
+    ".instar/instar-dev-decisions/2026-11-06T20-39-28-550Z-executor-github-outage-notice.json",
+    ".instar/instar-dev-traces/2026-11-06T20-34-50-831Z-executor-check-timeout-stage-fce3ae0c.json",
+    ".instar/instar-dev-traces/2026-11-06T20-39-14-980Z-executor-github-outage-notice-f2e0762b.json",
+    ".instar/instar-dev-traces/2026-11-06T22-52-14-286Z-diagnosis-peer-test-unique-tmp-7bb4afd8.json",
+    ".instar/instar-dev-traces/2026-11-06T22-52-53-648Z-diagnosis-peer-test-unique-tmp-d051c6ca.json",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/localVerify/FailedFileDiagnosisPeerService.test.ts",
+    "upgrades/eli16/2885-main-refresh.md",
+    "upgrades/eli16/diagnosis-peer-test-unique-tmp.md",
+    "upgrades/eli16/executor-check-timeout-stage.md",
+    "upgrades/eli16/executor-github-outage-notice.md",
+    "upgrades/next/diagnosis-peer-test-unique-tmp.md",
+    "upgrades/next/executor-check-timeout-stage.md",
+    "upgrades/next/executor-github-outage-notice.md",
+    "upgrades/side-effects/2885-main-refresh.md",
+    "upgrades/side-effects/diagnosis-peer-test-unique-tmp.md",
+    "upgrades/side-effects/executor-check-timeout-stage.md",
+    "upgrades/side-effects/executor-github-outage-notice.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible conflict resolution in an existing PR; preserve both independent test groups. Runtime files auto-merge from the existing reviewed PR and current main, with no new behavior or third test fix.",
+  "eli16Path": "upgrades/eli16/2885-main-refresh.md",
+  "sideEffectsPath": "upgrades/side-effects/2885-main-refresh.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}
