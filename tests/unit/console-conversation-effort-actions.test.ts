@@ -33,6 +33,20 @@ describe('owner effort sheets and opaque request continuity',()=>{
   f.button('Check status').click();await settle();expect(panel().textContent).toContain('Saved independently. The current sync status could not be checked.');expect(f.button('Retry same request')).toBeUndefined();
   document.querySelector<HTMLButtonElement>('.sheet-close')!.click();expect(name.value).toBe('');f.mount(true);f.button('Rename effort').click();await settle();expect(f.calls.filter(c=>c.body?.change?.kind==='set-effort-title')).toHaveLength(1);expect(panel().querySelector('input')).toBeNull();
  });
+ it('refreshes the list once when a sheet closes after a change, by × or by Done',async()=>{
+  for(const closeWith of ['×','Done']){
+   let posted=0;
+   const f=await boot((path,body)=>{if(path.endsWith('/pending'))return ok({items:[]});if(path.includes('/nodes/'))return ok(rawNode());if(body){posted++;return ok({state:'committed',effort,requestId:body.requestId,idempotencyKey:'k'});}return ok({});});
+   f.mount();f.button('Create effort').click();await settle();f.button('Create effort').click();await settle();
+   if(f.button('Check status')){f.button('Check status').click();await settle();}
+   if(closeWith==='Done'){const name=document.querySelector('[role=dialog] input') as HTMLInputElement;if(name){name.value='A name';document.querySelector('[role=dialog] form')!.dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));await settle();if(f.button('Check status')){f.button('Check status').click();await settle();}}}
+   const closer=closeWith==='×'?document.querySelector('[role=dialog] .sheet-close') as HTMLElement:f.button('Done');expect(closer,closeWith).toBeTruthy();closer.click();await settle();
+   expect(posted).toBeGreaterThan(0);expect(f.refresh,closeWith).toHaveBeenCalledTimes(1);
+  }
+ });
+ it('does not refresh when the sheet closes with nothing changed',async()=>{
+  const f=await boot((path)=>path.endsWith('/pending')?ok({items:[]}):ok({}));f.mount();f.button('Create effort').click();await settle();(document.querySelector('[role=dialog] .sheet-close') as HTMLElement).click();await settle();expect(f.refresh).not.toHaveBeenCalled();
+ });
  it('blocks new actions until asynchronous pending restoration completes',async()=>{
   let release!:(value:any)=>void;const pending=new Promise(resolve=>{release=resolve;});const f=await boot(path=>path.endsWith('/pending')?pending:ok(rawNode()));f.mount(true);f.button('Rename effort').click();await settle();expect(document.querySelector('[role=dialog] input')).toBeNull();expect(f.calls.some(c=>c.body)).toBe(false);
   release(ok({items:[{operationKey:'graph-event:pending-move-01',subject:effort,kind:'set-primary-placement',requestId:'earlier-move-0001',state:'saved-pending'}]}));await settle();expect(document.querySelector('[role=dialog]')?.textContent).toContain('An earlier change');expect(document.querySelector('[role=dialog] input')).toBeNull();

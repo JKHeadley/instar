@@ -14,12 +14,12 @@ export function effortActionControls({ canCorrect, node = null, correction = nul
     if (!authorized()) return;
     let open = true, busy = false, ready = false, effort = node?.ref || null, snapshot = correction;
     let scope = mode === 'create' ? 'effort:create' : `${node.key}:${mode}`, kind = mode === 'create' ? 'create-effort' : mode === 'rename' ? 'set-effort-title' : 'set-front-door';
-    let frozen = null, generation = 0;const draftInputs = new Set();
+    let frozen = null, generation = 0, changed = false;const draftInputs = new Set();
     const wipeDraft = () => { for (const input of draftInputs) input.value = '';if (typeof frozen?.body?.change?.title === 'string') frozen.body.change.title = ''; };
     const status = el('p', { class: 'need-sub', role: 'status', 'aria-live': 'polite' });
     const content = el('div', { style: 'min-width:0;max-width:100%' }), actions = el('div');
     const close = () => { open = false; generation++; clearInterval(lockCheck); window.removeEventListener('instar-owner-locked', onLock); wipeDraft();draftInputs.clear();content.replaceChildren(); actions.replaceChildren(); status.textContent = '';frozen = null; effort = null; snapshot = null; };
-    const panel = sheet({ title: mode === 'create' ? 'Create effort' : mode === 'rename' ? 'Rename effort' : 'Choose front door', onClose: close }, content, status, actions);
+    const panel = sheet({ title: mode === 'create' ? 'Create effort' : mode === 'rename' ? 'Rename effort' : 'Choose front door', onClose: () => { close(); if (changed && authorized()) refresh(); } }, content, status, actions);
     panel.classList.add('conversation-correction-sheet');
     const active = () => open && authorized();
     const onLock = () => { if (open) { closeSheet(); unlock(); } };
@@ -40,7 +40,7 @@ export function effortActionControls({ canCorrect, node = null, correction = nul
       // receive only opaque identity and monotonic witness knowledge.
       track(scope, { path: null, body: { requestId: frozen.body.requestId }, witnessed: frozen.witnessed === true,recorded:frozen.recorded===true });
     };
-    const done = () => { closeSheet(); refresh(); };
+    const done = () => { const refreshedOnClose = changed && authorized(); closeSheet(); if (!refreshedOnClose) refresh(); };
     const showDone = label => setKids(actions, el('button', { type: 'button', class: 'btn-primary btn-inline', text: label || 'Done', onclick: done }));
     const showName = () => {
       if (!active() || snapshot?.headerForgotten || !Number.isSafeInteger(snapshot?.headerVersion)) { status.textContent = 'The name is unavailable. Refresh this effort.'; showDone('Refresh'); return; }
@@ -59,7 +59,7 @@ export function effortActionControls({ canCorrect, node = null, correction = nul
       name.focus();
     };
     const committed = async data => {
-      wipeDraft();forget(scope,frozen?.body.requestId); frozen = null; ready = false;
+      changed = true;wipeDraft();forget(scope,frozen?.body.requestId); frozen = null; ready = false;
       if (kind === 'create-effort') {
         if (data.effort?.kind !== 'effort' || !encodeNodeRef(data.effort)) { status.textContent = 'The effort was created. Refresh to open it.'; showDone('Refresh'); return; }
         effort = data.effort; scope = `${encodeNodeRef(effort)}:rename`; kind = 'set-effort-title';
