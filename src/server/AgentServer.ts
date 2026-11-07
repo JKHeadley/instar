@@ -3690,6 +3690,7 @@ export class AgentServer {
                 overrides: options.feedbackExecuteDeps,
               });
               const executor = this.feedbackExecute.service;
+              options.autoUpdater?.setRestartHold('feedback-executor', () => executor.restartHolds());
               triageCtx.service.attachExecutor({
                 status: () => executor.status(),
                 executionStateFor: (id) => executor.executionStateFor(id),

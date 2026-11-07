@@ -30,7 +30,7 @@ import { governor } from '../../monitoring/selfaction/governor.js';
 import type { DerivedTarget } from '../../monitoring/selfaction/types.js';
 import { FeedbackExecuteStore, OPEN_PR_STATES, type ExecutionRow, type ExecutionState } from './FeedbackExecuteStore.js';
 import {
-  GITHUB_OUTAGE_NOTICE_MS, CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, CONFINED_RELATED_TIMEOUT_MS, commandFailureTail, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL, PREVIOUS_REVIEW_FILE,
+  ATTEMPT_RESTART_HOLD_MS, GITHUB_OUTAGE_NOTICE_MS, CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, CONFINED_RELATED_TIMEOUT_MS, commandFailureTail, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL, PREVIOUS_REVIEW_FILE,
   MERGE_ARMED_DEADLINE_MS, MERGE_RETRY_DELAY_MS, SANDBOX_RUNTIME_VERSION, VERIFY_QUIET_MS, WORKSPACE_DISK_CAP_BYTES,
   buildClaudeSandboxSettings, buildSandboxRuntimeSettings, clampProbeDetail, confinedCacheEnv, confinedEnv, effectiveLatchUntil, pathSlug, publishFork, safeSlug, type ConfinementPaths, type ExecuteLiveConfig,
 } from './executePolicy.js';
@@ -42,6 +42,7 @@ import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApp
 import { FEEDBACK_REVIEW_PASS_PREFIX, REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, feedbackReviewLead, isSpecReviewHead, judgeRoutedFeedbackReview, renderCloseComment, renderReviewComment, reviewFindingsText, reviewRefusalIsAboutTheChange, type FeedbackReviewLead, type IndependentReviewVerdict, type ReviewCommentNext, type ReviewerOutcome } from './independentReview.js';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
 import { RerouteRefusedError } from '../../core/rerouteRefusedError.js';
+import type { RestartHold } from '../../core/UpdateGate.js';
 import { PROBE_TAIL_CHARS, canaryStamp, evaluateSessionCanary, findSessionTranscript, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, verdictOf, type CanaryProbeResult } from './confinementCanary.js';
 import { treeBytes, type ConfinedRunner } from './ConfinedRunner.js';
 import type { DepsCachePort } from './depsCache.js';
@@ -344,6 +345,19 @@ export class FeedbackExecutorService {
 
   // ── tick admission ───────────────────────────────────────────────────────────
 
+  /**
+   * Setup and verification run inside this process, so a restart loses them; a running session
+   * survives one and is adopted. Each hold ends by itself, and the updater's ceiling bounds the total.
+   */
+  restartHolds(): RestartHold[] {
+    if (!this.running) return [];
+    return this.opts.store.inStates('claimed', 'verifying').map((row) => ({
+      name: `feedback-attempt:${row.attemptId}`,
+      until: row.updatedAt + ATTEMPT_RESTART_HOLD_MS,
+      reason: 'a feedback fix attempt is in setup or verification and a restart would lose it',
+    }));
+  }
+
   acceptTick(): { status: 202 | 409 | 429 | 503; body: Record<string, unknown> } {
     if (!this.opts.isCanonicalOwner()) return { status: 409, body: { error: 'not-canonical-owner', owner: this.opts.ownerMachineId() } };
     if (this.running) return { status: 409, body: { error: 'tick-in-flight' } };
@@ -423,10 +437,7 @@ export class FeedbackExecutorService {
         acted.add(row.attemptId);
         continue;
       }
-      const reviewDir = this.attemptPaths(row).reviewDir;
-      const adoptable = row.sessionMachine === this.opts.selfMachineId &&
-        ((row.state === 'running' && Boolean(row.workspace && fs.existsSync(row.workspace))) ||
-          (row.state === 'verifying' && Boolean(((row.workspace && fs.existsSync(row.workspace)) || fs.existsSync(reviewDir)) && row.publishClone && fs.existsSync(row.publishClone))));
+      const adoptable = this.adoptableOnThisMachine(row);
       if (row.ownerEpoch < epoch && !adoptable) {
         await this.stopSession(row);
         this.endAttempt(row, epoch, 'stopped', 'stale-epoch');
@@ -940,6 +951,21 @@ export class FeedbackExecutorService {
     }
   }
 
+  /**
+   * Whether this machine can carry an attempt to the current epoch. Verification moves the worker's
+   * tree to the review directory, and a re-verify waits in `running` with its tree still there, so
+   * that state must count too or a finished fix is discarded.
+   */
+  private adoptableOnThisMachine(row: ExecutionRow): boolean {
+    if (row.sessionMachine !== this.opts.selfMachineId) return false;
+    const workspace = Boolean(row.workspace && fs.existsSync(row.workspace));
+    const reviewTree = fs.existsSync(this.attemptPaths(row).reviewDir);
+    const publishClone = Boolean(row.publishClone && fs.existsSync(row.publishClone));
+    if (row.state === 'verifying') return (workspace || reviewTree) && publishClone;
+    if (row.state !== 'running') return false;
+    return workspace || (row.reason === 'reverify-after-restart' && reviewTree && publishClone);
+  }
+
   private async reconcileLive(rowIn: ExecutionRow, epoch: number, slug: string, approver: string): Promise<void> {
     let row = rowIn;
     if (row.state === 'verifying' && row.reason === 'publishing') {
@@ -949,11 +975,7 @@ export class FeedbackExecutorService {
     if (row.ownerEpoch < epoch) {
       // Same machine re-acquired the lease with the session still alive (or already finished with its
       // workspace intact): adopt it under the current epoch instead of killing a healthy build.
-      const sameMachine = row.sessionMachine === this.opts.selfMachineId;
-      const reviewDir = this.attemptPaths(row).reviewDir;
-      if (sameMachine && (row.state === 'running' || row.state === 'verifying') &&
-        ((row.workspace && fs.existsSync(row.workspace)) || (row.state === 'verifying' && fs.existsSync(reviewDir))) &&
-        (row.state !== 'verifying' || (row.publishClone && fs.existsSync(row.publishClone)))) {
+      if (this.adoptableOnThisMachine(row)) {
         row = this.opts.store.adopt(epoch, row.attemptId);
         this.opts.audit.append('execute:adopted', { attemptId: row.attemptId, epoch });
       } else {
