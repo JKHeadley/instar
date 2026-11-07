@@ -99,7 +99,7 @@ export interface MessageEvent extends AppEventBase {
    * events, which were necessarily sent by an owner phone (no other kind existed).
    */
   senderName?: string;
-  senderRole?: 'owner' | 'msp';
+  senderRole?: 'owner' | 'msp' | 'team';
   senderPerson?: ConversationOwner;
   /**
    * message-origin-all-platforms §3: which machine, harness and model wrote an AGENT reply,
@@ -171,7 +171,7 @@ export interface BrowsedMessage {
   receipt?: MachineReceipt;
   attachments?: AppAttachment[];
   senderName?: string;
-  senderRole?: 'owner' | 'msp';
+  senderRole?: 'owner' | 'msp' | 'team';
   agentOrigin?: MessageOriginEvidence;
 }
 
@@ -272,7 +272,7 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       if (receipt) out.receipt = receipt;
       const senderName = typeof r.senderName === 'string' && r.senderName.length > 0 && r.senderName.length <= 128 ? r.senderName : null;
       if (senderName) out.senderName = senderName;
-      if (r.senderRole === 'owner' || r.senderRole === 'msp') out.senderRole = r.senderRole;
+      if (r.senderRole === 'owner' || r.senderRole === 'msp' || r.senderRole === 'team') out.senderRole = r.senderRole;
       const senderPerson = validConversationOwner(r.senderPerson);
       if (senderPerson) out.senderPerson = senderPerson;
       // Only an agent reply carries origin, only a valid one, and only one recorded by the machine

@@ -249,7 +249,8 @@ export function mountConsoleTicketDeviceRoutes(router: Router, svc: MobilePairin
   /** `enrolment`: the presence-key route also serves Remote Desktop and the PIN page (mobile-owner-presence-pin §2.4 step 6). */
   const gate = (req: Request, res: Response, enrolment = false): string | null => {
     res.setHeader('Cache-Control', 'no-store');
-    const on = isConsoleTicketEnabled(svc.deps.config) || (enrolment && isOwnerPresenceOn(svc.deps.config));
+    // Team access's Face ID controls need the key too, on any agent with native conversations.
+    const on = isConsoleTicketEnabled(svc.deps.config) || (enrolment && (isOwnerPresenceOn(svc.deps.config) || svc.nativeOn));
     if (!svc.enabled() || !on || !svc.deps.config.authToken) {
       res.status(503).json({ error: 'console-ticket-off', detail: 'Opening the console from the app without the PIN is turned off on this agent.' });
       return null;

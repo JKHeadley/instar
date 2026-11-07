@@ -13,6 +13,7 @@
  * appended by the server only on a `verified` origin verdict (increment 2); increment 1 never
  * appends it.
  */
+import { safeInboxTarget } from './memorySessionPolicy.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { SessionChannelRegistry } from '../messaging/shared/SessionChannelRegistry.js';
@@ -69,6 +70,10 @@ export interface AppInboundDispatchDeps {
   channels: SessionChannelRegistry;
   store: AppConversationStore;
   stateDir: string;
+  /** The owner's display name, for history lines stored before senders were recorded. */
+  ownerDisplayName?: () => string;
+  /** The inbox of a confined conversation's scope folder, or null (team-roles-and-access §4.1). */
+  confinedInbox?: (conversationKey: string) => string | null;
   spawnAdmission?: () => AppDispatchAdmission | null | undefined;
   /** Whether the app reply relay is installed and current (spawn refused otherwise). */
   relayReady?: () => { ready: true } | { ready: false; reason: string };
@@ -160,7 +165,7 @@ export function createAppFollowUpInjector(deps: { sessions: Pick<AppDispatchSess
 }
 
 /** The session context: recent history and the relay instructions, written to a private file. */
-function writeContext(deps: AppInboundDispatchDeps, input: Pick<AppDispatchInput, 'conversationKey' | 'alias' | 'ownerName' | 'notes'> & { messageId: string | null }): { ctxPath: string; contextData: string; tmpDir: string } {
+function writeContext(deps: AppInboundDispatchDeps, input: Pick<AppDispatchInput, 'conversationKey' | 'alias' | 'ownerName' | 'notes'> & { messageId: string | null }): { ctxPath: string; contextData: string; fileFor: (name: string) => string } {
     // Context: recent history from the conversation store (never a platform API).
     const history = deps.store.browseMessages(input.conversationKey, null, HISTORY).messages
       .filter((m) => m.messageId !== input.messageId);
@@ -177,7 +182,8 @@ function writeContext(deps: AppInboundDispatchDeps, input: Pick<AppDispatchInput
       lines.push(`--- Conversation History (last ${history.length} messages) ---`);
       for (const m of history) {
         const time = new Date(m.at).toISOString().slice(11, 19);
-        const who = m.role === 'agent' ? 'Agent' : (cleanConversationTitle(input.ownerName) ?? 'Operator');
+        // A shared conversation has several speakers: each line names the one stored with it.
+        const who = m.role === 'agent' ? 'Agent' : (cleanConversationTitle(m.senderName ?? deps.ownerDisplayName?.() ?? input.ownerName) ?? 'Operator');
         // Lazy on purpose (media spec §4.5): earlier files are named, never copied or pulled here.
         for (const a of m.attachments ?? []) lines.push(`[${time}] ${who}: ${historyLine(a)}`);
         if (m.text || !m.attachments) lines.push(`[${time}] ${who}: ${m.text}`);
@@ -194,15 +200,19 @@ function writeContext(deps: AppInboundDispatchDeps, input: Pick<AppDispatchInput
     lines.push('EOF');
     lines.push('');
     lines.push('Strip the [app:] prefix before interpreting the message.');
-    lines.push('To send files, add --file <path> before the text (repeat it for several); the text can be an argument or piped in as usual.');
+    const confinedInbox = deps.confinedInbox?.(input.conversationKey) ?? null;
+    // Sending a file is refused from a confined session, so its context does not offer it.
+    if (!confinedInbox) lines.push('To send files, add --file <path> before the text (repeat it for several); the text can be an argument or piped in as usual.');
     lines.push('Only relay conversational text and the files you mean to send — not tool output or internal reasoning.');
     lines.push(`Conversation id: ${input.alias} — the durable identity of THIS app conversation on this machine. Use it as the topicId when opening durable state (e.g. POST /commitments).`);
     const contextData = lines.join('\n');
-    const tmpDir = path.join(deps.stateDir, 'state', 'app-dispatch');
+    const tmpDir = confinedInbox ?? path.join(deps.stateDir, 'state', 'app-dispatch');
     fs.mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
-    const ctxPath = path.join(tmpDir, `ctx-${input.alias}-${Date.now()}.txt`);
-    fs.writeFileSync(ctxPath, contextData, { mode: 0o600 }); /* state-registry: app-conversations */
-    return { ctxPath, contextData, tmpDir };
+    // A confined session can write to its inbox, so a file for it goes through the safe path.
+    const fileFor = (name: string) => (confinedInbox ? safeInboxTarget(confinedInbox, name) : path.join(tmpDir, name));
+    const ctxPath = fileFor(`ctx-${input.alias}-${Date.now()}.txt`);
+    fs.writeFileSync(ctxPath, contextData, { mode: 0o600, flag: 'wx' }); /* state-registry: app-conversations */
+    return { ctxPath, contextData, fileFor };
 }
 
 export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInboundDispatch {
@@ -217,12 +227,12 @@ export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInbou
     await waitForStart(deps, `app:${input.conversationKey}`);
     const channelKey = String(input.alias);
     const tag = appInjectionTag(input.alias, input.title, input.ownerName, input.originVerdict);
-    const { ctxPath, contextData, tmpDir } = writeContext(deps, input);
+    const { ctxPath, contextData, fileFor } = writeContext(deps, input);
     const full = `${tag} ${input.text} (IMPORTANT: Read ${ctxPath} for conversation history and app relay instructions — you MUST relay your response back.)`;
     let bootstrap = full;
     if (full.length > 500) {
-      const msgPath = path.join(tmpDir, `msg-${input.alias}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.txt`);
-      fs.writeFileSync(msgPath, `${full}\n\n${contextData}`, { mode: 0o600 }); /* state-registry: app-conversations */
+      const msgPath = fileFor(`msg-${input.alias}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.txt`);
+      fs.writeFileSync(msgPath, `${full}\n\n${contextData}`, { mode: 0o600, flag: 'wx' }); /* state-registry: app-conversations */
       bootstrap = `${tag} [Long message saved to ${msgPath} — read it to see the full message and conversation history]`;
     }
 

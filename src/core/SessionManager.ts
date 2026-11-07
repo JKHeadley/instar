@@ -8,6 +8,7 @@ import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
  */
 
 import { isSafeSessionRef } from './claudeResumeTranscript.js';
+import { conversationRefOf, type TeamConfinement } from '../users/TeamConfinement.js';
 import type { MemoryPrivacyRecovery } from '../users/MemoryPrivacyRecovery.js';
 import { isCredentialEnvName, CLAUDE_CONFINED_PERMISSION_ARGS } from './credentialEnvNames.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -1061,6 +1062,8 @@ export class SessionManager extends EventEmitter {
   /** Memory privacy (docs/specs/memory-privacy.md). Unwired means today's behaviour. */
   private memoryPrivacyWiring?: {
     privacy: MemoryPrivacy;
+    /** The confined list (team-roles-and-access §3.5). */
+    confinement?: TeamConfinement;
     /** The whole Telegram group's place key, or null when there is no group. */
     telegramGroupKey: () => string | null;
     /** True when the boot probe proved the OS sandbox starts here. */
@@ -1075,6 +1078,9 @@ export class SessionManager extends EventEmitter {
     /** Finds the Slack channel of a session started before places were recorded. */
     slackChannelForSession?: (sessionName: string) => string | null;
   };
+  private readonly conversationLocks = new Map<string, Promise<void>>();
+  /** Forgets a conversation's resume binding. Wired at boot, where the binding store lives. */
+  conversationResumeDropper: ((ref: string) => void) | null = null;
   private memoryInboundClaims = new Map<string, { place: string; dev: number; ino: number; size: number; mtimeMs: number; claimedAt: number }>();
 
   /**
@@ -1768,6 +1774,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   private planMemorySession(framework: string, tmuxSession: string, input: SessionPlaceInput): MemorySessionPlan | null {
     const wiring = this.memoryPrivacyWiring;
+    // Before the off-switch check: with privacy off a confined conversation cannot be confined at all.
+    if (wiring?.confinement?.refuseSpawn(input, wiring.privacy.enabled)) throw new MemoryPrivacyUnavailableError(framework);
     if (!wiring || !wiring.privacy.enabled) return null;
     const place = wiring.privacy.placeFor(input, wiring.telegramGroupKey());
     const audience = wiring.privacy.audienceFor(place);
@@ -1895,6 +1903,20 @@ rm()  { "${shimRunner}" rm  "$@"; }
     });
     if (staged === text && !/\b(?:file|document|photo|image|attachment)\b/i.test(text)) return staged;
     return `${staged}\n[File access: If one referenced file fails to open, retry that file once. Then say which file failed and ask the sender to resend it. Do not conclude that other files cannot open in this session.]`;
+  }
+
+  /**
+   * The inbox of a confined conversation's scope folder, or null when it is not confined. `key` is an
+   * app conversation key or `telegram:<topic>`, the forms the conversation store uses.
+   */
+  confinedInboxFor(key: string): string | null {
+    const wiring = this.memoryPrivacyWiring;
+    if (!wiring?.confinement || !wiring.privacy.enabled) return null;
+    const input: SessionPlaceInput = key.startsWith('telegram:') ? { telegramTopicId: Number(key.slice(9)) } : { memoryPlaceKey: `app:${key}` };
+    const place = wiring.confinement.place(input);
+    if (!place) return null;
+    const scopeDir = wiring.privacy.ensureScopeDir(wiring.privacy.audienceFor(place), 'inbox');
+    return scopeDir ? path.join(scopeDir, 'inbox') : null;
   }
 
   /** The audience kind a place would get, for callers that shape what they send there. */
@@ -7512,7 +7534,56 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Used for Telegram-driven conversational sessions.
    * Optionally sends an initial message after Claude is ready.
    */
-  async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; framework?: IntelligenceFramework; codexLocalProvider?: 'ollama' | 'lmstudio'; defaultModel?: string;
+  /**
+   * One change to who may read a conversation, against every spawn of it: a spawn holds this lock from
+   * resolving its audience through launch, so a grant can never interleave (team-roles-and-access §4.1).
+   */
+  async withConversationLock<T>(ref: string, fn: () => Promise<T>): Promise<T> {
+    const prior = this.conversationLocks.get(ref) ?? Promise.resolve();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const tail = prior.then(() => held);
+    this.conversationLocks.set(ref, tail);
+    await prior;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.conversationLocks.get(ref) === tail) this.conversationLocks.delete(ref);
+    }
+  }
+
+  /**
+   * A change to who may read a conversation, for team access: under the conversation's lock, end its
+   * live session so a new one resolves the new place, then run the change.
+   */
+  async applyConversationChange<T>(ref: string, change: () => Promise<T> | T): Promise<T> {
+    return this.withConversationLock(ref, async () => {
+      const input: SessionPlaceInput = ref.startsWith('telegram:') ? { telegramTopicId: Number(ref.slice(9)) } : { memoryPlaceKey: `app:${ref}` };
+      for (const session of this.listRunningSessions()) {
+        const place = session.memoryPlaceInput;
+        const same = input.telegramTopicId !== undefined
+          ? (session.telegramTopicId === input.telegramTopicId || place?.telegramTopicId === input.telegramTopicId)
+          : place?.memoryPlaceKey === input.memoryPlaceKey;
+        // A session that will not end means the change must not go through under it.
+        if (same && !(await this.retireMemorySession(session))) throw new Error('team-access-session-still-running');
+      }
+      // A failed spawn can record the new audience without launching, so the next one must not be
+      // left to notice the change: the old transcript belongs to the old audience.
+      this.conversationResumeDropper?.(ref);
+      return change();
+    });
+  }
+
+  /** Spawn under the conversation's lock when it names one. See `spawnInteractiveSessionUnlocked`. */
+  async spawnInteractiveSession(...args: Parameters<SessionManager['spawnInteractiveSessionUnlocked']>): Promise<string> {
+    const options = args[2];
+    const ref = conversationRefOf({ telegramTopicId: options?.telegramTopicId, memoryPlaceKey: options?.memoryPlaceKey });
+    if (!ref) return this.spawnInteractiveSessionUnlocked(...args);
+    return this.withConversationLock(ref, () => this.spawnInteractiveSessionUnlocked(...args));
+  }
+
+  async spawnInteractiveSessionUnlocked(initialMessage?: string, name?: string, options?: { shapedForAudience?: string; reshapeForAudience?: (kind: string, message: string) => string; telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; framework?: IntelligenceFramework; codexLocalProvider?: 'ollama' | 'lmstudio'; defaultModel?: string;
     /** durable-conversation-identity §7: the authenticated bootstrap
      *  conversation ids this session may open durable state on (a Slack spawn
      *  passes its minted conversation id). Falls back to [telegramTopicId]. */
@@ -7672,6 +7743,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
       memoryPlaceKey: options?.memoryPlaceKey,
       memoryPlace: options?.memoryPlace,
     });
+    // A caller that shaped its message for one audience gets it reshaped if a grant changed that.
+    const actualAudience = memoryPlan?.audience.kind ?? 'open';
+    if (initialMessage && options?.reshapeForAudience && options.shapedForAudience !== undefined && options.shapedForAudience !== actualAudience) {
+      initialMessage = options.reshapeForAudience(actualAudience, initialMessage);
+    }
     if (memoryPlan?.dropResume && options?.resumeSessionId) {
       options = { ...options, resumeSessionId: undefined };
     }
@@ -8162,7 +8238,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         const retryMessage = this.resumeFollowsAccountEnabled() && !initialMessage.startsWith(RESUME_REOPEN_FAILED_NOTE)
           ? `${RESUME_REOPEN_FAILED_NOTE}\n\n${initialMessage}`
           : initialMessage;
-        await this.spawnInteractiveSession(retryMessage, originalName, {
+        await this.spawnInteractiveSessionUnlocked(retryMessage, originalName, {
           telegramTopicId: options.telegramTopicId,
           slackChannelId: options.slackChannelId,
           slackThreadTs: options.slackThreadTs,
