@@ -9696,6 +9696,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added team access Registry First awareness');
     }
 
+    if (!content.includes('Registry First — team requests:')) {
+      content += '\n- **Registry First — team requests:** when someone asks me for access, I do not grant it and cannot. I file it with `POST /team/proposals` with a typed `change` (grant, role or invite) and an optional `reason`, and say the owner will see it in the app. The owner approves or declines there. A member gets one open request at a time, and a member who asks who has access gets: "Only the owner can see that."';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added team requests Registry First awareness');
+    }
+
     if (!content.includes('Registry First — people:')) {
       content += '\n- **Registry First — people:** before answering who can reach this agent or what someone can see, read `GET /team/people` (add `?scope=pool` on several machines). It lists each person, how they reach the agent and what they can see, and it names any machine that did not answer. When the owner asks in their own chat to turn on memory privacy, set `memoryPrivacy.enabled: true` in the config on every machine and restart.\n';
       patched = true;
@@ -16095,6 +16101,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       '**Registry First — people:',
       // team-roles-and-access: "add someone" must reach the owner's phone, on every framework.
       '**Registry First — team access:',
+      '**Registry First — team requests:',
       // decision-journal: a Codex/Gemini agent that does not learn the new
       // requirement will POST without `principle`, take a 400 it cannot explain,
       // and fall back to recording decisions somewhere nothing reads — which is

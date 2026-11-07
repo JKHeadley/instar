@@ -12,6 +12,7 @@ import { parseSignedEvents, type RequestEvent } from '../core/TeamAccessEvents.j
 import { TEAM_ACCESS_WRITE_PATHS, eventsFitPath, type ConfinedEntry, type TeamAccessRow } from '../core/TeamAccessLog.js';
 import { ORG_ROLES, type OrgRole } from '../permissions/types.js';
 import { tierOfRole } from '../permissions/TeamAccess.js';
+import { TeamRequests, eventsMatchChange, parseRequestChange, requestSummary, type Requester } from '../core/TeamRequests.js';
 import { topicPlaceKey } from '../users/TeamConfinement.js';
 import { buildSignedOrigin } from './mobileConversationRoutes.js';
 import { devicePersonOf, principalOf, type MobilePairingService } from './mobilePairingRoutes.js';
@@ -29,6 +30,9 @@ export interface TeamRouteDeps {
   /** The resolved owner's profile id, and whether several claim to be the owner. */
   ownerProfile: () => { userId: string | null; several: boolean; links: Record<string, string | number> };
   logsDir: string;
+  stateDir: string;
+  /** A plain name for a conversation or place, for the owner's Requests list. */
+  conversationTitle: (refOrPlace: string) => string | null;
   /** Conversations to confine on a restore: those holding team-phone messages, and every one. */
   restoreRefs: () => { teamRefs: ConfinedEntry[]; allRefs: () => ConfinedEntry[] };
   /** Turn memory privacy on here and restart this machine (§3.6). */
@@ -137,6 +141,33 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
   const router = Router();
   const refusals = new TeamRefusalLog(path.join(deps.logsDir, 'team-access.jsonl'), deps.now);
   const now = () => (deps.now ?? Date.now)();
+
+  const requests = new TeamRequests(deps.stateDir, deps.now);
+
+  /** Who is asking, from the session and never from the body. */
+  const requesterOf = (res: Response): Requester => {
+    const session = res.locals.memorySession as { audience?: { kind: string; userId?: string; placeKey?: string }; placeKey?: string | null } | undefined;
+    const audience = session?.audience;
+    if (audience?.kind === 'person' && audience.userId) {
+      return { kind: 'person', key: audience.userId, label: svc.teamLog()?.state().people.get(audience.userId)?.name ?? 'Someone' };
+    }
+    const place = audience?.kind === 'place' ? audience.placeKey : session?.placeKey;
+    if (session && place) return { kind: 'place', key: place, label: `Someone in ${deps.conversationTitle(place) ?? 'a shared conversation'}` };
+    return { kind: 'agent', key: 'agent', label: 'The agent' };
+  };
+
+  /** A write that answers a request must do exactly what it asked. Null means carry on. */
+  const requestCheck = (req: Request, events: RequestEvent[]): Refusal | null => {
+    const id = (req.body as { requestId?: unknown } | undefined)?.requestId;
+    if (id === undefined) return null;
+    const open = typeof id === 'string' ? requests.get(id) : null;
+    if (!open) return { status: 404, error: 'request-gone', detail: 'That request has expired or was already answered.' };
+    return eventsMatchChange(open.change, events) ? null : { status: 409, error: 'request-mismatch', detail: 'This change is not the one that was asked for.' };
+  };
+  const closeAnswered = (req: Request): void => {
+    const id = (req.body as { requestId?: unknown } | undefined)?.requestId;
+    if (typeof id === 'string') requests.close(id);
+  };
 
   const send = (res: Response, r: Refusal): void => { res.status(r.status).json({ error: r.error, detail: r.detail }); };
 
@@ -269,13 +300,43 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     return { status: 200, body: { ok: true } };
   });
 
+  // The agent, or a member's own session, asks. This gives nobody anything: only the owner's signed write does.
+  router.post('/team/proposals', write(async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (principalOf(req).kind !== 'token') { res.status(403).json({ error: 'agent-token-required' }); return; }
+    const body = (req.body ?? {}) as { change?: unknown; reason?: unknown; expiresAt?: unknown };
+    const change = parseRequestChange(body.change);
+    if (!change) { res.status(400).json({ error: 'bad-change', detail: 'A request names a typed change: grant, role or invite.' }); return; }
+    const reason = typeof body.reason === 'string' && body.reason.trim() ? body.reason.trim() : null;
+    const r = requests.add(requesterOf(res), change, reason, body.expiresAt);
+    if (!r.ok) { res.status(409).json({ error: r.error, detail: 'There is already a request waiting for the owner.' }); return; }
+    res.status(201).json({ id: r.request.id, expiresAt: r.request.expiresAt, detail: 'The owner will see this in the app.' });
+  }));
+
+  router.get('/mobile/team/requests', (req, res) => {
+    if (!ownerDevice(req, res)) return;
+    const state = svc.teamLog()?.state();
+    const nameOf = (key: string) => state?.people.get(key)?.name ?? 'someone';
+    const titleOf = (ref: string) => deps.conversationTitle(ref) ?? 'a conversation';
+    res.json({ requests: requests.open().map((r) => ({
+      id: r.id, requester: { kind: r.requester.kind, label: r.requester.label }, change: r.change, summary: requestSummary(r, nameOf, titleOf),
+      reason: r.reason, createdAt: r.createdAt, expiresAt: r.expiresAt,
+    })) });
+  });
+
+  router.post('/mobile/team/requests/:id/decline', (req, res) => {
+    if (!ownerDevice(req, res)) return;
+    if (!requests.close(String(req.params.id))) { res.status(404).json({ error: 'request-gone', detail: 'That request has expired or was already answered.' }); return; }
+    res.json({ ok: true });
+  });
+
   router.get('/mobile/team/context', (req, res) => {
     if (!ownerDevice(req, res)) return;
     const owner = deps.ownerProfile();
     const log = svc.teamLog();
     res.json({
       ownerPersonKey: log?.state().ownerPersonKey ?? owner.userId, ownerLinks: owner.links, several: owner.several,
-      teamOn: svc.teamOn(), refusal: svc.teamRefusal(),
+      teamOn: svc.teamOn(), refusal: svc.teamRefusal(), openRequests: requests.open().length,
       people: [...(log?.state().people.values() ?? [])].map((p) => ({ personKey: p.personKey, name: p.name, role: p.role })),
     });
   });
@@ -306,6 +367,8 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     const adds = events.filter((e): e is Extract<RequestEvent, { type: 'person-add' }> => e.type === 'person-add');
     if (adds.length !== 1) { res.status(400).json({ error: 'person-required', detail: 'An invite names one person.' }); return; }
     const add = adds[0];
+    const mismatch = requestCheck(req, events);
+    if (mismatch) { send(res, mismatch); return; }
     if (!log.state().on && !(events.some((e) => e.type === 'team-on') && events.some((e) => e.type === 'owner-pin'))) {
       res.status(400).json({ error: 'first-invite-incomplete', detail: 'The first invite also turns team access on.' });
       return;
@@ -318,6 +381,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     const refused = await applyGrants(events);
     if (refused) { send(res, refused); return; }
     await underLocks(grantRefs(events), () => appendRequest(req, deviceId));
+    closeAnswered(req);
     res.json({ personKey: add.personKey, link: link.link, expiresAt: link.expiresAt, disclosure: TEAM_DISCLOSURE });
   }));
 
@@ -335,9 +399,12 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (stop) { res.status(409).json({ error: stop, detail: refuseText[stop] }); return; }
     const events = eventsOf(req, res);
     if (!events) return;
+    const mismatch = requestCheck(req, events);
+    if (mismatch) { send(res, mismatch); return; }
     const refused = await applyGrants(events);
     if (refused) { send(res, refused); return; }
     await underLocks(grantRefs(events), () => appendRequest(req, deviceId));
+    closeAnswered(req);
     res.json({ ok: true });
   }));
 
@@ -348,8 +415,11 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (!events) return;
     const log = svc.teamLog();
     if (!log?.state().people.has(String(req.params.personKey))) { res.status(404).json({ error: 'unknown-person', detail: 'That person is not on this agent.' }); return; }
+    const mismatch = requestCheck(req, events);
+    if (mismatch) { send(res, mismatch); return; }
     await underLocks(refsOf(String(req.params.personKey)), () => appendRequest(req, deviceId));
     if (events.some((e) => e.type === 'person-remove')) svc.revokePersonPhones(String(req.params.personKey));
+    closeAnswered(req);
     res.json({ ok: true });
   }));
 

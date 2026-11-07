@@ -97,7 +97,7 @@ async function setup(opts: { machine?: string; pool?: AppPoolHandle } = {}) {
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
   app.use(createTeamRouter(pairing, {
     signer: () => signer, applyConversationChange: async (_r, c) => c(), isSystemTopic: () => false, isJobTopic: () => false,
-    ownerProfile: () => ({ userId: 'owner-1', several: false, links: {} }), logsDir: path.join(dir, 'logs'),
+    ownerProfile: () => ({ userId: 'owner-1', several: false, links: {} }), logsDir: path.join(dir, 'logs'), stateDir: dir, conversationTitle: () => null,
     restoreRefs: () => ({ teamRefs: [], allRefs: () => [] }), requireMemoryPrivacy: () => true,
   }));
   app.use(createRoutes(ctx));
