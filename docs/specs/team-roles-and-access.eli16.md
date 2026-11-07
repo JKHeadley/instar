@@ -51,7 +51,7 @@ Existing agents work exactly as they do now. An update neither restricts anyone 
 
 ## What comes first
 
-The first piece restricts nobody. It lets an owner see who can reach their agent and what they can see, and it warns the owner when a second person can reach an agent with memory privacy off. That warning had no owner in the Thursday B2Lead report. After that come member phones on agents that run on one machine, with their People screens in the app. Agents on several machines come straight after that, because most of ours run that way. The multi-machine parts proved hardest, so they get their own review rounds. Then admin maintenance, adding people across several agents, and Slack conversations for members.
+The first piece restricts nobody. It lets an owner see who can reach their agent and what they can see, and it warns the owner when a second person can reach an agent with memory privacy off. That warning had no owner in the Thursday B2Lead report. After that come member phones on agents that run on one machine, with their People screens in the app. The checks for that step are done and it is being built now. Agents on several machines come straight after that, because most of ours run that way. The multi-machine parts proved hardest, so they get their own review rounds. Then admin maintenance, adding people across several agents, and Slack conversations for members.
 
 ## What you need to decide
 

@@ -255,7 +255,7 @@ Steps 2a and 3 are useful together, not separately. A user-facing step is done o
 
 ### 4.1 Step 2a scope
 
-**Decision (hub, 2026-11-06 20:06 PST, topic 140183).** Step 2 is split. Review rounds 7 to 12 each found new items, and the hardest were all multi-machine, so one-machine agents go first and converge on their own. 2b is not deferred indefinitely: it gets its own rounds right after 2a lands.
+**Decision (hub, 2026-11-06 20:06 PST, topic 140183).** Step 2 is split. Review rounds 7 to 12 each found new items, and the hardest were all multi-machine, so one-machine agents go first and converge on their own. 2b follows directly: it gets its own rounds right after 2a lands.
 
 **On an agent with more than one machine,** counted from the pool registry, `POST /mobile/team/invites` answers `409 team-needs-one-machine`, and the app says: "Team members work on agents running on one machine for now. Support for several machines is the next step. You can still use owner and MSP phones." Never a silent no.
 
