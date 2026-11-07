@@ -16494,6 +16494,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     port: ctx.config.port,
     readSecret: (name) => { const v = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).get(name); return typeof v === 'string' && v ? v : null; },
     writeSecret: (name, value) => { new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).set(name, value); },
+    deleteSecret: (name) => { new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).delete(name); },
+    // Setup talks to the person from this machine, which needs a channel and the lease. An unreadable lease reads as not held.
+    canReachOwner: () => { try { return !!ctx.telegram && (ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true); } catch { return false; } }, // @silent-fallback-ok — not held means a yes waits, never a yes on a machine that can't talk
+    // Messaging is the backup every address service names, so a working channel means a switch-off strands nobody.
+    // The channel being switched off never counts as its own backup.
+    otherRouteWorks: async (service) => (service !== 'telegram' && !!ctx.telegram) || (service !== 'slack' && !!ctx.slack),
     // Its own conversation, because setup needs the person: for a credential, a decision, and to say it works.
     startSetup: async (service, name, brief, existingTopic) => {
       if (!ctx.telegram) throw new Error('setup needs a Telegram conversation to reach the person');

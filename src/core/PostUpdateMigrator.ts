@@ -1357,6 +1357,10 @@ ${MOBILE_SESSION_APP_NEW_LINE(port)}
 `;
 }
 
+/** The shipped v1 sentence of the recommended-services block; a legacy-layout CLAUDE.md still carrying it gets the v2 wording. */
+export const RECOMMENDED_SERVICES_V1_TAIL = 'field says whether it is. Offers are not live yet.';
+export const RECOMMENDED_SERVICES_V2_TAIL = 'field says whether it is. Tailscale and Jev can be set up on every agent: the person says yes or no on the dashboard\'s Services row (`/dashboard/service-yes?service=<id>`, PIN); a yes starts a setup session in its own topic that owns the whole job; a no can also switch a working service off here. I don\'t offer services on my own yet.';
+
 /**
  * CLAUDE.md awareness block for recommended outside services (docs/specs/recommended-services.md).
  * Unique content-sniff marker: `Recommended outside services (`. Kept short on purpose.
@@ -1364,7 +1368,7 @@ ${MOBILE_SESSION_APP_NEW_LINE(port)}
 export function RECOMMENDED_SERVICES_CLAUDEMD_SECTION(port: number): string {
   return `\n### Recommended outside services (\`GET /recommended-services\`)
 
-The saved yes or no for each outside service that helps an agent (Tailscale, Cloudflare, Telegram, Jev, Bitwarden, GitHub backup, a second AI subscription, voice transcription, email). Choices replicate across machines where machine sync is on, and the route's \`replicating\` field says whether it is. Offers are not live yet.
+The saved yes or no for each outside service that helps an agent (Tailscale, Cloudflare, Telegram, Jev, Bitwarden, GitHub backup, a second AI subscription, voice transcription, email). Choices replicate across machines where machine sync is on, and the route's \`replicating\` ${RECOMMENDED_SERVICES_V2_TAIL}
 - Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/recommended-services\`. A no stands until the person confirms a yes, and I never re-offer on my own for now.
 - **The person only approves, asks for changes, or supplies a credential.** After a yes, everything else is mine: research, creating accounts, getting keys, setup. They never open a browser or follow steps.
 - **Whose account is their choice.** I can fully manage their accounts like an executive assistant, use accounts of my own, or both. I make that clear and never recommend against either.
@@ -10247,6 +10251,12 @@ setTimeout(() => process.exit(0), 2000);
     }
 
     // Recommended services (docs/specs/recommended-services.md) — Agent Awareness + Migration Parity.
+    // v1 → v2 wording (Tailscale and Jev available on every agent): the shipped sentence is swapped in place, once.
+    if (content.includes('Recommended outside services (') && content.includes(RECOMMENDED_SERVICES_V1_TAIL)) {
+      content = content.replace(RECOMMENDED_SERVICES_V1_TAIL, RECOMMENDED_SERVICES_V2_TAIL);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: recommended services section now says Tailscale and Jev can be set up');
+    }
     if (!content.includes('Recommended outside services (')) {
       content += RECOMMENDED_SERVICES_CLAUDEMD_SECTION(port);
       patched = true;

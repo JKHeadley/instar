@@ -29,8 +29,10 @@ export interface CatalogRow {
   gapSpec?: string;
   /** The test that proved the fallback. Required on an `exercised` row. */
   drillTest?: string;
-  /** The id of a live-proven setup recipe. A service with none is unavailable. */
+  /** The id of a live-proven setup recipe. A service with none is unavailable, so a yes can't be taken for it. */
   setupRecipe: string | null;
+  /** A way for the person to reach the agent (an address or a channel). Switching one off waits until another route works. */
+  wayIn?: boolean;
 }
 
 const LOCAL_MODEL_SPEC = 'docs/specs/backup-local-model-last-resort.md';
@@ -41,6 +43,7 @@ const EMAIL_SPEC = 'docs/specs/backup-email-sending.md';
 export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze([
   {
     id: 'tailscale',
+    wayIn: true,
     name: 'Tailscale',
     benefit: 'A private address for reaching your agent from your own devices, and the strongest link between its machines.',
     dataLeaves: 'Device names and network addresses go to Tailscale so your devices can find each other. Your traffic stays encrypted between them.',
@@ -48,10 +51,12 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     account: 'A Tailscale account, signed in with an existing Google, GitHub or similar login.',
     backup: 'Cloudflare, your local network, or messaging, which needs no address.',
     backupStatus: 'specified',
-    setupRecipe: null,
+    // Proven live 2026-11-07 (topic 135786): a test agent sent the sign-in link, the person's tap signed the machine in, the check passed.
+    setupRecipe: 'tailscale-v1',
   },
   {
     id: 'cloudflare-domain',
+    wayIn: true,
     name: 'Cloudflare with your own domain',
     benefit: 'A public address that never changes. Saying no keeps the temporary address, so tunnels stay on.',
     dataLeaves: 'Every request to your agent passes through Cloudflare.',
@@ -63,6 +68,7 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
   },
   {
     id: 'telegram',
+    wayIn: true,
     name: 'Telegram',
     benefit: 'Reach your agent from anywhere, and get its messages on your phone.',
     dataLeaves: 'Your messages with your agent pass through Telegram.',
@@ -81,7 +87,8 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     account: 'A TypeSafe account and key, which I get myself.',
     backup: 'Those checks skip it or use their normal path.',
     backupStatus: 'specified',
-    setupRecipe: null,
+    // Proven live 2026-11-05 (topic 135786): a test agent opened the account, got the key and stored it; the check passed.
+    setupRecipe: 'jev-v1',
   },
   {
     id: 'bitwarden',
