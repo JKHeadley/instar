@@ -30,9 +30,10 @@ import { renderFiles } from './files.js';
 import { renderSessions } from './sessions.js';
 import { renderMaturation, maturationTile } from './maturation-board.js';
 import { renderIdeas, ideasTile } from './ideas.js';
+import { renderConversations, conversationsTile } from './conversations.js';
 import { paceCard } from './pace.js';
 import { takeTicket, signInAtBoot } from './ticket-model.js';
-import { sheetIsOpen, closeSheet, unlockCheck, machineIssue, MACHINES_PAGE, newArrival, refreshHeld } from './ui.js';
+import { sheetIsOpen, closeSheet, unlockCheck, machineIssue, MACHINES_PAGE, newArrival, refreshHeld, rememberOperatorSession, forgetOperatorSession } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
 const THEME_KEY = 'instar_console_theme';
@@ -147,6 +148,7 @@ async function validToken(t) {
 }
 
 function signOut() {
+  forgetOperatorSession();
   try { localStorage.removeItem(TOKEN_KEY); } catch { /* storage blocked */ }
   token = '';
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
@@ -192,9 +194,11 @@ async function renderUnlock(message) {
         err.textContent = data.error ? `${data.error}${typeof data.attemptsRemaining === 'number' ? ` · ${data.attemptsRemaining} tries left` : ''}` : 'That did not work. Try again.';
         btn.disabled = false; input.select(); return;
       }
-      // Only the bearer token is stored, exactly as the legacy dashboard does.
-      // The operator proof is deliberately not kept: the console is read-only.
+      // The bearer follows the existing dashboard storage policy. Human proof
+      // stays only in page memory for owner-only pages, until server expiry.
       try { localStorage.setItem(TOKEN_KEY, data.token); } catch { /* storage blocked */ }
+      rememberOperatorSession(data);
+      input.value = '';
       token = data.token;
       start();
     } catch { err.textContent = 'The server could not be reached.'; btn.disabled = false; }
@@ -598,6 +602,7 @@ function tile(t, withIcon = true) {
 function renderGroup(main, g) {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   const extras = [
+    ...(g.id === 'work' ? [conversationsTile()] : []),
     ...groupExtras(g, { get }), // the Development tile (Work, maintainer mode only) and the developer-tools switch (Settings)
     ...(g.id === 'work' ? [maturationTile(get)] : []), // shown only when /maturation/board answers
     ...(g.id === 'work' ? [ideasTile(get)] : []), // shown only when /ecosystem-ideas answers
@@ -637,6 +642,7 @@ function footNote() {
 // ── routing ───────────────────────────────────────────────────────────────
 // Native feature pages, by hash path. A feature not listed here still opens its legacy tab.
 const NATIVE = {
+  'work/conversations': renderConversations,
   'work/promises': renderPromises,
   'work/plans': renderPlans,
   'work/plans/in-the-way': renderPlans,

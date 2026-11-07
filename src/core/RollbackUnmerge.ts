@@ -31,6 +31,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { sanitizeMachineId } from './CoherenceJournal.js';
@@ -60,6 +61,7 @@ export class DroppedOriginRegistry {
   private readonly readFileSync: (p: string) => string;
   private readonly existsSync: (p: string) => boolean;
   private doc: DroppedDoc;
+  private readonly physicalRoot: {path:string;device:bigint;inode:bigint}|null;
 
   constructor(seams: {
     stateDir: string;
@@ -67,9 +69,23 @@ export class DroppedOriginRegistry {
     existsSync?: (p: string) => boolean;
   }) {
     this.stateDir = seams.stateDir;
+    try {const root=fs.realpathSync(seams.stateDir),stat=fs.statSync(root,{bigint:true});this.physicalRoot=stat.isDirectory()?{path:root,device:stat.dev,inode:stat.ino}:null;}
+    catch { /* @silent-fallback-ok: generic injected registries remain supported; the new physical proof API refuses them. */ this.physicalRoot=null; }
     this.readFileSync = seams.readFileSync ?? ((p) => fs.readFileSync(p, 'utf-8'));
     this.existsSync = seams.existsSync ?? ((p) => fs.existsSync(p));
     this.doc = this.load();
+  }
+
+  /** Narrow physical evidence API. Does not refresh or rewrite generic live
+   * registry semantics: stale/injected/corrupt physical state refuses proof. */
+  physicalSnapshot(expectedRoot:string):string {
+    const root=this.physicalRoot;if(!root||root.path!==expectedRoot||fs.realpathSync(this.stateDir)!==root.path)throw new Error('dropped-origin-physical-root-mismatch');
+    const stat=fs.statSync(root.path,{bigint:true});if(!stat.isDirectory()||stat.dev!==root.device||stat.ino!==root.inode)throw new Error('dropped-origin-physical-root-changed');
+    const file=path.join(root.path,'state','state-sync','dropped-origins.json');
+    let missing=false;for(const component of [path.join(root.path,'state'),path.dirname(file)]){try{const entry=fs.lstatSync(component);if(!entry.isDirectory()||entry.isSymbolicLink())throw new Error('dropped-origin-physical-path-invalid');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;missing=true;break;}}
+    let disk:unknown={version:1,dropped:[]};if(!missing){let fd:number|undefined;try{fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));const entry=fs.fstatSync(fd);if(!entry.isFile()||entry.size>4*1024*1024)throw new Error('dropped-origin-physical-file-invalid');disk=JSON.parse(fs.readFileSync(fd,'utf8'));}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}finally{if(fd!==undefined)fs.closeSync(fd);}}
+    const normalize=(value:unknown):string=>{const raw=value as DroppedDoc;if(!raw||typeof raw!=='object'||Object.keys(raw).sort().join(',')!=='dropped,version'||raw.version!==1||!Array.isArray(raw.dropped)||raw.dropped.length>20000)throw new Error('dropped-origin-physical-document-invalid');const seen=new Set<string>();const rows=raw.dropped.map(row=>{if(!row||typeof row!=='object'||Object.keys(row).sort().join(',')!=='droppedAt,origin,store'||typeof row.store!=='string'||typeof row.origin!=='string'||typeof row.droppedAt!=='string')throw new Error('dropped-origin-physical-entry-invalid');const key=JSON.stringify([row.store,row.origin]);if(seen.has(key))throw new Error('dropped-origin-physical-duplicate');seen.add(key);return [row.store,row.origin,row.droppedAt];}).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));return JSON.stringify(rows);};
+    const physical=normalize(disk);if(physical!==normalize(this.doc))throw new Error('dropped-origin-physical-state-changed');return createHash('sha256').update(physical).digest('hex');
   }
 
   private docPath(): string {

@@ -50,4 +50,13 @@ describe('topic messages scroll-back', () => {
     const res = await request(a).get('/telegram/topics/127504/messages?before=yesterday');
     expect(res.status).toBe(400);
   });
+  it('supports the stable message-id tie breaker and refuses unbound or malformed ids', async () => {
+    const { a } = app();
+    const valid = await request(a).get('/telegram/topics/127504/messages?before=2026-10-31T00:00:00Z&beforeMessageId=42');
+    expect(valid.status).toBe(200);
+    expect(valid.body.historyCursorVersion).toBe(2);
+    for (const query of ['beforeMessageId=42', 'before=2026-10-31T00:00:00Z&beforeMessageId=-1', 'before=2026-10-31T00:00:00Z&beforeMessageId=unknown']) {
+      expect((await request(a).get(`/telegram/topics/127504/messages?${query}`)).status).toBe(400);
+    }
+  });
 });

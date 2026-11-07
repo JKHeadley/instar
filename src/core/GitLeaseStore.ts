@@ -1,3 +1,4 @@
+import {syncNativeLeaseFile} from './NativeLeaseDurability.js';
 /**
  * GitLeaseStore — the durable (git-backed) LeaseStore for LeaseCoordinator.
  *
@@ -46,6 +47,10 @@ export class GitLeaseStore implements LeaseStore {
   private log(m: string): void {
     this.d.logger?.(`[git-lease] ${m}`);
   }
+
+  /** Supplements the actual commit/push CAS with local crash durability. */
+  syncDurably(expected:LeaseRecord|null=this.read().lease):void{syncNativeLeaseFile(this.d.registryAbsPath,expected,document=>(document as MachineRegistry).lease??null);}
+  get durabilityPath():string{return this.d.registryAbsPath;}
 
   read(): { lease: LeaseRecord | null; epoch: number } {
     const reg = this.d.loadRegistry();

@@ -1304,6 +1304,7 @@ export function loadConfig(projectDir?: string): InstarConfig {
     },
     authToken: fileConfig.authToken,
     dashboardPin: fileConfig.dashboardPin,
+    dashboardPinGeneration: fileConfig.dashboardPinGeneration,
     relationships: fileConfig.relationships || {
       relationshipsDir: path.join(stateDir, 'relationships'),
       maxRecentInteractions: 20,

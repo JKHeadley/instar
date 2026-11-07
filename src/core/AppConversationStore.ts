@@ -860,6 +860,28 @@ export class AppConversationStore {
     return (this.db.prepare('SELECT conversationKey FROM conversations WHERE tombstoned = 0').all() as Array<{ conversationKey: string }>).map((r) => r.conversationKey);
   }
 
+  /** Bounded registration snapshot, including removals, without message or title data. */
+  inventoryFrontier(limit = 1001): {
+    keys: Array<{ conversationKey: string; tombstoned: boolean }>;
+    overflow: boolean;
+    eventWatermark: number;
+    liveCount: number;
+  } {
+    const bounded = Number.isFinite(limit) ? Math.max(1, Math.min(10001, Math.floor(limit))) : 1001;
+    return this.db.transaction(() => {
+      const rows = this.db.prepare('SELECT conversationKey, tombstoned FROM conversations ORDER BY canonicalKey LIMIT ?')
+        .all(bounded + 1) as Array<{ conversationKey: string; tombstoned: number }>;
+      const watermark = this.db.prepare('SELECT COALESCE(MAX(rowid), 0) AS value FROM events').get() as { value: number };
+      const live = this.db.prepare('SELECT COUNT(*) AS value FROM conversations WHERE tombstoned = 0').get() as { value: number };
+      return {
+        keys: rows.slice(0, bounded).map(row => ({ conversationKey: row.conversationKey, tombstoned: row.tombstoned !== 0 })),
+        overflow: rows.length > bounded,
+        eventWatermark: watermark.value,
+        liveCount: live.value,
+      };
+    })();
+  }
+
   deliveryState(messageId: string): ReducedDeliveryState | null {
     const r = this.db.prepare('SELECT deliveryState FROM messages WHERE messageId = ?').get(messageId) as { deliveryState: ReducedDeliveryState } | undefined;
     return r ? r.deliveryState : null;

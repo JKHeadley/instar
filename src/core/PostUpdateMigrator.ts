@@ -7,6 +7,7 @@ Act like an employee within an organization: use your role's standing grants, au
 `;
 import { poolReadSelectionAwareness } from './poolReadAwareness.js';
 import { ensureDashboardPin, persistDashboardPin } from './dashboardPin.js';
+import { LiveConfig } from '../config/LiveConfig.js';
 import { peerHomebaseAwareness, PEER_HOMEBASE_AWARENESS_V1_LIMITS, PEER_HOMEBASE_AWARENESS_V2_LIMITS, PEER_HOMEBASE_AWARENESS_ROUTING_MARKER, PEER_HOMEBASE_AWARENESS_PER_MESSAGE_MARKER } from './peerHomebaseAwareness.js';
 import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuard.js';
 /**
@@ -33,6 +34,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
 import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
+import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING } from '../messaging/shared/conversationGraphChat.js';
 import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
@@ -8659,6 +8661,12 @@ setTimeout(() => process.exit(0), 2000);
     }
 
     // message-origin-all-platforms: app and Slack recording + the phone row + the setting.
+    if (!content.includes(CONVERSATIONS_AWARENESS_HEADING)) {
+      content += '\n' + conversationsAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Conversations privacy and navigation awareness');
+    }
+
     if (!content.includes(MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING)) {
       content += '\n' + messageOriginAllPlatformsAwareness(port);
       patched = true;
@@ -16668,7 +16676,12 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     // Same rule as server boot (ensureDashboardPin): any set value, including a
     // vault reference, is kept. The PIN itself never goes into the result log.
     if (config.authToken && ensureDashboardPin(config, pin => {
-      persistDashboardPin(this.config.stateDir, pin, value => { config.dashboardPin = value; });
+      const pinWriter=new LiveConfig(this.config.stateDir);
+      persistDashboardPin(this.config.stateDir, pin, value => {
+        pinWriter.set('dashboardPin',value);
+        config.dashboardPin=value;
+        config.dashboardPinGeneration=pinWriter.get('dashboardPinGeneration',undefined);
+      });
     }).generated) {
       patched = true;
       result.upgraded.push('config.json: generated dashboard PIN');

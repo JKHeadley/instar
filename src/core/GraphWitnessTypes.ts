@@ -1,4 +1,5 @@
-import {GRAPH_MEMBER_LOSS_ACTIVATION_DOMAIN,verifyGraphMemberLossActivationAuthority,type GraphMemberLossActivationAuthority} from './GraphMemberLossActivation.js';
+import {verifyEd25519Memoized} from './VerifiedSignatureMemo.js';
+import {graphMemberLossActivationDomain,verifyGraphMemberLossActivationAuthority,type GraphMemberLossActivationAuthority} from './GraphMemberLossActivation.js';
 import {verifyGraphCustodyProfile,type GraphCustodyProfile} from './GraphCustodyProfile.js';
 /** Cryptographic wire contract for the independent Conversations witness.
  * Spec: conversation-effort-hierarchy-v3 §7.2. No title/transcript plaintext belongs here.
@@ -224,8 +225,7 @@ export function verifyGraphRecord(domain: string, payload: unknown, signature: s
   try {
     if (!/^[A-Za-z0-9_-]{86}$/.test(signature)) return false;
     if (Buffer.from(signature, 'base64url').toString('base64url') !== signature) return false;
-    const key = publicKey instanceof crypto.KeyObject ? publicKey : crypto.createPublicKey(publicKey);
-    return key.asymmetricKeyType === 'ed25519' && crypto.verify(null, signedBytes(domain, payload), key, Buffer.from(signature, 'base64url'));
+    return verifyEd25519Memoized(signedBytes(domain, payload), Buffer.from(signature, 'base64url'), publicKey);
   } catch { /* @silent-fallback-ok: malformed untrusted signature, payload or public key is failed verification, never runtime recovery */ return false; }
 }
 export function verifyMembershipEpoch(epoch: GraphMembershipEpoch, ownerPublicKey: crypto.KeyLike): boolean {
@@ -426,7 +426,7 @@ export function verifyMembershipActivation(certificate: GraphMembershipActivatio
       seen.add(receipt.machineId);
     }
     if(certificate.memberLoss!==undefined&&!verifyGraphMemberLossActivationAuthority(certificate.memberLoss,certificate,ownerPublicKey))return false;
-    return verifyGraphRecord(certificate.memberLoss?GRAPH_MEMBER_LOSS_ACTIVATION_DOMAIN:GRAPH_SIGNATURE_DOMAINS.membershipActivation, unsigned(certificate), certificate.signature, witnessPublicKey);
+    return verifyGraphRecord(certificate.memberLoss?graphMemberLossActivationDomain(certificate.memberLoss):GRAPH_SIGNATURE_DOMAINS.membershipActivation, unsigned(certificate), certificate.signature, witnessPublicKey);
   } catch { /* @silent-fallback-ok: malformed activation or member receipt is rejected, never activates proposed membership */ return false; }
 }
 export function verifyAdoptionCertificate(certificate: GraphAdoptionCertificate, packet: GraphOperationPacket,

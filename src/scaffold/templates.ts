@@ -10,6 +10,7 @@
  */
 
 import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramDashboardEditAwareness, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, messageOriginAllPlatformsAwareness } from "../messaging/telegram-origin/OriginAwareness.js";
+import { conversationsAwareness } from '../messaging/shared/conversationGraphChat.js';
 import { poolReadSelectionAwareness } from "../core/poolReadAwareness.js";
 import { peerHomebaseAwareness } from "../core/peerHomebaseAwareness.js";
 import { FEEDBACK_INBOX_TOKEN_SENTENCE } from "../feedback-factory/inbox/inboxAwareness.js";
@@ -1948,6 +1949,7 @@ The AutonomousLivenessReconciler also covers a second dead-work shape: an autono
 
   // message-origin-all-platforms: every agent (app and Slack record origin without Telegram).
   content += '\n' + messageOriginAllPlatformsAwareness(port);
+  content += '\n' + conversationsAwareness();
 
   if (hasTelegram) {
     content += telegramOriginAwareness(port);

@@ -54,6 +54,21 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
     const named: Array<[string, string]> = [
       ['GET', '/sessions/a/output'],
       ['POST', '/sessions/a/input'],
+      // Conversations' exact additive owner-only route families. Functional
+      // signature/ledger and owner refusal are covered by graph HTTP tests.
+      ['GET', '/mobile/conversation-graph/roots'],
+      ['GET', '/mobile/conversation-graph/nodes/e30'],
+      ['GET', '/mobile/conversation-graph/nodes/e30/destinations'],
+      ['GET', '/mobile/conversation-graph/pending'],
+      ['GET', '/mobile/conversation-graph/changes/request-1234'],
+      ['GET', '/mobile/conversation-graph/erasures/erasev1_12345678'],
+      ['POST', '/mobile/conversation-graph/forget-header/discover'],
+      ['POST', '/mobile/conversation-graph/forget-header/ensure'],
+      ['POST', '/mobile/conversation-graph/changes'],
+      ['POST', '/mobile/conversation-graph/preview'],
+      ['POST', '/mobile/conversation-graph/undo'],
+      ['POST', '/mobile/conversation-graph/forget-header'],
+      ['POST', '/mobile/conversation-graph/changes/graph-event:change-12345678/cancel'],
       ['GET', '/mobile/accounts'],
       ['GET', '/mobile/spend'],
       ['GET', '/mobile/resources'],

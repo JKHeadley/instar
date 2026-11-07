@@ -1,3 +1,4 @@
+import {DegradationReporter} from '../monitoring/DegradationReporter.js';
 /**
  * Native app conversations — the device routes (docs/specs/mobile-native-conversations.md,
  * increment 1). Writes are device-signed only (a Bearer request gets 403); the three reads also
@@ -280,6 +281,45 @@ export function historyRow(m: BrowsedMessage, verify: (m: BrowsedMessage) => Ori
   };
 }
 
+/** The existing flat-row producer, shared by the owner graph inventory. */
+export function localConversationListPage(deps: MobileConversationRouteDeps, limit: number, cursor: string | null): {
+  rows: ConversationListRow[]; more: boolean; slackOwnerUnset: boolean; partial: boolean;
+} {
+  const svc = deps.service;
+  if (!svc) return { rows: [], more: false, slackOwnerUnset: false, partial: true };
+  let partial = false;
+
+    const c = parseListCursor(cursor);
+    const page = svc!.store.listConversations({ limit, cursor: c ? cursor : null });
+    const appRows: ConversationListRow[] = page.conversations.map((x) => ({
+      id: x.conversationKey, platform: 'app', title: x.title, lastActivity: x.lastActivity ?? x.createdAt, lastPreview: x.lastPreview,
+      ...(x.ownerPerson ? { ownerPerson: x.ownerPerson } : {}),
+    }));
+    let tgRows: ConversationListRow[] = [];
+    if (deps.telegramTopics) {
+      try {
+        tgRows = deps.telegramTopics()
+          .map((t): ConversationListRow => ({ id: t.topicId, platform: 'telegram', title: t.topicName, lastActivity: t.lastActivity, lastPreview: t.lastPreview }))
+          .filter((r) => isAfterListCursor(r, c));
+      } catch { partial = true; DegradationReporter.getInstance().report({feature:'Conversations.slack-inventory',primary:'Read local Slack inventory',fallback:'Return explicitly partial inventory',reason:'slack-inventory-unavailable',impact:'Some Slack conversations are unavailable',internalOnly:true}); }
+    }
+    let slackRows: ConversationListRow[] = [];
+    let slackOwnerUnset = false;
+    if (deps.slackConversations) {
+      try {
+        const list = deps.slackConversations();
+        if (list === null) slackOwnerUnset = true;
+        // A Slack id is this machine's own: every Slack row names the machine that serves it, and
+        // the Slack routes refuse a request naming another machine (mobile-native-conversations §4.9).
+        else slackRows = list
+          .map((c): ConversationListRow => ({ id: c.id, platform: 'slack', title: c.title, lastActivity: c.lastActivity, lastPreview: c.lastPreview, machine: deps.machineId() }))
+          .filter((r) => isAfterListCursor(r, c));
+      } catch { partial = true; DegradationReporter.getInstance().report({feature:'Conversations.slack-inventory',primary:'Read local Slack inventory',fallback:'Return explicitly partial inventory',reason:'slack-inventory-unavailable',impact:'Some Slack conversations are unavailable',internalOnly:true}); }
+    }
+    const merged = mergeConversationPages([{ rows: appRows, more: page.nextCursor !== null }, { rows: tgRows, more: false }, { rows: slackRows, more: false }], limit);
+    return { rows: merged.rows, more: merged.nextCursor !== null, slackOwnerUnset, partial };
+}
+
 export function createMobileConversationRouter(deps: MobileConversationRouteDeps): Router {
   const router = Router();
   const now = deps.now ?? Date.now;
@@ -391,37 +431,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
    * cursor has the same shape and order) and every Telegram topic, merged on ONE cursor so paging
    * never drops a row of either kind.
    */
-  const localListPage = (limit: number, cursor: string | null): { rows: ConversationListRow[]; more: boolean; slackOwnerUnset: boolean } => {
-    const c = parseListCursor(cursor);
-    const page = svc!.store.listConversations({ limit, cursor: c ? cursor : null });
-    const appRows: ConversationListRow[] = page.conversations.map((x) => ({
-      id: x.conversationKey, platform: 'app', title: x.title, lastActivity: x.lastActivity ?? x.createdAt, lastPreview: x.lastPreview,
-      ...(x.ownerPerson ? { ownerPerson: x.ownerPerson } : {}),
-    }));
-    let tgRows: ConversationListRow[] = [];
-    if (deps.telegramTopics) {
-      try {
-        tgRows = deps.telegramTopics()
-          .map((t): ConversationListRow => ({ id: t.topicId, platform: 'telegram', title: t.topicName, lastActivity: t.lastActivity, lastPreview: t.lastPreview }))
-          .filter((r) => isAfterListCursor(r, c));
-      } catch { /* @silent-fallback-ok — a Telegram read failure leaves only the app rows; never an error for the app list */ }
-    }
-    let slackRows: ConversationListRow[] = [];
-    let slackOwnerUnset = false;
-    if (deps.slackConversations) {
-      try {
-        const list = deps.slackConversations();
-        if (list === null) slackOwnerUnset = true;
-        // A Slack id is this machine's own: every Slack row names the machine that serves it, and
-        // the Slack routes refuse a request naming another machine (mobile-native-conversations §4.9).
-        else slackRows = list
-          .map((c): ConversationListRow => ({ id: c.id, platform: 'slack', title: c.title, lastActivity: c.lastActivity, lastPreview: c.lastPreview, machine: deps.machineId() }))
-          .filter((r) => isAfterListCursor(r, c));
-      } catch { /* @silent-fallback-ok — a Slack read failure leaves the other rows; never an error for the app list */ }
-    }
-    const merged = mergeConversationPages([{ rows: appRows, more: page.nextCursor !== null }, { rows: tgRows, more: false }, { rows: slackRows, more: false }], limit);
-    return { rows: merged.rows, more: merged.nextCursor !== null, slackOwnerUnset };
-  };
+  const localListPage = (limit: number, cursor: string | null) => localConversationListPage(deps, limit, cursor);
 
   router.get('/mobile/conversations', async (req: Request, res: Response) => {
     if (!readGate(req, res)) return;

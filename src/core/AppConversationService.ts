@@ -19,8 +19,11 @@ import { AppConversationStore, MAX_STORED_TEXT, transcriptEventId, type AppEvent
 import type { ConversationOwner } from './MobilePeople.js';
 import { derivedEventId, isAppConversationKey, removeAuthorityTokens } from './appConversationText.js';
 import { appInjectionTag, type AppInboundDispatch } from './appInboundDispatch.js';
-import { ledgerViewKey, verifyRecordedOrigin, type MachineKeyLookup, type MachineSigner, type OriginVerdict, type VerifiableRecord } from './AppRecordSignatures.js';
-import type { MobileDeviceKeyLedger } from './MobileDeviceKeyLedger.js';
+import { ledgerViewKey, verifyRecordedOrigin, loadMachineSigner, identityKeyLookup, type MachineKeyLookup, type MachineSigner, type OriginVerdict, type VerifiableRecord } from './AppRecordSignatures.js';
+import { MobileDeviceKeyLedger } from './MobileDeviceKeyLedger.js';
+import { DeviceRegistry } from './MobileDeviceKeys.js';
+import fs from 'node:fs';
+import { assertGraphLocalPath } from './GraphLocalFiles.js';
 import { AppMediaStore, DEFAULT_MAX_STORE_BYTES } from './AppMediaStore.js';
 import { MAX_PURGE_BATCH, MAX_TRANSCRIPT_CHARS, displayName, sessionLine, type AppAttachment } from './appMediaTypes.js';
 import { TranscriptionUnavailableError } from './VoiceTranscription.js';
@@ -210,10 +213,27 @@ export class AppConversationService {
   /** Increment 3 fills this in (push without Telegram); increment 1 records the hook only. */
   pushHook: ((conversationKey: string, messageId: string) => void) | null = null;
 
+  /** Late first identity setup only. Read the real local signer; never accept
+   * caller-supplied keys, ledger rows or a permission flag. Reconcile before
+   * publishing any binding; existing or partial signing state is not replaced. */
+  initializeNativeSigning(devices:DeviceRegistry):MobileDeviceKeyLedger|null{
+    if(this.deps.signer||this.deps.keyLedger)return this.deps.signer&&this.deps.keyLedger?this.deps.keyLedger:null;
+    const root=fs.realpathSync(this.deps.stateDir);
+    if(!(devices instanceof DeviceRegistry)||path.basename(devices.file)!=='mobile-devices.json'||path.basename(path.dirname(devices.file))!=='state'||fs.realpathSync(path.dirname(path.dirname(devices.file)))!==root)throw new Error('app-native-signing-device-scope-mismatch');
+    assertGraphLocalPath(root,path.join(root,'state','mobile-devices.json'));
+    const signer=loadMachineSigner(this.deps.stateDir);if(!signer)return null;
+    const priorMachine=this.deps.machineId();if(priorMachine!=='local'&&priorMachine!==signer.machineId())throw new Error('app-native-signing-machine-mismatch');
+    const keyLookup=identityKeyLookup(this.deps.stateDir),keyLedger=new MobileDeviceKeyLedger({stateDir:this.deps.stateDir,signer,keyLookup});
+    keyLedger.reconcile(devices);
+    this.deps.signer=signer;this.deps.keyLookup=keyLookup;this.deps.keyLedger=keyLedger;
+    if(priorMachine==='local')this.deps.machineId=()=>signer.machineId();
+    return keyLedger;
+  }
+
   constructor(readonly deps: AppConversationServiceDeps) {
     this.now = deps.now ?? Date.now;
     this.store = deps.store ?? new AppConversationStore({
-      stateDir: deps.stateDir, machineId: deps.machineId, now: this.now,
+      stateDir: deps.stateDir, machineId: () => this.deps.machineId(), now: this.now,
       reportDegradation: (what, detail) => deps.reportDegradation?.(what, detail),
     });
     this.channels = new SessionChannelRegistry({ registryPath: path.join(deps.stateDir, 'state', 'app-session-registry.json') });
@@ -224,7 +244,7 @@ export class AppConversationService {
       onRefused: (error) => this.onMediaRefused(error),
     });
     this.replicator = new AppMediaReplicator({
-      media: this.media, store: this.store, selfId: deps.machineId, now: this.now,
+      media: this.media, store: this.store, selfId: () => this.deps.machineId(), now: this.now,
       report: (detail) => deps.reportDegradation?.('AppMediaReplicator', detail),
       raiseAttention: (item) => deps.raiseAttention?.(item),
       clearAttention: (key) => deps.clearAttention?.(key),

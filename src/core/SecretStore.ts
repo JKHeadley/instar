@@ -18,9 +18,23 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import {durableStamp,isDurablyUnchanged,rememberDurable} from './GraphDurableFileMemo.js';
 import { execFileSync } from 'node:child_process';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+
+/** Opt-in durability barrier for callers that publish cryptographic receipts.
+ * It never creates a key, changes keychain enrollment or silently ignores I/O. */
+function syncSecretFileAndParents(file:string):void{
+ if(isDurablyUnchanged(file))return;
+ const stamp=durableStamp(file),before=fs.lstatSync(file);if(!before.isFile()||before.isSymbolicLink())throw new Error('secret-durability-file-invalid');
+ const descriptor=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+ try{const opened=fs.fstatSync(descriptor);if(!opened.isFile()||opened.dev!==before.dev||opened.ino!==before.ino)throw new Error('secret-durability-file-changed');fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
+ for(let directory=path.dirname(file);;directory=path.dirname(directory)){
+  const descriptor=fs.openSync(directory,'r');try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}if(path.dirname(directory)===directory)break;
+ }
+ rememberDurable(file,stamp);
+}
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -183,6 +197,13 @@ export class MasterKeyManager {
     } catch { /* @silent-fallback-ok — unreadable alternate is simply absent */ }
     if (out.length === 0) push(this.getMasterKey(), this.forceFile ? 'file' : 'keychain');
     return out;
+  }
+
+  /** Flush an existing fallback key. A successful OS-keychain persistence/read
+   * uses that platform's durability contract; this method never enrolls a key. */
+  syncDurably():void {
+    if(fs.existsSync(this.keyFilePath)){syncSecretFileAndParents(this.keyFilePath);return;}
+    if(!this.isKeychainBacked)throw new Error('secret-durability-master-key-missing');
   }
 
   /** Whether the master key is stored in the OS keychain (vs file fallback). */
@@ -423,6 +444,13 @@ export class SecretStore {
     const tmpPath = `${this.encryptedPath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
     fs.writeFileSync(tmpPath, encrypted, { mode: 0o600 });
     fs.renameSync(tmpPath, this.encryptedPath);
+  }
+
+  /** Explicit barrier for newly stored receipt/signing keys. Existing writes
+   * retain their behavior; receipt-producing callers must await this success. */
+  syncDurably():void {
+    // Verify existing ciphertext/key coherence before publishing any durability claim.
+    this.read();this.keyManager.syncDurably();syncSecretFileAndParents(this.encryptedPath);
   }
 
   /** Get a specific secret by dot-notation path (e.g., 'telegram.token'). */

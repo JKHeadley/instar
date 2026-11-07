@@ -1,0 +1,22 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import {afterEach,describe,it,expect,vi} from 'vitest';
+import {GraphFrozenPhysicalInventory} from '../../src/core/GraphFrozenPhysicalInventory.js';
+import {ConversationGraphNativeTailFloor} from '../../src/core/ConversationGraphNativeTail.js';
+import {FencedLease} from '../../src/core/FencedLease.js';
+import {canonicalHash,signGraphRecord,GRAPH_SIGNATURE_DOMAINS as D} from '../../src/core/GraphWitnessTypes.js';
+import {SafeFsExecutor} from '../../src/core/SafeFsExecutor.js';
+import {replicationFixture} from './conversation-graph-replication.fixtures.js';
+const roots:string[]=[];function root(){const value=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'graph-held-reader-')));roots.push(value);return value;}
+afterEach(()=>{vi.restoreAllMocks();for(const value of roots.splice(0))SafeFsExecutor.safeRmSync(value,{recursive:true,force:true,operation:'graph-held-reader:teardown'});});
+describe('bounded physical held inventory',()=>{
+ it('checks actual bytes one file at a time and refuses later unlisted files at finalization',()=>{const r=root(),dir=path.join(r,'source');fs.mkdirSync(dir);fs.writeFileSync(path.join(dir,'a.json'),'{}');const proof=new GraphFrozenPhysicalInventory(r,dir,{maxFileBytes:1024,maxTotalBytes:2048,maxFiles:2});expect(proof.readJson('a.json')).toEqual({});fs.writeFileSync(path.join(dir,'b.json'),'{}');expect(proof.readJson('a.json')).toEqual({});expect(()=>proof.assertCurrent()).toThrow('file-unlisted');});
+ it('refuses same-inode changed bytes and replaced roots',()=>{const r=root(),dir=path.join(r,'source');fs.mkdirSync(dir);const file=path.join(dir,'a.json');fs.writeFileSync(file,'{"a":1}');const proof=new GraphFrozenPhysicalInventory(r,dir,{maxFileBytes:1024,maxTotalBytes:2048,maxFiles:2});fs.writeFileSync(file,'{"a":2}');expect(()=>proof.readJson('a.json')).toThrow('file-changed');fs.renameSync(dir,dir+'-old');fs.mkdirSync(dir);expect(()=>proof.assertScope()).toThrow('root-changed');});
+ it('refuses aggregate byte quota and failed real file fsync before any read handle',()=>{const r=root(),dir=path.join(r,'source');fs.mkdirSync(dir);const file=path.join(dir,'a.json');fs.writeFileSync(file,'{"a":1}');expect(()=>new GraphFrozenPhysicalInventory(r,dir,{maxFileBytes:1024,maxTotalBytes:2,maxFiles:2})).toThrow('capacity');const spy=vi.spyOn(fs,'fsyncSync').mockImplementationOnce(()=>{throw new Error('actual-fsync-fault');});expect(()=>new GraphFrozenPhysicalInventory(r,dir,{maxFileBytes:1024,maxTotalBytes:2048,maxFiles:2})).toThrow('actual-fsync-fault');spy.mockRestore();expect(fs.readFileSync(file,'utf8')).toBe('{"a":1}');});
+});
+describe('actual observed native-tail context',()=>{
+ it('binds real root and signed observed epoch while accepting a genuine same-epoch renewal',async()=>{const r=root(),other=root(),f=replicationFixture(),floor=new ConversationGraphNativeTailFloor(r,'echo',f.owner.publicKey);await floor.open();await floor.observe(f.membership,f.lease,f.originalLease);expect(()=>floor.assertObservedContext(r,'echo',f.membership,f.lease,f.originalLease)).not.toThrow();expect(()=>floor.assertObservedContext(other,'echo',f.membership,f.lease,f.originalLease)).toThrow('scope');const {signature:_old,...native}=f.originalLease,body={...native,nonce:native.nonce+1},renewed={...body,signature:crypto.sign(null,Buffer.from(FencedLease.canonicalize(body)),f.members[0].signing.privateKey).toString('base64')},bridgeBody={...f.lease,fencedLeaseHash:canonicalHash(renewed)};const {signature:_bridge,...unsigned}=bridgeBody,bridge={...unsigned,signature:signGraphRecord(D.lease,unsigned,f.members[0].signing.privateKey)};expect(()=>floor.assertObservedContext(r,'echo',f.membership,bridge,renewed)).not.toThrow();expect(()=>floor.assertObservedContext(r,'echo',f.membership,{...bridge,signature:'A'.repeat(86)},renewed)).toThrow('scope');});
+ it('checks persisted native evidence and refuses missing floor bytes',async()=>{const r=root(),f=replicationFixture(),floor=new ConversationGraphNativeTailFloor(r,'echo',f.owner.publicKey);await floor.observe(f.membership,f.lease,f.originalLease);const file=path.join(r,'state','conversation-graph-native-tail','floor.json');fs.renameSync(file,file+'.saved');expect(()=>floor.assertObservedContext(r,'echo',f.membership,f.lease,f.originalLease)).toThrow();});
+});

@@ -50,6 +50,16 @@ function mkEngine(opts: {
 }
 
 describe('DroppedOriginRegistry', () => {
+  it('physical proof refuses stale same-root state and corrupt physical documents', () => {
+    const first=new DroppedOriginRegistry({stateDir:dir}),second=new DroppedOriginRegistry({stateDir:dir});
+    expect(first.physicalSnapshot(fs.realpathSync(dir))).toMatch(/^[a-f0-9]{64}$/);
+    second.add('conversationGraph','B',new Date().toISOString());
+    expect(()=>first.physicalSnapshot(fs.realpathSync(dir))).toThrow('dropped-origin-physical-state-changed');
+    expect(second.physicalSnapshot(fs.realpathSync(dir))).toMatch(/^[a-f0-9]{64}$/);
+    fs.writeFileSync(path.join(dir,'state','state-sync','dropped-origins.json'),'{broken');
+    expect(()=>second.physicalSnapshot(fs.realpathSync(dir))).toThrow();
+  });
+
   it('records + persists a drop, queryable live', () => {
     const r1 = new DroppedOriginRegistry({ stateDir: dir });
     r1.add('pref', 'B', new Date().toISOString());

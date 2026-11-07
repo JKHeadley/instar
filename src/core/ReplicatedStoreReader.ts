@@ -88,6 +88,9 @@ export class ReplicatedStoreReader {
     this.seams = seams;
   }
 
+  /** Exact negative-registry pairing for physical retained-read proofs. */
+  usesDroppedOriginRegistry(registry: DroppedOriginRegistry): boolean { return this.seams.droppedOrigins === registry; }
+
   /** Is this store registered + enabled (so a read is non-dark)? A read on an
    *  unregistered or disabled store returns a strict no-op (no record). */
   private isLive(store: string): boolean {

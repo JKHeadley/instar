@@ -1469,6 +1469,16 @@ const UUID = APP_CONVERSATION_KEY_PATTERN;
 export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySet<DeviceStatus>; sendRoute?: boolean; body?: 'json' | 'octet' | 'none'; ownBucket?: number; bucket?: string; unassignedOk?: boolean; conversationRef?: boolean; ownerOnly?: boolean }> = (() => {
   const active: ReadonlySet<DeviceStatus> = new Set(['active']);
   return [
+    // Conversations v3 owner hierarchy. Admission still requires a live device
+    // signature; the mounted graph source separately enforces increment A.
+    { method: 'GET', re: /^\/mobile\/conversation-graph\/roots$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
+    { method: 'GET', re: /^\/mobile\/conversation-graph\/nodes\/[a-z0-9_-]{1,2048}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
+    { method: 'GET', re: /^\/mobile\/conversation-graph\/nodes\/[a-z0-9_-]{1,2048}\/destinations$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
+    { method: 'GET', re: /^\/mobile\/conversation-graph\/(pending|changes\/[a-z0-9_.:%-]{8,480})$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
+    { method: 'POST', re: /^\/mobile\/conversation-graph\/forget-header\/(discover|ensure)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
+    { method: 'GET', re: /^\/mobile\/conversation-graph\/erasures\/[A-Za-z0-9_-]{8,160}$/, statuses: active, ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
+    { method: 'POST', re: /^\/mobile\/conversation-graph\/(changes|preview|undo|forget-header)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
+    { method: 'POST', re: /^\/mobile\/conversation-graph\/changes\/(?:(graph-event|header-op)(:|%3a)[a-z0-9_-]{8,80}|queued(:|%3a)owner-change(:|%3a)[a-f0-9]{64})\/cancel$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
     { method: 'GET', re: /^\/health$/, statuses: active },
     { method: 'GET', re: /^\/attention$/, statuses: active },
     { method: 'GET', re: /^\/sessions$/, statuses: active },
@@ -1621,6 +1631,9 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       }
       host = h;
     }
+    // Immutable evidence from the key lookup used by THIS signature verification, not a later
+    // registry snapshot. Async private reads compare current authority to this admission.
+    let admittedIdentity: MobileDeviceAdmissionIdentity | null = null;
     const v = verifyDeviceRequest(
       { deviceId: id, time: req.headers['x-instar-device-time'], sig: req.headers['x-instar-device-sig'], method: req.method, pathWithQuery: req.originalUrl, rawBody: raw, host },
       (deviceId) => {
@@ -1630,6 +1643,8 @@ export function deviceAuthenticator(svc: MobilePairingService) {
         // write after it failed (mobile-native-conversations §4.6: the ledger row is the recorded
         // intent). In-memory index, no file read per request.
         const ledgerRevoked = !!svc.keyLedger && svc.keyLedger.isRevoked(deviceKeyHashOf(d.publicKey), d.id);
+        admittedIdentity = Object.freeze({ keyHash: deviceKeyHashOf(d.publicKey),
+          userId: d.userId ?? null, role: d.role ?? 'owner' });
         return { publicKey: d.publicKey, host: d.host, status: ledgerRevoked ? 'revoked' : d.status as DeviceStatus };
       },
       rule.statuses, svc.replay, Date.now(), rule.sendRoute === true,
@@ -1649,10 +1664,16 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     if (!person || !person.ok) {
       if (!rule.unassignedOk) return refuse(403, 'person-unknown');
     } else {
-      if (rule.ownerOnly && person.role !== 'owner') return refuse(403, 'owner-phone-required');
+      if (rule.ownerOnly && person.role !== 'owner') {
+        if (pathNorm.startsWith('/mobile/conversation-graph/')) {
+          res.status(403).json({ code: 'hierarchy-owner-only' }); return 'refused';
+        }
+        return refuse(403, 'owner-phone-required');
+      }
       (req as unknown as { instarDevicePerson: ResolvedPerson }).instarDevicePerson = person;
     }
     (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device', deviceId: v.deviceId };
+    (req as unknown as { instarDeviceAdmissionIdentity: MobileDeviceAdmissionIdentity | null }).instarDeviceAdmissionIdentity = admittedIdentity;
     // The moment the device signature was accepted: the signed records' `receivedAt` (§4.6).
     (req as unknown as { instarDeviceAdmittedAt: number }).instarDeviceAdmittedAt = Date.now();
     // The Host the signature was checked against (multi-route: one of this machine's own names;
@@ -1664,6 +1685,17 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     }
     return 'ok';
   };
+}
+
+export interface MobileDeviceAdmissionIdentity {
+  readonly keyHash: string;
+  readonly userId: string | null;
+  readonly role: 'owner' | 'msp';
+}
+
+/** Identity actually used by deviceAuthenticator; never accepted from an HTTP header/body. */
+export function deviceAdmissionIdentity(req: Request): MobileDeviceAdmissionIdentity | null {
+  return (req as unknown as { instarDeviceAdmissionIdentity?: MobileDeviceAdmissionIdentity }).instarDeviceAdmissionIdentity ?? null;
 }
 
 /** The person of the phone that signed this request (people and roles §3.4), or null. */

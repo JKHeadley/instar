@@ -19,6 +19,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { fileURLToPath } from 'node:url';
 import {
+  closeAllSqlite,
   sqliteRegistrySize,
   __resetSqliteRegistryForTests,
 } from '../../src/core/SqliteRegistry.js';
@@ -26,6 +27,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { StopGateDb } from '../../src/core/StopGateDb.js';
 import { PreferenceStore } from '../../src/providers/uxConfirm/PreferenceStore.js';
 import { SpawnLedger } from '../../src/threadline/SpawnLedger.js';
+import { witnessFixture } from './graph-witness-fixtures.js';
 import { JobSupervisionStore } from '../../src/scheduler/JobSupervisionStore.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -33,6 +35,7 @@ const SRC = path.join(REPO_ROOT, 'src');
 
 /** The 15 long-lived (process-lifetime) SQLite stores — the registry allowlist. */
 const LONG_LIVED_STORES = [
+  'src/core/GraphWitnessService.ts',
   'src/core/StopGateDb.ts',
   'src/core/FeatureRegistry.ts',
   'src/providers/uxConfirm/PreferenceStore.ts',
@@ -162,6 +165,13 @@ describe('SqliteRegistry wiring — registration fires (functional)', () => {
   });
   afterEach(() => {
     try { SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/SqliteRegistry-wiring.test.ts' }); } catch { /* ignore */ }
+  });
+
+  it('GraphWitnessService registers its real live handle, unregisters on close, and closes through process teardown',()=>{
+    const fixture=witnessFixture(tmp),service=fixture.open();expect(sqliteRegistrySize()).toBe(1);
+    expect(service.membershipProof(fixture.membership.agentId,1)).toEqual(fixture.membership);service.close();expect(sqliteRegistrySize()).toBe(0);
+    const reopened=fixture.open();expect(sqliteRegistrySize()).toBe(1);closeAllSqlite();expect(sqliteRegistrySize()).toBe(0);
+    expect(()=>reopened.membershipProof(fixture.membership.agentId,1)).toThrow();reopened.close();expect(sqliteRegistrySize()).toBe(0);
   });
 
   it('StopGateDb registers on construct', () => {

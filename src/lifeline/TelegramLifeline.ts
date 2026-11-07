@@ -133,7 +133,7 @@ interface TelegramUpdate {
   message?: {
     message_id: number;
     from: { id: number; first_name: string; username?: string };
-    chat: { id: number };
+    chat: { id: number; type?: string };
     message_thread_id?: number;
     text?: string;
     caption?: string;
@@ -1807,6 +1807,10 @@ export class TelegramLifeline {
         topicId,
         text,
         fromUserId: rawMsg.from.id,
+        // Destination identity for neutral Conversations replies. The server
+        // accepts this only with verified lifeline proof, never plain bearer.
+        sourceChatId: rawMsg.chat.id,
+        sourceChatType: rawMsg.chat.type,
         fromUsername: rawMsg.from.username,
         fromFirstName: rawMsg.from.first_name,
         messageId: rawMsg.message_id,
