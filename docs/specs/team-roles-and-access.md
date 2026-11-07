@@ -82,8 +82,9 @@ Each phone-written event stores the phone's whole signed request as `signedOrigi
 **Order.** The fold is a deterministic reducer over a total order: the receipt's signed `receivedAt`, then `eventId`. A late row triggers a full re-fold, which is cheap at team size. So replicas holding the same events reach the same state, in any arrival order.
 
 - Per person, and per person and conversation, the last event wins. On a tie, removal or the lower access wins.
-- Owner events are folded first. An admin event then counts only if the admin held the needed standing in the owner-only state at that event's time. So an owner's removal beats that admin's concurrent grant.
-- An event naming an unknown person, or signed by a key this machine's ledger does not know yet, is quarantined, and the fold reruns when the ledger or log gains rows. The ledger gains an ingest hook for this. **A quarantined removal or lowering is honoured at once,** because the safe direction needs no proof. A quarantined grant has no effect.
+- Owner events are folded first. An admin event then counts only if the admin held the needed standing in the owner-only state at that event's receipt time. This gives convergence, not causality: machine clocks differ, so a grant made in the seconds around an admin's removal may stand.
+- **An admin's past grants survive the admin's removal,** because they were valid when made, and the same goes for an admin who loses a conversation. Nothing cascades. Removing an admin shows the owner everything that admin granted, with one Remove all button, which covers the clock case above.
+- An event naming an unknown person, or signed by a key this machine's ledger does not know yet, is quarantined, and the fold reruns when the ledger or log gains rows. The ledger gains an ingest hook for this. A quarantined event is not accepted, whichever way it points. If it carries a valid machine receipt and would remove or lower access, the person's affected access is **held** until the row verifies: a temporary denial, kept apart from accepted state, and cleared when the row is either applied or dropped. A row with no valid receipt holds nothing, so an unknown key cannot lock anyone out.
 - A row that fails verification outright is ignored.
 
 Events: `phone-bind`, `owner-pin`, `person-add { personKey, name, tier, relationship?, links }`, `person-set`, `person-remove`, `grant { personKey, ref, access }`, `grant-remove`, `place-applied { ref, rev, machineId }` (machine-signed, §3.5), `lower` (machine-signed, below). `phone-bind` is described below.
@@ -207,7 +208,7 @@ An empty Telegram allowlist means anyone in the group can message the agent. Tha
 
 ### 3.11 Audit
 
-`logs/team-access.jsonl` records refusals, capped to one row per device, route and minute. Changes are already in the signed log, and message attribution is on the inbound log and app events. `GET /mobile/team/activity` (owner, admin read) shows plain lines: "Dana gave Sam access to 'Q4 planning'". The owner gets one attention item a day summarizing admin changes, only on days there were some. The refusal log is machine-local and retention-bounded, and Activity merges through the pool read.
+`logs/team-access.jsonl` records refusals, capped to one row per device, route and minute. Changes are already in the signed log, and message attribution is on the inbound log and app events. `GET /mobile/team/activity` (owner, admin read) shows plain lines: "Dana gave Sam access to 'Q4 planning'". For an admin, each line goes through `mayDo(read)`, and a conversation the admin may not read appears as "a conversation". The owner gets one attention item a day summarizing admin changes, only on days there were some. The refusal log is machine-local and retention-bounded, and Activity merges through the pool read.
 
 ### 3.12 Migration
 
@@ -299,7 +300,7 @@ Step 1 is a plain revert. From step 2 on, older builds since v1.3.1631 refuse a 
 
 ## 9. Tests
 
-- Unit: tier map; lower-of, including no `orgRole` and an `msp` phone untouched; a banned-literal test; every allowlist entry has a tier; notify-token tier; `mayDo` for each tier, op and ref form; log fold with bad signature, fields changed beside the signed body, a re-appended old grant, standing exceeded, the same events in shuffled orders, an owner removal concurrent with an admin grant, a quarantined grant, a quarantined removal honoured at once, an MSP-signed `owner-pin`; an admin with `read` cannot grant `use`; owner pin beats `orgRole`; `alwaysPerson`; place with grants; `ReachablePeople` with privacy off.
+- Unit: tier map; lower-of, including no `orgRole` and an `msp` phone untouched; a banned-literal test; every allowlist entry has a tier; notify-token tier; `mayDo` for each tier, op and ref form; log fold with bad signature, fields changed beside the signed body, a re-appended old grant, standing exceeded, the same events in shuffled orders, an admin's grant surviving the admin's removal in both clock directions, a quarantined grant, a quarantined removal holding access and clearing both ways, an unknown key with no receipt holding nothing, an MSP-signed `owner-pin`; an admin with `read` cannot grant `use`; owner pin beats `orgRole`; `alwaysPerson`; place with grants; `ReachablePeople` with privacy off.
 - Integration (HTTP): a status table across owner, `msp` with no `orgRole`, admin, member, guest and removed person on every route; bearer cannot raise; admin limits; invite refusals; `426` from an older app; two-step grant; second-person item once, updated in place, suppressed for shared people.
 - E2E: production init path, `/team/people` 200 with real wiring; a member reaches a granted conversation and gets `404` on another.
 - Live: a real session proving a member cannot get another member's fact, or the owner's, in a granted conversation.
