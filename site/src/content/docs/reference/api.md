@@ -1247,3 +1247,16 @@ Prioritization Queue feature page). Development-agent gated; 503 when dark.
 
 - `GET /work-queue` — the current deterministic ranked list of normalized work items.
 - `POST /work-queue/rescore` — recompute the ranking from live sources (pure compute, no durable writes).
+
+## Maintenance and observability reads
+
+See the Maintenance and observability read routes reference page for what each field means.
+
+- `GET /rate-limit/status` — RateLimitSentinel active throttle recoveries.
+- `GET /write-admission` — write-admission mode, counters and recent refusals (503 when dark).
+- `GET /load-assessment/summary` — machine-load assessment log, summarised and graded.
+- `GET /sessions/claude-binary` — Claude binary retainer state.
+- `POST /sessions/claude-binary/prune` — run one retainer prune pass.
+- `GET /worktrees/agent-reaper` — per-worktree reap verdicts and reclaimable count.
+- `GET /codex-arm-sweeper` — Codex arm session sweeper posture and counts.
+- `GET /mesh-selfheal/g3` — mesh self-heal observe-mode summary and promotion recommendation.
