@@ -116,6 +116,11 @@ export interface BuildIntelligenceProviderOptions {
    * rollback lever.
    */
   resolveExecJson?: () => boolean;
+  /**
+   * gemini-cli only: pass `--skip-trust` on this provider's one-shots (see
+   * GeminiCliIntelligenceProviderOptions.skipTrust). Absent ⇒ today's argv.
+   */
+  geminiSkipTrust?: boolean;
 }
 
 /**
@@ -207,6 +212,7 @@ export function buildIntelligenceProvider(
           geminiPath: path,
           ...(options.workingDirectory ? { workingDirectory: options.workingDirectory } : {}),
           ...(options.quotaStateFile ? { capacityPolicy: { quotaStateFile: options.quotaStateFile } } : {}),
+          ...(options.geminiSkipTrust ? { skipTrust: true } : {}),
         }),
         options.breaker,
       );

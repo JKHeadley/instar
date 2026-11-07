@@ -1544,9 +1544,14 @@ const geminiReviewer: SupportedReviewerFramework = {
     // Build (or accept an injected) provider. The factory wraps it in the
     // account-global circuit breaker, so a rate-limited review degrades the
     // same way every other instar LLM call does.
+    // `geminiSkipTrust`: the reviewer runs gemini headless from a cwd it never
+    // asked the operator to trust, and gemini >= ~0.40 refuses that with exit
+    // 55. Trusting the cwd for THIS call only is safe here because the review
+    // is a pure prompt -> text read (`--approval-mode default`, no workspace
+    // action) — and it is scoped to this provider, not set globally.
     const provider =
       args.providerOverride ??
-      buildIntelligenceProvider({ framework: 'gemini-cli' });
+      buildIntelligenceProvider({ framework: 'gemini-cli', geminiSkipTrust: true });
 
     if (!provider) {
       // Binary vanished between detect and review (or detection said
@@ -1569,7 +1574,7 @@ const geminiReviewer: SupportedReviewerFramework = {
         attribution: { component: 'crossModelReviewer' }, // attribution for /metrics/features
       });
     } catch (err) {
-      const reason = classifyReviewFailure(err);
+      const reason = classifyGeminiReviewFailure(err);
       return {
         status: 'degraded',
         framework: 'gemini-cli',
@@ -2171,6 +2176,35 @@ export function classifyReviewFailure(err: unknown): string {
     return 'timeout';
   }
   return 'error';
+}
+
+/**
+ * gemini-specific named failures, checked BEFORE the shared classifier.
+ *
+ * Measured 2026-11-07 on gemini CLI 0.67.0: every gemini review degraded as a
+ * bare `error`, which hid two distinct, differently-remediated causes:
+ *
+ *   - exit 55, "Gemini CLI is not running in a trusted directory" — the CLI's
+ *     trusted-folder gate refusing a headless run. → `gemini-untrusted-folder`.
+ *     Checked first: exit 55 is the CLI's own code for this refusal, and the
+ *     measured exit-55 stderr ALSO carried the auth error below (the CLI
+ *     authenticates before it checks trust), so exit 55 must win.
+ *   - `IneligibleTierError` / `UNSUPPORTED_CLIENT` — Google no longer serves
+ *     this client on the "Gemini Code Assist for individuals" tier. An
+ *     account/tier decision no code here can fix. → `gemini-tier-unsupported`.
+ *
+ * Everything else falls through to `classifyReviewFailure` unchanged. Scoped
+ * to the gemini entry so no other family's classification can move.
+ */
+export function classifyGeminiReviewFailure(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/Gemini CLI exited 55\b|not running in a trusted directory/i.test(msg)) {
+    return 'gemini-untrusted-folder';
+  }
+  if (/IneligibleTierError|UNSUPPORTED_CLIENT/.test(msg)) {
+    return 'gemini-tier-unsupported';
+  }
+  return classifyReviewFailure(err);
 }
 
 // ── Reviewer reply parsing ──────────────────────────────────────────────

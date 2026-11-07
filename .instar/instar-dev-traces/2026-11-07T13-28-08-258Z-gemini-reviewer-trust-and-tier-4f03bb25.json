@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "gemini-reviewer-trust-and-tier",
+  "sessionId": "8d64a48d-01f4-49c1-9210-3e2c46e90626",
+  "timestamp": "2026-11-07T13:28:08.258Z",
+  "artifactPath": "upgrades/side-effects/gemini-reviewer-trust-and-tier.md",
+  "artifactSha256": "a499dc4b239a12cce47f63a743b06eca7c0875e0c701f46544bb03620748cbcb",
+  "coveredFiles": [
+    "src/core/GeminiCliIntelligenceProvider.ts",
+    "src/core/crossModelReviewer.ts",
+    "src/core/intelligenceProviderFactory.ts",
+    "tests/unit/gemini-reviewer-trust-and-tier.test.ts",
+    "upgrades/next/gemini-reviewer-trust-and-tier.md",
+    "upgrades/side-effects/gemini-reviewer-trust-and-tier.eli16.md",
+    "upgrades/side-effects/gemini-reviewer-trust-and-tier.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fix to one reviewer family: opt-in --skip-trust on the gemini reviewer call plus two named degraded reasons; no block/allow surface, no state, a revert fully undoes it.",
+  "eli16Path": "upgrades/side-effects/gemini-reviewer-trust-and-tier.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/gemini-reviewer-trust-and-tier.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
