@@ -57,3 +57,7 @@ A machine row with an event this build does not know is kept and holds every tea
 
 ## A damaged machine repairs itself
 A machine with a damaged log or lock list rebuilds from any peer that answers: what was there is set aside, not deleted, and it carries on under a new stream. That new stream holds every team phone until the owner settles it, which they can do from a phone on that machine, because naming its earlier stream is allowed. With no peer answering the owner's restore applies as before.
+
+## Proved on two servers
+`tests/e2e/team-access-two-machines.test.ts` boots two real servers on one computer. Rows cross the real signed route, both reach one answer, and a removal made on one revokes a phone on the other. It found that a machine which had only received rows counted as having no log, so everyone there had no access. Fixed.
+**Cannot cross by this route:** conversation events share one journal that all peers copy, so a below-floor peer cannot be cut off alone. A stated limit.

@@ -794,3 +794,16 @@ describe('a damaged machine', () => {
     expect(a.healthState()).toBe('unreadable');
   });
 });
+
+describe('a machine that has only received rows', () => {
+  it('has a log, and it survives a restart', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-recv-'));
+    const a = machine('A');
+    start(a);
+    const b = new TeamAccessLog({ stateDir: dir, signer: signerFor('B'), verify });
+    expect(b.healthState()).toBe('absent');
+    b.ingest(a.allRows() as TeamAccessRow[]);
+    expect(b.healthState()).toBe('ok');
+    expect(new TeamAccessLog({ stateDir: dir, signer: signerFor('B'), verify }).healthState()).toBe('ok');
+  });
+});

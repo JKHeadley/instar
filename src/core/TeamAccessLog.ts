@@ -692,6 +692,8 @@ export class TeamAccessLog {
     if (added > 0) {
       this.folded = foldLog(this.rows, this.opts.verify);
       this.refoldPending = this.rows.some((r) => this.opts.verify(r) === 'unknown');
+      // A machine that has only ever received rows still has a log.
+      if (this.health === 'absent') this.health = 'ok';
       this.snapshot();
       this.leaveLostStream();
       const after = grantPairs(this.folded);
