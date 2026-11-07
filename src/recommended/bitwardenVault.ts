@@ -60,17 +60,28 @@ export function configHeldSecrets(config: Record<string, unknown>): Record<strin
   const tunnel = config.tunnel as Record<string, unknown> | undefined;
   take('config.tunnel.token', tunnel?.token);
   const messaging = Array.isArray(config.messaging) ? (config.messaging as Array<Record<string, unknown>>) : [];
+  const seenTypes = new Map<string, number>();
   for (const m of messaging) {
     const type = typeof m?.type === 'string' ? m.type : 'messaging';
+    // A second entry of the same type keeps its own name, so neither token is silently dropped.
+    const n = (seenTypes.get(type) ?? 0) + 1;
+    seenTypes.set(type, n);
+    const label = n === 1 ? type : `${type}.${n}`;
     const cfg = (m?.config ?? {}) as Record<string, unknown>;
-    for (const key of ['token', 'botToken', 'appToken', 'signingSecret']) take(`config.messaging.${type}.${key}`, cfg[key]);
+    for (const key of ['token', 'botToken', 'appToken', 'signingSecret']) take(`config.messaging.${label}.${key}`, cfg[key]);
   }
   return out;
 }
 
-/** Everything the copy covers: vault leaves plus the config-held secrets, sorted, names only. */
+/**
+ * Everything the copy covers: vault leaves plus the config-held secrets, sorted, names only. A config
+ * value whose vault twin of the same name already exists (`authToken` beside `config.authToken`) is
+ * left out, so one secret is not copied twice under two names while the config still carries it.
+ */
 export function copySourceNames(secrets: Secrets, config: Record<string, unknown>): string[] {
-  return [...new Set([...copiedSecretNames(secrets), ...Object.keys(configHeldSecrets(config))])].sort();
+  const vault = copiedSecretNames(secrets);
+  const fromConfig = Object.keys(configHeldSecrets(config)).filter((n) => !vault.includes(n.slice('config.'.length)));
+  return [...new Set([...vault, ...fromConfig])].sort();
 }
 
 /** The production surface: BitwardenProvider on this machine, scoped to this agent's folder. */

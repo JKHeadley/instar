@@ -59,18 +59,18 @@ describe('recommended services catalog', () => {
     }
   });
 
-  it('a service with no proven recipe is unavailable; only the two live-proven ones have one', () => {
+  it('a service with no proven recipe is unavailable; only the live-proven ones have one', () => {
     expect(isServiceAvailable({ ...rows[0], setupRecipe: 'tailscale-v1' })).toBe(true);
     expect(isServiceAvailable({ ...rows[0], setupRecipe: null })).toBe(false);
     // Giving a real service a recipe opens the confirm page to the public and promises setup. Tailscale and Jev
-    // got theirs on 2026-11-07 (topic 135786) after both were proven live on a test agent, with what the earlier
+    // got theirs on 2026-11-07 (topic 135786), and Bitwarden the same day, after each was proven live on a test agent, with what the earlier
     // comment here asked for: the switch-off route for a working service (`shutdown: authorized`, carried out by
     // the recipe), a key route that keeps the key out of the session, and a yes refused on a machine that can't
     // message the person. The owner-only Telegram button and the "an address comes first" row belong to the
     // offer list, which is not live, so they ship with it. Every other row stays unavailable until its recipe
     // has its own live proof, so this assertion must change only with such a proof.
-    expect(rows.filter(isServiceAvailable).map((r) => r.id)).toEqual(['tailscale', 'jev']);
-    expect(rows.filter(isServiceAvailable).map((r) => r.setupRecipe)).toEqual(['tailscale-v1', 'jev-v1']);
+    expect(rows.filter(isServiceAvailable).map((r) => r.id)).toEqual(['tailscale', 'jev', 'bitwarden']);
+    expect(rows.filter(isServiceAvailable).map((r) => r.setupRecipe)).toEqual(['tailscale-v1', 'jev-v1', 'bitwarden-v1']);
   });
 
   it('a row never gives the person a task', () => {
