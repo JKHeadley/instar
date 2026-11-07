@@ -44,7 +44,8 @@ export function openPublishedOwnedGraphCustody(options:{stateDir:string;agentId:
  const {stateDir,agentId,identity,identities,ownerPublicKey,publication}=options,genesis=publication.membership,membership=options.membership??genesis,profile=membership.custodyProfile,local=identity.loadIdentity(),installed=ownedGraphInstalledRoster(identity,identities);
  if(genesis.agentId!==agentId||!verifyGraphCustodyBootstrapPublication(publication,genesis.members,ownerPublicKey)||!verifyMembershipEpoch(membership,ownerPublicKey)||membership.agentId!==agentId||!profile||profile.mode!=='owned-machine'||profile.hostMachineId!==local.machineId)throw new Error('owned-custody-publication-invalid');
  const ordered=(rows:readonly GraphMembershipMember[])=>[...rows].sort((a,b)=>a.machineId<b.machineId?-1:a.machineId>b.machineId?1:0);
- if(canonicalHash(ordered(installed))!==canonicalHash(ordered(membership.members)))throw new Error('owned-custody-installed-roster-mismatch');
+ // Every signed member must still be installed under its signed keys. A machine paired later holds no signed place.
+ const installedById=new Map(installed.map(row=>[row.machineId,canonicalHash(row)]));if(!membership.members.every(row=>installedById.get(row.machineId)===canonicalHash(row)))throw new Error('owned-custody-installed-roster-mismatch');
  syncOwnedGraphIdentityDurably(identity,identities);
  const recoveryStore=new GraphOwnerRecoveryStore({stateDir,agentId,identity,identities});recoveryStore.put(recoveryStore.envelope(publication.admission.ownerRecoveryHash,genesis,ownerPublicKey),genesis,ownerPublicKey);
  const store=new GraphCustodyBootstrapStore(stateDir,agentId),pinned=store.publication(genesis.members);

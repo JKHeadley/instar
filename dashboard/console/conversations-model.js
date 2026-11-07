@@ -224,3 +224,4 @@ export function pendingModel(data) {
 }
 
 export function localOnlyEnvelope(response){return response?.status===503&&response.data?.code==='conversation-graph-pending'&&response.data?.reason==='owned-custody-pending'&&response.data?.capabilities?.recordLocal===true&&response.data?.capabilities?.canonical===false;}
+export function localOnlyWords(response){return response?.data?.awaitingJoin===true?'This machine has not joined your other machines for Conversations yet. Changes you make here stay on this machine.':'Working locally. The agreed view is unavailable.';}

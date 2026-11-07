@@ -70,7 +70,13 @@ describe('owned default across actual registered native peers',()=>{
    for(const options of f.native.options){const manager=new MachineIdentityManager(options.stateDir);new IdentityStore({stateDir:manager.baseDir}).apply({identity,scope:'remote',actor:'pairing-trust',path:'pair'});manager.registerMachine(identity,'standby');}
    const after=await change('after-new-machine-paired');expect(after.state,JSON.stringify(after)).toBe('committed');
    const roots=await fetch(f.origins[1]+'/conversation-graph/roots',{headers:ownerHeaders}),body=await roots.json();expect(roots.status,JSON.stringify(body)).toBe(200);expect(JSON.stringify(body)).toContain(after.effort.id);expect(f.defaults[1].runtime!.installedMembership.members.some(member=>member.machineId===identity.machineId)).toBe(false);
-   for(const manager of f.defaults)await manager.restore();expect(f.defaults[0].runtime).not.toBeNull();
+   for(const index of [0,1]){
+    // A fresh process has no custody open yet, which is where a raw paired-list comparison would stop it.
+    const prior=f.native.options[index],{configuration:_legacy,...nativeOnly}=prior,stateDir=prior.stateDir;await f.defaults[index].close();
+    let reopened:ConversationGraphDefault;const journal=new CoherenceJournal({stateDir,machineId:prior.identity.loadIdentity().machineId,onReplicatedRecordsCommitted:(kind,entries)=>reopened?.runtime?.onJournalCommit(kind,entries)});journal.setReplicatedKindRegistry(prior.registry);journal.open();journals.push(journal);
+    reopened=new ConversationGraphDefault({stateDir,agentId:'echo',instanceLock:prior.instanceLock,secrets:new SecretStore({stateDir,forceFileKey:true}),bootstrapBearer:'default-native-peer-bootstrap',fleet:{...nativeOnly,journal}});managers.push(reopened);
+    const runtime=await reopened.restore();expect(runtime,'fresh start on machine '+index).not.toBeNull();expect(runtime!.installedMembership.members.some(member=>member.machineId===identity.machineId)).toBe(false);expect(reopened.unjoinedMachines()).toEqual([identity.machineId]);await reopened.close();
+   }
   }finally{SafeFsExecutor.safeRmSync(newcomerDir,{recursive:true,force:true,operation:'tests/integration/graph-default-peers:newcomer'});}
  });
  it('commits a real follower-only owner HTTP correction with no owner visit on the native holder',async()=>{

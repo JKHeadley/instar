@@ -1,7 +1,7 @@
 // Native console Conversations. Owner-only reads use the existing PIN proof.
 // UI is a projection consumer: no inferred grouping, routing, or decision state.
 import { el, pageHead, setKids, note, askPin, operatorSession, forgetOperatorSession, arrivalScrollPosition } from './ui.js';
-import { listModel, nodeModel, pageQuery, graphHistoryRoute, historyModel, encodeNodeRef, localOnlyEnvelope } from './conversations-model.js';
+import { listModel, nodeModel, pageQuery, graphHistoryRoute, historyModel, encodeNodeRef, localOnlyEnvelope, localOnlyWords } from './conversations-model.js';
 import { mountPending } from './conversation-pending.js';
 import { correctionControls } from './conversation-corrections.js';
 import { effortActionControls } from './conversation-effort-actions.js';
@@ -304,11 +304,11 @@ export async function renderConversations(main) {
   const result = await read(`${ROOTS}?${pageQuery(state.view, state.q)}`, controller.signal);
   if (!current()) return;
   if(localOnlyEnvelope(result)){
-    const syncLine=el('p',{class:'need-sub conversation-sync',role:'status',text:'Working locally. The agreed view is unavailable.'});
+    const localWords=localOnlyWords(result),syncLine=el('p',{class:'need-sub conversation-sync',role:'status',text:localWords});
     const body=el('div',{class:'conversations-page'},pageHead({eyebrow:'Conversations',headline:'Your conversations'}),syncLine,
       note('Create an effort here while shared conversations are unavailable. These changes stay separate from the agreed view.'));
     const controls=effortActionControls({canCorrect:true,send:(path,payload)=>read(path,controller.signal,payload),current,unlock:()=>unlock(main,retry),refresh:retry});if(controls)body.append(controls);
-    setKids(main,body);await mountPending({body,syncLine,baseSync:'Working locally. The agreed view is unavailable.',send:(path,payload)=>read(path,controller.signal,payload),current,unlock:()=>unlock(main,retry),refresh:retry});return;
+    setKids(main,body);await mountPending({body,syncLine,baseSync:localWords,send:(path,payload)=>read(path,controller.signal,payload),current,unlock:()=>unlock(main,retry),refresh:retry});return;
   }
   if (!result.ok) { failure(main, result, retry); return; }
   const model = listModel(result.data, state.view);

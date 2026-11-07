@@ -27,6 +27,12 @@ describe('owned-custody v2 mounted dashboard',()=>{
   const f=await boot(path=>path.includes('/pending?offset=64')?{data:{items:[pending(65)],total:65,nextOffset:null}}:path.includes('/pending')?{data:{items:first,total:65,nextOffset:64}}:{data:{partial:false,items:[],nextCursor:null}});
   await f.render();expect(f.main.textContent).not.toContain('PENDING-PRIVATE');f.button('Show more pending changes').click();await settle();expect(f.main.textContent).toContain('PENDING-PRIVATE-NAME-65');expect(f.main.querySelectorAll('.conversation-pending-row')).toHaveLength(65);
  });
+ it('says plainly when this machine has not joined, and keeps the general wording otherwise',async()=>{
+  const {localOnlyWords,localOnlyEnvelope}=await import('../../dashboard/console/conversations-model.js');
+  const base={status:503,data:{code:'conversation-graph-pending',reason:'owned-custody-pending',capabilities:{recordLocal:true,canonical:false}}};
+  expect(localOnlyEnvelope(base)).toBe(true);expect(localOnlyWords(base)).toBe('Working locally. The agreed view is unavailable.');
+  const joined={...base,data:{...base.data,awaitingJoin:true}};expect(localOnlyEnvelope(joined)).toBe(true);expect(localOnlyWords(joined)).toContain('has not joined');
+ });
  it('offers local create only for the explicit authorized preprofile envelope and never fabricates an empty canonical tree',async()=>{
   const f=await boot(path=>path.includes('/pending')?{data:{items:[],total:0,nextOffset:null}}:{status:503,data:{code:'conversation-graph-pending',reason:'owned-custody-pending',capabilities:{recordLocal:true,canonical:false}}});
   await f.render();expect(f.button('Create effort')).toBeDefined();expect(f.main.textContent).toContain('agreed view is unavailable');expect(f.main.textContent).not.toContain('No efforts');expect(f.main.querySelector('.conversation-rows')).toBeNull();

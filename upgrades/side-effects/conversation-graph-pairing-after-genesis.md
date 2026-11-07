@@ -28,16 +28,16 @@ Member-loss planning still compares its own roster and is not changed. Machines 
 
 ## 6. External surfaces
 
-Owners keep the agreed view after pairing a machine. The new machine still says "Working locally. The agreed view is unavailable." with no reason given; a plainer message is still to be added.
+Owners keep the agreed view after pairing a machine. A new machine refused by a reachable peer now says it has not joined and that changes stay on it. That wording has unit coverage only; no real third machine has shown it.
 
 ## 6b. Operator-surface quality
 
-No dashboard markup changed.
+One status line changes wording on the local-only screen.
 
-1. Leads with the primary action: unchanged.
-2. Zero raw internals as primary content: unchanged.
-3. Destructive actions de-emphasized: unchanged.
-4. Plain language and phone width: unchanged.
+1. Leads with the primary action: yes, unchanged; Create effort stays available.
+2. Zero raw internals as primary content: yes. The line is a plain sentence.
+3. Destructive actions de-emphasized: yes, unchanged.
+4. Plain language and phone width: yes in wording; the line wraps as the old one did. Not rendered at phone width with this wording.
 
 ## 7. Multi-machine posture
 
@@ -53,4 +53,6 @@ New integration test failed before the fix (`graph-runtime-stopped`) and passes 
 
 ## Second-pass review
 
-Not yet reviewed independently.
+Fresh Claude reviewer, read-only: withheld on the first version. Fixed: the restart check in `OwnedGraphCustody` (the test now does a real fresh start, and failed with the old check); member key compared as well as id, so a re-paired machine with a new key is not treated as a member; `roster()` and `awaitingJoin` cannot throw on unreadable evidence. The fixed version has not had a second independent read.
+
+Known limits, tracked as ACT-607: a machine paired later blocks member-loss planning until unpaired; if it wins the native lease, member writes stay recorded-local with no reason shown (inferred, untested); a crash between pin and publication marker while a new machine is paired leaves `publication()` throwing.

@@ -64,6 +64,6 @@ export function createConversationGraphDefaultSurface(options:Omit<Parameters<ty
    const runtime=await options.manager.ensureOwner({principalKey:owner.principalKey,authenticationMethod:surface==='mobile'?'owner-device':'owner-dashboard',requestId:crypto.randomUUID(),isCurrent});
    if(!isCurrent())return void res.status(403).json({code:'hierarchy-owner-only'});const identity=options.manager.identity;if(!identity)throw new Error('graph-default-identity-unavailable');
    mount(runtime);return mounted!(req,res,next);
-  }catch{if(!isCurrent())return void res.status(403).json({code:'hierarchy-owner-only'});try{if(await provisional(req,res,surface,owner,isCurrent,()=>{recordLocal=true;}))return;}catch{if(!isCurrent())return void res.status(403).json({code:'hierarchy-owner-only'});}res.status(503).json({code:'conversation-graph-pending',reason:'owned-custody-pending',capabilities:{recordLocal,canonical:false}});}
+  }catch{if(!isCurrent())return void res.status(403).json({code:'hierarchy-owner-only'});try{if(await provisional(req,res,surface,owner,isCurrent,()=>{recordLocal=true;}))return;}catch{if(!isCurrent())return void res.status(403).json({code:'hierarchy-owner-only'});}res.status(503).json({code:'conversation-graph-pending',reason:'owned-custody-pending',capabilities:{recordLocal,canonical:false},...(options.manager.awaitingJoin?{awaitingJoin:true}:{})});}
  });return router;
 }
