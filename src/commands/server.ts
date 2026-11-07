@@ -65,6 +65,17 @@ function localSlackRelayReadiness(stateDir: string): { ready: true } | { ready: 
   if (!template) return { ready: false, reason: 'packaged Slack reply relay template is unavailable' };
   return slackReplyRelayReadiness(stateDir, template);
 }
+
+/**
+ * Readiness for a spawn, repairing first: a relay left behind by an update is rewritten the same
+ * way the post-update migration would (known shipped versions only, keeping a backup; hand-edited
+ * content is never overwritten). fb-73ad5b9e-f14: a stale relay refused a person for two hours.
+ */
+function repairedSlackRelayReadiness(config: { stateDir: string; projectDir: string }): { ready: true } | { ready: false; reason: string } {
+  const template = packagedSlackReplyRelay();
+  if (!template) return { ready: false, reason: 'packaged Slack reply relay template is unavailable' };
+  return repairSlackReplyRelayIfStale({ projectDir: config.projectDir, stateDir: config.stateDir, config, template, warn: (m) => console.warn(`[slack-relay] ${m}`) });
+}
 import { buildAspInboundClassifier } from '../core/AspInboundClassifier.js';
 import { setAspClassifierRef, getAspClassifierRef } from '../core/aspClassifierRef.js';
 import { resolveInboundTelegramMessageId, resolveSignedByAgent, operatorAutoBindPermitted } from '../messaging/shared/signedInbound.js';
@@ -105,7 +116,8 @@ import { resolveAntiThrashKnobs, readingValidity } from '../core/SwapAntiThrash.
 import { shouldReleaseOnComplete, createClaimOwnershipOnSpawn, ownershipNonce } from '../core/ownershipFollowsLiveWork.js';
 import { PrHandLease } from '../core/PrHandLease.js';
 import { ConversationRegistry } from '../core/ConversationRegistry.js';
-import { slackReplyRelayReadiness } from '../core/SlackReplyRelayInstaller.js';
+import { repairSlackReplyRelayIfStale, slackReplyRelayReadiness } from '../core/SlackReplyRelayInstaller.js';
+import { SlackRefusedHold, setActiveSlackRefusedHold } from '../core/SlackRefusedHold.js';
 import { claimSuspensionExcludesPin } from '../core/TopicClaimAnnotationStore.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
 import { NewTopicDefaultStore, evaluateSessionPoolLocalClaim, createSpawnForTopic, createDashboardPoolClaimOps, seedTopicProfileAtCreation } from '../core/dashboardTopicProfile.js';
@@ -1165,6 +1177,12 @@ let _slackAdapter: import('../messaging/slack/SlackAdapter.js').SlackAdapter | n
 // Returns what happened to the message (mobile-native-conversations §4.9: the app's Slack send
 // records it); the live and forwarded Slack paths ignore the result.
 let _slackInboundDispatch: ((message: import('../core/types.js').Message) => Promise<'delivered' | 'queued' | 'refused'>) | null = null;
+let _slackDispatchOrHold: ((message: import('../core/types.js').Message) => Promise<'delivered' | 'queued' | 'refused'>) | null = null;
+/** Why a dispatch was refused, for refusals worth retrying (a refusal already explained to the person has no entry). */
+const _slackRetryableRefusals = new WeakMap<import('../core/types.js').Message, string>();
+/** Fixed text to the operator, where a person can read it. Set once the notice routes are built. */
+let _slackRefusedHold: SlackRefusedHold | null = null;
+let _operatorNotice: ((text: string) => Promise<boolean | import('../messaging/NotificationSelectivityGate.js').QuietReceipt>) | null = null;
 // SessionRefresh — agent-initiated respawn. Module-scope so onRestartSession
 // (defined outside startServer) can delegate to it once startServer wires it.
 // Null until startServer constructs it; the Telegram /restart handler falls
@@ -10590,12 +10608,27 @@ export async function startServer(options: StartOptions): Promise<void> {
                   // Delivery confirmation via reaction only (no text message — the ✅ reaction is sufficient)
                 } catch (injectErr) {
                   console.error(`[slack→session] Injection failed: ${injectErr instanceof Error ? injectErr.message : injectErr}`);
+                  _slackRetryableRefusals.set(message, 'the message could not be handed to the running session');
                   return 'refused';
                 }
                 return 'delivered';
               }
             }
             console.log(`[slack→session] Session "${existingSession}" died, respawning...`);
+          }
+
+          // Readiness gates actual spawn only. Existing live sessions keep
+          // receiving inbound work even if a later filesystem drift is found;
+          // their next reply reports the helper failure rather than dropping
+          // the user's message before injection.
+          const relayReadiness = repairedSlackRelayReadiness(config);
+          if (conversationId === null || !relayReadiness.ready) {
+            const reason = conversationId === null
+              ? 'conversation identity unavailable'
+              : (!relayReadiness.ready ? relayReadiness.reason : 'unknown readiness failure');
+            console.error(`[slack→session] spawn refused: slack-relay-not-ready (${reason})`);
+            _slackRetryableRefusals.set(message, reason);
+            return 'refused';
           }
 
           // Check resume map for session continuity (keyed on routing key, so a
@@ -10616,19 +10649,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (resumeInfo) {
             slackAdapter!.removeChannelResume(routingKey);
           }
-
-          // Readiness gates actual spawn only. Existing live sessions keep
-          // receiving inbound work even if a later filesystem drift is found;
-          // their next reply reports the helper failure rather than dropping
-          // the user's message before injection.
-          const relayReadiness = localSlackRelayReadiness(config.stateDir);
-          if (conversationId === null || !relayReadiness.ready) {
-            const reason = conversationId === null
-              ? 'conversation identity unavailable'
-              : (!relayReadiness.ready ? relayReadiness.reason : 'unknown readiness failure');
-            console.error(`[slack→session] spawn refused: slack-relay-not-ready (${reason})`);
-            return 'refused';
-          }
+          // A refusal below is retried, and the retry should resume this conversation, not start over.
+          const restoreResume = () => { if (resumeInfo) slackAdapter!.saveChannelResume(routingKey, resumeInfo.uuid, resumeInfo.sessionName); };
 
           // Slack DMs are isolated 1:1 bound sessions too. A shared lifeline
           // intentionally has no single INSTAR_CONVERSATION_ID, so routing DMs
@@ -10674,6 +10696,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                       custodyLive: custody,
                     }).catch(() => {});
                   }
+                  if (!custody) { _slackRetryableRefusals.set(message, `spawn admission refused it (${d.reason})`); restoreResume(); }
                   return custody ? 'queued' : 'refused';
                 }
               }
@@ -10713,9 +10736,13 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
               return 'delivered';
             }
+            _slackRetryableRefusals.set(message, 'the session did not start');
+            restoreResume();
             return 'refused';
           } catch (err) {
             console.error(`[slack] Session spawn failed: ${err instanceof Error ? err.message : err}`);
+            _slackRetryableRefusals.set(message, 'the session failed to start');
+            restoreResume();
             return 'refused';
           } finally {
             const left = (_slackSpawningChannels.get(channelId) ?? 1) - 1;
@@ -10726,6 +10753,64 @@ export async function startServer(options: StartOptions): Promise<void> {
         // Expose to the owner-side mesh bridge (a forwarded Slack message replays
         // through the same dispatch on the machine that owns the conversation).
         _slackInboundDispatch = slackInboundDispatch;
+        // A refused conversation start keeps the message, retries it and tells the person
+        // (fb-73ad5b9e-f14). The app's route reports its own refusal, so only these callers hold.
+        const slackRefusedHold = new SlackRefusedHold({
+          stateFile: path.join(config.stateDir, 'state', 'slack-refused-hold.json'),
+          // A fresh id (the router dedupes on it), and a marker: a newer message may already have
+          // been answered, with this one in the history it read.
+          redispatch: async (m) => {
+            const copy = {
+              ...m,
+              id: `${m.id}~retry-${Date.now()}`,
+              content: `[Sent at ${m.receivedAt}, held until now because I couldn't start up to answer. It may already have been answered; check before acting on it.] ${m.content}`,
+            };
+            const outcome = await slackRouteAndDispatch(copy, slackInboundDispatch);
+            return outcome === 'refused' && !_slackRetryableRefusals.has(copy) ? 'explained' : outcome;
+          },
+          // Into the thread the person wrote in, whether or not that thread has its own session.
+          notifyConversation: async (routingKey, text, latest) => {
+            const { channelId, threadTs } = slackAdapter!.parseRoutingKey(routingKey);
+            const thread = threadTs ?? (latest?.metadata?.threadTs as string | undefined);
+            await slackAdapter!.sendToChannel(channelId, text, thread ? { thread_ts: thread } : undefined);
+            return true;
+          },
+          notifyOperator: (text) => (_operatorNotice ? _operatorNotice(text) : Promise.resolve(false)),
+          report: ({ reason, impact }) => DegradationReporter.getInstance().report({
+            feature: 'SlackRefusedHold',
+            primary: 'a Slack message starts or reaches a conversation that answers it',
+            fallback: 'the message is kept and retried for about two hours, and the person is told',
+            reason,
+            impact,
+          }),
+          logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+        });
+        slackRefusedHold.boot();
+        _slackRefusedHold = slackRefusedHold;
+        setActiveSlackRefusedHold(slackRefusedHold);
+        const slackDispatchOrHold = async (
+          message: import('../core/types.js').Message,
+          verdict?: Parameters<typeof slackInboundDispatch>[1],
+        ): Promise<'delivered' | 'queued' | 'refused'> => {
+          const routingKey = slackAdapter!.resolveRoutingKey(
+            message.channel.identifier,
+            message.metadata?.threadTs as string | undefined,
+            message.metadata?.ts as string | undefined,
+          );
+          let outcome: 'delivered' | 'queued' | 'refused';
+          try { outcome = await slackInboundDispatch(message, verdict); }
+          catch (err) {
+            // @silent-fallback-ok: the message is held and the person told, which is the fallback
+            console.error(`[slack→session] dispatch failed: ${err instanceof Error ? err.message : String(err)}`);
+            await slackRefusedHold.hold(routingKey, message, 'the dispatch failed');
+            return 'refused';
+          }
+          if (outcome === 'delivered') await slackRefusedHold.conversationWorks(routingKey);
+          const retryable = _slackRetryableRefusals.get(message);
+          if (outcome === 'refused' && retryable) await slackRefusedHold.hold(routingKey, message, retryable);
+          return outcome;
+        };
+        _slackDispatchOrHold = slackDispatchOrHold;
 
         // ── §6.2 adoption pass (durable-conversation-identity) ─────────────
         // Idempotent boot-time ensure: pre-register channel-LEVEL conversations
@@ -10755,37 +10840,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           console.warn(`  [conversation-registry] adoption pass failed (channels mint lazily on next inbound): ${err instanceof Error ? err.message : String(err)}`);
         }
 
-        slackAdapter.onMessage(async (message) => {
+        // The pool routing every Slack message goes through. A retry comes through here too, so a
+        // conversation that moved to another machine in the meantime is answered there.
+        const slackRouteAndDispatch = async (
+          message: import('../core/types.js').Message,
+          dispatch: (m: import('../core/types.js').Message, v?: Parameters<typeof slackInboundDispatch>[1]) => Promise<'delivered' | 'queued' | 'refused'>,
+        ): Promise<'delivered' | 'queued' | 'refused'> => {
           const channelId = message.channel.identifier;
           const messageTs = message.metadata?.ts as string | undefined;
           const threadTs = message.metadata?.threadTs as string | undefined;
           const routingKey = slackAdapter!.resolveRoutingKey(channelId, threadTs, messageTs);
-
-          // Sentinel intercept — classify message for emergency stop/pause. Runs on
-          // the machine the message arrived at (these are local-process actions);
-          // never forwarded.
-          if (sentinel) {
-            try {
-              const classification = await sentinel.classify(message.content);
-              if (classification.category === 'emergency-stop') {
-                // Kill all sessions
-                try { holdAllSetups(config.stateDir); } catch { /* @silent-fallback-ok — the stop itself must never fail over this */ }
-                const sessions = sessionManager.listRunningSessions();
-                for (const s of sessions) {
-                  try { sessionManager.killSession(s.id); } catch { /* ok */ }
-                }
-                slackAdapter!.sendToChannel(channelId, '🛑 Emergency stop — all sessions killed.').catch(() => {});
-                return;
-              } else if (classification.category === 'pause') {
-                const existingSession = slackAdapter!.getSessionForChannel(routingKey);
-                if (existingSession) {
-                  sessionManager.sendKey(existingSession, 'Escape');
-                  slackAdapter!.sendToChannel(channelId, '⏸️ Session paused.').catch(() => {});
-                }
-                return;
-              }
-            } catch { /* fail-open — if Sentinel errors, process message normally */ }
-          }
 
           // ── Multi-Machine Session Pool (§L4 / WS1.1): route through the pool ──
           // Mirrors the Telegram inbound dispatch. When the rollout stage is past
@@ -10844,11 +10908,11 @@ export async function startServer(options: StartOptions): Promise<void> {
                     ).catch(() => {});
                   }
                 }
-                return;
+                return 'refused'; // already explained to the sender
               }
               if (isRemotelyHandled(outcome, _meshSelfId)) {
                 console.log(`[session-pool] slack key ${routingKey} handled by owner ${outcome.owner ?? '?'} (${outcome.action}) — not dispatching locally`);
-                return;
+                return 'delivered';
               }
               // Custody-ack short-circuit (§2.2, mirrors the Telegram path): a
               // queued/placement-blocked verdict whose enqueue COMMITTED (acked) is
@@ -10856,7 +10920,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               // double-handle). Un-custodied (refused/off/dry-run) falls through.
               if ((outcome.action === 'queued' || outcome.action === 'placement-blocked') && outcome.acked) {
                 console.log(`[session-pool] slack key ${routingKey} in durable custody (${outcome.detail ?? outcome.action}) — drain will deliver`);
-                return;
+                return 'queued';
               }
               // 'handled-locally' / self 'spawned'/'owner-dead-replaced' / un-acked
               // 'queued'/'placement-blocked' → fall through to local dispatch below.
@@ -10865,7 +10929,43 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
           }
 
-          await slackInboundDispatch(message, _slackAdmissionVerdict);
+          return dispatch(message, _slackAdmissionVerdict);
+        };
+
+        slackAdapter.onMessage(async (message) => {
+          const channelId = message.channel.identifier;
+          const messageTs = message.metadata?.ts as string | undefined;
+          const threadTs = message.metadata?.threadTs as string | undefined;
+          const routingKey = slackAdapter!.resolveRoutingKey(channelId, threadTs, messageTs);
+
+          // Sentinel intercept — classify message for emergency stop/pause. Runs on
+          // the machine the message arrived at (these are local-process actions);
+          // never forwarded.
+          if (sentinel) {
+            try {
+              const classification = await sentinel.classify(message.content);
+              if (classification.category === 'emergency-stop') {
+                // Kill all sessions
+                try { holdAllSetups(config.stateDir); } catch { /* @silent-fallback-ok — the stop itself must never fail over this */ }
+                const sessions = sessionManager.listRunningSessions();
+                for (const s of sessions) {
+                  try { sessionManager.killSession(s.id); } catch { /* ok */ }
+                }
+                _slackRefusedHold?.dropAll('emergency stop');
+                slackAdapter!.sendToChannel(channelId, '🛑 Emergency stop — all sessions killed.').catch(() => {});
+                return;
+              } else if (classification.category === 'pause') {
+                const existingSession = slackAdapter!.getSessionForChannel(routingKey);
+                if (existingSession) {
+                  sessionManager.sendKey(existingSession, 'Escape');
+                  slackAdapter!.sendToChannel(channelId, '⏸️ Session paused.').catch(() => {});
+                }
+                return;
+              }
+            } catch { /* fail-open — if Sentinel errors, process message normally */ }
+          }
+
+          await slackRouteAndDispatch(message, slackDispatchOrHold);
         });
 
         await slackAdapter.start();
@@ -13532,7 +13632,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               const slackApiChannel = parsedTarget.channelId;
               const slackReplyThread = parsedTarget.threadTs;
 
-              const relayReadiness = localSlackRelayReadiness(config.stateDir);
+              const relayReadiness = repairedSlackRelayReadiness(config);
               if (!relayReadiness.ready) {
                 console.error(`[slack→recovery] spawn refused: slack-relay-not-ready (${relayReadiness.reason})`);
                 return;
@@ -22382,6 +22482,26 @@ export async function startServer(options: StartOptions): Promise<void> {
         } catch (err) { /* @silent-fallback-ok: no profiles means a small authorized list stands in (operatorSlackIds) */ console.warn(`[ClaudeKeyHealth] could not read user profiles: ${err instanceof Error ? err.message : String(err)}`); }
         return operatorSlackIds(slack.getAuthorizedUserIds(), profiles);
       };
+      const noticeToOperator = (text: string) => {
+        const hubTopicId = state.get<number>('agent-attention-topic') ?? 0;
+        const slack = _slackAdapter;
+        return deliverOperatorNotice({
+          telegram: telegram && hubTopicId ? async (t) => withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(hubTopicId, t)) : undefined,
+          slack: slack ? {
+            attentionChannel: state.get<string>('slack-attention-channel') ?? null,
+            readersOf: async (channelId) => {
+              const members = await slack.authorizedMembersOf(channelId);
+              const operators = keyOperators(slack);
+              return operators.length > 0 ? members.filter((id) => operators.includes(id)) : members;
+            },
+            post: async (channelId, t) => { await slack.sendToChannel(channelId, t); },
+            people: () => keyOperators(slack),
+            directMessage: async (userId, t) => { await slack.sendDirectMessage(userId, t); },
+          } : undefined,
+          warn: (m) => console.warn(`[ClaudeKeyHealth] ${m}`),
+        }, text);
+        };
+      _operatorNotice = noticeToOperator;
       const claudeKeyHealth = new ClaudeKeyHealth({
         stateFile: path.join(config.stateDir, 'state', 'claude-key-health.json'),
         currentKey: () => (keyHealthOn() ? configuredClaudeOauthKey() : undefined),
@@ -22404,25 +22524,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         // nothing, so it can't say whether anyone was told. Delivered means a person can read it:
         // a Slack alert channel with none of the agent's people in it reaches nobody (2026-11-04
         // drill), so then each of them gets a direct message.
-        notifyOperator: (text) => {
-          const hubTopicId = state.get<number>('agent-attention-topic') ?? 0;
-          const slack = _slackAdapter;
-          return deliverOperatorNotice({
-            telegram: telegram && hubTopicId ? async (t) => withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(hubTopicId, t)) : undefined,
-            slack: slack ? {
-              attentionChannel: state.get<string>('slack-attention-channel') ?? null,
-              readersOf: async (channelId) => {
-                const members = await slack.authorizedMembersOf(channelId);
-                const operators = keyOperators(slack);
-                return operators.length > 0 ? members.filter((id) => operators.includes(id)) : members;
-              },
-              post: async (channelId, t) => { await slack.sendToChannel(channelId, t); },
-              people: () => keyOperators(slack),
-              directMessage: async (userId, t) => { await slack.sendDirectMessage(userId, t); },
-            } : undefined,
-            warn: (m) => console.warn(`[ClaudeKeyHealth] ${m}`),
-          }, text);
-        },
+        notifyOperator: noticeToOperator,
         notifyPerson: async (sessionName, text) => {
           const topicId = topicForSession(sessionName);
           if (topicId !== null) { const inboundMessageId = telegram?.selectivity?.latestInbound(topicId); const envelope = inboundMessageId ? { origin: 'automated' as const, category: 'message-loss-notice' as const, sourceContext: 'claude-key-health-person', inboundMessageId } : stampNotification(); const receipt = await withNotificationEnvelope(envelope, async () => (telegram!)!.sendToTopic(topicId, text)); return receipt.recorded ? receipt : true; }
@@ -26913,7 +27015,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 text: sText,
                 senderUserId: envUid != null ? String(envUid) : undefined,
               });
-              void _slackInboundDispatch(sMessage)
+              void (_slackDispatchOrHold ?? _slackInboundDispatch)(sMessage)
                 .then(() => {
                   console.log(pc.green(`  [session-pool] owner-side Slack dispatch for forwarded key ${slackKey}`));
                   _inboundQueue?.markRemoteInjected(cmd.session, cmd.messageId);
@@ -31700,6 +31802,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       catch { console.warn('[instar] Windows desktop bootstrap diagnostic could not be persisted'); }
     }
 
+    // Only now: a retry must see the session router, spawn admission and the operator routes.
+    _slackRefusedHold?.start();
     const server = new AgentServer({ config, ecosystemLedger: _ecosystemLedger ?? undefined, recommendedServicesLedger: _recommendedServicesLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, usageWallRescue: _usageWallRescue ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, memoryPrivacy: _memoryPrivacyWired ?? undefined, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, requiredAck: _requiredAckService ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx }); if (_pendingCompactionEvidence) featureEvidence.record('multiMachine.coherenceJournal.replication.compaction', _pendingCompactionEvidence);    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     const readIdentityProjectionPeerRows = async () => {
       const peers = _resolvePeerUrls?.() ?? [];

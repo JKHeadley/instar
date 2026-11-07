@@ -140,3 +140,22 @@ export function ensureSlackReplyRelay(params: {
   }
   return result;
 }
+
+/**
+ * Readiness for a spawn, repairing first: a relay left behind by an update is rewritten the way the
+ * post-update migration would (known shipped versions only, with a backup; hand-edited content is
+ * never overwritten and stays not ready). fb-73ad5b9e-f14.
+ */
+export function repairSlackReplyRelayIfStale(params: {
+  projectDir: string;
+  stateDir: string;
+  config: unknown;
+  template: string;
+  warn?: (message: string) => void;
+}): { ready: true } | { ready: false; reason: string } {
+  const first = slackReplyRelayReadiness(params.stateDir, params.template);
+  if (first.ready) return first;
+  const repaired = ensureSlackReplyRelay(params);
+  for (const line of [...repaired.degraded, ...repaired.errors]) params.warn?.(line);
+  return slackReplyRelayReadiness(params.stateDir, params.template);
+}
