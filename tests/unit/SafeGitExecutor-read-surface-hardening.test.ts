@@ -319,6 +319,8 @@ describe('EVO-029: classification details', () => {
 
 // Long options git 2.50.1 prints in `git <verb> -h`, reviewed for options that
 // write or run a program (docs/specs/safe-git-read-surface-hardening.md, section 4).
+// for-each-ref --start-after and blame --diff-algorithm came from git 2.56.0 on the
+// Linux CI runners; neither writes or runs a program (spec decision 14).
 // A newer git that adds an option fails here and names it: review it against the
 // manual page, then add it here or add a refusal (spec decision 14).
 const REVIEWED_READ_OPTIONS: Record<string, string[]> = {
@@ -329,9 +331,9 @@ const REVIEWED_READ_OPTIONS: Record<string, string[]> = {
   'cat-file': ['--batch', '--batch-all-objects', '--batch-check', '--batch-command', '--buffer', '--filter', '--filters', '--follow-symlinks', '--mailmap', '--path', '--textconv', '--unordered', '--use-mailmap'],
   'check-ignore': ['--index', '--no-index', '--non-matching', '--quiet', '--stdin', '--verbose'],
   'show-ref': ['--abbrev', '--branches', '--dereference', '--exclude-existing', '--exists', '--hash', '--head', '--quiet', '--tags', '--verify'],
-  'for-each-ref': ['--color', '--contains', '--count', '--exclude', '--format', '--ignore-case', '--include-root-refs', '--merged', '--no-contains', '--no-merged', '--omit-empty', '--perl', '--points-at', '--python', '--shell', '--sort', '--stdin', '--tcl'],
+  'for-each-ref': ['--color', '--contains', '--count', '--exclude', '--format', '--ignore-case', '--include-root-refs', '--merged', '--no-contains', '--no-merged', '--omit-empty', '--perl', '--points-at', '--python', '--shell', '--sort', '--start-after', '--stdin', '--tcl'],
   'merge-base': ['--all', '--fork-point', '--independent', '--is-ancestor', '--octopus'],
-  'blame': ['--abbrev', '--color-by-age', '--color-lines', '--contents', '--ignore-rev', '--ignore-revs-file', '--incremental', '--line-porcelain', '--minimal', '--porcelain', '--progress', '--root', '--score-debug', '--show-email', '--show-name', '--show-number', '--show-stats'],
+  'blame': ['--abbrev', '--color-by-age', '--color-lines', '--contents', '--diff-algorithm', '--ignore-rev', '--ignore-revs-file', '--incremental', '--line-porcelain', '--minimal', '--porcelain', '--progress', '--root', '--score-debug', '--show-email', '--show-name', '--show-number', '--show-stats'],
   'shortlog': ['--committer', '--email', '--group', '--numbered', '--pretty', '--summary'],
   'count-objects': ['--human-readable', '--verbose'],
   'describe': ['--abbrev', '--all', '--always', '--broken', '--candidates', '--contains', '--debug', '--dirty', '--exact-match', '--exclude', '--first-parent', '--long', '--match', '--tags'],
