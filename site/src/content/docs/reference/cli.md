@@ -273,3 +273,16 @@ Docs coverage tracks the post-drive auditor capability as `instar post-drive-tra
 ```bash
 instar feedback --type bug --title "Session timeout" --description "Details..."
 ```
+
+## Testing a build on a throwaway agent
+
+```bash
+instar test-as-self --no-roundtrip                 # deploy the running dist into a throwaway agent home, boot it, verify, tear down
+instar test-as-self --bot-token <secret-drop-id>   # add a real Telegram round-trip (token via Secret Drop, never raw)
+instar test-as-self --keep --target <dir>          # leave the throwaway running for inspection
+instar test-as-self --report-json <path>           # per-step JSON report
+```
+
+`instar test-as-self` deploys the `dist/cli.js` that is running it, so `node <worktree>/dist/cli.js test-as-self` tests a
+branch without a release. It refuses a raw bot token and refuses to target a real agent home. See the
+[throwaway-deploy guide](/guides/test-as-self/) for the steps and the report format.

@@ -58,6 +58,7 @@ const LONG_LIVED_STORES = [
   // constructor (registerSqliteHandle), process-lifetime.
   'src/core/AppMediaStore.ts',
   'src/messaging/imessage/NativeBackend.ts',
+  'src/monitoring/skillLearning/Ledger.ts',
   'src/threadline/A2ADeliveryTracker.ts',
   // A2A inbound message-id ledger: registers its handle in the constructor and
   // unregisters in close() (docs/specs/a2a-inbound-id-ledger.md §1).
