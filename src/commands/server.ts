@@ -29619,6 +29619,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               hasHeld: (rk) => { try { return _inboundQueue?.hasQueued(rk) === true; } catch { return false; } }, // @silent-fallback-ok — an unreadable queue reads as nothing held
             };
             // The inbound queue's app tail (§2.4): a held message routes again; here it delivers like the send route.
+            const appDrainDispatching = new Set<string>();
             _appDrainDeliver = async (dmsg, handover) => {
               const svc = _appConversationService;
               const f = parseAppForward(dmsg.payload);
@@ -29638,11 +29639,16 @@ export async function startServer(options: StartOptions): Promise<void> {
                 return { kind: 'remote-delivered' };
               }
               if (out.action !== 'handled-locally') return { kind: 'remote-delivered' };
+              // An earlier forward may have reached a machine with only its answer lost, and a drain past its
+              // deadline is still running. Either way this message has been handled: never a second dispatch.
+              const already = svc.store.deliveryState(dmsg.messageId);
+              if (appDrainDispatching.has(dmsg.messageId) || (already !== null && already !== 'pending' && already !== 'unknown')) return { kind: 'local-delivered' };
               const conv = svc.liveConversation(key);
               const alias = svc.deps.registry.appAliasFor(key);
-              if (!conv || alias === null) { svc.appendDelivery(key, dmsg.messageId, 'refused', f.seed); return { kind: 'local-delivered', injectError: 'conversation-gone' }; }
+              if (!conv || alias === null) { svc.appendDelivery(key, dmsg.messageId, 'unknown', f.seed); return { kind: 'local-delivered', injectError: 'conversation-gone' }; }
               if (!handover.commitReceipt()) return { kind: 'handover-refused' };
               if (handover.stopRecheck()) return { kind: 'stopped-before-inject' };
+              appDrainDispatching.add(dmsg.messageId);
               try {
                 if (f.urgent) {
                   svc.noteEmergency(key);
@@ -29652,11 +29658,15 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }
                 if (!svc.deps.registry.isAppBound(alias)) svc.deps.registry.bindApp(alias);
                 const r = await dispatchStoredAppMessage(svc, { key, alias, title: conv.title ?? 'Untitled', event: f.event, ownerName: f.ownerName ?? svc.ownerName(), memoryPersonId: f.memoryPersonId });
-                svc.appendDelivery(key, dmsg.messageId, r.outcome, f.seed);
+                // A refusal here says nothing about an earlier attempt that may have reached a machine:
+                // `unknown` yields to its outcome, where a refusal could override it.
+                svc.appendDelivery(key, dmsg.messageId, r.outcome === 'refused' ? 'unknown' : r.outcome, f.seed);
                 return { kind: 'local-delivered' };
               } catch (err) { // @silent-fallback-ok — the message reads `unknown` in the app, and the queue reports it as possibly not injected
                 svc.appendDelivery(key, dmsg.messageId, 'unknown', f.seed);
                 return { kind: 'local-delivered', injectError: err instanceof Error ? err.message : String(err) };
+              } finally {
+                appDrainDispatching.delete(dmsg.messageId);
               }
             };
             const appEnforcer = new AppPoolEnforcer({

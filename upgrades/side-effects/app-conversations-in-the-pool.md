@@ -3,13 +3,13 @@
 **Version / slug:** `app-conversations-in-the-pool`
 **Date:** `2026-11-06`
 **Author:** `echo (builder on the M5 Pro)`
-**Second-pass reviewer:** `six independent subagent rounds (see below)`
+**Second-pass reviewer:** `eight independent subagent rounds (see below)`
 
 ## Summary of the change
 
 An app conversation, and its session, can now move between machines through a completed drain or the operator's "Bring it back here". Per-conversation fenced ownership (`app:<uuid>` records) replaces the all-or-nothing lease rule; a conversation that never moved has no record and behaves exactly as before. Adds `serves`/`mayReply`/`currentOwner`, a lease gate, close-on-loss, a capability flag enforced from the flagged side, router and receive-side app arms, key-typed journal rows, per-kind drain seams, the move and bring-back flows, and the phone's controls. Tier 2. Spec converged in 7 rounds; approved under the standing grant for Justin's 2026-11-06 14:11 message in topic 134088.
 
-**Proportion:** Tier 2, about 55 files and 4,500 lines (roughly half tests), 7 spec rounds, 6 second-pass rounds. In line with the size: this is the pool's largest single arm.
+**Proportion:** Tier 2, about 55 files and 4,500 lines (roughly half tests), 7 spec rounds, 8 second-pass rounds. In line with the size: this is the pool's largest single arm.
 
 ## Decision-point inventory
 
@@ -117,7 +117,15 @@ Minor: a retried request now reports `unknown`, and a queue loss's words follow 
 
 **A closing check of the retry answer** confirmed it and raised one blocking defect, fixed: a queue loss from a restart or a nap (`stale-custody`, `nap-stale` and others) told the phone flatly to send again, for a message the owner may have taken. Now only `sender-deauthorized` and the queue's own limits record `refused`; every other loss reads `unknown`. It also raised a smaller gap, not fixed: a routed 503 `owner-unavailable` record can't be told apart from a plain send's, so if the owner's outcome arrives later, a retry answers with that state plus the old words. This needs a refused enqueue on top of lost answers, and the state itself is right.
 
-Reviewer outcome: six independent rounds. Each found something, later rounds mostly smaller. The closing round raised a concern; its fix has not had a further round, so the trace records `reviewerConcurred: false`. Stopping here is a judgment, stated for the reader: nothing was found in placement, epochs, dark behaviour or security across any round, and what remained was in how an uncertain send is worded and recorded.
+**An eighth round, on the classification** (at Echo's request, since round 7's finding was blocking) confirmed it: every reason the queue reports lands in the right state, and `sender-deauthorized` is truly known at each caller. It raised gaps around it, all fixed:
+- A quarantined queue store, or a config that closes the engine, left a send `waiting` for good, since no row remained to report. Fixed once for any such cause: a send still `waiting` 45 minutes on (past the queue's limit) reads `unknown`.
+- The queue's local retry after a bring-back could dispatch a message a machine had already taken, or one still dispatching past the deadline. It now checks the delivery state and an in-flight set first, and a local refusal reads `unknown`, since it says nothing about an earlier attempt.
+- A failed delivery write skipped finishing the request. They are separate steps now.
+- Wording: the sender-refused text no longer mentions pairing, and stale comments are corrected.
+
+**Remaining limit:** a duplicate is still possible if an attempt reached another machine and its delivery event hasn't replicated when the retry runs. The check reads this machine's copy of the state.
+
+Reviewer outcome: eight independent rounds. Placement, epochs, dark behaviour and security had no findings in any round; every later finding was in how an uncertain send is recorded, or about messages lost around restarts. Round 8 raised concerns, so the trace records `reviewerConcurred: false`, and its fixes have had no further round.
 
 Not closed: a forward attempt already on the wire when a stop arrives can still be accepted. The owner may then run that message before the stop reaches it, or just after. That is ordinary send-then-stop ordering; it is named, not fenced.
 

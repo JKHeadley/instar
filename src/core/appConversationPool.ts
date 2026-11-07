@@ -30,7 +30,7 @@ export const APP_STOPPED_BEFORE_DELIVERY = 'You sent a stop, so this message was
 /** A held message a stop dropped: an earlier attempt may have reached the owner with only its answer lost. */
 export const APP_STOPPED_WHILE_HELD = 'You sent a stop, so this message may not have been delivered. Check the conversation, and send it again if you still want it.';
 export const STOPPED_MAYBE_DELIVERED = 'You sent a stop while this message was on its way, so it may or may not have reached the agent. Check the conversation.';
-export const OWNER_REFUSED_SENDER = 'The machine running this conversation refused this message. Send it again from a phone that is still paired.';
+export const OWNER_REFUSED_SENDER = 'The machine running this conversation refused this message.';
 export const MAY_NOT_BE_DELIVERED = 'This message may not have been delivered. Check the conversation, and send it again if you still want it.';
 
 /** The words for a held message the queue gave up on, by its reason. */

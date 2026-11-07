@@ -26,10 +26,12 @@ import { AppMediaStore, DEFAULT_MAX_STORE_BYTES } from './AppMediaStore.js';
 import { MAX_PURGE_BATCH, MAX_TRANSCRIPT_CHARS, displayName, sessionLine, type AppAttachment } from './appMediaTypes.js';
 import { TranscriptionUnavailableError } from './VoiceTranscription.js';
 import { AppMediaReplicator, OWNER_PULL_WAIT_MS, PENDING_DELIVERY_TTL_MS } from './AppMediaReplicator.js';
-import type { AppPoolHandle } from './appConversationPool.js';
+import { MAY_NOT_BE_DELIVERED, type AppPoolHandle } from './appConversationPool.js';
 import path from 'node:path';
 
 export const STRANDED_REQUEST_AGE_MS = 5 * 60_000;
+/** Past the queue's 30-minute limit, with room for a drain pass: a `waiting` send here has lost its row. */
+export const WAITING_OVERDUE_MS = 45 * 60_000;
 
 interface PendingRow { attachmentId: string; messageId: string; conversationKey: string; sha256: string; displayName: string; caption: string; createdAt: number; state: 'waiting' | 'ready' | 'expired'; path: string | null }
 
@@ -869,15 +871,35 @@ export class AppConversationService {
   }
 
   /**
-   * A held send ran out at the queue's limits (app-conversations-in-the-pool §2.2): the phone's request
-   * record is finished as refused, in words. Nothing re-places the conversation.
+   * The queue gave up on a held send (app-conversations-in-the-pool §2.2): the phone's request record is
+   * finished in words, as `refused` or `unknown` (appLossState). Nothing re-places the conversation.
    */
   finishExpiredForward(conversationKey: string, messageId: string, words: string, state: 'refused' | 'unknown' = 'refused'): void {
+    const rec = this.deps.requests.findSendByMessage(messageId);
+    // Separate steps: the row is already gone, so nothing retries this. A failed event must not leave the request reading `waiting`.
     try {
-      const rec = this.deps.requests.findSendByMessage(messageId);
       this.appendDelivery(conversationKey, messageId, state, rec ? `${rec.deviceId}\u0000${rec.requestId}` : `expired\u0000${messageId}`);
+    } catch (err) { this.report('expired forward', err); } // @silent-fallback-ok — reported; the request below still gets its words
+    try {
       if (rec) this.deps.requests.finish(rec.deviceId, rec.requestId, { status: 409, body: { error: state === 'unknown' ? 'outcome-unknown' : 'not-delivered', outcome: state, expiredForward: true, conversationKey, messageId, deliveryState: state, detail: words } });
-    } catch (err) { this.report('expired forward', err); } // @silent-fallback-ok — reported; the message stays stored and reads pending until the phone asks again
+    } catch (err) { this.report('expired forward', err); } // @silent-fallback-ok — reported; the message stays stored
+  }
+
+  /**
+   * A send still reading `waiting` past the queue's limits has lost its row some way the queue never
+   * reported: a quarantined store, an engine that never started (app-conversations-in-the-pool §2.2). It
+   * can't be known whether the owner took it, so it reads `unknown`, which yields to the owner's outcome.
+   */
+  private settleOverdueWaiting(): void {
+    if (!this.activePool()) return;
+    for (const w of this.deps.requests.waitingOlderThan(WAITING_OVERDUE_MS)) {
+      if (this.store.deliveryState(w.messageId) === 'pending') {
+        this.finishExpiredForward(w.conversationKey, w.messageId, MAY_NOT_BE_DELIVERED, 'unknown');
+      } else {
+        // It settled by replication: nothing to say beyond what the retry answers from the current state.
+        this.deps.requests.finish(w.deviceId, w.requestId, { status: 200, body: { ok: true, outcome: 'settled', expiredForward: true, conversationKey: w.conversationKey, messageId: w.messageId } });
+      }
+    }
   }
 
   /**
@@ -888,6 +910,7 @@ export class AppConversationService {
    * event from the reservation (same event id, so it merges away) and records `done`.
    */
   recoverStranded(): void {
+    try { this.settleOverdueWaiting(); } catch (err) { this.report('overdue waiting', err); } // @silent-fallback-ok — reported; the next tick repeats it
     try { this.media.recoverClaims((id) => this.store.hasMessage(id)); } catch (err) { this.report('media claims', err); } // @silent-fallback-ok — reported; the next tick repeats it
     for (const rec of this.deps.requests.stranded(STRANDED_REQUEST_AGE_MS)) {
       const x = rec.extra;

@@ -136,6 +136,17 @@ export class MobileChatRequestStore {
     return null;
   }
 
+  /** Sends answered `waiting` longer ago than this: the queue should have settled them by now. */
+  waitingOlderThan(minAgeMs: number): Array<{ deviceId: string; requestId: string; conversationKey: string; messageId: string }> {
+    const cutoff = this.now() - minAgeMs;
+    const out: Array<{ deviceId: string; requestId: string; conversationKey: string; messageId: string }> = [];
+    for (const r of this.records.values()) {
+      if (r.state !== 'done' || r.result?.body?.outcome !== 'waiting' || Date.parse(r.at) > cutoff) continue;
+      if (r.extra?.op === 'send' && r.extra.conversationKey && r.extra.messageId) out.push({ deviceId: r.deviceId, requestId: r.requestId, conversationKey: r.extra.conversationKey, messageId: r.extra.messageId });
+    }
+    return out;
+  }
+
   /** The core started and its outcome is uncertain. */
   markUnknown(deviceId: string, requestId: string): void {
     const k = key(deviceId, requestId);

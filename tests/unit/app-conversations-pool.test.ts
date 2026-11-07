@@ -7,7 +7,7 @@ import { describe, it, expect, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AppConversationService } from '../../src/core/AppConversationService.js';
+import { AppConversationService, WAITING_OVERDUE_MS } from '../../src/core/AppConversationService.js';
 import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
 import { MobileChatRequestStore } from '../../src/core/MobileChatRequests.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -41,7 +41,7 @@ function rec(over: Partial<SessionOwnershipRecord> = {}): SessionOwnershipRecord
   return { sessionKey: RK, ownerMachineId: PEER, ownershipEpoch: 5, status: 'active', nonce: 'n', timestamp: Date.now(), updatedAt: new Date().toISOString(), ...over };
 }
 
-function makeService(opts: { holds?: boolean; record?: SessionOwnershipRecord | null; gate?: boolean; draining?: boolean; pool?: boolean; running?: string[]; close?: AppPoolHandle['closeLostSession'] } = {}) {
+function makeService(opts: { holds?: boolean; record?: SessionOwnershipRecord | null; gate?: boolean; draining?: boolean; pool?: boolean; running?: string[]; close?: AppPoolHandle['closeLostSession']; clock?: () => number } = {}) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'app-pool-'));
   dirs.push(dir);
   fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
@@ -61,7 +61,7 @@ function makeService(opts: { holds?: boolean; record?: SessionOwnershipRecord | 
     hasHeld: () => false,
   };
   const svc = new AppConversationService({
-    stateDir: dir, machineId: () => SELF, registry, requests: new MobileChatRequestStore(dir),
+    stateDir: dir, machineId: () => SELF, registry, requests: new MobileChatRequestStore(dir, opts.clock ?? Date.now),
     holdsLease: () => v.holds, ownerName: () => 'J', dispatch: () => null, pool: () => handle,
   });
   svc.store.append({ eventId: 'cr-1', kind: 'created', conversationKey: KEY, title: 'T', at: new Date().toISOString(), machineId: SELF });
@@ -177,6 +177,51 @@ describe('the binding reconcile and close-on-loss (§2.1)', () => {
     svc.leaseTick();
     await new Promise((r) => setImmediate(r));
     expect(closed).toEqual([]);
+  });
+});
+
+describe('a send never stays waiting for good (§2.2)', () => {
+  const held = (svc: AppConversationService, id: string, messageId: string) => {
+    const requestId = `${Date.now()}-${id}`;
+    svc.deps.requests.reserve('dev', requestId, 'h', 0, { op: 'send', conversationKey: KEY, messageId });
+    svc.deps.requests.finish('dev', requestId, { status: 202, body: { ok: true, outcome: 'waiting', deliveryState: 'pending', conversationKey: KEY, messageId } });
+    return requestId;
+  };
+  const message = (messageId: string) => ({ eventId: `e-${messageId}`, kind: 'message', conversationKey: KEY, messageId, role: 'operator', text: 'x', at: new Date().toISOString(), machineId: SELF, receivedAt: new Date().toISOString() }) as never;
+
+  it('past the queue\'s limits with no row to report it (a quarantined store): it reads unknown, in words; before then it waits', () => {
+    let now = Date.now();
+    const { svc } = makeService({ clock: () => now });
+    svc.store.append(message('m1'));
+    const requestId = held(svc, 'a', 'm1');
+    svc.recoverStranded();
+    expect(svc.store.deliveryState('m1')).toBe('pending');
+    now += WAITING_OVERDUE_MS + 1;
+    svc.recoverStranded();
+    expect(svc.store.deliveryState('m1')).toBe('unknown');
+    const after = svc.deps.requests.lookup('dev', requestId, 'h');
+    expect(after).toMatchObject({ kind: 'done', status: 409, body: { error: 'outcome-unknown', outcome: 'unknown' } });
+  });
+
+  it('one the owner\'s outcome already settled keeps that outcome', () => {
+    let now = Date.now();
+    const { svc } = makeService({ clock: () => now });
+    svc.store.append(message('m2'));
+    held(svc, 'b', 'm2');
+    svc.appendDelivery(KEY, 'm2', 'delivered', 'owner');
+    now += WAITING_OVERDUE_MS + 1;
+    svc.recoverStranded();
+    expect(svc.store.deliveryState('m2')).toBe('delivered');
+  });
+
+  it('with the pool dark nothing is ever held, so nothing here runs', () => {
+    let now = Date.now();
+    const { svc } = makeService({ clock: () => now, pool: false });
+    svc.store.append(message('m3'));
+    held(svc, 'c', 'm3');
+    now += WAITING_OVERDUE_MS + 1;
+    svc.recoverStranded();
+    expect(svc.store.deliveryState('m3')).toBe('pending');
   });
 });
 
@@ -438,10 +483,10 @@ describe('messages reach the owner (§2.4)', () => {
     expect(appLossWords('ttl-expired')).toContain('Bring it back here');
     expect(appLossWords('attempts-exhausted')).toContain('Bring it back here');
     expect(appLossWords('sender-deauthorized')).toContain('refused');
-    expect(appLossWords('stale-custody-reboot')).toContain('may not have been delivered');
+    expect(appLossWords('stale-custody')).toContain('may not have been delivered');
     // Definite only where known or where the spec asks; a restart can't know, so it never says "send it again" flatly.
     for (const r of ['sender-deauthorized', 'ttl-expired', 'attempts-exhausted']) expect(appLossState(r)).toBe('refused');
-    for (const r of ['operator-stop', 'stale-custody-reboot', 'stale-custody-tenure', 'nap-stale', 'pause-expired', 'poisoned', 'gate:no-mesh-identity']) expect(appLossState(r)).toBe('unknown');
+    for (const r of ['operator-stop', 'stale-custody', 'dropped-overflow', 'nap-stale', 'pause-expired', 'poisoned', 'queue-dispatch-will-not-run:x', 'gate:no-mesh-identity']) expect(appLossState(r)).toBe('unknown');
   });
 
   it('the forward survives a queue row\'s JSON; anything else is not a forward', () => {

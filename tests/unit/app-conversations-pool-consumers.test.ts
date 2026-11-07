@@ -120,6 +120,16 @@ describe('every other reader (§2.2, §2.7)', () => {
     expect(body.indexOf('if (!_appConversationService) return items;')).toBeLessThan(body.indexOf('finishExpiredForward'));
   });
 
+  it('the queue\'s local retry never dispatches a message already handled, or one still dispatching', () => {
+    const at = server.indexOf('_appDrainDeliver = async (dmsg, handover) => {');
+    const block = server.slice(at, at + 4600);
+    const check = block.indexOf("appDrainDispatching.has(dmsg.messageId) || (already !== null && already !== 'pending' && already !== 'unknown')");
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(block.indexOf('dispatchStoredAppMessage('));
+    expect(block).toContain('appDrainDispatching.delete(dmsg.messageId)');
+    expect(block).toContain("r.outcome === 'refused' ? 'unknown' : r.outcome");
+  });
+
   it('the drain closes an app session through terminateWithAuthority, found by tmux name', () => {
     const at = server.indexOf('terminateSession: async (sk, reason, opts) => {');
     const block = server.slice(at, at + 800);
