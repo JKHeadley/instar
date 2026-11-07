@@ -187,6 +187,11 @@ export const REVIEW_FAILED_CLOSE_REPORT_AFTER = 3;
 const PR_BODY_FOOTER = '🤖 Generated with [Claude Code](https://claude.com/claude-code)';
 
 /** Which preparation step a (scrubbed) failure message points at; an id-shaped value the audit keeps. */
+/** The start of a failure message (what ran) and its end (why it failed), bounded for the status record. */
+export function boundedFailureDetail(text: string): string {
+  return text.length <= 500 ? text : `${text.slice(0, 80)} … ${text.slice(-420)}`;
+}
+
 export function prepareFailureStep(detail: string | null): string {
   if (!detail) return 'unknown';
   if (/base-sha|feedback-execute fetch base|\bfetch\b/.test(detail)) return 'fetch-base';
@@ -731,11 +736,13 @@ export class FeedbackExecutorService {
         : error instanceof RerouteRefusedError ? 'reroute-capacity'
         : error instanceof Error && /^(confinement|omit-auth-env|profile-unenforceable)/.test(error.message) ? 'profile-unenforceable' : 'prepare-failed';
       // The message says which step failed (clone, deps, symlink, …); without it every failure read "Error".
-      const message = error instanceof Error ? scrubForStore(error.message, { maxBytes: 2048 }) : null;
-      const detail = message ? (message.error ? '[detail withheld: scrub failed]' : message.text.slice(0, 300)) : null;
+      // A git command's flags fill the start of its message and the error comes last, so keep both ends.
+      const signal = error instanceof Error ? (error as { signal?: unknown }).signal : null;
+      const message = error instanceof Error ? scrubForStore(`${error.message}${typeof signal === 'string' ? ` [killed by ${signal}]` : ''}`, { maxBytes: 8192 }) : null;
+      const detail = message ? (message.error ? '[detail withheld: scrub failed]' : boundedFailureDetail(message.text)) : null;
       // The audit keeps only id-shaped values (a sentence becomes "[text:N]"), so it carries the step;
       // the scrubbed message itself is kept in executor state and shown as status.lastPrepareFailure.
-      const step = prepareFailureStep(detail);
+      const step = prepareFailureStep(message && !message.error ? message.text : detail);
       this.opts.audit.append('execute:prepare-failed', { attemptId: row.attemptId, reason, error: error instanceof Error ? error.name : 'unknown', step });
       // Under a stale epoch every write below is refused; the new owner ends the row.
       if (reason === 'stale-epoch') return false;
