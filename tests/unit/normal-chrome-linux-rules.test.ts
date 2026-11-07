@@ -243,6 +243,6 @@ describe('the input backend boundary', () => {
   it('never uses a synthetic input path', () => {
     const source = fs.readFileSync(DRIVER, 'utf8');
     expect(source).not.toMatch(/XSendEvent|generate_keyboard_event|generate_mouse_event|xdotool|remote-debugging/);
-    expect(spawnSync('python3', ['-c', `import ast;ast.parse(open(${JSON.stringify(DRIVER)}).read())`]).status).toBe(0);
+    expect(spawnSync('python3', ['-B', '-c', `import ast;ast.parse(open(${JSON.stringify(DRIVER)}).read())`]).status).toBe(0);
   });
 });
