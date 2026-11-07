@@ -8588,6 +8588,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         const confinement = _memoryPrivacyWired.confinement;
         return confinement ? confinement.isConfined(`telegram:${topicId}`) : false;
       };
+      scheduler.severalPeopleCheck = () => {
+        const confined = _memoryPrivacyWired.confinement?.entries();
+        return _memoryWiring.reachablePeople.count() > 1 || confined === null || (confined?.size ?? 0) > 0;
+      };
       scheduler.notifyDestinationHasOtherReaders = (job) => {
         const topicId = (job as { topicId?: number }).topicId;
         const kind = sessionManager.memoryAudienceKind(telegramConfiguredForMemory(config) ? { telegramTopicId: topicId ?? 0 } : { memoryPlace: { kind: 'system' } });
