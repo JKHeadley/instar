@@ -59,3 +59,7 @@ Round 1: concern raised, 6 issues (false limit claim on multi-account agents, no
 ## Later change: certified path
 
 The limit check moved into `claudeChildAuth.ts` with its own small pattern, because importing it through the probe pulled five modules into the certified model call path (pre-push fingerprint check). Behaviour is unchanged; the wording is a second copy of the banner patterns, covered by tests against the real banners.
+
+## Later change: repo checks
+
+The ELI16 file moved to the `.eli16.md` name the upgrade checks expect, and catch blocks carry their in-block marker. No behaviour change.

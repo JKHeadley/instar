@@ -199,7 +199,10 @@ export class UsageLimitWatch {
     if (!this.started || this.state.limited || this.inCooldown() || this.now() - this.lastSignalProbeAt < SIGNAL_MIN_PROBE_INTERVAL_MS) return;
     if (this.deps.anotherAccountHasRoom()) return;
     this.lastSignalProbeAt = this.now();
-    void this.runProbe().catch((err) => this.logger.warn(`[UsageLimitWatch] ${err instanceof Error ? err.message : String(err)}`));
+    void this.runProbe().catch((err) => {
+      // @silent-fallback-ok: a failed probe concludes nothing, and the next signal asks again
+      this.logger.warn(`[UsageLimitWatch] ${err instanceof Error ? err.message : String(err)}`);
+    });
   }
 
   private inCooldown(): boolean {
@@ -400,7 +403,12 @@ export class UsageLimitWatch {
     if (this.deps.manualTimers || !this.started) return;
     const needed = this.state.limited || this.state.allClearPending || this.state.awaiting.length > 0 || Object.keys(this.state.walled).length > 0;
     if (needed && !this.timer) {
-      this.timer = setInterval(() => { void this.tick().catch((err) => this.logger.warn(`[UsageLimitWatch] ${err instanceof Error ? err.message : String(err)}`)); }, TICK_MS);
+      this.timer = setInterval(() => {
+        void this.tick().catch((err) => {
+          // @silent-fallback-ok: the next tick retries; state stays on disk
+          this.logger.warn(`[UsageLimitWatch] ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }, TICK_MS);
       this.timer.unref?.();
     } else if (!needed && this.timer) {
       clearInterval(this.timer);

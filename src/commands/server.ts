@@ -22698,7 +22698,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       setActiveClaudeKeyHealth(claudeKeyHealth);
       setClaudeCallOutcomeListener((outcome) => claudeKeyHealth.noteCallOutcome(outcome));
       sessionManager.prependInteractiveLoginExpiredSink((signal) => claudeKeyHealth.handle(signal));
-      void claudeKeyHealth.boot().catch((err) => console.warn(`[ClaudeKeyHealth] boot failed: ${err instanceof Error ? err.message : String(err)}`));
+      void claudeKeyHealth.boot().catch((err) => { /* @silent-fallback-ok: logged, and later signals still reach the monitor */ console.warn(`[ClaudeKeyHealth] boot failed: ${err instanceof Error ? err.message : String(err)}`); });
 
       // Out of Claude usage with no account to move to: the operator is told, and waiting
       // conversations pick up when it's back (fb-cab84278-0b4). Beside the key monitor because it
