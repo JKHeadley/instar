@@ -98,7 +98,7 @@ export function resolveOpenSession(input: {
       ...(s.startedAt ? { startedAt: s.startedAt } : {}),
       ...(s.framework ? { framework: s.framework } : {}),
       ...base,
-      ...(url ? { dashboardUrl: url } : { reason: 'This machine has no dashboard address the phone can open yet.' }),
+      ...(url ? { dashboardUrl: url } : { reason: `${input.selfNickname ?? 'The machine running this chat'} has no dashboard address the phone can open yet.` }),
     };
   }
   const owner = input.ownerMachineId;
@@ -107,8 +107,8 @@ export function resolveOpenSession(input: {
     return {
       active: false, ...base,
       reason: nick
-        ? `This chat runs on ${nick}, not on this machine. Open the dashboard on ${nick} to see its session.`
-        : 'This chat runs on another of your machines, whose name I could not confirm, not on this machine.',
+        ? `This chat runs on ${nick}. Open the dashboard on ${nick} to see its session.`
+        : 'This chat runs on another of your machines, whose name I could not confirm.',
       ownerMachine: { machineId: owner, nickname: nick },
     };
   }

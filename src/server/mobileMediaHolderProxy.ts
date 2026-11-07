@@ -152,7 +152,7 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia & { c
     let token: string | undefined;
     try {
       peer = deps.peers().find((p) => p.machineId === q.machine);
-      if (!peer) { res.status(409).json({ error: 'wrong-machine', servedBy: deps.selfMachineId(), detail: 'This file belongs to a machine this one does not know.' }); return; }
+      if (!peer) { res.status(409).json({ error: 'wrong-machine', servedBy: deps.selfMachineId(), detail: 'This file belongs to a machine the agent does not know.' }); return; }
       if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: (peer.kind ?? 'last-known-url') as PeerEndpointKind }, deps.allowlist?.()).ok) { failed(res, 502, 'holder-untrusted'); return; }
       token = deps.token();
     } catch { failed(res, 503, 'holder-unavailable'); return; } // @silent-fallback-ok — reported by failed(); the phone is told to retry

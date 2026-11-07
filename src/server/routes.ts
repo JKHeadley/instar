@@ -22291,7 +22291,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (!copied && !app.media.locateBlob(attachment.sha256) && await app.replicator.awaitBlob(attachment.sha256, MEDIA_PATH_WAIT_MS)) {
       copied = await app.media.sessionCopy(ref.messageId, attachment);
     }
-    if (!copied) { res.status(404).json({ error: 'not-on-this-machine', detail: `this file is not on this machine yet; ${app.replicator.whyNotHere(attachment.sha256)}` }); return; }
+    if (!copied) { res.status(404).json({ error: 'not-on-this-machine', detail: `this file hasn't been copied over yet; ${app.replicator.whyNotHere(attachment.sha256)}` }); return; }
     res.json({ path: copied });
   });
 
@@ -38587,6 +38587,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     };
     mountMobilePlansPeopleRoutes(router, {
+      // Named wording, never "this machine" (the phone talks to the agent, not one machine).
+      selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       initiatives: () => (ctx.initiativeTracker ? ctx.initiativeTracker.list() : null),
       offlineMachineIds: () => {
         if (!ctx.meshSelfId) return [];
@@ -38665,6 +38667,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return [...answers, ...skipped];
     };
     mountMobilePhonesMessagesRoutes(router, {
+      // Named wording, never "this machine" (the phone talks to the agent, not one machine).
+      selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       originStatus: async () => (ctx.telegramOrigin ? { state: 'ok', data: await ctx.telegramOrigin.deliverySummaryInputs() } : { state: 'off' }),
       heldForward: () => ctx.telegramOrigin?.heldForwardHealth() ?? null,
       peerMessages: () => peerSummaries('/mobile/messages?scope=local'),
@@ -38687,6 +38691,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // bearer; waiting requests proxied-on-read across peers, key names this machine's. No value, length,
     // token or Secret Drop link leaves this route.
     mountMobileSecretsRoutes(router, {
+      // Named wording, never "this machine" (the phone talks to the agent, not one machine).
+      selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       pending: () => secretDrop.listPending(),
       keys: async () => {
         const configPath = path.join(ctx.config.projectDir, '.instar', 'config.json');
@@ -38794,6 +38800,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): trimmed
     // read-only summaries, owner phone or bearer, proxied-on-read across peers.
     mountMobileProposalsInsideRoutes(router, {
+      // Named wording, never "this machine" (the phone talks to the agent, not one machine).
+      selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       proposals: () => ({ state: 'ok', data: loadAllProposals(ctx.config.stateDir) }),
       peerProposals: () => peerSummaries('/mobile/proposals?scope=local'),
       activity: async () => {
@@ -38863,6 +38871,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
     }
     mountMobilePermissionsRoutes(router, {
+      selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       // A route's words can quote a run's goal, so the phone's answer gets the same removal as anything else it reads.
       sessionAction: async (action) => {
         const r = await runSessionAction(action, { call: sessionControlCall, selfMachineId: () => ctx.meshSelfId ?? null });

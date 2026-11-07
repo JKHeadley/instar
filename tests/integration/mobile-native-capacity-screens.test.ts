@@ -153,8 +153,8 @@ describe('owner phone: served, trimmed', () => {
       { name: 'Studio', isSelf: true, state: 'ok', netUsd: 4.2, unpricedTokens: 0 },
       { name: 'Mac Mini', isSelf: false, state: 'unreached', netUsd: null, unpricedTokens: null },
     ]);
-    expect(r.body.limits).toMatchObject({ routesState: 'ok', controlsState: 'ok', storeUnreadable: true, sentence: 'Limits are on and enforcing on this machine.', routesSentence: '1 paid route is open.' });
-    expect(r.body.limits.routes[0]).toMatchObject({ name: 'OpenRouter · OpenRouter', status: 'Open', committedDayUsd: 3, dailyCapUsd: 25, heldBy: 'this machine', committedElsewhere: false });
+    expect(r.body.limits).toMatchObject({ routesState: 'ok', controlsState: 'ok', storeUnreadable: true, sentence: 'Limits are on and enforcing on Studio.', routesSentence: '1 paid route is open.' });
+    expect(r.body.limits.routes[0]).toMatchObject({ name: 'OpenRouter · OpenRouter', status: 'Open', committedDayUsd: 3, dailyCapUsd: 25, heldBy: 'Studio', committedElsewhere: false });
     expect(r.body.conversations.claude).toMatchObject({ count: 4, tokens: 1200000 });
     const text = JSON.stringify(r.body);
     for (const leak of LEAKS) expect(text, leak).not.toContain(leak);

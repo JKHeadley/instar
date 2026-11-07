@@ -179,6 +179,8 @@ export interface AccountsOptions {
   localRepairs?: Array<{ accountId: string; state: string }>;
   /** Repair blockers across machines; a machine with no row here keeps its pool status. */
   blockers?: Array<{ accountId: string; machineId: string; reason: string }>;
+  /** The verified name of the machine answering, for wording that would otherwise say "this machine". */
+  selfName?: string | null;
   /** Registered machines the pool does not count as online (not asked): their ids. */
   offlineMachineIds?: string[];
 }
@@ -223,11 +225,12 @@ function roomReturnsAt(a: NoticeAccount): number | null {
  *  - every usable account, or every usable account of one kind, is at or over the line,
  *    with when room returns. A kind with an unread usable account is not concluded on.
  */
-export function accountNotices(accounts: NoticeAccount[], opts: { localUnreadable: boolean; partial: boolean }): AccountNotice[] {
+export function accountNotices(accounts: NoticeAccount[], opts: { localUnreadable: boolean; partial: boolean; selfName?: string | null }): AccountNotice[] {
   const out: AccountNotice[] = [];
   const scope = opts.partial ? ' (on the machines that answered)' : '';
   if (opts.localUnreadable && accounts.length === 0) {
-    const title = "This machine's account list can't be read right now.";
+    // Named, never "this machine": the phone talks to the agent, not to one machine.
+    const title = opts.selfName ? `${opts.selfName}'s account list can't be read right now.` : "The account list can't be read right now.";
     out.push({ key: 'list-unreadable', tone: 'bad', title, returnsAt: null, action: { kind: 'ask', about: title } });
     return out;
   }
@@ -321,7 +324,7 @@ export function summarizeAccounts(
     g.email = g.email ?? accountEmail(id, r.email);
     const mid = String(r.machineId ?? '');
     const isSelf = r.remote !== true;
-    const machine = verifiedEntityName(mid, r.machineNickname) ?? verifiedEntityName(mid, nicknameOf(mid)) ?? (isSelf ? 'This machine' : 'A machine with no name yet');
+    const machine = verifiedEntityName(mid, r.machineNickname) ?? verifiedEntityName(mid, nicknameOf(mid)) ?? (isSelf ? (opts.selfName ?? 'Your machine') : 'A machine with no name yet');
     g.cells.push({ row: r, machine: phoneText(machine, 60) ?? 'A machine with no name yet', isSelf });
     const q = rec(r.lastQuota);
     const at = Date.parse(String(q.measuredAt ?? ''));
@@ -362,7 +365,7 @@ export function summarizeAccounts(
   // Conclusions cover only the machines that answered; a partial read says so.
   // An offline machine was not read: its accounts may be missing, so conclusions are scoped too.
   const partial = unread.count > 0 || localUnreadable || offline.count > 0;
-  const notices = accountNotices(accounts, { localUnreadable, partial });
+  const notices = accountNotices(accounts, { localUnreadable, partial, selfName: opts.selfName ?? null });
   const read = accounts.filter((a) => a._pct >= 0 && a.machines.some((m) => m.state === 'ok'));
   // `headline` is kept for app builds that show it as a line of its own; current builds show `notices`
   // and nothing when there are none. It never names one account as "nearly out".
@@ -445,7 +448,7 @@ export interface MobilePaidRoute { key: string; name: string; status: 'Frozen' |
 export interface SpendMachine { name: string | null; machineId?: string; isSelf: boolean; summary: SpendPart; tokens: SpendPart }
 function machineName(m: SpendMachine): string {
   const v = m.machineId ? verifiedEntityName(m.machineId, m.name) : m.name;
-  return phoneText(v, 60) ?? (m.isSelf ? 'This machine' : 'A machine with no name yet');
+  return phoneText(v, 60) ?? (m.isSelf ? 'Your machine' : 'A machine with no name yet');
 }
 type SpendMachineLine = { name: string; isSelf: boolean; state: 'ok' | 'off' | 'unavailable' | 'unreached' | 'offline'; netUsd: number | null; unpricedTokens: number | null };
 
@@ -535,7 +538,9 @@ export function summarizeRecorded(machines: SpendMachine[]): Rec {
  * console: `routes` (the caps view, behind the spend view's switch) and `controls` (the money-layer
  * status). Both are this machine's (the money layer is held by one machine, named in the sentence).
  */
-export function summarizeLimits(caps: SpendPart, status: SpendPart, nicknameOf: (machineId: string) => string | null = () => null, selfMachineIds: string[] = []): Rec {
+export function summarizeLimits(caps: SpendPart, status: SpendPart, nicknameOf: (machineId: string) => string | null = () => null, selfMachineIds: string[] = [], selfName: string | null = null): Rec {
+  // "on Mac Studio", never "on this machine"; with no verified name the qualifier is left out.
+  const onSelf = selfName ? ` on ${selfName}` : '';
   const isSelf = (id: string) => selfMachineIds.includes(id);
   let routesState: 'ok' | 'off' | 'unavailable' = 'ok'; let routesReason: string | null = null;
   let routes: MobilePaidRoute[] = [];
@@ -563,7 +568,7 @@ export function summarizeLimits(caps: SpendPart, status: SpendPart, nicknameOf: 
           dailyCapUsd: num(k.dailyCapUsd),
           committedLifetimeUsd: elsewhere ? null : nonNeg(k.committedLifetimeUsd),
           lifetimeCapUsd: num(k.lifetimeCapUsd),
-          heldBy: holder === null ? null : isSelf(holder) ? 'this machine' : (phoneText(verifiedEntityName(holder, nicknameOf(holder)), 60) ?? 'another machine'),
+          heldBy: holder === null ? null : isSelf(holder) ? (selfName ?? 'the machine the app reached') : (phoneText(verifiedEntityName(holder, nicknameOf(holder)), 60) ?? 'another machine'),
           committedElsewhere: elsewhere,
         };
       });
@@ -580,7 +585,7 @@ export function summarizeLimits(caps: SpendPart, status: SpendPart, nicknameOf: 
   let notEnforcingWhileOn = false;
   if (!status.ok) {
     controlsState = status.off ? 'off' : 'unavailable';
-    sentence = status.off ? 'Spending limits are not built on this machine.' : "Can't tell whether spending limits are on.";
+    sentence = status.off ? `Spending limits are not built${onSelf}.` : "Can't tell whether spending limits are on.";
   } else {
     const s = rec(status.data);
     const life = str(s.lifecycleState);
@@ -593,8 +598,8 @@ export function summarizeLimits(caps: SpendPart, status: SpendPart, nicknameOf: 
     else if (!life || life === 'disabled') sentence = 'Spending limits are off';
     else sentence = /^[a-z-]{1,40}$/.test(life) ? `Limits: ${life.replace(/-/g, ' ')}` : 'Limits: state unknown';
     if (s.anyKeyFrozen === true) sentence += '; a paid route is frozen';
-    // The status is this machine's own; the machine that holds each paid route is on the route (`heldBy`).
-    sentence = `${sentence} on this machine.`;
+    // The status is the answering machine's own, so it names it; each paid route names its holder (`heldBy`).
+    sentence = `${sentence}${onSelf}.`;
   }
   return { routesState, routesReason, routesSentence, routes, storeUnreadable, truncated, controlsState, sentence, enforcing, notEnforcingWhileOn };
 }
@@ -628,14 +633,15 @@ export function summarizeConversations(machines: SpendMachine[], phrase: string)
 }
 
 /** The whole spend answer (minus schemaVersion/generatedAt). `machines[0]` is this machine. */
-export function summarizeSpend(windowKey: SpendWindowKey, parts: { machines: SpendMachine[]; caps: SpendPart; status: SpendPart; nicknameOf?: (machineId: string) => string | null; selfMachineIds?: string[]; now?: number }): Rec {
+export function summarizeSpend(windowKey: SpendWindowKey, parts: { machines: SpendMachine[]; caps: SpendPart; status: SpendPart; nicknameOf?: (machineId: string) => string | null; selfMachineIds?: string[]; selfName?: string | null; now?: number }): Rec {
   const w = SPEND_WINDOWS[windowKey];
   const now = parts.now ?? Date.now();
   const recorded = summarizeRecorded(parts.machines);
-  const limits = summarizeLimits(parts.caps, parts.status, parts.nicknameOf, parts.selfMachineIds ?? []);
+  const selfName = parts.selfName ?? (parts.machines[0] && parts.machines[0].isSelf && parts.machines[0].machineId ? phoneText(verifiedEntityName(parts.machines[0].machineId, parts.machines[0].name), 60) : phoneText(parts.machines[0]?.name, 60)) ?? null;
+  const limits = summarizeLimits(parts.caps, parts.status, parts.nicknameOf, parts.selfMachineIds ?? [], selfName);
   const conversations = summarizeConversations(parts.machines, w.phrase);
   const answered = (recorded.machines as SpendMachineLine[]).filter((l) => l.state === 'ok').length;
-  const where = parts.machines.length <= 1 ? 'on this machine' : answered === parts.machines.length ? `across ${answered} machines` : `on the ${answered === 1 ? 'machine' : `${answered} machines`} that answered`;
+  const where = parts.machines.length <= 1 ? (selfName ? `on ${selfName}` : 'on this agent') : answered === parts.machines.length ? `across ${answered} machines` : `on the ${answered === 1 ? 'machine' : `${answered} machines`} that answered`;
   let headline: string;
   if (recorded.state === 'ok') {
     const net = recorded.netUsd as number;
@@ -887,7 +893,7 @@ export function mountMobileCapacityRoutes(router: Router, deps: MobileCapacityDe
         let repairs: Array<{ accountId: string; state: string }> = [];
         try { repairs = deps.localRepairs(); } catch { /* @silent-fallback-ok — no repair evidence: cells show their pool status */ }
         // generatedAt is stamped when the answer is built, so a cached answer keeps its own time.
-        return { ...head(), ...summarizeAccounts(payload, { inUseAccountId: inUse, now: now(), nicknameOf: deps.nicknameOf, localRepairs: repairs, blockers, offlineMachineIds: deps.offlineMachineIds?.() ?? [] }) } as unknown as Rec;
+        return { ...head(), ...summarizeAccounts(payload, { inUseAccountId: inUse, now: now(), nicknameOf: deps.nicknameOf, localRepairs: repairs, blockers, offlineMachineIds: deps.offlineMachineIds?.() ?? [], selfName: phoneText(deps.selfName(), 60) }) } as unknown as Rec;
       });
       res.json(body);
     } catch (err) {
@@ -913,6 +919,7 @@ export function mountMobileCapacityRoutes(router: Router, deps: MobileCapacityDe
         return { ...head(), ...summarizeSpend(key, {
           nicknameOf: deps.nicknameOf,
           selfMachineIds: deps.selfMachineIds?.() ?? [],
+          selfName: phoneText(deps.selfName(), 60),
           now: now(),
           machines: [self, ...peers],
           caps: safePart('GET /mobile/spend (limits)', () => deps.spendCaps()),
@@ -928,7 +935,7 @@ export function mountMobileCapacityRoutes(router: Router, deps: MobileCapacityDe
 
   /** This machine's own answer (the shape every older phone reads). */
   const localResources = (): Rec => {
-    const machine = phoneText(deps.selfName(), 60) ?? 'This machine';
+    const machine = phoneText(deps.selfName(), 60) ?? 'Your machine';
     const sources = deps.resourceSources(now() - RESOURCE_WINDOW_HOURS * 3_600_000);
     if (sources === null) {
       return { ...head(), enabled: false, machine, windowHours: RESOURCE_WINDOW_HOURS, headline: "Resource usage isn't recorded on this agent.", total: null, server: null, sessions: [], truncated: false };

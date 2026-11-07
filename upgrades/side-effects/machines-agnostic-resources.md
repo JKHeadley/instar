@@ -15,6 +15,21 @@ Tier 1 (read-only, revert fully undoes it). 13 files, ~470 added / ~60 removed l
 - `dashboard/console/machines*.js` — no "this one" tag; order independent of the serving machine; every machine card shows its resource line and its sheet shows "What's using it" from the pooled read plus a Remote desktop link (the desktop page already explains a machine that isn't ready and shows its setup).
 - `src/core/PostUpdateMigrator.ts` — the agent-awareness bullet now says resources cover every machine; an idempotent migration rewords the old clause on existing agents.
 
+### Second commit: no "this machine" anywhere on the phone
+
+Follow-up the same night (same rule, coordinator request): every phone-facing line that said "this machine" now names the machine or drops the qualifier.
+- Spend: "Limits are on and enforcing on Mac Studio." The paid route's holder is named; the headline reads "on Mac Studio".
+- Accounts: "Mac Studio's account list can't be read right now."
+- Messages: "held on Mac Studio"; the machine list names it.
+- Keys: "The saved keys on Mac Studio can't be opened."; "The agent holds 2 keys."
+- Session settings: no "(this machine)" label; "(on Studio only)"; "Move this session to Studio …".
+- Inside: "None of these checks are on for Mac Studio". A peer's activity line names that peer; before this it wrongly said "this machine" for the peer.
+- Plans and the session screens: the self qualifier is gone.
+- Permissions: `/mobile/permissions/features` gains `machine`, the answering machine's name, so the phone titles its switches by name.
+- Media, conversation and pairing error details are worded without a machine ("The agent does not know that upload", "Messages aren't being received right now").
+
+Each module takes an optional `selfName` dep (the verified registry name, the same source the capacity routes already used). With no verified name, the qualifier is dropped; it never falls back to "this machine". Pairing-setup diagnostics that describe the tunnel machine itself stay as they are: they describe that machine's own setup, are shown during pairing, and name the host.
+
 ## Decision-point inventory
 
 No decision-point surface: read-only summaries and wording. Nothing gates, blocks, or filters.

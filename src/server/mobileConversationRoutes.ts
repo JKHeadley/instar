@@ -678,7 +678,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       // Nothing was dispatched: an honest refusal, not an unknown outcome.
       s.appendDelivery(key, messageId, 'refused', seed);
       featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'saved, not delivered: no dispatcher on this machine', context: { messageId, deviceId } });
-      finish(503, { error: 'chat-unavailable', detail: 'Your message is saved, but this machine cannot start a session for it right now.', conversationKey: key, eventId, messageId, deliveryState: 'refused', ...extras });
+      finish(503, { error: 'chat-unavailable', detail: 'Your message is saved, but a session can\'t start for it right now.', conversationKey: key, eventId, messageId, deliveryState: 'refused', ...extras });
       return;
     }
     // §4.5: one line per file before the caption, with a server-chosen path to a private copy.

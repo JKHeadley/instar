@@ -80,7 +80,9 @@ export function holdWords(reason: unknown): string {
 }
 
 /** The console's held headline (heldHeadline). */
-export function heldHeadline(n: unknown, replies?: unknown, automatic?: unknown, other?: unknown): string {
+export function heldHeadline(n: unknown, replies?: unknown, automatic?: unknown, other?: unknown, selfName: string | null = null): string {
+  // Named ("held on Mac Studio"), never "on this machine": the phone talks to the agent, not one machine.
+  const on = selfName ? ` on ${selfName}` : '';
   if (!isCount(n)) return "Can't tell how many messages are held.";
   if (!n) return 'No messages are held.';
   if (isCount(replies) && isCount(automatic) && isCount(other) && replies + automatic + other === n && (replies || automatic)) {
@@ -89,9 +91,9 @@ export function heldHeadline(n: unknown, replies?: unknown, automatic?: unknown,
       automatic ? `${automatic} automatic ${automatic === 1 ? 'message' : 'messages'}` : null,
       other ? `${other} other ${other === 1 ? 'message' : 'messages'}` : null,
     ].filter(Boolean);
-    return `${parts.join(' and ')} ${n === 1 ? 'is' : 'are'} held on this machine.`;
+    return `${parts.join(' and ')} ${n === 1 ? 'is' : 'are'} held${on}.`;
   }
-  return `${n} ${n === 1 ? 'message is' : 'messages are'} held on this machine.`;
+  return `${n} ${n === 1 ? 'message is' : 'messages are'} held${on}.`;
 }
 
 /** The no-detail headline from /health heldForward: held FORWARDS only, worded as such. */
@@ -116,6 +118,8 @@ export interface MessagesOpts {
   nicknameOf: (machineId: string) => string | null;
   /** This machine's /health telegramOrigin.heldForward, used when the detailed read fails. */
   heldForward?: unknown;
+  /** The answering machine's verified name, so its lines name it instead of saying "this machine". */
+  selfName?: string | null;
   offlineMachineIds?: string[];
 }
 
@@ -131,7 +135,7 @@ export function summarizeLocalMessages(status: OriginStatus, opts: MessagesOpts)
     return {
       state: status.state === 'off' ? 'off' : 'unavailable', heldCount: null,
       headline: forwardsHeadline(hf.count),
-      sub: status.state === 'off' ? 'Message recording is not running on this machine.' : "Couldn't read the message records just now.",
+      sub: status.state === 'off' ? `Message recording is not running${opts.selfName ? ` on ${opts.selfName}` : ''}.` : "Couldn't read the message records just now.",
       tone: isCount(hf.count) && hf.count > 0 ? 'attn' : 'unknown',
       groups: [], truncated: false, expired: 0, unconfirmedLine: null, recording: null, notReady: [],
     };
@@ -165,8 +169,8 @@ export function summarizeLocalMessages(status: OriginStatus, opts: MessagesOpts)
   if (held.length) {
     const replies = items.filter((x) => x.producerKind === 'session').length;
     const automatic = items.filter((x) => x.producerKind === 'server-automation').length;
-    headline = heldHeadline(held.length, replies, automatic, held.length - replies - automatic);
-    if (s.heldComplete === false) headline = `At least ${held.length} ${held.length === 1 ? 'message is' : 'messages are'} held on this machine (more may not be listed).`;
+    headline = heldHeadline(held.length, replies, automatic, held.length - replies - automatic, opts.selfName ?? null);
+    if (s.heldComplete === false) headline = `At least ${held.length} ${held.length === 1 ? 'message is' : 'messages are'} held${opts.selfName ? ` on ${opts.selfName}` : ''} (more may not be listed).`;
   } else if (s.heldComplete === false) headline = "Some held messages may not be listed: the record couldn't be read in full.";
   else if (expired) headline = `${expired} ${expired === 1 ? 'message' : 'messages'} expired before delivery.`;
   else headline = 'Messages to you';
@@ -232,7 +236,7 @@ function peerSummary(data: unknown, machineId: string, machine: string): { state
 export function summarizeMessages(status: OriginStatus, peers: PeerMessages[], opts: MessagesOpts): Rec {
   const local = summarizeLocalMessages(status, opts);
   const unreadIds: string[] = [];
-  const machines: Array<{ name: string; count: number | null; complete: boolean; state: string }> = [{ name: 'This machine', count: local.heldCount as number | null, complete: local.heldComplete !== false, state: String(local.state) }];
+  const machines: Array<{ name: string; count: number | null; complete: boolean; state: string }> = [{ name: opts.selfName ?? 'Your machine', count: local.heldCount as number | null, complete: local.heldComplete !== false, state: String(local.state) }];
   const groups: MobileHeldGroup[] = [...(local.groups as MobileHeldGroup[])];
   let peerHeld = 0;
   let peerTruncated = false;
@@ -385,6 +389,8 @@ export interface MobilePhonesMessagesDeps {
   /** Registered machines the pool does not count as online (not asked): ids, never returned. */
   offlineMachineIds?: () => string[];
   nicknameOf: (machineId: string) => string | null;
+  /** The answering machine's verified name, or null. */
+  selfName?: () => string | null;
   bearerOk: (req: Request) => boolean;
   now?: () => number;
 }
@@ -432,7 +438,7 @@ export function mountMobilePhonesMessagesRoutes(router: Router, deps: MobilePhon
           local ? Promise.resolve([] as PeerMessages[]) : safe('GET /mobile/messages (peers)', () => deps.peerMessages(), [] as PeerMessages[]),
         ]);
         const heldForward = await safe<unknown>('GET /mobile/messages (held forwards)', () => deps.heldForward(), null);
-        const opts = { now: now(), topicName: deps.topicName, nicknameOf: deps.nicknameOf, heldForward, offlineMachineIds: local ? [] : offline() };
+        const opts = { now: now(), topicName: deps.topicName, nicknameOf: deps.nicknameOf, heldForward, offlineMachineIds: local ? [] : offline(), selfName: cleanText(deps.selfName?.() ?? null, 60) };
         return { ...head(), ...(local ? summarizeLocalMessages(status, opts) : summarizeMessages(status, peers, opts)) };
       });
       res.json(body);

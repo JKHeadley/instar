@@ -18,6 +18,8 @@ Justin looks at his agent from his phone. The phone talks to the agent, which ha
 - Tapping a machine opens its page: its state, its CPU and memory, its busiest sessions, its Instar version, and a Remote Desktop button for that machine.
 - The web dashboard gets the same treatment: no "this one" tag, and every machine shows what is using it and a Remote desktop link.
 
+- The same rule now covers every phone screen. Spending, Accounts, Messages, Keys, Session settings, Inside, Plans and the session screens used to say "on this machine" or "This machine holds…". Now they name the machine ("Limits are on and enforcing on Mac Studio"). When the name isn't known, they simply leave the qualifier out. Error messages about files and messages no longer mention "this machine" at all.
+
 ## Safeguards
 
 - Read-only. Nothing here can change a machine or a session.

@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Request } from 'express';
 import {
-  summarizeResourceMachines, MAX_SESSIONS_PER_MACHINE,
+  summarizeResourceMachines, MAX_SESSIONS_PER_MACHINE, accountNotices,
   summarizeAccounts, accountCellState, usageWindows, accountEmail, kindWord,
   summarizeSpend, summarizeRecorded, summarizeLimits, summarizeConversations, windowOf, basisWord, modelWord, doorWord, routeStatusWord,
   summarizeResources, ownerOrBearer, singleFlight, rowKey,
@@ -210,7 +210,9 @@ describe('accounts', () => {
     const r = summarizeAccounts(pool([], [{ machineId: 'm_self', error: 'peer-pool-unavailable' }, { machineId: 'm_peer', machineNickname: 'Evil Name', error: 'HTTP 500 /Users/x' }, { machineId: 'm_x', error: 'timeout' }]), { now: NOW, nicknameOf: (id) => (id === 'm_peer' ? 'Mac Mini' : null) });
     expect(r.unread).toEqual({ count: 2, names: ['Mac Mini'] });
     expect(r.localUnreadable).toBe(true);
-    expect(r.headline).toBe("This machine's account list can't be read right now.");
+    expect(r.headline).toBe("The account list can't be read right now.");
+    // Named when the answering machine's name is known (never "this machine").
+    expect(accountNotices([], { localUnreadable: true, partial: false, selfName: 'Mac Studio' })[0].title).toBe("Mac Studio's account list can't be read right now.");
     const unconfigured = summarizeAccounts(pool([], [{ machineId: 'm_self', error: 'peer-pool-unconfigured' }]), { now: NOW });
     expect(unconfigured.localUnreadable).toBe(false);
     expect(unconfigured.unread.count).toBe(0);
@@ -306,9 +308,9 @@ describe('spend', () => {
 
   it('headline: one machine, all machines, partial; never $0 for unpriced use', () => {
     const okL = (net: number, unpriced = 0) => ledger([], { netUsd: net, unpricedTokensIn: unpriced });
-    expect(summarizeSpend('week', { machines: [self(okL(4.2))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('About $4.20 of pay-per-use cost this week on this machine.');
-    expect(summarizeSpend('today', { machines: [self(okL(0))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('No pay-per-use cost today on this machine.');
-    expect(summarizeSpend('today', { machines: [self(okL(0, 12000))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('No priced pay-per-use cost today on this machine; 12k tokens had no price on file.');
+    expect(summarizeSpend('week', { machines: [self(okL(4.2))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('About $4.20 of pay-per-use cost this week on Studio.');
+    expect(summarizeSpend('today', { machines: [self(okL(0))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('No pay-per-use cost today on Studio.');
+    expect(summarizeSpend('today', { machines: [self(okL(0, 12000))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('No priced pay-per-use cost today on Studio; 12k tokens had no price on file.');
     const peer = (summary: SpendMachine['summary']): SpendMachine => ({ name: 'Mac Mini', machineId: 'm_peer', isSelf: false, summary, tokens: tok(1) });
     expect(summarizeSpend('month', { machines: [self(okL(1)), peer(okL(2))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('About $3.00 of pay-per-use cost in the last 30 days across 2 machines.');
     expect(summarizeSpend('month', { machines: [self(okL(1)), peer({ ok: false, off: true })], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('About $1.00 of pay-per-use cost in the last 30 days on the machine that answered.');
@@ -328,27 +330,28 @@ describe('spend', () => {
     ]);
     const here = summarizeLimits({ ok: true, data: { keys: [{ keyRef: 'k', provider: 'openrouter', door: 'openrouter', committedDayUsd: 3, committedLifetimeUsd: 40, meteredLeaseHolder: 'm_self' }, { keyRef: 'k2', provider: 'groq', door: 'groq', committedDayUsd: 1 }] } }, { ok: false, off: true }, () => null, ['single-machine', 'm_self']);
     expect(here.routes).toEqual([
-      expect.objectContaining({ committedDayUsd: 3, committedLifetimeUsd: 40, heldBy: 'this machine', committedElsewhere: false }),
+      expect.objectContaining({ committedDayUsd: 3, committedLifetimeUsd: 40, heldBy: 'the machine the app reached', committedElsewhere: false }),
       expect.objectContaining({ committedDayUsd: 1, heldBy: null, committedElsewhere: false }),
     ]);
     // The money layer's own id for a machine without a mesh ('single-machine') is this machine too.
     const solo = summarizeLimits({ ok: true, data: { keys: [{ keyRef: 'k', provider: 'openrouter', door: 'openrouter', committedDayUsd: 2, meteredLeaseHolder: 'single-machine' }] } }, { ok: false, off: true }, () => null, ['single-machine']);
-    expect(solo.routes).toEqual([expect.objectContaining({ committedDayUsd: 2, heldBy: 'this machine', committedElsewhere: false })]);
-    expect(l).toMatchObject({ storeUnreadable: true, routesState: 'ok', controlsState: 'ok', routesSentence: '1 paid route is open; 1 frozen.', sentence: 'Limits are on and enforcing; a paid route is frozen on this machine.' });
+    expect(solo.routes).toEqual([expect.objectContaining({ committedDayUsd: 2, heldBy: 'the machine the app reached', committedElsewhere: false })]);
+    expect(l).toMatchObject({ storeUnreadable: true, routesState: 'ok', controlsState: 'ok', routesSentence: '1 paid route is open; 1 frozen.', sentence: 'Limits are on and enforcing; a paid route is frozen.' });
     const text = JSON.stringify(l);
     for (const leak of ['REF', 'm_holder', 'm_unnamed', 'm_self', '/Users/x', 'keyRef', 'meteredLeaseHolder']) expect(text).not.toContain(leak);
   });
 
   it('limits: every lifecycle sentence, and the two sources stay independent', () => {
-    const st = (s: Record<string, unknown>) => summarizeLimits({ ok: false, off: true }, { ok: true, data: s });
-    expect(st({ lifecycleState: 'enable-pending-restart' }).sentence).toBe('Limits are turned on but wait for a restart to start enforcing on this machine.');
-    expect(st({ lifecycleState: 'probe-failed', failingComponent: 'MeteredSpendLedger' })).toMatchObject({ sentence: 'Limits are turned on but not enforcing (probe failed: MeteredSpendLedger) on this machine.', notEnforcingWhileOn: true, routesState: 'off', controlsState: 'ok' });
-    expect(st({ lifecycleState: 'construction-failed', failingComponent: '/Users/x/evil path!' }).sentence).toBe('Limits are turned on but not enforcing (construction failed) on this machine.');
-    expect(st({ lifecycleState: 'disabled' }).sentence).toBe('Spending limits are off on this machine.');
-    expect(st({}).sentence).toBe('Spending limits are off on this machine.');
-    expect(st({ lifecycleState: 'arming' }).sentence).toBe('Limits: arming on this machine.');
-    expect(st({ lifecycleState: 'BAD STATE' }).sentence).toBe('Limits: state unknown on this machine.');
+    const st = (s: Record<string, unknown>) => summarizeLimits({ ok: false, off: true }, { ok: true, data: s }, () => null, [], 'Mac Studio');
+    expect(st({ lifecycleState: 'enable-pending-restart' }).sentence).toBe('Limits are turned on but wait for a restart to start enforcing on Mac Studio.');
+    expect(st({ lifecycleState: 'probe-failed', failingComponent: 'MeteredSpendLedger' })).toMatchObject({ sentence: 'Limits are turned on but not enforcing (probe failed: MeteredSpendLedger) on Mac Studio.', notEnforcingWhileOn: true, routesState: 'off', controlsState: 'ok' });
+    expect(st({ lifecycleState: 'construction-failed', failingComponent: '/Users/x/evil path!' }).sentence).toBe('Limits are turned on but not enforcing (construction failed) on Mac Studio.');
+    expect(st({ lifecycleState: 'disabled' }).sentence).toBe('Spending limits are off on Mac Studio.');
+    expect(st({}).sentence).toBe('Spending limits are off on Mac Studio.');
+    expect(st({ lifecycleState: 'arming' }).sentence).toBe('Limits: arming on Mac Studio.');
+    expect(st({ lifecycleState: 'BAD STATE' }).sentence).toBe('Limits: state unknown on Mac Studio.');
     const down = summarizeLimits({ ok: true, data: { keys: [] } }, { ok: false, off: false });
+    expect(summarizeLimits({ ok: false, off: true }, { ok: true, data: { lifecycleState: 'disabled' } }).sentence).toBe('Spending limits are off.');
     expect(down).toMatchObject({ routesState: 'ok', routesSentence: 'No paid route is set up.', controlsState: 'unavailable', sentence: "Can't tell whether spending limits are on." });
     expect(summarizeLimits({ ok: false, off: false }, { ok: false, off: true })).toMatchObject({ routesState: 'unavailable', controlsState: 'off' });
   });
