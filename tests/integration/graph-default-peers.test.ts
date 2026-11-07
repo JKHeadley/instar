@@ -5,6 +5,8 @@ import {GraphWitnessClient} from '../../src/core/GraphWitnessClient.js';
 import {ConversationGraphReplicationRuntime} from '../../src/server/ConversationGraphReplicationRuntime.js';
 import {spawn} from 'node:child_process';
 import Database from 'better-sqlite3';
+import {MachineIdentityManager} from '../../src/core/MachineIdentity.js';
+import {IdentityStore} from '../../src/core/IdentityStore.js';
 import os from 'node:os';
 import {ReplicatedPeerStreamReader} from '../../src/core/ReplicatedPeerStreamReader.js';
 import {ReplicatedKindRegistry} from '../../src/core/ReplicatedRecordEnvelope.js';
@@ -57,6 +59,19 @@ describe('owned default across actual registered native peers',()=>{
   const runtime=host.runtime!,actuation=runtime.actuation(),eventId='default-owned-placement',operationKey='graph-event:'+eventId,core={schemaVersion:1,eventId,op:'set-primary-placement',subject:{kind:'conversation',platform:'telegram',chatId:'-1001',topicId:42},parent:null,relation:null,replacesPlacementEventIds:[],authority:'owner',principal:'owner:echo',receipt:{kind:'owner-proof',id:'default-owner-accepted-request'},machineId:runtime.machineId,createdAt:new Date().toISOString()},receipt=signGraphAuthorizationReceipt({v:1,agentId:'echo',eventId:operationKey,coreHash:canonicalHash(core),actorPrincipal:'owner:echo',authenticationMethod:'owner-dashboard',receiptId:core.receipt.id,membershipEpoch:membership.epoch,leaseEpoch:actuation.lease.leaseEpoch,idempotencyKey:'default-owned-placement-request',writerId:runtime.machineId,fencedLeaseHash:canonicalHash(actuation.originalLease),acceptedAt:core.createdAt},hostIdentity.loadSigningKey());
   const result=await runtime.withSourceMutation(token=>runtime.submitPrepared({coreType:'graph-event',idempotencyKey:receipt.idempotencyKey,requestHash:canonicalHash({ownerRequest:'placement'}),core,authorizationProof:{receipt,membership,...actuation},plaintextSource:Buffer.from('owner application source')},token));expect(result.state).toBe('committed');expect(peer.source.status(operationKey).state).toBe('committed');expect(runtime.source.allCommitProofDelivered(operationKey)).toBe(true);expect(peer.source.allCommitProofDelivered(operationKey)).toBe(true);
   expect(f.native.service.inventory('echo','z'.repeat(43)).manifest.entries).toHaveLength(0); // Legacy external fixture was never a dependency.
+ });
+ it('keeps the signed members working when a new machine is paired after genesis, and does not wait on it',async()=>{
+  const f=await fixture();for(let i=0;i<2;i++){f.apps[i].use(express.json({limit:'64kb'}));f.apps[i].use(createConversationGraphDefaultSurface({manager:f.defaults[i],stateDir:f.native.options[i].stateDir,readEnabled:true,correctionsEnabled:true,scope:f.native.options[i].scopeVerifier!,telegramChatId:'-1001',pairing:null,verifyDashboardOwner:token=>token==='actual-fixture-owner',dashboardPolicy:()=>({pin:'fixture-owner-policy',generation:'11111111-1111-4111-8111-111111111111'}),forceFileKey:true}));}
+  const ownerHeaders={'X-Instar-Operator-Session':'actual-fixture-owner','content-type':'application/json'};
+  const change=async(requestId:string)=>{const response=await fetch(f.origins[1]+'/conversation-graph/changes',{method:'POST',headers:ownerHeaders,body:JSON.stringify({requestId,change:{kind:'create-effort',projectScope:['instar']}})}),first=await response.json();expect([200,202],JSON.stringify(first)).toContain(response.status);await f.defaults[0].runtime!.reconcilePending();await f.defaults[1].runtime!.reconcilePending();const statusResponse=await fetch(f.origins[1]+'/conversation-graph/changes/'+requestId,{headers:ownerHeaders});return statusResponse.json();};
+  const before=await change('before-new-machine-paired');expect(before.state,JSON.stringify(before)).toBe('committed');
+  const newcomerDir=fs.mkdtempSync(path.join(os.tmpdir(),'graph-newcomer-')),newcomer=new MachineIdentityManager(newcomerDir);await newcomer.generateIdentity({role:'standby'});const identity=newcomer.loadIdentity();
+  try{
+   for(const options of f.native.options){const manager=new MachineIdentityManager(options.stateDir);new IdentityStore({stateDir:manager.baseDir}).apply({identity,scope:'remote',actor:'pairing-trust',path:'pair'});manager.registerMachine(identity,'standby');}
+   const after=await change('after-new-machine-paired');expect(after.state,JSON.stringify(after)).toBe('committed');
+   const roots=await fetch(f.origins[1]+'/conversation-graph/roots',{headers:ownerHeaders}),body=await roots.json();expect(roots.status,JSON.stringify(body)).toBe(200);expect(JSON.stringify(body)).toContain(after.effort.id);expect(f.defaults[1].runtime!.installedMembership.members.some(member=>member.machineId===identity.machineId)).toBe(false);
+   for(const manager of f.defaults)await manager.restore();expect(f.defaults[0].runtime).not.toBeNull();
+  }finally{SafeFsExecutor.safeRmSync(newcomerDir,{recursive:true,force:true,operation:'tests/integration/graph-default-peers:newcomer'});}
  });
  it('commits a real follower-only owner HTTP correction with no owner visit on the native holder',async()=>{
   const f=await fixture();for(let i=0;i<2;i++){f.apps[i].use(express.json({limit:'64kb'}));f.apps[i].use(createConversationGraphDefaultSurface({manager:f.defaults[i],stateDir:f.native.options[i].stateDir,readEnabled:true,correctionsEnabled:true,scope:f.native.options[i].scopeVerifier!,telegramChatId:'-1001',pairing:null,verifyDashboardOwner:token=>token==='actual-fixture-owner',dashboardPolicy:()=>({pin:'fixture-owner-policy',generation:'11111111-1111-4111-8111-111111111111'}),forceFileKey:true}));}

@@ -442,7 +442,8 @@ export class ConversationGraphReplicationRuntime {
  private trustedInstalledSet():boolean{
   if(this.memberLossOpenOnly)return false;
   try{if(!verifyMembershipEpoch(this.config.membership,this.config.ownerPublicKey)||this.config.membership.agentId!==this.config.agentId)return false;const registry=this.options.identity.loadRegistry();const installed=new Set(Object.entries(registry.machines).filter(([,entry])=>entry.status==='active'&&!entry.revokedAt).map(([id])=>id));installed.add(this.machineId);
-   if(canonicalJson([...installed].sort())!==canonicalJson(this.config.membership.members.map(member=>member.machineId).sort()))return false;
+   // Every signed member must still be installed. A machine paired later has no signed place and cannot read sealed records, so it does not stop the members.
+   if(!this.config.membership.members.every(member=>installed.has(member.machineId)))return false;
    return this.config.membership.members.every(member=>{const identity=member.machineId===this.machineId?this.options.identity.loadIdentity():this.options.identities.loadIdentity(member.machineId,'remote');
     const epoch=this.options.identities.getEpoch(member.machineId);
     return !!identity&&!epoch.revokedAt&&sameKey(identity.signingPublicKey,member.signingPublicKey)&&sameKey(identity.encryptionPublicKey,member.sealingPublicKey);});

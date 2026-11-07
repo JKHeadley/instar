@@ -31,7 +31,7 @@ export function createConversationGraphDefaultSurface(options:Omit<Parameters<ty
   if(isCurrent())localReady();
   const key=(requestId:string)=>'owner-change:'+canonicalHash({principal:owner.principalKey,requestId});
   const machine=(machineId:string)=>{const row=options.manager.identity?.loadRegistry().machines[machineId];return{machineId,name:verifiedEntityName(machineId,row?.nickname??row?.name)||'Agent machine'};};
-  const waiting=()=>Object.entries(options.manager.identity?.loadRegistry().machines??{}).filter(([id,row])=>row.status==='active'&&!row.revokedAt&&id!==options.manager.identity?.loadIdentity().machineId).map(([id])=>machine(id));
+  const waiting=()=>Object.entries(options.manager.identity?.loadRegistry().machines??{}).filter(([id,row])=>row.status==='active'&&!row.revokedAt&&id!==options.manager.identity?.loadIdentity().machineId&&!options.manager.unjoinedMachines().includes(id)).map(([id])=>machine(id));
   const reply=(view:GraphQueuedIntentView)=>({wireVersion:2,requestId:view.requestId,operationKey:view.operationKey,state:view.state,recordedAt:view.recordedAt,custody:{kind:'recorded-here',machine:machine(view.recordedMachineId)},cancelEligible:view.cancelEligible,sync:{state:'unavailable'},waitingMachines:waiting(),details:view.details,...(view.change&&view.mayServeDetails()&&view.visibleTo(ref=>owner.mayView(ref))?{localIntent:{v:1,change:view.change,...(view.createdEffort?{createdEffort:view.createdEffort}:{})}}:{}),...(view.refusalCode?{reason:view.refusalCode}:{})});
   let status=200,body:unknown;
   if(req.method==='POST'&&path==='/changes'){

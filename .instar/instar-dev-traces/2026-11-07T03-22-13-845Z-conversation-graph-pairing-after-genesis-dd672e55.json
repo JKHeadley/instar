@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-pairing-after-genesis",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-07T03:22:13.845Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-pairing-after-genesis.md",
+  "artifactSha256": "a45a818a577ac9e13aeab3429269591869285fe21649c1d8c4cc17eee24ec6d6",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-07T03-19-57-962Z-conversation-graph-pairing-after-genesis.json",
+    "src/core/GraphCustodyPeerFrontier.ts",
+    "src/server/ConversationGraphDefault.ts",
+    "src/server/ConversationGraphDefaultSurface.ts",
+    "src/server/ConversationGraphReplicationRuntime.ts",
+    "tests/integration/graph-default-peers.test.ts",
+    "tests/integration/graph-member-loss-owned-role.test.ts",
+    "upgrades/conversation-graph-pairing-after-genesis.eli16.md",
+    "upgrades/side-effects/conversation-graph-pairing-after-genesis.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes membership checks in custody code under the approved Conversations spec; feature stays off by default.",
+  "secondPass": "true",
+  "reviewerConcurred": false
+}
