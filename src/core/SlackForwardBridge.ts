@@ -19,10 +19,25 @@
  */
 
 import type { Message } from './types.js';
+import { SLACK_CHANNEL_ID_RE } from './conversationIdentity.js';
 
 /** A Telegram topic key is a pure number; everything else (Slack `C…:ts`) is not. */
 export function isSlackSessionKey(sessionKey: string): boolean {
   return !/^\d+$/.test(sessionKey);
+}
+
+/**
+ * A Slack conversation's key in either form it is stored under: the raw routing key
+ * (`C…`/`D…`/`G…`, optionally `:<thread ts>`, as ownership and the adapter use) or the profile
+ * form `slack:<routing key>` (slack-conversations-stay-with-connection §2). Exact grammar, unlike
+ * `isSlackSessionKey`, so an `app:` key is never mistaken for Slack.
+ */
+export function isSlackConversationKey(key: string): boolean {
+  const raw = key.startsWith('slack:') ? key.slice('slack:'.length) : key;
+  const [channel, thread, extra] = raw.split(':');
+  if (extra !== undefined || !channel || !SLACK_CHANNEL_ID_RE.test(channel)) return false;
+  // Wider than SLACK_THREAD_TS_RE on purpose: refusing more is the safe side.
+  return thread === undefined || /^\d{6,12}\.\d{1,9}$/.test(thread);
 }
 
 /**

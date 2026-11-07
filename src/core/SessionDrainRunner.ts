@@ -42,6 +42,7 @@
  * that outlive run().
  */
 
+import { isSlackConversationKey } from './SlackForwardBridge.js';
 import type { OwnershipAction, SessionOwnershipRecord } from './SessionOwnership.js';
 import { mergeDefaults } from './mergeDefaults.js';
 import { topicRef } from '../messaging/shared/topicRef.js';
@@ -72,7 +73,8 @@ export type DrainStatus =
   | 'refused-not-owner'       // this machine does not own the topic
   | 'refused-stale-epoch'     // the sender's observed epoch no longer matches (replay / raced transfer)
   | 'refused-cas-lost'        // could not enter (or exit) transferring — a peer raced us
-  | 'refused-fenced';         // onNotQuiet 'abort': the record moved on before the close
+  | 'refused-fenced'          // onNotQuiet 'abort': the record moved on before the close
+  | 'refused-slack-stays';    // a Slack conversation stays with the machine holding its Slack connection
 
 export interface DrainOutcome {
   status: DrainStatus;
@@ -211,6 +213,15 @@ export class SessionDrainRunner {
       }
       return outcome;
     };
+
+    // ── 0. A Slack conversation never moves (slack-conversations-stay-with-connection §2.1) ──
+    // Its replies need the Slack connection, which lives on one machine. Refused before any fence,
+    // CAS, suspend, hand-off or close, so no mover (transfer, mesh drain, overload shed) can leave
+    // two live sessions on it — the numeric-only seams would otherwise read it as nothing to close.
+    if (isSlackConversationKey(req.sessionKey)) {
+      audit('drain-refused', { reason: 'slack-stays-with-connection' });
+      return { status: 'refused-slack-stays', autonomousRunSuspended: false };
+    }
 
     // ── 1. Re-validate + fence ────────────────────────────────────────────
     const rec = d.readOwnership(req.sessionKey);
