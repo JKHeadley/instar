@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-05T01:35:04.057Z",
+  "slug": "slack-topic-memory-message-id",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 124,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/messaging/slack/slackMessageId.ts"
+    ],
+    "addedLines": 123,
+    "deletedLines": 1
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Present from the moment the Slack dual-write was added. Its own comment says it 'matches Telegram's insertMessage pattern' — and it does, except Telegram's messageId is a number and Slack's ts is a string, so the `: 0` fallback that never fires for Telegram fired for every Slack message. INSERT OR IGNORE then made the loss silent: the mechanism that exists to make retries safe is what discarded the data, so nothing errored and no test covered the derivation."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

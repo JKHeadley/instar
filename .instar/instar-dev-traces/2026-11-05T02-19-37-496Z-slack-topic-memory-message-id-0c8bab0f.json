@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "slack-topic-memory-message-id",
+  "sessionId": "537edc50-aede-46c5-b98c-673cb1a574fa",
+  "timestamp": "2026-11-05T02:19:37.496Z",
+  "artifactPath": "upgrades/side-effects/slack-topic-memory-message-id.md",
+  "artifactSha256": "2faf79110d0c6ea2ffc47dee066e2995f60dbfbab2b8f43ce85ec00d96fec4e7",
+  "coveredFiles": [
+    "docs/specs/slack-topic-memory-message-id.eli16.md",
+    "src/messaging/slack/slackMessageId.ts",
+    "upgrades/next/slack-topic-memory-message-id.md",
+    "upgrades/side-effects/slack-topic-memory-message-id.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Release-note wording (plain language, no inline code) plus a verified interaction recorded in the side-effects review. No source behaviour change.",
+  "eli16Path": "docs/specs/slack-topic-memory-message-id.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/slack-topic-memory-message-id.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

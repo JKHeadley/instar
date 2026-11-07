@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-05T02:01:42.574Z",
+  "slug": "slack-topic-memory-message-id",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 26,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/slack/slackMessageId.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 0
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Follow-up to the same branch: documents the relationship to the governed conversationIdentity surface, after the mint-idiom ratchet fired on a doc comment that quoted the idiom verbatim while explaining why it is not used."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}
