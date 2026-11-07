@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { AppConversationStore, type MediaMessageEvent } from '../../src/core/AppConversationStore.js';
-import { AppMediaStore, CLAIM_RECOVERY_AGE_MS, UPLOAD_TTL_MS, type UploadRow } from '../../src/core/AppMediaStore.js';
+import { AppMediaStore, hostMachineName, CLAIM_RECOVERY_AGE_MS, UPLOAD_TTL_MS, type UploadRow } from '../../src/core/AppMediaStore.js';
 import { assembleChunks } from '../../src/core/appMediaWorker.js';
 import { attachmentIdFor, CHUNK_BYTES, type AppAttachment } from '../../src/core/appMediaTypes.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -20,7 +20,7 @@ const sha = (b: Buffer) => crypto.createHash('sha256').update(b).digest('hex');
 const png = (n = 100) => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), crypto.randomBytes(n)]);
 const KEY = '11111111-1111-4111-8111-111111111111';
 
-function setup(opts: { max?: number; disk?: { free: number; total: number } | null; now?: { t: number } } = {}) {
+function setup(opts: { max?: number; disk?: { free: number; total: number } | null; now?: { t: number }; machineName?: () => string } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstore-'));
   dirs.push(dir);
   const clock = opts.now ?? { t: Date.now() };
@@ -30,6 +30,7 @@ function setup(opts: { max?: number; disk?: { free: number; total: number } | nu
   const media = new AppMediaStore({
     stateDir: dir, store, now: () => clock.t, maxStoreBytes: () => opts.max ?? 1024 * 1024 * 1024,
     diskSpace: () => opts.disk ?? { free: 1e12, total: 2e12 }, reportDegradation: (_w, d) => reports.push(d), onRefused: (e) => refused.push(e),
+    ...(opts.machineName ? { machineName: opts.machineName } : {}),
   });
   return { dir, store, media, clock, reports, refused };
 }
@@ -258,6 +259,22 @@ describe('admission', () => {
     expect(start(e, bytes, 'dev2').reserved).toBe(0);
   });
 
+  it('a refusal names the machine (Justin 2026-11-07: "Errors like this should specify what machine it\'s referring to")', () => {
+    const e = setup({ disk: { free: 1024, total: 2e12 }, machineName: () => 'Mac Studio' });
+    const r = e.media.startUpload({ deviceId: 'd', conversationRef: 'x', size: 10, sha256: 'd'.repeat(64), declaredKind: 'file', declaredType: 't', filename: 'f' }) as { detail: string };
+    expect(r.detail).toBe("Mac Studio is nearly out of disk space, so the file wasn't stored.");
+    expect(r.detail).not.toMatch(/this machine/i);
+    const full = setup({ max: 1, machineName: () => 'Mac Mini' });
+    const f = full.media.startUpload({ deviceId: 'd', conversationRef: 'x', size: 10, sha256: 'e'.repeat(64), declaredKind: 'file', declaredType: 't', filename: 'f' }) as { error: string; detail: string };
+    expect(f.error).toBe('media-store-full');
+    expect(f.detail).toBe('The file store on Mac Mini is full. Permanently remove files in the app, or raise the limit.');
+    // No registry name: the host's own name, never "this machine".
+    const bare = setup({ disk: { free: 1024, total: 2e12 } });
+    const b = bare.media.startUpload({ deviceId: 'd', conversationRef: 'x', size: 10, sha256: 'f'.repeat(64), declaredKind: 'file', declaredType: 't', filename: 'f' }) as { detail: string };
+    expect(b.detail).toBe(`${hostMachineName()} is nearly out of disk space, so the file wasn't stored.`);
+    expect(b.detail).not.toMatch(/this machine/i);
+  });
+
   it('refuses every admission below the disk floor', () => {
     const e = setup({ disk: { free: 1024, total: 2e12 } });
     expect(e.media.startUpload({ deviceId: 'd', conversationRef: 'x', size: 10, sha256: 'd'.repeat(64), declaredKind: 'file', declaredType: 't', filename: 'f' })).toMatchObject({ status: 507, error: 'media-disk-floor' });
@@ -425,11 +442,14 @@ describe('capacity notices (the service latch)', () => {
     dirs.push(dir);
     let max = 10;
     const raised: string[] = [];
+    const titles: string[] = [];
     const cleared: string[] = [];
     const svc = new AppConversationService({
       stateDir: dir, machineId: () => 'm1', registry: new ConversationRegistry({ stateDir: dir, machineId: () => 'm1', isRecordingEnabled: () => true }),
       requests: new MobileChatRequestStore(dir), holdsLease: () => true, ownerName: () => 'Justin', dispatch: () => null,
-      mediaMaxStoreBytes: () => max, raiseAttention: (i) => raised.push(i.conditionKey), clearAttention: (k) => cleared.push(k),
+      mediaMaxStoreBytes: () => max, raiseAttention: (i) => { raised.push(i.conditionKey); titles.push(i.title); }, clearAttention: (k) => cleared.push(k),
+      // A fixed, roomy disk: this test is about the store cap, never the real machine's free space.
+      mediaDiskSpace: () => ({ free: 1e12, total: 2e12 }), machineName: () => 'Mac Studio',
     });
     const start = () => svc.media.startUpload({ deviceId: 'd', conversationRef: `app:${KEY}`, size: 100, sha256: crypto.randomBytes(32).toString('hex'), declaredKind: 'file', declaredType: 't', filename: 'f' });
     // Fill the store past 90% of the cap, then get refused.
@@ -439,6 +459,7 @@ describe('capacity notices (the service latch)', () => {
     expect(start()).toMatchObject({ error: 'media-store-full' });
     for (let i = 0; i < 5; i++) await svc.sweepMedia();
     expect(raised).toEqual(['app-media:store-full']);
+    expect(titles[0]).toBe('The app file store on Mac Studio is full');
     max = 1e9;
     await svc.sweepMedia();
     expect(cleared).toEqual(['app-media:store-full']);

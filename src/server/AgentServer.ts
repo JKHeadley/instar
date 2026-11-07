@@ -6055,6 +6055,8 @@ export class AgentServer {
             confineStranded: () => { throw new Error('pairing-not-ready'); },
             stateDir: options.config.stateDir,
             machineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
+            // Refusals name the machine ("Mac Studio is nearly out of disk space"), never "this machine".
+            machineName: () => (options.meshSelfId ? verifiedEntityName(options.meshSelfId, options.machinePoolRegistry?.getCapacity(options.meshSelfId)?.nickname) : null),
             registry: routeCtx.conversationRegistry!,
             requests,
             holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),

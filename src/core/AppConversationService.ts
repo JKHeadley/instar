@@ -45,6 +45,8 @@ export function availableLine(filePath: string, caption: string): string {
 export interface AppConversationServiceDeps {
   stateDir: string;
   machineId: () => string;
+  /** This machine's verified name, so refusals and notices name it (never "this machine" or an id). */
+  machineName?: () => string | null;
   registry: ConversationRegistry;
   requests: MobileChatRequestStore;
   store?: AppConversationStore;
@@ -78,6 +80,8 @@ export interface AppConversationServiceDeps {
    * conversations are on, so a machine with the feature off still keeps and purges what it holds.
    */
   mediaMaxStoreBytes?: () => number | undefined;
+  /** Free and total bytes of the media volume (tests inject it; production reads the real disk). */
+  mediaDiskSpace?: () => { free: number; total: number } | null;
   /** One notice per condition (absent ⇒ degradation reports only). */
   raiseAttention?: (item: { conditionKey: string; title: string; body: string }) => void;
   clearAttention?: (conditionKey: string) => void;
@@ -229,8 +233,10 @@ export class AppConversationService {
     this.media = new AppMediaStore({
       stateDir: deps.stateDir, store: this.store, now: this.now,
       maxStoreBytes: () => deps.mediaMaxStoreBytes?.() ?? DEFAULT_MAX_STORE_BYTES,
+      ...(deps.mediaDiskSpace ? { diskSpace: deps.mediaDiskSpace } : {}),
       reportDegradation: (what, detail) => deps.reportDegradation?.(what, detail),
       onRefused: (error) => this.onMediaRefused(error),
+      machineName: () => deps.machineName?.() ?? '',
     });
     this.replicator = new AppMediaReplicator({
       media: this.media, store: this.store, selfId: deps.machineId, now: this.now,
@@ -290,7 +296,9 @@ export class AppConversationService {
    * cleared (re-armed) only when the condition is gone.
    */
   private updateMediaNotices(): void {
-    const machine = this.deps.machineId();
+    // The key stays per machine id; the words use its name (the title used to show the raw id).
+    const machineKey = this.deps.machineId();
+    const machine = this.media.machineWords();
     const raiseOnce = (key: string, item: { title: string; body: string }) => {
       if (this.raisedNotices.has(key)) return;
       this.raisedNotices.add(key);
@@ -305,7 +313,7 @@ export class AppConversationService {
         const gib = (n: number) => (n / 1024 ** 3).toFixed(1);
         const h = this.media.health();
         raiseOnce('app-media:store-full', {
-          title: 'The app media store is full',
+          title: `The app file store on ${machine} is full`,
           body: `${gib(this.media.liveBytes())} GiB of ${gib(this.media.maxBytes())} GiB is in use and ${gib(Number(h.deletedBytes))} GiB sits in deleted conversations. New files are refused until space is freed: the app's Storage screen can permanently remove files, or the limit can be raised.`,
         });
       } else {
@@ -314,9 +322,9 @@ export class AppConversationService {
       }
     }
     if (this.refusedConditions.has('media-disk-floor')) {
-      const key = `app-media:disk-floor:${machine}`;
+      const key = `app-media:disk-floor:${machineKey}`;
       if (this.media.belowDiskFloor()) {
-        raiseOnce(key, { title: `${machine} is too low on disk to store app files`, body: 'New files are refused on this machine until its disk has more free space (5% or 2 GiB, whichever is larger).' });
+        raiseOnce(key, { title: `${machine} is too low on disk to store app files`, body: `New files are refused on ${machine} until its disk has more free space (5% or 2 GiB, whichever is larger).` });
       } else {
         this.refusedConditions.delete('media-disk-floor');
         clear(key);

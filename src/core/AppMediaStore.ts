@@ -16,6 +16,7 @@
  * (§4.2 steps 4-5, §4.3 recovery). A message event is never written before its blobs are durable.
  * Nothing here decides by content: sizes, hashes and fixed limits only.
  */
+import os from 'node:os';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -55,6 +56,12 @@ export interface UploadRow {
 
 export type Refusal = { status: number; error: string; detail: string };
 
+/** The host's own name, tidied ("DaBombs-Mac-Studio.local" → "DaBombs Mac Studio"), for when no registry name is known. */
+export function hostMachineName(): string {
+  const h = os.hostname().replace(/\.local$/i, '').replace(/[-_]+/g, ' ').trim();
+  return h || 'The machine that received it';
+}
+
 export interface AppMediaStoreOptions {
   stateDir: string;
   store: AppConversationStore;
@@ -65,6 +72,11 @@ export interface AppMediaStoreOptions {
   reportDegradation?: (what: string, detail: string) => void;
   /** An admission was refused for capacity (the service self-heals, then raises one notice). */
   onRefused?: (error: string) => void;
+  /**
+   * This machine's name for refusal words ("Mac Studio is nearly out of disk space"). The person reads
+   * them on a phone that talks to the agent, not to one machine, so a refusal always names its machine.
+   */
+  machineName?: () => string;
 }
 
 const SCHEMA = [
@@ -109,6 +121,12 @@ export class AppMediaStore {
   /** The copier's numbers (§4.12); absent until it is attached, so they read null, never 0. */
   private replicationHealth: (() => { unrecoverableBlobs: number | null; singleCopyBlobs: number | null }) | null = null;
   private sweepRunning = false;
+
+  /** The machine's name for a refusal (never "this machine"); the host's own name when none was given. */
+  machineWords(): string {
+    try { const n = this.opts.machineName?.(); if (n && n.trim()) return n.trim(); } catch { /* @silent-fallback-ok — a name read that throws falls back to the host name below */ }
+    return hostMachineName();
+  }
 
   constructor(private readonly opts: AppMediaStoreOptions) {
     this.root = path.join(opts.stateDir, 'app-media');
@@ -257,9 +275,9 @@ export class AppMediaStore {
 
   private capacityRefusal(size: number): Refusal | null {
     let refused: Refusal | null = null;
-    if (this.belowDiskFloor()) refused = { status: 507, error: 'media-disk-floor', detail: 'This machine is nearly out of disk space, so the file was not stored.' };
+    if (this.belowDiskFloor()) refused = { status: 507, error: 'media-disk-floor', detail: `${this.machineWords()} is nearly out of disk space, so the file wasn't stored.` };
     else if (this.opts.store.mediaLiveBytes() + this.reservedBytes() + size > this.opts.maxStoreBytes()) {
-      refused = { status: 507, error: 'media-store-full', detail: 'The media store is full. Permanently remove files in the app, or raise the limit.' };
+      refused = { status: 507, error: 'media-store-full', detail: `The file store on ${this.machineWords()} is full. Permanently remove files in the app, or raise the limit.` };
     }
     if (refused) { try { this.opts.onRefused?.(refused.error); } catch { /* @silent-fallback-ok — the refusal itself stands */ } }
     return refused;
@@ -298,7 +316,7 @@ export class AppMediaStore {
     const open = this.db.prepare(`SELECT COUNT(*) AS n FROM uploads WHERE deviceId = ? AND state IN ('open','assembling')`).get(input.deviceId) as { n: number };
     const staged = this.db.prepare(`SELECT COALESCE(SUM(size), 0) AS b FROM uploads WHERE deviceId = ? AND state IN ('open','assembling','complete','claimed')`).get(input.deviceId) as { b: number };
     if (open.n >= DEVICE_MAX_OPEN || staged.b + input.size > DEVICE_MAX_STAGED) return { status: 429, error: 'too-many-uploads', detail: 'Finish or wait for the uploads in progress first.' };
-    if (this.stagedBytes() + input.size > MACHINE_MAX_STAGED) return { status: 507, error: 'upload-staging-full', detail: 'This machine has too many uploads in progress. Try again shortly.' };
+    if (this.stagedBytes() + input.size > MACHINE_MAX_STAGED) return { status: 507, error: 'upload-staging-full', detail: `${this.machineWords()} has too many uploads in progress. Try again shortly.` };
     const adm = this.admission(input.sha256, input.size);
     if ('status' in adm) return adm;
     const uploadId = crypto.randomUUID();
