@@ -87,3 +87,12 @@ Each fix was removed in turn to confirm its test goes red.
 Eight findings, all fixed: a confined session could plant a link in its inbox and make the unsandboxed server overwrite a file the owner can write (now a checked real folder, an unguessable name and an exclusive write, for media, context and long-message files alike); a member's sentinel stop paused the whole queue (scoped, in both handlers); a resume binding could outlive an audience change (dropped under the lock); same-named files failed and a media-path failure was unhandled; job posts to a confined topic (re-checked before posting); held pushes reached removed people; each append refolded the whole log (now one row); a create recovered after a crash skipped confinement (now confined, and retried if the log is not ready). No route sets a job's topic, so the run-time checks are what apply there.
 
 - Added: Second review fixes with tests; each removal checked to turn its test red.
+
+## Third independent review, 2026-11-06
+Fixed: a confined session could report a flag-shaped session id on the hook route, which reached `--resume` at the next launch (a scoped session now speaks only for itself on that route, ids are validated where stored, and every `--resume` sink checks them); on Linux `.curlrc` was written through a planted link (now a staged write and a rename, with a linked folder set aside); session completion skipped the digest filter the periodic scan applies; job reflection read a topic before the confined check (the check now runs first); a member's words could feed owner corrections; a file planted as `inbox` broke dispatch (set aside). The first two exist on main for any confined session, independent of team access.
+Accepted, stated in the PR: `/app/media-path` copies are uncapped, but a session can already fill its own folder; a confined session can send `/feedback` under the agent's name.
+
+- Added: Third review fixes with tests; each removal checked to turn its test red.
+
+## Framework generality
+The resume id check sits in the launch abstraction and applies to every framework that resumes: claude-code, codex-cli and gemini-cli. It is correct for each: Claude and Codex ids are UUIDs, and Gemini resumes by `latest` or a number, all of which pass. It rejects only a leading dash, a slash, a dot, a space or an overlong value, none of which any framework's id contains. An id that fails is dropped and the session starts fresh, the same as having no id. The launch tests for each framework pass unchanged.

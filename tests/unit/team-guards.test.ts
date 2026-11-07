@@ -6,7 +6,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { eventsFitPath, foldRowInto, foldRows, emptyState } from '../../src/core/TeamAccessLog.js';
-import { safeInboxTarget } from '../../src/core/memorySessionPolicy.js';
+import { prepareSessionCurlHome, safeInboxTarget, setAsideUnlessRealFolder } from '../../src/core/memorySessionPolicy.js';
+import { isSafeSessionRef } from '../../src/core/claudeResumeTranscript.js';
+import { TopicResumeMap } from '../../src/core/TopicResumeMap.js';
 import { AppConversationService } from '../../src/core/AppConversationService.js';
 import { SessionManager } from '../../src/core/SessionManager.js';
 import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
@@ -175,9 +177,11 @@ describe('a job bound to a confined topic', () => {
   });
   it('is re-checked before posting, because a run holds its own copy of the job', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src/scheduler/JobScheduler.ts'), 'utf8');
-    const notify = src.slice(src.indexOf('const notifyMode = this.getNotifyMode(job);'));
+    const notify = src.slice(src.indexOf('async notifyJobComplete'));
     const check = notify.indexOf('this.dropConfinedTopic(job);');
     expect(check).toBeGreaterThan(-1);
+    // Before the first thing that reads the topic: the gate and the reflection take it too.
+    expect(check).toBeLessThan(notify.indexOf('topicId: job.topicId'));
     expect(check).toBeLessThan(notify.indexOf('sendToTopic(job.topicId'));
   });
   it('does nothing with no check wired', () => {
@@ -261,5 +265,108 @@ describe('ending a conversation\'s session', () => {
     let seen: string[] = [];
     await SessionManager.prototype.applyConversationChange.call(self as never, 'telegram:5', () => { seen = [...dropped]; });
     expect(seen).toEqual(['telegram:5']);
+  });
+});
+
+describe('a session id reported by a hook', () => {
+  it('passes only as a plain id', () => {
+    for (const ok of ['7f1c2d3e-1111-4111-8111-111111111111', 'latest', '3', 'thread_abc-1']) expect(isSafeSessionRef(ok)).toBe(true);
+    for (const bad of ['--plugin-dir=/x', '-x', '../../x', '/etc/passwd', 'a/b', 'a b', '', '.', '..', 'a.b', 'x'.repeat(129), 5, null, undefined]) {
+      expect(isSafeSessionRef(bad)).toBe(false);
+    }
+  });
+
+  it('is refused before it can be stored', () => {
+    const saved: string[] = [];
+    const running = [{ id: 's1', tmuxSession: 't', claudeSessionId: 'old' }];
+    const self = { state: { listSessions: () => running, saveSession: (x: { claudeSessionId: string }) => saved.push(x.claudeSessionId) } };
+    SessionManager.prototype.setClaudeSessionId.call(self as never, 's1', '--plugin-dir=/x');
+    expect(running[0].claudeSessionId).toBe('old');
+    expect(saved).toEqual([]);
+  });
+
+  it('is refused by the resume store', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-resume-'));
+    const map = new TopicResumeMap(dir, dir);
+    const stored = () => fs.readdirSync(dir, { recursive: true }).filter((f) => String(f).endsWith('.json'))
+      .map((f) => fs.readFileSync(path.join(dir, String(f)), 'utf8')).join('');
+    map.save(5, '--plugin-dir=/../x', 'sess');
+    expect(stored()).not.toContain('plugin-dir');
+    map.save(6, '7f1c2d3e-1111-4111-8111-111111111111', 'sess'); // the control: a real id is kept
+    expect(stored()).toContain('7f1c2d3e-1111-4111-8111-111111111111');
+  });
+
+  it('never reaches a claude launch, even from an older stored value', async () => {
+    const launch = await import('../../src/core/frameworkSessionLaunch.js');
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/core/frameworkSessionLaunch.ts'), 'utf8');
+    expect(launch).toBeTruthy();
+    const resumes = src.match(/argv\.push\('--resume', options\.resumeSessionId\)/g) ?? [];
+    expect(resumes.length).toBeGreaterThan(0);
+    expect((src.match(/isSafeSessionRef\(options\.resumeSessionId\)/g) ?? []).length).toBeGreaterThanOrEqual(resumes.length + 1);
+    const manager = fs.readFileSync(path.join(process.cwd(), 'src/core/SessionManager.ts'), 'utf8');
+    expect(manager.match(/isSafeSessionRef\(options\.resumeSessionId\)/g) ?? []).toHaveLength(2);
+  });
+});
+
+describe('what the server writes into a folder a session controls', () => {
+  const dirOf = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'team-scope-')));
+
+  it('.curlrc replaces a planted link and leaves its target alone', () => {
+    const scope = dirOf();
+    const victim = path.join(dirOf(), 'config.json');
+    fs.writeFileSync(victim, 'owner config');
+    fs.mkdirSync(path.join(scope, '.curl'));
+    fs.symlinkSync(victim, path.join(scope, '.curl', '.curlrc'));
+    const home = prepareSessionCurlHome(scope, 'linux')!;
+    expect(fs.readFileSync(victim, 'utf8')).toBe('owner config');
+    expect(fs.lstatSync(path.join(home, '.curlrc')).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(path.join(home, '.curlrc'), 'utf8')).toContain('noproxy');
+  });
+
+  it('a linked .curl folder is set aside, and nothing is written through it', () => {
+    const scope = dirOf();
+    const elsewhere = dirOf();
+    fs.symlinkSync(elsewhere, path.join(scope, '.curl'));
+    const home = prepareSessionCurlHome(scope, 'linux')!;
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+    expect(fs.lstatSync(home).isDirectory()).toBe(true);
+  });
+
+  it('nothing is written on a Mac', () => {
+    expect(prepareSessionCurlHome(dirOf(), 'darwin')).toBeNull();
+  });
+
+  it('a file or a link where a folder belongs is moved aside; a real folder stays', () => {
+    const scope = dirOf();
+    const asFile = path.join(scope, 'inbox');
+    fs.writeFileSync(asFile, 'x');
+    setAsideUnlessRealFolder(asFile);
+    expect(fs.existsSync(asFile)).toBe(false);
+    const real = path.join(scope, 'tmp');
+    fs.mkdirSync(real);
+    fs.writeFileSync(path.join(real, 'keep'), 'y');
+    setAsideUnlessRealFolder(real);
+    expect(fs.readFileSync(path.join(real, 'keep'), 'utf8')).toBe('y');
+    setAsideUnlessRealFolder(path.join(scope, 'absent'));
+  });
+});
+
+describe('what a confined session feeds agent-wide', () => {
+  it('a confined session never feeds digests; another does', () => {
+    const self = {};
+    expect(SessionManager.prototype.feedsAgentDigests.call(self as never, { memoryScopeDir: '/scope' })).toBe(false);
+    expect(SessionManager.prototype.feedsAgentDigests.call(self as never, { memoryScopeDir: undefined })).toBe(true);
+  });
+  it('the completion path applies the same rule as the periodic scan', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf8');
+    const at = src.indexOf('activitySentinel!.synthesizeSession(session)');
+    expect(at).toBeGreaterThan(-1);
+    expect(src.lastIndexOf('feedsAgentDigests(session)', at)).toBeGreaterThan(at - 200);
+  });
+  it('a team member\'s words are kept out of the owner\'s learned corrections', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf8');
+    expect(src).toContain('entry.fromUser && entry.text && !entry.teamPhone');
+    const routes = fs.readFileSync(path.join(process.cwd(), 'src/server/routes.ts'), 'utf8');
+    expect(routes).toContain("...(trust?.sender?.role === 'team' ? { teamPhone: true } : {}),\n        ");
   });
 });

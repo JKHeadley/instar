@@ -6851,7 +6851,9 @@ export function createRoutes(ctx: RouteContext): Router {
 
     // The ONE shared side-effect function (docs/specs/native-hook-events.md D1):
     // both this route and /hooks/native-events go through it.
-    const instarSid = typeof req.query.instar_sid === 'string' ? req.query.instar_sid : '';
+    // A scoped session speaks only for itself, whatever the query names.
+    const scopedSession = (res.locals.memorySession as { sessionId?: string } | undefined)?.sessionId;
+    const instarSid = scopedSession ?? (typeof req.query.instar_sid === 'string' ? req.query.instar_sid : '');
     const stored = dispatchHookEvent(hookEventDispatchDeps(), payload, instarSid);
     if (!stored) {
       res.status(500).json({ error: 'Failed to store event' });
@@ -28909,6 +28911,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         senderName: fromFirstName,
         senderUsername: fromUsername,
         telegramUserId: fromUserId,
+        ...(trust?.sender?.role === 'team' ? { teamPhone: true } : {}),
         // BIAS-TO-ACTION-SPEC D10: persist the lifeline's forward marker so the
         // standing-authorization resolver can prove non-forwarded provenance.
         // An app message is recorded with forwarded UNKNOWN, so no durable-evidence

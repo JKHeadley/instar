@@ -100,9 +100,12 @@ export function buildMemorySessionSettings(p: MemorySessionPaths): Record<string
 export function prepareSessionCurlHome(scopeDir: string, platform: NodeJS.Platform = process.platform): string | null {
   if (platform !== 'linux') return null;
   const curlHome = path.join(scopeDir, '.curl');
+  // The folder is the session's own, so it may have left a link here, and this runs unsandboxed.
+  setAsideUnlessRealFolder(curlHome);
   fs.mkdirSync(curlHome, { recursive: true, mode: 0o700 });
-  // Rewritten at every spawn: the folder is the session's own, so it may have changed it.
-  fs.writeFileSync(path.join(curlHome, '.curlrc'), 'noproxy = ""\n', { mode: 0o600 });
+  const staged = path.join(curlHome, `.curlrc-${randomUUID()}`);
+  fs.writeFileSync(staged, 'noproxy = ""\n', { mode: 0o600, flag: 'wx' });
+  fs.renameSync(staged, path.join(curlHome, '.curlrc')); // replaces a link rather than following it
   return curlHome;
 }
 
@@ -136,6 +139,14 @@ export function applyMemorySessionLaunch(argv: string[], settingsPath: string, s
   if (argv.includes('--dangerously-skip-permissions') || !argv.includes('dontAsk') || !argv.includes(settingsPath)) {
     throw new Error('memory-session-launch-missing: the memory session form was not applied');
   }
+}
+
+/** A session can leave a link or a file where the server expects a folder: move it out of the way. */
+export function setAsideUnlessRealFolder(dir: string): void {
+  let info: fs.Stats;
+  try { info = fs.lstatSync(dir); } catch { return; } // @silent-fallback-ok — nothing there is the normal first run
+  if (!info.isSymbolicLink() && info.isDirectory()) return;
+  fs.renameSync(dir, `${dir}.set-aside-${randomUUID()}`);
 }
 
 /**

@@ -3217,6 +3217,9 @@ export class JobScheduler {
 
     const job = this.jobs.find(j => j.slug === session.jobSlug);
     if (!job) return;
+    // First, before anything below reads its topic: it may have become confined since the job loaded,
+    // and a run holds its own copy of the job.
+    this.dropConfinedTopic(job);
 
     // A prompt job can declare its own run failed (spec feedback-inbox-vault-token
     // §B). Read synchronously, before any await, from the file named by this
@@ -3377,8 +3380,6 @@ export class JobScheduler {
     if (!this.messenger && !this.telegram) return;
     const notifyMode = this.getNotifyMode(job);
     if (notifyMode === 'never') return;
-    // A topic can become confined after the job was loaded, and a run holds its own copy of the job.
-    this.dropConfinedTopic(job);
 
     // Output was already captured above for run history — reuse it
 

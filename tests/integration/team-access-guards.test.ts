@@ -255,6 +255,29 @@ describe('a stop word from a phone', () => {
   });
 });
 
+describe('hook events from a scoped session', () => {
+  it('speak for that session alone, whatever the address names; an unscoped caller is unchanged', async () => {
+    const set: Array<[string, string]> = [];
+    const app = express();
+    app.use(express.json());
+    app.use((req, res, next) => { if (req.headers['x-scoped']) res.locals.memorySession = { sessionId: 'mine' }; next(); });
+    app.use(createRoutes({
+      config: { projectName: 'x', stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'team-hook-')), sessions: {}, scheduler: {} },
+      startTime: new Date(), scheduler: null,
+      hookEventReceiver: { receive: () => true, storeEvent: () => true },
+      sessionManager: {
+        listRunningSessions: () => [], getSessionById: (id: string) => ({ id, claudeSessionId: 'old' }),
+        setClaudeSessionId: (a: string, b: string) => { set.push([a, b]); },
+      },
+      state: { getJobState: () => null, getSession: () => null, queryEvents: () => [], getCoherenceJournal: () => undefined, get: () => undefined },
+    } as unknown as RouteContext));
+    const body = { event: 'PostToolUse', session_id: 'new-id' };
+    await request(app).post('/hooks/events?instar_sid=someone-else').set('x-scoped', '1').send(body);
+    await request(app).post('/hooks/events?instar_sid=someone-else').send(body);
+    expect(set).toEqual([['mine', 'new-id'], ['someone-else', 'new-id']]);
+  });
+});
+
 describe('a second machine', () => {
   it('is free to join an agent that never had a team, and refused once it has', async () => {
     const e = await setup();

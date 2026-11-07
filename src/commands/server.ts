@@ -13215,6 +13215,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
 
       sessionManager.on('sessionComplete', (session) => {
+        // The same rule the periodic scan applies: a confined session never feeds agent-wide digests.
+        if (!sessionManager.feedsAgentDigests(session)) return;
         activitySentinel!.synthesizeSession(session).then((report) => {
           if (report.synthesisCreated) {
             console.log(`[ActivitySentinel] Session synthesis created for ${session.name}: ${report.digestCount} digests`);
@@ -17962,7 +17964,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (beforeCorrectionCb) beforeCorrectionCb(entry);
               // Layer 0 (SYNC, free) — classify on the seam. No signal → stop at
               // ~zero cost on the vast majority of messages.
-              const verdict = entry.fromUser && entry.text
+              // A team member's words never become the owner's learned preferences.
+              const verdict = entry.fromUser && entry.text && !entry.teamPhone
                 ? HumanAsDetectorLog.getInstance().classify(entry.text)
                 : null;
               // Fire-and-forget — capture/distill latency must NEVER reach the
