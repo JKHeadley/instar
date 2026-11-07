@@ -343,3 +343,7 @@ call site spreads its result; the bind moved after `_agentServerRef = server;` (
 from the constructor line. Same values, same objects, same order of effects. The wire test asserts the
 call site carries none of the branches, and two unit tests cover the helper (hostname fallback, null
 collaborators, attention forwarding). Second-pass reviewer: concurred (wiring placement only).
+
+## Verify note, 2026-11-07
+
+The Studio verify of head 3a8a64455 on base bfe143d6 failed on one file, `tests/e2e/telegram-origin-transient-config-read.test.ts` (unit 61444 tests, 0 failed; e2e 3954 tests, 1 failed). This branch does not change `src/messaging/telegram-origin`, main was green at that base, and the file passed 3 of 3 isolated runs on this exact head. The file waits on real timers, and the verify ran on loaded machines, so load is the likely cause; that is not proven. This commit gives the verifier a new head, because a stored record for the same head and base cannot be retried.
