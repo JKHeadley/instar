@@ -4,6 +4,9 @@
  *   GET /mobile/jobs         — the schedule: every job, late or failing first, with next run times.
  *   GET /mobile/commitments  — promises: open ones first, with their due dates.
  *   GET /mobile/machines     — each machine with a plain status line, load verdict and version.
+ *                              Wording is agnostic of which machine answered: the phone talks to
+ *                              the agent, not a machine, so no row says "this machine". The evidence
+ *                              behind a state is a separate `evidenceLine` for the machine's detail.
  *
  * Read-only. A paired OWNER phone (device-signed; DEVICE_ALLOWLIST lists exactly these three
  * paths) or the agent's bearer token may read them; an MSP phone gets 403 `owner-phone-required`.
@@ -332,7 +335,10 @@ export interface MobileMachine {
   isSelf: boolean;
   leading: boolean;
   state: MobileMachineState;
+  /** Short and agnostic: "Live · load normal", "Not answering". Never names the answering machine as "this". */
   statusLine: string;
+  /** Where the state comes from, for the machine's detail ("Checked 17 s ago by Mac Studio."), or null. */
+  evidenceLine: string | null;
   loadVerdict: string | null;
   loadPerCore: number | null;
   sessions: number | null;
@@ -362,24 +368,70 @@ export function machineKey(id: string): string {
 
 const LOAD_WORDS: Record<string, string> = { ok: 'load normal', elevated: 'busy', saturated: 'overloaded', impaired: 'struggling to keep up' };
 
+const STATE_WORDS: Record<MobileMachineState, string> = {
+  live: 'Live', struggling: 'Struggling', unreachable: 'Not answering', stale: 'Not heard from recently', unknown: 'No evidence yet',
+};
+
+/** "17 s" / "3 min" / "2 h" / "4 d"; null when there is no age. */
+function ageWords(ms: unknown): string | null {
+  const v = num(ms);
+  if (v === null) return null;
+  const sec = Math.max(0, Math.floor(v / 1000));
+  if (sec < 60) return `${sec} s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} min`;
+  const hr = Math.floor(min / 60);
+  return hr < 48 ? `${hr} h` : `${Math.floor(hr / 24)} d`;
+}
+
 /**
- * Each machine from the `GET /pool` view. A pool switched off gets one "This machine" row; a pool
- * that is on (or unstated) with no usable rows gets the same row with `inventoryKnown: false`.
- * `single` is true only for a pool switched off. Machines that are not answering come first.
+ * The evidence behind a machine's state, worded without "this machine": the checker is named.
+ * Built from the pool row's structured `liveness` block, never from its pre-worded line.
  */
-export function summarizeMachines(pool: unknown, selfVersion: string | null): { machines: MobileMachine[]; headline: string; single: boolean; inventoryKnown: boolean } {
+export function evidenceLine(m: Rec, checkerName: string | null, nameOf: (machineId: string) => string | null): string | null {
+  const lv = (m.liveness && typeof m.liveness === 'object' ? m.liveness : null) as Rec | null;
+  if (!lv) return null;
+  const by = checkerName ?? 'the machine the app reached';
+  const age = ageWords(lv.evidenceAgeMs);
+  let main: string;
+  switch (lv.source) {
+    case 'self': main = 'Answered the app directly.'; break;
+    case 'direct': main = age ? `Checked ${age} ago by ${by}.` : `Checked by ${by}.`; break;
+    case 'relayed': main = age ? `Last heard ${age} ago, through a heartbeat file.` : 'Heard through a heartbeat file.'; break;
+    case 'saved': main = age ? `Last confirmed ${age} ago (a saved check).` : 'Confirmed by a saved check.'; break;
+    case 'peer-sighting': main = age ? `Last seen ${age} ago by another machine.` : 'Seen by another machine.'; break;
+    default: main = 'No contact on record yet.';
+  }
+  const ps = (lv.peerSighting && typeof lv.peerSighting === 'object' ? lv.peerSighting : null) as Rec | null;
+  const observer = ps ? nameOf(String(ps.observerMachineId ?? '')) : null;
+  const psAge = ps ? ageWords(ps.ageMs) : null;
+  const sight = observer && psAge ? ` ${observer} reached it ${psAge} ago.` : '';
+  return `${main}${sight}`;
+}
+
+/**
+ * Each machine from the `GET /pool` view. A pool switched off gets one row for the machine that
+ * answered; a pool that is on (or unstated) with no usable rows gets the same row with
+ * `inventoryKnown: false`. `single` is true only for a pool switched off. Machines that are not
+ * answering come first, then the leading machine. No wording depends on which machine answered.
+ */
+export function summarizeMachines(pool: unknown, selfVersion: string | null, nicknameOf: (machineId: string) => string | null = () => null): { machines: MobileMachine[]; headline: string; single: boolean; inventoryKnown: boolean } {
   const p = (pool && typeof pool === 'object' ? pool : {}) as Rec;
   const raw = Array.isArray(p.machines) ? (p.machines as unknown[]).filter((m): m is Rec => !!m && typeof m === 'object' && !!str((m as Rec).machineId)) : [];
   const selfId = str(p.selfMachineId);
   const router = p.router as Rec | null | undefined;
   const leader = router ? str(router.holder) : null;
   if (raw.length === 0) {
-    // This server answered, so this machine is up. Only a pool that is switched off proves it is
+    // This server answered, so its machine is up. Only a pool that is switched off proves it is
     // the only machine; an enabled pool with no usable rows means the list could not be read.
-    const machines: MobileMachine[] = [{ key: selfId ? machineKey(selfId) : 'self', name: 'This machine', isSelf: true, leading: false, state: 'live', statusLine: 'Answering (this machine)', loadVerdict: null, loadPerCore: null, sessions: null, maxSessions: null, version: selfVersion }];
+    const name = (selfId ? verifiedEntityName(selfId, nicknameOf(selfId)) : null) ?? 'Your machine';
+    const machines: MobileMachine[] = [{ key: selfId ? machineKey(selfId) : 'self', name, isSelf: true, leading: false, state: 'live', statusLine: 'Live', evidenceLine: null, loadVerdict: null, loadPerCore: null, sessions: null, maxSessions: null, version: selfVersion }];
     if (p.enabled === false) return { machines, headline: 'One machine, answering.', single: true, inventoryKnown: true };
-    return { machines, headline: "This machine is answering, but I can't read the list of your other machines right now.", single: false, inventoryKnown: false };
+    return { machines, headline: `${name} is answering, but I can't read the list of your other machines right now.`, single: false, inventoryKnown: false };
   }
+  const named = new Map<string, string | null>(raw.map((m) => [str(m.machineId) as string, verifiedEntityName(str(m.machineId) as string, m.nickname)]));
+  const nameOf = (id: string): string | null => named.get(id) ?? verifiedEntityName(id, nicknameOf(id));
+  const checker = selfId ? nameOf(selfId) : null;
   let estimatedPeers = 0;
   const rows = raw.map((m): MobileMachine => {
     const id = str(m.machineId) as string;
@@ -391,26 +443,26 @@ export function summarizeMachines(pool: unknown, selfVersion: string | null): { 
     const load = num(m.loadAvg);
     const perCore = load !== null && cores ? Math.round((load / cores) * 100) / 100 : null;
     const verdict = str(m.loadVerdict);
-    const liveness = phoneText(m.livenessLine, 160);
-    const baseLine = liveness
-      ? liveness.charAt(0).toUpperCase() + liveness.slice(1)
-      : state === 'live' ? (isSelf ? 'Answering (this machine)' : 'Answering') : state === 'stale' ? 'Not heard from recently' : 'No evidence yet';
-    const loadLine = verdict && verdict !== 'unknown' ? LOAD_WORDS[verdict] ?? null : null;
-    const line = [baseLine, loadLine, estimated && !isSelf ? 'estimated' : null].filter(Boolean).join(' · ');
+    // The load word already says "struggling to keep up" / "overloaded"; a struggling LIVE machine reads "Live · overloaded".
+    const lv = m.liveness as Rec | undefined;
+    const base = state === 'struggling' && lv?.state === 'live' ? 'Live' : STATE_WORDS[state];
+    const loadLine = (state === 'live' || state === 'struggling') && verdict && verdict !== 'unknown' ? LOAD_WORDS[verdict] ?? null : null;
+    const line = [base, loadLine, estimated && !isSelf ? 'estimated' : null].filter(Boolean).join(' · ');
     return {
       key: machineKey(id),
-      name: verifiedEntityName(id, m.nickname) ?? (isSelf ? 'This machine' : 'A machine with no name yet'),
+      name: named.get(id) ?? 'A machine with no name yet',
       isSelf,
       leading: !!leader && leader === id,
       state,
       statusLine: line,
+      evidenceLine: evidenceLine(m, checker, nameOf),
       loadVerdict: verdict && /^[a-z]{1,16}$/.test(verdict) ? verdict : null,
       loadPerCore: perCore,
       sessions: num(m.activeSessionCount),
       maxSessions: num(m.maxSessions),
       version: (str(hw.instarVersion) && /^[0-9A-Za-z.+-]{1,32}$/.test(String(hw.instarVersion)) ? String(hw.instarVersion) : null) ?? (isSelf ? selfVersion : null),
     };
-  }).sort((a, b) => MACHINE_ORDER[a.state] - MACHINE_ORDER[b.state] || Number(b.isSelf) - Number(a.isSelf) || a.name.localeCompare(b.name));
+  }).sort((a, b) => MACHINE_ORDER[a.state] - MACHINE_ORDER[b.state] || Number(b.leading) - Number(a.leading) || a.name.localeCompare(b.name));
   const down = rows.filter((r) => r.state === 'unreachable');
   const slow = rows.filter((r) => r.state === 'struggling');
   const unclear = rows.filter((r) => r.state === 'stale' || r.state === 'unknown');
@@ -508,7 +560,7 @@ export function mountMobileOpsRoutes(router: Router, deps: MobileOpsDeps): void 
     if (!guard(req, res)) return;
     try {
       const pool = deps.poolView();
-      const { machines, headline, single, inventoryKnown } = summarizeMachines(pool, deps.selfVersion());
+      const { machines, headline, single, inventoryKnown } = summarizeMachines(pool, deps.selfVersion(), deps.nicknameOf);
       res.json({ schemaVersion: MOBILE_OPS_SCHEMA_VERSION, generatedAt: new Date(now()).toISOString(), poolEnabled: (pool as Rec | null)?.enabled === true, single, inventoryKnown, headline, machines });
     } catch (err) {
       reportReadFailure('GET /mobile/machines', err);

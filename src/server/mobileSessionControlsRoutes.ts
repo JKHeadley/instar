@@ -116,6 +116,15 @@ export function doorModelWords(doors: MobileDoor[], framework: unknown, model: u
 
 export interface MobileMachine { machineId: string; label: string; selectable: boolean; reason: string | null; here: boolean }
 
+/** The answering machine's verified name from the pool, or null: wording names it, never "this machine". */
+export function selfNameOf(pool: unknown): string | null {
+  const p = rec(pool);
+  const self = str(p.selfMachineId);
+  if (!self) return null;
+  const m = (Array.isArray(p.machines) ? p.machines : []).map(rec).find((x) => x.machineId === self);
+  return m ? verifiedEntityName(self, typeof m.nickname === 'string' ? m.nickname : undefined) ?? null : null;
+}
+
 /** The machines a session can go to; null below two. A machine that can't be picked says why. */
 export function machineRows(pool: unknown): { selfMachineId: string | null; rows: MobileMachine[] } | null {
   const p = rec(pool);
@@ -137,7 +146,7 @@ export function machineRows(pool: unknown): { selfMachineId: string | null; rows
     else if (!name) reason = 'name unavailable';
     else if ((seen.get(name.toLowerCase()) ?? 0) > 1) reason = 'another machine has the same name';
     const atLimit = rec(m.quotaState).blocked === true;
-    return { machineId: id, label: `${name ?? 'Machine name unavailable'}${id === self ? ' (this machine)' : ''}${!reason && atLimit ? ' (at usage limit)' : ''}`, selectable: reason === null, reason, here: id === self };
+    return { machineId: id, label: `${name ?? 'Machine name unavailable'}${!reason && atLimit ? ' (at usage limit)' : ''}`, selectable: reason === null, reason, here: id === self };
   });
   return { selfMachineId: self, rows };
 }
@@ -221,9 +230,10 @@ export function summarizeControls(parts: ControlsParts, actions: unknown, now: n
 
   // A session here takes typing, keys and files. On another machine, that machine's rule decides.
   const typing = !remote || parts.peerInput === true;
+  const moveTo = (() => { const n = parts.pool.status === 200 ? selfNameOf(parts.pool.body) : null; return n ? `Move this session to ${n}` : 'Move this session to the machine the app reaches'; })();
   const typingReason = typing ? null : parts.peerInput === false
-    ? `Typing to ${str(row.machineNickname) ?? 'that machine'} from another machine is switched off there. Move this session here to type to it.`
-    : `${str(row.machineNickname) ?? 'That machine'} needs the latest Instar update before this phone can type to its sessions. Move this session here to type to it.`;
+    ? `Typing to ${str(row.machineNickname) ?? 'that machine'} from another machine is switched off there. ${moveTo} to type to it.`
+    : `${str(row.machineNickname) ?? 'That machine'} needs the latest Instar update before this phone can type to its sessions. ${moveTo} to type to it.`;
 
   return {
     schemaVersion: MOBILE_SESSION_CONTROLS_SCHEMA_VERSION,
@@ -272,7 +282,7 @@ export function summarizeNewOptions(options: RouteAnswer, pool: RouteAnswer, act
     note: regimeWords(o.regime),
     defaultFramework: str(def.framework),
     defaultModel: str(def.model),
-    defaultWords: str(def.framework) ? `New topics start on ${doorModelWords(doors, def.framework, def.model)}${def.replication === 'local-only' ? ' (this machine only)' : ''}.` : 'New topics start on the agent default.',
+    defaultWords: str(def.framework) ? `New topics start on ${doorModelWords(doors, def.framework, def.model)}${def.replication === 'local-only' ? (() => { const n = pool.status === 200 ? selfNameOf(pool.body) : null; return n ? ` (on ${n} only)` : ' (on one machine only)'; })() : ''}.` : 'New topics start on the agent default.',
     machines: machines ? machines.rows : [],
   };
 }

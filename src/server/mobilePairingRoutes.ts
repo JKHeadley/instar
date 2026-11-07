@@ -1445,7 +1445,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if ((text.length < 1 && !signedFiles) || text.length > 4000) { res.status(400).json({ error: 'text must be 1-4000 characters' }); return; }
     if (typeof requestId !== 'string' || requestIdTime(requestId) === null) { res.status(400).json({ error: 'bad-request-id' }); return; }
     const store = chatStoreOf();
-    if (!store) { res.status(503).json({ error: 'chat-unavailable', detail: 'The message record could not be read on this machine.' }); return; }
+    if (!store) { res.status(503).json({ error: 'chat-unavailable', detail: 'The message record could not be read right now.' }); return; }
     // The idempotency hash covers the text and, with files, each file's signed fields (§4.3).
     const hash = signedFiles ? payloadHash(topicId, ['\u0000media', text, ...signedFileHashParts(signedFiles)].join('\n')) : payloadHash(topicId, text);
     const answer = (l: ReturnType<MobileChatRequestStore['lookup']>): boolean => {
@@ -1464,7 +1464,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const ingest = poolCtx?.mobileInbound?.ingest;
     const ownerId = tg?.getOwnerUserId?.();
     if (!tg || !ingest || !ownerId) { res.status(503).json({ error: 'chat-unavailable', detail: 'This agent has no Telegram owner to speak as.' }); return; }
-    if (!svc.holdsLease()) { res.status(409).json({ error: 'not-serving', detail: 'This machine is not receiving messages right now. Try again shortly or use Telegram.' }); return; }
+    if (!svc.holdsLease()) { res.status(409).json({ error: 'not-serving', detail: 'Messages aren\'t being received right now. Try again shortly or use Telegram.' }); return; }
     const t = Date.now();
     const recent = (chatRate.get(p.deviceId) ?? []).filter((x) => t - x < 60_000);
     if (recent.length >= 20) { chatRate.set(p.deviceId, recent); res.status(429).json({ error: 'too-many-requests' }); return; }
