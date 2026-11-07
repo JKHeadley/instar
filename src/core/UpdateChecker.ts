@@ -185,6 +185,8 @@ export class UpdateChecker {
     // supervisor and boot wrapper perform the same recovery before startup.
     if (!fs.existsSync(shadowDir) && fs.existsSync(previousDir)) {
       fs.renameSync(previousDir, shadowDir);
+    } else {
+      this.retireLeftoverPrevious();
     }
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -402,6 +404,28 @@ export class UpdateChecker {
     return newVersion;
   }
 
+  /**
+   * A backup beside a usable active install is left over from an update whose cleanup was interrupted;
+   * a restart mid-delete leaves it partial. Promotion refuses to overwrite a backup, so keeping it would
+   * fail every later update and rollback until someone removed it by hand. Without the active install's
+   * entry file the backup may be the only good copy, so it stays.
+   */
+  private retireLeftoverPrevious(): void {
+    const shadowDir = path.join(this.stateDir, 'shadow-install');
+    const previousDir = path.join(this.stateDir, 'shadow-install.previous');
+    if (!fs.existsSync(previousDir)) return;
+    if (!fs.existsSync(path.join(shadowDir, 'node_modules', 'instar', 'dist', 'cli.js'))) {
+      console.warn('[UpdateChecker] Keeping the previous install: the active install has no entry file');
+      return;
+    }
+    console.warn('[UpdateChecker] Retiring a leftover previous install from an interrupted update');
+    try {
+      withSyncOp(() => SafeFsExecutor.safeRmSync(previousDir, { recursive: true, force: true, operation: 'UpdateChecker:retire-leftover-previous' }));
+    } catch (err) {
+      console.warn(`[UpdateChecker] Could not retire leftover previous install: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private promoteCandidate(candidateDir: string): void {
     const shadowDir = path.join(this.stateDir, 'shadow-install');
     const previousDir = path.join(this.stateDir, 'shadow-install.previous');
@@ -469,6 +493,7 @@ export class UpdateChecker {
     let restoredVersion = 'unknown';
     try {
       if (!fs.existsSync(shadowDir) && fs.existsSync(previousDir)) fs.renameSync(previousDir, shadowDir);
+      else this.retireLeftoverPrevious();
       fs.mkdirSync(candidateDir, { recursive: true });
       fs.writeFileSync(path.join(candidateDir, 'package.json'), JSON.stringify({ name: 'instar-shadow', private: true }, null, 2));
       await this.execAsync('npm', [
