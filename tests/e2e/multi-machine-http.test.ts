@@ -257,6 +257,16 @@ describe('Multi-Machine HTTP E2E', () => {
     expect(await ok.json()).toEqual({ rows: [], vector: {} }); // two real servers: a new agent's log is empty
   });
 
+  it('rows can be pushed only by an authenticated machine, and only as a list', async () => {
+    const body = { rows: 'not-a-list' };
+    const refused = await fetch(`${baseA}/api/team-access/push`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    expect(refused.ok).toBe(false);
+    expect(refused.status).not.toBe(400);
+    const headers = signRequest(envB.machineId, envB.signingKeys.privateKey, body, 78);
+    const bad = await fetch(`${baseA}/api/team-access/push`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+    expect(bad.status).toBe(400);
+  });
+
   it('accepts properly signed requests', async () => {
     const heartbeat = {
       holder: envB.machineId,

@@ -110,6 +110,16 @@ export function toMergeRow(row: TeamAccessRow, events: ReadonlyArray<MergeEvent>
   };
 }
 
+/** Enough of a row to hash and verify it. */
+function isRowShaped(r: unknown): r is TeamAccessRow {
+  const row = r as { seq?: unknown; kind?: unknown; origin?: unknown; incarnation?: unknown; events?: unknown; machineSig?: { sig?: unknown; machineId?: unknown }; signedOrigin?: { bodyB64?: unknown } } | null;
+  if (!row || typeof row !== 'object' || !Number.isSafeInteger(row.seq) || (row.seq as number) < 1) return false;
+  if (typeof row.machineSig?.sig !== 'string' || typeof row.machineSig.machineId !== 'string') return false;
+  if (row.origin !== undefined && (typeof row.origin !== 'string' || typeof row.incarnation !== 'string')) return false;
+  if (row.kind === 'machine') return Array.isArray(row.events) && row.events.every((e) => validateMachineEvent(e) !== null);
+  return row.kind === 'request' && typeof row.signedOrigin?.bodyB64 === 'string';
+}
+
 /** What a row locks: its `confine` events, and any conversation it grants. */
 function confinesIn(row: TeamAccessRow): ConfinedEntry[] {
   if (row.kind === 'machine') {
@@ -182,6 +192,13 @@ export function gapsIn(rows: ReadonlyArray<TeamAccessRow>, verify: (row: TeamAcc
     if (verify(r) === 'unknown' && !settled.has(streamOf(r))) gaps.push({ kind: 'unplaced', origin: originOf(r), incarnation: r.incarnation ?? UNCHAINED_INCARNATION, seq: r.seq });
   }
   return gaps;
+}
+
+/** Every person-and-conversation pair a state grants, with its access. A change of either is a change. */
+function grantPairs(s: TeamAccessState): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [person, refs] of s.grants) for (const [ref, access] of refs) out.set(`${person}\u0000${ref}\u0000${access}`, ref);
+  return out;
 }
 
 /** A row's place in its origin's chain. */
@@ -569,17 +586,21 @@ export class TeamAccessLog {
    * Take rows from a peer. A row that fails verification is left out, and one already held changes
    * nothing, so this is safe to run with whatever a peer sends. Returns how many were new.
    */
-  ingest(incoming: ReadonlyArray<TeamAccessRow>): { added: number; refused: number } {
+  ingest(incoming: ReadonlyArray<TeamAccessRow>): { added: number; refused: number; touched: string[] } {
+    const before = grantPairs(this.state());
+    const touched = new Set<string>();
     const held = new Set(this.rows.map((r) => `${streamOf(r)}#${r.seq}#${rowHash(r)}`));
     let added = 0;
     let refused = 0;
     for (const row of incoming) {
+      // A peer's rows are what it sent, so nothing here is assumed about their shape.
+      if (!isRowShaped(row)) { refused += 1; continue; }
       const id = `${streamOf(row)}#${row.seq}#${rowHash(row)}`;
       if (held.has(id)) continue;
       if (this.opts.verify(row) === 'failed') { refused += 1; continue; }
       // Before folding, and for a row that cannot be placed yet too: confining is the safe direction.
       this.ensureConfinedFile();
-      for (const entry of confinesIn(row)) this.confineHere(entry);
+      for (const entry of confinesIn(row)) { this.confineHere(entry); touched.add(entry.ref); }
       this.writeLine(row);
       this.rows.push(row);
       this.foreign.add(row);
@@ -593,8 +614,10 @@ export class TeamAccessLog {
       this.refoldPending = this.rows.some((r) => this.opts.verify(r) === 'unknown');
       this.snapshot();
       this.leaveLostStream();
+      const after = grantPairs(this.folded);
+      for (const [pair, ref] of [...before, ...after]) if (before.has(pair) !== after.has(pair)) touched.add(ref);
     }
-    return { added, refused };
+    return { added, refused, touched: [...touched] };
   }
 
   /**

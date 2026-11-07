@@ -342,6 +342,11 @@ export class MultiMachineCoordinator extends EventEmitter {
   /** This machine's identity (null if not initialized). */
   get identity(): MachineIdentity | null { return this._identity; }
 
+  /** When a peer's lease was last seen, on this machine's clock, or null. */
+  leaseObservedAt(machineId: string): number | null {
+    return this.leaseCoordinator?.peerLeaseObservations().get(machineId)?.observedAtMs ?? null;
+  }
+
   /** Whether this machine is the awake (primary) machine. */
   get isAwake(): boolean { return this._role === 'awake'; }
 

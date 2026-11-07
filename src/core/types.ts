@@ -4034,6 +4034,11 @@ export interface InstarConfig {
    */
   mobilePairing?: {
     enabled?: boolean;
+    /** Team access (docs/specs/team-roles-and-access.md). */
+    team?: {
+      /** Refuse team phones after 24 hours with no peer answering, instead of serving on. Off by default. */
+      strictStaleness?: boolean;
+    };
     /** Code lifetime in minutes, default 10, clamped to 1–60. */
     codeTtlMinutes?: number;
     /** Native operator chat (docs/specs/mobile-operator-chat.md). `enabled` omitted ⇒ follows mobilePairing. */

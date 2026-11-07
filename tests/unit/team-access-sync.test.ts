@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { sha256Hex, type MachineSigner } from '../../src/core/AppRecordSignatures.js';
 import { TeamAccessLog, rowPayload, type RequestRow, type TeamAccessRow } from '../../src/core/TeamAccessLog.js';
-import { pullFromPeers, shouldRefuseForStaleness } from '../../src/core/TeamAccessSync.js';
+import { PeerHasNoLog, STRICT_STALENESS_MS, TeamAccessPuller, pullFromPeers, shouldRefuseForStaleness, type SyncPeer } from '../../src/core/TeamAccessSync.js';
 import { findGaps } from '../../src/core/TeamAccessMerge.js';
 
 const signerFor = (id: string): MachineSigner => ({
@@ -107,7 +107,7 @@ describe('two machines', () => {
     start(a);
     const rows = a.rowsBeyond({});
     const forged = { ...rows[1], machineSig: { ...rows[1].machineSig, sig: 'bad' } } as TeamAccessRow;
-    expect(b.ingest([rows[0], forged])).toEqual({ added: 1, refused: 1 });
+    expect(b.ingest([rows[0], forged])).toMatchObject({ added: 1, refused: 1 });
     expect(b.state().on).toBe(false);
   });
 
@@ -396,5 +396,145 @@ describe('what holds every team person', () => {
       { origin: 'A', incarnation: 'x', seq: 3, prev: 'anchor', hash: 'h3', seen: {}, events: [] },
     ], () => 'x');
     expect(merged).toEqual([]);
+  });
+});
+
+describe('the regular exchange', () => {
+  const MIN = 60_000;
+  const rig = (peer: Partial<SyncPeer> = {}) => {
+    const clock = { now: 1_000_000 };
+    const local = machine('A');
+    start(local);
+    const remote = machine('B');
+    const seen: string[][] = [];
+    const evidence: { at: number | null } = { at: null };
+    const up = { yes: true };
+    const puller = new TeamAccessPuller({
+      log: () => local,
+      peers: () => [{
+        machineId: 'B',
+        fetchRows: async (have, heads) => {
+          if (!up.yes) throw new Error('no route');
+          return { rows: remote.rowsBeyond(have, heads), vector: remote.vector() };
+        },
+        pushRows: async (rows) => { remote.ingest(rows); },
+        ...peer,
+      }],
+      leaseEvidenceAt: () => evidence.at,
+      afterIngest: (t) => { seen.push(t); },
+      now: () => clock.now,
+    });
+    return { clock, local, remote, seen, evidence, up, puller };
+  };
+
+  it('refuses until the first exchange has finished, then serves', async () => {
+    const { puller } = rig();
+    expect(puller.refusing()).toBe(true);
+    await puller.tick();
+    expect(puller.refusing()).toBe(false);
+    puller.noteWake();
+    expect(puller.refusing()).toBe(true);
+  });
+
+  it('with no peers there is nothing to wait for', () => {
+    const local = machine('A');
+    expect(new TeamAccessPuller({ log: () => local, peers: () => [], afterIngest: () => undefined }).refusing()).toBe(false);
+  });
+
+  it('a first exchange nobody answers still lets the machine serve: a closed lid stops nothing', async () => {
+    const { puller, up } = rig();
+    up.yes = false;
+    await puller.tick();
+    expect(puller.refusing()).toBe(false);
+  });
+
+  it('a peer shown awake that does not answer for 15 minutes refuses, and an answer clears it', async () => {
+    const { puller, up, evidence, clock } = rig();
+    up.yes = false;
+    for (let i = 0; i <= 15; i += 1) {
+      evidence.at = clock.now;
+      await puller.tick();
+      if (i < 15) expect(puller.refusing()).toBe(false);
+      clock.now += i < 15 ? MIN : 0;
+    }
+    expect(puller.refusing()).toBe(true);
+    expect(puller.waitingOn()).toEqual(['B']);
+    up.yes = true;
+    await puller.tick();
+    expect(puller.refusing()).toBe(false);
+  });
+
+  it('when the evidence lapses the wait starts over', async () => {
+    const { puller, up, evidence, clock } = rig();
+    up.yes = false;
+    evidence.at = clock.now;
+    await puller.tick();
+    clock.now += 10 * MIN;
+    await puller.tick();
+    evidence.at = clock.now;
+    await puller.tick();
+    clock.now += 6 * MIN;
+    evidence.at = clock.now;
+    await puller.tick();
+    expect(puller.refusing()).toBe(false);
+  });
+
+  it('a peer that pushes counts as answering, though it cannot be dialled', async () => {
+    const { puller, up, evidence, clock } = rig();
+    up.yes = false;
+    evidence.at = clock.now;
+    await puller.tick();
+    clock.now += 16 * MIN;
+    evidence.at = clock.now;
+    expect(puller.refusing()).toBe(true);
+    puller.noteInbound('B', true);
+    expect(puller.refusing()).toBe(false);
+  });
+
+  it('a peer with no log route is not waited for', async () => {
+    const { puller, evidence, clock } = rig({ fetchRows: async () => { throw new PeerHasNoLog('B'); } });
+    evidence.at = clock.now;
+    await puller.tick();
+    clock.now += 16 * MIN;
+    evidence.at = clock.now;
+    await puller.tick();
+    expect(puller.refusing()).toBe(false);
+  });
+
+  it('rows reach the peer by push, and a change here is reported with its conversation', async () => {
+    const { puller, local, remote, seen } = rig();
+    await puller.tick();
+    expect(view(remote)).toBe(view(local));
+    remote.appendSignedRequest(signed([{ type: 'grant', personKey: 'p', ref: 'c1', access: 'use' }]));
+    await puller.tick();
+    expect(seen.flat()).toContain('c1');
+    remote.appendSignedRequest(signed([{ type: 'person-remove', personKey: 'p' }]));
+    await puller.tick();
+    expect(seen.at(-1)).toEqual(['c1']);
+  });
+
+  it('strict staleness refuses after a day with no peer answering, and only when turned on', async () => {
+    const local = machine('A');
+    start(local);
+    let strict = false;
+    const clock = { now: 1 };
+    const p = new TeamAccessPuller({
+      log: () => local, afterIngest: () => undefined, now: () => clock.now, strictStaleness: () => strict,
+      peers: () => [{ machineId: 'B', fetchRows: async () => { throw new Error('no'); } }],
+    });
+    await p.tick();
+    clock.now += STRICT_STALENESS_MS;
+    expect(p.refusing()).toBe(false);
+    strict = true;
+    expect(p.refusing()).toBe(true);
+  });
+
+  it('nonsense from a peer is refused without harm', () => {
+    const local = machine('A');
+    start(local);
+    const before = local.allRows().length;
+    const r = local.ingest([null, {}, { seq: 'x' }, { seq: 1, kind: 'machine', events: [{ type: 'nope' }], machineSig: { sig: 's', machineId: 'B' } }] as never);
+    expect(r.refused).toBe(4);
+    expect(local.allRows()).toHaveLength(before);
   });
 });

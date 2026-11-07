@@ -27,3 +27,9 @@ A team phone is bound in the log at activation, with a pass at boot for 2a's pho
 **Over-block:** a machine that restores from a backup holds every team phone until the owner settles it. Deliberate: a lost row could have been a removal.
 **Settling:** `POST /mobile/team/origin-gone`, owner only, Face ID. A row counts as settling a gap only if the owner's phone signed it. The named machine starts a new stream when it hears.
 **Found by the tests:** a machine's next number came from the snapshot's highest row, which can be a peer's, and that read as a lost row. Own numbers now come from own rows once a peer's rows are held.
+
+## The regular exchange
+`TeamAccessPuller` asks each peer for what is missing every minute and gives it what it lacks. A machine that cannot be dialled pushes through `POST /api/team-access/push`, machine auth only. With no peers it does nothing, so a one-machine agent sees no change. After rows arrive, each conversation whose sharing changed has its live session ended here, and phones are re-checked.
+**Over-block:** team phones wait for the first exchange after boot or sleep, and a peer shown awake that stops answering for 15 minutes refuses them. Both only with the team on and at least one peer.
+**Under-block:** a machine cut off from every peer keeps serving, the stated limit in §5. `mobilePairing.team.strictStaleness` closes it at 24 hours, off by default.
+**Rollback:** nothing starts the exchange without a machine identity and peers; removing `startTeamPuller` stops it.

@@ -70,7 +70,9 @@ export interface MachineRouteContext {
   /** True when this agent has had team members: a second machine would know none of it (team-roles-and-access §4.1). */
   teamJoinBlocked?: () => boolean;
   /** Team access: the rows a peer lacks, from any origin (team-roles-and-access, "Step 2b"). */
-  teamAccessRows?: (have: Record<string, number>, heads: Record<string, string>) => { rows: unknown[]; vector: Record<string, number> };
+  teamAccessRows?: (have: Record<string, number>, heads: Record<string, string>, senderId: string) => { rows: unknown[]; vector: Record<string, number> };
+  /** A peer sent rows this machine lacks. */
+  teamAccessPush?: (rows: unknown[], senderId: string) => Promise<{ added: number; refused: number }>;
   /** Machine identity manager */
   identityManager: MachineIdentityManager;
   /** Heartbeat manager for coordination */
@@ -235,7 +237,17 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     const heads: Record<string, string> = {};
     if (body?.have && typeof body.have === 'object') for (const [k, v] of Object.entries(body.have)) if (typeof v === 'number') have[k] = v;
     if (body?.heads && typeof body.heads === 'object') for (const [k, v] of Object.entries(body.heads)) if (typeof v === 'string') heads[k] = v;
-    res.json(ctx.teamAccessRows(have, heads));
+    res.json(ctx.teamAccessRows(have, heads, (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId));
+  });
+
+  // A machine that cannot be dialled gets its rows out here. Rows verify themselves on arrival.
+  router.post('/api/team-access/push', authMiddleware, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const rows = (req.body as { rows?: unknown } | undefined)?.rows;
+    if (!ctx.teamAccessPush) { res.status(503).json({ error: 'team-access-unavailable' }); return; }
+    if (!Array.isArray(rows) || rows.length > 500) { res.status(400).json({ error: 'bad-rows' }); return; }
+    try { res.json(await ctx.teamAccessPush(rows, (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId)); }
+    catch { res.status(500).json({ error: 'team-access-push-failed' }); } // @silent-fallback-ok — the sender keeps the rows and retries
   });
 
   // E2E-PAIRING: tests/e2e/desktop-setup-boot-lifecycle.test.ts

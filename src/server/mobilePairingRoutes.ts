@@ -1,3 +1,4 @@
+import type { TeamAccessPuller } from '../core/TeamAccessSync.js';
 import type { TeamActionKind } from './mobilePermissionsRoutes.js';
 import { verifiedInboundMirrorEnvelope, isQuietReceipt, QuietRecordedError } from '../messaging/NotificationSelectivityGate.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
@@ -483,7 +484,7 @@ export class MobilePairingService {
     const gate = this.deps.teamGate?.() ?? 'memory-privacy-required';
     if (gate !== 'ok') return gate;
     // A lost narrowing could have named anyone, so a gap holds everyone (Step 2b).
-    return this.teamLog()?.gaps().length ? 'access-being-checked' : null;
+    return this.teamLog()?.gaps().length || (this.teamOn() && this.teamPuller?.refusing()) ? 'access-being-checked' : null;
   }
 
   /** A one-time link for a team person. Their phone's standing comes from the log, never the link. */
@@ -540,6 +541,11 @@ export class MobilePairingService {
       if (log.everHeld(d.userId) && !this.teamStanding(d.userId)) this.revokePersonPhones(d.userId);
     }
   }
+
+  reportTeamFault(feature: string, err: unknown): void { this.deps.reportDegradation?.(feature, err); }
+
+  /** The exchange with peers; absent on an agent with no machine identity. */
+  teamPuller: TeamAccessPuller | null = null;
 
   /** Set by the team router: the Face ID team actions (§3.6, §4.1). */
   teamActionRunner: ((kind: TeamActionKind, req: Request, deviceId: string) => Promise<{ status: number; body: unknown }>) | null = null;
