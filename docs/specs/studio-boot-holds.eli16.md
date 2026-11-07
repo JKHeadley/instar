@@ -17,3 +17,5 @@ Nothing here adds a new decision or gate, and undoing it is a plain revert with 
 The update tests also changed: they now fake only the package install, so the real checks of a new install still run in them.
 
 The same change applies to one integration test of a real CLI start.
+
+After merging main: main's new cleanup of a leftover backup still does a blocking delete, so it keeps its marker for that, and its tests now fake only npm so the real checks still run.

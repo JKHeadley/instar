@@ -89,3 +89,5 @@ Project map on the real agent home (490 related worktrees): old 41.4s and 51.1s;
 Local verify failed three `tests/unit/UpdateChecker.test.ts` cases. They faked `execAsync` for every command; validation now goes through that helper, so the fake replaced the real node probes those tests exist to prove. They now fake npm only, so the real startup and native-module checks still run, and a loop advances fake timers until the call settles. No code changed.
 
 `tests/integration/native-update-preflight.test.ts` needed the same change, found by the next Local Verify run. Five files fake this helper: the unit and e2e ones either never reach validation or were changed above.
+
+Merging main brought in #2911's `retireLeftoverPrevious`. It deletes a backup with a synchronous `safeRmSync` inside `withSyncOp`, so this change restores that import: the delete still blocks, and the marker stays for it. Its three tests in `tests/unit/UpdateChecker.test.ts` faked `execAsync` for every command, which replaced the real validation probes now routed through that helper, so they use the same npm-only fake. No `src/localVerify` file changed in this step.

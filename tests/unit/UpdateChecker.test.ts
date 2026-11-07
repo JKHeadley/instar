@@ -241,14 +241,11 @@ describe('UpdateChecker', () => {
       seedInstall(live, '1.0.0', true);
       fs.mkdirSync(path.join(leftover, 'node_modules'), { recursive: true }); // partial: its delete was interrupted
       vi.spyOn(checker, 'check').mockResolvedValue({ currentVersion: '1.0.0', latestVersion: '1.0.1', updateAvailable: true, checkedAt: new Date().toISOString() });
-      vi.spyOn(checker as any, 'execAsync').mockImplementation(async (_cmd: string, args: string[]) => {
+      fakeNpm((args) => {
         if (args[0] === 'install') seedInstall(args[args.indexOf('--prefix') + 1], '1.0.1', true);
-        return '';
       });
 
-      const pending = checker.applyUpdate();
-      await vi.runAllTimersAsync();
-      const result = await pending;
+      const result = await settle(checker.applyUpdate());
       expect(result.success).toBe(true);
       expect(checker.getShadowInstalledVersion()).toBe('1.0.1');
       expect(fs.existsSync(leftover)).toBe(false);
@@ -280,14 +277,11 @@ describe('UpdateChecker', () => {
         return realRm(target, opts);
       }) as never);
       vi.spyOn(checker, 'check').mockResolvedValue({ currentVersion: '1.0.0', latestVersion: '1.0.1', updateAvailable: true, checkedAt: new Date().toISOString() });
-      vi.spyOn(checker as any, 'execAsync').mockImplementation(async (_cmd: string, args: string[]) => {
+      fakeNpm((args) => {
         if (args[0] === 'install') seedInstall(args[args.indexOf('--prefix') + 1], '1.0.1', true);
-        return '';
       });
 
-      const pending = checker.applyUpdate();
-      await vi.runAllTimersAsync();
-      const result = await pending;
+      const result = await settle(checker.applyUpdate());
       expect(result.success).toBe(false);
       expect(result.message).toContain('Previous install backup still exists');
       expect(checker.getShadowInstalledVersion()).toBe('1.0.0');
@@ -304,9 +298,7 @@ describe('UpdateChecker', () => {
         return '';
       });
 
-      const pending = checker.applyUpdate();
-      await vi.runAllTimersAsync();
-      const result = await pending;
+      const result = await settle(checker.applyUpdate());
       expect(result.success).toBe(false);
       expect(checker.getShadowInstalledVersion()).toBe('1.0.0');
       expect(fs.existsSync(live)).toBe(true);
@@ -320,14 +312,11 @@ describe('UpdateChecker', () => {
       seedInstall(live, '1.0.1', true);
       fs.mkdirSync(path.join(leftover, 'node_modules'), { recursive: true });
       (checker as any).saveRollbackInfo('1.0.0', '1.0.1');
-      vi.spyOn(checker as any, 'execAsync').mockImplementation(async (_cmd: string, args: string[]) => {
+      fakeNpm((args) => {
         if (args[0] === 'install') seedInstall(args[args.indexOf('--prefix') + 1], '1.0.0', true);
-        return '';
       });
 
-      const pending = checker.rollback();
-      await vi.runAllTimersAsync();
-      expect((await pending).success).toBe(true);
+      expect((await settle(checker.rollback())).success).toBe(true);
       expect(checker.getShadowInstalledVersion()).toBe('1.0.0');
       expect(fs.existsSync(leftover)).toBe(false);
     });
