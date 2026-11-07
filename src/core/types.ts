@@ -635,6 +635,11 @@ export interface JobDefinition {
    *  If omitted or empty, the job runs on ALL machines (default behavior).
    *  Example: ["m_abc123...", "justins-macbook"] */
   machines?: string[];
+  /** How much this job asks of a machine (docs/specs/resource-aware-placement.md §5).
+   *  `heavy` (builds, full test runs, simulators) never runs on a machine below the
+   *  heavy-work size floor unless `machines` explicitly names that machine.
+   *  Absent = `standard` (today's behaviour). */
+  workWeight?: 'light' | 'standard' | 'heavy';
   /** Common blockers — pre-confirmed resolution patterns for this job.
    *  Injected into working memory at session start and used by the
    *  EscalationResolutionReviewer to catch unnecessary human escalations. */
@@ -1480,6 +1485,7 @@ export type SkipReason =
   | 'capacity'        // No available session slots (queued instead of skipped, but tracked)
   | 'claimed'         // Another machine already claimed this job (Phase 4C — Gap 5)
   | 'machine-scope'   // Job is scoped to a different machine
+  | 'machine-too-small' // A `workWeight: 'heavy'` job on a machine below the heavy-work size floor (resource-aware placement §5)
   | 'already-running' // A live session already holds this jobSlug (june15-headless-spawn-reroute O3: per-slug double-run guard)
   | 'role-guard'      // WS4.3: state-writing job refused on a read-only standby (not the lease-holder)
   | 'throwaway-agent' // test-agent-leak-guard: agent lives in a temp folder / sandboxed HOME
