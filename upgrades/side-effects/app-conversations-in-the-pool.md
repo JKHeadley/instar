@@ -146,3 +146,18 @@ Run on the M5 Pro at `2beabdb2c`, one suite at a time. Integration 6,172 passed,
 Main had squashed #2894 and #2895, so 13 files conflicted. Twelve kept this branch's side: main's side there was either empty or the older `isOwner` call this change replaces. `src/users/wireMemoryPrivacy.ts` kept both sides, because `reachablePeople` from main and `sandboxReady` from this branch are separate additions. The already-released note `upgrades/next/slack-conversations-stay-with-connection.md` came back in the merge and was removed. No behaviour changed beyond what this artifact already covers.
 
 Checked after the merge: the lines removed relative to main are this change's own replacements, none of main's newer work was undone, and the type check is clean. Affected set on this machine: 15,527 unit tests (430 files), 111 integration and 25 e2e all passed. The full suite was not run at this head, by agreement with Echo; Local Verify is the full run. `reviewerConcurred` stays false, for the reason recorded above.
+
+## Team access rules through a moved conversation (after #2916, 2026-11-07)
+
+Team access (#2916) landed while this PR waited. It makes a team member's stop end only their own conversation, where the owner's stop also pauses the agent's resume queue. The route keeps that rule at its local stops, but four owner-side paths in this change ran an unscoped stop: a forwarded stop, an exact stop text in a forward, the owner's classifier, and a drain's last resort. Team access currently requires a one-machine agent, so a team sender should not reach them today. The rule is enforced anyway, so it does not depend on that limit.
+
+- `stopScope` now travels on every forward, because the owner can turn a plain send into a stop. The parser keeps only the one known value.
+- The drain path now calls `actOnUrgent`, the same function as the owner's receiver, so there is one place for this rule.
+- `memoryPersonId` follows #2916's rule, and the signed event carries the sender's name and role, so a team member's send stays theirs on the owner.
+- The new placement and bring-back routes default to the owner tier, so a team phone cannot reach them.
+
+Tests: six new cases in `tests/integration/team-access-guards.test.ts` send a real team phone's forward, serialized as a queue row, through the real owner receiver. Removing the scope from the forward, the owner or the parser each makes them fail.
+
+Over-block: none; the scope only narrows a stop. Under-block: a peer forging or dropping the field could widen a stop, but peers are already trusted to deliver stops, and an older machine would ignore the field, which the whole-pool flag gate prevents. Interactions: the owner's stop is unchanged, as the tests show. Rollback: revert with the rest of this PR; the flag is off for the fleet.
+
+Also fixed: #2916's exclusive write of `ctx-<alias>-<ms>.txt` threw `EEXIST` when a start and a message landed in the same millisecond, which failed `tests/unit/app-dispatch-engine.test.ts`. The name now has a random part, like the message file beside it.

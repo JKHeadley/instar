@@ -79,6 +79,12 @@ export interface AppForwardPayload {
   ownerName: string | null;
   memoryPersonId: string | null;
   urgent?: AppUrgent;
+  /**
+   * A team member's stop ends their own conversation, not the agent's resume queue, on whichever machine
+   * acts on it (team-roles-and-access §4.1). It travels on every forward, because the owner can turn a
+   * plain send into a stop: an exact stop text, or the classifier.
+   */
+  stopScope?: 'conversation';
 }
 
 export function buildAppForward(p: Omit<AppForwardPayload, 'kind'>): AppForwardPayload {
@@ -101,6 +107,7 @@ export function parseAppForward(payload: unknown): AppForwardPayload | null {
     ownerName: typeof p.ownerName === 'string' ? p.ownerName : null,
     memoryPersonId: typeof p.memoryPersonId === 'string' ? p.memoryPersonId : null,
     ...(p.urgent === 'stop' || p.urgent === 'pause' ? { urgent: p.urgent } : {}),
+    ...(p.stopScope === 'conversation' ? { stopScope: p.stopScope } : {}),
   };
 }
 
@@ -557,10 +564,11 @@ export function createAppOwnerReceiver(d: AppOwnerReceiverDeps) {
   };
 }
 
-function actOnUrgent(s: AppConversationService, key: string, f: AppForwardPayload, messageId: string): void {
+/** A forwarded stop or pause, acted on here: the one place the owner and a drain's last resort do this. */
+export function actOnUrgent(s: AppConversationService, key: string, f: AppForwardPayload, messageId: string): void {
   s.noteEmergency(key);
   if (f.urgent === 'pause') s.pause(key);
-  else s.emergencyStop(key);
+  else s.emergencyStop(key, f.stopScope);
   s.appendDelivery(key, messageId, 'intercepted', f.seed);
 }
 

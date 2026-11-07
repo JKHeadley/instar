@@ -210,7 +210,8 @@ function writeContext(deps: AppInboundDispatchDeps, input: Pick<AppDispatchInput
     fs.mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
     // A confined session can write to its inbox, so a file for it goes through the safe path.
     const fileFor = (name: string) => (confinedInbox ? safeInboxTarget(confinedInbox, name) : path.join(tmpDir, name));
-    const ctxPath = fileFor(`ctx-${input.alias}-${Date.now()}.txt`);
+    // Exclusive write, so two starts in one millisecond need different names.
+    const ctxPath = fileFor(`ctx-${input.alias}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.txt`);
     fs.writeFileSync(ctxPath, contextData, { mode: 0o600, flag: 'wx' }); /* state-registry: app-conversations */
     return { ctxPath, contextData, fileFor };
 }

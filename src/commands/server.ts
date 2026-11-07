@@ -238,7 +238,7 @@ import { decideLeaseGatedSpawn, sharedG3SoakLedger, applyBindingCleanupOnKill } 
 import { isSlackSessionKey, isSlackConversationKey, reconstructSlackMessage } from '../core/SlackForwardBridge.js';
 import { tokenMayWriteConversation } from '../core/conversationKeys.js';
 import { createConversationPorts, conversationResumeViews } from '../core/conversationPorts.js';
-import { AppFlagTracker, AppLeaseGate, AppPoolEnforcer, LEASE_GATE_BOUND_MS, appLossState, appLossWords, appForwardSenderValid, createAppOwnerReceiver, dispatchStoredAppMessage, parseAppForward, type StatusAnswer } from '../core/appConversationPool.js';
+import { actOnUrgent, AppFlagTracker, AppLeaseGate, AppPoolEnforcer, LEASE_GATE_BOUND_MS, appLossState, appLossWords, appForwardSenderValid, createAppOwnerReceiver, dispatchStoredAppMessage, parseAppForward, type StatusAnswer } from '../core/appConversationPool.js';
 import { appPlacement, runAppMove, runBringBack, setAppPoolMoves } from '../core/appConversationMove.js';
 import { DEFAULT_DRAIN_CLAIM_GRACE_MS } from '../core/SessionDrainRunner.js';
 import type { SessionOwnershipRecord } from '../core/SessionOwnership.js';
@@ -29782,9 +29782,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               appDrainDispatching.add(dmsg.messageId);
               try {
                 if (f.urgent) {
-                  svc.noteEmergency(key);
-                  if (f.urgent === 'pause') svc.pause(key); else svc.emergencyStop(key);
-                  svc.appendDelivery(key, dmsg.messageId, 'intercepted', f.seed);
+                  actOnUrgent(svc, key, f, dmsg.messageId);
                   return { kind: 'local-delivered' };
                 }
                 if (!svc.deps.registry.isAppBound(alias)) svc.deps.registry.bindApp(alias);

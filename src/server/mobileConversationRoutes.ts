@@ -689,11 +689,10 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     };
 
     const memoryPersonId = sender && sender.role !== 'owner' ? sender.userId : null;
-    // A team member's stop ends their own conversation only. Team access needs a one-machine agent, so a
-    // forwarded stop never carries this scope (team-roles-and-access step 2a).
+    // A team member's stop ends their own conversation only, here or on the machine that owns it.
     const stopScope = sender?.role === 'team' ? 'conversation' : undefined;
     const router = s.poolRouter();
-    const forwardOf = (urgent?: AppUrgent) => buildAppForward({ event: msg, seed, ownerName: sender?.name ?? null, memoryPersonId, ...(urgent ? { urgent } : {}) });
+    const forwardOf = (urgent?: AppUrgent) => buildAppForward({ event: msg, seed, ownerName: sender?.name ?? null, memoryPersonId, ...(urgent ? { urgent } : {}), ...(stopScope ? { stopScope } : {}) });
     const envelope = { via: 'mobile-device' as const, deviceId, eventId };
     const recordKey = `app:${key}`;
     /** A stop or pause goes to the conversation's current owner (app-conversations-in-the-pool §2.4). True: it ran here. */
