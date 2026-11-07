@@ -137,8 +137,13 @@ describe('server.ts production wiring (source-level integrity)', () => {
     expect(stmt).toContain('SkillLearningSentinel.create(deps)');
   });
 
-  it('hands the sentinel to AgentServer at construction (the routes read it through the server)', () => {
-    expect(src).toMatch(/liveTestRunnerCtx, skillLearningSentinel \}\);/);
+  it('binds the sentinel to AgentServer right after construction, on its own line (the routes read it through the server)', () => {
+    const ctor = src.indexOf('const server = new AgentServer({');
+    expect(ctor).toBeGreaterThan(0);
+    const bind = src.indexOf('server.setSkillLearningSentinel(skillLearningSentinel);');
+    expect(bind).toBeGreaterThan(ctor);
+    // The bind is a statement of its own, not an argument on the constructor line every PR extends.
+    expect(src.slice(ctor, src.indexOf('\n', ctor))).not.toContain('skillLearningSentinel');
     expect(src).not.toContain('learnedSkillReconciler.start();');
   });
 });

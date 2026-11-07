@@ -322,3 +322,14 @@ on the e2e alive test (the real sentinel module has existed since slice 1). Both
 no test body changed. A flagged record would otherwise wait on an independent-review trace in the tree
 before the `instar/local-verify` status could pass. Second-pass reviewer: concurred (no decision surface
 touched — test registration only).
+
+### Note 2026-11-07 — bind moved off the constructor line (merge robustness)
+
+Three sibling merges in four hours each conflicted with this branch on the same two hot spots: the end
+of the `routes.ts` import block and the one-line `AgentServer` argument list in `server.ts`. Every
+conflict dropped the branch from the verifier line. The sentinel is now bound with
+`server.setSkillLearningSentinel(sentinel)` on its own line right after construction (the setter already
+existed for late binds and tests; the routes read the sentinel through a getter, so the bind is live before
+`listen`), and the `mandatePin` import sits in a long-stable part of the import block. No behaviour
+changes: same object, same lifetime, same routes. The wire test now asserts the own-line bind. Second-pass
+reviewer: concurred (wiring placement only).
