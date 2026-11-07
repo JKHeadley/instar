@@ -218,3 +218,5 @@ Statements broader than the code, with resolutions:
 Not checked by the reviewer: the full unit suite beyond the nine touched files; a live server boot with the change; the git-sync job script's pull path; the backfill against this agent's real `.claude/skills/`.
 
 **Follow-up (2026-11-06, PR #2877 CI):** the no-silent-fallbacks ratchet flagged the 11 catch blocks this slice added; each is a designed fail-safe (absent file ⇒ null; corrupt baseline shard ⇒ treated missing ⇒ LOCK rather than overwrite; unparseable frontmatter ⇒ no canonical, logged by the caller) and now carries an in-window `@silent-fallback-ok` with its reason. No behaviour change; the scanner reports exactly 494 again.
+
+**Docs addition (2026-11-07):** `docs/TEST-AS-SELF.md` documents the `instar test-as-self` throwaway-deploy harness used for this feature's test-agent rung (the Docs Coverage command floor is 60%; the merged tree sat at 59% after main's newest command). Documentation only, no runtime surface.
