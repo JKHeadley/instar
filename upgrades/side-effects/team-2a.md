@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-Builds step 2a of docs/specs/team-roles-and-access.md §4.1 in pieces. This first piece adds the role map, the event validators and the signed access log with the confined list. Nothing calls it yet, so no behaviour changes.
+Builds step 2a of docs/specs/team-roles-and-access.md §4.1 in pieces, with the invite route last, so team access cannot be turned on until every guard exists. So far: the role map, event validators, the signed access log and confined list, the `team` phone role, route tiers, and the conversation check by operation. No team phone can exist yet, so owner and `msp` behaviour is unchanged.
 
 ## Decision-point inventory
 

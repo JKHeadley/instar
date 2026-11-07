@@ -50,7 +50,9 @@ import { detectOutboundCredential } from '../messaging/outbound-credential-guard
 import { PairingInviteTelegram } from '../threadline/PairingInviteTelegram.js';
 import { APP_CONVERSATION_KEY_PATTERN, derivedEventId, hideCredentialSpans, removeAuthorityTokens } from '../core/appConversationText.js';
 import type { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
-import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
+import { deviceKeyHashOf, identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
+import { TeamAccessLog, verifyTeamAccessRow } from '../core/TeamAccessLog.js';
+import { tierAtLeast, tierOfRole, type ConversationOp, type Tier } from '../permissions/TeamAccess.js';
 import { buildSignedOrigin } from './mobileConversationRoutes.js';
 import { activeOwnerPhone, mountConsoleTicketDeviceRoutes } from './mobileConsoleTicket.js';
 import { mountPairingApprovalDeviceRoutes } from './mobilePairingApproval.js';
@@ -65,8 +67,8 @@ import type { MediaMessageEvent, MessageEvent } from '../core/AppConversationSto
 import { UserManager } from '../users/UserManager.js';
 import { MspGrantStore } from '../core/MobileMspGrants.js';
 import {
-  choosePerson, devicePerson, mayUseConversation, personLabel,
-  type ConversationOwner, type DevicePerson, type OwnerIdentity, type PeopleLookup, type PersonProfile, type ResolvedPerson,
+  choosePerson, devicePerson, isOwnerPerson, mayUseConversation, personLabel,
+  type ConversationOwner, type DevicePerson, type OwnerIdentity, type PeopleLookup, type PersonProfile, type ResolvedPerson, type TeamStanding,
 } from '../core/MobilePeople.js';
 
 export const MOBILE_REDEEM_PATH = '/mobile/pairing-codes/redeem';
@@ -86,6 +88,8 @@ export interface PairingSiblingView { machineId: string; name?: string; status?:
 
 export interface MobilePairingDeps {
   config: InstarConfig;
+  /** Whether team phones may work right now (§3.6, §4.1). Absent refuses them. */
+  teamGate?: () => 'ok' | 'memory-privacy-required' | 'team-needs-one-machine';
   stateDir: string;
   tunnel?: () => PairingTunnelView | undefined;
   selfMachineId?: string | null;
@@ -150,8 +154,8 @@ function sanitizePeerDevice(raw: unknown, machineId: string): Record<string, unk
   return {
     id: d.id.slice(0, 64), deviceName: cleanText(d.deviceName), pairedAt: new Date(Date.parse(d.pairedAt)).toISOString(), label: cleanText(d.label), machine: machineId,
     // People and roles: a peer's person fields, re-validated (an unknown role reads as unassigned).
-    role: d.role === 'msp' ? 'msp' : 'owner', personName: cleanText(d.personName),
-    ...(d.unassigned === true || (d.role !== undefined && d.role !== 'owner' && d.role !== 'msp') ? { unassigned: true } : {}),
+    role: d.role === 'msp' || d.role === 'team' ? d.role : 'owner', personName: cleanText(d.personName),
+    ...(d.unassigned === true || (d.role !== undefined && d.role !== 'owner' && d.role !== 'msp' && d.role !== 'team') ? { unassigned: true } : {}),
   };
 }
 
@@ -256,6 +260,7 @@ export class MobilePairingService {
    * registry; boot reconciliation repairs a crash between the two in either direction.
    */
   keyLedger: MobileDeviceKeyLedger | null = null;
+  private teamLogInstance: TeamAccessLog | null = null;
   readonly codes: PairingCodeStore;
   readonly devices: DeviceRegistry;
   readonly confirm: ConfirmationCodes;
@@ -439,13 +444,46 @@ export class MobilePairingService {
   /** Resolve a device record to its person (absent role ⇒ owner; a removed MSP person ⇒ person-unknown). */
   personOfDevice(d: DeviceRecord): DevicePerson {
     // The registry is read only for an MSP phone or an owner phone with a named profile.
-    const needsRegistry = d.role === 'msp' || !!d.userId;
-    return devicePerson(d, needsRegistry ? this.people() : null, this.ownerIdentity(), (id) => this.grants.get(id));
+    const needsRegistry = d.role === 'msp' || (d.role !== 'team' && !!d.userId);
+    return devicePerson(d, needsRegistry ? this.people() : null, this.ownerIdentity(), (id) => this.grants.get(id), (key) => this.teamStanding(key));
   }
 
-  /** May this phone's person use this conversation? (one shared check, spec §3.4) */
-  mayUse(person: ResolvedPerson, ref: string): boolean {
-    return mayUseConversation(person, ref, this.machineId(), this.appConversationOwner);
+  /** The signed access log, opened once the key ledger exists; null while it does not. */
+  teamLog(): TeamAccessLog | null {
+    if (this.teamLogInstance) return this.teamLogInstance;
+    const ledger = this.keyLedger;
+    if (!ledger) return null;
+    const { stateDir } = this.deps;
+    const lookup = identityKeyLookup(stateDir);
+    this.teamLogInstance = new TeamAccessLog({
+      stateDir, signer: loadMachineSigner(stateDir),
+      verify: (row) => verifyTeamAccessRow(row, ledger.view(), lookup),
+    });
+    return this.teamLogInstance;
+  }
+
+  /** A team person's standing, from the log alone. No log, an unreadable log or no person: no access. */
+  teamStanding(personKey: string): TeamStanding | null {
+    const log = this.teamLog();
+    if (!log || log.healthState() !== 'ok') return null;
+    const p = log.state().people.get(personKey);
+    if (!p || !log.state().on) return null;
+    const tier = tierOfRole(p.role);
+    return tier === 'owner' ? null : { name: p.name, tier };
+  }
+
+  /** Why a team phone is refused right now, or null. Memory privacy is required, and stays required (§3.6). */
+  teamRefusal(): 'memory-privacy-required' | 'team-needs-one-machine' | null {
+    const gate = this.deps.teamGate?.() ?? 'memory-privacy-required';
+    return gate === 'ok' ? null : gate;
+  }
+
+  /** May this phone's person do this to this conversation? (one shared check, spec §3.5) */
+  mayUse(person: ResolvedPerson, ref: string, op: ConversationOp = 'read'): boolean {
+    return mayUseConversation(person, ref, this.machineId(), this.appConversationOwner, op, (key, r) => {
+      const log = this.teamLog();
+      return { own: log?.ownerOf(r) === key, grant: log?.grantOf(key, r) ?? null };
+    });
   }
 
   /** The shared check by device id (push recipients): an unknown device or person ⇒ no. */
@@ -579,7 +617,7 @@ export class MobilePairingService {
   noteActivated(deviceId: string): void { this.contestOthers(deviceId); }
 
   /** Can a tap approve this phone, as far as its own row goes? */
-  approvable(d: DeviceRecord): boolean { return d.role !== 'msp' && !this.contested.has(d.id); }
+  approvable(d: DeviceRecord): boolean { return (d.role === undefined || d.role === 'owner') && !this.contested.has(d.id); }
 
   /** Phones waiting on this machine. */
   waitingPhones(): DeviceRecord[] { return this.devices.list().filter((d) => d.status === 'pending' && !!d.publicKey); }
@@ -602,7 +640,7 @@ export class MobilePairingService {
     const d = waiting.find((x) => x.id === deviceId);
     if (!d) return 'ended';
     // An MSP's phone is not in the owner's hand: handing over the code is what binds it to that person.
-    if (d.role === 'msp') return 'code-only';
+    if (d.role !== undefined && d.role !== 'owner') return 'code-only';
     if (this.contested.has(deviceId)) return 'contested';
     if (this.devices.pairingPaused()) return 'paused';
     // A Telegram-path pairing belongs to the lease holder (the same rule as confirm); a lease move voids it.
@@ -905,8 +943,8 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     svc.declineNonces.set(nonce, device.id);
     const pretty = displayCode(code);
     // People and roles §3.2: the owner approves every phone, so the message says whose phone it is.
-    const forWhom = device.role === 'msp' ? svc.personOfDevice(device) : null;
-    const forWhomName = forWhom ? (forWhom.ok ? personLabel(forWhom.name, 'msp') : 'someone no longer in your user list') : null;
+    const forWhom = device.role !== undefined && device.role !== 'owner' ? svc.personOfDevice(device) : null;
+    const forWhomName = forWhom ? (forWhom.ok ? personLabel(forWhom.name, forWhom.role) : 'someone no longer in your user list') : null;
     // An MSP's phone stays code-only (mobile-pairing-approve §4): handing over the code is the binding.
     const canApprove = isPairingApproveEnabled(svc.deps.config) && svc.approvable(device);
     const codeLine = forWhomName
@@ -1423,7 +1461,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (p.kind !== 'device') { res.status(403).json({ error: 'operator-device-required' }); return; }
     const sender = devicePersonOf(req);
     if (!sender) { res.status(403).json({ error: 'person-unknown' }); return; }
-    const senderPerson = sender.role === 'msp' && sender.userId ? { machineId: svc.machineId(), userId: sender.userId } : null;
+    const senderPerson = !isOwnerPerson(sender) && sender.userId ? { machineId: svc.machineId(), userId: sender.userId } : null;
     const senderTrust = { role: sender.role, ...(senderPerson ? { person: senderPerson } : {}) };
     const body = (req.body ?? {}) as Record<string, unknown>;
     const topicId = Number(req.params.topicId);
@@ -1745,9 +1783,57 @@ const UUID = APP_CONVERSATION_KEY_PATTERN;
 // conversation, so it must call the shared `mayUse` check (the coverage test reads this flag).
 // `ownerOnly`: only a phone whose person is the owner (403 owner-phone-required otherwise).
 // `bucket`: the name of the rule's own bucket (rules sharing a name share a count).
-export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySet<DeviceStatus>; sendRoute?: boolean; body?: 'json' | 'octet' | 'none'; ownBucket?: number; bucket?: string; unassignedOk?: boolean; conversationRef?: boolean; ownerOnly?: boolean }> = (() => {
+export interface DeviceRule { method: string; re: RegExp; statuses: ReadonlySet<DeviceStatus>; sendRoute?: boolean; body?: 'json' | 'octet' | 'none'; ownBucket?: number; bucket?: string; unassignedOk?: boolean; conversationRef?: boolean; ownerOnly?: boolean; tier?: Tier }
+
+/**
+ * The routes a team phone may reach, and the lowest tier for each (team-roles-and-access §3.7). This
+ * list opens routes: anything not named reads `admin` or `owner`, so a route added later stays closed
+ * to members and guests until someone decides otherwise. `msp` and owner phones do not read tiers.
+ */
+const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
+  ['GET', /^\/health$/, 'guest'],
+  ['GET', /^\/mobile\/routes$/, 'guest'],
+  ['GET', /^\/mobile\/device$/, 'guest'],
+  ['POST', /^\/mobile\/device\/confirm$/, 'guest'],
+  ['POST', /^\/mobile\/device\/push$/, 'guest'],
+  ['POST', /^\/mobile\/device\/presence-key$/, 'guest'],
+  ['POST', /^\/mobile\/devices\/[^/]+\/revoke$/, 'guest'],
+  ['GET', /^\/mobile\/devices$/, 'guest'],
+  ['GET', /^\/topic\/list$/, 'guest'],
+  ['GET', /^\/telegram\/topics$/, 'guest'],
+  ['GET', /^\/telegram\/topics\/[^/]+\/messages$/, 'guest'],
+  ['GET', /^\/mobile\/conversations$/, 'guest'],
+  ['GET', new RegExp(`^/mobile/chat/app/${UUID}/messages$`), 'guest'],
+  ['GET', new RegExp(`^/mobile/chat/app/${UUID}/events$`), 'guest'],
+  ['GET', new RegExp(`^/mobile/chat/app/${UUID}/preview/[a-z0-9._:-]{1,128}$`), 'guest'],
+  ['GET', /^\/mobile\/media\/[0-9a-f]{64}$/, 'guest'],
+  ['POST', /^\/mobile\/conversations$/, 'member'],
+  ['PATCH', new RegExp(`^/mobile/conversations/${UUID}$`), 'member'],
+  ['DELETE', new RegExp(`^/mobile/conversations/${UUID}$`), 'member'],
+  ['POST', /^\/mobile\/chat\/\d+$/, 'member'],
+  ['POST', new RegExp(`^/mobile/chat/app/${UUID}$`), 'member'],
+  ['POST', /^\/mobile\/media\/uploads$/, 'member'],
+  ['PUT', new RegExp(`^/mobile/media/uploads/${UUID}/chunks/(0|[1-9][0-9]{0,5})$`), 'member'],
+  ['GET', new RegExp(`^/mobile/media/uploads/${UUID}$`), 'member'],
+  ['POST', /^\/mobile\/media\/purge$/, 'member'],
+];
+
+/** The conversation and operation a team phone's request acts on, read from its path. */
+export function teamConversationTarget(method: string, pathNorm: string): { ref: string; op: ConversationOp } | null {
+  let m = /^\/mobile\/chat\/(\d+)$/.exec(pathNorm);
+  if (m && method === 'POST') return { ref: `telegram:${m[1]}`, op: 'send' };
+  m = /^\/telegram\/topics\/(\d+)\/messages$/.exec(pathNorm);
+  if (m && method === 'GET') return { ref: `telegram:${m[1]}`, op: 'read' };
+  m = new RegExp(`^/mobile/chat/app/(${UUID})(/messages|/events|/preview/.+)?$`).exec(pathNorm);
+  if (m) return { ref: m[1], op: method === 'POST' && !m[2] ? 'send' : 'read' };
+  m = new RegExp(`^/mobile/conversations/(${UUID})$`).exec(pathNorm);
+  if (m) return { ref: m[1], op: method === 'DELETE' ? 'delete' : 'rename' };
+  return null;
+}
+
+export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
   const active: ReadonlySet<DeviceStatus> = new Set(['active']);
-  return [
+  const rules: DeviceRule[] = [
     { method: 'GET', re: /^\/health$/, statuses: active },
     { method: 'GET', re: /^\/attention$/, statuses: active },
     { method: 'GET', re: /^\/sessions$/, statuses: active },
@@ -1899,6 +1985,10 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     { method: 'POST', re: /^\/mobile\/sessions\/new$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/sessions\/default$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
   ];
+  return rules.map((rule) => {
+    const named = TEAM_ROUTE_TIERS.find(([method, re]) => method === rule.method && re.source === rule.re.source);
+    return { ...rule, tier: rule.ownerOnly ? 'owner' : named ? named[2] : 'admin' };
+  });
 })();
 
 /**
@@ -1931,6 +2021,13 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       if (!svc.deviceRateOk(d.id)) return refuse(429, 'too-many-requests');
       const np = svc.personOfDevice(d);
       if (!np.ok) return refuse(403, 'person-unknown');
+      if (np.role === 'team') {
+        // The token opens a push's text, so it answers to the same limits as a signed request.
+        const stop = svc.teamRefusal();
+        if (stop) return refuse(403, stop);
+        const target = teamConversationTarget('GET', pathNorm);
+        if (!target || !svc.mayUse(np, target.ref, target.op)) return refuse(404, 'unknown-conversation');
+      }
       (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device-notify', deviceId: d.id };
       (req as unknown as { instarDevicePerson: ResolvedPerson }).instarDevicePerson = np;
       return 'ok';
@@ -1992,6 +2089,13 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       if (!rule.unassignedOk) return refuse(403, 'person-unknown');
     } else {
       if (rule.ownerOnly && person.role !== 'owner') return refuse(403, 'owner-phone-required');
+      if (person.role === 'team') {
+        if (!person.tier || !tierAtLeast(person.tier, rule.tier ?? 'owner')) return refuse(403, 'tier-required');
+        const stop = svc.teamRefusal();
+        if (stop && !rule.unassignedOk) return refuse(403, stop);
+        const target = teamConversationTarget(req.method, pathNorm);
+        if (target && !svc.mayUse(person, target.ref, target.op)) return refuse(404, 'unknown-conversation');
+      }
       (req as unknown as { instarDevicePerson: ResolvedPerson }).instarDevicePerson = person;
     }
     (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device', deviceId: v.deviceId };
@@ -2012,7 +2116,7 @@ export function deviceAuthenticator(svc: MobilePairingService) {
 export interface MobileDeviceAdmissionIdentity {
   readonly keyHash: string;
   readonly userId: string | null;
-  readonly role: 'owner' | 'msp';
+  readonly role: 'owner' | 'msp' | 'team';
 }
 
 /** Identity actually used by deviceAuthenticator; never accepted from an HTTP header/body. */
@@ -2030,10 +2134,17 @@ export function devicePersonOf(req: Request): ResolvedPerson | null {
  * The shared conversation check for a device-signed (or notify-token) request: a bearer request
  * (no device person) may use everything, as before. Spec §3.4.
  */
-export function deviceMayUse(svc: MobilePairingService, req: Request, ref: string): boolean {
+export function deviceMayUse(svc: MobilePairingService, req: Request, ref: string, op: ConversationOp = 'read'): boolean {
   if (principalOf(req).kind === 'token') return true;
   const p = devicePersonOf(req);
-  return p !== null && svc.mayUse(p, ref);
+  return p !== null && svc.mayUse(p, ref, op);
+}
+
+/** Keep only the Telegram topics a team phone may read. Every other caller sees them all. */
+export function filterTopicsForTeam<T>(svc: MobilePairingService | null | undefined, req: Request, rows: T[], idOf: (row: T) => unknown): T[] {
+  const p = devicePersonOf(req);
+  if (!svc || !p || p.role !== 'team') return rows;
+  return rows.filter((row) => svc.mayUse(p, `telegram:${String(idOf(row))}`, 'read'));
 }
 
 /** Is this request from an MSP phone? (bearer and owner phones: false) */

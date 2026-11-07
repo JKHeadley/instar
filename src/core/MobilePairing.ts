@@ -73,7 +73,7 @@ const sha = (s: string): string => crypto.createHash('sha256').update(s).digest(
 export interface BoundOrigin { host: string; kind: 'cloudflare' | 'tailscale' }
 
 /** Who a pairing link is for (people and roles §3.2); absent ⇒ the owner. Server memory only. */
-export interface PairingPerson { userId: string | null; role: 'owner' | 'msp' }
+export interface PairingPerson { userId: string | null; role: 'owner' | 'msp' | 'team' }
 
 interface CodeEntry { expiresAt: number; label: string | null; tokenHash: string; bound: BoundOrigin | null; person: PairingPerson | null }
 

@@ -82,7 +82,7 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
     imessageAuthorizedContacts: (entry('imessage').authorizedContacts as string[] | undefined) ?? [],
     mspDeviceUserIds: readJson<{ devices?: Array<{ role?: string; status?: string; userId?: string }> }>(
       path.join(input.stateDir, 'state', 'mobile-devices.json'), {},
-    ).devices?.filter((d) => d.role === 'msp' && d.status === 'active' && d.userId).map((d) => d.userId as string) ?? [],
+    ).devices?.filter((d) => (d.role === 'msp' || d.role === 'team') && d.status === 'active' && d.userId).map((d) => d.userId as string) ?? [],
     telegramOwnerId: input.telegramOwnerId?.()
       ?? (entry('telegram').ownerUserId as number | undefined)
       ?? ((entry('telegram').promptGate as { ownerId?: number } | undefined)?.ownerId)

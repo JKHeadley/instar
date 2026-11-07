@@ -14,7 +14,7 @@ import {
 import { DeviceRegistry } from '../../src/core/MobileDeviceKeys.js';
 import { PairingCodeStore } from '../../src/core/MobilePairing.js';
 import { validateAppEvent } from '../../src/core/AppConversationStore.js';
-import { registryPeople, DEVICE_ALLOWLIST } from '../../src/server/mobilePairingRoutes.js';
+import { registryPeople, DEVICE_ALLOWLIST, teamConversationTarget } from '../../src/server/mobilePairingRoutes.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const dirs: string[] = [];
@@ -272,5 +272,132 @@ describe('owner grants for an MSP (§3.5)', async () => {
   it('devicePerson attaches the person\'s grants to an MSP phone', () => {
     const p = devicePerson({ userId: 'justin', role: 'msp' }, people, owner, () => ({ ownerConversations: true, slack: false }));
     expect(p).toMatchObject({ ok: true, grants: { ownerConversations: true, slack: false } });
+  });
+});
+
+describe('team phones (team-roles-and-access §3.1, §3.5)', () => {
+  const owner = { ownerName: 'Ann', telegramOwnerId: 1 };
+  const standing = (key: string) => (key === 'sam' ? { name: 'Sam', tier: 'member' as const } : key === 'gus' ? { name: 'Gus', tier: 'guest' as const } : null);
+  const resolved = (key: string) => {
+    const p = devicePerson({ userId: key, role: 'team' }, null, owner, undefined, standing);
+    if (!p.ok) throw new Error('unresolved');
+    return p;
+  };
+  const uuid = '11111111-1111-4111-8111-111111111111';
+  const facts = (_k: string, ref: string) => ({ own: ref === 'telegram:9', grant: ref === 'telegram:7' ? 'use' as const : ref === 'telegram:8' ? 'read' as const : null });
+
+  it('resolves standing from the log and nothing else', () => {
+    expect(devicePerson({ userId: 'sam', role: 'team' }, null, owner, undefined, standing)).toMatchObject({ ok: true, role: 'team', name: 'Sam', tier: 'member', telegramUserId: null });
+  });
+
+  it('a person the log does not hold is unknown, never the owner', () => {
+    expect(devicePerson({ userId: 'nobody', role: 'team' }, null, owner, undefined, standing)).toMatchObject({ ok: false, reason: 'person-unknown' });
+    expect(devicePerson({ role: 'team' }, null, owner, undefined, standing)).toMatchObject({ ok: false });
+    expect(devicePerson({ userId: 'sam', role: 'team' }, null, owner)).toMatchObject({ ok: false });
+  });
+
+  it('a bearer link can never name a team phone', () => {
+    expect(choosePerson(undefined, 'team', null, owner)).toMatchObject({ ok: false, error: 'bad-role' });
+  });
+
+  it('a team person owns what they create, unlike the owner', () => {
+    expect(conversationOwnerFor(resolved('sam'), 'm1')).toEqual({ machineId: 'm1', userId: 'sam' });
+  });
+
+  it.each([
+    ['sam', 'telegram:7', 'send', true],
+    ['sam', 'telegram:7', 'delete', false],
+    ['sam', 'telegram:8', 'read', true],
+    ['sam', 'telegram:8', 'send', false],
+    ['sam', 'telegram:6', 'read', false],
+    ['sam', 'telegram:9', 'delete', true],
+    ['gus', 'telegram:7', 'read', true],
+    ['gus', 'telegram:7', 'send', false],
+    ['sam', 'slack:T1:C1', 'read', false],
+    ['sam', uuid, 'read', false],
+  ] as const)('%s on %s may %s: %s', (who, ref, op, want) => {
+    expect(mayUseConversation(resolved(who), ref, 'm1', () => null, op, facts)).toBe(want);
+  });
+
+  it('a team person with no facts source gets nothing', () => {
+    expect(mayUseConversation(resolved('sam'), 'telegram:7', 'm1', () => null, 'read', null)).toBe(false);
+  });
+
+  it('a team person reaches their own app conversation by its stored owner', () => {
+    expect(mayUseConversation(resolved('sam'), uuid, 'm1', () => ({ machineId: 'm1', userId: 'sam' }), 'delete', () => ({ own: false, grant: null }))).toBe(true);
+    expect(mayUseConversation(resolved('sam'), uuid, 'm1', () => ({ machineId: 'm1', userId: 'other' }), 'read', () => ({ own: false, grant: null }))).toBe(false);
+  });
+
+  it('msp and owner answers do not depend on the operation', () => {
+    const msp = { ok: true as const, role: 'msp' as const, userId: 'd', name: 'Dana', telegramUserId: null, grants: { ownerConversations: false, slack: false } };
+    expect(mayUseConversation(msp, 'telegram:6', 'm1', () => null, 'delete', facts)).toBe(true);
+  });
+});
+
+describe('role literals', () => {
+  it('no code outside MobilePeople compares a phone role to msp to decide owner behaviour', () => {
+    const root = path.resolve(__dirname, '../../src');
+    const hits: string[] = [];
+    const walk = (dir: string): void => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) { walk(p); continue; }
+        if (!e.name.endsWith('.ts') || e.name === 'MobilePeople.ts') continue;
+        for (const line of fs.readFileSync(p, 'utf8').split('\n')) {
+          if (/\b(?:sender|person|sendPerson|forWhom)\??\.role\s*===\s*'msp'/.test(line)) hits.push(`${e.name}: ${line.trim().slice(0, 80)}`);
+        }
+      }
+    };
+    walk(root);
+    expect(hits).toEqual([]);
+  });
+});
+
+describe('route tiers (team-roles-and-access §3.7)', () => {
+  it('every allowlist entry has a tier, and owner-only entries read owner', () => {
+    for (const rule of DEVICE_ALLOWLIST) {
+      expect(rule.tier, rule.re.source).toBeTruthy();
+      if (rule.ownerOnly) expect(rule.tier).toBe('owner');
+    }
+  });
+
+  const tierFor = (method: string, p: string) => DEVICE_ALLOWLIST.find((r) => r.method === method && r.re.test(p))?.tier;
+
+  it.each([
+    ['GET', '/mobile/conversations', 'guest'],
+    ['GET', '/telegram/topics/7/messages', 'guest'],
+    ['POST', '/mobile/chat/7', 'member'],
+    ['POST', '/mobile/conversations', 'member'],
+    ['POST', '/mobile/media/purge', 'member'],
+    ['GET', '/attention', 'admin'],
+    ['GET', '/sessions', 'admin'],
+    ['GET', '/mobile/people', 'admin'],
+    ['POST', '/mobile/console-ticket', 'admin'],
+    ['GET', '/mobile/files', 'owner'],
+    ['GET', '/mobile/machines', 'owner'],
+  ])('%s %s needs %s', (method, p, tier) => {
+    expect(tierFor(method, p)).toBe(tier);
+  });
+
+  it('a route added without a decision stays closed to members', () => {
+    const open = DEVICE_ALLOWLIST.filter((r) => r.tier === 'guest' || r.tier === 'member').length;
+    expect(open).toBe(25);
+  });
+
+  it.each([
+    ['POST', '/mobile/chat/7', 'telegram:7', 'send'],
+    ['GET', '/telegram/topics/7/messages', 'telegram:7', 'read'],
+  ] as const)('%s %s targets %s for %s', (method, p, ref, op) => {
+    expect(teamConversationTarget(method, p)).toEqual({ ref, op });
+  });
+
+  it('reads the operation from an app conversation route', () => {
+    const uuid = '11111111-1111-4111-8111-111111111111';
+    expect(teamConversationTarget('POST', `/mobile/chat/app/${uuid}`)).toEqual({ ref: uuid, op: 'send' });
+    expect(teamConversationTarget('GET', `/mobile/chat/app/${uuid}/messages`)).toEqual({ ref: uuid, op: 'read' });
+    expect(teamConversationTarget('GET', `/mobile/chat/app/${uuid}/preview/m1`)).toEqual({ ref: uuid, op: 'read' });
+    expect(teamConversationTarget('DELETE', `/mobile/conversations/${uuid}`)).toEqual({ ref: uuid, op: 'delete' });
+    expect(teamConversationTarget('PATCH', `/mobile/conversations/${uuid}`)).toEqual({ ref: uuid, op: 'rename' });
+    expect(teamConversationTarget('GET', '/mobile/conversations')).toBeNull();
   });
 });

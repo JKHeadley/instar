@@ -160,7 +160,7 @@ function sanitizePeerMessage(raw: unknown, machine: string, display?: OriginDisp
     originVerified: 'unknown', machine,
     ...(files > 0 ? { filesOnOtherMachine: files } : {}),
     ...(typeof m.senderName === 'string' && m.senderName.length > 0 ? { senderName: m.senderName.slice(0, 128) } : {}),
-    ...(m.senderRole === 'owner' || m.senderRole === 'msp' ? { senderRole: m.senderRole } : {}),
+    ...(m.senderRole === 'owner' || m.senderRole === 'msp' || m.senderRole === 'team' ? { senderRole: m.senderRole } : {}),
     // A peer's origin row is re-checked; its display bits are replaced by this machine's (§4).
     ...(m.role === 'agent' && display ? { origin: validateDeviceOriginRow(m.origin, display) ?? deviceOriginRow(null, display, 'other-machine') } : {}),
   };
@@ -694,7 +694,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     let originVerdict: OriginVerdict = 'unknown';
     try {
       originVerdict = s.verify(msg);
-      outcome = await dispatch({ conversationKey: key, alias, title: conv.title ?? 'Untitled', text: sessionText, messageId, ownerName: sender?.name ?? s.ownerName(), memoryPersonId: sender?.role === 'msp' ? sender.userId : null, originVerdict, ...(pending.lines.length > 0 ? { notes: pending.lines } : {}) });
+      outcome = await dispatch({ conversationKey: key, alias, title: conv.title ?? 'Untitled', text: sessionText, messageId, ownerName: sender?.name ?? s.ownerName(), memoryPersonId: sender && sender.role !== 'owner' ? sender.userId : null, originVerdict, ...(pending.lines.length > 0 ? { notes: pending.lines } : {}) });
       if (outcome === 'delivered') pending.ack();
     } catch (err) {
       try { s.appendDelivery(key, messageId, 'unknown', seed); } catch { /* @silent-fallback-ok — the request itself is recorded outcome-unknown below */ }

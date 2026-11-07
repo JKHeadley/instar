@@ -25,7 +25,7 @@ import type { OriginDisplaySettings, TelegramOriginProducer } from '../messaging
 import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyOriginDeps } from './replyOrigin.js';
 import { consolePageUrl } from './dashboardPaths.js';
 import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
-import { stripViewSignatures } from './mobilePairingRoutes.js';
+import { filterTopicsForTeam, stripViewSignatures } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
@@ -1119,7 +1119,7 @@ export interface MobileInboundTrust {
    * People and roles (docs/specs/mobile-app-people-and-roles.md): the authenticated phone's role and
    * registry person (MSP only, namespaced by machine). Absent ⇒ an owner phone (older callers).
    */
-  sender?: { role: 'owner' | 'msp'; person?: { machineId: string; userId: string } };
+  sender?: { role: 'owner' | 'msp' | 'team'; person?: { machineId: string; userId: string } };
 }
 
 export interface RouteContext {
@@ -19627,7 +19627,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     const local = ctx.telegram?.getAllTopicMappings() ?? [];
     if (req.query.scope !== 'pool') {
-      res.json({ topics: local, serving: ctx.telegramOrigin?.options.holdsLease?.() === true });
+      res.json({ topics: filterTopicsForTeam(ctx.mobilePairingService, req, local, (t) => (t as { topicId?: unknown }).topicId), serving: ctx.telegramOrigin?.options.holdsLease?.() === true });
       return;
     }
     // A session can run on a standby whose local registry still says
@@ -19680,7 +19680,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
     res.json({
-      topics: [...named.values()].sort((a, b) => a.topicId - b.topicId),
+      topics: filterTopicsForTeam(ctx.mobilePairingService, req, [...named.values()].sort((a, b) => a.topicId - b.topicId), (t) => t.topicId),
       pool: { failed, unresolved: [...knownIds].filter(id => !named.has(id)).sort((a, b) => a - b) },
     });
   });
@@ -30384,13 +30384,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
    * List all topics with metadata.
    * GET /topic/list
    */
-  router.get('/topic/list', (_req, res) => {
+  router.get('/topic/list', (req, res) => {
     if (!ctx.topicMemory) {
       res.status(503).json({ error: 'TopicMemory not initialized' });
       return;
     }
 
-    const topics = ctx.topicMemory.listTopics();
+    const topics = filterTopicsForTeam(ctx.mobilePairingService, req, ctx.topicMemory.listTopics(), (t) => (t as { topicId?: unknown }).topicId);
     res.json({ topics, total: topics.length });
   });
 

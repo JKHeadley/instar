@@ -338,7 +338,7 @@ interface LogEntry {
   deviceId?: string;
   eventId?: string;
   /** People and roles: the app sender's role and registry person (MSP only; namespaced by machine). */
-  senderRole?: 'owner' | 'msp';
+  senderRole?: 'owner' | 'msp' | 'team';
   senderPerson?: { machineId: string; userId: string };
   /** Structural origin, stamped at the send/receive seam. */
   provenance: MessageProvenance;
@@ -1651,7 +1651,7 @@ export class TelegramAdapter implements MessagingAdapter {
     via?: 'mobile-device';
     deviceId?: string;
     eventId?: string;
-    senderRole?: 'owner' | 'msp';
+    senderRole?: 'owner' | 'msp' | 'team';
     senderPerson?: { machineId: string; userId: string };
   }): void {
     const fromApp = entry.via === 'mobile-device';

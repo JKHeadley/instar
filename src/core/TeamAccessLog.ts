@@ -18,7 +18,11 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isGrantAccessEvent, parseSignedEvents, validateMachineEvent, type MachineEvent, type RequestEvent } from './TeamAccessEvents.js';
-import { sha256Hex, type MachineSignature, type MachineSigner } from './AppRecordSignatures.js';
+import {
+  canonicalStringFromHash, ledgerViewKey, receiptPayload, sha256Hex, verifyMachineSignature,
+  type LedgerView, type MachineKeyLookup, type MachineSignature, type MachineSigner,
+} from './AppRecordSignatures.js';
+import { DEVICE_TIME_WINDOW_MS, isStrictLowSDer, parseDevicePublicKey } from './MobileDeviceKeys.js';
 import type { GrantAccess } from '../permissions/TeamAccess.js';
 import type { OrgRole } from '../permissions/types.js';
 
@@ -30,7 +34,10 @@ export interface RequestRow {
   kind: 'request';
   receivedAt: string;
   /** The phone's stored signed request and the machine's receipt (mobile-native-conversations §4.6). */
-  signedOrigin: { keyHash: string; deviceId: string; bodyB64: string; bodySha256: string; [k: string]: unknown };
+  signedOrigin: {
+    keyHash: string; deviceId: string; bodyB64: string; bodySha256: string;
+    publicKey?: string; host?: string; method?: string; pathWithQuery?: string; timeMs?: string; sig?: string;
+  };
   receipt?: MachineSignature;
   machineSig: MachineSignature;
 }
@@ -74,6 +81,48 @@ export function emptyState(): TeamAccessState {
 export function rowPayload(row: Omit<RequestRow, 'machineSig'> | Omit<MachineRow, 'machineSig'>): string {
   const content = row.kind === 'request' ? `${row.receivedAt}\n${row.signedOrigin.bodySha256}\n${row.signedOrigin.keyHash}` : `${row.at}\n${sha256Hex(JSON.stringify(row.events))}`;
   return `instar-team-access-row-v1\n${row.seq}\n${row.kind}\n${content}`;
+}
+
+/** The routes whose signed requests may carry access events. */
+export const TEAM_ACCESS_WRITE_PATHS: readonly RegExp[] = [
+  /^\/mobile\/team\/invites$/, /^\/mobile\/team\/grants$/, /^\/mobile\/team\/people\/[^/]+$/, /^\/mobile\/team\/off$/,
+];
+
+/**
+ * A row's verdict. The phone's signature is re-checked over the stored body, the path must be an
+ * access route, and the machine must have signed both the receipt and the row. A key this machine
+ * cannot look up reads `unknown`, never `failed`.
+ */
+export function verifyTeamAccessRow(row: TeamAccessRow, ledger: LedgerView, machineKey: MachineKeyLookup): RowVerdict {
+  const { machineSig, ...rest } = row;
+  const atMs = Date.parse(row.kind === 'request' ? row.receivedAt : row.at);
+  if (!Number.isFinite(atMs)) return 'failed';
+  const rowSig = verifyMachineSignature(machineKey, machineSig, rowPayload(rest as Omit<RequestRow, 'machineSig'> | Omit<MachineRow, 'machineSig'>), atMs);
+  if (rowSig === 'bad') return 'failed';
+  if (row.kind === 'machine') return rowSig === 'ok' ? 'verified' : 'unknown';
+
+  const o = row.signedOrigin;
+  if (!ledger) return 'unknown';
+  const entry = ledger.get(ledgerViewKey(o.keyHash, o.deviceId));
+  if (!entry) return 'unknown';
+  if (o.publicKey !== entry.publicKey || o.deviceId !== entry.deviceId) return 'failed';
+  if (typeof o.host !== 'string' || typeof o.pathWithQuery !== 'string' || typeof o.timeMs !== 'string' || typeof o.sig !== 'string') return 'failed';
+  if ((o.method ?? '').toUpperCase() !== 'POST' || !TEAM_ACCESS_WRITE_PATHS.some((re) => re.test(o.pathWithQuery as string))) return 'failed';
+  const key = parseDevicePublicKey(entry.publicKey);
+  const sigBytes = /^[A-Za-z0-9_-]+$/.test(o.sig) ? Buffer.from(o.sig, 'base64url') : null;
+  if (!key || !sigBytes || !isStrictLowSDer(sigBytes)) return 'failed';
+  const canonical = canonicalStringFromHash(o.deviceId, o.host, o.method as string, o.pathWithQuery, o.timeMs, o.bodySha256);
+  let sigOk = false;
+  try { sigOk = crypto.verify('sha256', Buffer.from(canonical), { key, dsaEncoding: 'der' }, sigBytes); } catch { sigOk = false; } // @silent-fallback-ok — a malformed signature is a failed row
+  if (!sigOk) return 'failed';
+  const activated = Date.parse(entry.activatedAt);
+  const revoked = entry.revokedAt ? Date.parse(entry.revokedAt) : null;
+  if (!Number.isFinite(activated) || atMs < activated || (revoked !== null && atMs >= revoked)) return 'failed';
+  if (!/^\d{10,16}$/.test(o.timeMs) || Math.abs(Number(o.timeMs) - atMs) > DEVICE_TIME_WINDOW_MS) return 'failed';
+  if (!row.receipt) return 'failed';
+  const receipt = verifyMachineSignature(machineKey, row.receipt, receiptPayload(sha256Hex(canonical), row.receivedAt, row.receipt.machineId), atMs);
+  if (receipt === 'bad') return 'failed';
+  return receipt === 'ok' && rowSig === 'ok' ? 'verified' : 'unknown';
 }
 
 function bodyEvents(row: RequestRow): RequestEvent[] | null {
