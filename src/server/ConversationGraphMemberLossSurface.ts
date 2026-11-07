@@ -1,6 +1,8 @@
 /** Owner route for removing a permanently lost machine. Every step reuses the action,
  * preflight, native and execution components, so this file grants no permission of its
  * own: it only runs them in order and reports where they got to. */
+import path from 'node:path';
+import {flushTreesDurably} from '../core/GraphDurableFileMemo.js';
 import type {Request,Response} from 'express';
 import {verifiedEntityName} from '../messaging/shared/channelIdentity.js';
 import {SecretStore} from '../core/SecretStore.js';
@@ -27,6 +29,7 @@ export async function removeLostMachine(options:{manager:ConversationGraphDefaul
  if(!actual||!native||!runtime)throw new Error('member-loss-planning-runtime-unavailable');
  const {authority}=actual,scope=intent.scope,context:GraphOwnerMemberLossContext={ownerPublicKey:authority.ownerPublicKey,previousPublicationHash:scope.previousPublicationHash,previousMembership:scope.previousMembership,newMembership:scope.newMembership,nativeIdentities:scope.nativeIdentities};
  const existing=heldRemoval(manager),holds=existing?.row.holds.length?existing.row.holds:[authority.beginMemberLossHold(intent.intentProof,context,runtime.machineId,native.identity.loadSigningKey())];
+ await flushTreesDurably(['conversation-graph-source','conversation-graph-intake','conversation-graph-transfer'].map(name=>path.join(authority.stateRoot,'state',name)));
  const snapshot=await runtime.source.verifyMemberLossInventory(runtime.reader,runtime.droppedOriginRegistry,runtime.intake,authority,intent.intentProof);
  let preflight:GraphMemberLossHeldPreflight;
  try{preflight=progress&&resumed?GraphMemberLossHeldPreflight.resume({authority,snapshot,context,intent:intent.intentProof,holds,consent:resumed.consent,progress}):GraphMemberLossHeldPreflight.collect({authority,snapshot,context,intent:intent.intentProof,holds});}catch(error){snapshot.close();throw error;}

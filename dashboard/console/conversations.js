@@ -309,7 +309,10 @@ export async function renderConversations(main) {
     const body=el('div',{class:'conversations-page'},pageHead({eyebrow:'Conversations',headline:'Your conversations'}),syncLine,
       note('Create an effort here while shared conversations are unavailable. These changes stay separate from the agreed view.'));
     const controls=effortActionControls({canCorrect:true,send:(path,payload)=>read(path,controller.signal,payload),current,unlock:()=>unlock(main,retry),refresh:retry});if(controls)body.append(controls);
-    setKids(main,body);await mountPending({body,syncLine,baseSync:localWords,send:(path,payload)=>read(path,controller.signal,payload),current,unlock:()=>unlock(main,retry),refresh:retry});return;
+    setKids(main,body);
+    // A stopped removal is the very thing that takes the agreed view away, so its way to finish has to stay on this page.
+    void machineControls({send:(path,sent)=>read(path,controller.signal,sent),current,unlock:()=>unlock(main,retry),refresh:retry}).then(machines=>{if(machines&&current())body.append(machines);}).catch(()=>{});
+    await mountPending({body,syncLine,baseSync:localWords,send:(path,payload)=>read(path,controller.signal,payload),current,unlock:()=>unlock(main,retry),refresh:retry});return;
   }
   if (!result.ok) { failure(main, result, retry); return; }
   const model = listModel(result.data, state.view);

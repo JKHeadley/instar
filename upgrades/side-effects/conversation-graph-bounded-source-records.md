@@ -33,7 +33,7 @@ Signed rows replicate as before. Live activity is machine-local by design: it is
 Revert the commit. Records written so far stay valid and nothing needs repair. Nothing is deployed yet, so no agent carries the old growth.
 
 ## Class-Closure Declaration
-Defect class: unbounded-self-action. Closure: bounded. Activity no longer drives permanent records; the remaining rate is one per active topic a week and one checkpoint per machine a day. Long-term compaction remains absent and is stated above.
+Defect class: unbounded-self-action. Closure: n/a, because this change adds no new self-action and only slows existing ones. Activity no longer drives permanent records; the remaining rate is one per active topic a week and one checkpoint per machine a day. Long-term compaction remains absent and is stated above.
 
 ## Evidence
 Message and topic counts came from Echo's own Telegram log. Tests: `tests/unit/graph-source-row-unchanged.test.ts`, a new integration case proving a new message reuses the record and a rename adds exactly one, and `tests/unit/conversation-graph-source-sweep-cadence.test.ts`.

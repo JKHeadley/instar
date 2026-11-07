@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-removal-at-size",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-07T19:37:06.255Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-removal-at-size.md",
+  "artifactSha256": "aba679704d7c97805e20e6fa72f89f165ffc325d4a5d62815f96531b0852f1d9",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "dashboard/console/conversations.js",
+    "src/core/ConversationGraphIntake.ts",
+    "src/core/ConversationGraphReplication.ts",
+    "src/core/GraphDurableFileMemo.ts",
+    "src/server/ConversationGraphMemberLossSurface.ts",
+    "tests/unit/console-conversations-v2-dom.test.ts",
+    "tests/unit/graph-durable-file-memo-trees.test.ts",
+    "upgrades/side-effects/conversation-graph-bounded-source-records.md",
+    "upgrades/side-effects/conversation-graph-removal-at-size.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
