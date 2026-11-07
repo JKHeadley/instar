@@ -178,6 +178,74 @@ describe('instar-dev pre-commit — decision-audit line rides the commit (self-s
     }
   });
 
+  // ── Deleted paths enter the record scope (PR #2821) ──
+  // The PR-boundary check takes every changed path, so a path the gate leaves
+  // out of scope can never pass it.
+
+  function commitBase(files: string[]): void {
+    for (const rel of files) fs.writeFileSync(path.join(sandbox, rel), `// ${rel}\nline two\nline three\n`);
+    execFileSync('git', ['add', ...files], { cwd: sandbox });
+    execFileSync('git', ['commit', '-q', '--no-verify', '-m', 'base'], { cwd: sandbox });
+  }
+  function writeTrace(coveredFiles: string[]): void {
+    fs.writeFileSync(
+      path.join(sandbox, '.instar', 'instar-dev-traces', `${Date.now()}-audit-fixture.json`),
+      JSON.stringify({
+        phase: 'complete', slug: 'audit-fixture', tier: 1, coveredFiles, createdAt: new Date().toISOString(),
+      }, null, 2),
+    );
+  }
+  function onlyEntry(): { scope: { basis: string; files: string[] } } {
+    const entries = listEntryFiles();
+    expect(entries.length).toBe(1);
+    return JSON.parse(fs.readFileSync(path.join(sandbox, '.instar', 'instar-dev-decisions', entries[0]), 'utf8'));
+  }
+
+  it('a deletion-only commit reaches the gate, and the deleted path enters the record scope', async () => {
+    commitBase(['src/gone.ts']);
+    execFileSync('git', ['rm', '-q', 'src/gone.ts'], { cwd: sandbox });
+    writeTrace(['src/gone.ts']);
+
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).not.toBe(0); // incomplete Tier-1 bundle: the gate ran
+    const entry = onlyEntry();
+    expect(entry.scope.files).toEqual(['src/gone.ts']);
+    expect(entry.scope.basis).not.toBe('staged-in-scope-additions-plus-deletions');
+  });
+
+  it('a trace that leaves out a deleted path does not cover the commit', async () => {
+    commitBase(['src/gone.ts', 'src/kept.ts']);
+    execFileSync('git', ['rm', '-q', 'src/gone.ts'], { cwd: sandbox });
+    fs.appendFileSync(path.join(sandbox, 'src/kept.ts'), '// changed\n');
+    execFileSync('git', ['add', 'src/kept.ts'], { cwd: sandbox });
+    writeTrace(['src/kept.ts']);
+
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('No fresh complete trace covers this staged change, deleted and renamed-away paths included');
+    expect(listEntryFiles()).toEqual([]);
+  });
+
+  it('a rename puts both the old and the new path in the record scope', async () => {
+    commitBase(['src/old-name.ts']);
+    execFileSync('git', ['mv', 'src/old-name.ts', 'src/new-name.ts'], { cwd: sandbox });
+    writeTrace(['src/new-name.ts', 'src/old-name.ts']);
+
+    await runHook(process.env, sandbox);
+    expect(onlyEntry().scope.files.sort()).toEqual(['src/new-name.ts', 'src/old-name.ts']);
+  });
+
+  it('a deleted out-of-scope file alone still passes through the gate', async () => {
+    fs.writeFileSync(path.join(sandbox, 'docs', 'note.md'), 'note\n');
+    execFileSync('git', ['add', 'docs/note.md'], { cwd: sandbox });
+    execFileSync('git', ['commit', '-q', '--no-verify', '-m', 'base'], { cwd: sandbox });
+    execFileSync('git', ['rm', '-q', 'docs/note.md'], { cwd: sandbox });
+
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).toBe(0);
+    expect(listEntryFiles()).toEqual([]);
+  });
+
   // ── Verdict finalization (the mislabeled rode-along entry, 2026-06-05) ──
   // Riding-the-retry is deliberate: a blocked evaluation's entry rides the
   // next successful commit. But without a verdict, an entry written under a
@@ -247,7 +315,7 @@ describe('instar-dev pre-commit — decision-audit line rides the commit (self-s
     expect(entry.verdict).toBe('pass');
     expect(entry.slug).toBe('pass-fixture');
     expect(entry.scope).toEqual({
-      basis: 'staged-in-scope-additions-plus-deletions',
+      basis: 'staged-in-scope-paths-including-deleted',
       files: [srcRel],
       addedLines: 1,
       deletedLines: 0,

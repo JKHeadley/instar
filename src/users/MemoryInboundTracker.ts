@@ -7,12 +7,15 @@
  * session holding wider memory never answers a new reader.
  */
 
+import type { SessionPlaceInput } from './MemoryPrivacy.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { audienceKey, OPERATOR_PERSON_ID, type MemoryPrivacy } from './MemoryPrivacy.js';
 import { isScopedAudience } from './MemoryAudience.js';
 import type { MemoryBlocker, MemoryPrivacyRecovery } from './MemoryPrivacyRecovery.js';
 
 export interface InboundFacts {
+  /** The session's place, when it is more than `placeKey`: a Telegram topic may have its own (team-roles-and-access §3.5). */
+  placeInput?: SessionPlaceInput;
   placeKey: string;
   placeKind: 'private' | 'shared';
   /** Verified sender: `user:<id>` when resolved, else `<platform>:<id>`. Null when unverified. */
@@ -77,7 +80,7 @@ export class MemoryInboundTracker {
       : { kind: 'held', reason: 'person refused' });
     if (!recovery || !owner) return MEMORY_PRIVACY_UNAVAILABLE_REPLY;
     // The owner's own private chat needs no boundary, so private memory is not the cause.
-    const audience = privacy.audienceFor(privacy.placeFor({ memoryPlaceKey: facts.placeKey }, null));
+    const audience = privacy.audienceFor(privacy.placeFor(facts.placeInput ?? { memoryPlaceKey: facts.placeKey }, null));
     if (!isScopedAudience(audience)) return MEMORY_PRIVACY_RETRY_REPLY;
     const blocker: MemoryBlocker | undefined = this.deps.framework() !== 'claude-code' ? 'framework' : undefined;
     if (!recovery.hasCause(blocker)) return MEMORY_PRIVACY_RETRY_REPLY;
@@ -126,7 +129,7 @@ export class MemoryInboundTracker {
 
     if (flipped || readersChanged) await this.deps.retireSessions();
 
-    const audience = privacy.audienceFor(privacy.placeFor({ memoryPlaceKey: facts.placeKey }, null));
+    const audience = privacy.audienceFor(privacy.placeFor(facts.placeInput ?? { memoryPlaceKey: facts.placeKey }, null));
     // Whatever started this session, it must match before this message reaches it: this
     // covers sessions from before an update, a restart, and a place that lost its proof.
     const live = facts.liveSession?.();

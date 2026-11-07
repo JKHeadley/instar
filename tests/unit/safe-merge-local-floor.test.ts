@@ -271,6 +271,21 @@ describe('runLocalBodyChecks — eli16, decision-audit, release-fragment from th
     expect(r.every((c: { ok: boolean }) => c.ok)).toBe(true);
   });
 
+  it('reads a removed file as a deletion: an older record excuses it, a current one does not (#2821)', () => {
+    const files = [
+      { filename: 'src/x.ts', status: 'modified' },
+      { filename: 'scripts/run-migration.js', status: 'removed' },
+      { filename: '.instar/instar-dev-decisions/a.json', status: 'added' },
+      { filename: 'upgrades/next/x.md', status: 'added' },
+    ];
+    const audit = (basis: string) => runLocalBodyChecks({ ...pr, files, decisionRecords: [{ scope: { basis, files: ['src/x.ts'] } }] })
+      .find((c: { name: string }) => c.name === 'decision-audit');
+    expect(audit('staged-in-scope-additions-plus-deletions').ok).toBe(true);
+    const current = audit('staged-in-scope-paths-including-deleted');
+    expect(current.ok).toBe(false);
+    expect(current.detail).toContain('scripts/run-migration.js');
+  });
+
   it('fails eli16 without the section', () => {
     const r = runLocalBodyChecks({ ...pr, body: 'short', files: [], decisionRecords: [] });
     expect(r.find((c: { name: string }) => c.name === 'eli16').ok).toBe(false);

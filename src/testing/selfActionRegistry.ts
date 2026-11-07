@@ -54,6 +54,7 @@ import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMain
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
 import { decideKeyRefresh, REFRESH_MAX_ATTEMPTS } from '../core/ClaudeKeyHealth.js';
 import { decideRefusedRetry, RETRY_DELAYS_MS } from '../core/SlackRefusedHold.js';
+import { decideLimitRefresh, REFRESH_MAX_PER_DAY } from '../core/UsageLimitWatch.js';
 import { raiseDue } from '../monitoring/MaturationLadder.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
 import { decideRescueGate, WALL_RESCUE_LIMITS } from '../core/UsageWallRescue.js';
@@ -3308,6 +3309,37 @@ const claudeKeySessionRefresh: SelfActionController = {
 };
 
 /**
+ * usage-limit-session-refresh — when Claude usage comes back, a conversation with messages waiting is
+ * restarted. Worst case, the probe keeps passing while the session keeps hitting the limit (say it
+ * sits on another account). The REAL brake is `decideLimitRefresh`: 3 restarts per session in a
+ * rolling day, then it is left as it is and reported.
+ */
+const usageLimitSessionRefresh: SelfActionController = {
+  id: 'usage-limit-session-refresh',
+  actionVerb: 'session-refresh',
+  models: 'src/core/UsageLimitWatch.ts (decideLimitRefresh: 3 restarts per session per rolling day)',
+  modelsPath: 'src/core/UsageLimitWatch.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Restart times are persisted, so a server restart resets nothing, and a server restart is never caused by this controller.' },
+  boundK: REFRESH_MAX_PER_DAY,
+  perTargetBoundK: REFRESH_MAX_PER_DAY,
+  ticks: 60,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const TARGET = 'walled-session';
+    let recent = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (decideLimitRefresh({ recentRefreshes: recent }) !== 'attempt') return;
+        recent += 1;
+        sink.emit({ verb: 'session-refresh', target: TARGET });
+        if (!f.targetAlwaysRejects()) { recent = 0; } // it answered (never under the fixture)
+      },
+    };
+  },
+};
+
+/**
  * slack-refused-hold-retry — a refused Slack conversation start is retried. Under the pinned fixture
  * every retry is refused. The REAL brake is `decideRefusedRetry`: a fixed schedule of 6 tries over
  * about two hours, then the person is asked to resend and the messages are dropped. Nothing re-adds
@@ -4778,6 +4810,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   codex429ExitNotice,
   claudeKeySessionRefresh,
   slackRefusedHoldRetry,
+  usageLimitSessionRefresh,
   desktopRelockGuardReplacement,
   desktopLockedHelperRespawn,
   sessionPoolStagePromotion,

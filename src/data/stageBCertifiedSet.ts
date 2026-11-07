@@ -24,6 +24,62 @@ export const STAGE_B_CERTIFIED_SET = {
   ],
   "excluded": [
     {
+      "file": "src/core/AppRecordSignatures.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/IdentityStore.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/MachineIdentity.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/MobileDeviceKeys.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/NicknameAssigner.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/TeamAccessEvents.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/TeamAccessLog.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/appConversationText.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/appMediaTypes.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/keyMaterialPaths.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/pairingWords.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/messaging/outbound-credential-guard.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/permissions/TeamAccess.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/users/TeamConfinement.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
       "file": "src/core/pipeErrorGuard.ts",
       "reason": "Stream error listener reached through the excluded ClaudeCliIntelligenceProvider; it only stops a closed pipe becoming an uncaught exception, and has no part in the certified Codex Stage-B delivery path."
     },

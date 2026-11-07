@@ -54,6 +54,13 @@ describe('policy', () => {
     const p = { workspace: '/h/.worktrees/w', publishClone: '/h/.worktrees/w-publish', tmpDir: '/h/.worktrees/w-tmp', depsCache: '/h/.worktrees/.feedback-deps/x', agentHome: '/h', testRunnerHoldersFile: '/u/.instar/host-test-runner-holders.json', homeDir: '/u' };
     const s = buildSandboxRuntimeSettings(p);
     expect(s.network.allowedDomains).toEqual([]);
+    expect(s.network.allowMachLookup).toEqual(process.platform === 'darwin' ? ['com.apple.SystemConfiguration.DNSConfiguration'] : undefined);
+    expect(buildSandboxRuntimeSettings(p, { platform: 'darwin' }).network).toMatchObject({
+      allowedDomains: [], deniedDomains: [], allowLocalBinding: false, allowUnixSockets: [],
+      allowMachLookup: ['com.apple.SystemConfiguration.DNSConfiguration'],
+    });
+    expect(buildSandboxRuntimeSettings(p, { platform: 'linux' }).network.allowMachLookup).toBeUndefined();
+    expect(buildSandboxRuntimeSettings(p, { platform: 'win32' }).network.allowMachLookup).toBeUndefined();
     expect(s.filesystem.allowWrite).toEqual(['/h/.worktrees/w', '/h/.worktrees/w-tmp', ...testRunnerSemaphoreFiles(p.testRunnerHoldersFile)]);
     expect(s.filesystem.denyWrite).toEqual(expect.arrayContaining(['/h/.worktrees/w/.git', `/h/.worktrees/w/${EVIDENCE_FILE}`, '/h/.worktrees/w/.claude', '/h/.worktrees/w/.instar', p.depsCache, p.publishClone, '/tmp']));
     expect(s.filesystem.denyRead).toEqual(expect.arrayContaining(['/u', '/tmp', '/h', p.publishClone, '/u/.ssh', '/u/.claude', '/u/.config']));
@@ -90,10 +97,12 @@ describe('policy', () => {
   it('Claude settings: dontAsk allowlist, denies web/MCP and the agent home entries, no system-temp write deny', () => {
     const p = { workspace: '/h/.worktrees/w', publishClone: '/h/.worktrees/w-publish', tmpDir: '/h/.worktrees/w-tmp', depsCache: '/h/.worktrees/.feedback-deps/x', agentHome: '/h', testRunnerHoldersFile: '/u/.instar/h.json', homeDir: '/u' };
     const s = buildClaudeSandboxSettings({ paths: p, agentHomeChildren: ['.instar', '.worktrees', 'src'] }) as {
-      sandbox: { enabled: boolean; failIfUnavailable: boolean; allowUnsandboxedCommands: boolean; filesystem: { denyWrite: string[]; denyRead: string[]; allowRead: string[] } };
+      sandbox: { enabled: boolean; failIfUnavailable: boolean; allowUnsandboxedCommands: boolean; network: { allowedDomains: string[]; allowMachLookup?: string[] }; filesystem: { denyWrite: string[]; denyRead: string[]; allowRead: string[] } };
       permissions: { defaultMode: string; deny: string[]; allow: string[] }; env: Record<string, string>;
     };
     expect(s.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false });
+    expect(s.sandbox.network.allowedDomains).toEqual([]);
+    expect(s.sandbox.network.allowMachLookup).toEqual(process.platform === 'darwin' ? ['com.apple.SystemConfiguration.DNSConfiguration'] : undefined);
     expect(s.sandbox.filesystem.denyWrite).not.toContain('/tmp');
     expect(s.permissions.defaultMode).toBe('dontAsk');
     expect(s.permissions.deny).toEqual(expect.arrayContaining(['WebFetch', 'WebSearch', 'mcp__*', 'Read(//h/.instar/**)', 'Read(//h/src/**)', 'Read(//h/.worktrees/w-publish/**)', 'Edit(//h/.worktrees/w/.git/**)', 'Edit(//h/.worktrees/w/.claude/**)', 'Edit(//h/.worktrees/w/.instar/**)']));
@@ -781,6 +790,20 @@ describe('canary review-round regressions', () => {
 });
 
 describe('runner and filesystem helpers', () => {
+  it('a timed-out run records when it first printed and what was running', async () => {
+    const env = { PATH: process.env.PATH ?? '' };
+    const silent = await runCapped(process.execPath, ['-e', 'setTimeout(()=>{}, 60000)'], { cwd: os.tmpdir(), env, timeoutMs: 500 });
+    expect(silent.timedOut).toBe(true);
+    expect(silent.stderr).toContain('no output at all');
+    expect(silent.stderr).toContain('setTimeout');
+    const talking = await runCapped(process.execPath, ['-e', 'console.log("hi"); setTimeout(()=>{}, 60000)'], { cwd: os.tmpdir(), env, timeoutMs: 1_500 });
+    expect(talking.timedOut).toBe(true);
+    expect(talking.stdout).toContain('hi');
+    expect(talking.stderr).toContain('first output after');
+    const finished = await runCapped(process.execPath, ['-e', 'process.exit(0)'], { cwd: os.tmpdir(), env, timeoutMs: 10_000 });
+    expect(finished.stderr).toBe('');
+  });
+
   it('runCapped enforces the wall clock and the output cap and never throws on a non-zero exit', async () => {
     const env = { PATH: process.env.PATH ?? '' };
     expect((await runCapped(process.execPath, ['-e', 'process.exit(3)'], { cwd: os.tmpdir(), env, timeoutMs: 10_000 })).exitCode).toBe(3);

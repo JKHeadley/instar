@@ -73,3 +73,41 @@ Tier 2. Spec about 300 lines, 6 of 6 rounds used. Each round's outside findings 
 Stopped at the round cap, round 6 of 6. **The last round was not quiet.** Every design finding raised so far is resolved in the spec, but the fixes from rounds 5 and 6 did not get a further review round, and the outside reviewer's verdict on round 6 was still SERIOUS ISSUES, with three findings since fixed.
 
 None of the open risk touches the first slice, which is read-only and restricts nobody. Everything from rounds 2 to 6 concerns build step 2 onward. Step 2 is the security-sensitive step, so it gets its own side-effects review and an independent second pass, and it re-reads the §3.3 and §3.5 text against the code before building. Findings left: see Left behind.
+
+## Addendum: rounds 7 to 37 (2026-11-06)
+
+The tag above was stamped at the round cap with no quiet round, so the overseer held build step 2 and asked for fresh rounds until one found nothing new. Rounds 7 to 12 covered all of step 2 and kept finding items, the hardest multi-machine, so the overseer split it: 2a (one-machine agents) and 2b (multi-machine).
+
+**2a went quiet at round 37** on the text hashed `32ca33bfeffd5740`: the internal pass reported no design finding, and Codex reported MINOR ISSUES with no design finding, its second such round running. Only wording followed.
+
+Limits on that claim:
+
+- The last internal reviewer traced the two latest changes and spot-checked the rest. It did not trace every bullet.
+- Codex read the specs, not the code.
+- Several internal rounds ran under a brief that said the scheduled-jobs limit was decided and not to re-raise it. One round's bar treated a double file corruption as long-tail. Round 9 briefly used a narrower bar and was not counted.
+- From round 2 the internal lenses ran as one combined pass.
+
+**2b, the team admin steps and the rest are not converged.** §4.1 lists what is known for them.
+
+**Disclosed limit, not fixed:** owner-reach scheduled jobs can read member words from message logs, and nothing but model behaviour stops those words steering a job. The overseer ruled it not blocking 2a (it sits inside the owner role) with its own fix tracked as fb-27cc594b-a49.
+
+Most valuable finds in 2a: slash commands and intercept words reaching agent-wide controls from a team phone; confined sessions unable to read their own context; a Slack stop killing every session; member text loading into owner-reach sessions after a revoke; backup restore rolling back revocations; a clock moving backward undoing a removal.
+
+## Code review of step 2a (2026-11-06 to 2026-11-07)
+
+The spec rounds above read the design. Once 2a was built, reviewers read the code: six rounds from the same model family and four passes from Codex, each given the code and not the reasoning.
+
+They found over thirty real defects the spec rounds and a full route-by-role table had not. The ones that mattered most:
+
+- Any team phone could read any Telegram topic through an altered address, because the gate matched fewer paths than the allow rule and the handler parsed `51x` as 51.
+- The conversation list showed every topic's name and a preview.
+- A person's own conversation was never confined.
+- A confined session could plant a link and have the unsandboxed server overwrite an owner's file.
+- A confined session could report a flag-shaped session id that reached `--resume` at the next launch. This and the Linux `.curlrc` write were on main for any confined session, so they went into their own PR, 2910.
+- On an ordinary agent the owner could invite people but not turn team access off.
+- A restore could lock an owner out of every conversation.
+- A row lost from the middle of the log could quietly give back what it took away.
+
+What this says about the process: a design review cannot see wiring, and a test that stops at the gate says nothing about what a handler serves. Several fixes were themselves wrong the first time. One was wired only on a path production does not use, and a stop handler had a second unfixed copy. Removing each fix to confirm its test goes red caught three tests that could not fail.
+
+Stopped on content. The last round found no way to gain access, only ordering and recovery edges, which were fixed. The pass before it found two that could give access back: a non-standard topic reference, reachable only through the owner's own signed request, and a lost log row that could restore a higher role. Both were fixed. Codex's label read SERIOUS ISSUES on every pass, including the last, so a clean label was never reached. A live run on the final build passed; a model's reply under confinement was not seen, because the test agent's session stopped at "Login expired".

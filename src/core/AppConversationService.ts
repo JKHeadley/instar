@@ -12,6 +12,7 @@
  * non-owner, are later work: a non-owner answers `503 owner-unavailable` AFTER the message is
  * persisted (§4.8's fallback), so nothing typed is lost.
  */
+import { safeInboxTarget } from './memorySessionPolicy.js';
 import type { ConversationRegistry } from './ConversationRegistry.js';
 import type { MobileChatRequestStore } from './MobileChatRequests.js';
 import { SessionChannelRegistry } from '../messaging/shared/SessionChannelRegistry.js';
@@ -25,6 +26,7 @@ import { AppMediaStore, DEFAULT_MAX_STORE_BYTES } from './AppMediaStore.js';
 import { MAX_PURGE_BATCH, MAX_TRANSCRIPT_CHARS, displayName, sessionLine, type AppAttachment } from './appMediaTypes.js';
 import { TranscriptionUnavailableError } from './VoiceTranscription.js';
 import { AppMediaReplicator, OWNER_PULL_WAIT_MS, PENDING_DELIVERY_TTL_MS } from './AppMediaReplicator.js';
+import fs from 'node:fs';
 import path from 'node:path';
 
 export const STRANDED_REQUEST_AGE_MS = 5 * 60_000;
@@ -53,7 +55,14 @@ export interface AppConversationServiceDeps {
   killSession?: (tmuxSession: string) => boolean;
   pauseSession?: (tmuxSession: string) => void;
   /** The emergency-stop side effects shared with the Telegram path (resume queue pause, …). */
-  onEmergencyStop?: (alias: number) => void;
+  onEmergencyStop?: (alias: number, scope?: 'conversation') => void;
+  /**
+   * The inbox of a confined conversation's scope folder, or null when it is not confined. A confined
+   * session cannot read the agent's state, so its files go here (team-roles-and-access §4.1).
+   */
+  confinedInbox?: (conversationKey: string) => string | null;
+  /** A create recovered after a crash gets the same confinement as a normal one. */
+  confineStranded?: (conversationKey: string, personKey: string, deviceId: string) => void;
   reportDegradation?: (what: string, detail: string) => void;
   now?: () => number;
   /**
@@ -358,7 +367,7 @@ export class AppConversationService {
     // A voice note's server transcription runs in parallel with the other files (§4.5.1).
     const lines: Array<string | Promise<string>> = [];
     for (const a of attachments) {
-      const copy = await this.media.sessionCopy(messageId, a).catch((err: unknown) => { // @silent-fallback-ok — reported through deps.reportDegradation; the line says the file is unavailable
+      const copy = await this.media.sessionCopy(messageId, a).then((p) => (p ? this.intoConfinedInbox(conversationKey, p) : p)).catch((err: unknown) => { // @silent-fallback-ok — reported through deps.reportDegradation; the line says the file is unavailable
         this.report('session copy', err);
         return null;
       });
@@ -373,6 +382,18 @@ export class AppConversationService {
       this.replicator.want(a.sha256);
     }
     return Promise.all(lines);
+  }
+
+  /**
+   * A confined session can read only its scope folder, so a server-recorded file is copied there. The
+   * caller found this file through the conversation's own events: never a path from a message.
+   */
+  intoConfinedInbox(conversationKey: string, filePath: string): string {
+    const inbox = this.deps.confinedInbox?.(conversationKey);
+    if (!inbox) return filePath;
+    const target = safeInboxTarget(inbox, filePath);
+    fs.copyFileSync(filePath, target, fs.constants.COPYFILE_EXCL);
+    return target;
   }
 
   /** Wired where the pairing service is: declines a pending pairing whose code a transcript dictates. */
@@ -556,8 +577,9 @@ export class AppConversationService {
     for (const r of rows) {
       try {
         const a = this.store.getMediaAttachments(r.conversationKey, r.messageId)?.find((x) => x.attachmentId === r.attachmentId);
-        const copy = a ? await this.media.sessionCopy(r.messageId, a) : null;
-        if (!copy) continue;
+        const held = a ? await this.media.sessionCopy(r.messageId, a) : null;
+        if (!held) continue;
+        const copy = this.intoConfinedInbox(r.conversationKey, held);
         // Claim the row first, so two landings never produce two lines (§4.12: de-duplicated by attachment).
         const claimed = this.media.indexDb.prepare(`UPDATE pending_deliveries SET state = 'ready', path = ? WHERE attachmentId = ? AND state = 'waiting'`).run(copy, r.attachmentId);
         if (claimed.changes !== 1) continue;
@@ -734,12 +756,12 @@ export class AppConversationService {
     return alias === null ? null : this.channels.getSessionForChannel(String(alias));
   }
 
-  emergencyStop(conversationKey: string): { stopped: boolean; session: string | null } {
+  emergencyStop(conversationKey: string, scope?: 'conversation'): { stopped: boolean; session: string | null } {
     const session = this.sessionFor(conversationKey);
     let stopped = false;
     if (session) { try { stopped = this.deps.killSession?.(session) === true; } catch { stopped = false; } } // @silent-fallback-ok — the outcome is reported, never claimed
     const alias = this.deps.registry.appAliasFor(conversationKey);
-    if (alias !== null) { try { this.deps.onEmergencyStop?.(alias); } catch { /* @silent-fallback-ok — the stop itself already ran */ } }
+    if (alias !== null) { try { this.deps.onEmergencyStop?.(alias, scope); } catch { /* @silent-fallback-ok — the stop itself already ran */ } }
     return { stopped, session };
   }
 
@@ -793,6 +815,7 @@ export class AppConversationService {
       }
       if (x.op === 'create') {
         const owner = x.ownerMachine && x.ownerUser ? { machineId: x.ownerMachine, userId: x.ownerUser } : null;
+        if (x.ownerUser) this.deps.confineStranded?.(key, x.ownerUser, rec.deviceId);
         const r = this.applyCreate(rec.deviceId, rec.requestId, key, x.title ?? 'Untitled', owner);
         this.deps.requests.finish(rec.deviceId, rec.requestId, r);
       } else if (x.op === 'rename' && x.title) {

@@ -44,6 +44,12 @@ const BLOCKED_PATH_PREFIXES = new Set([
   // machine; a restored auto-install file would also start a root install on another machine.
   'state/playwright-profiles/',
   'state/xdrive/',
+  // Team access (team-roles-and-access §7): an ordinary restore must not roll back who has access.
+  // /mobile/team/restore is the only way back.
+  'state/team-access/',
+  'state/team-access-last-good/',
+  '.instar/state/team-access/',
+  '.instar/state/team-access-last-good/',
   '.instar/state/playwright-profiles/',
   '.instar/state/xdrive/',
   // includeFiles entries resolve RELATIVE TO stateDir (sourcePath = path.join(stateDir,
