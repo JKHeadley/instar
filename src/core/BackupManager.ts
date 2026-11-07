@@ -40,6 +40,12 @@ const BLOCKED_PATH_PREFIXES = new Set([
   // never-served deny, the gitignore entries and the sync classifier.
   ...KEY_MATERIAL_BACKUP_PREFIXES,
   '.instar/secrets/',
+  // Chrome profiles hold session cookies and the Linux driver's state names live processes on one
+  // machine; a restored auto-install file would also start a root install on another machine.
+  'state/playwright-profiles/',
+  'state/xdrive/',
+  '.instar/state/playwright-profiles/',
+  '.instar/state/xdrive/',
   // includeFiles entries resolve RELATIVE TO stateDir (sourcePath = path.join(stateDir,
   // entry)), so the project-relative '.instar/secrets/' spelling above never matched a
   // stateDir-relative 'secrets/…' entry: `includeFiles: ['secrets/passkeys/']` or
@@ -175,6 +181,8 @@ const DEFAULT_CONFIG: BackupConfig = {
     'state/recommended-services/',
     'state/offer-prerequisites/',
     'state/recommended-service-setup/',
+    // Attribution paper trail: a restore without pins would turn good citations into uncheckable ones.
+    'attribution/',
     // Integrated-Being v1 (gated by config.integratedBeing.enabled at snapshot
     // time — see resolveIncludedFiles()). Glob matches the active ledger and
     // any rotated .jsonl.<epoch> archives.

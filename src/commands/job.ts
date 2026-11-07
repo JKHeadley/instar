@@ -7,6 +7,8 @@ import pc from 'picocolors';
 import { loadConfig, ensureStateDir } from '../core/Config.js';
 import { loadJobs, validateJob } from '../scheduler/JobLoader.js';
 import { JobRunHistory } from '../scheduler/JobRunHistory.js';
+import { jobReportChoice } from '../messaging/notificationCategories.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { StateManager } from '../core/StateManager.js';
 import type { JobDefinition, JobPriority, ModelTier } from '../core/types.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
@@ -78,6 +80,8 @@ export async function addJob(options: JobAddOptions): Promise<void> {
   console.log(`  Schedule: ${options.schedule}`);
   console.log(`  Priority: ${newJob.priority}`);
   console.log(`  Model:    ${newJob.model}`);
+  const selectivity = (config as { notifications?: { selectivity?: { enabled?: boolean; dryRun?: boolean; push?: { categories?: Record<string, boolean> } } } }).notifications?.selectivity;
+  console.log(`  Reports:  ${jobReportChoice(options.slug, { enforcing: resolveDevAgentGate(selectivity?.enabled, config) && selectivity?.dryRun === false, categoryPush: selectivity?.push?.categories?.['job-status'] === true }).agentAction}`);
 }
 
 export async function listJobs(_options: { dir?: string }): Promise<void> {

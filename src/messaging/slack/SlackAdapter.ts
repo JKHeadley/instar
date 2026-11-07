@@ -732,7 +732,7 @@ export class SlackAdapter implements MessagingAdapter {
   async sendToChannel(
     channelId: string,
     text: string,
-    options?: { thread_ts?: string; formatMode?: SlackFormatMode; originFooter?: string },
+    options?: { thread_ts?: string; formatMode?: SlackFormatMode; nativeReferences?: string[]; originFooter?: string },
   ): Promise<string> {
     const parsed = this.parseRoutingKey(channelId);
     const params: Record<string, unknown> = { channel: parsed.channelId, text };
@@ -741,6 +741,7 @@ export class SlackAdapter implements MessagingAdapter {
     // Per-call formatter opt-out for callers that already author mrkdwn
     // (stripped from params inside the formatting funnel, never sent to Slack).
     if (options?.formatMode) params._formatMode = options.formatMode;
+    if (options?.nativeReferences?.length) params._nativeReferences = options.nativeReferences;
     if (options?.originFooter) params._originFooter = options.originFooter;
     const result = await this.formattedApiCall('chat.postMessage', params);
     return result.ts as string;

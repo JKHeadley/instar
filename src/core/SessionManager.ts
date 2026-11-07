@@ -1,3 +1,4 @@
+import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
 /**
  * Session Manager — spawn and monitor Claude Code sessions via tmux.
  *
@@ -28,6 +29,7 @@ import { resolveGhTokenFromVault } from './ghToken.js';
 import type { ReapGuard, ReapKeepReason } from './ReapGuard.js';
 import { DRAINED_CLOSE_BYPASSED_REASONS, drainProcessShape, analyseTranscriptSinceBoundary } from './standDownDrain.js';
 import { clampWorkEvidence, isMidWork } from './WorkEvidence.js';
+import { confirmSessionUsageLimit } from '../monitoring/sessionUsageLimitEvidence.js';
 import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 import type { OriginSessionLaunch, OriginSessionLifecycle } from '../messaging/telegram-origin/OriginSessionRegistry.js';
 import { captureOriginHookSettings } from '../messaging/telegram-origin/OriginNativeHookProof.js';
@@ -1937,7 +1939,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
   /** Clean up after a session that ran inside the boundary. */
   releaseMemorySession(session: Pick<Session, 'id' | 'memoryScopeDir' | 'memorySettingsPath' | 'memoryAudience'>): void {
     if (!session.memoryScopeDir) return;
-    this.memoryPrivacyWiring?.privacy.revokeSessionTokens(session.id);
+    const privacy = this.memoryPrivacyWiring?.privacy;
+    if (privacy && !privacy.sessionReplied(session.id)) {
+      featureEvidence.record('memoryPrivacy', { kind: 'error', reason: 'session ended with no reply', context: { audience: session.memoryAudience ?? null } });
+    }
+    privacy?.revokeSessionTokens(session.id);
     const op = 'SessionManager.releaseMemorySession';
     if (session.memorySettingsPath) SafeFsExecutor.safeRmSync(session.memorySettingsPath, { force: true, operation: op });
     if (session.memoryAudience === 'none') SafeFsExecutor.safeRmSync(session.memoryScopeDir, { recursive: true, force: true, operation: op });
@@ -3334,7 +3340,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
           featureEvidence.record('monitoring.tmuxResilience.asyncHotPath', { kind: 'fired', reason: 'probe-classified-session-dead', context: { session: session.tmuxSession } });
         }
         if (alive === false) {
-          // CAS re-read after the await: an operator kill (or another killer)
+          const lastSample = this.startupTails.get(session.tmuxSession);
+          const knownExitCode = this.terminalExitCodes.get(session.tmuxSession);
+          const exitCode = knownExitCode ?? 0;
+          // Retained Codex panes preserve the terminal error after the process exits.
+          // Read at the death boundary so a later 429 is not missed by startup sampling.
+          const exitTail = session.framework === 'codex-cli'
+            ? (await this.captureOutputMaybeAsync(session.tmuxSession, 60)) || lastSample?.tail || ''
+            : lastSample?.tail || '';
+          const codexRateLimited = session.framework === 'codex-cli'
+            && knownExitCode !== undefined && knownExitCode !== 0
+            && /(?:\b429\b[^\n]*too many requests|too many requests[^\n]*\b429\b)/i.test(exitTail);
+          // CAS re-read after the Codex capture await: an operator kill (or another killer)
           // can land mid-probe, so re-read the live record before mutating it —
           // mirrors terminateSession's status CAS. If it already drifted off
           // 'running', another writer owns the transition; skip this inline
@@ -3366,9 +3383,6 @@ rm()  { "${shimRunner}" rm  "$@"; }
           const uptimeSeconds = fresh.startedAt
             ? Math.max(0, Math.round((Date.now() - new Date(fresh.startedAt).getTime()) / 1000))
             : undefined;
-          const lastSample = this.startupTails.get(session.tmuxSession);
-          const knownExitCode = this.terminalExitCodes.get(session.tmuxSession);
-          const exitCode = knownExitCode ?? 0;
           this.terminalExitCodes.delete(session.tmuxSession);
           // A headless one-shot (`claude -p` / completionMode 'exit') finishes BY exiting, often well
           // inside the startup window. Under `remain-on-exit failed` a failed exit keeps its pane and
@@ -3384,9 +3398,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
           const duringStartup = !finishedHeadless && uptimeSeconds !== undefined && uptimeSeconds * 1000 < STARTUP_TAIL_WINDOW_MS;
           const midWork = exitCode !== 0;
           this.startupTails.delete(session.tmuxSession);
-          fresh.status = 'completed';
+          fresh.status = codexRateLimited ? 'failed' : 'completed';
           fresh.endedAt = new Date().toISOString();
-          fresh.endedReason = duringStartup ? 'process-exited-during-startup' : 'process-exited';
+          fresh.endedReason = codexRateLimited ? 'codex-rate-limited'
+            : duringStartup ? 'process-exited-during-startup' : 'process-exited';
           this.state.saveSession(fresh);
           console.warn(
             `[SessionManager] Session "${fresh.name}" (${fresh.framework ?? 'unknown framework'}) exited on its own` +
@@ -3398,11 +3413,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
             session: fresh,
             reason: fresh.endedReason,
             uptimeSeconds,
-            lastTail: lastSample?.tail,
+            lastTail: exitTail || undefined,
             exitCode,
             midWork,
             outcome: midWork ? 'stopped-mid-work' : 'completed',
           });
+          if (codexRateLimited) this.#emitListenersIsolated('codexRateLimitExit', fresh);
           this.revokeOriginSession(fresh.id);
           this.emit('sessionComplete', fresh);
           // The result is recorded; a job's retained dead pane has no further
@@ -4591,6 +4607,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         this.ensurePinnedHomeInteractiveReady(pinnedHome, 'headless pin');
       }
     }
+    assertBrowserMcpProfilesSafe(resolvedCwd, headlessFramework, this.originConfigHome(headlessFramework, headlessSpec.envOverrides), this.config.projectDir);
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(headlessSpec.envOverrides)) {
       frameworkEnvFlags.push('-e', `${k}=${v}`);
@@ -5034,6 +5051,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       this.defaultHomeFirstRunChecked = true;
       this.ensurePinnedHomeInteractiveReady(process.env.CLAUDE_CONFIG_DIR || null, 'default login');
     }
+    assertBrowserMcpProfilesSafe(resolvedCwd, 'claude-code', this.originConfigHome('claude-code', launchSpec.envOverrides), this.config.projectDir);
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(launchSpec.envOverrides)) {
       frameworkEnvFlags.push('-e', `${k}=${v}`);
@@ -5385,14 +5403,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     try {
       const paneInfo = withSyncOp(() => execFileSync(
         this.config.tmuxPath,
-        ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}'],
+        ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}||#{pane_dead_signal}'],
         { encoding: 'utf-8', timeout: 5000 }
       )).trim();
       const fields = paneInfo.split('||');
       if (fields[2] === '1') {
-        const code = Number(fields[3]);
-        if (Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
-        return false;
+        return this.terminalPaneLiveness(tmuxSession, fields[3], fields[4]) !== false;
       }
       const [paneCmd, startCmd] = fields;
       // Claude Code runs as 'claude' or 'node' process
@@ -5417,6 +5433,20 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // @silent-fallback-ok — pane inspection, assumes alive
       return true;
     }
+  }
+
+  /** tmux may close the pane fd before waitpid publishes an exit status.
+   * An empty status is unknown, never exit zero. A signal is also terminal
+   * evidence, though tmux exposes no numeric exit code for that case. */
+  private terminalPaneLiveness(tmuxSession: string, status?: string, signal?: string): false | 'indeterminate' {
+    if (status?.trim()) {
+      const code = Number(status);
+      if (Number.isFinite(code)) {
+        this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
+        return false;
+      }
+    }
+    return signal?.trim() ? false : 'indeterminate';
   }
 
   /**
@@ -5476,14 +5506,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       try {
         const { stdout } = await execFileAsync(
           this.config.tmuxPath,
-          ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}'],
+          ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}||#{pane_dead_signal}'],
           { timeout: 5000 }
         );
         const fields = stdout.trim().split('||');
         if (fields[2] === '1') {
-          const code = Number(fields[3]);
-          if (Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
-          return false;
+          return this.terminalPaneLiveness(tmuxSession, fields[3], fields[4]);
         }
         return this.classifyPaneCommand(tmuxSession, fields.slice(0, 2).join('||'));
       } catch {
@@ -5509,14 +5537,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       '-t',
       `=${tmuxSession}:`,
       '-p',
-      '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}',
+      '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}||#{pane_dead_signal}',
     ]);
     if (disp.state !== 'success') return true; // unprobeable ⇒ assume alive (preserves the legacy catch)
     const fields = disp.stdout.trim().split('||');
     if (fields[2] === '1') {
-      const code = Number(fields[3]);
-      if (Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
-      return false;
+      return this.terminalPaneLiveness(tmuxSession, fields[3], fields[4]);
     }
     return this.classifyPaneCommand(tmuxSession, fields.slice(0, 2).join('||'));
   }
@@ -6305,6 +6331,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   /** Frameworks whose closed-headless-lane fallback has already been disclosed. */
   private readonly closedHeadlessLaneDisclosed = new Set<string>();
+
+  /** A helper's limit is never evidence that the session serving the topic is
+   * unable to reply. Corroborate the exact main transcript and account home. */
+  confirmSessionUsageLimit(tmuxSession: string): string | false {
+    const session = this.listRunningSessions().find(s => s.tmuxSession === tmuxSession);
+    if (!session?.claudeSessionId || (session.framework ?? 'claude-code') !== 'claude-code') return false;
+    const configHome = this.configHomeForSession(tmuxSession, { defaultWhenUnset: true });
+    if (!configHome) return false;
+    return confirmSessionUsageLimit(resolveFrameworkTranscriptPath({
+      framework: 'claude-code', sessionId: session.claudeSessionId,
+      projectDir: session.cwd ?? this.config.projectDir, configHome,
+    }), session.claudeSessionId) ? session.claudeSessionId : false;
+  }
 
   /**
    * Last-modified time of the session's framework transcript, in ms, or null when
@@ -7724,6 +7763,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (resumeReopenFailed && effectiveInitialMessage) {
       effectiveInitialMessage = `${RESUME_REOPEN_FAILED_NOTE}\n\n${effectiveInitialMessage}`;
     }
+    assertBrowserMcpProfilesSafe(options?.cwd ?? this.config.projectDir, framework, effectiveConfigHome, this.config.projectDir);
     const { plan: interactiveThreadline, mcpFlags: interactiveMcpFlags, tag: interactiveTransportTag } =
       this.planInteractiveThreadlineMcp(framework, binaryPath, options); // threadline-mcp-local-http D3
     const launchSpec = buildInteractiveLaunch(framework, {
@@ -9445,7 +9485,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           if (recoveryFiredOnce || recoveryRefusedOnce) {
             console.warn(`[SessionManager] Injection recovery FAILED in "${tmuxSession}" — marker "${marker.slice(0, 30)}…" is still at an idle prompt after the full ladder. The message is NOT delivered; handing off to StuckInputSentinel.`);
             DegradationReporter.getInstance().report({
-              feature: 'SessionManager.verifyInjection',
+              feature: 'SessionManager.verifyInjection.unsubmitted',
               primary: 'Bracketed paste + Enter submits injected message',
               fallback: 'Persistent StuckInputSentinel continues recovery across server restarts',
               reason: 'Marker still at an idle prompt after every in-process recovery rung',
@@ -9466,7 +9506,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
             recoveryRefusedOnce = true;
             console.warn(`[SessionManager] Injection stuck in "${tmuxSession}" and recovery was REFUSED (${fired.reason ?? 'no reason given'}) — marker "${marker.slice(0, 30)}…" is still at the prompt and no key was sent. The message is NOT delivered.`);
             DegradationReporter.getInstance().report({
-              feature: 'SessionManager.verifyInjection',
+              feature: 'SessionManager.verifyInjection.unsubmitted',
               primary: 'Bracketed paste + Enter submits injected message',
               fallback: 'None — the recovery keypress was refused before it was sent',
               reason: `Recovery refused: ${fired.reason ?? 'unknown'}`,
@@ -9945,7 +9985,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       const [dead, status] = out.split('||');
       if (dead !== '1') return false;
       const code = Number(status);
-      if (Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
+      if (status?.trim() && Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
       return true;
     } catch {
       // @silent-fallback-ok — an unprobeable pane is treated as alive (previous behaviour).

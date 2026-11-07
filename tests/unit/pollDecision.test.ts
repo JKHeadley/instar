@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { BOOT_POLL_HOLD_MAX_MS, bootHoldStep, holdPollAtBoot, decidePollAction, type PollDecisionInputs } from '../../src/lifeline/pollDecision.js';
+import { BOOT_POLL_HOLD_MAX_MS, RECENT_409_WINDOW_MS, hasRecent409, bootHoldStep, holdPollAtBoot, decidePollAction, type PollDecisionInputs } from '../../src/lifeline/pollDecision.js';
 
 const base: PollDecisionInputs = {
   currentlyPolling: false,
@@ -89,4 +89,20 @@ describe('bootHoldStep', () => {
   it('no opinion inside the bound waits', () => expect(at(1000 + BOOT_POLL_HOLD_MAX_MS - 1, null)).toBe('wait'));
   it('no opinion at the bound expires, so a machine with no lease is not silent forever', () => expect(at(1000 + BOOT_POLL_HOLD_MAX_MS, null)).toBe('expired'));
   it.each([[true], [false]])('an opinion of %s releases, even past the bound', (o) => expect(at(1000 + BOOT_POLL_HOLD_MAX_MS * 2, o)).toBe('release'));
+});
+
+describe('hasRecent409 — a 409 count is evidence only while it is fresh', () => {
+  const now = 1_800_000_000_000;
+  it('no 409s → no evidence', () => {
+    expect(hasRecent409({ consecutive409s: 0, last409AtMs: now, nowMs: now })).toBe(false);
+  });
+  it('a 409 inside the window → evidence', () => {
+    expect(hasRecent409({ consecutive409s: 4, last409AtMs: now - RECENT_409_WINDOW_MS + 1, nowMs: now })).toBe(true);
+  });
+  it('the last 409 at or past the window → stale, no evidence', () => {
+    expect(hasRecent409({ consecutive409s: 4, last409AtMs: now - RECENT_409_WINDOW_MS, nowMs: now })).toBe(false);
+  });
+  it('the window outlasts the longest 409 backoff (60s), so a live conflict stays visible', () => {
+    expect(RECENT_409_WINDOW_MS).toBeGreaterThan(60_000);
+  });
 });

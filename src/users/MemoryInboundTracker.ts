@@ -7,6 +7,7 @@
  * session holding wider memory never answers a new reader.
  */
 
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { audienceKey, OPERATOR_PERSON_ID, type MemoryPrivacy } from './MemoryPrivacy.js';
 import { isScopedAudience } from './MemoryAudience.js';
 import type { MemoryBlocker, MemoryPrivacyRecovery } from './MemoryPrivacyRecovery.js';
@@ -64,7 +65,12 @@ export class MemoryInboundTracker {
    */
   async refuse(facts: InboundFacts, sendOwnerPrivately?: SendOwnerPrivately): Promise<string> {
     const { privacy, recovery } = this.deps;
-    if (!recovery || !privacy.isOwnerSender(facts.senderKey, facts.personId)) return MEMORY_PRIVACY_UNAVAILABLE_REPLY;
+    const owner = privacy.isOwnerSender(facts.senderKey, facts.personId);
+    // Locking the owner out is the harm; anyone else refused is the boundary doing its job.
+    featureEvidence.record('memoryPrivacy', owner
+      ? { kind: 'error', reason: 'owner refused' }
+      : { kind: 'held', reason: 'person refused' });
+    if (!recovery || !owner) return MEMORY_PRIVACY_UNAVAILABLE_REPLY;
     // The owner's own private chat needs no boundary, so private memory is not the cause.
     const audience = privacy.audienceFor(privacy.placeFor({ memoryPlaceKey: facts.placeKey }, null));
     if (!isScopedAudience(audience)) return MEMORY_PRIVACY_RETRY_REPLY;

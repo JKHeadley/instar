@@ -147,6 +147,15 @@ export class MobilePushService {
   }
 
   /**
+   * A trigger only phones on THIS machine can act on, so it is not fanned out (mobile-pairing-approve
+   * §6: a waiting phone is held here, and only an owner phone paired here can approve it).
+   */
+  notifyHere(t: Omit<PushTrigger, 'sourceMachine'>): void {
+    if (!this.deps.enabled()) return;
+    void this.receive({ ...t, sourceMachine: this.deps.machineId }, false).catch((err) => this.deps.reportDegradation?.('MobilePush.receive', err));
+  }
+
+  /**
    * An agent reply appended to a native app conversation (mobile-native-conversations §4.7): one
    * push per reply, through the same budgets, folding and dedupe as a hub post, fanned out so a
    * phone paired on another machine hears it too. Needs no Telegram.

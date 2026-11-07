@@ -49,6 +49,11 @@ describe('leaseRenewalDependencies', () => {
     expect(leaseRenewalDependencies(cfg({ messaging: [{ type: 'telegram', enabled: false, config: {} }] }))).toEqual([]);
     expect(leaseRenewalDependencies(cfg({ mobilePairing: { enabled: true, native: { enabled: false } } }))).toEqual([]);
   });
+  it('names the takeover survivor only when the takeover switch is on, with no surface needed', () => {
+    const lease = (enabled: boolean) => ({ multiMachine: { leaseSelfHeal: { soloCaptainHold: { enabled } } } });
+    expect(leaseRenewalDependencies(cfg(lease(true)))).toEqual(['takeover-survivor']);
+    expect(leaseRenewalDependencies(cfg(lease(false)))).toEqual([]);
+  });
   it('follows the app gate on a development agent (omitted ⇒ on)', () => {
     expect(leaseRenewalDependencies(cfg({ developmentAgent: true }))).toEqual(['app-conversations']);
   });

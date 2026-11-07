@@ -55,6 +55,7 @@ export async function renderAllowed(main, ctx) {
 
   const eyebrow = `Settings · What I’m allowed to do${guards.ok && guards.multi && guards.selfName ? ` · ${guards.selfName}` : ''}`;
   setKids(main, el('div', { class: 'allowed-page' },
+    // warning-path: pageHead
     pageHead({ eyebrow, headline: profile.ok ? profile.sentence : 'What I’m allowed to do', sub: profile.ok ? null : profile.reason, tone: guards.ok && guards.counts.look ? 'attn' : profile.ok ? 'ok' : 'muted', facts: facts({ profile, guards, features, suggestions }) }),
     el('div', { class: 'page-sections' },
       profileBlock(profile, post, refresh),
@@ -115,6 +116,7 @@ function guardsBlock(guards, refresh) {
   }
   const open = (r) => (r.record ? openGuard(r, refresh) : null);
   return el('div', { class: 'guard-block', id: 'sec-guards' },
+    // warning-path: row
     section({ id: 'guards-look', title: guards.counts.look ? 'Safety checks · need a look' : 'Safety checks', rows: [...guards.look, ...guards.failed], empty: 'Every safety check is where it should be.', onRow: open, tone: guards.counts.look ? 'attn' : null }),
     section({ id: 'guards-others', title: `${guards.counts.others} others`, rows: guards.others, collapsed: true, onRow: open }));
 }

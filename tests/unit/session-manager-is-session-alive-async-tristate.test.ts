@@ -214,6 +214,43 @@ describe('SessionManager.isSessionAliveAsync — tri-state (§A)', () => {
     expect(completed).toBe(0);
   });
 
+  it.each([false, true])('waits for a dead pane exit status before classifying a Codex 429 (async=%s)', async (enabled) => {
+    const subject = makeManager(tmpDir, state, enabled);
+    state.saveSession({ ...runningSession('pending-exit', 'pending-exit'), framework: 'codex-cli' });
+    let exitStatus = '';
+    opHandlers = {
+      'has-session': () => ({ ok: '' }),
+      // tmux can close the pane fd before waitpid supplies its exit status.
+      'display-message': () => ({ ok: `codex||codex||1||${exitStatus}||` }),
+      'capture-pane': () => ({ ok: 'exceeded retry limit, last status: 429 Too Many Requests' }),
+    };
+    const notices: Session[] = [];
+    subject.on('codexRateLimitExit', (s) => notices.push(s));
+    try {
+      expect(subject.isSessionAlive('pending-exit')).toBe(true);
+      expect(await probe(subject).isSessionAliveAsync('pending-exit')).toBe('indeterminate');
+      await maintenanceTicks.get(subject)!();
+      expect(state.getSession('pending-exit')!.status).toBe('running');
+      expect(notices).toHaveLength(0);
+
+      exitStatus = '1';
+      await maintenanceTicks.get(subject)!();
+      expect(state.getSession('pending-exit')).toMatchObject({ status: 'failed', endedReason: 'codex-rate-limited' });
+      expect(subject.listRunningSessions()).toHaveLength(0);
+      await maintenanceTicks.get(subject)!();
+      expect(notices).toHaveLength(1);
+    } finally { subject.stopMonitoring(); }
+  });
+
+  it.each([false, true])('recognizes a signal-terminated pane without an exit status (async=%s)', async (enabled) => {
+    const subject = makeManager(tmpDir, state, enabled);
+    opHandlers = { 'display-message': () => ({ ok: 'codex||codex||1||||TERM' }) };
+    try {
+      expect(subject.isSessionAlive('signaled')).toBe(false);
+      expect(await probe(subject).isSessionAliveAsync('signaled')).toBe(false);
+    } finally { subject.stopMonitoring(); }
+  });
+
   it('off-path (tmuxAsyncEnabled:false) retains the legacy false-on-timeout behavior', async () => {
     const off = makeManager(tmpDir, state, /* asyncEnabled */ false);
     // legacy body: a has-session timeout is caught → returns false ("dead"), byte-for-byte.

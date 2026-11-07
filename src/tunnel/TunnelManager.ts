@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/tunnel/TunnelManager.ts');
 /**
  * TunnelManager — single owner of the tunnel lifecycle.
  *
@@ -455,7 +457,7 @@ export class TunnelManager extends EventEmitter {
       sendGroup: async (text: string) => {
         const topicId = adapter.getDashboardTopicId() ?? adapter.getLifelineTopicId();
         if (typeof topicId !== 'number') return; // no group destination
-        await adapter.sendToTopic(topicId, text);
+        await withNotificationEnvelope(stampNotification(), async () => (adapter)!.sendToTopic(topicId, text));
       },
       sendOwnerDM: async (text: string) => {
         await adapter.sendToOwnerDM(text);

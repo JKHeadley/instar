@@ -16,13 +16,22 @@ export interface TelegramHandoverBinding {
   joinerMachineId: string;
 }
 
-interface SealedTelegramHandover extends TelegramHandoverBinding {
+/** Who the bot answers. Without these a joined machine answers everyone in the chat. */
+export interface TelegramHandoverPeople {
+  authorizedUserIds?: Array<number | string>;
+  ownerUserId?: number | string | null;
+}
+
+interface SealedTelegramHandover extends TelegramHandoverBinding, TelegramHandoverPeople {
   botToken: string;
   chatId: string;
   expiresAt: string;
 }
 
-export function sealTelegramHandover(input: TelegramHandoverBinding & {
+const isUserId = (v: unknown): v is number | string =>
+  (typeof v === 'number' && Number.isSafeInteger(v)) || (typeof v === 'string' && /^\d+$/.test(v));
+
+export function sealTelegramHandover(input: TelegramHandoverBinding & TelegramHandoverPeople & {
   botToken: string;
   chatId: string;
   joinerEncryptionPublicKey: string;
@@ -31,6 +40,8 @@ export function sealTelegramHandover(input: TelegramHandoverBinding & {
   const payload: SealedTelegramHandover = {
     botToken: input.botToken,
     chatId: input.chatId,
+    ...(input.authorizedUserIds?.length ? { authorizedUserIds: input.authorizedUserIds } : {}),
+    ...(input.ownerUserId != null ? { ownerUserId: input.ownerUserId } : {}),
     pairingSessionId: input.pairingSessionId,
     joinerMachineId: input.joinerMachineId,
     expiresAt: new Date(input.now.getTime() + TELEGRAM_HANDOVER_TTL_MS).toISOString(),
@@ -45,7 +56,7 @@ export function openTelegramHandover(input: {
   expected: TelegramHandoverBinding;
   encryptionPrivateKeyPem: string;
   now: Date;
-}): { ok: true; botToken: string; chatId: string } | { ok: false; refusal: TelegramHandoverRefusal } {
+}): ({ ok: true; botToken: string; chatId: string } & TelegramHandoverPeople) | { ok: false; refusal: TelegramHandoverRefusal } {
   let opened: Partial<SealedTelegramHandover>;
   try {
     opened = decryptFromSync(input.sealed, createPrivateKey(input.encryptionPrivateKeyPem)) as Partial<SealedTelegramHandover>;
@@ -61,5 +72,17 @@ export function openTelegramHandover(input: {
   }
   const expiry = Date.parse(String(opened.expiresAt));
   if (!Number.isFinite(expiry) || expiry <= input.now.getTime()) return { ok: false, refusal: 'expired' };
-  return { ok: true, botToken: opened.botToken, chatId: opened.chatId };
+  // A list that does not parse must not fall through to "no list", which means everyone.
+  if (opened.authorizedUserIds !== undefined
+    && !(Array.isArray(opened.authorizedUserIds) && opened.authorizedUserIds.every(isUserId))) {
+    return { ok: false, refusal: 'malformed' };
+  }
+  if (opened.ownerUserId != null && !isUserId(opened.ownerUserId)) return { ok: false, refusal: 'malformed' };
+  return {
+    ok: true,
+    botToken: opened.botToken,
+    chatId: opened.chatId,
+    ...(opened.authorizedUserIds?.length ? { authorizedUserIds: opened.authorizedUserIds } : {}),
+    ...(opened.ownerUserId != null ? { ownerUserId: opened.ownerUserId } : {}),
+  };
 }

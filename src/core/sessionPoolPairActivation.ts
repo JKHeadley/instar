@@ -13,6 +13,7 @@ import { migrateSecrets } from './SecretMigrator.js';
 import type { EncryptedSecretPayload } from './SecretStore.js';
 import {
   openTelegramHandover, sealTelegramHandover, type TelegramHandoverBinding, type TelegramHandoverRefusal,
+  type TelegramHandoverPeople,
 } from './telegramPairHandover.js';
 
 export const PAIR_ACTIVATION_VERSION = 1;
@@ -79,6 +80,10 @@ export const POOL_ACTIVATION_KEYS: ReadonlyArray<readonly [path: string, value: 
   ['multiMachine.coherenceJournal.replication.enabled', true],
   ['multiMachine.pollFollowsLease.enabled', true],
   ['multiMachine.pollFollowsLease.dryRun', false],
+  // session-pool-takeover-at-pairing: the spare keeps a lease it took, with no git remote to confirm over.
+  ['multiMachine.leaseSelfHeal.soloCaptainHold.enabled', true],
+  ['multiMachine.leaseSelfHeal.soloCaptainHold.requireLastingLink', true],
+  // `multiMachine.leaseSelfHeal.soloCaptainHold.pairRole` differs per side: see applyPairActivationKeys.
 ];
 
 function setPath(root: Json, dotted: string, value: unknown): void {
@@ -96,9 +101,12 @@ function setPath(root: Json, dotted: string, value: unknown): void {
  * on disk and the decision has ruled out a choice. `stage` is removed so a joiner starts
  * dark under the `shadow` ceiling whatever its home held.
  */
-export function applyPairActivationKeys(fileConfig: Json, nowIso: string): Json {
+export function applyPairActivationKeys(fileConfig: Json, nowIso: string, role: PairRole, pairedWith: string): Json {
   const next = structuredClone(fileConfig);
   for (const [dotted, value] of POOL_ACTIVATION_KEYS) setPath(next, dotted, value);
+  // Decides who is in charge until a lasting link is proved, so exactly one machine ever is.
+  setPath(next, 'multiMachine.leaseSelfHeal.soloCaptainHold.pairRole', role);
+  setPath(next, 'multiMachine.leaseSelfHeal.soloCaptainHold.pairedWith', pairedWith);
   setPath(next, 'multiMachine.sessionPool.activatedAtPairing', nowIso);
   delete ((next.multiMachine as Json).sessionPool as Json).stage;
   return next;
@@ -127,8 +135,11 @@ function recordPairDecision(stateDir: string, decision: PairActivationDecision, 
   fs.writeFileSync(decisionPath(stateDir), JSON.stringify({ ...decision, at: nowIso }, null, 2));
 }
 
+export type PairRole = 'inviter' | 'joiner';
+
 export type InviterPairResponse = {
-  sessionPoolActivation?: { version: number };
+  /** `role` is the joiner's: normally `joiner`, but a rebuilt first machine pairing back through its partner is not. */
+  sessionPoolActivation?: { version: number; role?: PairRole };
   telegramHandover?: EncryptedSecretPayload;
 };
 
@@ -161,7 +172,7 @@ export function decideInviterPairActivation(input: {
 export function finishInviterPairActivation(input: {
   stateDir: string;
   decision: PairActivationDecision;
-  telegram: { botToken: string; chatId: string } | null;
+  telegram: ({ botToken: string; chatId: string } & TelegramHandoverPeople) | null;
   pairingSessionId: string;
   joinerMachineId: string;
   joinerEncryptionPublicKey: string;
@@ -178,7 +189,7 @@ export function finishInviterPairActivation(input: {
     const first = decision.reason === 'first-pairing';
     if (first) {
       const configPath = path.join(stateDir, 'config.json');
-      writeConfigAtomic(configPath, applyPairActivationKeys(JSON.parse(fs.readFileSync(configPath, 'utf-8')), nowIso));
+      writeConfigAtomic(configPath, applyPairActivationKeys(JSON.parse(fs.readFileSync(configPath, 'utf-8')), nowIso, 'inviter', input.joinerMachineId));
     }
     const telegramHandover = telegram ? sealTelegramHandover({
       ...telegram,
@@ -188,7 +199,10 @@ export function finishInviterPairActivation(input: {
       now,
     }) : undefined;
     return {
-      response: { sessionPoolActivation: { version: PAIR_ACTIVATION_VERSION }, ...(telegramHandover ? { telegramHandover } : {}) },
+      response: {
+        sessionPoolActivation: { version: PAIR_ACTIVATION_VERSION, role: roleForJoiner(stateDir) },
+        ...(telegramHandover ? { telegramHandover } : {}),
+      },
       restart: first,
     };
   } catch (err) {
@@ -202,6 +216,12 @@ export function finishInviterPairActivation(input: {
     });
     return { response: {}, restart: false };
   }
+}
+
+/** The other side of this machine's own role, so a pair never holds two joiners. */
+function roleForJoiner(stateDir: string): PairRole {
+  const own = at(JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8')), 'multiMachine', 'leaseSelfHeal', 'soloCaptainHold', 'pairRole');
+  return own === 'joiner' ? 'inviter' : 'joiner';
 }
 
 /** The inviter reads activation at boot, so it restarts once the joiner has its answer. */
@@ -220,6 +240,20 @@ export function requestPairActivationRestart(stateDir: string, now: Date): void 
   fs.renameSync(temp, flagPath);
 }
 
+function fillMissingPeople(entry: Json, people: TelegramHandoverPeople): boolean {
+  let filled = false;
+  const own = entry.authorizedUserIds;
+  if (people.authorizedUserIds?.length && !(Array.isArray(own) && own.length > 0)) {
+    entry.authorizedUserIds = people.authorizedUserIds;
+    filled = true;
+  }
+  if (people.ownerUserId != null && entry.ownerUserId == null && at(entry, 'promptGate', 'ownerId') == null) {
+    entry.ownerUserId = people.ownerUserId;
+    filled = true;
+  }
+  return filled;
+}
+
 /**
  * The joiner's half, run before its server first starts. The pool keys are written whether
  * or not the token opens: a machine without it cannot serve, hands messages back, and
@@ -232,30 +266,52 @@ export function applyJoinerPairActivation(input: {
   binding: TelegramHandoverBinding;
   encryptionPrivateKeyPem: string | null;
   now: Date;
-}): { activated: boolean; telegram: 'written' | 'not-offered' | 'kept-existing' | TelegramHandoverRefusal | 'no-key' } {
+  /** Who this machine paired with. Absent only from a response with no identity, which waits on every peer. */
+  inviterMachineId?: string;
+}): {
+  activated: boolean;
+  telegram: 'written' | 'not-offered' | 'kept-existing' | TelegramHandoverRefusal | 'no-key';
+  /** An existing Telegram entry gained a list or owner. A running server needs a restart to use it. */
+  peopleFilled?: boolean;
+  /** An existing Telegram entry could not be checked against the handover. */
+  peopleUnchecked?: boolean;
+} {
   const { configPath, stateDir, response, now } = input;
   if (response.sessionPoolActivation?.version !== PAIR_ACTIVATION_VERSION) return { activated: false, telegram: 'not-offered' };
   // Pairing again only resends the token: anything the owner changed here since stands.
   const onDisk = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Json;
-  const config = activatedAtPairing(onDisk) ? onDisk : applyPairActivationKeys(onDisk, now.toISOString());
+  const config = activatedAtPairing(onDisk) ? onDisk : applyPairActivationKeys(
+    onDisk,
+    now.toISOString(),
+    response.sessionPoolActivation?.role === 'inviter' ? 'inviter' : 'joiner',
+    input.inviterMachineId ?? '',
+  );
   let telegram: 'written' | 'not-offered' | 'kept-existing' | TelegramHandoverRefusal | 'no-key' = 'not-offered';
+  let peopleFilled = false;
+  let peopleUnchecked = false;
   if (response.telegramHandover) {
     const messaging = Array.isArray(config.messaging) ? config.messaging as Json[] : [];
-    if (messaging.some((m) => m?.type === 'telegram')) telegram = 'kept-existing';
-    else if (!input.encryptionPrivateKeyPem) telegram = 'no-key';
-    else {
+    const existing = messaging.find((m) => m?.type === 'telegram');
+    if (!input.encryptionPrivateKeyPem) {
+      telegram = existing ? 'kept-existing' : 'no-key';
+      peopleUnchecked = !!existing;
+    } else {
       const opened = openTelegramHandover({
         sealed: response.telegramHandover,
         expected: input.binding,
         encryptionPrivateKeyPem: input.encryptionPrivateKeyPem,
         now,
       });
-      if (opened.ok) {
-        config.messaging = [...messaging, {
-          type: 'telegram',
-          enabled: true,
-          config: { token: opened.botToken, chatId: opened.chatId, pollIntervalMs: 2000, stallTimeoutMinutes: 5 },
-        }];
+      if (existing) {
+        telegram = 'kept-existing';
+        // Pairing again is how a machine joined without these gets them. Its own list stands.
+        const own = at(existing, 'config') as Json | undefined;
+        if (opened.ok && own) peopleFilled = fillMissingPeople(own, opened);
+        else peopleUnchecked = true;
+      } else if (opened.ok) {
+        const entry: Json = { token: opened.botToken, chatId: opened.chatId, pollIntervalMs: 2000, stallTimeoutMinutes: 5 };
+        fillMissingPeople(entry, opened);
+        config.messaging = [...messaging, { type: 'telegram', enabled: true, config: entry }];
         telegram = 'written';
       } else telegram = opened.refusal;
     }
@@ -263,5 +319,5 @@ export function applyJoinerPairActivation(input: {
   writeConfigAtomic(configPath, config);
   // Moves the literal token into the encrypted store straight away.
   if (telegram === 'written') migrateSecrets(configPath, stateDir);
-  return { activated: true, telegram };
+  return { activated: true, telegram, peopleFilled, peopleUnchecked };
 }

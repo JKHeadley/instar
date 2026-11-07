@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/threadline/TelegramBridge.ts');
 /**
  * TelegramBridge — mirrors threadline messages into per-thread Telegram topics.
  *
@@ -302,7 +304,7 @@ export class TelegramBridge {
     try {
       if (!this.ownsMirrorVoice()) return;
       await withThreadlineForwardedAuthor(this.originService, direction, topicId, body,
-        () => this.telegram.sendToTopic(topicId, body, { silent: true, skipStallClear: true }));
+        () => withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(topicId, body, { silent: true, skipStallClear: true })));
       if (!this.ownsMirrorVoice()) return;
       const binding = this.bindings.get(threadId);
       if (binding) {

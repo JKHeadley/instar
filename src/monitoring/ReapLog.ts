@@ -74,6 +74,7 @@ function tailLines(filePath: string, maxBytes: number): TailLinesPage {
  */
 export type ReapNotifyOutcome =
   | 'enqueued'
+  | 'quiet-recorded'
   | 'sent'
   | 'send-failed-escalated'
   | 'no-topic'
@@ -82,6 +83,7 @@ export type ReapNotifyOutcome =
 export type SessionEndOutcome = 'completed' | 'stopped-mid-work';
 
 const NOTIFY_OUTCOMES: ReadonlySet<string> = new Set([
+  'quiet-recorded',
   'enqueued',
   'sent',
   'send-failed-escalated',

@@ -34,7 +34,7 @@ describe('Phones card', () => {
     for (const st of [{ waiting: 0, paired: 0 }, { waiting: 1, paired: 2 }, { waiting: 3, paired: 1 }, { locked: true, paired: 1 }, {}]) {
       expect(validateGlanceSpec(phonesGlanceSpec(st)).ok).toBe(true);
     }
-    expect(phonesGlanceSpec({ waiting: 1, paired: 0 }).headline).toBe('A phone is waiting to pair. Open Waiting to see the code.');
+    expect(phonesGlanceSpec({ waiting: 1, paired: 0 }).headline).toBe('A phone is waiting to pair. Open Waiting to approve or decline.');
   });
 
   it('without an operator session: asks to unlock and shows no code', async () => {
@@ -69,6 +69,39 @@ describe('Phones card', () => {
     decline.click();
     await new Promise((r) => setTimeout(r, 10));
     expect(t.calls.some((c) => c.method === 'POST' && c.url === '/mobile/pairing-approvals/dev-1/decline')).toBe(true);
+  });
+
+  it('Approve (mobile-pairing-approve §3.3): posts to the route, shows the key condition, and shows a refusal\'s reason', async () => {
+    const row = { deviceId: 'dev-1', deviceName: 'iPhone', fingerprint: 'AB12-CD34', code: 'KITE-4172', expiresAt: '2026-11-02T10:12:00Z', canApprove: true };
+    const t = mount({
+      'GET /mobile/pairing-approvals': () => json(200, { approval: 'dashboard', approvals: [row] }),
+      'GET /mobile/devices': () => json(200, { devices: [] }),
+      'POST /mobile/pairing-approvals/dev-1/approve': () => json(409, { error: 'another-phone-waiting', detail: 'Another phone is also waiting to pair, so nothing was approved.' }),
+    });
+    await t.panel.refresh();
+    [...t.root.querySelectorAll('button')].find((b) => /Waiting to pair/.test(b.textContent ?? ''))?.click();
+    const card = () => t.root.ownerDocument.querySelector('.phone-approval');
+    if (!card()) { const tile = [...t.root.querySelectorAll('[role="button"],button')].find((b) => /Waiting/.test(b.textContent ?? '')); (tile as HTMLElement | undefined)?.click(); }
+    expect(card()!.textContent).toContain('Approve only if you are pairing this phone right now and the key matches');
+    expect(card()!.textContent).toContain('KITE-4172');
+    const approve = [...card()!.querySelectorAll('button')].find((b) => /^Approve/.test(b.textContent ?? ''))!;
+    approve.click();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(t.calls).toContainEqual({ url: '/mobile/pairing-approvals/dev-1/approve', method: 'POST' });
+    expect(t.root.textContent).toContain('Another phone is also waiting');
+  });
+
+  it('no Approve button when the agent cannot use it', async () => {
+    const row = { deviceId: 'dev-1', deviceName: 'iPhone', code: '123456', expiresAt: '2026-11-02T10:12:00Z' };
+    const t = mount({
+      'GET /mobile/pairing-approvals': () => json(200, { approval: 'dashboard', approvals: [row] }),
+      'GET /mobile/devices': () => json(200, { devices: [] }),
+    });
+    await t.panel.refresh();
+    const tile = [...t.root.querySelectorAll('[role="button"],button')].find((b) => /Waiting/.test(b.textContent ?? ''));
+    (tile as HTMLElement | undefined)?.click();
+    const doc = t.root.ownerDocument;
+    expect([...doc.querySelectorAll('.phone-approval button')].some((b) => /^Approve/.test(b.textContent ?? ''))).toBe(false);
   });
 
   it('pairing off: says so', async () => {

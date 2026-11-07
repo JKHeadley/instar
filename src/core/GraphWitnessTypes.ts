@@ -1,6 +1,6 @@
 import {verifyEd25519Memoized} from './VerifiedSignatureMemo.js';
 import {graphMemberLossActivationDomain,verifyGraphMemberLossActivationAuthority,type GraphMemberLossActivationAuthority} from './GraphMemberLossActivation.js';
-import {verifyGraphCustodyProfile,type GraphCustodyProfile} from './GraphCustodyProfile.js';
+import {verifyGraphCustodyProfile} from './GraphCustodyProfile.js';
 /** Cryptographic wire contract for the independent Conversations witness.
  * Spec: conversation-effort-hierarchy-v3 §7.2. No title/transcript plaintext belongs here.
  */
@@ -13,17 +13,8 @@ import { verify as verifyMachineSignature } from './MachineIdentity.js';
 /** Complete history population supported by the immutable recovery manifest. */
 export const GRAPH_RECOVERY_MAX_MANIFEST_ENTRIES=20000;
 
-export interface GraphMembershipMember {
-  machineId: string;
-  signingPublicKey: string;
-  sealingPublicKey: string;
-}
-export interface GraphMembershipEpoch {
-  custodyProfile?:GraphCustodyProfile;
-  v: 1; agentId: string; epoch: number; previousMembershipHash: string | null;
-  members: GraphMembershipMember[]; writerId: string; witnessId: string;
-  failureDomain: string; createdAt: string; signature: string;
-}
+export type {GraphMembershipMember,GraphMembershipEpoch} from './GraphMembershipTypes.js';
+import type {GraphMembershipMember,GraphMembershipEpoch} from './GraphMembershipTypes.js';
 export interface GraphWitnessLease {
   v: 1; agentId: string; membershipEpoch: number; leaseEpoch: number;
   writerId: string; issuedAt: string; expiresAt: string; fencedLeaseHash: string; signature: string;

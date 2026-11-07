@@ -28,6 +28,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { browserCapability } from '../core/linuxBrowserProvision.js';
 import { activeAutonomousJobs, DEFAULT_MAX_CONCURRENT_AUTONOMOUS } from '../core/AutonomousSessions.js';
 import type { SecretDrop } from './SecretDrop.js';
 import type { RouteContext } from './routes.js';
@@ -293,10 +294,10 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'mobilePairing',
     prefixes: ['/mobile'],
-    description: 'Mobile pairing links and device keys (docs/specs/mobile-pairing-link.md, docs/specs/mobile-device-keys.md) — a one-time instar.sh link adds this agent to the Instar iPhone app. The phone registers its own Secure Enclave key; the owner receives a 6-digit code privately in Telegram and types it into the app; only then does the phone become active. Phones never receive the API token or an operator session and may only make a fixed list of signed requests. POST /mobile/pairing-codes (Bearer) mints the link; public POST /mobile/pairing-codes/redeem registers the pending phone over the named tunnel; POST /mobile/device/confirm and GET /mobile/device are device-signed; GET /mobile/devices (?scope=pool) lists phones; POST /mobile/devices/:id/revoke revokes one. POST /mobile/chat/:topicId (device-signed only, docs/specs/mobile-operator-chat.md) delivers an app message into a topic through the same inbound path as the owner\'s Telegram message, idempotent by requestId; GET /telegram/topics/:topicId/messages?scope=pool reads that topic across machines. Push (docs/specs/mobile-push.md): POST /mobile/device/push registers a phone\'s APNs token, hub posts notify phones directly through Apple (no item text), GET /mobile/attention/:id gives the phone the title, POST /mobile/push/notify carries the trigger between machines, GET /mobile/push is the status. Without a Telegram owner (docs/specs/mobile-native-conversations.md §4.4, with native conversations on), redeem answers {status: pending, approval: dashboard} and the code is shown only to a dashboard PIN session on GET /mobile/pairing-approvals (POST /mobile/pairing-approvals/:id/decline declines); the phone is recorded approvedVia dashboard-pin. Every agent reply in an app conversation also sends one push ("New reply", §4.7), Telegram or not. Dev-gated (mobilePairing.enabled, chat also mobilePairing.chat.enabled); 503 when dark. Native Schedule, Promises and Machines (docs/specs/mobile-native-ops-screens.md): GET /mobile/jobs, GET /mobile/commitments, GET /mobile/machines — read-only trimmed summaries of the console\'s Schedule, Promises and Machines pages for an owner phone (device-signed) or the bearer token; an MSP phone gets 403 owner-phone-required.',
+    description: 'Mobile pairing links and device keys (docs/specs/mobile-pairing-link.md, docs/specs/mobile-device-keys.md) — a one-time instar.sh link adds this agent to the Instar iPhone app. The phone registers its own Secure Enclave key; the owner receives a 6-digit code privately in Telegram and types it into the app; only then does the phone become active. Phones never receive the API token or an operator session and may only make a fixed list of signed requests. POST /mobile/pairing-codes (Bearer) mints the link; public POST /mobile/pairing-codes/redeem registers the pending phone over the named tunnel; POST /mobile/device/confirm and GET /mobile/device are device-signed; GET /mobile/devices (?scope=pool) lists phones; POST /mobile/devices/:id/revoke revokes one. POST /mobile/chat/:topicId (device-signed only, docs/specs/mobile-operator-chat.md) delivers an app message into a topic through the same inbound path as the owner\'s Telegram message, idempotent by requestId; GET /telegram/topics/:topicId/messages?scope=pool reads that topic across machines. Push (docs/specs/mobile-push.md): POST /mobile/device/push registers a phone\'s APNs token, hub posts notify phones directly through Apple (no item text), GET /mobile/attention/:id gives the phone the title, POST /mobile/push/notify carries the trigger between machines, GET /mobile/push is the status. Without a Telegram owner (docs/specs/mobile-native-conversations.md §4.4, with native conversations on), redeem answers {status: pending, approval: dashboard} and the code is shown only to a dashboard PIN session on GET /mobile/pairing-approvals (POST /mobile/pairing-approvals/:id/decline declines); the phone is recorded approvedVia dashboard-pin. Approve instead of a code (docs/specs/mobile-pairing-approve.md): the owner taps Approve on the private Telegram message (verified owner tap, private chat only), or POST /mobile/pairing-approvals/:id/approve from a dashboard PIN session (dashboard-path phones only), or an owner phone uses GET /mobile/pairing-requests and POST /mobile/pairing-requests/:id/challenge|approve|decline with Face ID (approvedVia owner-phone); redeem and GET /mobile/device tell the waiting phone confirmWith, fingerprint and expiresAt; the code still works; off switch mobilePairing.approve.enabled. Every agent reply in an app conversation also sends one push ("New reply", §4.7), Telegram or not. Dev-gated (mobilePairing.enabled, chat also mobilePairing.chat.enabled); 503 when dark. Native Schedule, Promises and Machines (docs/specs/mobile-native-ops-screens.md): GET /mobile/jobs, GET /mobile/commitments, GET /mobile/machines — read-only trimmed summaries of the console\'s Schedule, Promises and Machines pages for an owner phone (device-signed) or the bearer token; an MSP phone gets 403 owner-phone-required.',
     build: () => ({
       configured: true,
-      endpoints: ['POST /mobile/pairing-codes', 'POST /mobile/pairing-codes/redeem', 'GET /mobile/pairing-codes/ping', 'GET /mobile/devices', 'GET /mobile/device', 'POST /mobile/device/confirm', 'POST /mobile/devices/:id/revoke', 'POST /mobile/chat/:topicId', 'POST /mobile/device/push', 'GET /mobile/attention/:id', 'POST /mobile/push/notify', 'GET /mobile/push', 'GET /mobile/pairing-approvals', 'POST /mobile/pairing-approvals/:id/decline', 'GET /mobile/jobs', 'GET /mobile/commitments', 'GET /mobile/machines'],
+      endpoints: ['POST /mobile/pairing-codes', 'POST /mobile/pairing-codes/redeem', 'GET /mobile/pairing-codes/ping', 'GET /mobile/devices', 'GET /mobile/device', 'POST /mobile/device/confirm', 'POST /mobile/devices/:id/revoke', 'POST /mobile/chat/:topicId', 'POST /mobile/device/push', 'GET /mobile/attention/:id', 'POST /mobile/push/notify', 'GET /mobile/push', 'GET /mobile/pairing-approvals', 'POST /mobile/pairing-approvals/:id/decline', 'POST /mobile/pairing-approvals/:id/approve', 'GET /mobile/pairing-requests', 'POST /mobile/pairing-requests/:id/challenge', 'POST /mobile/pairing-requests/:id/approve', 'POST /mobile/pairing-requests/:id/decline', 'GET /mobile/jobs', 'GET /mobile/commitments', 'GET /mobile/machines'],
     }),
   },
   {
@@ -306,6 +307,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({
       configured: true,
       endpoints: ['POST /mobile/conversations', 'GET /mobile/conversations', 'PATCH /mobile/conversations/:key', 'DELETE /mobile/conversations/:key', 'POST /mobile/chat/app/:key', 'GET /mobile/chat/app/:key/messages', 'GET /mobile/chat/app/:key/events', 'GET /mobile/chat/app/:key/preview/:messageId', 'GET /mobile/chat/slack/:conversationId/messages', 'POST /mobile/chat/slack/:conversationId', 'POST /app/session-reply', 'POST /mobile/media/uploads', 'PUT /mobile/media/uploads/:uploadId/chunks/:index', 'GET /mobile/media/uploads/:uploadId', 'GET /mobile/media/:sha256', 'POST /mobile/media/purge', 'GET /app/media-path/:attachmentId'],
+    }),
+  },
+  {
+    key: 'attribution',
+    prefixes: ['/attribution'],
+    description: 'Attribution paper trail (docs/specs/attribution-paper-trail.md) — a statement credited to a person points at the logged message it came from, or says it has no source. Answers "who said this, and how did it change?". A write gate on notes, a nudge on sends, a ledger of every wording and a daily report that writes nothing to any note. Live on development agents, dark on the fleet (503). `record` refuses nothing; `enforce` is opt-in.',
+    build: () => ({
+      configured: true,
+      endpoints: ['POST /attribution/check', 'GET /attribution/resolve', 'GET /attribution/find', 'GET /attribution/trace', 'GET /attribution/status', 'POST /attribution/audit'],
     }),
   },
   {
@@ -458,6 +468,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobileSessionControls',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'The Instar iPhone app\'s session screen controls (docs/specs/mobile-native-session-controls.md): GET /mobile/sessions/controls (machine, door, model and why each can or cannot change), GET /mobile/sessions/new-options, GET /mobile/sessions/history (secrets removed), POST /sessions/:name/key (the keys tray and Stop) and POST /sessions/:name/attachments for owner phones; POST /mobile/sessions/door/:topic, /move/:topic, /close/:id, /new and /default, each with Face ID over a single-use challenge behind mobilePairing.permissionActions. Every control runs the dashboard\'s own route, so its rules stay in force. Sessions on another machine go through the machine the phone reached (pool-token /mobile/sessions/relay/:name/* routes), and typing obeys that machine\'s dashboard.poolStream.allowRemoteInput.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/sessions/controls', 'GET /mobile/sessions/new-options', 'GET /mobile/sessions/history', 'POST /sessions/:name/key', 'POST /sessions/:name/attachments', 'POST /mobile/sessions/door/:topic', 'POST /mobile/sessions/move/:topic', 'POST /mobile/sessions/close/:id', 'POST /mobile/sessions/new', 'POST /mobile/sessions/default'],
+    }),
+  },
+  {
     key: 'mobileSecretsWrites',
     // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
     prefixes: [],
@@ -465,6 +485,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({
       configured: true,
       endpoints: ['POST /mobile/secrets/requests', 'POST /mobile/secrets/requests/:key/cancel'],
+    }),
+  },
+  {
+    key: 'mobileOwnerPresence',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Remote Desktop with Face ID and the Dashboard PIN page for the owner\'s phone (docs/specs/mobile-owner-presence-pin.md): POST /mobile/desktop-unlock/challenge and POST /mobile/desktop-unlock mint a desktop-only, phone-bound 15-minute session after a fresh presence-key (Face ID / passcode) signature; POST /mobile/dashboard-pin/challenge and POST /mobile/dashboard-pin/reveal show the dashboard PIN this machine compares against and tell the owner privately. Owner phone only; the bearer is refused. Dev-gated (mobilePairing.ownerPresence.enabled).',
+    build: () => ({
+      configured: true,
+      endpoints: ['POST /mobile/desktop-unlock/challenge', 'POST /mobile/desktop-unlock', 'POST /mobile/dashboard-pin/challenge', 'POST /mobile/dashboard-pin/reveal'],
     }),
   },
   {
@@ -485,6 +515,26 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({
       configured: true,
       endpoints: ['GET /mobile/proposals', 'GET /mobile/inside'],
+    }),
+  },
+  {
+    key: 'mobileConsolePagesScreens',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Native Ideas, Pace, Development, Maturation and Files screens for the Instar iPhone app (docs/specs/mobile-native-console-pages.md): read-only, owner phone or bearer, each built from the console route it mirrors.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/ideas', 'GET /mobile/pace', 'GET /mobile/development', 'GET /mobile/maturation', 'GET /mobile/files', 'GET /mobile/files/read'],
+    }),
+  },
+  {
+    key: 'mobileHealthIssues',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'What a degraded /health means for the person (docs/specs/mobile-health-issues.md): each reason sorted into user-affecting, internal or unclassified from a declared table, with plain words and a next step, and the quick actions on each one (docs/specs/health-quick-actions.md): hide for a while, hide from me, or ignore completely, undoable from the Hidden list. Owner phone or bearer. /health keeps its shape; only an ignored problem stops counting in it.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /mobile/health-issues', 'POST /mobile/health-issues/choices', 'POST /mobile/health-issues/choices/undo', 'POST /mobile/attention/:id/choice'],
     }),
   },
   {
@@ -783,6 +833,18 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     },
   },
   {
+    key: 'browser',
+    prefixes: ['/browser'],
+    description: 'The browser this agent always has: ready, installing, not-built or broken, each with a next step',
+    build: ({ ctx }) => ({
+      ...browserCapability(ctx.config.stateDir),
+      endpoints: [
+        'GET /browser/state — this machine\'s browser state and next step; check it before saying a browser task cannot be done',
+        'POST /browser/linux/install — after the operator says yes, install the driver\'s packages on this machine',
+      ],
+    }),
+  },
+  {
     key: 'secrets',
     prefixes: ['/secrets'],
     description:
@@ -800,7 +862,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'DELETE /secrets/pending/:token — cancel a pending request',
       ],
       retrievalHint:
-        'ALWAYS retrieve via `node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name` (use `--names` to discover fields). It streams the value to stdout and NEVER prints the response body. Raw curl against /secrets/retrieve dumps the secret into the Bash tool transcript — do not use it.',
+        'A website password for the agent\'s Linux Chrome: request it with `browserHost` (shown on the form), then, with the password box focused, `XD_PROFILE=<id> node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name --browser`; it goes straight into the box, is not stored, and nothing else can read it. Otherwise ALWAYS retrieve via `node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name` (use `--names` to discover fields). It streams the value to stdout and NEVER prints the response body. Raw curl against /secrets/retrieve dumps the secret into the Bash tool transcript — do not use it.',
     }),
   },
   {
@@ -833,10 +895,11 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'evolution',
     prefixes: ['/evolution'],
-    description: 'Evolution proposals + learnings + gaps + actions',
+    description: 'Evolution proposals, learnings, gaps and actions. Soft total retention targets preserve open work; finished memory remains in the full-content archive. Read /evolution/retention for pressure/coverage and /evolution/archive for paginated local memory including peer copies.',
     build: ({ ctx }) => ({
       enabled: !!ctx.evolution,
       subsystems: ['proposals', 'learnings', 'gaps', 'actions'],
+      endpoints: ['GET /evolution/retention', 'GET /evolution/archive'],
     }),
   },
   {
@@ -998,7 +1061,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({
       enabled: true,
       endpoints: [
-        'GET /commitments — list commitments (filterable)',
+        'GET /commitments — list commitments (filterable: ?status=active, ?scope=mesh, ?priority=high|normal|low|unset)',
         'GET /commitments/:id — fetch a single commitment',
         'POST /commitments — open a new commitment',
         'PATCH /commitments/:id — update status/details',
@@ -1006,6 +1069,9 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /commitments/:id/withdraw — withdraw the commitment',
         'POST /commitments/:id/resume — resume a paused commitment',
         'GET /commitments/active-context — assemble active-commitment context',
+        'GET /commitments/review/queue — promises due for the agent\'s own review (?peek=1 for the job gate)',
+        'POST /commitments/review/apply — apply a promise-review batch through the evidence/caps floor',
+        'POST /commitments/:id/reopen — undo a closure the promise review made (30-day window)',
         'GET /blocker-lifecycle/summary — raw per-origin blocker timing plus deliverable-completion count',
         'GET /blocker-lifecycle/trend — raw per-origin blocker timing plus completion-count direction',
       ],

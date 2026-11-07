@@ -48,6 +48,19 @@ describe('accounts', () => {
     expect(kindWord('who-knows')).toBe('Other');
   });
 
+  it('a wrong login is attention; an unconfirmed or blocked sign-in is shown but not counted', () => {
+    const stuck = accountCellState({ status: 'active', identityDrifted: true, identityDrift: { actualAccountId: 'e', actualEmail: 'echo@x.io', repairState: 'planned', detectedAt: at(-60 * 24 * 10) } }, false, null, NOW);
+    expect(stuck).toEqual({ state: 'attn', label: "holds another account's login" });
+    expect(accountCellState({ status: 'active', identityDrifted: true, identityDrift: { actualAccountId: 'e', repairState: 'planned', detectedAt: at(-30) } }, false, null, NOW).state).toBe('unknown');
+    expect(accountCellState({ status: 'active', identityDrifted: true, identityDrift: { actualAccountId: 'missing-local-login' } }, false, null, NOW)).toEqual({ state: 'attn', label: 'needs sign-in' });
+    expect(accountCellState({ status: 'needs-reauth' }, false, 'no-open-incident').state).toBe('unknown');
+    expect(accountCellState({ status: 'needs-reauth' }, false, 'profile-unresolved').label).toBe("automatic repair can't start yet");
+    expect(accountCellState({ status: 'needs-reauth' }, false, 'device-limit-benched').state).toBe('attn');
+    const r = summarizeAccounts(pool([row({ status: 'needs-reauth' })]), { now: NOW, blockers: [{ accountId: String(row({}).id), machineId: String(row({}).machineId), reason: 'no-open-incident' }] });
+    expect(r.needsSignIn).toBe(0);
+    expect(r.headline).not.toContain('signing in');
+  });
+
   it('one account across machines: freshest reading wins, a future-dated reading never does', () => {
     const r = summarizeAccounts(pool([
       row({ lastQuota: { fiveHour: { utilizationPct: 40, resetsAt: at(100) }, measuredAt: at(-30) } }),
@@ -114,14 +127,82 @@ describe('accounts', () => {
     expect(only.accounts[0].signIn).toBe('signing-in');
   });
 
-  it('headlines: plenty left, nearly out, every account nearly out, partial, none', () => {
+  it('headline (older app builds): never names one account as nearly out; counts are right', () => {
     const q = (id: string, pct: number) => row({ id: `id-${id}`, nickname: id, lastQuota: { fiveHour: { utilizationPct: pct, resetsAt: at(10) }, measuredAt: at(-1) } });
-    expect(summarizeAccounts(pool([q('A', 40), q('B', 10)]), { now: NOW }).headline).toBe('Plenty left: the busiest account is at 40%.');
-    expect(summarizeAccounts(pool([q('A', 95), q('B', 10)]), { now: NOW }).headline).toBe('A is nearly out; others have room.');
-    expect(summarizeAccounts(pool([q('A', 95), q('B', 91)]), { now: NOW }).headline).toBe('Every account is nearly out.');
-    expect(summarizeAccounts(pool([q('A', 40)], [{ machineId: 'm_peer', error: 'timeout' }]), { now: NOW, nicknameOf: () => 'Mac Mini' }).headline).toBe('Plenty left (on the machines that answered): the busiest account is at 40%.');
+    expect(summarizeAccounts(pool([q('A', 40), q('B', 10)]), { now: NOW }).headline).toBe('2 of 2 accounts have room.');
+    // The reported case: two accounts full, others with room. Not "A is nearly out".
+    const two = summarizeAccounts(pool([q('Adriana', 100), q('Echo', 100), q('Dawn', 89), q('Luna', 73)]), { now: NOW });
+    expect(two.headline).toBe('2 of 4 accounts have room.');
+    expect(two.notices).toEqual([]);
+    expect(summarizeAccounts(pool([q('A', 95), q('B', 91)]), { now: NOW }).headline).toBe('All 2 Claude accounts are nearly out.');
     expect(summarizeAccounts(pool([]), { now: NOW }).headline).toBe('No accounts are set up yet.');
     expect(summarizeAccounts(pool([row({})]), { now: NOW }).headline).toBe('No usage readings yet.');
+  });
+
+  describe('notices: only what needs the person or changes what they can do', () => {
+    const q = (id: string, pct: number, over: Record<string, unknown> = {}, resetMin = 10) => row({ id: `id-${id}`, nickname: id, lastQuota: { fiveHour: { utilizationPct: pct, resetsAt: at(resetMin) }, measuredAt: at(-1) }, ...over });
+    const cx = (id: string, pct: number, resetMin = 30) => row({ id: `cx-${id}`, nickname: id, framework: 'codex-cli', lastQuota: { primary: { usedPercent: pct, resetsAtIso: at(resetMin) }, measuredAt: at(-1) } });
+    const notices = (rows: unknown[], failed: unknown[] = []) => summarizeAccounts(pool(rows, failed), { now: NOW }).notices;
+
+    it('a routine state is no notice: one or two full while others have room, or all fine', () => {
+      expect(notices([q('A', 100), q('B', 100), q('C', 89)])).toEqual([]);
+      expect(notices([q('A', 40), q('B', 10)])).toEqual([]);
+      expect(notices([q('A', 89), q('B', 89)])).toEqual([]);
+    });
+
+    it('the whole pool at or over 90%: one notice, used up vs nearly out, with when room returns', () => {
+      const n = notices([q('A', 95, {}, 300), q('B', 90, {}, 60)]);
+      expect(n).toHaveLength(1);
+      expect(n[0]).toMatchObject({ tone: 'attn', title: 'All 2 Claude accounts are nearly out.', returnsAt: at(60), action: { kind: 'ask' } });
+      const up = notices([q('A', 100), q('B', 100, {}, 5)]);
+      expect(up[0]).toMatchObject({ tone: 'bad', title: 'All 2 Claude accounts are used up.', returnsAt: at(5) });
+      expect(notices([q('A', 100)])[0].title).toBe('The only Claude account is used up.');
+    });
+
+    it('room returns only when every full window on an account resets', () => {
+      const both = row({ id: 'id-A', nickname: 'A', lastQuota: { fiveHour: { utilizationPct: 100, resetsAt: at(10) }, sevenDay: { utilizationPct: 95, resetsAt: at(900) }, measuredAt: at(-1) } });
+      expect(notices([both])[0].returnsAt).toBe(at(900));
+      const noTime = row({ id: 'id-A', nickname: 'A', lastQuota: { fiveHour: { utilizationPct: 100 }, measuredAt: at(-1) } });
+      expect(notices([noTime])[0].returnsAt).toBeNull();
+    });
+
+    it('one framework out while another has room: a notice for that framework only', () => {
+      const n = notices([q('A', 40), cx('X', 100), cx('Y', 97)]);
+      expect(n.map((x) => x.title)).toEqual(['All 2 Codex accounts are nearly out.']);
+      const both = notices([q('A', 99), cx('X', 100)]);
+      expect(both.map((x) => x.title)).toEqual(['All 2 accounts are nearly out.']);
+    });
+
+    it('an account with no reading, or one needing sign-in, is not counted as out of room', () => {
+      expect(notices([q('A', 100), row({ id: 'id-B', nickname: 'B' })])).toEqual([]);
+      const n = notices([q('A', 100), q('B', 10, { status: 'needs-reauth' })]);
+      expect(n).toHaveLength(2);
+      expect(n.find((x) => x.key === 'sign-in')).toMatchObject({ tone: 'attn', title: '1 account needs signing in.', action: { kind: 'sign-in', accounts: [rowKey('account', 'id-B')] } });
+      expect(n.find((x) => x.key !== 'sign-in')!.title).toBe('The only Claude account is used up.');
+    });
+
+    it('a machine with no signed-in account, and a sign-in that fixes it; not while unknown or signing in', () => {
+      const peer = (id: string, over: Record<string, unknown>) => q(id, 10, { machineId: 'm_peer', machineNickname: 'Mac Mini', remote: true, ...over });
+      const n = notices([q('A', 10), peer('A', { status: 'needs-reauth' })]);
+      expect(n[0]).toMatchObject({ tone: 'bad', title: 'Mac Mini has no signed-in account, so nothing can run there.', action: { kind: 'sign-in', accounts: [rowKey('account', 'id-A')] } });
+      expect(n).toHaveLength(1); // the account is not asked for twice
+      const more = notices([q('A', 10), peer('A', { status: 'needs-reauth' }), q('B', 10, { status: 'needs-reauth' })]);
+      expect(more.map((x) => x.title)).toEqual(['Mac Mini has no signed-in account, so nothing can run there.', '1 more account needs signing in.']);
+      expect(notices([q('A', 10), peer('A', { status: 'warming' })])).toEqual([]);
+      expect(notices([q('A', 10), peer('A', {}), peer('B', { id: 'id-B', status: 'needs-reauth' })]).map((x) => x.key)).toEqual(['sign-in']);
+    });
+
+    it("this machine's list unreadable; a partial read scopes its conclusions", () => {
+      const n = notices([], [{ machineId: 'm_self', error: 'peer-pool-unavailable' }]);
+      expect(n).toEqual([expect.objectContaining({ key: 'list-unreadable', tone: 'bad', action: expect.objectContaining({ kind: 'ask' }) })]);
+      expect(notices([q('A', 100)], [{ machineId: 'm_peer', error: 'timeout' }])[0].title).toBe('The only Claude account is used up (on the machines that answered).');
+    });
+
+    it('every notice carries an action', () => {
+      const all = notices([q('A', 100), q('B', 100, { status: 'needs-reauth', machineId: 'm_peer', machineNickname: 'Mac Mini', remote: true })]);
+      expect(all.length).toBeGreaterThan(0);
+      for (const x of all) expect(['sign-in', 'ask']).toContain(x.action.kind);
+    });
   });
 
   it('unread names peers by registry name only; this machine\'s own failed row is localUnreadable', () => {

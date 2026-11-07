@@ -69,7 +69,7 @@ function build(opts: {
     config: { authToken: 'test', stateDir: '/tmp', port: 0 },
     state: { get: (k: string) => (k === 'agent-updates-topic' && !opts.noTopic ? UPDATES_TOPIC_ID : undefined) },
     messagingToneGate: { review },
-    telegram: { sendToTopic: async (topicId: number, text: string) => { sends.push({ topicId, text }); } },
+    telegram: { sendToTopic: async (topicId: number, text: string) => { sends.push({ topicId, text }); return { messageId: sends.length, topicId }; } },
     growthDigestPublisher: publisher,
   };
   // Registering the routes attaches postToUpdatesTopic to the publisher.
@@ -86,6 +86,16 @@ describe('GrowthDigestPublisher — guarded delivery path (integration)', () => 
     expect(b.sends[0].text).toContain('Growth check-in');
     expect(b.sends[0].text).toContain('Feature X');
     expect(b.audits.find((a) => a.action === 'sent')).toBeDefined();
+  });
+
+  it('a quiet receipt records the digest without claiming delivery', async () => {
+    const b = build({ mode: 'live' });
+    (b.ctx.telegram as { sendToTopic: (...args: unknown[]) => Promise<unknown> }).sendToTopic = async () =>
+      ({ recorded: true, delivered: false, quietId: 'quiet-digest' });
+    await b.publisher.publishOnce(NOW, 'manual');
+    expect(b.audits.find((a) => a.action === 'quiet-recorded')).toBeDefined();
+    expect(b.audits.find((a) => a.action === 'sent')).toBeUndefined();
+    expect(b.sends).toHaveLength(0);
   });
 
   it('no Updates topic → publisher records send-blocked(no-updates-topic), nothing sent (never a fallback topic)', async () => {
@@ -136,7 +146,7 @@ describe('POST /telegram/post-update — behavior preserved by the funnel extrac
     const ctx = {
       config: { authToken: 'test', stateDir: '/tmp', port: 0 },
       state: { get: () => undefined },
-      telegram: { sendToTopic: async () => {} },
+      telegram: { sendToTopic: async () => { return { messageId: 1, topicId: 1 }; } },
     };
     srv = await listen(ctx);
     const res = await fetch(srv.url + '/telegram/post-update', {
@@ -150,7 +160,7 @@ describe('POST /telegram/post-update — behavior preserved by the funnel extrac
     const ctx = {
       config: { authToken: 'test', stateDir: '/tmp', port: 0 },
       state: { get: (k: string) => (k === 'agent-updates-topic' ? UPDATES_TOPIC_ID : undefined) },
-      telegram: { sendToTopic: async () => { sends.push(1); } },
+      telegram: { sendToTopic: async () => { sends.push(1);  return { messageId: 1, topicId: 1 }; } },
     };
     srv = await listen(ctx);
     const res = await fetch(srv.url + '/telegram/post-update', {

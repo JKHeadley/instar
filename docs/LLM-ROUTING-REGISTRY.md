@@ -167,6 +167,7 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | Component | file:line | Decision | Nature | Route | Intentional? |
 |---|---|---|---|---|---|
 | MessagingToneGate | src/core/MessagingToneGate.ts:264 | outbound tone/leak/self-stop | A/B·gating | OC(fast) (override→pi) | ⚠ high-volume + fails closed; accuracy matters, but a fast small model likely fits |
+| AttributionJudge | src/core/attribution/AttributionJudge.ts | does this credit a person, do the logged words support it, lineage, source ranking | A/B·gating | OC(fast) | passes as `unchecked` with no model after failover (stated exception, attribution-paper-trail section 4); own queue and budgets |
 | CoherenceGate / CoherenceReviewer | src/core/CoherenceReviewer.ts:295 | action coherent for project? | **B** (blocks work) | OC(fast) | ✅ keep reasoning |
 | ExternalOperationGate | src/core/ExternalOperationGate.ts:510 | external-op mutability class | **B** safety | OC(default)·gating | ✅ |
 | LLMSanitizer | src/security/LLMSanitizer.ts:110 | prompt-injection sanitize | **B** safety | OC(fast) | ✅ |

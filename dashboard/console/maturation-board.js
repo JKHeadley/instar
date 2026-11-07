@@ -5,8 +5,9 @@
 // Layout, top to bottom: one answer sentence · a square per feature (the glance) ·
 // plain groups (Broken, Stuck, …) with one plain line per feature · details on tap.
 
-import { el, cantTell, setKids, firstPaint, arrivalScroll } from './ui.js';
+import { el, cantTell, setKids, firstPaint, arrivalScroll, askLink } from './ui.js';
 import { maturationPaceNode } from './pace.js';
+import { coveragePanel } from './measurement-coverage.js';
 import {
   GROUPS, groupOf, groupCounts, headline, subline, parseState, stateQuery, openGroups,
   filterRows, orderInGroup, sortRows, SORTS, squares, humanName, humanArea, ownerChip, statusLine, timeline, fmtDate, metricText, ladderOf, card, isNobody,
@@ -14,6 +15,7 @@ import {
 
 const POOL_TIMEOUT_MS = 12_000;
 let lastBoard = null;
+let lastCoverage = null;
 let ladderApi = null;
 
 /**
@@ -24,7 +26,11 @@ let ladderApi = null;
 export async function renderMaturation(main, api, nav = consoleNav()) {
   ladderApi = api;
   if (!lastBoard) firstPaint(main, el('p', { class: 'mb-loading', text: 'Reading every machine…' }));
-  const r = await api.get('/maturation/board?scope=pool', POOL_TIMEOUT_MS);
+  const [r, coverage] = await Promise.all([
+    api.get('/maturation/board?scope=pool', POOL_TIMEOUT_MS),
+    api.get('/maturation/board?scope=pool&part=coverage', POOL_TIMEOUT_MS).catch(() => ({ ok: false })),
+  ]);
+  lastCoverage = coverage.ok ? coverage.data : null;
   if (!r.ok) {
     if (r.reason === 'switched off on this agent') {
       setKids(main, el('section', { class: 'mb-hero' },
@@ -113,7 +119,7 @@ function draw(main, board, nav, pace = null) {
     return el('section', { class: 'mb-group' }, head, body);
   }).filter(Boolean);
 
-  setKids(main, hero, glance, tools,
+  setKids(main, hero, coveragePanel(lastCoverage, ladderApi), glance, tools,
     sections.length ? el('div', { class: 'mb-groups' }, sections) : el('p', { class: 'mb-sub', text: 'Nothing matches.' }),
     sourcesNote(board));
 
@@ -144,6 +150,7 @@ function detail(f) {
   const numbers = ladderOf(f) ? el('ul', { class: 'mb-numbers', 'aria-label': 'The numbers it must hit' }) : null;
   if (numbers && ladderApi) fillNumbers(numbers, f);
   return el('div', { class: 'mb-detail' },
+    el('p', { class: 'mb-fine' }, askLink(`The maturation board's line on ${f.title || f.name || f.id}`)),
     rows.length ? el('dl', { class: 'mb-card' }, rows.flatMap((x) => [
       el('dt', { text: x.label }),
       el('dd', { text: x.text, 'data-tone': x.tone || null }),
@@ -174,6 +181,7 @@ async function fillNumbers(list, f) {
   if (!row) return;
   setKids(list, ...row.metrics.map((m) => el('li', {
     text: metricText(m),
+    // warning-path: askLink
     'data-tone': m.pass === false ? 'bad' : m.pass === true ? 'ok' : null,
   })));
 }

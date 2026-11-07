@@ -2,7 +2,8 @@
  * Express middleware — JSON parsing, CORS, auth, error handling.
  */
 
-import { memorySessionAllows } from './memorySessionGuard.js';
+import { memoryReplyChannel, memorySessionAllows } from './memorySessionGuard.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { SessionTokenRecord } from '../users/MemoryPrivacy.js';
 import { THREADLINE_MCP_DEADLINES } from '../core/threadlineMcpSpawn.js';
 import type { Request, Response, NextFunction } from 'express';
@@ -206,6 +207,8 @@ export function authMiddleware(
    * memorySessionGuard. When absent, session tokens are refused like any bad token.
    */
   memorySessionLookup?: (token: string) => SessionTokenRecord | null,
+  /** Told when a scoped session's reply went out. A record only, after the response. */
+  memorySessionReplied?: (session: SessionTokenRecord) => void,
 ) {
   return (req: Request, res: Response, next: NextFunction): void => {
     // Threadline MCP over local HTTP — ONE exact-path rule, FIRST: before the
@@ -430,6 +433,14 @@ export function authMiddleware(
         return;
       }
       res.locals.memorySession = session;
+      const replyChannel = memoryReplyChannel(req.method, req.path);
+      if (replyChannel) {
+        res.once('finish', () => {
+          if (res.statusCode < 200 || res.statusCode >= 300) return;
+          featureEvidence.record('memoryPrivacy', { kind: 'fired', reason: 'reply delivered', context: { channel: replyChannel, audience: session.audience.kind } });
+          try { memorySessionReplied?.(session); } catch { /* @silent-fallback-ok — a lost note reads as no reply, which shows on the ladder */ }
+        });
+      }
       next();
       return;
     }
@@ -611,6 +622,15 @@ export const PARITY_PASS_TIMEOUT_MS = 360_000;
 export const POOL_TRANSFER_TIMEOUT_MS = 75_000;
 
 /**
+ * The phone's session controls (docs/specs/mobile-native-session-controls.md) wait on a dashboard route
+ * called over loopback, so each budget has to outlast that route's own: a move reads the machines (up to
+ * 12 s) and then the transfer (75 s), and the rest get past the default 30 s a door switch, a close or a
+ * new session can take.
+ */
+export const MOBILE_SESSION_MOVE_TIMEOUT_MS = POOL_TRANSFER_TIMEOUT_MS + 15_000;
+export const MOBILE_SESSION_ACTION_TIMEOUT_MS = 45_000;
+
+/**
  * `POST /corrections/analyze` awaits correction meaning grouping (one model
  * call per uncached candidate pair, bounded by `DEFAULT_RUN_BUDGET_MS` = 240 s
  * in JevCorrectionGrouping.ts, plus up to one 60 s referee call already in
@@ -717,6 +737,9 @@ export function resolveFollowMeBudgets(remoteScrapeTimeoutMs?: number): FollowMe
   return { scrapeMs, enrollStartRouteMs, relayFetchMs, startCellRouteMs };
 }
 
+/** Past HOLDER_MEDIA_DEADLINE_MS (300 s), so the stream's own limit always ends first. */
+export const MOBILE_MEDIA_TIMEOUT_MS = 330_000;
+
 /**
  * The production per-path request-timeout overrides. Exported as the single
  * source of truth so wiring-integrity tests assert against the SAME map the
@@ -734,6 +757,7 @@ export function resolveFollowMeBudgets(remoteScrapeTimeoutMs?: number): FollowMe
 export function buildRequestTimeoutOverrides(opts?: {
   paritySourceTotalTimeoutMs?: number;
   followMeRemoteScrapeTimeoutMs?: number;
+  defaultTimeoutMs?: number;
 }): Record<string, number> {
   const configuredTotal = opts?.paritySourceTotalTimeoutMs;
   const followMe = resolveFollowMeBudgets(opts?.followMeRemoteScrapeTimeoutMs);
@@ -747,6 +771,11 @@ export function buildRequestTimeoutOverrides(opts?: {
     '/whatsapp/send': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/imessage/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/imessage/validate-send': OUTBOUND_MESSAGING_TIMEOUT_MS,
+    // A file from another machine has its own 300 s limit, and a 408 under the stream would leave
+    // its slot held. Uploads and purge keep the agent's configured default.
+    '/mobile/media': Math.max(MOBILE_MEDIA_TIMEOUT_MS, opts?.defaultTimeoutMs ?? 30_000),
+    '/mobile/media/uploads': opts?.defaultTimeoutMs ?? 30_000,
+    '/mobile/media/purge': opts?.defaultTimeoutMs ?? 30_000,
     '/spec/conformance-check': SPEC_REVIEW_TIMEOUT_MS,
     '/corrections/analyze': CORRECTIONS_ANALYZE_TIMEOUT_MS,
     '/cutover-readiness/parity-pass': parityBudgetMs,
@@ -759,6 +788,11 @@ export function buildRequestTimeoutOverrides(opts?: {
     // WS1.2: the deterministic transfer awaits the owner-side drain (≤ drain
     // bound + the 50s remote-call cap) synchronously — see POOL_TRANSFER_TIMEOUT_MS.
     '/pool/transfer': POOL_TRANSFER_TIMEOUT_MS,
+    '/mobile/sessions/move': MOBILE_SESSION_MOVE_TIMEOUT_MS,
+    '/mobile/sessions/door': MOBILE_SESSION_ACTION_TIMEOUT_MS,
+    '/mobile/sessions/close': MOBILE_SESSION_ACTION_TIMEOUT_MS,
+    '/mobile/sessions/new': MOBILE_SESSION_ACTION_TIMEOUT_MS,
+    '/mobile/sessions/default': MOBILE_SESSION_ACTION_TIMEOUT_MS,
     // Account-follow-me cross-machine sign-in chain — see the FollowMeBudgets
     // block above. These four entries are what stop the outermost budget from
     // being the smallest one in the stack.

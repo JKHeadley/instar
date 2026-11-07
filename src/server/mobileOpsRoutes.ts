@@ -236,7 +236,15 @@ export interface MobileCommitment {
   machine: string | null;
   /** A replicated copy whose last update is older than 15 min, or of unknown age. */
   stale: boolean;
+  /** How much it matters (set by the agent); null = not assessed yet. */
+  priority: 'high' | 'normal' | 'low' | null;
+  /** 'promise-review' when the agent's own review closed it. */
+  closedBy: 'promise-review' | null;
 }
+
+export type MobilePriorityFilter = 'high' | 'normal' | 'low' | 'unset';
+export interface MobileCommitmentCounts { open: number; high: number; normal: number; low: number; unset: number }
+const PRIORITY_RANK: Record<string, number> = { high: 0, normal: 1, unset: 2, low: 3 };
 
 const WAIT_WORDS: Record<string, MobileCommitment['waitingOn']> = { 'user-input': 'your answer', 'user-authorization': 'your approval', external: 'something outside' };
 
@@ -251,7 +259,12 @@ function nextDue(c: Rec): number | null {
  * promises first — overdue, then by due date, then newest — then promises closed in the last
  * seven days, newest first. Older closed promises are left out.
  */
-export function summarizeCommitments(rows: unknown, now: number, nicknameOf: (machineId: string) => string | null = () => null): { commitments: MobileCommitment[]; truncated: boolean } {
+export function summarizeCommitments(
+  rows: unknown,
+  now: number,
+  nicknameOf: (machineId: string) => string | null = () => null,
+  priorityFilter: MobilePriorityFilter | null = null,
+): { commitments: MobileCommitment[]; truncated: boolean; counts: MobileCommitmentCounts } {
   const list = Array.isArray(rows) ? rows : [];
   const out: Array<MobileCommitment & { _due: number | null; _at: number }> = [];
   for (const raw of list) {
@@ -288,15 +301,23 @@ export function summarizeCommitments(rows: unknown, now: number, nicknameOf: (ma
       resolvedAt: Number.isFinite(resolved) ? new Date(resolved).toISOString() : null,
       machine: replica && origin ? verifiedEntityName(origin, nicknameOf(origin)) : null,
       stale: replica && !(typeof c.stalenessMs === 'number' && Number.isFinite(c.stalenessMs) && c.stalenessMs <= REPLICA_FRESH_MS),
+      priority: c.priority === 'high' || c.priority === 'normal' || c.priority === 'low' ? c.priority : null,
+      closedBy: c.closedBy === 'promise-review' ? 'promise-review' : null,
       _due: due,
       _at: Number.isFinite(open ? created : resolved) ? (open ? created : resolved) : 0,
     });
   }
+  // Counts cover EVERY open promise (the row list is capped), never closed ones.
+  const counts: MobileCommitmentCounts = { open: 0, high: 0, normal: 0, low: 0, unset: 0 };
+  for (const r of out) if (r.open) { counts.open++; counts[r.priority ?? 'unset']++; }
+  const rank = (r: MobileCommitment) => PRIORITY_RANK[r.priority ?? 'unset'];
   out.sort((a, b) => Number(b.open) - Number(a.open)
-    || (a.open ? Number(b.overdue) - Number(a.overdue) || (a._due ?? Infinity) - (b._due ?? Infinity) : 0)
+    || (a.open ? rank(a) - rank(b) || Number(b.overdue) - Number(a.overdue) || (a._due ?? Infinity) - (b._due ?? Infinity) : 0)
     || b._at - a._at);
-  const truncated = out.length > MAX_COMMITMENTS;
-  return { commitments: out.slice(0, MAX_COMMITMENTS).map(({ _due, _at, ...r }) => r), truncated };
+  // ?priority= narrows to OPEN rows of that priority (closed rows are omitted while filtering).
+  const listed = priorityFilter ? out.filter((r) => r.open && (r.priority ?? 'unset') === priorityFilter) : out;
+  const truncated = listed.length > MAX_COMMITMENTS;
+  return { commitments: listed.slice(0, MAX_COMMITMENTS).map(({ _due, _at, ...r }) => r), truncated, counts };
 }
 
 // ── machines ──────────────────────────────────────────────────────────────────
@@ -334,8 +355,8 @@ function machineState(m: Rec): { state: MobileMachineState; estimated: boolean }
   return { state: m.online === true ? 'live' : m.online === false ? 'stale' : 'unknown', estimated: true };
 }
 
-/** A one-way, stable row key for a machine (never the id itself). */
-function machineKey(id: string): string {
+/** A one-way, stable row key for a machine (never the id itself). Shared with the health reading's `machine`. */
+export function machineKey(id: string): string {
   return crypto.createHash('sha256').update(`mobile-ops-machine:${id}`).digest('hex').slice(0, 16);
 }
 
@@ -470,8 +491,13 @@ export function mountMobileOpsRoutes(router: Router, deps: MobileOpsDeps): void 
     try {
       const rows = await deps.commitmentsView();
       if (rows === null) { res.json({ schemaVersion: MOBILE_OPS_SCHEMA_VERSION, generatedAt: new Date(now()).toISOString(), enabled: false, commitments: [], truncated: false }); return; }
-      const { commitments, truncated } = summarizeCommitments(rows, now(), deps.nicknameOf);
-      res.json({ schemaVersion: MOBILE_OPS_SCHEMA_VERSION, generatedAt: new Date(now()).toISOString(), enabled: true, commitments, truncated });
+      const pq = typeof req.query.priority === 'string' ? req.query.priority : undefined;
+      if (pq !== undefined && !['high', 'normal', 'low', 'unset'].includes(pq)) {
+        res.status(400).json({ error: 'priority must be high, normal, low or unset' });
+        return;
+      }
+      const { commitments, truncated, counts } = summarizeCommitments(rows, now(), deps.nicknameOf, (pq as MobilePriorityFilter | undefined) ?? null);
+      res.json({ schemaVersion: MOBILE_OPS_SCHEMA_VERSION, generatedAt: new Date(now()).toISOString(), enabled: true, commitments, truncated, counts });
     } catch (err) {
       reportReadFailure('GET /mobile/commitments', err);
       res.status(500).json({ error: 'promises-unavailable' });

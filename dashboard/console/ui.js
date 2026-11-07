@@ -19,14 +19,28 @@ export function el(tag, attrs = {}, ...kids) {
   return n;
 }
 
-/** 1. The feature page head: eyebrow, headline sentence, context line, facts. */
-export function pageHead({ eyebrow, headline, sub, tone, facts = [] }) {
+/** Opens Sessions with the question ready in the message box. Nothing is sent until the person sends it. */
+export function askHref(subject) {
+  return `#/work/sessions?ask=${encodeURIComponent(`The dashboard shows this: "${String(subject)}". What happened, does it affect me, and what should we do about it?`)}`;
+}
+/** The path every warning has even when there is nothing else to press. */
+export function askLink(subject, text = 'Ask the agent about this') {
+  return el('a', { class: 'ask-link', href: askHref(subject), text });
+}
+const isWarning = (tone) => tone === 'attn' || tone === 'bad';
+
+/** 1. The feature page head: eyebrow, headline sentence, context line, facts. A warning here always has a way to ask. */
+export function pageHead({ eyebrow, headline, sub, tone, facts = [], noAsk = false }) {
+  const toned = facts.filter((f) => isWarning(f.tone));
+  const ask = !noAsk && (isWarning(tone) || toned.length > 0)
+    ? [isWarning(tone) ? headline : null, ...toned.map((f) => `${f.n} ${f.label}`)].filter(Boolean).join(' · ') : null;
   return el('section', { class: 'hero page-hero', 'data-tone': tone || 'ok' },
     el('div', { class: 'eyebrow', text: eyebrow }),
     el('h1', { class: 'page-title', text: headline }),
     sub ? el('p', { text: sub }) : null,
     facts.length ? el('div', { class: 'facts' }, facts.map((f) => el(f.href ? 'a' : 'span', { class: `fact${f.tone ? ' ' + f.tone : ''}`, href: f.href || null },
       el('span', { class: 'fact-n', text: String(f.n) }), el('span', { class: 'fact-label', text: f.label })))) : null,
+    ask ? el('p', { class: 'hero-ask' }, askLink(ask)) : null,
   );
 }
 

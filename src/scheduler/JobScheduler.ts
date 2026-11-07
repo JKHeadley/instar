@@ -1,3 +1,7 @@
+import { isQuietReceipt, verifiedJobEnvelope } from '../messaging/NotificationSelectivityGate.js';
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/scheduler/JobScheduler.ts');
+import { verifyImportedPortableJob, recordImportedPortableIntegrityFailure } from '../core/JobPortableIntegrity.js';
 /**
  * Job Scheduler — cron-based job execution engine.
  *
@@ -26,6 +30,8 @@ import { ExecutionJournal } from '../core/ExecutionJournal.js';
 import { IntegrationGate } from './IntegrationGate.js';
 import { JobReflector } from '../core/JobReflector.js';
 import { formatLoadProblem, loadJobsDetailed } from './JobLoader.js';
+import { readRecentPromotion, markPromotionSweepComplete } from '../core/roleFollowRestart.js';
+import { PromotionCatchUpStore } from './PromotionCatchUpStore.js';
 import { readAgentMdBody, rehydrateAgentMdJobFromLastValidatedBody, verifyScriptHash } from './AgentMdJobLoader.js';
 import { parseScriptOutput, capScriptOutput, type ParsedScriptRun } from './jobScriptProtocol.js';
 import { notifyScriptRunObservers, type ScriptRunObserver } from './scriptRunObservers.js';
@@ -79,6 +85,7 @@ interface JobCapacityEpisode {
   jobs: string[];
   blockedAtByJob?: Record<string, string>;
   alertedAt?: string;
+  recordedAt?: string;
 }
 
 const CAPACITY_POLL_MS = 15_000;
@@ -110,6 +117,8 @@ interface JobFailureAlertState {
   nextEligibleAt: string;
   lastAttemptAt?: string;
   lastDeliveredAt?: string;
+  recordedAt?: string;
+  quietId?: string;
   activeAttemptId?: string;
 }
 
@@ -184,6 +193,10 @@ export class JobScheduler {
   private cronTasks: Map<string, Cron> = new Map();
   private queue: QueuedJob[] = [];
   private running = false;
+  private promotionCatchUpPending = false;
+  private blockedCronDuringPromotion = new Set<string>();
+  private promotionCatchUpStore: PromotionCatchUpStore;
+  private promotionLeaseProvider: (() => { leaseEpoch: number; machineId: string; holdsLease: boolean; runOnceWitness?: boolean }) | null = null;
   private paused = false;
 
   /** Last on-disk drift fingerprint warned for each agentmd job. */
@@ -226,6 +239,8 @@ export class JobScheduler {
   /** Retry state for skipped jobs: slug → { retries, lastAttempt, timer } */
   private retryState: Map<string, { retries: number; timer: ReturnType<typeof setTimeout> }> = new Map();
   private missedJobStartupTimer: ReturnType<typeof setTimeout> | null = null;
+  private catchUpNoticeTimer: ReturnType<typeof setInterval> | null = null;
+  private catchUpAlertsInFlight = new Set<string>();
   private silenceCheckTimer: ReturnType<typeof setInterval> | null = null;
   private silenceAlertsInFlight = new Set<string>();
   private silenceAlertEpoch = new Map<string, number>();
@@ -347,6 +362,10 @@ export class JobScheduler {
   /** Cached machine-local pin evidence. Absent means no pin can activate. */
   private jobRouteEvidence: ((job: JobDefinition) => JobRouteEvidence) | null = null;
 
+  setPromotionLeaseProvider(provider: (() => { leaseEpoch: number; machineId: string; holdsLease: boolean; runOnceWitness?: boolean }) | null): void {
+    this.promotionLeaseProvider = provider;
+  }
+
   setJobRouteEvidenceProvider(provider: ((job: JobDefinition) => JobRouteEvidence) | null): void {
     this.jobRouteEvidence = provider;
   }
@@ -377,6 +396,7 @@ export class JobScheduler {
     this.skipLedger = new SkipLedger(stateDir);
     this.skipLedger.onSkip = (event) => this.observeContinuitySkip(event.slug, event.reason);
     this.runHistory = new JobRunHistory(stateDir);
+    this.promotionCatchUpStore = new PromotionCatchUpStore(stateDir);
   }
 
   /**
@@ -384,6 +404,17 @@ export class JobScheduler {
    * Used to avoid rebuilding cron tasks when the on-disk jobs snapshot
    * has not actually changed.
    */
+  /**
+   * A job's definition for the post-gate comparison. `topicId` is left out: the
+   * scheduler writes it onto the live job at runtime and a reload drops that
+   * write, so it moves without anyone editing the job. A topic-only edit made
+   * during a gate therefore runs this one fire with the previous topic's notices
+   * and prompt context; the next fire uses the new topic.
+   */
+  private static gatedDefinition(job: JobDefinition): string {
+    return JSON.stringify({ ...job, topicId: undefined });
+  }
+
   private static signatureForJobs(jobs: JobDefinition[]): string {
     return crypto.createHash('sha256').update(JSON.stringify(jobs)).digest('hex');
   }
@@ -416,6 +447,10 @@ export class JobScheduler {
     for (const job of scopedJobs) {
       try {
         const task = new Cron(job.schedule, async () => {
+          if (this.promotionCatchUpPending) {
+            this.blockedCronDuringPromotion.add(job.slug);
+            return; // the promotion sweep owns admission until it finishes
+          }
           // New cron window — reset retry state so we get fresh attempts
           this.clearRetryState(job.slug);
           try {
@@ -780,6 +815,7 @@ export class JobScheduler {
     if (this.running) return;
 
     this.refreshJobs();
+    this.promotionCatchUpPending = readRecentPromotion(this.stateDir, Date.now(), this.promotionLeaseProvider?.()) !== null;
     this.running = true;
     this.silenceCheckTimer = setInterval(() => this.checkSilentJobs(), 5 * 60_000);
     this.silenceCheckTimer.unref?.();
@@ -815,6 +851,11 @@ export class JobScheduler {
         console.error(`[scheduler] Missed-job startup evaluation failed: ${err}`);
       });
     }
+
+    // A missed-work prompt remains durable even if messaging is unavailable at boot.
+    this.catchUpNoticeTimer = setInterval(() => this.retryUnresolvedCatchUpNotices(), 5 * 60_000);
+    this.catchUpNoticeTimer.unref?.();
+    this.retryUnresolvedCatchUpNotices();
 
     // Ensure every job has a Telegram topic (job-topic coupling)
     if (this.telegram) {
@@ -853,6 +894,8 @@ export class JobScheduler {
       this.missedJobStartupTimer = null;
     }
     this.queue = [];
+    if (this.catchUpNoticeTimer) clearInterval(this.catchUpNoticeTimer);
+    this.catchUpNoticeTimer = null;
     if (this.capacityPoll) clearInterval(this.capacityPoll);
     this.capacityPoll = null;
     // Clear all retry timers
@@ -914,7 +957,23 @@ export class JobScheduler {
       return 'skipped';
     }
 
+    if (!verifyImportedPortableJob(this.stateDir, path.dirname(this.stateDir), slug)) {
+      recordImportedPortableIntegrityFailure(this.stateDir, slug);
+      this.skipLedger.recordSkip(slug, 'disabled');
+      this.state.appendEvent({ type: 'job_skipped',
+        summary: `Job "${slug}" refused — imported files no longer match local approval`,
+        timestamp: new Date().toISOString(),
+        metadata: { slug, reason, gateReason: 'portable-integrity' },
+      });
+      return 'skipped';
+    }
+
     this.refreshAgentMdBodyIfChanged(job);
+
+    // The definition this fire was admitted on, taken BEFORE the rollback
+    // projection below. The post-gate check compares the live set against this:
+    // the projection is a per-fire view of the same definition, never a change.
+    const admittedDefinition = job.gate ? JobScheduler.gatedDefinition(job) : undefined;
 
     // job-cost-reduction §5.1 / §8.4: an instar-origin `runner: script` job
     // runs its shipped script — unless the rollback switch (read LIVE here)
@@ -1121,6 +1180,39 @@ export class JobScheduler {
       }
       if (!gatePassed) {
         this.scheduleRetry(slug, 'gate');
+        return 'skipped';
+      }
+    }
+
+    if (job.gate) {
+      try { this.refreshJobs(); } catch { return 'skipped'; }
+      const live = this.jobs.find(candidate => candidate.slug === slug);
+      // Each refusal names its own cause. A local job has no portable integrity
+      // to fail, so only a failed portable check may write that record: it feeds
+      // the coverage alert for imported jobs.
+      if (!verifyImportedPortableJob(this.stateDir, path.dirname(this.stateDir), slug)) {
+        recordImportedPortableIntegrityFailure(this.stateDir, slug);
+        this.skipLedger.recordSkip(slug, 'disabled');
+        this.state.appendEvent({ type: 'job_skipped',
+          summary: `Job "${slug}" refused — imported files no longer match local approval`,
+          timestamp: new Date().toISOString(), metadata: { slug, reason, gateReason: 'portable-integrity' },
+        });
+        return 'skipped';
+      }
+      if (!live || !live.enabled) {
+        this.skipLedger.recordSkip(slug, 'disabled');
+        this.state.appendEvent({ type: 'job_skipped',
+          summary: `Job "${slug}" refused — ${live ? 'disabled' : 'removed from the live job set'} during its gate`,
+          timestamp: new Date().toISOString(), metadata: { slug, reason, gateReason: live ? 'disabled' : 'job-missing' },
+        });
+        return 'skipped';
+      }
+      if (JobScheduler.gatedDefinition(live) !== admittedDefinition) {
+        this.skipLedger.recordSkip(slug, 'definition-changed');
+        this.state.appendEvent({ type: 'job_skipped',
+          summary: `Job "${slug}" refused — definition changed during its gate`,
+          timestamp: new Date().toISOString(), metadata: { slug, reason, gateReason: 'post-gate-definition-changed' },
+        });
         return 'skipped';
       }
     }
@@ -1734,7 +1826,7 @@ export class JobScheduler {
 
   private async maybeAlertCapacityEpisode(): Promise<void> {
     const episode = this.state.get<JobCapacityEpisode>('job-capacity-episode');
-    if (!episode || episode.alertedAt || this.capacityAlertInFlight || !episode.jobs.length) return;
+    if (!episode || episode.alertedAt || episode.recordedAt || this.capacityAlertInFlight || !episode.jobs.length) return;
     const waiting = episode.jobs.map(s => this.jobs.find(j => j.slug === s)).filter((j): j is JobDefinition => Boolean(j));
     if (!waiting.length) {
       for (const slug of episode.jobs) this.markCapacityJobStarted(slug);
@@ -1760,12 +1852,13 @@ export class JobScheduler {
       const names = waiting.sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]).map(j => j.name);
       const notice = jobCapacityNotice(names, ageMs);
       const hub = this.state.get<number>('agent-attention-topic');
-      if (this.telegram && hub) await this.telegram.sendToTopic(hub, notice);
+      let receipt: unknown;
+      if (this.telegram && hub) receipt = await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(hub, notice));
       else if (!this.telegram && this.messenger) await this.messenger.send({ userId: 'system', content: notice });
       else return;
       const current = this.state.get<JobCapacityEpisode>('job-capacity-episode');
       if (current?.firstBlockedAt === episode.firstBlockedAt && current.jobs.length) {
-        this.state.set('job-capacity-episode', { ...current, alertedAt: new Date().toISOString() });
+        this.state.set('job-capacity-episode', { ...current, ...(isQuietReceipt(receipt) ? { recordedAt: new Date().toISOString() } : { alertedAt: new Date().toISOString() }) });
       }
     } catch (err) {
       console.error(`[scheduler] Capacity episode notice failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -3097,7 +3190,7 @@ export class JobScheduler {
     const failed = session.status === 'failed' || session.status === 'killed' || declaredFailure !== null;
     const failureError = !failed ? undefined
       : session.status === 'failed' || session.status === 'killed'
-        ? `Session ${session.status} (${session.name})${declaredFailure ? ` — declared failure: ${declaredFailure}` : ''}`
+        ? `Session ${session.status} (${session.name})${session.endedReason === 'codex-rate-limited' ? ' — Codex 429 Too Many Requests' : ''}${declaredFailure ? ` — declared failure: ${declaredFailure}` : ''}`
         : `Declared failure: ${declaredFailure}`;
 
     // Capture session output FIRST — needed for both history and notifications
@@ -3333,7 +3426,7 @@ export class JobScheduler {
     // Send to the job's dedicated topic if available, otherwise fall back to generic messenger
     if (this.telegram && job.topicId) {
       try {
-        await this.telegram.sendToTopic(job.topicId, summary);
+        await withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram)!.sendToTopic(job.topicId!, summary));
       } catch (err) {
         console.error(`[scheduler] Failed to send to job topic ${job.topicId}: ${err}`);
         // The original outbox retains custody, including uncertain acceptance.
@@ -3348,7 +3441,7 @@ export class JobScheduler {
           );
           job.topicId = newTopic.topicId;
           this.saveJobTopicMapping(job.slug, newTopic.topicId);
-          await this.telegram.sendToTopic(newTopic.topicId, summary);
+          await withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram)!.sendToTopic(newTopic.topicId, summary));
         } catch (recreateErr) {
           console.error(`[scheduler] Failed to recreate topic for ${job.slug}: ${recreateErr}`);
         }
@@ -3429,9 +3522,9 @@ export class JobScheduler {
         job.topicId = topic.topicId;
         mappings[job.slug] = topic.topicId;
 
-        await this.telegram.sendToTopic(topic.topicId,
+        await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(topic.topicId,
           `*${job.name}*\n${job.description}\n\nSchedule: \`${job.schedule}\`\nPriority: ${job.priority}\n\nThis topic is the home for this job. Reports, status updates, and errors will appear here.`
-        );
+        ));
       } catch (err) {
         console.error(`[scheduler] Failed to create topic for job ${job.slug}: ${err}`);
       }
@@ -3650,9 +3743,9 @@ export class JobScheduler {
 
       const noticeTopic = job.topicId ?? this.state.get<number>('agent-attention-topic');
       const send = this.telegram && noticeTopic
-        ? () => this.telegram!.sendToTopic(noticeTopic, alertText).then(() => undefined)
+        ? () => withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram!)!.sendToTopic(noticeTopic, alertText))
         : !this.telegram && this.messenger
-          ? () => this.messenger!.send({ userId: 'system', content: alertText }).then(() => undefined)
+          ? () => this.messenger!.send({ userId: 'system', content: alertText })
           : null;
 
       if (!send) {
@@ -3661,8 +3754,16 @@ export class JobScheduler {
       }
 
       try {
-        await send();
+        const receipt = await send();
         if (!this.isCurrentFailureAlertAttempt(stateKey, attemptId)) return;
+        if (isQuietReceipt(receipt)) {
+          alertState.deliveryAttempts = 0; alertState.recordedAt = new Date(now).toISOString(); alertState.quietId = receipt.quietId;
+          delete alertState.activeAttemptId;
+          alertState.nextEligibleAt = new Date(now + 24 * 60 * 60_000).toISOString();
+          this.state.set(stateKey, alertState); this.scheduleFailureAlert(job, alertState);
+          this.state.appendEvent({ type: 'job_alert_recorded', summary: `Failure alert recorded for ${job.slug}`, timestamp: new Date(now).toISOString(), metadata: { slug: job.slug, quietId: receipt.quietId } });
+          return;
+        }
         alertState.deliveryAttempts = 0;
         alertState.deliveredCount += 1;
         alertState.lastDeliveredAt = new Date(now).toISOString();
@@ -3693,14 +3794,14 @@ export class JobScheduler {
 
   /** A quiet gate or machine pin is evidence of lost job coverage, not success. */
   private observeContinuitySkip(slug: string, reason: SkipReason): void {
-    if (this.state.readOnly || (reason !== 'gate' && reason !== 'machine-scope')) return;
+    if (this.state.readOnly || (reason !== 'gate' && reason !== 'machine-scope' && reason !== 'definition-changed')) return;
     const job = this.jobs.find((candidate) => candidate.slug === slug);
     if (!job?.enabled) return;
     const key = `job-silence-${slug}`;
-    const previous = this.state.get<{ count: number; lastSkip: string; lastNotified?: string; lastAttemptAt?: string }>(key);
+    const previous = this.state.get<{ count: number; lastSkip: string; lastNotified?: string; recordedAt?: string; lastAttemptAt?: string }>(key);
     const now = new Date().toISOString();
     const count = (previous?.count ?? 0) + 1;
-    const next = { count, lastSkip: now, lastNotified: previous?.lastNotified, lastAttemptAt: previous?.lastAttemptAt };
+    const next = { count, lastSkip: now, lastNotified: previous?.lastNotified, recordedAt: previous?.recordedAt, lastAttemptAt: previous?.lastAttemptAt };
     this.state.set(key, next);
     if (count >= 3) this.raiseContinuityAlert(job, `${count} scheduled attempts were skipped (${reason})`, key);
   }
@@ -3721,15 +3822,16 @@ export class JobScheduler {
 
   private raiseContinuityAlert(job: JobDefinition, detail: string, key: string): void {
     if (this.state.readOnly) return;
-    const previous = this.state.get<{ count: number; lastSkip: string; lastNotified?: string; lastAttemptAt?: string }>(key);
+    const previous = this.state.get<{ count: number; lastSkip: string; lastNotified?: string; recordedAt?: string; lastAttemptAt?: string }>(key);
     const now = Date.now();
-    if (previous?.lastNotified && now - Date.parse(previous.lastNotified) < 24 * 60 * 60_000) return;
+    const lastVisibleOrRecorded = Math.max(...[previous?.lastNotified, previous?.recordedAt].map(at => at ? Date.parse(at) : 0).filter(Number.isFinite), 0);
+    if (lastVisibleOrRecorded && now - lastVisibleOrRecorded < 24 * 60 * 60_000) return;
     if (previous?.lastAttemptAt && now - Date.parse(previous.lastAttemptAt) < 60 * 60_000) return;
     if (this.silenceAlertsInFlight.has(key)) return;
     const topicId = job.topicId ?? this.state.get<number>('agent-attention-topic');
     const message = `Scheduled job ${job.name} is not running as expected: ${detail}. Check its gate, machine scope and last successful run.`;
     const send = this.telegram && topicId
-      ? () => this.telegram!.sendToTopic(topicId, message)
+      ? () => withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram!)!.sendToTopic(topicId!, message))
       : !this.telegram && this.messenger
         ? () => this.messenger!.send({ userId: 'system', content: message })
         : null;
@@ -3737,14 +3839,15 @@ export class JobScheduler {
     this.silenceAlertsInFlight.add(key);
     const epoch = this.silenceAlertEpoch.get(key) ?? 0;
     const attemptedAt = new Date(now).toISOString();
-    this.state.set(key, { count: previous?.count ?? 0, lastSkip: previous?.lastSkip ?? attemptedAt, lastNotified: previous?.lastNotified, lastAttemptAt: attemptedAt });
+    this.state.set(key, { count: previous?.count ?? 0, lastSkip: previous?.lastSkip ?? attemptedAt, lastNotified: previous?.lastNotified, recordedAt: previous?.recordedAt, lastAttemptAt: attemptedAt });
     void Promise.resolve().then(async () => {
       if (this.state.readOnly || this.paused) return false;
-      await send();
-      return true;
+      const receipt = await send();
+      return isQuietReceipt(receipt) ? receipt : true;
     }).then((delivered) => {
       if (!delivered || this.state.readOnly || (this.silenceAlertEpoch.get(key) ?? 0) !== epoch) return;
-      const current = this.state.get<{ count: number; lastSkip: string; lastNotified?: string; lastAttemptAt?: string }>(key);
+      const current = this.state.get<{ count: number; lastSkip: string; lastNotified?: string; recordedAt?: string; lastAttemptAt?: string }>(key);
+      if (isQuietReceipt(delivered)) { this.state.set(key, { ...current, count: current?.count ?? 0, lastSkip: current?.lastSkip ?? attemptedAt, lastAttemptAt: attemptedAt, recordedAt: new Date().toISOString(), quietId: delivered.quietId }); return; }
       this.state.set(key, { count: current?.count ?? 0, lastSkip: current?.lastSkip ?? attemptedAt, lastAttemptAt: attemptedAt, lastNotified: new Date().toISOString() });
       this.state.appendEvent({ type: 'job_alert_delivered', summary: `Continuity alert delivered for ${job.slug}`,
         timestamp: new Date().toISOString(), metadata: { slug: job.slug, kind: 'silence' } });
@@ -3868,6 +3971,61 @@ export class JobScheduler {
     });
   }
 
+  private noticeMissedPromotionJob(slug: string, promotionId: string): void {
+    if (this.state.readOnly || this.paused) return;
+    const job = this.jobs.find(row => row.slug === slug);
+    if (!job) return;
+    const key = `promotion-catch-up-alert-${slug}`;
+    const prior = this.state.get<{ promotionId: string; attemptAt: number; deliveredAt?: number; recordedAt?: number }>(key);
+    const now = Date.now();
+    if (prior?.promotionId === promotionId && now - prior.attemptAt < (prior.deliveredAt || prior.recordedAt ? 24 * 60 * 60_000 : 60 * 60_000)) return;
+    if (this.catchUpAlertsInFlight.has(key)) return;
+    const summary = `Job ${slug} has a missed or uncertain occurrence after a lease takeover. Review it before choosing a manual run.`;
+    const send = this.telegram
+      ? () => this.telegram!.createAttentionItemConfirmed({ id: `promotion-catch-up-${promotionId}-${slug}`,
+          conditionKey: `promotion-catch-up-${promotionId}-${slug}`, title: `Review missed job: ${slug}`,
+          summary, description: summary, category: 'job', priority: 'HIGH', sourceContext: 'promotion-catch-up' })
+      : !this.telegram && this.messenger
+        ? () => this.messenger!.send({ userId: 'system', content: summary })
+        : null;
+    if (!send) return; // the durable catch-up journal makes the next tick retry
+    this.state.set(key, { promotionId, attemptAt: now });
+    this.catchUpAlertsInFlight.add(key);
+    void Promise.resolve().then(async () => {
+      if (this.state.readOnly || this.paused) return false;
+      const outcome = await send();
+      return outcome && typeof outcome === 'object' && 'hubHeld' in outcome && outcome.hubHeld === true ? 'recorded' : 'delivered';
+    }).then(delivered => {
+      if (!delivered || this.state.readOnly || this.paused) return;
+      const current = this.state.get<{ promotionId: string; attemptAt: number }>(key);
+      const jobState = this.state.getJobState(slug);
+      if (current?.promotionId === promotionId && this.promotionCatchUpStore.hasUnresolved(slug,
+        jobState?.lastResult === 'success' ? jobState.lastRun ?? undefined : undefined)) {
+        this.state.set(key, { ...current, ...(delivered === 'recorded' ? { recordedAt: Date.now() } : { deliveredAt: Date.now() }) });
+      }
+    }).catch(error => console.warn(`[scheduler] Catch-up attention failed for ${slug}:`, error))
+      .finally(() => this.catchUpAlertsInFlight.delete(key));
+  }
+
+  private retryUnresolvedCatchUpNotices(): void {
+    if (!this.running || this.paused || this.state.readOnly) return;
+    try {
+      for (const job of this.jobs) {
+        const row = this.promotionCatchUpStore.latestUnresolved(job.slug);
+        if (!row) continue;
+        const jobState = this.state.getJobState(job.slug);
+        if (this.promotionCatchUpStore.hasUnresolved(job.slug,
+          jobState?.lastResult === 'success' ? jobState.lastRun ?? undefined : undefined)) {
+          this.noticeMissedPromotionJob(job.slug, row.promotionId);
+        } else {
+          this.state.delete(`promotion-catch-up-alert-${job.slug}`);
+          this.telegram?.clearAttentionCondition({ conditionKey: `promotion-catch-up-${row.promotionId}-${job.slug}` },
+            'Job completed successfully');
+        }
+      }
+    } catch (error) { console.warn('[scheduler] Could not retry promotion catch-up notices:', error); }
+  }
+
   private async checkMissedJobs(enabledJobs: JobDefinition[]): Promise<void> {
     const now = Date.now();
 
@@ -3929,15 +4087,61 @@ export class JobScheduler {
       return b.overdueRatio - a.overdueRatio;
     });
 
-    for (const { job } of missedJobs) {
-      try {
-        await this.triggerJob(job.slug, 'missed');
-      } catch (err) {
-        // A demotion can occur after triggerJob's entry check but before a gate
-        // or spawn path records shared bookkeeping. The StateManager refusal is
-        // authoritative; contain it per job so one raced trigger cannot abort
-        // evaluation of the rest or escape the startup callback.
-        console.error(`[scheduler] Missed trigger failed for "${job.slug}": ${err}`);
+    const promotion = readRecentPromotion(this.stateDir, now, this.promotionLeaseProvider?.());
+    let sweepComplete = false;
+    try {
+      for (const { job } of missedJobs) {
+        if (!promotion && this.promotionCatchUpStore.hasUnresolved(job.slug,
+          this.state.getJobState(job.slug)?.lastResult === 'success'
+            ? this.state.getJobState(job.slug)?.lastRun ?? undefined : undefined)) {
+          const prior = this.promotionCatchUpStore.latestBlocked(job.slug);
+          if (prior && prior.status !== 'skip') this.noticeMissedPromotionJob(job.slug, prior.promotionId);
+          continue;
+        }
+        if (promotion) {
+          if (!this.promotionCatchUpStore.isHealthy()) {
+            this.noticeMissedPromotionJob(job.slug, promotion.id);
+            continue; // corrupt journal is unknown, never a fresh automatic request
+          }
+          if (this.promotionCatchUpStore.get(promotion.id, job.slug)) continue;
+          const policy = promotion.verified && (job.catchUpPolicy !== 'run-once' || this.promotionLeaseProvider?.().runOnceWitness === true)
+            ? job.catchUpPolicy ?? 'ask' : 'ask';
+          if (policy === 'skip' || policy === 'ask') {
+            this.promotionCatchUpStore.record(promotion.id, job.slug, policy);
+            if (policy === 'ask') this.noticeMissedPromotionJob(job.slug, promotion.id);
+            continue;
+          }
+          if (!this.promotionCatchUpStore.record(promotion.id, job.slug, 'requested')) continue;
+        }
+        try {
+          const result = await this.triggerJob(job.slug, promotion ? 'promotion-catch-up' : 'missed');
+          if (promotion) {
+            this.promotionCatchUpStore.record(promotion.id, job.slug, result === 'triggered' ? 'triggered' : 'uncertain');
+            if (result !== 'triggered') this.noticeMissedPromotionJob(job.slug, promotion.id);
+          }
+        } catch (err) {
+          if (promotion) {
+            this.promotionCatchUpStore.record(promotion.id, job.slug, 'uncertain');
+            this.noticeMissedPromotionJob(job.slug, promotion.id);
+          }
+          console.error(`[scheduler] Missed trigger failed for "${job.slug}": ${err}`);
+        }
+      }
+      sweepComplete = true;
+    } finally {
+      this.promotionCatchUpPending = false;
+      for (const slug of this.blockedCronDuringPromotion) {
+        if (promotion && !this.promotionCatchUpStore.isHealthy()) {
+          this.noticeMissedPromotionJob(slug, promotion.id);
+        } else if (promotion && !this.promotionCatchUpStore.get(promotion.id, slug)) {
+          this.promotionCatchUpStore.record(promotion.id, slug, 'ask');
+          this.noticeMissedPromotionJob(slug, promotion.id);
+        }
+      }
+      this.blockedCronDuringPromotion.clear();
+      if (promotion && sweepComplete && this.promotionCatchUpStore.isHealthy()) {
+        try { markPromotionSweepComplete(this.stateDir, promotion.id, now); }
+        catch (error) { console.warn('[scheduler] Could not consume promotion sweep:', error); }
       }
     }
   }
@@ -3991,7 +4195,7 @@ export class JobScheduler {
     if (this.telegram && topicId) {
       const formatted = reflector.formatInsight(insight);
       try {
-        await this.telegram.sendToTopic(topicId, formatted);
+        await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(topicId!, formatted));
       } catch {
         // Topic may not exist — not critical
       }

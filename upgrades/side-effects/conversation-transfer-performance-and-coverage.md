@@ -42,6 +42,8 @@ Checked on a real CLI server in headless Chromium at 320, 390 and 1280 wide.
 3. Destructive actions de-emphasized: yes by design and earlier browser walkthroughs; name removal sits under More, behind its own step. Not rechecked on the real server in this change.
 4. Plain language and phone width: yes. No sideways scroll at 320 or 390. One known gap: "Some original history is unavailable." offers no action while it shows, which is for about a minute on a fresh install. Light theme is not rechecked on the real server.
 
+Raw Telegram send baseline: one entry added for `TelegramAdapter#handleCommand`. It answers the owner's own `/conversations` in their private chat, only after the authorized-sender check, and sends a fixed pointer. It is a direct reply, not a notification.
+
 ## 7. Multi-machine posture
 
 Replicated: checkpoints and records travel by the existing graph replication. The memos are per-process and machine-local by design; a restart starts empty and flushes again.

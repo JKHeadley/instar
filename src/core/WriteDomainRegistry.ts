@@ -346,6 +346,13 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     fileLevel: 'git-sync-excluded',
     note: 'requests, tickets and grants are process-local and never restored; only a redacted local audit survives',
   } });
+  // Linux browser install: sets this machine's own flag and installs on this machine.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/browser/linux/install', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'writes state/xdrive/ for the packages on this machine; a peer answers for its own machine',
+  } });
   // Console composer attachments: the file must sit on the disk of the machine
   // running the session, which reads it by path. Never converges across machines.
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/sessions/:name/attachments', domain: 'machine-local', story: {
@@ -494,6 +501,19 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/enable', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/override', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/unfork', domain: 'cluster-shared' });
+  // Portable export consent and bundle replay accounting belong to the source
+  // machine, which may be a standby. Their state is excluded from git-sync.
+  const portableSourceStory: ConvergenceStory = {
+    logical: 'per-machine-path', onSharedGitSyncedPath: true, fileLevel: 'git-sync-excluded',
+    note: 'exact-root export approval and nonce ledger stay on the source machine',
+  };
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/portable-bundle', domain: 'machine-local', story: portableSourceStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/portable/export/', domain: 'machine-local', story: portableSourceStory });
+  // Import approval, rollback and rearm may change the runnable job manifest.
+  // The serving lease holder is their single writer.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/portable/import/', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/portable/rollback', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/portable/rearm', domain: 'cluster-shared' });
   // Secure A2A verified pairing (docs/specs/secure-a2a-verified-pairing.md §3.2): starting a
   // pairing writes the trust profile and the pending-words store. It only does anything on
   // the machine that holds the Threadline relay identity (it answers 503 elsewhere), and the
@@ -1156,6 +1176,10 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // owner-routed commitment mutation as /transition and /withdraw (a replica forwards
   // to the machine that holds the promise).
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/:id/decide', domain: 'cluster-shared' });
+  // promise-review-and-priority: the review's bounded apply and its undo both
+  // mutate the commitment store, the same shared agent state as the routes above.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/review/apply', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/:id/reopen', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/process', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/tick', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/runs/', domain: 'cluster-shared' });

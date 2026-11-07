@@ -6,7 +6,7 @@
 # A page whose Content-Security-Policy forbids inline scripts makes this report ERR main-world-script-did-not-run.
 # macOS only (Apple Events). Installed by instar into .instar/scripts/browser/.
 if [ "$(uname -s)" != "Darwin" ]; then
-  echo "ERR macos-only: the normal-Chrome method uses macOS Apple Events; it does not run on $(uname -s)" >&2
+  echo "ERR macos-only: the normal-Chrome method uses macOS Apple Events; it does not run on $(uname -s). On Linux use xdrive.sh in this same folder." >&2
   exit 2
 fi
 [ -z "$1" ] || [ -z "$2" ] && { echo "usage: chrome-mainworld.sh <profile-id|/absolute/user-data-dir> '<js>' [expected-origin]" >&2; exit 64; }

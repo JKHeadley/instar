@@ -76,7 +76,7 @@ describe('E2E: autonomous emergency-stop preserves state record', () => {
         logInboundMessage: () => {},
         getSessionForTopic: () => SESSION,
         onSentinelKillSession: (name: string) => { killed.push(name); return killOutcome; },
-        sendToTopic: async (_topic: number, text: string) => { sent.push(text); },
+        sendToTopic: async (_topic: number, text: string) => { sent.push(text);  return { messageId: 1, topicId: Number(_topic) }; },
         onTopicMessage: () => { throw new Error('emergency stop routed to session'); },
       } as never,
       scheduler: null,

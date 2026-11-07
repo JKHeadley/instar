@@ -1,3 +1,6 @@
+import { isQuietReceipt, type OutboundEnvelope } from '../messaging/NotificationSelectivityGate.js';
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/monitoring/SessionMonitor.ts');
 /**
  * SessionMonitor — Proactive session health monitoring.
  *
@@ -42,6 +45,7 @@ interface SessionSnapshot {
   lastUserMessageAt: number;
   lastAgentMessageAt: number;
   notifiedAt: number | null;
+  recordedAt?: number;
   status: 'healthy' | 'idle' | 'unresponsive' | 'dead';
 }
 
@@ -62,7 +66,7 @@ export interface SessionMonitorDeps {
   /** Check if a session is alive */
   isSessionAlive: (sessionName: string) => boolean;
   /** Get recent messages for a topic */
-  getTopicHistory: (topicId: number, limit: number) => Array<{ text: string; fromUser: boolean; timestamp: string }>;
+  getTopicHistory: (topicId: number, limit: number) => Array<{ text: string; fromUser: boolean; timestamp: string; messageId?: string | number }>;
   /** Send a message to a topic */
   sendToTopic: (topicId: number, text: string) => Promise<any>;
   /** Trigger triage recovery for a session */
@@ -109,6 +113,11 @@ const DEFAULT_CONFIG: Required<SessionMonitorConfig> = {
 };
 
 export class SessionMonitor extends EventEmitter {
+  private noticeEnvelope(topicId: number, servesInbound: boolean, category: 'message-loss-notice' | 'presence-standby' = 'message-loss-notice'): OutboundEnvelope {
+    const inbound = servesInbound ? this.deps.getTopicHistory(topicId, 50).filter(row => row.fromUser).at(-1) : undefined;
+    return inbound?.messageId !== undefined ? { origin: 'automated', category, sourceContext: 'session-monitor', inboundMessageId: String(inbound.messageId) } : stampNotification();
+  }
+
   private config: Required<SessionMonitorConfig>;
   private deps: SessionMonitorDeps;
   private snapshots = new Map<number, SessionSnapshot>();
@@ -432,13 +441,15 @@ export class SessionMonitor extends EventEmitter {
             return;
           }
           snap.status = 'dead';
-          await this.deps.sendToTopic(topicId,
+          const receipt = await withNotificationEnvelope(this.noticeEnvelope(topicId, snap.lastUserMessageAt > snap.lastAgentMessageAt), async () => (this.deps)!.sendToTopic(topicId,
             `Session hit "conversation too long" and can't continue. Send a new message to start a fresh session with your recent history.`
-          ).catch(() => {});
+          )).catch(() => false);
+          if (receipt !== false && !isQuietReceipt(receipt)) {
           this.emit('monitor:user-notified', { topicId, message: 'context_exhausted' });
           this.ctxNotifiedSessions.set(topicId, { sessionName, at: now });
           this.persistCtxNotified();
           snap.notifiedAt = now;
+          } else if (isQuietReceipt(receipt)) snap.recordedAt = now;
           this.notificationCooldowns.set(topicId, now);
           return;
         }
@@ -527,19 +538,20 @@ export class SessionMonitor extends EventEmitter {
         }
         // If triage didn't resolve or isn't available, notify user
         if (userExpectsResponse) {
-          let delivered = true;
-          await this.deps.sendToTopic(topicId,
+          const receipt = await withNotificationEnvelope(this.noticeEnvelope(topicId, true), async () => (this.deps)!.sendToTopic(topicId,
             `The session has stopped. Send a new message to start a fresh session with full conversation context.`
-          ).catch(() => { delivered = false; });
-          this.emit('monitor:user-notified', { topicId, message: 'session_dead' });
+          )).catch(() => false);
+          const delivered = receipt !== false && !isQuietReceipt(receipt);
+          if (isQuietReceipt(receipt)) snap.recordedAt = now;
+          if (delivered) this.emit('monitor:user-notified', { topicId, message: 'session_dead' });
           // Record only a notice that went out: a failed send must stay
           // retryable (after the cooldown or a restart), never marked as told.
           if (delivered) {
             this.deadNotified.set(topicId, { sessionName, userMessageAt: snap.lastUserMessageAt, at: now });
             this.persistDeadNotified();
+            snap.notifiedAt = now;
           }
         }
-        snap.notifiedAt = now;
         this.notificationCooldowns.set(topicId, now);
         break;
       }
@@ -567,14 +579,14 @@ export class SessionMonitor extends EventEmitter {
         // For idle sessions, only notify if user is actively waiting
         if (userExpectsResponse) {
           const msg = `Session has been idle for ${idleMinutes} minutes. Checking if it needs attention...`;
-          await this.deps.sendToTopic(topicId, msg).catch(() => {});
-          this.emit('monitor:user-notified', { topicId, message: 'session_idle' });
+          const receipt = await withNotificationEnvelope(this.noticeEnvelope(topicId, true, 'presence-standby'), async () => (this.deps)!.sendToTopic(topicId, msg)).catch(() => false);
+          if (receipt !== false && !isQuietReceipt(receipt)) { this.emit('monitor:user-notified', { topicId, message: 'session_idle' }); snap.notifiedAt = now; }
+          else if (isQuietReceipt(receipt)) snap.recordedAt = now;
 
           if (this.deps.triggerTriage) {
             await this.deps.triggerTriage(topicId, sessionName, `Session idle for ${idleMinutes} minutes, user waiting`);
           }
         }
-        snap.notifiedAt = now;
         this.notificationCooldowns.set(topicId, now);
         break;
       }

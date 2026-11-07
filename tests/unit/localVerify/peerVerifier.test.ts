@@ -12,6 +12,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { LocalVerifyService, type LocalVerifyServiceSeams, type PrView } from '../../../src/localVerify/LocalVerifyService.js';
+import { PEER_RESTART_HOLD_MS } from '../../../src/core/PlannedRestartVerifyGuard.js';
 import { computePolicyHash } from '../../../src/localVerify/policy.js';
 import type { LocalVerifyRecord } from '../../../src/localVerify/record.js';
 import type { VerifyRunResult } from '../../../src/localVerify/orchestrator.js';
@@ -526,6 +527,180 @@ describe('coordinator — results', () => {
 });
 
 // ── peer side ──────────────────────────────────────────────────────────
+
+describe('coordinator — heartbeat for a planned restart', () => {
+  async function dispatched() {
+    const c = coordinator();
+    await c.svc.request(1);
+    await c.svc.request(2);
+    await c.runTimers();
+    const req = c.peer.runs()[0];
+    const file = path.join(c.stateDir, 'state', 'local-verify', 'peer-hold.json');
+    const read = () => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf-8')) as { v: number; writtenAt: number; leaseEpoch: number; attempts: Array<{ attemptId: string; pr: number; sentAt: number; lastPollOkAt: number }> } : null);
+    const audits = () => fs.readFileSync(path.join(c.stateDir, 'logs', 'local-verify.jsonl'), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as { event: string; reason?: string; attemptId?: string });
+    const requestRestart = (over: Record<string, unknown> = {}) => fs.writeFileSync(path.join(c.stateDir, 'state', 'restart-requested.json'), JSON.stringify({
+      plannedRestart: true, requestedBy: 'update', requestedAt: new Date(c.seams.now!()).toISOString(), expiresAt: new Date(c.seams.now!() + 3_600_000).toISOString(), ...over,
+    }));
+    return { c, req, file, read, audits, requestRestart };
+  }
+  const done = (req: PeerRunRequest) => ({ state: 'done', record: record({
+    pr: req.pr, headSha: req.headSha, baseSha: req.baseSha, machineId: 'peer1', startedAt: new Date(Date.parse('2026-10-21T12:00:00.000Z') + 60_000).toISOString(),
+    attempt: { id: req.attemptId, coordinatorMachineId: 'coord', leaseEpoch: 7 },
+  }) }) as PeerResult;
+
+  it('publishes an attempt the moment it is accepted, before any tick', async () => {
+    const { req, read } = await dispatched();
+    expect(read()).toMatchObject({ attempts: [{ attemptId: req.attemptId }] });
+  });
+
+  it('clears the heartbeat in the same poll that imports the record', async () => {
+    const { c, req, read } = await dispatched();
+    c.peer.setResult(() => done(req));
+    await c.svc.tick();
+    expect(c.svc.getRecord(2, sha('c'), 'main')).toMatchObject({ machineId: 'peer1' });
+    expect(read()).toBeNull();
+  });
+
+  it('lists an accepted reservation before its first poll, with no restart pending', async () => {
+    const { c, req, read } = await dispatched();
+    c.peer.setResult(() => new Promise<PeerResult>(() => {})); // nothing has been polled yet and nothing will answer
+    void c.svc.tick();
+    expect(read()).toMatchObject({ v: 1, leaseEpoch: 7, attempts: [{ attemptId: req.attemptId, pr: req.pr }] });
+    expect(c.peer.calls.filter((x) => x.kind === 'result')).toHaveLength(1);
+  });
+
+  it('a hanging poll does not delay the heartbeat on the next tick', async () => {
+    const { c, file, read } = await dispatched();
+    c.peer.setResult(() => new Promise<PeerResult>(() => {}));
+    void c.svc.tick();
+    await c.flush();
+    SafeFsExecutor.safeRmSync(file, { force: true, operation: 'peerVerifier.test' });
+    void c.svc.tick();
+    expect(read()).not.toBeNull();
+  });
+
+  it('drops an attempt on an epoch change or a lost lease', async () => {
+    for (const change of ['epoch', 'lease'] as const) {
+      const { c, read } = await dispatched();
+      await c.svc.tick();
+      expect(read()).not.toBeNull();
+      if (change === 'epoch') c.setEpoch(8); else c.setHolds(false);
+      await c.svc.tick();
+      expect(read()).toBeNull();
+    }
+  });
+
+  it('excludes a marker still in sending, and a peer with no successful poll in two minutes', async () => {
+    const { c, read } = await dispatched();
+    c.peer.setResult(() => ({ state: 'running' }));
+    await c.svc.tick();
+    expect(read()).not.toBeNull();
+    c.peer.setResult(() => null); // from here the peer answers nothing
+    c.advance(PEER_LIMITS.pollMs + 1);
+    await c.svc.tick();
+    c.advance(PEER_LIMITS.pollMs + 1);
+    await c.svc.tick();
+    c.advance(1);
+    await c.svc.tick();
+    expect(read()).toBeNull();
+
+    const s = coordinator();
+    s.peer.setRun(() => null); // sent, never answered: the marker stays sending
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.runTimers();
+    await s.svc.tick();
+    expect(fs.existsSync(path.join(s.stateDir, 'state', 'local-verify', 'peer-hold.json'))).toBe(false);
+  });
+
+  it('an unknown answer does not count as contact', async () => {
+    const { c, read } = await dispatched();
+    c.peer.setResult(() => ({ state: 'unknown' }));
+    await c.svc.tick();
+    const seeded = read()!.attempts[0].lastPollOkAt;
+    c.advance(PEER_LIMITS.pollMs + 1);
+    await c.svc.tick();
+    await c.flush();
+    c.advance(1);
+    await c.svc.tick();
+    expect(read()!.attempts[0].lastPollOkAt).toBe(seeded);
+  });
+
+  it('import removes the attempt and the file goes away on the next tick', async () => {
+    const { c, req, read } = await dispatched();
+    await c.svc.tick();
+    expect(read()).not.toBeNull();
+    c.peer.setResult(() => done(req));
+    c.advance(PEER_LIMITS.pollMs + 1);
+    await c.svc.tick();
+    await c.svc.tick();
+    expect(c.svc.getRecord(2, sha('c'), 'main')).toMatchObject({ machineId: 'peer1' });
+    expect(read()).toBeNull();
+  });
+
+  it('holds off a new dispatch while a planned restart waits on the attempt', async () => {
+    const { c, requestRestart } = await dispatched();
+    await c.svc.request(3);
+    requestRestart();
+    const before = c.peer.runs().length;
+    c.peer.setResult(() => ({ state: 'running' }));
+    await c.svc.tick();
+    await c.runTimers();
+    expect(c.peer.runs()).toHaveLength(before);
+  });
+
+  it('audits the hold once per attempt per request, then why it ended', async () => {
+    const { c, req, audits, requestRestart } = await dispatched();
+    requestRestart();
+    await c.svc.tick();
+    await c.svc.tick();
+    expect(audits().filter((e) => e.event === 'restart-held-for-peer' && e.attemptId === req.attemptId)).toHaveLength(1);
+    c.peer.setResult(() => done(req));
+    c.advance(PEER_LIMITS.pollMs + 1);
+    await c.svc.tick();
+    expect(audits().filter((e) => e.event === 'restart-peer-hold-ended').map((e) => e.reason)).toEqual(['imported']);
+  });
+
+  it('records the other ways a hold ends: abandoned, bypass and the bound', async () => {
+    const a = await dispatched();
+    a.requestRestart();
+    await a.c.svc.tick();
+    a.c.setEpoch(8);
+    await a.c.svc.tick();
+    expect(a.audits().filter((e) => e.event === 'restart-peer-hold-ended').map((e) => e.reason)).toEqual(['abandoned']);
+
+    const b = await dispatched();
+    b.requestRestart();
+    await b.c.svc.tick();
+    b.c.advance(1_000); // the bypass writer stamps a new requestedAt
+    b.requestRestart({ bypassHolds: true });
+    await b.c.svc.tick();
+    expect(b.audits().filter((e) => e.event === 'restart-peer-hold-ended').map((e) => e.reason)).toEqual(['bypass']);
+
+    const d = await dispatched();
+    d.requestRestart();
+    await d.c.svc.tick();
+    d.c.advance(PEER_RESTART_HOLD_MS + 1);
+    await d.c.svc.tick();
+    expect(d.audits().filter((e) => e.event === 'restart-peer-hold-ended').map((e) => e.reason)).toEqual(['bound-reached']);
+
+    const f = await dispatched(); // the guard released at the bound and the request was consumed before this tick
+    f.requestRestart();
+    await f.c.svc.tick();
+    f.c.advance(PEER_RESTART_HOLD_MS + 1);
+    SafeFsExecutor.safeRmSync(path.join(f.c.stateDir, 'state', 'restart-requested.json'), { force: true, operation: 'peerVerifier.test' });
+    await f.c.svc.tick();
+    expect(f.audits().filter((e) => e.event === 'restart-peer-hold-ended').map((e) => e.reason)).toEqual(['bound-reached']);
+
+    const g = await dispatched(); // the peer went silent, so the guard no longer holds for it
+    g.requestRestart();
+    g.c.peer.setResult(() => null);
+    await g.c.svc.tick();
+    g.c.advance(2 * PEER_LIMITS.pollMs + 1);
+    await g.c.svc.tick();
+    expect(g.audits().filter((e) => e.event === 'restart-peer-hold-ended').map((e) => e.reason)).toEqual(['no-longer-qualifies']);
+  });
+});
 
 describe('peer — accepting and running', () => {
   function peerSide() {

@@ -18,10 +18,12 @@
 
 import fs from 'node:fs';
 import { installAgentIdentityFromPairing } from '../core/AgentIdentityHandover.js';
+import os from 'node:os';
 import path from 'node:path';
 import pc from 'picocolors';
 import { loadConfig } from '../core/Config.js';
-import { applyJoinerPairActivation, type InviterPairResponse } from '../core/sessionPoolPairActivation.js';
+import { applyJoinerPairActivation, decideInviterPairActivation, requestPairActivationRestart, type InviterPairResponse } from '../core/sessionPoolPairActivation.js';
+import { LastingLinkLedger, lastingEndpoints, mergeEndpoints } from '../core/lastingLink.js';
 import { redactUrl, redactUrlsInText } from '../core/redactUrl.js';
 import { resolveJoinDir } from '../utils/joinDir.js';
 import { gitLeaseHasNoRemote, selectLeaseMedium } from '../core/leaseMediumSelection.js';
@@ -32,7 +34,7 @@ import { GitSyncManager } from '../core/GitSync.js';
 import { SelfKnowledgeTree } from '../knowledge/SelfKnowledgeTree.js';
 import { CoverageAuditor } from '../knowledge/CoverageAuditor.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
-import type { MachineRole } from '../core/types.js';
+import type { MachineRole, MeshEndpoint } from '../core/types.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 
 export async function establishPairingRecoveryRoot(
@@ -340,7 +342,43 @@ export function noRemoteTakeoverApplies(projectDir: string, gitBackupEnabled: bo
   return gitLeaseHasNoRemote(projectDir) === true;
 }
 
+function pairingWouldActivate(config: ReturnType<typeof loadConfig>): boolean {
+  const mgr = new MachineIdentityManager(config.stateDir);
+  const selfId = mgr.hasIdentity() ? mgr.loadIdentity().machineId : '';
+  return decideInviterPairActivation({
+    stateDir: config.stateDir,
+    otherMachineIds: Object.keys(mgr.loadRegistry().machines ?? {}).filter((id) => id !== selfId),
+    joinerMachineId: '',
+  })?.activate === true;
+}
+
+/**
+ * Exported for tests. Read from disk, not the loaded config: pairing writes the switch after
+ * this process loaded its config, and the note must not call a working takeover broken.
+ */
+export function takeoverSwitchOnDisk(stateDir: string): boolean {
+  try {
+    const heal = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8'))?.multiMachine?.leaseSelfHeal;
+    return heal?.soloCaptainHold?.enabled === true && !heal?.preferredAwakeMachineId;
+  } catch {
+    return false; // @silent-fallback-ok: an unreadable config keeps the older, more cautious note
+  }
+}
+
+async function ownLastingEndpoints(config: ReturnType<typeof loadConfig>): Promise<MeshEndpoint[]> {
+  try {
+    const { computeOwnLastingEndpoints } = await import('../core/MeshUrlAdvertiser.js');
+    return await computeOwnLastingEndpoints(config);
+  } catch (err) {
+    console.warn('[pair] could not work out this machine\'s addresses:', err);
+    return []; // @silent-fallback-ok: reported to the owner by the no-lasting-connection note.
+  }
+}
+
 function printNoRemoteTakeoverNote(config: ReturnType<typeof loadConfig>): void {
+  if (takeoverSwitchOnDisk(config.stateDir)) return;
+  // A first pairing writes the switch, so this note would be false for the pair it is about to make.
+  if (pairingWouldActivate(config)) return;
   const registryPath = path.join(config.stateDir, 'machines', 'registry.json');
   if (!noRemoteTakeoverApplies(config.projectDir, config.gitBackup?.enabled !== false, registryPath, config.multiMachine?.leaseFlapFix?.mediumCheck)) return;
   console.log(pc.yellow('  Note: automatic takeover does not work yet on a pair with no git remote.'));
@@ -593,6 +631,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
       // heartbeat URL field instead).
       const { resolveAdvertisedMeshUrl } = await import('../core/MeshUrlAdvertiser.js');
       const advertisedUrl = resolveAdvertisedMeshUrl(config.tunnel);
+      const ownLasting = await ownLastingEndpoints(config);
       const sendPairingRequest = () => fetch(`${repoUrl}/api/pair`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -601,6 +640,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
             machineIdentity: identity,
             ephemeralPublicKey: identity.encryptionPublicKey,
             ...(advertisedUrl ? { advertisedUrl } : {}),
+            ...(ownLasting.length > 0 ? { endpoints: ownLasting } : {}),
           }),
           signal: AbortSignal.timeout(10_000),
         });
@@ -632,6 +672,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
 
       const result = await resp.json() as {
         machineIdentity?: any;
+        endpoints?: unknown;
         agentIdentityEnvelope?: any;
         identityRecoveryBearerToken?: string;
         status?: string;
@@ -641,6 +682,21 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
       // use a distinct agent-wide bearer conveyed only inside this
       // code-authenticated pairing response, so peers with different local API
       // tokens can still perform the recovery protocol.
+      // The agent's owner introducers travel with its identity (mobile-pairing-introducer §6).
+      if (Array.isArray((result as { ownerIntroducers?: unknown }).ownerIntroducers)) {
+        try {
+          const joinedConfig = JSON.parse(fs.readFileSync(configFilePath, 'utf8')) as Record<string, any>;
+          joinedConfig.mobilePairing ??= {};
+          if (!Array.isArray(joinedConfig.mobilePairing.ownerIntroducers)) {
+            joinedConfig.mobilePairing.ownerIntroducers = (result as { ownerIntroducers: Array<{ name: string; publicKey: string }> }).ownerIntroducers
+              .filter((e) => e && typeof e.name === 'string' && typeof e.publicKey === 'string').slice(0, 8);
+            fs.writeFileSync(configFilePath, `${JSON.stringify(joinedConfig, null, 2)}\n`, { mode: 0o600 });
+            config = loadConfig(projectDir);
+          }
+        } catch (err) {
+          console.log(pc.yellow(`  Could not copy the owner introducers: ${err instanceof Error ? err.message : String(err)}. Phones can still pair with the code.`));
+        }
+      }
       if (/^[a-f0-9]{64}$/i.test(result.identityRecoveryBearerToken ?? '')) {
         const joinedConfig = JSON.parse(fs.readFileSync(configFilePath, 'utf8')) as Record<string, any>;
         joinedConfig.multiMachine ??= {};
@@ -701,6 +757,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
           configPath: configFilePath,
           stateDir: config.stateDir,
           response: result,
+          inviterMachineId: result.machineIdentity?.machineId,
           binding: { pairingSessionId: String(options.code), joinerMachineId: identity.machineId },
           encryptionPrivateKeyPem: (() => {
             try {
@@ -714,6 +771,26 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         });
         if (joined.activated) {
           config = loadConfig(projectDir);
+          if (joined.telegram === 'written') {
+            try {
+              const { installTelegramRelayForJoinedMachine } = await import('./init.js');
+              installTelegramRelayForJoinedMachine(config.projectDir, config.stateDir, config.port);
+            } catch (err) {
+              console.log(pc.red(`  Sessions on this machine cannot answer on Telegram until its next update: the reply script did not install (${err instanceof Error ? err.message : String(err)}).`));
+            }
+          }
+          if (joined.peopleFilled) {
+            // A server already running here keeps its old list, and starting the unit does nothing to it.
+            console.log(pc.green('  This machine now answers only the people the first machine answers.'));
+            try {
+              requestPairActivationRestart(config.stateDir, new Date());
+            } catch (err) {
+              console.log(pc.yellow(`  Its running server keeps the old list until it next restarts (${err instanceof Error ? err.message : String(err)}).`));
+            }
+          }
+          if (joined.peopleUnchecked) {
+            console.log(pc.yellow('  This machine could not check who it should answer on Telegram. Pair it again to retry.'));
+          }
           console.log(pc.green('  Sharing is on: new conversations can start on either machine once the pair looks healthy.'));
           if (!['written', 'not-offered', 'kept-existing'].includes(joined.telegram)) {
             console.log(pc.red(`  The Telegram token did not arrive (${joined.telegram}). This machine cannot answer on Telegram.`) +
@@ -732,9 +809,23 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         // URL, so this (standby) machine can route mesh RPCs back to it without
         // waiting for a registry sync. Cross-machine routing reads lastKnownUrl;
         // the joiner is the one place that authoritatively knows this URL.
+        // A quick-tunnel address dies when that machine restarts, which the pairing itself
+        // can cause, so keep what else it sent. `lastKnownUrl` stays the tunnel: it is read as one.
+        const peerLasting = lastingEndpoints(result.endpoints);
         try {
           mgr.updateMachineUrl(result.machineIdentity.machineId, repoUrl.replace(/\/+$/, ''));
+          if (peerLasting.length > 0) {
+            mgr.updateMachineEndpoints(
+              result.machineIdentity.machineId,
+              mergeEndpoints(mgr.getMachineEndpoints(result.machineIdentity.machineId), peerLasting),
+            );
+          }
         } catch { /* best-effort — entry was just registered above */ }
+        new LastingLinkLedger(config.stateDir).forget(result.machineIdentity.machineId);
+        if (takeoverSwitchOnDisk(config.stateDir) && (peerLasting.length === 0 || ownLasting.length === 0)) {
+          console.log(pc.yellow('  These machines have no lasting connection, so conversations stay on the first one and this one will not take over if it dies.'));
+          console.log(pc.yellow('  To fix it, put both on the same network or on Tailscale, then pair them again.'));
+        }
         console.log(pc.green(`  Paired with: ${result.machineIdentity.name}`));
       }
     } catch (err) {

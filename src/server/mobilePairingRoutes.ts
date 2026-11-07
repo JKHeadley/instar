@@ -1,3 +1,6 @@
+import { verifiedInboundMirrorEnvelope, isQuietReceipt, QuietRecordedError } from '../messaging/NotificationSelectivityGate.js';
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/server/mobilePairingRoutes.ts');
 /**
  * Mobile pairing links (docs/specs/mobile-pairing-link.md).
  *
@@ -34,7 +37,7 @@ import {
 import type { InstarConfig } from '../core/types.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import {
-  ConfirmationCodes, DeviceRegistry, displayCode, type CodeFormat, ReplayGuard, parseDevicePublicKey, verifyDeviceRequest,
+  ConfirmationCodes, DeviceRegistry, displayCode, type ApprovedVia, type CodeFormat, ReplayGuard, parseDevicePublicKey, verifyDeviceRequest,
   type DeviceRecord, type DeviceStatus,
 } from '../core/MobileDeviceKeys.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
@@ -49,7 +52,9 @@ import { APP_CONVERSATION_KEY_PATTERN, derivedEventId, hideCredentialSpans, remo
 import type { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
 import { buildSignedOrigin } from './mobileConversationRoutes.js';
-import { mountConsoleTicketDeviceRoutes } from './mobileConsoleTicket.js';
+import { activeOwnerPhone, mountConsoleTicketDeviceRoutes } from './mobileConsoleTicket.js';
+import { mountPairingApprovalDeviceRoutes } from './mobilePairingApproval.js';
+import { mountIntroducerRoutes, mountIntroductionRedeemRoute, ownerIntroducers, type Introducer } from './mobilePairingIntroducer.js';
 import {
   checkSignedFiles, claimMediaUploads, mediaRecordTooLarge, mirrorMediaToTelegram, preflightMediaAttachments, publishMediaMessage, signedFileHashParts,
   type SignedAttachment, type TelegramMediaMirrorTarget,
@@ -87,8 +92,11 @@ export interface MobilePairingDeps {
   siblings?: () => PairingSiblingView[];
   /** Probe our own stable origin; injectable for tests. */
   fetchFn?: typeof fetch;
-  /** Send the confirmation code to the owner's private chat with a Decline button; resolves to the Telegram message id, or null. */
-  ownerDM?: (text: string, declineData: string) => Promise<number | null>;
+  /**
+   * Send the owner's private chat a message, with a Decline button and (mobile-pairing-approve §3.2)
+   * an Approve button when their data is given; resolves to the Telegram message id, or null.
+   */
+  ownerDM?: (text: string, declineData: string, approveData?: string) => Promise<number | null>;
   /**
    * Whether a Telegram owner is known (mobile-native-conversations §4.4): with one, the code goes
    * to the owner's private chat; without one (and native conversations on), the dashboard path.
@@ -116,6 +124,8 @@ export interface MobilePairingDeps {
    * stamps on its events (`meshSelfId ?? coordinator id ?? 'local'`). Absent ⇒ `selfMachineId`.
    */
   peopleMachineId?: () => string;
+  /** This agent's own identity key, for vouching for its owner's phones (mobile-pairing-introducer §3.2). */
+  readIdentity?: () => { publicKey: Buffer; privateKey: Buffer } | null;
 }
 
 /** The default people lookup: the registry on disk (read-only, no writes) plus `config.users`. */
@@ -210,6 +220,33 @@ export function isMobileNativeEnabled(config: InstarConfig): boolean {
   return resolveDevAgentGate(config.mobilePairing?.native?.enabled, config);
 }
 
+/** `mobilePairing.approve.enabled` (docs/specs/mobile-pairing-approve.md §3.6): omitted ⇒ on wherever pairing is on. Read live. */
+export function isPairingApproveEnabled(config: InstarConfig): boolean {
+  return isMobilePairingEnabled(config) && config.mobilePairing?.approve?.enabled !== false;
+}
+
+/** What an approval attempt came to (spec §3.1). */
+export type ApproveOutcome = 'approved' | 'ended' | 'paused' | 'moved' | 'another-phone-waiting' | 'contested' | 'code-only' | 'failed' | 'off';
+
+/** One plain sentence per refusal, shared by every surface (spec §3.1). */
+export const APPROVE_REFUSAL: Record<Exclude<ApproveOutcome, 'approved'>, { status: number; error: string; detail: string }> = {
+  ended: { status: 409, error: 'pairing-ended', detail: 'That phone is no longer waiting: it was paired, declined, or its link expired.' },
+  paused: { status: 429, error: 'pairing-paused', detail: 'Phone pairing is paused because too many wrong codes were typed, so nothing was approved.' },
+  moved: { status: 409, error: 'approval-moved', detail: 'This pairing moved to another machine, so nothing was approved. Ask for a new link.' },
+  'another-phone-waiting': { status: 409, error: 'another-phone-waiting', detail: 'Another phone is also waiting to pair, so nothing was approved. Decline the one that is not yours, then approve again.' },
+  contested: { status: 409, error: 'pairing-contested', detail: 'More than one phone tried to pair at once, so this one cannot be approved with a tap. If it is yours, type its code into the app. If not, decline it.' },
+  'code-only': { status: 409, error: 'code-required', detail: 'This phone is for someone else, so it pairs with the code: give it to them only if you want them to use the app with this agent.' },
+  failed: { status: 500, error: 'approve-failed', detail: 'I could not record that, so nothing was approved. Try again.' },
+  off: { status: 503, error: 'pairing-approve-off', detail: 'Approving phones is turned off on this agent. Use the code.' },
+};
+
+/** Answer an approval route from its outcome. */
+export function approveAnswer(res: Response, outcome: ApproveOutcome, deviceId: string): void {
+  if (outcome === 'approved') { res.json({ status: 'active', deviceId }); return; }
+  const r = APPROVE_REFUSAL[outcome];
+  res.status(r.status).json({ error: r.error, detail: r.detail });
+}
+
 export class MobilePairingService {
   /** Native app conversations resolved on at boot (set by AgentServer). Gates the send-route rate move. */
   nativeOn = false;
@@ -280,6 +317,9 @@ export class MobilePairingService {
     this.confirm.prune();
     for (const [n, id] of this.declineNonces) { const d = this.devices.get(id); if (!d || d.status !== 'pending') this.declineNonces.delete(n); }
     this.pruneDashboardCodes();
+    const t = this.now();
+    for (const [h, e] of this.takenCodes) if (e.expiresAt <= t) this.takenCodes.delete(h);
+    for (const id of this.contested) { const d = this.devices.get(id); if (!d || d.status !== 'pending') this.contested.delete(id); }
     if (!this.enabled() || this.holdsLease()) return;
     // The Telegram path's code travels through the lease holder's adapter, so a lease move voids
     // it. A dashboard-path device has no such dependency and survives a lease move (§4.4).
@@ -295,10 +335,34 @@ export class MobilePairingService {
    * dashboard PIN session) when native conversations are on; otherwise null (the old refusal).
    */
   approvalPath(): 'telegram' | 'dashboard' | null {
-    // Native conversations off: exactly the old behaviour (try the Telegram DM whenever an adapter exists).
-    if (!this.nativeOn) return this.deps.ownerDM ? 'telegram' : null;
+    // A Telegram owner chat must really exist: `ownerDM` is wired even with no adapter, so it alone
+    // proves nothing (fb-cceb7986-efa; mobile-pairing-introducer §3.5).
     const owner = this.deps.telegramOwnerPresent ? this.deps.telegramOwnerPresent() : true;
-    return this.deps.ownerDM && owner ? 'telegram' : 'dashboard';
+    if (this.deps.ownerDM && owner) return 'telegram';
+    // No Telegram owner: the code is held for the pairing page when native conversations are on,
+    // or when an owner introducer can finish the pairing (the code stays the fallback).
+    if (this.nativeOn || this.introducers().length > 0) return 'dashboard';
+    return null;
+  }
+
+  /**
+   * The pairing page (or the legacy Phones tab) is open and unlocked right now: it polled the
+   * approvals list with an operator session within the last 25 s (both pages poll every 10 s).
+   * A display signal only (mobile-pairing-introducer §3.4); it grants nothing.
+   */
+  private pairingPageSeenAt = 0;
+  notePairingPageSeen(): void { this.pairingPageSeenAt = this.now(); }
+  pairingPageOpen(): boolean { return this.pairingPageSeenAt > 0 && this.now() - this.pairingPageSeenAt <= 25_000; }
+
+  /** Owner introducers this agent's creator configured (mobile-pairing-introducer §3.1), from the running config: a file edit applies at the next restart. */
+  introducers(): Introducer[] {
+    return ownerIntroducers(this.deps.config, (err) => this.deps.reportDegradation?.('MobileIntroducer.config', err));
+  }
+
+  /** A pairing approved on an introducer's word: the record in the owner's private chat, when there is one. */
+  tellOwnerIntroduced(introducerName: string, d: DeviceRecord): void {
+    const text = `A phone was added to ${this.deps.config.projectName} with Face ID, vouched for by ${introducerName}: ${d.deviceName ?? 'unnamed'} (key ${d.fingerprint ?? 'unknown'}). If that was not you, remove it on the Phones page.`;
+    void Promise.resolve(this.deps.ownerDM?.(text, '')).catch(() => { /* @silent-fallback-ok — a courtesy record; the activation already happened and shows on the Phones page */ });
   }
 
   /** Record a dashboard-path pending device's code (memory only). */
@@ -469,6 +533,152 @@ export class MobilePairingService {
     return 'declined';
   }
   private now: () => number;
+
+  // ── Approve instead of a code (docs/specs/mobile-pairing-approve.md) ──
+
+  /**
+   * Phones that may no longer be approved with a tap (spec §4): a link used by two phones, or a phone
+   * left waiting beside one that was just activated. Code and Decline still work. Memory only: a
+   * restart expires every pending phone anyway.
+   */
+  private readonly contested = new Set<string>();
+  /** sha256(link code) → the phone that took it and until when, so a second use of that link is seen. */
+  private readonly takenCodes = new Map<string, { deviceId: string; publicKey: string; expiresAt: number }>();
+
+  /** A phone took this link (spec §4). */
+  noteLinkTaken(code: string, device: DeviceRecord): void {
+    if (!isPairingApproveEnabled(this.deps.config)) return;
+    this.takenCodes.set(crypto.createHash('sha256').update(code).digest('hex'), { deviceId: device.id, publicKey: device.publicKey ?? '', expiresAt: Date.parse(device.expiresAt!) });
+  }
+
+  /** A redeem found its code gone: if another key already took this link, its phone is contested. */
+  noteLinkReused(code: unknown, publicKey: string): void {
+    if (typeof code !== 'string' || !isPairingApproveEnabled(this.deps.config)) return;
+    const hash = crypto.createHash('sha256').update(code).digest('hex');
+    const t = this.takenCodes.get(hash);
+    if (!t || t.expiresAt <= this.now() || t.publicKey === publicKey) return;
+    // One notice per link: whoever holds it can repeat this request as often as they like.
+    this.takenCodes.delete(hash);
+    const d = this.devices.get(t.deviceId);
+    if (!d) return;
+    if (d.status === 'pending') this.contested.add(t.deviceId);
+    featureEvidence.record('mobilePairing', { kind: 'held', reason: 'pairing link used by two phones', context: { deviceId: t.deviceId, status: d.status } });
+    const text = d.status === 'active'
+      ? `Two phones tried to use the same pairing link, and the first is now paired: ${d.deviceName ?? 'unnamed'} (key ${d.fingerprint ?? 'unknown'}). If that is not your phone, remove it on the Phones page now.`
+      : d.status === 'pending'
+        ? 'Two phones tried to use the same pairing link, so that pairing now needs its code. If you did not expect this, decline it and ask me for a new link.'
+        : null;
+    if (text) void Promise.resolve(this.deps.ownerDM?.(text, '')).catch(() => { /* @silent-fallback-ok — a courtesy notice; the tap is already refused */ });
+  }
+
+  /** A phone was just activated: anything still waiting beside it stays code-or-decline (spec §4). */
+  private contestOthers(activated: string): void {
+    for (const d of this.waitingPhones()) if (d.id !== activated) this.contested.add(d.id);
+  }
+  /** Called by the code path after an activation. */
+  noteActivated(deviceId: string): void { this.contestOthers(deviceId); }
+
+  /** Can a tap approve this phone, as far as its own row goes? */
+  approvable(d: DeviceRecord): boolean { return d.role !== 'msp' && !this.contested.has(d.id); }
+
+  /** Phones waiting on this machine. */
+  waitingPhones(): DeviceRecord[] { return this.devices.list().filter((d) => d.status === 'pending' && !!d.publicKey); }
+
+  /**
+   * The one approval funnel (spec §3.1). Synchronous from the read to the registry write, so two
+   * answers never interleave. An approval names one device id, whose row is pending exactly once.
+   */
+  approvePending(deviceId: string, via: ApprovedVia, opts: { approvedBy?: string } = {}): ApproveOutcome {
+    const outcome = this.approveOutcome(deviceId, via, opts);
+    featureEvidence.record('mobilePairing', outcome === 'approved'
+      ? { kind: 'fired', reason: 'approved without a code', context: { deviceId, approvedVia: via, ...(opts.approvedBy ? { approvedBy: opts.approvedBy } : {}) } }
+      : { kind: outcome === 'failed' ? 'error' : 'held', reason: `approve refused: ${outcome}`, context: { deviceId, approvedVia: via } });
+    return outcome;
+  }
+
+  private approveOutcome(deviceId: string, via: ApprovedVia, opts: { approvedBy?: string }): ApproveOutcome {
+    if (!isPairingApproveEnabled(this.deps.config)) return 'off';
+    const waiting = this.waitingPhones();
+    const d = waiting.find((x) => x.id === deviceId);
+    if (!d) return 'ended';
+    // An MSP's phone is not in the owner's hand: handing over the code is what binds it to that person.
+    if (d.role === 'msp') return 'code-only';
+    if (this.contested.has(deviceId)) return 'contested';
+    if (this.devices.pairingPaused()) return 'paused';
+    // A Telegram-path pairing belongs to the lease holder (the same rule as confirm); a lease move voids it.
+    if (!this.isDashboardPending(deviceId) && !this.holdsLease()) return 'moved';
+    // A reflex tap must not pick between two phones: the code still works, and Decline is one tap (§4).
+    if (waiting.length > 1) return 'another-phone-waiting';
+    const approvedAt = new Date(this.now()).toISOString();
+    try {
+      // Ledger row first (the durable intent), registry second, as confirm does; nothing is consumed on failure.
+      this.keyLedger?.recordActivation(d, via, approvedAt);
+      const after = this.devices.applyConfirm(deviceId, { ok: true, approvedVia: via, approvedAt, ...(opts.approvedBy ? { approvedBy: opts.approvedBy } : {}) });
+      if (after?.status !== 'active') return 'failed';
+    } catch (err) {
+      this.deps.reportDegradation?.('MobilePairing.registryWrite', err);
+      return 'failed';
+    }
+    this.confirm.drop(deviceId);
+    this.dropDashboardCode(deviceId);
+    for (const [n, id] of this.declineNonces) if (id === deviceId) this.declineNonces.delete(n);
+    return 'approved';
+  }
+
+  /** The owner's Approve button in Telegram (spec §3.2): the same nonce as that message's Decline. */
+  approveByNonce(nonce: string): ApproveOutcome {
+    const id = this.declineNonces.get(nonce);
+    return id ? this.approvePending(id, 'telegram-dm') : 'ended';
+  }
+
+  /** Decline one waiting phone, from any surface. */
+  declinePending(deviceId: string): void {
+    this.confirm.drop(deviceId);
+    this.dropDashboardCode(deviceId);
+    for (const [n, id] of this.declineNonces) if (id === deviceId) this.declineNonces.delete(n);
+    try { this.devices.decline(deviceId); } catch (err) { // @silent-fallback-ok — the code is gone, so the device can never confirm; reported
+      this.deps.reportDegradation?.('MobilePairing.declineWrite', err);
+    }
+  }
+
+  /** An owner phone able to answer on this machine right now: active, owner, presence key on file. */
+  ownerPhoneCanApprove(): boolean {
+    return this.devices.list().some((d) => !!d.presenceKey && activeOwnerPhone(this, d.id));
+  }
+
+  /** What a waiting phone is told (spec §3.5); nothing when the feature is off. */
+  waitingFields(d: DeviceRecord): Record<string, unknown> {
+    if (!isPairingApproveEnabled(this.deps.config)) return {};
+    // Only ways that can work now, easiest first (mobile-pairing-introducer §3.4).
+    const introducers = this.introducers();
+    const dashboardPending = this.isDashboardPending(d.id);
+    const live = this.pairingPageOpen();
+    const confirmWith = this.approvable(d) ? [
+      ...(introducers.length > 0 ? ['paired-agent'] : []),
+      ...(this.ownerPhoneCanApprove() ? ['owner-phone'] : []),
+      ...(dashboardPending ? (live ? ['dashboard'] : []) : ['telegram']),
+      'code',
+    ] : ['code'];
+    return {
+      confirmWith, fingerprint: d.fingerprint ?? null, expiresAt: d.expiresAt ?? null,
+      ...(introducers.length > 0 && this.approvable(d) ? { introducers: introducers.map((i) => ({ name: i.name, keyId: i.keyId })) } : {}),
+      // Where the code is, when it is held for the pairing page (the code fallback names it).
+      ...(dashboardPending && d.host ? { codeAt: 'pairing-page', codePageUrl: codePageUrlForDevice(d.host, d.id) } : {}),
+    };
+  }
+
+  /** One contentless push so an owner phone can answer; only this machine's phones can (spec §6). */
+  notifyOwnerPhones(d: DeviceRecord): void {
+    if (!isPairingApproveEnabled(this.deps.config) || !this.approvable(d) || !this.ownerPhoneCanApprove()) return;
+    this.push?.notifyHere({ kind: 'notice', dedupeKey: `pairing-request:${d.id}` });
+  }
+
+  /** The record of who approved, in the owner's private chat when there is one (spec §3.4). */
+  tellOwnerPhoneApproved(approverId: string, d: DeviceRecord): void {
+    const approver = this.devices.get(approverId);
+    const text = `${approver?.deviceName ?? 'Your paired phone'} approved a new phone with Face ID: ${d.deviceName ?? 'unnamed'} (key ${d.fingerprint ?? 'unknown'}). If that was not you, remove both phones on the Phones page.`;
+    void Promise.resolve(this.deps.ownerDM?.(text, '')).catch(() => { /* @silent-fallback-ok — a courtesy record; the activation already happened and shows on the Phones page */ });
+  }
 
   enabled(): boolean { return isMobilePairingEnabled(this.deps.config); }
   private cfg(): MobilePairingConfig | undefined { return this.deps.config.mobilePairing; }
@@ -644,6 +854,8 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     // Take-and-delete happens synchronously inside redeem(), before any async work.
     const r = svc.codes.redeem(body.code, token);
     if (!r.ok) {
+      // mobile-pairing-approve §4: the same link from a second key proves it got out.
+      svc.noteLinkReused(body.code, publicKey);
       featureEvidence.recordAtMostEvery('mobilePairing', `redeem|${r.reason}`, 60_000, { kind: 'held', reason: `redeem refused: ${r.reason}` });
       if (r.reason === 'too-many-attempts') { res.status(429).json({ error: 'too-many-attempts' }); return; }
       res.status(403).json({ error: 'That link has expired or was already used.' });
@@ -672,6 +884,7 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       return;
     }
     const device = created.device;
+    svc.noteLinkTaken(body.code as string, device);
     // mobile-pairing-word-code §3.2: only an app that asks for it gets a WORD-NNNN code; builds
     // already on phones send digits only, so everything else keeps today's 6-digit code.
     const codeFormat: CodeFormat = Array.isArray(body.codeFormats) && body.codeFormats.length <= 8 && body.codeFormats.includes('word') ? 'word' : 'digits';
@@ -683,8 +896,9 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       // dashboard-console-default-and-pair-page §3.3: the code page on the host this phone just
       // redeemed on (already checked above: local TLS, an eligible host, the code's bound host).
       featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'redeemed: code held on dashboard', context: { deviceId: device.id, approval: 'dashboard', role: device.role ?? 'owner', routeKind: eligible.kind, codeFormat } });
+      svc.notifyOwnerPhones(device);
       res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'dashboard', codeFormat,
-        codePageUrl: codePageUrlForDevice(reqHost!, device.id) });
+        codePageUrl: codePageUrlForDevice(reqHost!, device.id), ...svc.waitingFields(device) });
       return;
     }
     const nonce = crypto.randomBytes(12).toString('hex');
@@ -692,21 +906,34 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     const pretty = displayCode(code);
     // People and roles §3.2: the owner approves every phone, so the message says whose phone it is.
     const forWhom = device.role === 'msp' ? svc.personOfDevice(device) : null;
-    const text = [
-      forWhom
-        ? `Your code to pair a phone for ${forWhom.ok ? personLabel(forWhom.name, 'msp') : 'someone no longer in your user list'} with ${svc.deps.config.projectName} is ${pretty}. Give it to them only if you want them to use the Instar app with this agent.`
-        : `Your code to pair a phone with ${svc.deps.config.projectName} is ${pretty}.`,
+    const forWhomName = forWhom ? (forWhom.ok ? personLabel(forWhom.name, 'msp') : 'someone no longer in your user list') : null;
+    // An MSP's phone stays code-only (mobile-pairing-approve §4): handing over the code is the binding.
+    const canApprove = isPairingApproveEnabled(svc.deps.config) && svc.approvable(device);
+    const codeLine = forWhomName
+      ? `Your code to pair a phone for ${forWhomName} with ${svc.deps.config.projectName} is ${pretty}. Give it to them only if you want them to use the Instar app with this agent.`
+      : `Your code to pair a phone with ${svc.deps.config.projectName} is ${pretty}.`;
+    // mobile-pairing-approve §3.2: the decision first, the code kept as the fallback for older apps.
+    const text = (canApprove ? [
+      `A phone is asking to pair with ${svc.deps.config.projectName}. Approve only if you are pairing a phone right now and this key matches the one the app shows.`,
+      `Phone key: ${device.fingerprint ?? 'unknown'}\nPhone name: ${device.deviceName ?? '(none given)'} (the phone chose this name, so don't rely on it)`,
+      `If you did not start this, tap Decline.`,
+      `If the app asks for a code instead: ${codeLine} Don't send or show this message to anyone, including me.`,
+    ] : [
+      codeLine,
       `Type it into the Instar app only if you are pairing a phone right now. If you did not start this, tap Decline. Don't send or show this message to anyone, including me.`,
       `Phone name: ${device.deviceName ?? '(none given)'}`,
-    ].join('\n\n');
+    ]).join('\n\n');
     let delivered: number | null = null;
     try {
       delivered = await Promise.race([
-        svc.deps.ownerDM!(text, `md:d:${nonce}`),
+        svc.deps.ownerDM!(text, `md:d:${nonce}`, ...(canApprove ? [`md:a:${nonce}`] : [])),
         new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000)),
       ]);
     } catch { delivered = null; } // @silent-fallback-ok — treated as not delivered: the pending device is removed and the caller gets 409
     if (!delivered || !svc.deps.ownerDM) {
+      // An owner phone may have approved during the wait (mobile-pairing-approve §3.4): that stands.
+      const now = svc.devices.get(device.id);
+      if (now?.status === 'active') { res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'active', approval: 'telegram', codeFormat }); return; }
       svc.confirm.drop(device.id);
       svc.declineNonces.delete(nonce);
       try { svc.devices.remove(device.id); } catch (err) { svc.deps.reportDegradation?.('MobilePairing.registryWrite', err); }
@@ -715,7 +942,8 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       return;
     }
     featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'redeemed: code sent by Telegram', context: { deviceId: device.id, approval: 'telegram', role: device.role ?? 'owner', routeKind: eligible.kind, codeFormat } });
-    res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'telegram', codeFormat });
+    svc.notifyOwnerPhones(device);
+    res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'telegram', codeFormat, ...svc.waitingFields(device) });
   });
 }
 
@@ -743,7 +971,11 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     // any machine can, so refuse here (not after the operator opened the link) when this machine
     // cannot deliver the confirmation code.
     const approval = svc.approvalPath();
-    if (!approval || (approval === 'telegram' && !svc.holdsLease())) {
+    if (!approval) {
+      res.status(409).json({ error: 'approval-unavailable', detail: 'This agent has no way to confirm a new phone yet: it has no Telegram chat with its owner, phone pairing without Telegram is not turned on, and no other agent of the owner is set up to vouch for phones. Connect Telegram, or have the agent that created this one add itself as an introducer, then make a new link.' });
+      return;
+    }
+    if (approval === 'telegram' && !svc.holdsLease()) {
       res.status(409).json({ error: 'approval-unavailable', detail: 'This machine cannot send the confirmation code. Make the link from the machine serving Telegram.' });
       return;
     }
@@ -804,12 +1036,32 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
 
   router.get('/mobile/pairing-approvals', (req: Request, res: Response) => {
     if (!operatorOnly(req, res)) return;
+    // A waiting phone may now be told "tap Approve on the pairing page" (mobile-pairing-introducer §3.4).
+    svc.notePairingPageSeen();
     const approvals = svc.dashboardApprovals().map(({ device, code, expiresAt }) => ({
       deviceId: device.id, deviceName: device.deviceName, label: device.label, fingerprint: device.fingerprint ?? null, ...personFields(device, svc),
       // Display form for both formats (mobile-pairing-word-code §3.4): `KITE-4172` or `123 456`.
       code: displayCode(code), codeFormat: /^\d{6}$/.test(code) ? 'digits' : 'word', pairedAt: device.pairedAt, expiresAt: new Date(expiresAt).toISOString(),
+      // mobile-pairing-approve §3.3: whether this card may offer Approve (never on a Telegram-owner agent).
+      canApprove: isPairingApproveEnabled(deps.config) && svc.approvalPath() === 'dashboard' && svc.approvable(device),
     }));
     res.json({ approval: svc.approvalPath(), approvals });
+  });
+
+  // Approve from the same card, behind the same access that shows the code (mobile-pairing-approve
+  // §3.3). Only a dashboard-path phone: the PIN never approves a phone on an agent with a Telegram
+  // owner. Refusals are never 403, which the pages read as "the session is gone".
+  router.post('/mobile/pairing-approvals/:id/approve', (req: Request, res: Response) => {
+    if (!operatorOnly(req, res)) return;
+    if (!isPairingApproveEnabled(deps.config)) { approveAnswer(res, 'off', ''); return; }
+    const id = String(req.params.id);
+    if (!svc.isDashboardPending(id)) { res.status(404).json({ error: 'not-pending', detail: APPROVE_REFUSAL.ended.detail }); return; }
+    if (svc.approvalPath() !== 'dashboard') {
+      featureEvidence.record('mobilePairing', { kind: 'held', reason: 'approve refused: approval-moved', context: { deviceId: id } });
+      res.status(409).json({ error: 'approval-moved', detail: 'This agent now approves phones through your private Telegram chat. Use the message there.' });
+      return;
+    }
+    approveAnswer(res, svc.approvePending(id, 'dashboard-pin'), id);
   });
 
   // "Not me": the operator declines a dashboard-path pairing from the same card.
@@ -850,6 +1102,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       status: d.status, deviceName: d.deviceName, approvedAt: d.approvedAt ?? null,
       // A pending dashboard-path phone (§4.4) tells the operator where the code is.
       ...(d.status === 'pending' && svc.isDashboardPending(d.id) ? { approval: 'dashboard' } : {}),
+      // Approve instead of a code (mobile-pairing-approve §3.5): this route is the waiting phone's status poll.
+      ...(d.status === 'pending' ? svc.waitingFields(d) : {}),
       ...(d.approvedVia ? { approvedVia: d.approvedVia } : {}),
       // People and roles §3.1: whose phone this is (`unassigned` when the person was removed).
       person: personView(svc.personOfDevice(d)),
@@ -994,6 +1248,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (check.result === 'ok') {
       svc.confirm.drop(d.id); // consumed only after the activation was written
       svc.dropDashboardCode(d.id);
+      svc.noteActivated(d.id);
       for (const [n, id] of svc.declineNonces) if (id === d.id) svc.declineNonces.delete(n);
       featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'confirmed', context: { deviceId: d.id, approvedVia, role: d.role ?? 'owner' } });
       res.json({ status: 'active' });
@@ -1015,6 +1270,14 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
 
   // Console sign-in from an owner phone (docs/specs/mobile-console-device-signin.md).
   mountConsoleTicketDeviceRoutes(router, svc);
+
+  // Approve a waiting phone from an owner phone, with Face ID (mobile-pairing-approve §3.4).
+  mountPairingApprovalDeviceRoutes(router, svc);
+
+  // Add a new agent from a phone you already use (docs/specs/mobile-pairing-introducer.md): this
+  // agent vouching for its owner phone, and this agent taking another agent's word.
+  mountIntroducerRoutes(router, svc, { readIdentity: () => deps.readIdentity?.() ?? null });
+  mountIntroductionRedeemRoute(router, svc);
 
   // Revoke: bearer may revoke any device; a device itself; an ACTIVE OWNER phone any device held on
   // this machine (docs/specs/mobile-native-phones-messages.md §3.3 — what the console's Phones panel
@@ -1381,21 +1644,37 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
 
     // Mirror: best-effort, never decides delivery.
     let mirrored = false;
+    let mirrorRecorded: { quietId: string; deliveredParts: number } | undefined;
     try {
       // The mirror is a copy for people reading the topic: credential-shaped spans always show
       // as "[credential hidden]", even when the operator sent them as written (§4.9).
       const mirrorText = svc.nativeOn ? hideCredentialSpans(delivered) : text;
+      // Only this authenticated, accepted ingress creates these closures. The shared helper
+      // keeps its routine default; each physical mirror call gets this verified conversation scope.
+      const sendMirrorText: TelegramMediaMirrorTarget['sendToTopic'] = (id, value, options) =>
+        withNotificationEnvelope(verifiedInboundMirrorEnvelope('verified-mobile-ingress-mirror'), () => tg.sendToTopic(id, value, options));
+      const mirrorTarget: TelegramMediaMirrorTarget = {
+        sendToTopic: sendMirrorText,
+        sendMediaToTopic: (id, files, value, options) => withNotificationEnvelope(verifiedInboundMirrorEnvelope('verified-mobile-ingress-mirror'),
+          () => (tg as unknown as TelegramMediaMirrorTarget).sendMediaToTopic(id, files, value, options)),
+      };
       if (app && stored.length > 0) {
-        await mirrorMediaToTelegram(tg as unknown as TelegramMediaMirrorTarget, topicId, senderName, stored, mirrorText, (sha) => app.media.locateBlob(sha));
+        const result = await mirrorMediaToTelegram(mirrorTarget, topicId, senderName, stored, mirrorText, (sha) => app.media.locateBlob(sha));
+        if (result.delivery.outcome === 'recorded') mirrorRecorded = { quietId: result.delivery.receipt.quietId, deliveredParts: result.delivery.deliveredParts };
+        else mirrored = true;
       } else {
-        await tg.sendToTopic(topicId, `📱 ${senderName} (from the app): ${mirrorText}`, { silent: true, skipStallClear: true, operatorMirror: true });
+        const result = await sendMirrorText(topicId, `📱 ${senderName} (from the app): ${mirrorText}`, { silent: true, skipStallClear: true, operatorMirror: true });
+        if (isQuietReceipt(result)) mirrorRecorded = { quietId: result.quietId, deliveredParts: 0 };
+        else mirrored = true;
       }
-      mirrored = true;
     } catch (err) {
-      deps.reportDegradation?.('MobileChat.mirror', err);
+      if (err instanceof QuietRecordedError) mirrorRecorded = { quietId: err.receipt.quietId, deliveredParts: 0 };
+      else deps.reportDegradation?.('MobileChat.mirror', err);
     }
     const response = {
-      ok: true, outcome, eventId, mirrored, ...(stored.length > 0 ? { mirror: mirrored ? 'sent' : 'failed', messageId: storeMessageId } : {}), ...extras,
+      ok: true, outcome, eventId, mirrored,
+      ...(mirrorRecorded ? { mirror: 'recorded', mirrorQuietId: mirrorRecorded.quietId, partiallyMirrored: mirrorRecorded.deliveredParts > 0 } : {}),
+      ...(stored.length > 0 ? { ...(mirrorRecorded ? {} : { mirror: mirrored ? 'sent' : 'failed' }), messageId: storeMessageId } : {}), ...extras,
       ...(b.killed !== undefined ? { stopped: b.killed } : {}),
       ...(b.paused !== undefined ? { paused: b.paused } : {}),
     };
@@ -1419,7 +1698,7 @@ function personView(p: DevicePerson): Record<string, unknown> {
 }
 
 /** The person fields of a device row (people and roles §3.2). */
-function personFields(d: DeviceRecord, svc: MobilePairingService): Record<string, unknown> {
+export function personFields(d: DeviceRecord, svc: MobilePairingService): Record<string, unknown> {
   const p = svc.personOfDevice(d);
   return { role: p.role, personName: p.ok ? p.name : null, ...(p.ok ? {} : { unassigned: true }) };
 }
@@ -1516,11 +1795,19 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     { method: 'POST', re: /^\/mobile\/media\/uploads$/, statuses: active, body: 'json', conversationRef: true },
     { method: 'PUT', re: new RegExp(`^/mobile/media/uploads/${UUID}/chunks/(0|[1-9][0-9]{0,5})$`), statuses: active, body: 'octet', ownBucket: 240 },
     { method: 'GET', re: new RegExp(`^/mobile/media/uploads/${UUID}$`), statuses: active, body: 'none' },
-    { method: 'GET', re: /^\/mobile\/media\/[0-9a-f]{64}$/, statuses: active, body: 'none', conversationRef: true },
+    { method: 'GET', re: /^\/mobile\/media\/[0-9a-f]{64}$/, statuses: active, body: 'none', conversationRef: true, ownBucket: 120, bucket: 'media-read' },
     { method: 'POST', re: /^\/mobile\/media\/purge$/, statuses: active, body: 'json', conversationRef: true },
     // Console sign-in from an owner phone (mobile-console-device-signin §3.1-3.2); each route
     // re-checks owner, local TLS and the feature switch itself.
+    // Approve a waiting phone with Face ID (docs/specs/mobile-pairing-approve.md §3.4): owner phones only.
+    { method: 'GET', re: /^\/mobile\/pairing-requests$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'pairing-requests-read' },
+    { method: 'POST', re: new RegExp(`^/mobile/pairing-requests/${UUID}/(challenge|approve|decline)$`), statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'pairing-approve' },
     { method: 'POST', re: /^\/mobile\/device\/presence-key$/, statuses: active, body: 'json' },
+    // Add a new agent from a phone you already use (mobile-pairing-introducer §3.2-3.3). The
+    // introducer routes re-check owner, local TLS and the switch; the waiting phone hands in its own.
+    { method: 'GET', re: /^\/mobile\/introducer$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'introducer-read' },
+    { method: 'POST', re: /^\/mobile\/introductions(\/challenge)?$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'pairing-approve' },
+    { method: 'POST', re: /^\/mobile\/device\/introduction$/, statuses: new Set(['pending', 'active']), body: 'json', ownBucket: 6, bucket: 'introduction-redeem' },
     { method: 'POST', re: /^\/mobile\/console-ticket\/challenge$/, statuses: active, body: 'json' },
     { method: 'POST', re: /^\/mobile\/console-ticket$/, statuses: active, body: 'json' },
     // Native schedule, promises and machines (mobile-native-ops-screens): read-only trimmed
@@ -1553,6 +1840,23 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     // Native Passwords & keys (docs/specs/mobile-native-secrets.md): a read-only trimmed summary, owner
     // phones only: names and state, never a value, a length, a token or a Secret Drop link.
     { method: 'GET', re: /^\/mobile\/secrets$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'secrets-reads' },
+    // Native console pages and the read-only file browser (docs/specs/mobile-native-console-pages.md): owner
+    // phones only, one shared bucket of their own. Each answer mirrors a console route, read on this machine.
+    { method: 'GET', re: /^\/mobile\/ideas$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'console-pages-reads' },
+    { method: 'GET', re: /^\/mobile\/pace$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'console-pages-reads' },
+    { method: 'GET', re: /^\/mobile\/development$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'console-pages-reads' },
+    { method: 'GET', re: /^\/mobile\/maturation$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'console-pages-reads' },
+    { method: 'GET', re: /^\/mobile\/files$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'console-files-reads' },
+    { method: 'GET', re: /^\/mobile\/files\/read$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'console-files-reads' },
+    // What /health means for the person (docs/specs/mobile-health-issues.md): a read-only trimmed summary,
+    // owner phones only. The Fleet screen reads it every 30 s, so it has its own bucket.
+    { method: 'GET', re: /^\/mobile\/health-issues$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'health-issues-reads' },
+    // The person's quick actions on a problem (docs/specs/health-quick-actions.md): undoable, so the device signature
+    // is enough. Exactly these two paths: the routes machines use with each other are bearer-only.
+    { method: 'POST', re: /^\/mobile\/health-issues\/choices$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'health-choices' },
+    { method: 'POST', re: /^\/mobile\/health-issues\/choices\/undo$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'health-choices' },
+    // Done and Ignore for a Needs-you item (docs/specs/mobile-attention-choices.md), in the same bucket.
+    { method: 'POST', re: /^\/mobile\/attention\/(?=[a-z0-9._:-]*[a-z0-9])[a-z0-9._:-]{1,200}\/choice$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'health-choices' },
     // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): read-only
     // trimmed summaries, owner phones only, with one shared bucket of their own (they read peers).
     { method: 'GET', re: /^\/mobile\/proposals$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'proposals-inside-reads' },
@@ -1565,12 +1869,43 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     { method: 'GET', re: /^\/mobile\/permissions\/slips$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
     { method: 'GET', re: /^\/mobile\/permissions\/features$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
     { method: 'POST', re: /^\/mobile\/permissions\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4): owner phone only,
+    // their own bucket so retries can't use up the approvals' allowance.
+    { method: 'POST', re: /^\/mobile\/desktop-unlock\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
+    { method: 'POST', re: /^\/mobile\/desktop-unlock$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
+    { method: 'POST', re: /^\/mobile\/dashboard-pin\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
+    { method: 'POST', re: /^\/mobile\/dashboard-pin\/reveal$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
+    // The desktop calls the app makes after a Face ID unlock (§2.2): signed by the owner phone instead of the
+    // API token, and still refused by each route without a desktop session. Reads that ask the other machines
+    // share 20/min, the two writes 12/min, and the viewer's polls 240/min.
+    { method: 'GET', re: /^\/desktop\/targets$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'owner-desktop-peers' },
+    { method: 'GET', re: /^\/desktop\/setup$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'owner-desktop-peers' },
+    { method: 'GET', re: /^\/desktop\/setup\/[^/]{1,200}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 240, bucket: 'owner-desktop' },
+    { method: 'POST', re: /^\/desktop\/setup\/[^/]{1,200}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-desktop-writes' },
+    { method: 'POST', re: /^\/desktop\/requests$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-desktop-writes' },
+    { method: 'GET', re: /^\/desktop\/requests\/[^/]{1,200}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 240, bucket: 'owner-desktop' },
+    { method: 'GET', re: /^\/desktop\/requests\/[^/]{1,200}\/(cursor|displays)$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 240, bucket: 'owner-desktop' },
+    { method: 'POST', re: /^\/desktop\/requests\/[^/]{1,200}\/(ticket|resume|revoke)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 240, bucket: 'owner-desktop' },
     { method: 'POST', re: /^\/mobile\/permissions\/requests\/[a-z0-9._:-]{1,128}\/(approve|decline)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/permissions\/features\/[a-z0-9._:-]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // Ask for a password or key, and cancel a request (docs/specs/mobile-native-secrets-writes.md): the same
     // Face ID-confirmed path and bucket. Neither answers a token or a Secret Drop link.
     { method: 'POST', re: /^\/mobile\/secrets\/requests$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/secrets\/requests\/[0-9a-f]{16}\/cancel$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // The session screen's controls (docs/specs/mobile-native-session-controls.md). Owner phones only.
+    // Conversation use, signed: the keys tray and attaching a file (each re-resolves the session).
+    { method: 'POST', re: /^\/sessions\/[a-z0-9_-]{1,200}\/key$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 60, bucket: 'session-keys' },
+    { method: 'POST', re: /^\/sessions\/[a-z0-9_-]{1,200}\/attachments$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'session-attachments' },
+    // Trimmed reads: what the menu shows, what a new session can pick, and the conversation record with secrets removed.
+    { method: 'GET', re: /^\/mobile\/sessions\/controls$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'session-controls-reads' },
+    { method: 'GET', re: /^\/mobile\/sessions\/new-options$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'session-controls-reads' },
+    { method: 'GET', re: /^\/mobile\/sessions\/history$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'session-history-reads' },
+    // What ends, moves or starts a session: the Face ID-confirmed path and bucket above.
+    { method: 'POST', re: /^\/mobile\/sessions\/door\/[1-9][0-9]{0,15}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/sessions\/move\/[1-9][0-9]{0,15}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/sessions\/close\/[a-z0-9._:-]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/sessions\/new$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/sessions\/default$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
   ];
 })();
 

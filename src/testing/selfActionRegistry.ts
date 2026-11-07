@@ -1,3 +1,4 @@
+import { claimReconciliationNotice } from '../core/TopicProfileOrchestrator.js';
 /**
  * selfActionRegistry.ts — the self-action controller registry (Part D1 of
  * docs/specs/self-action-convergence.md). This is the single list the
@@ -22,6 +23,9 @@
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { nextAuditAfterFailure } from '../core/attribution/AttributionAudit.js';
+import { advanceEvolutionArchiveFailure, evolutionArchiveSyncAttemptDue, EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES } from '../core/EvolutionArchiveSync.js';
+import type { EvolutionArchiveSyncPeer } from '../core/EvolutionArchive.js';
 import { PENDING_MAX_BACKOFF_MS, PENDING_TICK_MS, PENDING_TTL_MS } from '../threadline/requiredAckService.js';
 import { decideSetupRestart, MAX_SETUP_STARTS } from '../recommended/setupRestart.js';
 import { MAX_GUARD_REPLACEMENTS, RESPAWNS_PER_REQUEST, decideGuardReplacement, decideLockedRespawn } from '../core/DesktopLockedController.js';
@@ -29,6 +33,7 @@ import { OverloadShedPlanner, DEFAULT_OVERLOAD_SHED } from '../core/OverloadShed
 import { PlacementExecutor } from '../core/PlacementExecutor.js';
 import type { MachineCapacity } from '../core/types.js';
 import { HostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
+import { CHROME_UPGRADE_INTERVAL_MS, MAX_INSTALL_ATTEMPTS, decideProvision, type BackoffRecord, type MachineFacts, type ProvisionRecord } from '../core/linuxBrowserProvision.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import { checkThrowawayExpiry, MAX_TEARDOWN_ATTEMPTS } from '../core/ThrowawayAgentGuard.js';
@@ -315,6 +320,65 @@ const desktopRelockGuardReplacement: SelfActionController = {
         if (decideGuardReplacement(replacements) === 'give-up') return;
         replacements += 1;
         sink.emit({ verb: 'respawn', target: 'relock-guard' });
+      },
+    };
+  },
+};
+
+const LINUX_BROWSER_FACTS: MachineFacts = { platform: 'linux', wsl: false, arch: 'x64', osRelease: 'ID=ubuntu\nVERSION_ID="24.04"\n', hasApt: true, sudoWorks: true, freeBytes: 10 * 1024 ** 3 };
+
+/** linux-browser-install-retry: every attempt fails and the machine stays up, so the hourly check keeps
+ * asking. The real decision paces it at 1 h, 6 h, 24 h, then stops for good until an operator says yes. */
+/** attribution-audit-retry: a daily report whose model stays down. It settles to one try a day, for good. */
+const attributionAuditRetry: SelfActionController = {
+  id: 'attribution-audit-retry',
+  actionVerb: 'retry',
+  models: 'src/core/attribution/AttributionAudit.ts (finishRun — nextAuditAfterFailure, breaker after 3 failed runs)',
+  modelsPath: 'src/core/attribution/AttributionAudit.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The failure count, next run and breaker are on disk in audit-state.json, so a restart resumes the same schedule.' },
+  boundK: 33,
+  perTargetBoundK: 33,
+  ticks: 24 * 30,
+  tickMs: 60 * 60_000,
+  eternalSentinel: { reason: 'A daily report keeps trying once a day with its breaker open, so the report comes back on its own when the model does.', rateFloorMs: 12 * 60 * 60_000 },
+  delegatedGiveUp: 'The audit budget of 40 model calls a run and the 24h breaker',
+  makeUnderPressure(f, sink) {
+    let failures = 0;
+    let nextRunAt = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (now < nextRunAt) return;
+        sink.emit({ verb: 'retry', target: 'attribution-audit' });
+        failures += 1;
+        nextRunAt = nextAuditAfterFailure(failures, now).nextRunAt;
+      },
+    };
+  },
+};
+
+const linuxBrowserInstallRetry: SelfActionController = {
+  id: 'linux-browser-install-retry',
+  actionVerb: 'retry',
+  models: 'src/core/linuxBrowserProvision.ts (provisionLinuxBrowser — decideProvision, MAX_INSTALL_ATTEMPTS)',
+  modelsPath: 'src/core/linuxBrowserProvision.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The attempt count is on disk in provision-backoff.json, so a restart cannot reset it.' },
+  boundK: MAX_INSTALL_ATTEMPTS,
+  perTargetBoundK: MAX_INSTALL_ATTEMPTS,
+  ticks: 24 * 30,
+  tickMs: 60 * 60_000,
+  eternalSentinel: undefined,
+  makeUnderPressure(f, sink) {
+    let backoff: BackoffRecord | null = null;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        const decision = decideProvision({ wanted: true, depsPresent: false, bindings: 0, facts: LINUX_BROWSER_FACTS, record: null, backoff, now });
+        if (decision.action !== 'install') return;
+        backoff = { attempts: (backoff?.attempts ?? 0) + 1, lastAt: now };
+        sink.emit({ verb: 'retry', target: 'linux-browser-install' });
       },
     };
   },
@@ -834,6 +898,39 @@ const appMediaReplication: SelfActionController = {
     };
   },
 };
+
+/** Full-content archive retry: the actual runtime helper parks the durable peer after six failures. */
+const evolutionArchiveSyncRetry: SelfActionController = {
+  id: 'evolution-archive-sync',
+  actionVerb: 'archive-sync-retry',
+  models: 'src/core/EvolutionArchiveSync.ts (onPeerRecorded uses evolutionArchiveSyncAttemptDue + advanceEvolutionArchiveFailure; durable park after six rejected requests)',
+  modelsPath: 'src/core/EvolutionArchiveSync.ts',
+  boundK: EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES,
+  perTargetBoundK: EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES,
+  ticks: 120,
+  tickMs: 30_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return makeEvolutionArchiveSyncPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) { return makeEvolutionArchiveSyncPressure(f, sink); },
+};
+
+function makeEvolutionArchiveSyncPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const key = 'evolution-archive-sync:peer';
+  return { tick() {
+    sink.considered++;
+    const peer = (f.durableState.get(key) as EvolutionArchiveSyncPeer | undefined) ?? {
+      url: 'https://archive-peer.example', offset: 0, failures: 0, nextAttemptAt: 0, parked: false,
+    };
+    if (!evolutionArchiveSyncAttemptDue(peer, f.clock.nowMs())) return;
+    // Match the runtime's durable reservation-before-network ordering.
+    f.durableState.set(key, advanceEvolutionArchiveFailure(peer, f.clock.nowMs()));
+    sink.emit({ verb: 'archive-sync-retry', target: 'archive-peer' });
+    sink.emitTimesMs.push(f.clock.nowMs());
+    if (!f.targetAlwaysRejects()) f.durableState.set(key, { ...peer, failures: 0, nextAttemptAt: 0, parked: false });
+  } };
+}
 
 const evolutionActionExpirySweep: SelfActionController = {
   id: 'evolution-action-expiry-sweep',
@@ -2265,33 +2362,33 @@ const agentIdentityCoherenceDetector: SelfActionController = {
  * the lease holder: ONE attempt inside the reply request, then a durable hold
  * whose quick ladder retries from the 5 s boot tick at +10 s and +20 s (the
  * ladder state lives in the held row's `holdDetail.ladder`, restart-surviving),
- * then the EXISTING 15-minute `reserveRecoveryAttempt` schedule until the
- * operation's 6 h deadline expires it (`expireOperation`, reported once). Under
- * a holder that always refuses, one held reply therefore costs at most
- * 1 + 2 + 24 = 27 forward attempts, horizon-independent: past the deadline the
+ * then the EXISTING `reserveRecoveryAttempt` schedule (+30 s, +1 m, +2 m, +5 m,
+ * then every 15 minutes) until the operation's 6 h deadline expires it
+ * (`expireOperation`, reported once). Under a holder that always refuses, one
+ * held reply therefore costs at most 1 + 2 + 28 = 31 forward attempts, horizon-independent: past the deadline the
  * row is `expired` and nothing fires again. Real source:
  * src/messaging/telegram-origin/OriginForwardToHolder.ts (nextLadderState,
  * recoverForwardedHold) + TelegramOriginRuntime.runForwardLadder/recoverHeld.
  */
 const telegramOriginForwardLadder: SelfActionController = {
   id: 'telegram-origin-forward-ladder', actionVerb: 'retry-forward-to-holder',
-  models: 'OriginForwardToHolder.nextLadderState (two quick steps, +10 s/+20 s, persisted in holdDetail.ladder) then OriginStoreBackend.reserveRecoveryAttempt (15-min interval) until expireOperation at the 6 h deadline.',
+  models: 'OriginForwardToHolder.nextLadderState (two quick steps, +10 s/+20 s, persisted in holdDetail.ladder) then OriginStoreBackend.reserveRecoveryAttempt (30 s, 1 m, 2 m, 5 m, then 15-min intervals) until expireOperation at the 6 h deadline.',
   modelsPath: 'src/messaging/telegram-origin/OriginForwardToHolder.ts',
-  boundK: 27, perTargetBoundK: 27, ticks: 6_000, tickMs: 5_000, // 8h20m horizon > the 6 h deadline
+  boundK: 31, perTargetBoundK: 31, ticks: 6_000, tickMs: 5_000, // 8h20m horizon > the 6 h deadline
   restartPosture: { pressureSurvives: true, restartUnderPressure: makeTelegramOriginForwardLadderPressure },
   makeUnderPressure: makeTelegramOriginForwardLadderPressure,
 };
 function makeTelegramOriginForwardLadderPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
-  const LADDER_DELAYS_MS = [10_000, 20_000], SCHEDULE_MS = 15 * 60_000, DEADLINE_MS = 6 * 60 * 60_000;
+  const LADDER_DELAYS_MS = [10_000, 20_000], SCHEDULE_MS = [30_000, 60_000, 2 * 60_000, 5 * 60_000], SCHEDULE_TAIL_MS = 15 * 60_000, DEADLINE_MS = 6 * 60 * 60_000;
   return { tick() {
     sink.considered++;
     if (!f.targetAlwaysRejects()) return;
     const now = f.clock.nowMs();
     // The held row (durable): prepared at the first pressured tick; `ladder` + `nextAttemptAt` persist across reconstruction.
-    let row = f.durableState.get('origin-forward:row') as { preparedAt: number; ladderAttempts: number; nextAt: number | null; state: 'held' | 'expired' } | undefined;
+    let row = f.durableState.get('origin-forward:row') as { preparedAt: number; ladderAttempts: number; reservations: number; nextAt: number | null; state: 'held' | 'expired' } | undefined;
     if (!row) {
       sink.emit({ verb: 'retry-forward-to-holder', target: 'op-1' }); // the one in-request attempt
-      row = { preparedAt: now, ladderAttempts: 0, nextAt: now + LADDER_DELAYS_MS[0], state: 'held' };
+      row = { preparedAt: now, ladderAttempts: 0, reservations: 0, nextAt: now + LADDER_DELAYS_MS[0], state: 'held' };
       f.durableState.set('origin-forward:row', row); return;
     }
     if (row.state === 'expired') return;
@@ -2300,8 +2397,8 @@ function makeTelegramOriginForwardLadderPressure(f: PressureFixture, sink: Actio
     sink.emit({ verb: 'retry-forward-to-holder', target: 'op-1' });
     if (row.ladderAttempts < LADDER_DELAYS_MS.length) {
       row.ladderAttempts += 1; // nextLadderState
-      row.nextAt = row.ladderAttempts < LADDER_DELAYS_MS.length ? now + LADDER_DELAYS_MS[row.ladderAttempts] : now + SCHEDULE_MS; // exhausted → the 15-min schedule
-    } else row.nextAt = now + SCHEDULE_MS; // reserveRecoveryAttempt
+      row.nextAt = row.ladderAttempts < LADDER_DELAYS_MS.length ? now + LADDER_DELAYS_MS[row.ladderAttempts] : now; // exhausted → the first reservation has no schedule row to wait on
+    } else { row.nextAt = now + (SCHEDULE_MS[row.reservations] ?? SCHEDULE_TAIL_MS); row.reservations += 1; } // reserveRecoveryAttempt
     f.durableState.set('origin-forward:row', row);
   } };
 }
@@ -3843,6 +3940,61 @@ function makeRequiredAckPendingRetry(f: PressureFixture, sink: ActionSink): { ti
   };
 }
 
+/** Coverage alert delivery under a permanently failing transport. The on-disk
+ * episode timestamp is the brake and survives reconstruction. */
+const jobCoverageAlertRetry: SelfActionController = {
+  id: 'job-coverage-alert-retry',
+  actionVerb: 'retry-coverage-alert',
+  models: 'src/core/JobCoverageMonitor.ts (durable episode attempts, one-hour failed-send floor and daily delivered reminder)',
+  modelsPath: 'src/core/JobCoverageMonitor.ts',
+  delegatedGiveUp: 'operator recovery closes the episode; unresolved coverage is an eternal health signal with a one-hour minimum retry interval',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => makeJobCoverageAlertRetry(f, sink) },
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 300,
+  tickMs: 5 * 60_000,
+  eternalSentinel: { reason: 'a failing coverage alert retries no more than hourly', rateFloorMs: 60 * 60_000 },
+  makeUnderPressure: (f, sink) => makeJobCoverageAlertRetry(f, sink),
+};
+
+function makeJobCoverageAlertRetry(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered += 1;
+    const now = f.clock.nowMs();
+    const lastAttempt = f.durableState.get('coverage-alert:last-attempt') as number | undefined;
+    if (lastAttempt !== undefined && now - lastAttempt < 60 * 60_000) return;
+    f.durableState.set('coverage-alert:last-attempt', now);
+    sink.emit({ verb: 'retry-coverage-alert', target: 'operator' });
+    sink.emitTimesMs.push(now);
+  } };
+}
+
+/** A portable transfer tick selects at most twenty jobs and cannot overlap. */
+const jobPortableTransferPoll: SelfActionController = {
+  id: 'job-portable-transfer-poll',
+  actionVerb: 'retry-portable-job-batch',
+  models: 'src/core/JobCoverageMonitor.ts (five-minute non-overlapping tick, durable rotating cursor, at most twenty jobs per peer)',
+  modelsPath: 'src/core/JobCoverageMonitor.ts',
+  delegatedGiveUp: 'a revoked or unavailable peer is reported as a coverage gap; a later bounded tick retries',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => makeJobPortableTransferPoll(f, sink) },
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 200,
+  tickMs: 5 * 60_000,
+  eternalSentinel: { reason: 'portable transfer is bounded to one batch per coverage tick', rateFloorMs: 5 * 60_000 },
+  makeUnderPressure: (f, sink) => makeJobPortableTransferPoll(f, sink),
+};
+function makeJobPortableTransferPoll(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered += 1;
+    const now = f.clock.nowMs();
+    const last = f.durableState.get('portable-transfer:last-batch') as number | undefined;
+    if (last !== undefined && now - last < 5 * 60_000) return;
+    f.durableState.set('portable-transfer:last-batch', now);
+    sink.emit({ verb: 'retry-portable-job-batch', target: 'registered-peer' });
+    sink.emitTimesMs.push(now);
+  } };
+}
 /**
  * job-silence-alert — a persistent silent job keeps asking the operator for
  * attention. A durable last-attempt stamp floors failed sends at one hour;
@@ -3874,7 +4026,86 @@ const jobSilenceAlert: SelfActionController = {
   },
 };
 
+/** A retained Codex 429 pane is transitioned from running to failed before
+ * the exit notice is emitted. The persisted status is the settling brake: a
+ * monitor tick or server restart cannot emit a second notice for that run. */
+const codex429ExitNotice: SelfActionController = {
+  id: 'codex-429-exit-notice',
+  actionVerb: 'rate-limit-notify',
+  models: 'src/commands/server.ts (codexRateLimitExit listener, driven by SessionManager terminal status transition)',
+  modelsPath: 'src/commands/server.ts',
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 100,
+  tickMs: 5_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => codex429ExitNotice.makeUnderPressure(f, sink),
+  },
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered += 1;
+      if (f.durableState.get('codex-429-session-status') === 'failed') return;
+      f.durableState.set('codex-429-session-status', 'failed');
+      sink.emit({ verb: 'rate-limit-notify', target: 'codex-session:one' });
+    } };
+  },
+};
+
+function makeProfileReconciliationNotice(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  // Reload on each tick to model repeated server boots under the same busy
+  // mismatch. Only the durable episode claim survives, never a pending slot.
+  return { tick() {
+    sink.considered += 1;
+    const notices = JSON.parse(String(f.durableState.get('profile-reconciliation-notices') ?? '{}')) as Record<string, string>;
+    if (claimReconciliationNotice(notices, 'topic', 'same-unresolved-profile-mismatch')) {
+      sink.emit({ verb: 'notify-profile-mismatch', target: 'topic' });
+    }
+    f.durableState.set('profile-reconciliation-notices', JSON.stringify(notices));
+  } };
+}
+
+const profileReconciliationNotice: SelfActionController = {
+  id: 'topic-profile-reconciliation-notice',
+  actionVerb: 'notify-profile-mismatch',
+  models: 'TopicProfileOrchestrator.bootReconcileSweep → durable mismatch episode claim; busy retry carries no twin notice',
+  modelsPath: 'src/core/TopicProfileOrchestrator.ts',
+  makeUnderPressure: makeProfileReconciliationNotice,
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 1000,
+  tickMs: 60_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: makeProfileReconciliationNotice },
+};
+
+/** The standby limit-notice edge settles after one durable claim per serving
+ * UUID. Repeated tiers, inbound messages and restarts retain the claim; only
+ * an external serving reply or replacement UUID opens a different episode. */
+function makePresenceUsageNotice(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered++;
+    if (!f.targetAlwaysRejects() || f.durableState.has('presence-limit:serving-uuid')) return;
+    f.durableState.set('presence-limit:serving-uuid', true);
+    sink.emit({ verb: 'usage-limit-notify', target: 'serving-uuid' });
+  } };
+}
+const presenceUsageNotice: SelfActionController = {
+  id: 'presence-usage-limit-notice', actionVerb: 'usage-limit-notify',
+  models: 'src/monitoring/PresenceProxy.ts (sendProxyMessage: durable per-topic serving UUID claim before send; retained on ambiguous error)',
+  modelsPath: 'src/monitoring/PresenceProxy.ts',
+  boundK: 1, perTargetBoundK: 1, ticks: 720, tickMs: 60_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: makePresenceUsageNotice },
+  makeUnderPressure: makePresenceUsageNotice,
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  attributionAuditRetry,
+  presenceUsageNotice,
+  jobPortableTransferPoll,
+  jobCoverageAlertRetry,
+  profileReconciliationNotice,
+  linuxBrowserInstallRetry,
+  codex429ExitNotice,
   claudeKeySessionRefresh,
   desktopRelockGuardReplacement,
   desktopLockedHelperRespawn,
@@ -3921,6 +4152,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   subscriptionReloginRedrive,
   standDownMaintenance,
   evolutionActionExpirySweep,
+  evolutionArchiveSyncRetry,
   appMediaCapacityNotice,
   appMediaReplication,
   spendReconSweep,

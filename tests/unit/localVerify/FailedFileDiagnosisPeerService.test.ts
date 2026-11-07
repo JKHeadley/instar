@@ -1,4 +1,5 @@
 // safe-fs-allow: test fixture cleanup uses SafeFsExecutor.
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,7 +10,7 @@ import type { DiagnosisPeerRequest } from '../../../src/localVerify/failedFileDi
 
 const req: DiagnosisPeerRequest = { repo: 'JKHeadley/instar', pr: 9, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
   baseRefName: 'main', verifierVersion: 'v1', policyHash: 'c'.repeat(64), failedFiles: ['tests/unit/a.test.ts'],
-  attemptId: '1'.repeat(32), coordinatorMachineId: 'studio', leaseEpoch: 7 };
+  attemptId: randomBytes(16).toString('hex'), coordinatorMachineId: 'studio', leaseEpoch: 7 };
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) SafeFsExecutor.safeRmSync(root, { recursive: true, force: true,
   operation: 'FailedFileDiagnosisPeerService.test.ts' }); });
@@ -116,6 +117,43 @@ describe('peer failed-file diagnosis lifecycle', () => {
     expect(fs.existsSync(attempt)).toBe(false);
     expect(fs.existsSync(shortTemps)).toBe(false);
   });
+
+  for (const [rows, shouldRetire] of [[100_000, true], [500_000, false]] as const) {
+    it(`bounds real process scans: ${rows} rows ${shouldRetire ? 'retire an absent child' : 'keep an oversized scan unknown'}`, async () => {
+      const h = harness();
+      await h.peer.accept(req, ctx);
+      const statePath = path.join(h.root, 'state/local-verify/failed-file-diagnosis-peer.json');
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      state.current.pid = null;
+      fs.writeFileSync(statePath, JSON.stringify(state));
+      // Exercise the real execFile stream limits with a deterministic ps executable.
+      const bin = path.join(h.root, 'bin');
+      fs.mkdirSync(bin);
+      fs.writeFileSync(path.join(bin, 'ps'), `#!${process.execPath}\nprocess.stdout.write(' 9999 9999 /bin/sleep\\n'.repeat(${rows}));\n`, { mode: 0o700 });
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ''}`;
+      try {
+        const restarted = h.reboot();
+        await restarted.boot();
+        expect(restarted.busy()).toBe(!shouldRetire);
+        if (shouldRetire) {
+          expect(await restarted.accept(req, ctx)).toEqual({ accepted: false, reason: 'attempt-tombstoned' });
+        } else {
+          expect(restarted.result(req.attemptId)).toEqual({ state: 'running' });
+          expect(fs.existsSync(state.current.inputPath)).toBe(true);
+          expect(JSON.parse(fs.readFileSync(statePath, 'utf8')).current).toMatchObject({
+            pid: null, request: { attemptId: req.attemptId },
+          });
+          expect(await restarted.accept({ ...req, attemptId: '2'.repeat(32) }, ctx))
+            .toEqual({ accepted: false, reason: 'busy' });
+        }
+        expect(h.killed).toEqual([]);
+      } finally {
+        if (previousPath === undefined) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+      }
+    });
+  }
 
   it('retires a restart intent whose child never started or created a worktree', async () => {
     const h = harness();

@@ -44,6 +44,25 @@ afterEach(() => {
 });
 
 describe('DeliveryFailureSentinel — recovery happy path', () => {
+  it('retires quiet success without a recovered counter or follow-up message', async () => {
+    const store = PendingRelayStore.open('echo', stateDir);
+    const id = 'quiet-recorded-delivery';
+    store.enqueue({ delivery_id: id, topic_id: 42, text_hash: 'a'.repeat(64), text: 'automated notice', http_code: 503 });
+    const postReply = vi.fn(async () => ({ status: 200, body: JSON.stringify({ ok: true, delivered: false, recorded: true, quietId: 'quiet-id' }) }));
+    const sentinel = new DeliveryFailureSentinel({ store, configPath, readConfig: () => ({ port: 4042, authToken: 'tok', agentId: 'echo' }),
+      bootId: 'quiet-test', toneGate: null, postReply,
+      whoamiCache: new WhoamiCache({ fetchFn: async () => ({ agentId: 'echo', port: 4042 }) }),
+    });
+    try {
+      await sentinel.start();
+      const counters = await sentinel.tick();
+      expect(counters.recovered).toBe(0);
+      expect(store.findByDeliveryId(id)?.state).toBe('quiet-recorded');
+      expect(postReply).toHaveBeenCalledTimes(1);
+      await sentinel.tick(); expect(postReply).toHaveBeenCalledTimes(1);
+    } finally { await sentinel.stop(); store.close(); }
+  });
+
   it('delivers the oldest queued reply in a topic first after restart', async () => {
     const store = PendingRelayStore.open('echo', stateDir);
     const older = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';

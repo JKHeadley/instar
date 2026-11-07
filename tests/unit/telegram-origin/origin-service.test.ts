@@ -1,3 +1,5 @@
+import { withNotificationEnvelope } from '../../../src/messaging/notificationStampers.js';
+import { NotificationSelectivityGate, QuietRecordedError, isVerifiedJobEnvelope, verifiedInboundMirrorEnvelope, verifiedJobEnvelope, verifiedReplyEnvelope } from '../../../src/messaging/NotificationSelectivityGate.js';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHash, generateKeyPairSync } from 'node:crypto';
 import { OriginStore } from '../../../src/messaging/telegram-origin/OriginStore.js';
@@ -37,6 +39,166 @@ async function harness(hidden = false) {
   return { stateDir, store, service, input, network, send, authorize, onHold, spoolEvidence };
 }
 describe('origin service durable delivery', () => {
+  it('preserves waiting state across a signed human media mirror and completes it for the actual answer', async () => {
+    const h = await harness();
+    const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));
+    h.service.notificationGate = gate; gate.observeInbound(42, 'human-input');
+    const presence = { origin: 'automated' as const, category: 'presence-standby' as const, sourceContext: 'presence', inboundMessageId: 'human-input' };
+    try {
+      await withNotificationEnvelope(verifiedInboundMirrorEnvelope('test-admitted-human'), () => h.service.runAsAutomation('telegram-server',
+        () => h.service.sendBot({ method: 'sendPhoto', accountId: 'bot-1', params: { chat_id: '-100123', message_thread_id: 42, photo: 'file-id', caption: 'Human photo' } }, h.network)));
+      expect(h.network).toHaveBeenCalledOnce();
+      const rows = (await h.store.listOrigins()).records;
+      const record = JSON.parse(rows[0].record.envelopeJson);
+      expect(record.notification).toMatchObject({ origin: 'verified-reply', inboundMirror: true });
+      h.service.completeNotification(record);
+      expect(gate.decide(42, presence).decision).toBe('deliver');
+      await withNotificationEnvelope(verifiedReplyEnvelope('test-real-answer'), () => h.service.runAsAutomation('telegram-server',
+        () => h.service.sendBot({ ...h.input, params: { ...h.input.params, text: 'The actual answer resolves the waiting turn.' } }, h.network)));
+      expect(gate.decide(42, presence).decision).toBe('record');
+    } finally { await gate.close(); }
+  });
+  describe('per-job opt-in provenance', () => {
+    async function jobHarness(push: { jobs: Record<string, boolean>; jobTopics?: Record<string, number> }, sessionSlug?: string) {
+      const h = await harness(); const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false, push }));
+      gate.pushDestination = () => ({ chatId: String(h.input.params.chat_id), topicId: 7000 });
+      h.service.notificationGate = gate;
+      h.service.notificationJobSession = id => id === 'job-session' && !!sessionSlug;
+      h.service.notificationJobSlug = id => id === 'job-session' ? sessionSlug : undefined;
+      const token = await h.service.options.sessions.issue({ sessionId: 'job-session', harnessId: 'codex-cli', projectDir: h.stateDir });
+      h.service.options.observer.track(h.service.options.sessions.getBinding('job-session')!);
+      return { h, gate, token };
+    }
+    const sealed = async (h: Awaited<ReturnType<typeof harness>>) => JSON.parse((await h.store.listOrigins()).records[0].record.envelopeJson);
+    const claim = (slug: string) => ({ origin: 'automated' as const, category: 'job-status' as const, sourceContext: slug });
+    it('delivers an opted-in job session through the sealed record, in the topic the operator chose', async () => {
+      const topic = Number(((await harness()).input.params as { message_thread_id?: number }).message_thread_id ?? 1);
+      const { h, gate, token } = await jobHarness({ jobs: { 'instar2-checkin': true }, jobTopics: { 'instar2-checkin': topic } }, 'instar2-checkin');
+      try {
+        await h.service.runWithSessionToken(token, () => withNotificationEnvelope(claim('instar2-checkin'), () => h.service.sendBot(h.input, h.network)));
+        expect(h.network).toHaveBeenCalledOnce();
+        const record = await sealed(h);
+        expect(record.notification).toMatchObject({ category: 'job-status', sourceContext: 'instar2-checkin', verifiedJobSlug: 'instar2-checkin' });
+        expect(record.destination.topicId).toBe(String(topic));
+      } finally { await gate.close(); }
+    });
+    it('an opted-in job addressing any other topic is sent to the hub', async () => {
+      const { h, gate, token } = await jobHarness({ jobs: { 'instar2-checkin': true }, jobTopics: { 'instar2-checkin': 999 } }, 'instar2-checkin');
+      try {
+        // The fixture's canned receipt names the original topic, so a retargeted send is held after dispatch.
+        await h.service.runWithSessionToken(token, () => withNotificationEnvelope(claim('instar2-checkin'), () => h.service.sendBot(h.input, h.network))).catch(() => undefined);
+        expect(h.network).toHaveBeenCalledOnce();
+        expect((await sealed(h)).destination.topicId).toBe('7000');
+      } finally { await gate.close(); }
+    });
+    it('a job session claiming another job is named by its own session and stays quiet', async () => {
+      const { h, gate, token } = await jobHarness({ jobs: { 'instar2-checkin': true } }, 'bugs-overseer');
+      try {
+        await expect(h.service.runWithSessionToken(token, () => withNotificationEnvelope(claim('instar2-checkin'), () => h.service.sendBot(h.input, h.network)))).rejects.toBeInstanceOf(QuietRecordedError);
+        expect(h.network).not.toHaveBeenCalled();
+        expect((await sealed(h)).notification).toMatchObject({ sourceContext: 'bugs-overseer', verifiedJobSlug: 'bugs-overseer' });
+      } finally { await gate.close(); }
+    });
+    it('a claimed sealed field from a session with no scheduler job is stripped and stays quiet', async () => {
+      const { h, gate, token } = await jobHarness({ jobs: { 'instar2-checkin': true } });
+      try {
+        await expect(h.service.runWithSessionToken(token, () => withNotificationEnvelope({ ...claim('instar2-checkin'), verifiedJobSlug: 'instar2-checkin' }, () => h.service.sendBot(h.input, h.network)))).rejects.toBeInstanceOf(QuietRecordedError);
+        expect(h.network).not.toHaveBeenCalled();
+        expect((await sealed(h)).notification).not.toHaveProperty('verifiedJobSlug');
+      } finally { await gate.close(); }
+    });
+    it('a scheduler notice keeps its identity through the seal with no session', async () => {
+      const topic = Number(((await harness()).input.params as { message_thread_id?: number }).message_thread_id ?? 1);
+      const { h, gate } = await jobHarness({ jobs: { 'nightly': true }, jobTopics: { 'nightly': topic } });
+      try {
+        await withNotificationEnvelope(verifiedJobEnvelope('nightly'), () => h.service.runAsAutomation('telegram-server', () => h.service.sendBot(h.input, h.network)));
+        expect(h.network).toHaveBeenCalledOnce();
+      } finally { await gate.close(); }
+    });
+    it('restores a peer record from its sealed field, and only a job-status envelope', async () => {
+      const { h, gate } = await jobHarness({ jobs: {} });
+      try {
+        const peer = { sessionId: 'job-session', producerKind: 'session', originMachineId: 'other-machine' } as never;
+        h.service.notificationJobSlug = () => 'same-id-local-job'; // a coincident local session id must not rename a peer's job
+        const restored = h.service.restoreJobEnvelope(peer, { ...claim('a'), verifiedJobSlug: 'a', relayedOrigin: true, contextTopicId: 5 });
+        expect(isVerifiedJobEnvelope(restored)).toBe(true);
+        expect(restored?.sourceContext).toBe('a');
+        expect(restored).toMatchObject({ relayedOrigin: true, contextTopicId: 5 });
+        expect(isVerifiedJobEnvelope(h.service.restoreJobEnvelope(peer, claim('a')))).toBe(false);
+        const other = { origin: 'automated' as const, category: 'spend-alert' as const, sourceContext: 'a', verifiedJobSlug: 'a' };
+        expect(h.service.restoreJobEnvelope(peer, other)).toBe(other);
+      } finally { await gate.close(); }
+    });
+  });
+  it('preserves the existing release promotion only for a trusted upgrade session', async () => {
+    const h = await harness(); const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));
+    h.service.notificationGate = gate; h.service.notificationJobSession = () => true;
+    h.service.notificationPromotedUpgradeSession = id => id === 'approved-upgrade';
+    const token = await h.service.options.sessions.issue({ sessionId: 'approved-upgrade', harnessId: 'codex-cli', projectDir: h.stateDir });
+    h.service.options.observer.track(h.service.options.sessions.getBinding('approved-upgrade')!);
+    try {
+      await h.service.runWithSessionToken(token, () => h.service.sendBot(h.input, h.network));
+      expect(h.network).toHaveBeenCalledOnce();
+      const rows = (await h.store.listOrigins()).records;
+      expect(JSON.parse(rows[0].record.envelopeJson).notification).toMatchObject({ category: 'update-announcement', releaseAudiencePromoted: true });
+      expect(h.service.runAsAutomation('telegram-server', () => h.service.notificationForCurrentProducer())).not.toHaveProperty('releaseAudiencePromoted');
+    } finally { await gate.close(); }
+  });
+
+  it.each([
+    { enabled: true, dryRun: false, quiet: true },
+    { enabled: true, dryRun: true, quiet: false },
+    { enabled: false, dryRun: false, quiet: false },
+  ])('characterizes PR 2819 delivery-notice gating: %j', async ({ enabled, dryRun, quiet }) => {
+    const h = await harness();
+    const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled, dryRun }));
+    h.service.notificationGate = gate;
+    h.service.registerAutomationProducer('reply-delivery-notice');
+    const body = { text: 'A reply I wrote is delayed by a delivery interruption.' };
+    const token = h.service.issueAutomationReply('reply-delivery-notice', 42, body, undefined, 'reply-delivery-notice:original:delayed');
+    try {
+      const send = h.service.runWithAutomationReply(token, 42, body, () => h.service.sendBot({ ...h.input,
+        params: { ...h.input.params, text: body.text } }, h.network));
+      if (quiet) {
+        await expect(send).rejects.toBeInstanceOf(QuietRecordedError);
+        expect(h.network).not.toHaveBeenCalled();
+        expect(await h.store.recoverableAdmissions()).toEqual([]);
+      } else {
+        await send;
+        expect(h.network).toHaveBeenCalledOnce();
+      }
+    } finally { await gate.close(); }
+  });
+
+  it('terminally records quiet automation and replays its receipt after worker restart', async () => {
+    const h = await harness();
+    const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));
+    h.service.notificationGate = gate;
+    const prepared = vi.spyOn(h.service, 'prepareBot');
+    const send = (service: TelegramOriginService) => {
+      const token = service.issueAutomationReply('telegram-server', 42, { text: h.input.params.text }, undefined, 'quiet:one');
+      return service.runWithAutomationReply(token, 42, { text: h.input.params.text }, () => service.sendBot(h.input, h.network));
+    };
+    let quietId: string | undefined;
+    try { await send(h.service); throw new Error('Expected a quiet receipt'); }
+    catch (error) { expect(error).toBeInstanceOf(QuietRecordedError); quietId = (error as QuietRecordedError).receipt.quietId; }
+    expect(h.network).not.toHaveBeenCalled();
+    const rows = (await h.store.listOrigins()).records;
+    const row = await h.store.getOrigin(rows[0].record.originId);
+    expect(row?.operation).toMatchObject({ state: 'suppressed', holdReason: 'quiet-notification-recorded', holdDetail: { quietId } });
+    expect(await h.store.recoverableAdmissions()).toEqual([]);
+    const route = vi.spyOn(gate, 'route').mockRejectedValueOnce(new Error('Must not reclassify terminal quiet receipt'));
+    await expect(h.service.executePreparedBot(prepared.mock.results[0].value, h.network)).rejects.toBeInstanceOf(QuietRecordedError);
+    expect(route).not.toHaveBeenCalled(); route.mockRestore();
+    await h.store.close();
+    const store = await OriginStore.open({ stateDir: h.stateDir, agentId: 'echo' }, worker); stores.push(store);
+    const restarted = new TelegramOriginService({ ...h.service.options, store, ownerBootId: 'boot-2' });
+    restarted.notificationGate = gate;
+    await expect(send(restarted)).rejects.toMatchObject({ receipt: { recorded: true, quietId } });
+    expect(h.network).not.toHaveBeenCalled();
+    await gate.close();
+  });
+
   it('replays an accepted logical automation send after worker restart without preparing new delivery custody', async () => {
     const h = await harness();
     const send = (service: TelegramOriginService, logicalId: string, input = h.input) => {

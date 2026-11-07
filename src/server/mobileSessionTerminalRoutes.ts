@@ -13,8 +13,13 @@
  * re-checks the owner, resolves the name to exactly one session record running on THIS machine
  * (tmux name, then id, then name; ambiguous → 409), refuses control characters in typed text,
  * reads the pane without blocking the event loop, and logs every typed message without its text.
- * A session that is not here is named from this machine's registry when a peer lists it; it is
- * never proxied.
+ *
+ * The session controls (docs/specs/mobile-native-session-controls.md) add a keys route and device
+ * access to the dashboard's attachment route, and a hop to another machine: a request that names
+ * another machine goes from here to that machine's `/mobile/sessions/relay/...` routes with the pool
+ * token (the way the dashboard's stream and History already reach it). That machine resolves the
+ * session, removes its own secrets and applies its own rule about typing from another machine. A peer
+ * without those routes answers as before, so a mixed pool never types through a weaker path.
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -46,6 +51,37 @@ export const SESSION_REPLACED_REASON = 'This session ended and a new one took it
 export const INPUT_BUSY_REASON = 'Too many messages were typed from phones in the last minute. Wait a moment and send again.';
 /** Device inputs per minute across ALL phones on this machine (each holds the event loop briefly). */
 export const DEVICE_INPUT_MACHINE_PER_MINUTE = 12;
+/** The keys tray, exactly as the console's: nothing else reaches tmux from a phone. */
+export const DEVICE_KEYS: ReadonlySet<string> = new Set(['Enter', 'y', 'n', 'Escape', 'Up', 'Down', 'Left', 'Right', 'C-c']);
+/** Key presses per minute across all phones on this machine. A person works through a menu with several. */
+export const DEVICE_KEY_MACHINE_PER_MINUTE = 60;
+/** Attached file bytes per rolling hour on one machine, phones only: the console's route has no such limit, but a phone's key is not a console. */
+export const DEVICE_ATTACH_BYTES_PER_HOUR = 200 * 1024 * 1024;
+export const ATTACH_BUSY_REASON = 'A lot of files were attached from phones in the last hour. Wait a while and try again.';
+
+/** The rolling hour of attached bytes. Counted as bytes once decoded. */
+export class AttachmentWindow {
+  private rows: Array<{ at: number; bytes: number }> = [];
+  constructor(private readonly now: () => number = Date.now, private readonly limit = DEVICE_ATTACH_BYTES_PER_HOUR) {}
+  admit(base64Chars: number): boolean {
+    const t = this.now();
+    const bytes = Math.floor(base64Chars * 3 / 4);
+    this.rows = this.rows.filter((x) => t - x.at < 3_600_000);
+    if (this.rows.reduce((sum, x) => sum + x.bytes, 0) + bytes > this.limit) return false;
+    this.rows.push({ at: t, bytes });
+    return true;
+  }
+}
+export const BAD_KEY_REASON = 'That key cannot be sent from the phone.';
+export const REMOTE_INPUT_OFF_REASON = 'Typing into sessions from another machine is switched off on that machine. To type to it, move this session to this machine from its menu.';
+
+/** A session on a machine that has not updated yet: it can't be opened through this one. */
+export function peerTooOldReason(nickname: string | null): string {
+  return `${nickname ?? 'That machine'} needs the latest Instar update before this phone can open its sessions. It updates by itself soon. To open it now, move it to this machine from its menu.`;
+}
+export function peerUnreachableReason(nickname: string | null): string {
+  return `${nickname ?? 'That machine'} isn't answering right now. It will keep trying.`;
+}
 
 /** The answer for a request bound to another machine: it repeats the phone's own claim. */
 export function requestedMachineReason(nickname: string | null): string {
@@ -63,6 +99,20 @@ export function redactForDevice(text: string, secrets: ReadonlyArray<string | nu
   const vals = [...new Set(secrets.filter((v): v is string => typeof v === 'string' && v.length >= 4))].sort((a, b) => b.length - a.length);
   for (const v of vals) out = out.split(v).join('[redacted]');
   return out;
+}
+
+/**
+ * Fields that name something rather than say something: ids, times, a saved path, a route's binding. A short
+ * numeric PIN can appear inside one by chance, and rewriting it would break what the phone does with it.
+ */
+const REDACT_EXEMPT_KEYS: ReadonlySet<string> = new Set(['path', 'confirmationChallenge', 'sessionId', 'session', 'tmuxSession', 'at', 'startedAt', 'generatedAt', 'error']);
+
+/** The same removal over a whole answer: string values only, so an answer's shape and its numbers stay as they were. */
+export function redactDeep<T>(value: T, secrets: ReadonlyArray<string | null | undefined>): T {
+  if (typeof value === 'string') return redactForDevice(value, secrets) as unknown as T;
+  if (Array.isArray(value)) return value.map((v) => redactDeep(v, secrets)) as unknown as T;
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, REDACT_EXEMPT_KEYS.has(k) ? v : redactDeep(v, secrets)])) as T;
+  return value;
 }
 export const REPLAY_REASON = 'This exact request was already received, so it was not typed in again.';
 export const REPLAY_RECORD_REASON = 'The agent could not record this request safely, so it was not typed in. Try again in a moment.';
@@ -147,6 +197,15 @@ export interface MobileSessionTerminalDeps {
   selfMachineId(): string | null;
   /** Values to redact from device output (the API token and dashboard PIN), read per request. */
   secrets(): Array<string | null | undefined>;
+  /** One press of a named key (SessionManager.sendKey), the console's own path. */
+  sendKey?(tmuxSession: string, key: string): boolean;
+  /**
+   * Call a route on another machine with the pool token. null when it can't be reached. Absent (or a
+   * single-machine install): a session elsewhere is named, as before.
+   */
+  relayToPeer?(machineId: string, method: 'GET' | 'POST', path: string, body?: unknown): Promise<{ status: number; body: unknown } | null>;
+  /** This machine's rule about typing into its sessions from another machine (dashboard.poolStream.allowRemoteInput). */
+  allowRemoteInput?(): boolean;
   /** The durable replay record for device input (defaults to <stateDir>/state/mobile-session-input-replay.json). */
   replayRecord?: DeviceInputReplayRecord;
   stateDir: string;
@@ -154,6 +213,8 @@ export interface MobileSessionTerminalDeps {
 }
 
 type Principal = { kind: string; deviceId?: string };
+/** A request the router will act on. `relayTo`: the machine it goes to instead of this one. */
+interface DeviceGate { deviceId: string; name: string; local: boolean; sid: string; relayTo?: string }
 const principalOf = (req: Request): Principal => ((req as unknown as { instarPrincipal?: Principal }).instarPrincipal) ?? { kind: 'token' };
 
 /**
@@ -227,7 +288,32 @@ export function createMobileSessionTerminalRouter(deps: MobileSessionTerminalDep
   const inFlight = new Map<string, Promise<MissAnswer>>();
   const missNames = new Map<string, Array<{ at: number; name: string }>>();
   let machineInputs: number[] = [];
+  let machineKeys: number[] = [];
+  const attachments = new AttachmentWindow(now);
   const replayRecord = deps.replayRecord ?? new DeviceInputReplayRecord(path.join(deps.stateDir, 'state', 'mobile-session-input-replay.json'), now);
+
+  /** Durable replay record, written before anything happens (the verifier's set is in memory). False = answered. */
+  function admitReplay(req: Request, res: Response, g: DeviceGate): boolean {
+    const raw = (req as unknown as { rawBody?: Buffer }).rawBody;
+    const digest = DeviceInputReplayRecord.digest(canonicalString(g.deviceId, deviceAdmittedHost(req) ?? '', req.method, req.originalUrl, String(req.headers['x-instar-device-time'] ?? ''), raw));
+    const admitted = replayRecord.admit(digest);
+    if (admitted === 'replay') { res.status(409).json({ error: 'replay', reason: REPLAY_REASON }); return false; }
+    if (admitted === 'unavailable') { res.status(503).json({ error: 'replay-record-unavailable', reason: REPLAY_RECORD_REASON }); return false; }
+    return true;
+  }
+
+  function audit(req: Request, g: DeviceGate, row: Record<string, unknown>): void {
+    const person = devicePersonOf(req);
+    appendInputAudit(deps.stateDir, { at: new Date(now()).toISOString(), deviceId: g.deviceId, role: person?.role ?? null, userId: person?.userId ?? null, ...row });
+  }
+
+  function keyWindowOk(): boolean {
+    const t = now();
+    machineKeys = machineKeys.filter((x) => t - x < 60_000);
+    if (machineKeys.length >= DEVICE_KEY_MACHINE_PER_MINUTE) return false;
+    machineKeys.push(t);
+    return true;
+  }
 
   /** One fan-out per name per cache window (15 s found elsewhere, 3 s otherwise), shared by concurrent callers; per-device name cap. */
   async function missAnswer(deviceId: string, name: string): Promise<MissAnswer> {
@@ -260,7 +346,7 @@ export function createMobileSessionTerminalRouter(deps: MobileSessionTerminalDep
   }
 
   /** The common device checks; null when the request was answered (or passed on). */
-  function deviceGate(req: Request, res: Response, next: NextFunction): { deviceId: string; name: string; local: boolean; sid: string } | null {
+  function deviceGate(req: Request, res: Response, next: NextFunction): DeviceGate | null {
     const p = principalOf(req);
     if (p.kind !== 'device') { next(); return null; }
     res.setHeader('Cache-Control', 'no-store');
@@ -271,6 +357,12 @@ export function createMobileSessionTerminalRouter(deps: MobileSessionTerminalDep
     // Machine binding: a row from another machine never resolves against this machine's records.
     const machine = typeof req.query.machine === 'string' ? req.query.machine : '';
     const self = deps.selfMachineId();
+    // A write that names a machine runs there or not at all. With no mesh id here, that machine can't be reached,
+    // and a same-named session on this machine is a different session.
+    if (machine && !self && req.method !== 'GET') { res.status(404).json({ error: 'session-on-other-machine', reason: requestedMachineReason(null), ownerMachine: { machineId: machine, nickname: null } }); return null; }
+    if (machine && self && machine !== self && deps.relayToPeer) {
+      return { deviceId: p.deviceId ?? '', name, local: false, sid: typeof req.query.sid === 'string' ? req.query.sid : '', relayTo: machine };
+    }
     if (machine && self && machine !== self) {
       const nick = verifiedEntityName(machine, deps.nicknameOf(machine)) ?? null;
       res.status(404).json({ error: 'session-on-other-machine', reason: requestedMachineReason(nick), ownerMachine: { machineId: machine, nickname: nick } });
@@ -280,7 +372,38 @@ export function createMobileSessionTerminalRouter(deps: MobileSessionTerminalDep
     return { deviceId: p.deviceId ?? '', name, local: !!machine && machine === self, sid };
   }
 
-  async function resolveOrAnswer(res: Response, g: { deviceId: string; name: string; local: boolean; sid: string }): Promise<SessionRecordLike | null> {
+  /**
+   * Send the phone's request on to the machine it named, and answer the phone with what came back. A
+   * machine that doesn't know the relay routes is too old (nothing happened there); one that doesn't
+   * answer is a moment's trouble, so the phone keeps trying.
+   */
+  async function relay(res: Response, g: DeviceGate, method: 'GET' | 'POST', path: string, body: unknown, transform: (b: Record<string, unknown>) => Record<string, unknown> = (b) => b): Promise<number | null> {
+    const machine = g.relayTo as string;
+    const nick = verifiedEntityName(machine, deps.nicknameOf(machine)) ?? null;
+    let answer: { status: number; body: unknown } | null = null;
+    try { answer = await deps.relayToPeer!(machine, method, path, body); } catch { answer = null; } // @silent-fallback-ok — answered as not answering, below
+    if (!answer) { res.status(503).json({ error: 'peer-unreachable', reason: peerUnreachableReason(nick) }); return null; }
+    const b = answer.body && typeof answer.body === 'object' && !Array.isArray(answer.body) ? answer.body as Record<string, unknown> : null;
+    // The other machine refusing the pool token is its trouble, never this phone being signed out.
+    if (answer.status === 401 || answer.status === 403) { res.status(503).json({ error: 'peer-unreachable', reason: peerUnreachableReason(nick) }); return null; }
+    const unknownRoute = answer.status === 404 && (!b || typeof b.error !== 'string' || !/^session/i.test(b.error));
+    if (!b || unknownRoute) {
+      res.status(404).json({ error: 'session-on-other-machine', reason: peerTooOldReason(nick), ownerMachine: { machineId: machine, nickname: nick }, peerTooOld: true });
+      return null;
+    }
+    let secrets: Array<string | null | undefined> = [];
+    try { secrets = deps.secrets(); } catch { secrets = []; } // @silent-fallback-ok — the sig= rewrite still applies
+    // This machine removes its own secrets too: the two machines' PINs need not match.
+    res.status(answer.status).json(redactDeep(transform(b), secrets));
+    return answer.status;
+  }
+
+  const relayQuery = (g: DeviceGate, more: string[] = []): string => {
+    const q = [...more, ...(g.sid ? [`sid=${encodeURIComponent(g.sid)}`] : [])];
+    return q.length ? `?${q.join('&')}` : '';
+  };
+
+  async function resolveOrAnswer(res: Response, g: DeviceGate): Promise<SessionRecordLike | null> {
     const { deviceId, name } = g;
     let records: SessionRecordLike[] = [];
     try { records = deps.listSessions(); } catch { records = []; } // @silent-fallback-ok — an unreadable registry is a miss
@@ -299,10 +422,15 @@ export function createMobileSessionTerminalRouter(deps: MobileSessionTerminalDep
   router.get('/sessions/:name/output', async (req: Request, res: Response, next: NextFunction) => {
     const g = deviceGate(req, res, next);
     if (!g) return;
-    const s = await resolveOrAnswer(res, g);
-    if (!s) return;
     const raw = parseInt(String(req.query.lines ?? ''), 10);
     const lines = Number.isFinite(raw) ? Math.min(Math.max(raw, 1), DEVICE_OUTPUT_MAX_LINES) : DEVICE_OUTPUT_DEFAULT_LINES;
+    if (g.relayTo) {
+      const nick = verifiedEntityName(g.relayTo, deps.nicknameOf(g.relayTo)) ?? null;
+      await relay(res, g, 'GET', `/mobile/sessions/relay/${encodeURIComponent(g.name)}/output${relayQuery(g, [`lines=${lines}`])}`, undefined, (b) => ({ ...b, machineNickname: nick }));
+      return;
+    }
+    const s = await resolveOrAnswer(res, g);
+    if (!s) return;
     let output: string | null = null;
     try { output = await deps.captureOutputAsync(s.tmuxSession, lines); } catch { output = null; } // @silent-fallback-ok — an unreadable pane answers not running
     if (output === null) { res.status(404).json({ error: 'session-not-running', reason: NOT_RUNNING_REASON }); return; }
@@ -318,27 +446,151 @@ export function createMobileSessionTerminalRouter(deps: MobileSessionTerminalDep
     if (typeof text !== 'string' || text.length === 0) { res.status(400).json({ error: 'bad-text', reason: 'Type something to send.' }); return; }
     if (text.length > DEVICE_INPUT_MAX) { res.status(400).json({ error: 'bad-text', reason: `Up to ${DEVICE_INPUT_MAX} characters can be sent at once.` }); return; }
     if (!isPlainDeviceText(text)) { res.status(400).json({ error: 'bad-text', reason: BAD_TEXT_REASON }); return; }
+    if (g.relayTo) {
+      if (!admitReplay(req, res, g)) return;
+      const status = await relay(res, g, 'POST', `/mobile/sessions/relay/${encodeURIComponent(g.name)}/input${relayQuery(g)}`, { text });
+      if (status !== null && status >= 200 && status < 300) audit(req, g, { machineId: g.relayTo, tmuxSession: g.name, textLength: text.length });
+      return;
+    }
     const s = await resolveOrAnswer(res, g);
     if (!s) return;
     // One machine-wide window across all phones. sendInput is synchronous, so sends never overlap.
     const tNow = now();
     machineInputs = machineInputs.filter((x) => tNow - x < 60_000);
     if (machineInputs.length >= DEVICE_INPUT_MACHINE_PER_MINUTE) { res.status(429).json({ error: 'too-many-requests', reason: INPUT_BUSY_REASON }); return; }
-    // Durable replay record, written before anything is typed (the verifier's set is in memory).
-    const raw = (req as unknown as { rawBody?: Buffer }).rawBody;
-    const digest = DeviceInputReplayRecord.digest(canonicalString(g.deviceId, deviceAdmittedHost(req) ?? '', req.method, req.originalUrl, String(req.headers['x-instar-device-time'] ?? ''), raw));
-    const admitted = replayRecord.admit(digest);
-    if (admitted === 'replay') { res.status(409).json({ error: 'replay', reason: REPLAY_REASON }); return; }
-    if (admitted === 'unavailable') { res.status(503).json({ error: 'replay-record-unavailable', reason: REPLAY_RECORD_REASON }); return; }
+    if (!admitReplay(req, res, g)) return;
     machineInputs.push(tNow);
     let ok = false;
     try { ok = deps.sendInput(s.tmuxSession, text); } catch { ok = false; } // @silent-fallback-ok — answered as send-failed
     if (!ok) { res.status(409).json({ error: 'send-failed', reason: SEND_FAILED_REASON }); return; }
-    const person = devicePersonOf(req);
-    appendInputAudit(deps.stateDir, {
-      at: new Date(now()).toISOString(), deviceId: g.deviceId, role: person?.role ?? null, userId: person?.userId ?? null,
-      sessionId: s.id, tmuxSession: s.tmuxSession, textLength: text.length,
-    });
+    audit(req, g, { sessionId: s.id, tmuxSession: s.tmuxSession, textLength: text.length });
+    res.json({ ok: true });
+  });
+
+  // The keys tray. Conversation use, like typing: signed by an owner phone. Not a Bearer route: the
+  // console sends keys over its WebSocket, so a Bearer request falls through to a plain 404.
+  router.post('/sessions/:name/key', async (req: Request, res: Response, next: NextFunction) => {
+    const g = deviceGate(req, res, next);
+    if (!g) return;
+    const key = (req.body ?? {}).key;
+    if (typeof key !== 'string' || !DEVICE_KEYS.has(key)) { res.status(400).json({ error: 'bad-key', reason: BAD_KEY_REASON }); return; }
+    if (g.relayTo) {
+      if (!admitReplay(req, res, g)) return;
+      const status = await relay(res, g, 'POST', `/mobile/sessions/relay/${encodeURIComponent(g.name)}/key${relayQuery(g)}`, { key });
+      if (status !== null && status >= 200 && status < 300) audit(req, g, { machineId: g.relayTo, tmuxSession: g.name, key });
+      return;
+    }
+    const s = await resolveOrAnswer(res, g);
+    if (!s) return;
+    if (!keyWindowOk()) { res.status(429).json({ error: 'too-many-requests', reason: INPUT_BUSY_REASON }); return; }
+    if (!admitReplay(req, res, g)) return;
+    let ok = false;
+    try { ok = deps.sendKey ? deps.sendKey(s.tmuxSession, key) : false; } catch { ok = false; } // @silent-fallback-ok — answered as send-failed
+    if (!ok) { res.status(409).json({ error: 'send-failed', reason: SEND_FAILED_REASON }); return; }
+    audit(req, g, { sessionId: s.id, tmuxSession: s.tmuxSession, key });
+    res.json({ ok: true });
+  });
+
+  // Attaching a file: the dashboard's own route saves it (next()), once this router has resolved the
+  // session the phone meant. On another machine it goes to that machine's same route, so the file lands
+  // on the disk the session can read. Conversation use, like typing: signed by an owner phone.
+  router.post('/sessions/:name/attachments', async (req: Request, res: Response, next: NextFunction) => {
+    const g = deviceGate(req, res, next);
+    if (!g) return;
+    const size = typeof (req.body ?? {}).dataBase64 === 'string' ? (req.body.dataBase64 as string).length : 0;
+    if (g.relayTo) {
+      if (!attachments.admit(size)) { res.status(429).json({ error: 'too-many-requests', reason: ATTACH_BUSY_REASON }); return; }
+      const status = await relay(res, g, 'POST', `/mobile/sessions/relay/${encodeURIComponent(g.name)}/attachments${relayQuery(g)}`, { filename: req.body?.filename, dataBase64: req.body?.dataBase64 });
+      if (status !== null && status >= 200 && status < 300) audit(req, g, { machineId: g.relayTo, tmuxSession: g.name, attachmentBase64Chars: size });
+      return;
+    }
+    const s = await resolveOrAnswer(res, g);
+    if (!s) return;
+    if (s.tmuxSession !== g.name) { res.status(409).json({ error: 'ambiguous-session', reason: 'Open this session from the sessions list and attach it again.' }); return; }
+    if (!attachments.admit(size)) { res.status(429).json({ error: 'too-many-requests', reason: ATTACH_BUSY_REASON }); return; }
+    audit(req, g, { sessionId: s.id, tmuxSession: s.tmuxSession, attachmentBase64Chars: size });
+    next();
+  });
+
+  // ── The other side of the hop: the machine that runs the session ─────────────────
+  // Pool token only (no phone rule lists these, so a phone gets 403 device-not-allowed). The same
+  // resolver and redaction as the phone's routes, on this machine's own records and secrets.
+  const relayGate = (req: Request, res: Response): DeviceGate | null => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (principalOf(req).kind !== 'token') { res.status(403).json({ error: 'pool-token-required' }); return null; }
+    const name = req.params.name;
+    if (typeof name !== 'string' || !DEVICE_SESSION_NAME_RE.test(name)) { res.status(400).json({ error: 'bad-session-name' }); return null; }
+    // `local`: a same-named session elsewhere is another session, and the asking machine named this one.
+    return { deviceId: 'pool', name, local: true, sid: typeof req.query.sid === 'string' ? req.query.sid : '' };
+  };
+
+  router.get('/mobile/sessions/relay/:name/state', (req: Request, res: Response) => {
+    if (!relayGate(req, res)) return;
+    res.json({ inputAllowed: deps.allowRemoteInput ? deps.allowRemoteInput() : false, keysSupported: !!deps.sendKey });
+  });
+
+  router.get('/mobile/sessions/relay/:name/output', async (req: Request, res: Response) => {
+    const g = relayGate(req, res);
+    if (!g) return;
+    const s = await resolveOrAnswer(res, g);
+    if (!s) return;
+    const raw = parseInt(String(req.query.lines ?? ''), 10);
+    const lines = Number.isFinite(raw) ? Math.min(Math.max(raw, 1), DEVICE_OUTPUT_MAX_LINES) : DEVICE_OUTPUT_DEFAULT_LINES;
+    let output: string | null = null;
+    try { output = await deps.captureOutputAsync(s.tmuxSession, lines); } catch { output = null; } // @silent-fallback-ok — an unreadable pane answers not running
+    if (output === null) { res.status(404).json({ error: 'session-not-running', reason: NOT_RUNNING_REASON }); return; }
+    let secrets: Array<string | null | undefined> = [];
+    try { secrets = deps.secrets(); } catch { secrets = []; } // @silent-fallback-ok — the sig= rewrite still applies
+    res.json({ session: s.name, sessionId: s.id, tmuxSession: s.tmuxSession, output: redactForDevice(output, secrets), startedAt: s.startedAt ?? null, machineNickname: deps.selfNickname() });
+  });
+
+  router.post('/mobile/sessions/relay/:name/input', async (req: Request, res: Response) => {
+    const g = relayGate(req, res);
+    if (!g) return;
+    if (!deps.allowRemoteInput?.()) { res.status(409).json({ error: 'input-not-allowed', reason: REMOTE_INPUT_OFF_REASON }); return; }
+    const text = (req.body ?? {}).text;
+    if (typeof text !== 'string' || text.length === 0 || text.length > DEVICE_INPUT_MAX || !isPlainDeviceText(text)) { res.status(400).json({ error: 'bad-text', reason: BAD_TEXT_REASON }); return; }
+    const s = await resolveOrAnswer(res, g);
+    if (!s) return;
+    const tNow = now();
+    machineInputs = machineInputs.filter((x) => tNow - x < 60_000);
+    if (machineInputs.length >= DEVICE_INPUT_MACHINE_PER_MINUTE) { res.status(429).json({ error: 'too-many-requests', reason: INPUT_BUSY_REASON }); return; }
+    machineInputs.push(tNow);
+    let ok = false;
+    try { ok = deps.sendInput(s.tmuxSession, text); } catch { ok = false; } // @silent-fallback-ok — answered as send-failed
+    if (!ok) { res.status(409).json({ error: 'send-failed', reason: SEND_FAILED_REASON }); return; }
+    appendInputAudit(deps.stateDir, { at: new Date(now()).toISOString(), via: 'peer-relay', sessionId: s.id, tmuxSession: s.tmuxSession, textLength: text.length });
+    res.json({ ok: true });
+  });
+
+  // The file reaches the same dashboard handler a phone here reaches, under this machine's own rule:
+  // a file is only useful with the message that names it, which that rule would refuse.
+  router.post('/mobile/sessions/relay/:name/attachments', async (req: Request, res: Response, next: NextFunction) => {
+    const g = relayGate(req, res);
+    if (!g) return;
+    if (!deps.allowRemoteInput?.()) { res.status(409).json({ error: 'input-not-allowed', reason: REMOTE_INPUT_OFF_REASON }); return; }
+    const s = await resolveOrAnswer(res, g);
+    if (!s) return;
+    const size = typeof (req.body ?? {}).dataBase64 === 'string' ? (req.body.dataBase64 as string).length : 0;
+    if (!attachments.admit(size)) { res.status(429).json({ error: 'too-many-requests', reason: ATTACH_BUSY_REASON }); return; }
+    appendInputAudit(deps.stateDir, { at: new Date(now()).toISOString(), via: 'peer-relay', sessionId: s.id, tmuxSession: s.tmuxSession, attachmentBase64Chars: size });
+    req.url = `/sessions/${encodeURIComponent(s.tmuxSession)}/attachments`;
+    next();
+  });
+
+  router.post('/mobile/sessions/relay/:name/key', async (req: Request, res: Response) => {
+    const g = relayGate(req, res);
+    if (!g) return;
+    if (!deps.allowRemoteInput?.()) { res.status(409).json({ error: 'input-not-allowed', reason: REMOTE_INPUT_OFF_REASON }); return; }
+    const key = (req.body ?? {}).key;
+    if (typeof key !== 'string' || !DEVICE_KEYS.has(key)) { res.status(400).json({ error: 'bad-key', reason: BAD_KEY_REASON }); return; }
+    const s = await resolveOrAnswer(res, g);
+    if (!s) return;
+    if (!keyWindowOk()) { res.status(429).json({ error: 'too-many-requests', reason: INPUT_BUSY_REASON }); return; }
+    let ok = false;
+    try { ok = deps.sendKey ? deps.sendKey(s.tmuxSession, key) : false; } catch { ok = false; } // @silent-fallback-ok — answered as send-failed
+    if (!ok) { res.status(409).json({ error: 'send-failed', reason: SEND_FAILED_REASON }); return; }
+    appendInputAudit(deps.stateDir, { at: new Date(now()).toISOString(), via: 'peer-relay', sessionId: s.id, tmuxSession: s.tmuxSession, key });
     res.json({ ok: true });
   });
 

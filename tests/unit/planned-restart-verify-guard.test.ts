@@ -8,7 +8,10 @@ import {
   markPlannedRestartDeferred,
   recentlyRequestedPlannedRestart,
   PLANNED_RESTART_DELIVERY_MS,
+  PEER_RESTART_HOLD_MS,
   VERIFY_RESTART_HOLD_MS,
+  peerHoldPath,
+  plannedRestartBypassesHolds,
 } from '../../src/core/PlannedRestartVerifyGuard.js';
 import { ForegroundRestartWatcher } from '../../src/core/ForegroundRestartWatcher.js';
 import { ServerSupervisor } from '../../src/lifeline/ServerSupervisor.js';
@@ -160,5 +163,88 @@ describe('planned restart / local verify coordination', () => {
     (supervisor as unknown as { checkRestartRequest(): void }).checkRestartRequest();
     expect(restart).not.toHaveBeenCalled();
     expect(fs.existsSync(flagPath())).toBe(false);
+  });
+});
+
+describe('planned restart / accepted peer attempts', () => {
+  let dir: string;
+  const NOW = Date.parse('2026-11-05T18:00:00.000Z');
+  const flag = (requestedAt = NOW) => ({
+    requestedAt: new Date(requestedAt).toISOString(), requestedBy: 'update', plannedRestart: true,
+    expiresAt: new Date(requestedAt + 60 * 60_000).toISOString(),
+  });
+  const beat = (o: { writtenAt?: unknown; sentAt?: unknown; raw?: string; v?: unknown; attempts?: unknown } = {}) => {
+    fs.mkdirSync(path.dirname(peerHoldPath(dir)), { recursive: true });
+    fs.writeFileSync(peerHoldPath(dir), o.raw ?? JSON.stringify({
+      v: o.v ?? 1, writtenAt: 'writtenAt' in o ? o.writtenAt : NOW, leaseEpoch: 7,
+      attempts: o.attempts ?? [{ attemptId: 'a', pr: 1, sentAt: 'sentAt' in o ? o.sentAt : NOW - 60_000, lastPollOkAt: NOW }],
+    }));
+  };
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'planned-restart-peer-')); fs.mkdirSync(path.join(dir, 'state'), { recursive: true }); });
+  afterEach(() => { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'planned-restart-verify-guard.test.ts' }); });
+
+  it('holds until sentAt + 21 minutes and not past it', () => {
+    const sentAt = NOW - 5 * 60_000;
+    beat({ sentAt });
+    expect(plannedRestartVerifyState(dir, flag(), NOW)).toMatchObject({ hold: true, holdUntilMs: sentAt + PEER_RESTART_HOLD_MS });
+    beat({ sentAt: NOW - PEER_RESTART_HOLD_MS });
+    expect(plannedRestartVerifyState(dir, flag(), NOW).hold).toBe(false);
+  });
+
+  it('takes the latest of several attempts', () => {
+    beat({ attempts: [{ sentAt: NOW - 10 * 60_000 }, { sentAt: NOW - 60_000 }, { sentAt: 'nope' }, null] });
+    expect(plannedRestartVerifyState(dir, flag(), NOW).holdUntilMs).toBe(NOW - 60_000 + PEER_RESTART_HOLD_MS);
+  });
+
+  it('trusts a heartbeat up to 90 seconds old and no further', () => {
+    for (const [age, hold] of [[31_000, true], [89_000, true], [91_000, false]] as const) {
+      beat({ writtenAt: NOW - age });
+      expect(plannedRestartVerifyState(dir, flag(), NOW).hold).toBe(hold);
+    }
+  });
+
+  it('a missing, malformed, future or wrong-version heartbeat never defers', () => {
+    expect(plannedRestartVerifyState(dir, flag(), NOW).hold).toBe(false);
+    for (const bad of [{ raw: '{not json' }, { raw: 'null' }, { writtenAt: NOW + 60_000 }, { writtenAt: 'soon' }, { v: 2 }, { attempts: [] }, { sentAt: NOW + 60_000 }]) {
+      beat(bad);
+      expect(plannedRestartVerifyState(dir, flag(), NOW).hold).toBe(false);
+    }
+  });
+
+  it('an explicit bypass ignores the peer hold', () => {
+    beat();
+    expect(plannedRestartVerifyState(dir, { ...flag(), bypassHolds: true }, NOW)).toMatchObject({ pending: true, hold: false });
+  });
+
+  it('with a live local child the later bound wins, capped at the request ceiling', () => {
+    const local = (startedAt: number) => {
+      fs.writeFileSync(path.join(dir, 'state', 'local-verify', 'inflight.json'), JSON.stringify({ pr: 1, headSha: 'a'.repeat(40), attemptToken: 't', startedAt, pid: process.pid, pgid: process.pid }));
+    };
+    const sentAt = NOW - 60_000;
+    beat({ sentAt });
+    local(NOW - VERIFY_RESTART_HOLD_MS + 60_000); // local bound is one minute away, the peer's is later
+    expect(plannedRestartVerifyState(dir, flag(), NOW).holdUntilMs).toBe(sentAt + PEER_RESTART_HOLD_MS);
+    local(NOW - 1_000); // local bound is later, but the request only has its own three hours
+    const requestedAt = NOW - 2 * 60 * 60_000;
+    expect(plannedRestartVerifyState(dir, flag(requestedAt), NOW).holdUntilMs).toBe(requestedAt + VERIFY_RESTART_HOLD_MS);
+  });
+
+  it('a request that reaches its three-hour ceiling stops waiting, and a peer hold never outlasts it', () => {
+    beat();
+    expect(plannedRestartVerifyState(dir, flag(NOW - VERIFY_RESTART_HOLD_MS), NOW).hold).toBe(false);
+    const requestedAt = NOW - VERIFY_RESTART_HOLD_MS + 60_000;
+    expect(plannedRestartVerifyState(dir, flag(requestedAt), NOW).holdUntilMs).toBe(requestedAt + VERIFY_RESTART_HOLD_MS);
+  });
+
+  it('marks a peer-only hold as deferred so the request keeps its delivery window', () => {
+    beat();
+    expect(markPlannedRestartDeferred(dir, flag(), NOW)).toBe(true);
+    expect(recentlyRequestedPlannedRestart(dir, flag(), NOW)).toBe(true);
+  });
+
+  it('reports an explicit bypass on the pending request', () => {
+    expect(plannedRestartBypassesHolds(dir)).toBe(false);
+    fs.writeFileSync(path.join(dir, 'state', 'restart-requested.json'), JSON.stringify({ ...flag(), bypassHolds: true }));
+    expect(plannedRestartBypassesHolds(dir)).toBe(true);
   });
 });

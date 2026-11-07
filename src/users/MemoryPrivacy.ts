@@ -66,6 +66,8 @@ export interface SessionTokenRecord {
   sessionId: string;
   audience: MemoryAudience;
   placeKey: string | null;
+  /** A reply from this session reached a person. Kept with the token so a restart does not lose it. */
+  replied?: boolean;
 }
 
 interface PersistedState {
@@ -405,6 +407,19 @@ export class MemoryPrivacy {
   sessionForToken(token: string): SessionTokenRecord | null {
     if (!token.startsWith('mps_')) return null;
     return this.state.tokens[hashToken(token)] ?? null;
+  }
+
+  /** Note that this session's reply went out, once per session. */
+  noteSessionReply(sessionId: string): void {
+    let changed = false;
+    for (const record of Object.values(this.state.tokens)) {
+      if (record.sessionId === sessionId && !record.replied) { record.replied = true; changed = true; }
+    }
+    if (changed) this.save();
+  }
+
+  sessionReplied(sessionId: string): boolean {
+    return Object.values(this.state.tokens).some(r => r.sessionId === sessionId && r.replied === true);
   }
 
   revokeSessionTokens(sessionId: string): void {

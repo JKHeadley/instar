@@ -47,10 +47,25 @@ describe('a single-machine agent', () => {
 describe('wiring', () => {
   it('the decision runs before the joiner is stored', () => {
     expect(routes.indexOf('decideInviterPairActivation({')).toBeLessThan(routes.indexOf('storeRemoteIdentity(acceptedMachineIdentity'));
-    expect(routes.indexOf('decideInviterPairActivation({')).toBeGreaterThan(routes.indexOf("router.post('/api/pair'"));
+    // The pairing route delegates to handlePair, so the decision must sit inside that handler.
+    const handler = routes.indexOf('const handlePair = async');
+    expect(handler).toBeGreaterThan(-1);
+    expect(routes.indexOf('decideInviterPairActivation({')).toBeGreaterThan(handler);
+    expect(routes.indexOf('decideInviterPairActivation({')).toBeLessThan(routes.indexOf("router.post('/api/pair'"));
+    expect(routes.slice(routes.indexOf("router.post('/api/pair'")).slice(0, 200)).toContain('handlePair(req, res)');
   });
   it('the joiner writes before its first boot, and before it records the peer', () => {
     expect(joinFlow.indexOf('applyJoinerPairActivation({')).toBeLessThan(joinFlow.indexOf('mgr.storeRemoteIdentity(result.machineIdentity)'));
+  });
+  it('a machine handed Telegram at join gets the reply script before its first boot', () => {
+    const written = joinFlow.indexOf("joined.telegram === 'written'");
+    expect(written).toBeGreaterThan(joinFlow.indexOf('applyJoinerPairActivation({'));
+    expect(joinFlow.indexOf('installTelegramRelayForJoinedMachine(', written)).toBeGreaterThan(written);
+    expect(joinFlow.indexOf('installTelegramRelayForJoinedMachine(', written)).toBeLessThan(joinFlow.indexOf('installAutoStart(config.projectName'));
+  });
+  it('the pairing server hands over who the bot answers, not only the token', () => {
+    const agentServer = fs.readFileSync(path.join(process.cwd(), 'src/server/AgentServer.ts'), 'utf-8');
+    expect(agentServer).toMatch(/botToken: token, chatId: String\(chatId\), authorizedUserIds, ownerUserId: ownerUserId \?\? promptGate\?\.ownerId/);
   });
   it('the green and the expiry are gated on the marker, and the runner keeps its place', () => {
     expect(server).toMatch(/const pairStartedPool = activatedAtPairing\(config\)/);

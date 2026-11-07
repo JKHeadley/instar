@@ -2,11 +2,8 @@
 import crypto from 'node:crypto';
 import {canonicalHash,canonicalPublicKey,exactFields,iso,opaque,signGraphRecord,unsigned,verifyGraphRecord,type GraphMembershipEpoch} from './GraphWitnessTypes.js';
 export const GRAPH_CUSTODY_PROFILE_DOMAIN='graph-custody-deployment-v1';
-export interface GraphCustodyProfile {
- v:1;agentId:string;membershipEpoch:number;membershipContextHash:string;
- mode:'owned-machine'|'external';witnessId:string;witnessPublicKey:string;failureDomain:string;
- hostMachineId:string|null;hostSigningPublicKey:string|null;createdAt:string;signature:string;
-}
+export type {GraphCustodyProfile} from './GraphMembershipTypes.js';
+import type {GraphCustodyProfile} from './GraphMembershipTypes.js';
 export function graphCustodyMembershipContext(membership:GraphMembershipEpoch):unknown {
  const {signature:_signature,custodyProfile:_profile,...context}=membership;return context;
 }
