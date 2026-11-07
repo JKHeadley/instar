@@ -210,3 +210,5 @@ One remaining item, **major, not blocking this slice:** a lock (`operator-owned`
 **Concur with the review.**
 
 **Follow-up (CI, 2026-11-07):** the ledger cache registers/unregisters its better-sqlite3 handle per the SqliteRegistry contract and is allowlisted in the wiring test (same fix as slice 1). No behaviour change.
+
+**Docs-site addition (2026-11-07):** `site/src/content/docs/reference/cli.md` and `site/src/content/docs/guides/test-as-self.md` document `instar test-as-self` (docs-coverage command floor). Documentation only.
