@@ -274,7 +274,11 @@ describe('recommended services setup', () => {
       await started();
       expect((await put(a, '')).status).toBe(400);
       expect((await put(a, 'two\nlines')).status).toBe(400);
-      expect((await put(a, 'has space')).status).toBe(400);
+      expect((await put(a, 'tab\there')).status).toBe(400);
+      // A passphrase has spaces in it (Bitwarden's master passwords, for one); only control characters are refused.
+      expect((await put(a, 'has space')).status).toBe(200);
+      expect(secret).toBe('has space');
+      secret = null;
       expect((await request(a).post('/recommended-services/jev/key').send({ value: 'k' })).status).toBe(403);
       expect((await request(a).post('/recommended-services/jev/key').set('X-Instar-Request', '1').send({ value: 'k' })).status).toBe(400);
       expect(secret).toBeNull();

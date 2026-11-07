@@ -128,6 +128,30 @@ describe('recommended services: production wiring', () => {
     expect(res.body.error).toBe('no-recipe');
   });
 
+  it('the Bitwarden recipe is dark on a fleet agent: no copy route, no key route, not available', async () => {
+    const { server } = boot(true);
+    const app = server.getApp();
+    const list = await request(app).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
+    expect(list.body.services.find((row: { service: string }) => row.service === 'bitwarden').available).toBe(false);
+    const sync = await request(app).post('/recommended-services/bitwarden/sync').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
+    expect(sync.status).toBe(404);
+    expect(sync.body.error).toBe('no-recipe');
+  });
+
+  it('an agent proving the Bitwarden recipe reaches it through the real wiring, with the real vault surface behind it', async () => {
+    const { server } = boot(true, { recommendedServices: { provingRecipes: ['bitwarden-v1'] } });
+    const app = server.getApp();
+    const list = await request(app).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
+    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'jev', 'bitwarden']);
+    // The copy route is wired and stops at the missing yes; the page names what would be copied, as names.
+    const sync = await request(app).post('/recommended-services/bitwarden/sync').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
+    expect(sync.status).toBe(409);
+    expect(sync.body.error).toBe('not-granted-here');
+    const page = await request(app).get('/recommended-services/bitwarden/confirm');
+    if (page.status === 200) expect(Array.isArray(page.body.copies)).toBe(true);
+    else expect(page.body.error).toBe('no-owner');
+  });
+
   it('an agent proving a recipe (a throwaway under a temp folder) reaches it through the real wiring, beside the proven ones', async () => {
     const { server } = boot(true, { recommendedServices: { provingRecipes: ['tailscale-v1'] } });
     const app = server.getApp();
