@@ -528,6 +528,52 @@ export class AgentServer {
    * attention list and pushed to paired phones. Returns true only when the owner
    * can now see it, so the controller retries otherwise.
    */
+  /**
+   * The second-person notice (team-roles-and-access §3.10): at boot, hourly, and on a new sender,
+   * on the lease holder only. At most one pass a minute, however many senders arrive.
+   */
+  private startReachNotices(options: { config: InstarConfig; reachablePeople?: import('../users/ReachablePeople.js').ReachablePeople; coordinator?: MultiMachineCoordinator; resolvePeerUrls?: () => Array<{ machineId: string; url: string; kind: import('./peerUrlGuard.js').PeerEndpointKind }>; meshSelfId?: string | null }): void {
+    const people = options.reachablePeople;
+    if (!people) return;
+    let last = 0;
+    const pass = (): void => {
+      const now = Date.now();
+      if (now - last < 60_000) return;
+      last = now;
+      void import('./teamPeople.js').then(({ runReachNotices }) => runReachNotices({
+        people, selfMachineId: options.meshSelfId ?? options.coordinator?.identity?.machineId ?? null,
+        authToken: () => options.config.authToken, peers: () => options.resolvePeerUrls?.() ?? [],
+        peerUrlAllowlist: () => (options.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,
+        holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
+        raise: (n) => this.raiseReachNotice(n),
+      }));
+    };
+    people.onNewSender = pass;
+    const boot = setTimeout(pass, 3 * 60_000); boot.unref();
+    const hourly = setInterval(pass, 60 * 60_000); hourly.unref();
+  }
+
+  /** With Telegram, an attention item keyed by condition; without, the local list and a push. */
+  private async raiseReachNotice(n: { conditionKey: string; title: string; text: string }): Promise<boolean> {
+    const id = `agent:${n.conditionKey}`;
+    if (!this.telegramAdapter) {
+      const stored = this.localAttention?.raise({ id, title: n.title, summary: n.text, description: n.text, priority: 'NORMAL', category: 'privacy', source: 'agent', sourceContext: 'team-people' }) ?? false;
+      if (stored) {
+        try {
+          this.mobilePairing?.push?.onHubPost({ kind: 'item', itemId: id, dedupeKey: `local-attention:${id}:${Date.now()}`, priority: 'NORMAL' });
+        } catch { /* @silent-fallback-ok — the item is stored; the push is best-effort and reports its own degradation */ }
+      }
+      return stored;
+    }
+    try {
+      await this.telegramAdapter.createAttentionItem({ id, conditionKey: n.conditionKey, title: n.title, summary: n.text, description: n.text, priority: 'NORMAL', category: 'privacy', sourceContext: 'team-people' });
+      return true;
+    } catch (err) {
+      console.warn(`[team-people] notice not raised, the next pass retries: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
   private async raiseLockedSecurityItem(item: { key: string; title: string; body: string }): Promise<boolean> {
     if (!this.telegramAdapter) {
       // No Telegram: the item goes to the local attention list (GET /attention, the app)
@@ -1172,6 +1218,8 @@ export class AgentServer {
     ecosystemLedger?: import('../ecosystem/EcosystemLedger.js').EcosystemLedger;
     /** docs/specs/recommended-services.md: the bootstrap-built choice ledger. Absent means the routes answer 503. */
     recommendedServicesLedger?: import('../recommended/RecommendedServicesLedger.js').RecommendedServicesLedger;
+    /** Who can reach the agent (team-roles-and-access §3.10). */
+    reachablePeople?: import('../users/ReachablePeople.js').ReachablePeople;
     /** Test seams for the idea pipeline: external I/O only. */
     ecosystemDeps?: import('../ecosystem/buildEcosystemIdeas.js').BuildEcosystemInput['overrides'];
     judgmentProvenance?: import('../core/JudgmentProvenanceLog.js').JudgmentProvenanceLog;
@@ -6061,6 +6109,8 @@ export class AgentServer {
       }
     }
     routeCtx.recommendedServicesLedger = options.recommendedServicesLedger ?? null;
+    routeCtx.reachablePeople = options.reachablePeople ?? null;
+    this.startReachNotices(options);
     this.startEcosystemIdeas(options, routeCtx);
     this.desktopSetupTarget = new DesktopSetupTarget({
       peerClaimAllowed: resolveDevAgentGate(options.config.remoteDesktop?.guidedSetup?.enabled, options.config),

@@ -1648,6 +1648,8 @@ export interface RouteContext {
   ecosystemIdeas?: () => import('../ecosystem/buildEcosystemIdeas.js').EcosystemRouteContext | { unavailable: 'no-source' } | null;
   /** docs/specs/recommended-services.md. Null when this machine has no identity; the routes answer 503. */
   recommendedServicesLedger?: import('../recommended/RecommendedServicesLedger.js').RecommendedServicesLedger | null;
+  /** Who can reach the agent (team-roles-and-access §3.10). */
+  reachablePeople?: import('../users/ReachablePeople.js').ReachablePeople | null;
   /** Only tests set this, because no real service has a proven setup yet. */
   recommendedServicesCatalog?: readonly import('../recommended/catalog.js').CatalogRow[];
   /**
@@ -12382,6 +12384,20 @@ export function createRoutes(ctx: RouteContext): Router {
   // Memory privacy status (docs/specs/memory-privacy.md). Agent token only.
   router.get('/memory-privacy', (_req, res) => {
     res.json(ctx.sessionManager.memoryPrivacyStatus());
+  });
+
+  // Who can reach this agent and what they can see (team-roles-and-access §3.10). Agent token only:
+  // a phone or a scoped session has no route here. Read-only.
+  router.get('/team/people', async (req, res) => {
+    const people = ctx.reachablePeople;
+    if (!people) { res.status(503).json({ error: 'team-people-unavailable' }); return; }
+    const { readTeamPeople } = await import('./teamPeople.js');
+    const answer = await readTeamPeople({
+      people, selfMachineId: ctx.meshSelfId ?? null, authToken: () => ctx.config.authToken,
+      peers: () => ctx.resolvePeerUrls?.() ?? [],
+      peerUrlAllowlist: () => (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,
+    }, req.query.scope === 'pool' ? 'pool' : 'local');
+    res.json({ ...answer, privacyOn: ctx.sessionManager.memoryPrivacyStatus().enabled === true });
   });
 
   // The owner's one-time repair (spec: "Owner recovery"). The token is the auth, the
