@@ -25,7 +25,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mobile-health-issues.test.ts' });
 });
 
-function setup(readHealth: () => Promise<{ status: number; body: unknown }>, events: Array<Record<string, unknown>> = [], current?: () => { iMessage?: 'down' | 'up' | 'off' }) {
+function setup(readHealth: () => Promise<{ status: number; body: unknown }>, events: Array<Record<string, unknown>> = [], current?: () => { iMessage?: 'down' | 'up' | 'off' }, machine?: () => { key: string | null; name: string | null }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mhealth-int-'));
   dirs.push(dir);
   fs.writeFileSync(path.join(dir, 'users.json'), JSON.stringify([{ id: 'justin', name: 'Justin', channels: [], permissions: ['user'] }]));
@@ -36,7 +36,7 @@ function setup(readHealth: () => Promise<{ status: number; body: unknown }>, eve
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(svc)));
   const router = express.Router();
-  mountMobileHealthRoutes(router, { readHealth, recentEvents: () => events, current, bearerOk: (req) => req.headers.authorization === 'Bearer tok-1' });
+  mountMobileHealthRoutes(router, { readHealth, recentEvents: () => events, current, machine, bearerOk: (req) => req.headers.authorization === 'Bearer tok-1' });
   app.use(router);
   const pair = (person?: { userId: string; role: 'msp' }) => {
     const dev = makeDevice();
@@ -67,6 +67,25 @@ describe('GET /mobile/health-issues', () => {
     expect(r.body.issues[0]).toMatchObject({ id: 'SessionManager.verifyInjection', impact: 'internal', count: 1 });
     expect(JSON.stringify(r.body)).not.toContain('SECRET-REASON');
     expect(r.body).not.toHaveProperty('sessions');
+  });
+
+  it('each problem, and the answer, names the machine that answered', async () => {
+    const { app, pair } = setup(healthy, [], () => ({ iMessage: 'down' }), () => ({ key: 'abc123', name: 'Mac Studio' }));
+    const r = await signedGet(app, pair());
+    expect(r.status).toBe(200);
+    expect(r.body.machine).toEqual({ key: 'abc123', name: 'Mac Studio' });
+    expect(r.body.issues.length).toBeGreaterThan(0);
+    for (const i of r.body.issues) expect(i.machine).toEqual({ key: 'abc123', name: 'Mac Studio' });
+  });
+
+  it('no machine is named when there is none to name, or naming it fails; the reading still answers', async () => {
+    for (const machine of [undefined, () => ({ key: null, name: null }), () => { throw new Error('registry gone'); }]) {
+      const { app } = setup(healthy, [], () => ({ iMessage: 'down' }), machine as never);
+      const r = await request(app).get(PATH).set('Authorization', 'Bearer tok-1');
+      expect(r.status).toBe(200);
+      expect(r.body).not.toHaveProperty('machine');
+      expect(r.body.issues[0]).not.toHaveProperty('machine');
+    }
   });
 
   it('iMessage down shows with no event in the window', async () => {

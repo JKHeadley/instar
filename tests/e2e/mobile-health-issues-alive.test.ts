@@ -108,6 +108,10 @@ describe('owner health reading — production wiring', () => {
     const r2 = await phone.send('GET', '/mobile/health-issues');
     expect(r2.status).toBe(200);
     const row = r2.body.issues.find((i: { id: string }) => i.id === 'GitSync.gitHygiene');
+    // Wiring: production names the machine that answered (no pool here, so this computer's own name), on the row too.
+    expect(typeof r2.body.machine?.name).toBe('string');
+    expect(r2.body.machine.name.length).toBeGreaterThan(0);
+    expect(row?.machine).toEqual(r2.body.machine);
     expect(row).toMatchObject({ impact: 'internal', title: 'Some files were kept out of sync on purpose' });
     expect(row.ask).toContain('GitSync.gitHygiene');
     expect(r2.body.verdict).not.toBe('healthy');

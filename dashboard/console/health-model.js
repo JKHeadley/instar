@@ -86,11 +86,17 @@ export function hiddenAskHref(row) {
   return askHref({ ask: `You have this hidden on your health page: "${row.title}" (reference: ${row.key}). Is it still happening, and should I bring it back?` });
 }
 
+/** "On Mac Studio": the machine this problem is on, or nothing when the agent didn't name one. */
+export function machineWords(issue) {
+  const name = issue && issue.machine && typeof issue.machine.name === 'string' ? issue.machine.name.trim() : '';
+  return name ? `On ${name}` : '';
+}
+
 /** Home's rows: only what affects the person. Internal items never raise the count. */
 export function healthNeedRows(res) {
   const d = readableIssues(res);
   if (!d) return null;
-  return d.issues.filter((i) => i && i.impact === 'user-affecting').map((i) => ({ key: i.id, title: i.title, detail: i.detail, href: issueHref(i) }));
+  return d.issues.filter((i) => i && i.impact === 'user-affecting').map((i) => ({ key: i.id, title: i.title, detail: [machineWords(i), i.detail].filter(Boolean).join(' · '), href: issueHref(i) }));
 }
 
 /** "3 times", or nothing for one. */

@@ -1,9 +1,9 @@
-import { readPeerNotifications } from './notificationPoolRead.js';
+import { readPeerJobs, readPeerNotifications } from './notificationPoolRead.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import type { Router } from 'express';
 import type { RouteContext } from './routes.js';
-import { CONVERSATION_CATEGORIES, isNotificationCategory } from '../messaging/notificationCategories.js';
+import { CONVERSATION_CATEGORIES, isNotificationCategory, isNotificationJobSlug } from '../messaging/notificationCategories.js';
 import { verifiedReplyEnvelope } from '../messaging/NotificationSelectivityGate.js';
 
 /** Uses the existing authenticated router; preference writes additionally require operator proof. */
@@ -22,13 +22,19 @@ export function mountNotificationRoutes(router: Router, ctx: RouteContext, verif
       const topicId = ctx.telegram!.notificationTopicId(record.destination.chatId, record.destination.topicId);
       const envelope = record.notification?.origin === 'verified-reply' && record.producerKind === 'session' && !ctx.state.getSession(record.sessionId ?? '')?.jobSlug
         ? verifiedReplyEnvelope('lifeline-origin-session') : record.notification?.origin === 'verified-reply' ? undefined : record.notification;
-      res.json(await gate.route(topicId, request.policy?.text ?? body.text ?? body.caption ?? '', envelope, record.operationId));
+      res.json(await gate.route(topicId, request.policy?.text ?? body.text ?? body.caption ?? '', runtime.service.restoreJobEnvelope(record, envelope), record.operationId));
     } catch { res.status(503).json({ error: 'Notification classification could not be saved' }); }
   });
-  router.get('/notifications/selectivity', (_req, res) => {
+  router.get('/notifications/selectivity', async (req, res) => {
     const gate = ctx.telegram?.selectivity;
     if (!gate) { res.status(503).json({ error: 'Notification feed is not available on this machine' }); return; }
-    res.json(gate.status());
+    try {
+      const choices = gate.jobPush();
+      const pool = req.query.scope === 'pool' ? await readPeerJobs(ctx) : { jobs: [], unavailable: [] };
+      const known = new Map([...pool.jobs, ...(ctx.scheduler?.getJobs() ?? [])].map(job => [job.slug, job]));
+      res.json({ ...gate.status(), jobsScope: req.query.scope === 'pool' ? 'pool' : 'this-machine', jobsUnavailable: pool.unavailable,
+        jobs: [...known.values()].map(job => ({ slug: job.slug, name: job.name, enabled: job.enabled !== false, push: choices[job.slug] === true, decided: typeof choices[job.slug] === 'boolean' })) });
+    } catch { res.status(503).json({ error: 'Notification status is not available right now' }); }
   });
   router.get('/notifications/quiet', async (req, res) => {
     const gate = ctx.telegram?.selectivity;
@@ -89,6 +95,43 @@ export function mountNotificationRoutes(router: Router, ctx: RouteContext, verif
       if (ctx.liveConfig && ctx.liveConfig.get(`notifications.selectivity.push.categories.${category}`, !req.body.enabled) !== req.body.enabled) throw new Error('Preference write did not persist');
       if (conversational) await ctx.telegram!.sendToTopic(topicId, `Done — routine ${category.replaceAll('-', ' ')} ${req.body.enabled ? 'will now be pushed' : 'will stay in the notification feed'}.`, { envelope: verifiedReplyEnvelope('notification-preference-confirm') });
       res.json({ ok: true, category, enabled: req.body.enabled });
+    } catch { res.status(503).json({ error: 'Could not save the preference. Please retry.' }); }
+  });
+  router.post('/notifications/jobs/:slug/push', async (req, res) => {
+    const gate = ctx.telegram?.selectivity;
+    const slug = req.params.slug;
+    if (!gate || !gate.preferences) { res.status(503).json({ error: 'Notification preferences are unavailable' }); return; }
+    if (!isNotificationJobSlug(slug) || typeof req.body?.enabled !== 'boolean') { res.status(400).json({ error: 'Choose a job and whether its reports should push' }); return; }
+    const surface = req.body.confirmedBy;
+    const topicId = Number(req.body.topicId), messageId = String(req.body.confirmingMessageId ?? '');
+    const pin = surface === 'dashboard-pin' && ctx.verifyDashboardOperatorSession?.(req.headers['x-instar-operator-session'] as string | undefined) === true;
+    const conversational = surface === 'operator-conversational-confirm' && Number.isSafeInteger(topicId) && gate.confirmsOperator(topicId, messageId);
+    // Proof comes before the job lookup, so an unconfirmed caller cannot list job names.
+    if (!pin && !conversational) { res.status(400).json({ error: 'Confirm this change with your dashboard PIN or a recent operator message' }); return; }
+    // A job written seconds ago is not in memory until the next refresh. Turning a job off
+    // never needs it to exist: a deleted job's choice must stay removable.
+    let name: string | undefined;
+    try {
+      // An async route has no framework catch: a job file with a typo must answer, not take the server down.
+      try { ctx.scheduler?.refreshJobs(); }
+      catch (error) { if (req.body.enabled) throw error; /* @silent-fallback-ok: turning a job off needs no job list */ }
+      name = ctx.scheduler?.getJobs().find(row => row.slug === slug)?.name;
+      if (!name && req.body.enabled) {
+        const pool = await readPeerJobs(ctx);
+        name = pool.jobs.find(row => row.slug === slug)?.name;
+        if (!name && pool.unavailable.length) { res.status(503).json({ error: 'A machine that may run this job cannot be reached right now. Please retry.' }); return; }
+        if (!name) { res.status(404).json({ error: 'No job with that name' }); return; }
+      }
+    } catch { res.status(503).json({ error: 'The job list could not be read. Please check it and retry.' }); return; }
+    try {
+      await gate.preferences.setJob(slug, req.body.enabled, surface, conversational ? topicId : undefined);
+      void gate.preferences.drain();
+      if (ctx.liveConfig && ctx.liveConfig.get(`notifications.selectivity.push.jobs.${slug}`, !req.body.enabled) !== req.body.enabled) throw new Error('Preference write did not persist');
+      const categoryPush = gate.categoryPushEnabled('job-status'), enforcing = gate.isEnforcing();
+      const outcome = req.body.enabled && !enforcing ? 'already reach you, because Quiet by Default is still only observing; this choice takes effect when it starts enforcing' : req.body.enabled ? (conversational ? 'will now reach you here when the job sends them to this conversation, and in the Attention topic otherwise' : 'will now reach you in the Attention topic') : !enforcing ? 'will reach you for now, because Quiet by Default is still only observing' : categoryPush ? 'will still reach you, because all scheduled job reports are turned on' : 'will stay in the notification feed';
+      const message = `Reports from ${name ?? slug} ${outcome}.`;
+      if (conversational) await ctx.telegram!.sendToTopic(topicId, `Done — ${message}`, { envelope: verifiedReplyEnvelope('notification-preference-confirm') });
+      res.json({ ok: true, slug, enabled: req.body.enabled, categoryPush, enforcing, topicId: conversational && req.body.enabled ? topicId : null, message });
     } catch { res.status(503).json({ error: 'Could not save the preference. Please retry.' }); }
   });
 }

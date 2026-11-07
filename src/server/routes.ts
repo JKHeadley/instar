@@ -4,6 +4,7 @@ import { categoryForProducer } from '../messaging/notificationCategories.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/routes.ts');
 import { mountNotificationRoutes } from './notificationRoutes.js';
+import { jobReportChoice } from '../messaging/notificationCategories.js';
 import { verifiedReplyEnvelope, requireTelegramDelivery } from '../messaging/NotificationSelectivityGate.js';
 import { JobPortableSync } from '../core/JobPortableSync.js';
 import { validMaturationOutcomeDetail } from '../monitoring/MaturationOutcome.js';
@@ -249,7 +250,7 @@ import { discardPrepared, prepareReplyFiles } from '../core/appMediaReplyFiles.j
 import { MEDIA_PATH_WAIT_MS } from '../core/AppMediaReplicator.js';
 import { isNeverServed } from './fileRoutes.js';
 import { isMobileMediaEnabled } from './mobilePairingRoutes.js';
-import { mountMobileOpsRoutes } from './mobileOpsRoutes.js';
+import { mountMobileOpsRoutes, machineKey } from './mobileOpsRoutes.js';
 import { joinTelegramHistory, withTelegramMediaForDevice } from './mobileConversationRoutes.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
 import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
@@ -18825,6 +18826,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // Bump manifestVersion before write.
       const nextVersion = (typeof manifest.manifestVersion === 'number' ? manifest.manifestVersion : 0) + 1;
       const finalManifest = { ...manifest, slug, manifestVersion: nextVersion };
+      const created = !fs.existsSync(manifestPath);
 
       const { atomicSaveAgentMdJob } = await import('../scheduler/AgentMdAtomicSave.js');
       const result = atomicSaveAgentMdJob({
@@ -18838,7 +18840,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
 
-      res.json({ ok: true, manifestVersion: nextVersion });
+      res.json({ ok: true, manifestVersion: nextVersion, ...(created && ctx.telegram?.selectivity ? { reportChoice: jobReportChoice(slug, { enforcing: ctx.telegram.selectivity.isEnforcing(), categoryPush: ctx.telegram.selectivity.categoryPushEnabled('job-status') }) } : {}) });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -38245,6 +38247,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return (ctx.machinePoolRegistry?.getCapacities() ?? []).map((m) => m.machineId).filter((id) => !online.has(id));
       },
       localRepairs: () => (ctx.subscriptionRelogin?.store.list({}) ?? []).map((e) => ({ accountId: e.accountId, state: e.state })),
+      // The same merged read the console uses, so the phone and the dashboard count the same sign-ins.
+      reloginBlockers: async () => {
+        const response = await fetch(`http://${ctx.config.host || '127.0.0.1'}:${ctx.config.port}/subscription-relogin?scope=pool`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(6_000),
+        });
+        if (!response.ok) return [];
+        const body = await response.json() as { blockers?: Array<{ accountId: string; machineId: string; reason: string }> };
+        return Array.isArray(body.blockers) ? body.blockers : [];
+      },
       spendSummary: (hours) => spendPart(routingSpendSummaryResult('day', hours), !routingSpendGateOpen()),
       tokens: (sinceMs) => (ctx.tokenLedger
         ? { ok: true, data: { summary: ctx.tokenLedger.summary({ sinceMs }), codex: ctx.tokenLedger.codexSummary({ sinceMs }) } }
@@ -38482,6 +38493,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return { iMessage: ctx.imessage?.getConnectionInfo().state === 'connected' ? 'up' : 'down' };
       },
       bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
+      // Each problem says which machine it is on: the pool nickname, else this computer's own name.
+      machine: () => {
+        const id = ctx.meshSelfId ?? null;
+        const pooled = id ? verifiedEntityName(id, ctx.machinePoolRegistry?.getCapacity(id)?.nickname) : null;
+        const host = os.hostname().replace(/\.local$/i, '').replace(/[-_]+/g, ' ').trim();
+        return { key: id ? machineKey(id) : null, name: pooled ?? verifiedEntityName(id ?? 'self', host) };
+      },
       choices: (() => {
         const storeError = (detail: string, err: unknown) => DegradationReporter.getInstance().report({ feature: 'HealthChoices.store', primary: 'Saving what the person hid', fallback: 'Hidden problems may show again', reason: `${detail}: ${err instanceof Error ? err.message : String(err)}`, impact: 'A problem you hid may show again.' });
         const store = healthChoiceStoreFor(ctx.config.stateDir, { onError: storeError });

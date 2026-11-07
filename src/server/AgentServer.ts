@@ -144,6 +144,7 @@ import { createWorktreeRoutes, createOidcWorktreeRoutes } from './worktreeRoutes
 import { registerRemediationProposalsRoutes } from './routes/remediation-proposals.js';
 import { registerProvenanceRoutes } from './routes/provenance.js';
 import { CanonicalIdentityManager } from '../identity/IdentityManager.js';
+import { IdentityManager as ThreadlineIdentityManager } from '../threadline/client/IdentityManager.js';
 import { FileSeenNonceStore } from '../core/aspNonceStore.js';
 import { AspKeyDirectory } from '../core/AspKeyDirectory.js';
 import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
@@ -1742,6 +1743,8 @@ export class AgentServer {
       },
       // Without a Telegram owner, pairing codes are confirmed on the dashboard (mobile-native-conversations §4.4).
       telegramOwnerPresent: () => !!options.telegram?.getOwnerUserId?.(),
+      // mobile-pairing-introducer §3.2: this agent's own identity, read fresh per signing.
+      readIdentity: () => { const id = new ThreadlineIdentityManager(options.config.stateDir).get(); return id ? { publicKey: id.publicKey, privateKey: id.privateKey } : null; },
       // People and roles: the Telegram owner id decides which registry profile is the owner.
       telegramOwnerId: () => { const id = options.telegram?.getOwnerUserId?.(); return typeof id === 'number' ? id : null; },
       // The same namespace the app conversation store stamps (people and roles §5).
