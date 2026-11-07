@@ -578,6 +578,13 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     fileLevel: 'git-sync-excluded',
     note: 'class-review rows live in a machine-local SQLite/WAL store under the .instar sync exclusion; own-origin shells/outcomes converge through the class-review-record replicated store and remote terminal state remains advisory',
   };
+  const failureCalloutStory: ConvergenceStory = {
+    logical: 'ws2x-replicated', onSharedGitSyncedPath: true, fileLevel: 'git-sync-excluded',
+    note: 'Correction analysis also writes the local ledger and journal-backed learned preferences; it retains its existing writer. Failure-case context and immutable episodes extend correction-ledger.db; failure-callout-chunk journal snapshots replicate through the existing peer streams. Pool summaries omit forensic detail; complete replica detail is marked stale and read-only. CAS mutations remain on the origin writer.',
+  };
+  for (const method of ['PATCH', 'POST'] as const) {
+    reg.add({ kind: 'route', method, pathPrefix: '/corrections/', domain: 'machine-local', story: failureCalloutStory });
+  }
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/class-reviews/', domain: 'machine-local', story: classReviewStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/class-reviews/', domain: 'machine-local', story: classReviewStory });
   reg.add({
@@ -694,6 +701,28 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       logical: 'per-machine-path',
       onSharedGitSyncedPath: false,
       note: 'the route accepts only a conversation THIS machine owns and holds a bind-app binding for (409 not-owner otherwise), then appends the agent reply to the machine-local app conversation store, which replicates through the appConversations kind; no git-synced store is mutated',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/mobile/team/',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'step 2a of team-roles-and-access: one machine only, a second machine is refused at the join, so the signed access log is this machine\'s; replication is step 2b.',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/team/people/',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'the agent lowering a person writes a machine-signed row to this machine\'s access log; same one-machine story as /mobile/team/.',
     },
   });
   reg.add({
@@ -1168,6 +1197,10 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // owner-routed commitment mutation as /transition and /withdraw (a replica forwards
   // to the machine that holds the promise).
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/:id/decide', domain: 'cluster-shared' });
+  // promise-review-and-priority: the review's bounded apply and its undo both
+  // mutate the commitment store, the same shared agent state as the routes above.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/review/apply', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/:id/reopen', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/process', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/tick', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/runs/', domain: 'cluster-shared' });

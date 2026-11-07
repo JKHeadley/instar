@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-05T22:04:51.471Z",
+  "slug": "quiet-by-default-completion",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 30,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/data/stageBCertifiedSet.ts",
+      "src/messaging/NotificationSelectivityGate.ts",
+      "src/messaging/notificationCategories.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 4
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Final parity review found existing PA-5 audience promotion needed to survive the new category gate without a second opt-in. Bound promotion to authenticated upgrade-notify session plus canonical pending guide."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/integration/notification-selectivity-gate.test.ts",
+      "howCaught": "Existing category and global budgets apply to promoted release notices too. Actual gate tests bound 500-event opted-in pressure; preference retries settle at eight and rearm only on a persisted offline-to-online edge. Canonical convergence invariant: tests/unit/self-action-convergence.test.ts."
+    }
+  },
+  "verdict": "pass"
+}

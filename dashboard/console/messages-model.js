@@ -51,6 +51,7 @@ export function buildMessagesPage(statusRes, healthRes, now = Date.now(), topicN
       main: verifiedDisplayName(topicNames[String(topic)], topic) || 'Conversation name unavailable',
       sub: holdWords(h.hold_reason || h.holdReason || h.reason),
       end: ago(since, now) || '',
+      // warning-path: row
       tone: 'attn', record: h, topicId: topic || null, sinceTs: Date.parse(since) || 0,
     };
   }).sort((a, b) => b.sinceTs - a.sinceTs);
@@ -68,6 +69,7 @@ export function buildMessagesPage(statusRes, healthRes, now = Date.now(), topicN
     const oldest = items.reduce((min, item) => item.sinceTs && (!min || item.sinceTs < min) ? item.sinceTs : min, 0);
     const count = items.length;
     const main = first.topicId ? first.main : count === 1 ? '1 delayed message' : `${count} delayed messages`;
+    // warning-path: row
     return { key, main, sub: first.sub, end: oldest ? `oldest ${ago(oldest, now)}` : '', tone: 'attn',
       records: items.map((item) => item.record), topicId: first.topicId, count, sinceTs: oldest };
   }).sort((a, b) => b.count - a.count || b.sinceTs - a.sinceTs);
@@ -91,11 +93,14 @@ export function buildMessagesPage(statusRes, healthRes, now = Date.now(), topicN
   ].filter(Boolean).join(' ');
   return {
     ok: true, rows, expired, headline, sub,
+    // warning-path: pageHead
     tone: held.length ? 'attn' : expired ? 'bad' : 'ok',
     recording: act.complete ? 'on' : 'not fully set up',
+    // warning-path: pageHead
     notReady: notReady.map((o) => ({ main: String(o.obligation || '').replace(/-/g, ' '), sub: `${String(o.subject || '').replace(/-/g, ' ')} · ${o.state}${o.reason ? ' · ' + String(o.reason).replace(/-/g, ' ') : ''}`, tone: o.state === 'held' ? 'attn' : 'unknown' })),
     storage: s.storage && s.storage.store ? s.storage.store.state : null,
     facts: [
+      // warning-path: pageHead
       ...(expired ? [{ n: expired, label: 'lost before delivery', tone: 'bad' }] : []),
     ],
   };

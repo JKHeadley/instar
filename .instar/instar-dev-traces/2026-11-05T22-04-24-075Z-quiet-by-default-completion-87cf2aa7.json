@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "slug": "quiet-by-default-completion",
+  "sessionId": "32f97cda-1387-4f50-8d19-50a2f487ede4",
+  "timestamp": "2026-11-05T22:04:24.075Z",
+  "artifactPath": "upgrades/side-effects/quiet-by-default-completion.md",
+  "artifactSha256": "e42c750b02b8c5017c143616d4540c89e3af5db76575608c37c60cda0c55e650",
+  "specPath": "docs/specs/notification-selectivity.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-05T22-03-44-554Z-quiet-by-default-completion.json",
+    ".instar/instar-dev-traces/orphan-deferral-overrides.jsonl",
+    "docs/eli16/quiet-by-default-completion.eli16.md",
+    "src/commands/server.ts",
+    "src/data/stageBCertifiedSet.ts",
+    "src/messaging/NotificationSelectivityGate.ts",
+    "src/messaging/notificationCategories.ts",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "tests/unit/notification-selectivity.test.ts",
+    "tests/unit/telegram-origin/origin-service.test.ts",
+    "upgrades/side-effects/quiet-by-default-completion.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Preserve approved release audience authority within the notification gate; authenticated session and guide proof only, opt-out and budgets retained. Independent reviewer concurred.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Final parity review found existing PA-5 audience promotion needed to survive the new category gate without a second opt-in. Bound promotion to authenticated upgrade-notify session plus canonical pending guide."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/integration/notification-selectivity-gate.test.ts",
+      "howCaught": "Existing category and global budgets apply to promoted release notices too. Actual gate tests bound 500-event opted-in pressure; preference retries settle at eight and rearm only on a persisted offline-to-online edge. Canonical convergence invariant: tests/unit/self-action-convergence.test.ts."
+    }
+  }
+}

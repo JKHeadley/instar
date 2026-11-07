@@ -1,0 +1,7 @@
+# Feedback sorting keeps going after a restart
+
+Feedback sorting asks a model to judge each report, and each call first has to pass an ownership check. That check makes sure only the machine currently responsible for the queue can spend calls. It compares two copies of an ownership number: the live one, which goes up each time a multi-machine agent's server restarts and re-acquires its lease, and a saved one kept beside the queue.
+
+The saved copy only moved when another job happened to write it. So after every restart there was a gap, sometimes half an hour, when the two numbers disagreed and sorting refused its own calls. It then described that refusal as "the daily call limit was reached", although only 24 of 150 calls had been used. That wrong label misled people reading the status, and it also made the pacing logic slow sorting down.
+
+Now, when the same machine still owns the queue without a break, reserving a call brings the saved number up to date. Nothing else about ownership changes: an older number is refused, another machine is refused, a queue restored from backup still needs fresh approval, and a call at the real limit is still refused. No limit was raised and nothing new needs approval. The reported reason now tells the truth: "call-cap-reached" only when a counter is really full, and "authority-admission-refused" for other refusals. Undoing this is a plain revert, with no data to repair.

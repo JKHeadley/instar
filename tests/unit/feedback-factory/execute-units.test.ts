@@ -21,7 +21,7 @@ import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApp
 import { effectChecks, evaluateSessionCanary, failureTail, findSessionTranscript, linkEffectChecks, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, sessionReadTargets, sessionToolTargets, transcriptChecks, verdictOf, canaryStamp, canaryLinkPaths, PROBE_TAIL_CHARS, SESSION_CANARY_STEPS } from '../../../src/feedback-factory/execute/confinementCanary.js';
 import { readCallLines, toolCallLines } from '../../fixtures/feedbackExecuteHarness.js';
 import { resolveSandboxRuntime, runCapped, shortTmpDir, treeBytes, SandboxRuntimeRunner, type ConfinedRunner } from '../../../src/feedback-factory/execute/ConfinedRunner.js';
-import { DepsCache, rebuildFailureTail, FIX_SCRIPT_SIBLINGS } from '../../../src/feedback-factory/execute/depsCache.js';
+import { DepsCache, dependencyManifestText, rebuildFailureTail, FIX_SCRIPT_SIBLINGS } from '../../../src/feedback-factory/execute/depsCache.js';
 import { removeAttemptTree, sweepTrash } from '../../../src/feedback-factory/execute/attemptFs.js';
 import { isCredentialEnvName } from '../../../src/core/credentialEnvNames.js';
 import { claudeHeadlessExtraFlags } from '../../../src/core/frameworkSessionLaunch.js';
@@ -54,6 +54,13 @@ describe('policy', () => {
     const p = { workspace: '/h/.worktrees/w', publishClone: '/h/.worktrees/w-publish', tmpDir: '/h/.worktrees/w-tmp', depsCache: '/h/.worktrees/.feedback-deps/x', agentHome: '/h', testRunnerHoldersFile: '/u/.instar/host-test-runner-holders.json', homeDir: '/u' };
     const s = buildSandboxRuntimeSettings(p);
     expect(s.network.allowedDomains).toEqual([]);
+    expect(s.network.allowMachLookup).toEqual(process.platform === 'darwin' ? ['com.apple.SystemConfiguration.DNSConfiguration'] : undefined);
+    expect(buildSandboxRuntimeSettings(p, { platform: 'darwin' }).network).toMatchObject({
+      allowedDomains: [], deniedDomains: [], allowLocalBinding: false, allowUnixSockets: [],
+      allowMachLookup: ['com.apple.SystemConfiguration.DNSConfiguration'],
+    });
+    expect(buildSandboxRuntimeSettings(p, { platform: 'linux' }).network.allowMachLookup).toBeUndefined();
+    expect(buildSandboxRuntimeSettings(p, { platform: 'win32' }).network.allowMachLookup).toBeUndefined();
     expect(s.filesystem.allowWrite).toEqual(['/h/.worktrees/w', '/h/.worktrees/w-tmp', ...testRunnerSemaphoreFiles(p.testRunnerHoldersFile)]);
     expect(s.filesystem.denyWrite).toEqual(expect.arrayContaining(['/h/.worktrees/w/.git', `/h/.worktrees/w/${EVIDENCE_FILE}`, '/h/.worktrees/w/.claude', '/h/.worktrees/w/.instar', p.depsCache, p.publishClone, '/tmp']));
     expect(s.filesystem.denyRead).toEqual(expect.arrayContaining(['/u', '/tmp', '/h', p.publishClone, '/u/.ssh', '/u/.claude', '/u/.config']));
@@ -90,10 +97,12 @@ describe('policy', () => {
   it('Claude settings: dontAsk allowlist, denies web/MCP and the agent home entries, no system-temp write deny', () => {
     const p = { workspace: '/h/.worktrees/w', publishClone: '/h/.worktrees/w-publish', tmpDir: '/h/.worktrees/w-tmp', depsCache: '/h/.worktrees/.feedback-deps/x', agentHome: '/h', testRunnerHoldersFile: '/u/.instar/h.json', homeDir: '/u' };
     const s = buildClaudeSandboxSettings({ paths: p, agentHomeChildren: ['.instar', '.worktrees', 'src'] }) as {
-      sandbox: { enabled: boolean; failIfUnavailable: boolean; allowUnsandboxedCommands: boolean; filesystem: { denyWrite: string[]; denyRead: string[]; allowRead: string[] } };
+      sandbox: { enabled: boolean; failIfUnavailable: boolean; allowUnsandboxedCommands: boolean; network: { allowedDomains: string[]; allowMachLookup?: string[] }; filesystem: { denyWrite: string[]; denyRead: string[]; allowRead: string[] } };
       permissions: { defaultMode: string; deny: string[]; allow: string[] }; env: Record<string, string>;
     };
     expect(s.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false });
+    expect(s.sandbox.network.allowedDomains).toEqual([]);
+    expect(s.sandbox.network.allowMachLookup).toEqual(process.platform === 'darwin' ? ['com.apple.SystemConfiguration.DNSConfiguration'] : undefined);
     expect(s.sandbox.filesystem.denyWrite).not.toContain('/tmp');
     expect(s.permissions.defaultMode).toBe('dontAsk');
     expect(s.permissions.deny).toEqual(expect.arrayContaining(['WebFetch', 'WebSearch', 'mcp__*', 'Read(//h/.instar/**)', 'Read(//h/src/**)', 'Read(//h/.worktrees/w-publish/**)', 'Edit(//h/.worktrees/w/.git/**)', 'Edit(//h/.worktrees/w/.claude/**)', 'Edit(//h/.worktrees/w/.instar/**)']));
@@ -781,6 +790,20 @@ describe('canary review-round regressions', () => {
 });
 
 describe('runner and filesystem helpers', () => {
+  it('a timed-out run records when it first printed and what was running', async () => {
+    const env = { PATH: process.env.PATH ?? '' };
+    const silent = await runCapped(process.execPath, ['-e', 'setTimeout(()=>{}, 60000)'], { cwd: os.tmpdir(), env, timeoutMs: 500 });
+    expect(silent.timedOut).toBe(true);
+    expect(silent.stderr).toContain('no output at all');
+    expect(silent.stderr).toContain('setTimeout');
+    const talking = await runCapped(process.execPath, ['-e', 'console.log("hi"); setTimeout(()=>{}, 60000)'], { cwd: os.tmpdir(), env, timeoutMs: 1_500 });
+    expect(talking.timedOut).toBe(true);
+    expect(talking.stdout).toContain('hi');
+    expect(talking.stderr).toContain('first output after');
+    const finished = await runCapped(process.execPath, ['-e', 'process.exit(0)'], { cwd: os.tmpdir(), env, timeoutMs: 10_000 });
+    expect(finished.stderr).toBe('');
+  });
+
   it('runCapped enforces the wall clock and the output cap and never throws on a non-zero exit', async () => {
     const env = { PATH: process.env.PATH ?? '' };
     expect((await runCapped(process.execPath, ['-e', 'process.exit(3)'], { cwd: os.tmpdir(), env, timeoutMs: 10_000 })).exitCode).toBe(3);
@@ -832,6 +855,62 @@ describe('runner and filesystem helpers', () => {
 });
 
 describe('dependency cache', () => {
+  it('a release that only bumps the project version reuses the cache; a dependency change does not', async () => {
+    const root = tmp();
+    let installs = 0;
+    const manifest = (version: string, dep = '1.0.0') => JSON.stringify({ name: 'x', version, dependencies: { d: dep } });
+    const locked = (version: string, dep = '1.0.0') => JSON.stringify({ name: 'x', version, lockfileVersion: 3,
+      packages: { '': { name: 'x', version, dependencies: { d: dep } }, 'node_modules/d': { version: dep } } });
+    const files: Record<string, string> = { 'package.json': manifest('1.3.1702'), 'package-lock.json': locked('1.3.1702') };
+    const cache = new DepsCache({
+      root: path.join(root, 'deps'), agentHome: path.join(root, 'home'), trashRoot: path.join(root, '.instar', 'trash'),
+      runner: { available: () => ({ ok: true, version: '0.0.77' }), run: async () => ({ exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false, outputCapped: false }) },
+      readAtCommit: (_s, _sha, f) => files[f] ?? null, listAtCommit: () => [],
+      install: async (dir) => { installs++; fs.mkdirSync(path.join(dir, 'node_modules'), { recursive: true }); },
+      hasPnpm: () => false, testRunnerHoldersFile: path.join(root, 'h.json'),
+    });
+    const first = await cache.ensure('/src', 'a'.repeat(40));
+    Object.assign(files, { 'package.json': manifest('1.3.1703'), 'package-lock.json': locked('1.3.1703') });
+    const released = await cache.ensure('/src', 'b'.repeat(40));
+    expect(installs).toBe(1);
+    expect(first.ok && released.ok && released.hash === first.hash).toBe(true);
+    // The base gate is keyed per release even though the cache is not.
+    expect(first.ok && released.ok && released.gateKey !== first.gateKey).toBe(true);
+    Object.assign(files, { 'package.json': manifest('1.3.1703', '2.0.0'), 'package-lock.json': locked('1.3.1703', '2.0.0') });
+    const changed = await cache.ensure('/src', 'c'.repeat(40));
+    expect(installs).toBe(2);
+    expect(first.ok && changed.ok && changed.hash !== first.hash).toBe(true);
+    expect(dependencyManifestText('lockfileVersion: 9.0')).toBe('lockfileVersion: 9.0');
+  });
+
+  it('reuses a same-version native binary from another ready cache for this ABI instead of compiling', async () => {
+    const root = tmp();
+    const deps = path.join(root, 'deps');
+    const bin = path.join('node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
+    const seed = (name: string, abi: string, version: string, content: string, ready = true) => {
+      write(path.join(deps, name), bin, content);
+      write(path.join(deps, name), 'node_modules/better-sqlite3/package.json', JSON.stringify({ version }));
+      if (ready) write(path.join(deps, name), '.ready', JSON.stringify({ nodeAbi: abi }));
+    };
+    // Wrong sources sort first, so only the filters can skip them.
+    seed('0'.repeat(20), 'other-abi', '1.0.0', 'wrong-abi');
+    seed('1'.repeat(20), process.versions.modules, '0.9.0', 'wrong-version');
+    seed('2'.repeat(20), process.versions.modules, '1.0.0', 'not-ready', false);
+    seed('f'.repeat(20), process.versions.modules, '1.0.0', 'right-binary');
+    const runs: string[] = [];
+    const cache = new DepsCache({
+      root: deps, agentHome: path.join(root, 'home'), trashRoot: path.join(root, '.instar', 'trash'),
+      runner: { available: () => ({ ok: true, version: '0.0.77' }), run: async (cmd) => { runs.push(cmd.command); return { exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false, outputCapped: false }; } },
+      readAtCommit: (_s, _sha, f) => (f === 'package.json' || f === 'package-lock.json' ? '{"name":"x"}' : null), listAtCommit: () => [],
+      install: async (dir) => { write(dir, 'node_modules/better-sqlite3/package.json', JSON.stringify({ version: '1.0.0' })); },
+      hasPnpm: () => false, testRunnerHoldersFile: path.join(root, 'h.json'),
+    });
+    const result = await cache.ensure('/src', 'd'.repeat(40));
+    expect(result.ok).toBe(true);
+    expect(runs).toEqual([]);
+    if (result.ok) expect(fs.readFileSync(path.join(result.dir, bin), 'utf8')).toBe('right-binary');
+  });
+
   it('builds from the base SHA manifests only, reuses a ready cache, evicts all but the two newest unless in use', async () => {
     const root = tmp();
     const installs: Array<{ dir: string; tool: string }> = [];

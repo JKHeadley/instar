@@ -12,6 +12,7 @@ import { buildRequests } from './secrets-model.js';
 import { spendingNeed } from './costs-model.js';
 import { healthNeedRows } from './health-model.js';
 
+// warning-path: inline
 const row = (key, main, sub, href, refs = []) => ({ key: `need:${key}`, main, sub: sub || '', tone: 'attn', refs, action: { kind: 'href', href } });
 
 /** A 200 that does not have the expected shape: it told us nothing, so never read it as "nothing waiting". */
@@ -37,7 +38,8 @@ export const NEED_SOURCES = [
   { id: 'accounts', page: 'capacity/accounts', reads: { pool: '/subscription-pool?scope=pool', relogin: '/subscription-relogin?scope=pool' },
     rows: ({ pool, relogin }, now) => {
       const episodes = relogin.ok && Array.isArray(relogin.data && relogin.data.episodes) ? relogin.data.episodes : [];
-      const page = buildAccountsPage(pool, now, { episodes });
+      const blockers = relogin.ok && Array.isArray(relogin.data && relogin.data.blockers) ? relogin.data.blockers : [];
+      const page = buildAccountsPage(pool, now, { episodes, blockers });
       if (!page.ok) return pool.data && pool.data.enabled === false ? [] : UNREADABLE;
       return page.needs.map((n) => row(`account:${n.key}`, n.title, n.sub, '#/capacity/accounts?s=needs', [String(n.label || '').split(' · ').pop()].filter(Boolean)));
     } },

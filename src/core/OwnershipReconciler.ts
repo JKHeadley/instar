@@ -36,6 +36,7 @@
  * are registered.
  */
 
+import { isSlackConversationKey } from './SlackForwardBridge.js';
 import type { SessionOwnershipRegistry, CasResult } from './SessionOwnershipRegistry.js';
 import type { SessionOwnershipRecord } from './SessionOwnership.js';
 import type { TopicPin, TopicPlacementPinStore } from './TopicPlacementPinStore.js';
@@ -206,6 +207,8 @@ export interface ReconcileTickReport {
   deferredAutonomousRun: number;
   /** U4.1 §2D pacing: move-initiating actions withheld this tick (over ws13MaxMovesPerTick). */
   deferredPaced: number;
+  /** Pins on Slack conversations, never acted on: a Slack conversation stays with its connection. */
+  skippedSlackPins?: number;
   /** trustworthy-machine-load D1: overload-shed transfers initiated this tick (also counted in `transfers`). */
   overloadTransfers?: number;
   /** trustworthy-machine-load D4: unpinned in-flight transfers claimed / aborted this tick (also counted in claims/aborts). */
@@ -444,6 +447,13 @@ export class OwnershipReconciler {
 
     for (const [sessionKey, pin] of Object.entries(this.effectivePins())) {
       if (!pin.pinned || !pin.preferredMachine) continue;
+      // slack-conversations-stay-with-connection §2.1: a pin left on a Slack conversation (from a move
+      // tried before this fix, or replicated from an older machine) never moves it. No case below may
+      // transfer, claim or adopt it: nothing would close the old session, and two would answer.
+      if (isSlackConversationKey(sessionKey)) {
+        report.skippedSlackPins = (report.skippedSlackPins ?? 0) + 1;
+        continue;
+      }
       pinnedSeenThisTick.add(sessionKey);
       const rec = this.d.ownership.read(sessionKey);
       const owner = rec && rec.status !== 'released' ? rec.ownerMachineId : null;
@@ -640,6 +650,15 @@ export class OwnershipReconciler {
       try { all = this.d.ownership.all(); } catch { all = []; /* @silent-fallback-ok — an unreadable registry drives nothing this tick; the next tick retries */ }
       for (const rec of all) {
         if (rec.status !== 'transferring' || pinnedSeenThisTick.has(rec.sessionKey)) continue;
+        // slack-conversations-stay-with-connection §2.1: a Slack conversation caught mid-transfer (an
+        // older owner's move, or one in flight at upgrade) is never claimed elsewhere — its owner takes
+        // it back at once, whatever the flags, so it is neither split nor left queuing in `transferring`.
+        if (isSlackConversationKey(rec.sessionKey)) {
+          if (rec.ownerMachineId === self && rec.transferTo && rec.transferTo !== self) {
+            this.act(report, 'aborts', rec.sessionKey, { type: 'abort-transfer', machineId: self }, 'reconcile-abort-transfer');
+          }
+          continue;
+        }
         if (!driveUnpinned && rec.drainInFlight !== true) continue;
         const age = now - (rec.timestamp ?? 0); // same fallback as the pinned path
         if (rec.transferTo === self) {
@@ -919,6 +938,10 @@ export class OwnershipReconciler {
     if (!pin || !pin.pinned || !pin.preferredMachine) return { pinned: false };
     const pinHlc = pin.hlc ?? this.deriveLocalPinHlc(pin);
     const base = { pinned: true as const, preferredMachine: pin.preferredMachine, pinHeldSince: pinHlc.physical };
+    // slack-conversations-stay-with-connection: a pin on a Slack conversation is never acted on — say so.
+    if (isSlackConversationKey(sessionKey)) {
+      return { ...base, pinState: 'pending', pendingReason: 'A Slack conversation stays with the machine that holds the Slack connection, so this pin is ignored.' };
+    }
     // U4.2 §2.4: a claim suspension excludes the pin — derived, never written.
     try {
       const s = this.d.claimSuspensions?.()?.get(Number(sessionKey));

@@ -43,6 +43,7 @@ export interface DevGatedFeature {
 }
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
+  { name: 'notificationSelectivity', configPath: 'notifications.selectivity.enabled', description: 'Observe automated notification dispositions on development agents; fleet remains dark until operator enable.', justification: 'Structural provenance only, dry-run by default, reply floors preserved. Echo enforcement is explicitly authorized by the current operator directive; other agents retain the approved staged flip.' },
   {
     name: 'scriptRunners',
     configPath: 'jobs.scriptRunners.enabled',
@@ -208,6 +209,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the owner-gate + governor + reconciler run the full decision loop and AUDIT/log every suppression/dead-letter/close they WOULD make, but PromiseBeacon.emitUserSend STILL sends and the governor/reconciler mutate nothing while dryRun holds (verified at emitUserSend §4.2 + reconcileGraveyard/maybeReconcileGraveyard dryRun branches). No spend, no destructive action, no egress while the canary holds; real suppression/closes need a deliberate dryRun:false. Same dogfooding posture as topicProfiles / credential-repointing.',
   },
   {
+    name: 'promiseReview',
+    configPath: 'commitments.promiseReview.enabled',
+    description: 'Promise review (docs/specs/promise-review-and-priority.md): the promise-review job reviews the agent\'s own open promises every 6 h and keeps / prioritizes / delivers / archives each through POST /commitments/review/apply.',
+    justification: 'Ships closureDryRun:true: on a dev agent keep/prioritize stamp live (they close nothing), while deliver/archive are validated and audited as would-apply and close nothing until a deliberate closureDryRun:false. Even live, every closure needs a written reason plus server-checked evidence, is capped (15/run, 60/day), audited to logs/promise-review.jsonl and reopenable for 30 days; nothing is ever deleted and the job never messages anyone. Spend: one sonnet session per 6 h only when enough rows are due (gate). Kill switch read live.',
+  },
+  {
     name: 'biasToAction',
     configPath: 'monitoring.biasToAction.enabled',
     description: 'Standing-authorization signal for B17_FALSE_BLOCKER (BIAS-TO-ACTION-SPEC) — feeds the outbound tone gate a VERIFIED-operator, non-forwarded, in-window grant so "re-asking for authority you already hold" is recognized as the false blocker it is.',
@@ -308,6 +315,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'monitoring.blockerLedger.durableVaultSession.enabled',
     description: 'Durable org-Bitwarden session (self-unblock-before-escalating spec §5.3) — a TTL+idle-bounded, in-flight-only warm session the org-vault probe uses so an in-vault credential is actually reachable.',
     justification: 'The session value lives in PROCESS MEMORY ONLY — never written to any log/config/temp file, never passed as a CLI argv (handed to bw only via the child BW_SESSION env), and NEVER placed on the multiMachine.secretSync path (machine-local). It is held warm only while a checklist run is in flight and carries a TTL + idle-expiry, so the standing-privilege window is minimal. The master password stays operator-held; no new on-disk secret is introduced. The dev agent is the controlled blast radius where this matures before any fleet flip.',
+  },
+  {
+    name: 'attributionPaperTrail',
+    configPath: 'attribution.enabled',
+    description: 'Attribution paper trail — statements credited to a person resolve to the logged message, in notes, messages and a daily report (attribution-paper-trail).',
+    justification: 'Ships in mode record: on a dev agent it writes its own ledger and report, refuses nothing, holds nothing and never edits a note. Spend is the agent\'s own subscription inside fixed budgets of 200 and 300 model calls a day plus 40 a run.',
   },
   {
     name: 'topicProfiles',
@@ -912,6 +925,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Own names come only from local configuration and are proven by the per-process pairing ping (echoed Host, local-TLS arrival, no sibling claim); a request is accepted only on a still-configured own name that arrived through this machine\'s own TLS front, and a captured signature names its exact host. Probes are bounded (one in flight, 3 s, backoff to 15 min, breaker after 8). The serve step never overwrites an existing 443 config. Switching it off restores the single paired host exactly.',
   },
   {
+    name: 'mobilePairingOwnerPresence',
+    configPath: 'mobilePairing.ownerPresence.enabled',
+    description: 'Remote Desktop with Face ID and the Dashboard PIN page on the owner\'s phone (docs/specs/mobile-owner-presence-pin.md): a fresh presence-key signature over a single-use, purpose-bound challenge mints a desktop-only, phone-bound 15-minute session (POST /mobile/desktop-unlock) or reveals the dashboard PIN this server compares against (POST /mobile/dashboard-pin/reveal).',
+    justification: 'The desktop session is narrower than the PIN unlock: accepted only by the desktop routes, re-checked against the phone on every use, cleared on a PIN change, and the phone never holds the API token. The reveal is owner-phone only, never returns a placeholder, and needs the owner\'s private chat, which is told (without the PIN) at most once per phone per 10 minutes while every reveal is audited. Bearer, MSP and shared phones are refused; every use and refusal is audited. Dark on the fleet until the development-agent live proof and a physical-phone check pass.',
+  },
+  {
     name: 'mobilePairingPermissionActions',
     configPath: 'mobilePairing.permissionActions.enabled',
     description: 'Face ID-confirmed permission writes from the owner\'s phone (docs/specs/mobile-native-permissions.md): approve or decline a waiting authorization request held on this machine, and turn a feature switch on or off, each with a fresh presence-key signature over a single-use challenge bound to the device, Host and exact action (POST /mobile/permissions/challenge, /requests/:id/approve|decline, /features/:id).',
@@ -960,6 +979,7 @@ export interface DarkGateExclusion {
 }
 
 export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
+  { configPath: 'notifications.selectivity.digest.enabled', category: 'optional-integration', reason: 'A daily digest is an explicit operator notification preference, never an automatic development-agent opt-in.' },
   // ── destructive — kills/deletes on a heuristic; off + dry-run for EVERYONE ──
   {
     configPath: 'monitoring.sessionReaper.enabled',

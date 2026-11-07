@@ -75,11 +75,15 @@ export function buildMachinesPage(poolRes, healthRes, now = Date.now(), extras =
   const busiest = rows.filter((r) => typeof r.perCore === 'number').sort((a, b) => b.perCore - a.perCore)[0];
   const leader = rows.find((r) => r.leading);
   const facts = [
+    // warning-path: pageHead
     { n: `${answering}/${total}`, label: 'answering', tone: answering < total ? 'attn' : null },
+    // warning-path: pageHead
     busiest ? { n: busiest.name, label: `busiest · ${busiest.verdict}`, tone: busiest.verdict === 'overloaded' ? 'attn' : null } : null,
     leader ? { n: leader.name, label: 'leading' } : null,
+    // warning-path: inline
     extras.needsLook ? { n: extras.needsLook, label: 'need a look', tone: 'attn', href: '#/settings/allowed' } : null,
   ].filter(Boolean);
+  // warning-path: pageHead
   return { ok: true, single, machines: rows, headline, sub: subParts.join(' '), facts, tone: dark.length ? 'bad' : struggling.length || unclear.length ? 'attn' : 'ok' };
 }
 
@@ -91,6 +95,7 @@ export function ropesFor(peerId, healthRes, now = Date.now()) {
   return list.filter((r) => r.peer === peerId).map((r) => ({
     kind: ROPE_WORDS[r.kind] || r.kind,
     // A rope never actually exercised is unknown, whatever its default label says.
+    // warning-path: askLink
     state: !r.lastResultAt || r.state === 'unknown' ? 'unknown' : r.state === 'healthy' ? 'ok' : 'bad',
     label: !r.lastResultAt ? 'not checked yet' : r.state === 'healthy' ? `working · ${ago(r.lastResultAt, now)}` : `failing · ${r.consecutiveFailures} in a row`,
   }));
@@ -108,7 +113,9 @@ export function healthOf(res) {
     ok: true,
     summary: issues.length || notActive.length ? `${issues.length + notActive.length} ${issues.length + notActive.length === 1 ? 'part needs' : 'parts need'} a look.` : `All ${caps.length} parts working.`,
     rows: [
+      // warning-path: askLink
       ...issues.map((i) => ({ main: i.title || i.message || i.label || 'An issue', sub: i.detail || i.description || '', tone: 'attn' })),
+      // warning-path: askLink
       ...notActive.map((c) => ({ main: c.label, sub: c.status, tone: 'attn' })),
       ...caps.filter((c) => c && c.status === 'active').map((c) => ({ main: c.label, sub: c.metric || '' })),
     ],

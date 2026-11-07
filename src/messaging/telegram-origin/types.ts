@@ -44,6 +44,8 @@ export interface OriginDestination {
   scheduledMessageId: string | null;
 }
 export interface TelegramOriginRecord extends TelegramOriginProducer {
+  /** Origin-stamped structural notification provenance, signed with the record. */
+  notification?: import('../NotificationSelectivityGate.js').OutboundEnvelope;
   /** Custody importer attests unknown legacy authorship, not its own authorship. */
   importedByMachineId?: string;
   legacySnapshotDigest?: string;

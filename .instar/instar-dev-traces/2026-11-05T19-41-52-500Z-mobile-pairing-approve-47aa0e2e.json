@@ -1,0 +1,49 @@
+{
+  "version": 3,
+  "slug": "mobile-pairing-approve",
+  "sessionId": "ae0d2305-6c8f-443a-a23d-9c020ecac27c",
+  "timestamp": "2026-11-05T19:41:52.500Z",
+  "artifactPath": "upgrades/side-effects/mobile-pairing-approve.md",
+  "artifactSha256": "564bc1ef17cac79b9e8e0765bfc2233f4c5a361f9a0290a0f2cbf19f072041a3",
+  "specPath": "docs/specs/mobile-pairing-approve.md",
+  "coveredFiles": [
+    "dashboard-pair/pair-model.js",
+    "dashboard-pair/pair.js",
+    "dashboard/console/nav-model.js",
+    "dashboard/phones.js",
+    "docs/specs/mobile-pairing-approve.eli16.md",
+    "docs/specs/mobile-pairing-approve.md",
+    "docs/specs/reports/mobile-pairing-approve-convergence.md",
+    "src/core/MobileDeviceKeys.ts",
+    "src/core/MobilePush.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/types.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/mobileConsoleTicket.ts",
+    "src/server/mobilePairingApproval.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/mobile-pairing-approve-alive.test.ts",
+    "tests/integration/mobile-dashboard-pairing.test.ts",
+    "tests/integration/mobile-pairing-approve.test.ts",
+    "tests/unit/dashboard-pair-page.test.ts",
+    "tests/unit/dashboard-phones.test.ts",
+    "tests/unit/mobile-pairing-approve.test.ts",
+    "upgrades/next/mobile-pairing-approve.md",
+    "upgrades/side-effects/mobile-pairing-approve.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Identity and auth admission: a new way to activate a phone on the agent.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/mobile-pairing-approve-convergence.md",
+      "iterations": 2,
+      "verified": true
+    }
+  }
+}

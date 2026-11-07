@@ -253,6 +253,125 @@ describe('automatic full-suite replay after enforced preflight red', () => {
     expect(fs.readFileSync(restarted.svc.auditPath, 'utf8')).toContain('"reason":"replay-managed"');
     restarted.svc.shutdown();
   });
+  describe('rebuildIndex reads open PRs in one call', () => {
+    const seed = (h: ReturnType<typeof setup>, prs: number[]) => {
+      fs.mkdirSync(path.dirname(h.svc.journalPath), { recursive: true });
+      fs.writeFileSync(h.svc.journalPath, prs.map((pr, n) => JSON.stringify({ v: 1, writtenAt: new Date(Date.parse('2026-10-21T12:00:00Z') + n).toISOString(), record: record({ pr }) })).join('\n') + '\n');
+    };
+    const seamsOf = (h: ReturnType<typeof setup>) => (h.svc as unknown as { seams: LocalVerifyServiceSeams }).seams;
+    const countIsPrOpen = (h: ReturnType<typeof setup>) => {
+      const counter = { calls: 0 };
+      const original = seamsOf(h).isPrOpen;
+      seamsOf(h).isPrOpen = async (pr) => { counter.calls += 1; return original(pr); };
+      return counter;
+    };
+
+    it('makes no per-PR call when the list is available, and treats a PR missing from it as not open', async () => {
+      const h = setup();
+      seed(h, [1, 2, 3]);
+      const perPr = countIsPrOpen(h);
+      let lists = 0;
+      seamsOf(h).listOpenPrs = async () => { lists += 1; return new Set([1, 3]); };
+      const res = await h.svc.rebuildIndex();
+      expect(lists).toBe(1);
+      expect(perPr.calls).toBe(0);
+      expect(res).toMatchObject({ loaded: 2, skippedClosed: 1 });
+      h.svc.shutdown();
+    });
+
+    it('makes no GitHub call at all for an empty journal', async () => {
+      const h = setup();
+      let lists = 0;
+      seamsOf(h).listOpenPrs = async () => { lists += 1; return new Set<number>(); };
+      await h.svc.rebuildIndex();
+      expect(lists).toBe(0);
+      h.svc.shutdown();
+    });
+
+    it('gives the same answer as the per-PR path', async () => {
+      const viaList = setup();
+      seed(viaList, [1, 2, 3]);
+      seamsOf(viaList).listOpenPrs = async () => new Set([1, 3]);
+      const viaPerPr = setup({ open: { 2: false } });
+      seed(viaPerPr, [1, 2, 3]);
+      expect(await viaList.svc.rebuildIndex()).toEqual(await viaPerPr.svc.rebuildIndex());
+      viaList.svc.shutdown();
+      viaPerPr.svc.shutdown();
+    });
+
+    const closedSeenOf = (h: ReturnType<typeof setup>) => (h.svc as unknown as { readClosedSeen(): Record<number, number> }).readClosedSeen();
+    const journalPrs = (h: ReturnType<typeof setup>) => fs.readFileSync(h.svc.journalPath, 'utf-8').trim().split('\n').filter(Boolean).map((l) => (JSON.parse(l) as { record: { pr: number } }).record.pr).sort();
+
+    it('starts the retention clock for a PR missing from the list, and writes the same state as the per-PR path', async () => {
+      const viaList = setup();
+      seed(viaList, [1, 2, 3]);
+      seamsOf(viaList).listOpenPrs = async () => new Set([1, 3]);
+      const viaPerPr = setup({ open: { 2: false } });
+      seed(viaPerPr, [1, 2, 3]);
+      await viaList.svc.rebuildIndex();
+      await viaPerPr.svc.rebuildIndex();
+      expect(Object.keys(closedSeenOf(viaList))).toEqual(['2']);
+      expect(closedSeenOf(viaList)).toEqual(closedSeenOf(viaPerPr));
+      expect(journalPrs(viaList)).toEqual(journalPrs(viaPerPr));
+      const key = (h: ReturnType<typeof setup>, pr: number) => h.svc.getRecord(pr, record({ pr }).headSha, 'main') !== null;
+      for (const h of [viaList, viaPerPr]) expect([1, 2, 3].map((pr) => key(h, pr))).toEqual([true, false, true]);
+      viaList.svc.shutdown();
+      viaPerPr.svc.shutdown();
+    });
+
+    it('clears the clock when a later list shows the PR open again', async () => {
+      const h = setup();
+      seed(h, [1, 2]);
+      seamsOf(h).listOpenPrs = async () => new Set([1]);
+      await h.svc.rebuildIndex();
+      expect(closedSeenOf(h)[2]).toBeDefined();
+      seamsOf(h).listOpenPrs = async () => new Set([1, 2]);
+      await h.svc.rebuildIndex();
+      expect(closedSeenOf(h)[2]).toBeUndefined();
+      h.svc.shutdown();
+    });
+
+    it('drops a listed-missing PR from the journal only after the retention window', async () => {
+      const h = setup();
+      seed(h, [1, 2]);
+      seamsOf(h).listOpenPrs = async () => new Set([1]);
+      await h.svc.rebuildIndex();
+      expect(journalPrs(h)).toEqual([1, 2]);
+      h.advance(LOCAL_VERIFY_LIMITS.retentionAfterCloseMs + 1);
+      await h.svc.rebuildIndex();
+      expect(journalPrs(h)).toEqual([1]);
+      expect(closedSeenOf(h)[2]).toBeUndefined();
+      h.svc.shutdown();
+    });
+
+    it('a PR GitHub cannot resolve: unknown and kept on the per-PR path, closed on the list path', async () => {
+      const perPr = setup({ open: { 2: null } });
+      seed(perPr, [1, 2]);
+      await perPr.svc.rebuildIndex();
+      expect(closedSeenOf(perPr)[2]).toBeUndefined();
+      const viaList = setup();
+      seed(viaList, [1, 2]);
+      seamsOf(viaList).listOpenPrs = async () => new Set([1]);
+      await viaList.svc.rebuildIndex();
+      expect(closedSeenOf(viaList)[2]).toBeDefined();
+      perPr.svc.shutdown();
+      viaList.svc.shutdown();
+    });
+
+    it.each([
+      ['returns null', async () => null],
+      ['throws', async () => { throw new Error('gh down'); }],
+    ])('falls back to one read per PR when the list %s', async (_label, listOpenPrs) => {
+      const h = setup({ open: { 2: false } });
+      seed(h, [1, 2, 3]);
+      const perPr = countIsPrOpen(h);
+      seamsOf(h).listOpenPrs = listOpenPrs as LocalVerifyServiceSeams['listOpenPrs'];
+      const res = await h.svc.rebuildIndex();
+      expect(perPr.calls).toBe(3);
+      expect(res).toMatchObject({ loaded: 2, skippedClosed: 1 });
+      h.svc.shutdown();
+    });
+  });
   it('keeps the journal cap when pending replay proofs fill every slot', async () => {
     const h = setup();
     const state = path.join(h.stateDir, 'state');

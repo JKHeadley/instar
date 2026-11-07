@@ -182,6 +182,9 @@ export const WRONG_BUDGET_WINDOW_MS = 24 * 60 * 60_000;
 const TERMINAL_KEEP_MS = 24 * 60 * 60_000;
 const MAX_TOMBSTONES = 200;
 
+/** Which proof approved a phone: the owner's private chat, a dashboard PIN session, or an owner phone's Face ID. */
+export type ApprovedVia = 'telegram-dm' | 'dashboard-pin' | 'owner-phone' | 'owner-agent';
+
 export interface DeviceRecord {
   id: string;
   deviceName: string | null;
@@ -193,8 +196,10 @@ export interface DeviceRecord {
   host?: string;
   expiresAt?: string;
   approvedAt?: string;
-  /** How the owner approved this key (mobile-native-conversations §4.4); absent ⇒ telegram-dm. */
-  approvedVia?: 'telegram-dm' | 'dashboard-pin';
+  /** How the owner approved this key (mobile-native-conversations §4.4, mobile-pairing-approve §3.1); absent ⇒ telegram-dm. */
+  approvedVia?: ApprovedVia;
+  /** The owner phone whose Face ID approved this key (mobile-pairing-approve §3.1). */
+  approvedBy?: string;
   declinedAt?: string;
   revokedAt?: string;
   /** HMACs of distinct wrong codes already tried (per-process key; cleared on activation). */
@@ -213,7 +218,7 @@ export interface DeviceRecord {
    * (every phone paired before people and roles was approved by the owner alone as the owner's).
    */
   userId?: string;
-  role?: 'owner' | 'msp';
+  role?: 'owner' | 'msp' | 'team';
   /**
    * The phone's presence key (docs/specs/mobile-console-device-signin.md §3.1): a second Secure
    * Enclave P-256 public key that signs only after the device owner authenticates. Set once.
@@ -293,7 +298,7 @@ export class DeviceRegistry {
   pairingPaused(): boolean { return (this.normalize(this.read()).wrongCodeTimes ?? []).length >= WRONG_BUDGET; }
 
   /** Adds a pending device. Refuses a duplicate key, too many pending, or a paused budget. */
-  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string; userId?: string | null; role?: 'owner' | 'msp' }):
+  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string; userId?: string | null; role?: 'owner' | 'msp' | 'team' }):
     { ok: true; device: DeviceRecord } | { ok: false; reason: 'duplicate-key' | 'too-many-pending' | 'pairing-paused' } {
     const f = this.normalize(this.read());
     if ((f.wrongCodeTimes ?? []).length >= WRONG_BUDGET) return { ok: false, reason: 'pairing-paused' };
@@ -319,7 +324,7 @@ export class DeviceRegistry {
    * (the absent-means-owner shape). Returns null when this machine holds no such device; a revoked
    * device is never reassigned.
    */
-  setPerson(id: string, person: { userId: string | null; role: 'owner' | 'msp' }): DeviceRecord | null {
+  setPerson(id: string, person: { userId: string | null; role: 'owner' | 'msp' | 'team' }): DeviceRecord | null {
     const f = this.normalize(this.read());
     const d = f.devices.find((x) => x.id === id);
     if (!d || d.status === 'revoked') return null;
@@ -351,12 +356,13 @@ export class DeviceRegistry {
   }
 
   /** Records the outcome of a confirmation attempt. `wrongHmac` is set for a wrong code. */
-  applyConfirm(id: string, outcome: { ok: true; approvedVia?: 'telegram-dm' | 'dashboard-pin'; approvedAt?: string } | { ok: false; wrongHmac: string }): DeviceRecord | null {
+  applyConfirm(id: string, outcome: { ok: true; approvedVia?: ApprovedVia; approvedAt?: string; approvedBy?: string } | { ok: false; wrongHmac: string }): DeviceRecord | null {
     const f = this.normalize(this.read());
     const d = f.devices.find((x) => x.id === id);
     if (!d || d.status !== 'pending') return d ?? null;
     if (outcome.ok) {
       d.status = 'active'; d.approvedAt = outcome.approvedAt ?? new Date(this.now()).toISOString(); d.approvedVia = outcome.approvedVia ?? 'telegram-dm';
+      if (outcome.approvedBy) d.approvedBy = outcome.approvedBy;
       delete d.wrongCodes; delete d.expiresAt;
     } else {
       d.wrongCodes = d.wrongCodes ?? [];

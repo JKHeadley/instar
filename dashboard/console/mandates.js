@@ -56,6 +56,7 @@ export async function renderMandates(main, ctx) {
   if (!slips.ok) sections.push(el('section', { class: 'list-section', id: 'sec-active' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Active slips' })), cantTell(slips.reason)));
   else {
     sections.push(activeBlock(slips, deps));
+    // warning-path: row
     sections.push(section({ id: 'ended', title: 'Ended', rows: slips.ended.map((c) => ({ key: c.key, main: c.summary, sub: `${c.title} · ${c.stateWords}`, tone: c.invalid ? 'bad' : 'unknown', card: c })), collapsed: true, empty: 'No slip has ended yet.', onRow: (r) => openSlip(r.card, deps) }));
   }
   sections.push(historyBlock(audit, deps));

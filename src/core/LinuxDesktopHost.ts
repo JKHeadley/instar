@@ -12,6 +12,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { guardChildStdin } from './pipeErrorGuard.js';
 import { validDesktopInput, validDisplayId, type DesktopButton, type DesktopDisplay, type DesktopDisplayList,
   type DesktopHost, type DesktopInput, type DesktopProbe } from './DesktopHost.js';
 
@@ -29,6 +30,7 @@ export type LinuxRunner = (file: string, args: string[], options: { env: NodeJS.
 export const defaultLinuxRunner: LinuxRunner = (file, args, { env, limit, timeoutMs, input }) => new Promise((resolve, reject) => {
   const child = execFile(file, args, { env, encoding: 'buffer', maxBuffer: limit, timeout: timeoutMs, windowsHide: true },
     (error, stdout) => (error ? reject(error) : resolve(stdout as Buffer)));
+  guardChildStdin(child.stdin, 'linux-desktop-host');
   if (input !== undefined) child.stdin?.end(input);
 });
 

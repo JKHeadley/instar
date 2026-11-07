@@ -24,6 +24,17 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/attribution-gate.js\"",
+            "blocking": true,
+            "timeout": 25000
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {

@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "executor-git-nonblocking",
+  "sessionId": "318ed537-3e62-40ad-adf9-360871c3e705",
+  "timestamp": "2026-11-07T04:13:58.301Z",
+  "artifactPath": "upgrades/side-effects/executor-git-nonblocking.md",
+  "artifactSha256": "079cfbe889cb72a242da99cb54ae81a4f4d294771190d869064e44525b23c195",
+  "coveredFiles": [
+    "src/feedback-factory/execute/executorPorts.ts",
+    "tests/unit/feedback-factory/execute-attempt-git.test.ts",
+    "tests/unit/feedback-factory/execute-github-runtime.test.ts",
+    "upgrades/eli16/executor-git-nonblocking.md",
+    "upgrades/next/executor-git-nonblocking.md",
+    "upgrades/side-effects/executor-git-nonblocking.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Moves slow git steps off the event loop through the same guard funnel; a revert fully undoes it. Independent second pass raised concerns that are addressed.",
+  "eli16Path": "upgrades/eli16/executor-git-nonblocking.md",
+  "sideEffectsPath": "upgrades/side-effects/executor-git-nonblocking.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one git command per spawn inside the existing bounded attempt path; no retry, and the kill only ends that same child after its timeout; not a self-triggered loop"
+  }
+}

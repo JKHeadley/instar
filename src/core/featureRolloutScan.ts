@@ -16,6 +16,7 @@ import { SafeGitExecutor } from './SafeGitExecutor.js';
 import type { SpecArtifact } from './FeatureRolloutReconciler.js';
 import type { RolloutFlagObservation } from './featureRollout.js';
 import type { MaturationEvaluationContract, MaturationMetricSource, RolloutAccountingDisposition } from './InitiativeTracker.js';
+import { parseMaturationOutcome } from '../monitoring/MaturationOutcome.js';
 
 const RECENT_MERGE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000; // 14d ⇒ active vs terminal backfill
 
@@ -91,7 +92,10 @@ export function parseMaturationContract(raw: string | undefined): MaturationCont
     ids.add(m.id);
     metrics.push({ id: m.id, source, sourceRef: m.sourceRef, direction: m.direction as 'at-least' | 'at-most', threshold: m.threshold, minSamples: m.minSamples as number });
   }
-  return { ok: true, contract: { cadenceHours: v.cadenceHours as number, evidenceMaxAgeHours: v.evidenceMaxAgeHours as number, metrics } };
+  const outcome = v.outcome === undefined ? undefined : parseMaturationOutcome(v.outcome, metrics.map(m => m.id));
+  if (outcome === null) return { ok: false, error: 'invalid-shape' };
+  return { ok: true, contract: { cadenceHours: v.cadenceHours as number, evidenceMaxAgeHours: v.evidenceMaxAgeHours as number, metrics,
+    ...(outcome ? { outcome } : {}) } };
 }
 
 function maturationContractFrom(fm: Record<string, string>): MaturationEvaluationContract | undefined {

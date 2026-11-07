@@ -48,7 +48,7 @@ async function appHarness(extra: Record<string, unknown> = {}, configExtra: Reco
     projectDir: process.cwd(), configuredModel: 'gpt-6-astra' });
   const app = express(); app.use(express.json());
   app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer agent-test') { res.sendStatus(401); return; } next(); });
-  app.use(createRoutes({ config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
+  app.use(createRoutes({ state: { getSession: () => undefined }, config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
     messaging: [{ type: 'telegram', enabled: true, config: { token: botToken, chatId: '-100123', lifelineTopicId: 7848 } }], ...configExtra },
     telegramOrigin: runtime, verifyDashboardOperatorSession: (proof: string) => proof === 'operator-test',
     telegram: { sendToTopic: async (topicId: number, text: string) => {
@@ -162,15 +162,18 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
       .set('Authorization', 'Bearer agent-test').set('X-Instar-Origin-Session', h.sessionToken)
       .send({ text: 'The client report is ready for your review.' });
     expect(sent.status).toBe(409); expect(review).toHaveBeenCalledOnce();
+    const firstStart = Date.now();
     expect(await h.runtime.recoverHeld()).toEqual({ processed: 1, recovered: 0 });
     expect(review).toHaveBeenCalledTimes(2);
-    for (let n = 0; n < 12; n++) expect(await h.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
+    // The first step of the pacing ladder is 30 s: a few immediate ticks stay inside it.
+    for (let n = 0; n < 3; n++) expect(await h.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
     expect(review).toHaveBeenCalledTimes(2); expect(h.network).not.toHaveBeenCalled();
     const audit = await request(h.app).get('/telegram/origins').set('Authorization', 'Bearer agent-test')
       .set('X-Instar-AgentId', 'echo').set('X-Instar-Operator-Session', 'operator-test');
     expect(audit.status).toBe(200);
     expect(audit.body.records[0].recovery).toMatchObject({ attempts: 1 });
-    expect(audit.body.records[0].recovery.nextAttemptAt).toBeGreaterThan(Date.now() + 14 * 60_000);
+    expect(audit.body.records[0].recovery.nextAttemptAt).toBeGreaterThanOrEqual(firstStart + 30_000);
+    expect(audit.body.records[0].recovery.nextAttemptAt).toBeLessThanOrEqual(Date.now() + 30_000);
     expect(audit.body.records[0].attempts).toEqual([]);
     // Advance only the real worker scheduler's explicit test clock. Network,
     // policy, original custody and request bytes continue through production.

@@ -16,7 +16,8 @@
  */
 
 import type { TelegramHandoverPeople } from '../core/telegramPairHandover.js';
-import { Router } from 'express';
+import { LastingLinkLedger, lastingEndpoints, mergeEndpoints } from '../core/lastingLink.js';
+import { Router, type Request, type Response } from 'express';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { sealIdentityForJoiner, readAgentIdentityForHandover } from '../core/AgentIdentityHandover.js';
@@ -24,6 +25,8 @@ import {
   decideInviterPairActivation, finishInviterPairActivation, requestPairActivationRestart,
 } from '../core/sessionPoolPairActivation.js';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { sign, verify } from '../core/MachineIdentity.js';
 import type { MachineIdentityManager } from '../core/MachineIdentity.js';
 import type { HeartbeatManager, Heartbeat } from '../core/HeartbeatManager.js';
@@ -41,11 +44,31 @@ import { identityRecoveryBearerResponseMessage } from '../core/IdentityRecoveryB
 import { identityProjectionBatchMessage } from '../core/IdentityProjectionEnvelope.js';
 import { identityPropagationReceiptMessage, type IdentityPropagationReceiptUnsigned } from '../core/IdentityPropagationReceipt.js';
 import { recoveryRootDelegationHash, signingAckDelegationHash } from '../core/MachineOperatorDelegation.js';
+
+/**
+ * `mobilePairing.ownerIntroducers` from this machine's own config file, for a joining machine
+ * (docs/specs/mobile-pairing-introducer.md §6). Public keys and names only; nothing when absent.
+ */
+export function ownerIntroducersForJoin(stateDir: string | undefined): { ownerIntroducers?: Array<{ name: string; publicKey: string }> } {
+  if (!stateDir) return {};
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf8')) as { mobilePairing?: { ownerIntroducers?: unknown } };
+    const list = cfg.mobilePairing?.ownerIntroducers;
+    if (!Array.isArray(list)) return {};
+    const clean = list.slice(0, 8).filter((e): e is { name: string; publicKey: string } =>
+      !!e && typeof (e as { name?: unknown }).name === 'string' && typeof (e as { publicKey?: unknown }).publicKey === 'string'
+      && /^[A-Za-z0-9_-]{43}$/.test((e as { publicKey: string }).publicKey))
+      .map((e) => ({ name: e.name.slice(0, 40), publicKey: e.publicKey }));
+    return clean.length ? { ownerIntroducers: clean } : {};
+  } catch { /* @silent-fallback-ok — no readable list means the joiner simply has none (it falls back to the code) */ return {}; }
+}
 export { identityRecoveryBearerResponseMessage } from '../core/IdentityRecoveryBearer.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
 export interface MachineRouteContext {
+  /** True when this agent has had team members: a second machine would know none of it (team-roles-and-access §4.1). */
+  teamJoinBlocked?: () => boolean;
   /** Machine identity manager */
   identityManager: MachineIdentityManager;
   /** Heartbeat manager for coordination */
@@ -154,6 +177,7 @@ export interface MachineRouteContext {
    * ropes. Absent / returns undefined ⇒ the field is omitted (un-upgraded behavior).
    */
   getSelfMeshEndpoints?: () => import('../core/types.js').MeshEndpoint[] | undefined;
+  getFreshLastingEndpoints?: () => Promise<import('../core/types.js').MeshEndpoint[]>;
   /** Bearer-authenticated recovery protocol. Mounted before the ordinary bearer
    * middleware because the rest of this router uses machine authentication. */
   identityReannounce?: IdentityReannounceService;
@@ -169,6 +193,22 @@ export interface MachineRouteContext {
 }
 
 // ── Route Factory ──────────────────────────────────────────────────
+
+/** Read fresh: this machine's registry entry is written only at boot, so a network joined since is missing. */
+async function selfLastingEndpointsForPairing(ctx: MachineRouteContext): Promise<unknown> {
+  const fallback = lastingEndpoints(ctx.identityManager.getMachineEndpoints(ctx.localMachineId));
+  if (!ctx.getFreshLastingEndpoints) return fallback;
+  try {
+    const fresh = await Promise.race([
+      ctx.getFreshLastingEndpoints(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 3_000).unref()),
+    ]);
+    return fresh ? mergeEndpoints(fallback, fresh) : fallback;
+  } catch (err) {
+    console.warn('[pair] could not read this machine\'s addresses:', err);
+    return fallback; // @silent-fallback-ok: the boot-time addresses, reported on the line above.
+  }
+}
 
 export function createMachineRoutes(ctx: MachineRouteContext): Router {
   const router = Router();
@@ -531,9 +571,14 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
   // Note: This endpoint does NOT use machineAuth (new machine isn't registered yet).
   // Instead, it relies on the pairing code exchange for authentication.
 
-  router.post('/api/pair', (req, res) => {
-    const { pairingCode, machineIdentity, ephemeralPublicKey, advertisedUrl } = req.body ?? {};
+  // Express 4 does not catch a rejected handler, and an unhandled rejection stops the server.
+  const handlePair = async (req: Request, res: Response): Promise<void> => {
+    const { pairingCode, machineIdentity, ephemeralPublicKey, advertisedUrl, endpoints } = req.body ?? {};
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    if (ctx.teamJoinBlocked?.()) {
+      res.status(409).json({ error: 'team-needs-one-machine', detail: 'This agent has had team members, so a second machine has to wait for support for several machines.' });
+      return;
+    }
 
     if (!pairingCode || !machineIdentity || !ephemeralPublicKey) {
       res.status(400).json({ error: 'Missing required pairing fields' });
@@ -653,6 +698,20 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
         ctx.identityManager.updateMachineUrl(machineIdentity.machineId, advertisedUrl.trim().replace(/\/+$/, ''));
       } catch { /* entry was just registered; best-effort */ }
     }
+    // The joiner may have no other way to tell this machine where it is: a quick tunnel only
+    // exists once its server starts, and that address changes at every restart.
+    const joinerLasting = lastingEndpoints(endpoints);
+    if (joinerLasting.length > 0) {
+      try {
+        ctx.identityManager.updateMachineEndpoints(
+          machineIdentity.machineId,
+          mergeEndpoints(ctx.identityManager.getMachineEndpoints(machineIdentity.machineId), joinerLasting),
+        );
+      } catch (err) {
+        console.warn('[pair] could not record the new machine\'s addresses:', err);
+      }
+    }
+    if (ctx.stateDir) new LastingLinkLedger(ctx.stateDir).forget(machineIdentity.machineId);
     stored.consumed = true;
     pairingStore.save(stored);
 
@@ -721,9 +780,13 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     res.json({
       status: 'paired',
       machineIdentity: localIdentity,
+      endpoints: await selfLastingEndpointsForPairing(ctx),
       ...(activation?.response ?? {}),
       ...(ctx.getIdentityRecoveryBearerToken?.() ? { identityRecoveryBearerToken: ctx.getIdentityRecoveryBearerToken!() } : {}),
       ...(agentIdentityEnvelope ? { agentIdentityEnvelope } : {}),
+      // The agent's owner introducers travel with its identity (mobile-pairing-introducer §6):
+      // public keys only, over this code-authenticated pairing response.
+      ...ownerIntroducersForJoin(ctx.stateDir),
       message: 'Paired.',
     });
     if (activation?.restart && ctx.stateDir) {
@@ -734,6 +797,12 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
         console.warn('[pair] could not request a restart; sharing starts at the next one:', err);
       }
     }
+  };
+  router.post('/api/pair', (req, res) => {
+    handlePair(req, res).catch((err) => {
+      console.warn('[pair] pairing failed:', err instanceof Error ? err.message : String(err));
+      if (!res.headersSent) res.status(500).json({ error: 'pairing-failed' });
+    });
   });
 
   // Existing pools created before the recovery channel can converge without a

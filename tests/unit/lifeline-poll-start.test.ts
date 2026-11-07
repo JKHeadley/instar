@@ -7,13 +7,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { TelegramLifeline } from '../../src/lifeline/TelegramLifeline.js';
-import { BOOT_POLL_HOLD_MAX_MS } from '../../src/lifeline/pollDecision.js';
+import { BOOT_POLL_HOLD_MAX_MS, RECENT_409_WINDOW_MS } from '../../src/lifeline/pollDecision.js';
 import { writePollIntent } from '../../src/core/pollIntent.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 type Rig = {
   polling: boolean; bootPollHeldSinceMs: number; pollStartPending: boolean; pollStartGen: number; pollLoopId: number;
-  pollIntentAwakeSinceMs: number; consecutive409s: number; pollTimeout: null; projectConfig: unknown;
+  pollIntentAwakeSinceMs: number; consecutive409s: number; last409AtMs: number; conflict409StartedAt: number | null; pollTimeout: null; projectConfig: unknown;
   flushStaleConnection: () => Promise<void>; poll: () => Promise<void>; reconcilePolling: () => void;
 };
 
@@ -25,7 +25,7 @@ function rig(heldSince: number): Rig {
   const l = Object.create(TelegramLifeline.prototype) as Rig;
   Object.assign(l, {
     polling: false, bootPollHeldSinceMs: heldSince, pollStartPending: false, pollStartGen: 0, pollLoopId: 0,
-    pollIntentAwakeSinceMs: 0, consecutive409s: 0, pollTimeout: null,
+    pollIntentAwakeSinceMs: 0, consecutive409s: 0, last409AtMs: 0, conflict409StartedAt: null, pollTimeout: null,
     projectConfig: { stateDir: dir, multiMachine: { pollFollowsLease: { enabled: true, dryRun: false } } },
     flushStaleConnection: () => new Promise<void>((r) => flushes.push(r)),
     poll: async () => { polls += 1; },
@@ -169,5 +169,76 @@ describe('the poll loop', () => {
     l.polling = true; l.pollLoopId = 2;
     await l.poll(1);
     expect(reads).toBe(0);
+  });
+});
+
+describe('409s from an earlier poll do not block the next start (2026-11-06 drill)', () => {
+  it('a machine that got 409s, lost the lease, then regained it starts polling once the 409s are stale', async () => {
+    const l = rig(0);
+    l.polling = true; l.consecutive409s = 7; l.last409AtMs = Date.now(); l.conflict409StartedAt = Date.now() - 400_000;
+    intent(false); l.reconcilePolling();
+    expect(l.polling).toBe(false);
+    expect(l.conflict409StartedAt).toBeNull(); // a standby is not stuck in a 409 fight
+    expect(l.consecutive409s).toBe(7);         // the evidence is kept, not thrown away
+    advance(RECENT_409_WINDOW_MS); intent(true); l.reconcilePolling();
+    advance(21_000); intent(true); l.reconcilePolling();
+    expect(flushes).toHaveLength(1);
+    flushes[0](); await tick();
+    expect(l.polling).toBe(true);
+  });
+
+  it('a lease that flaps back within two minutes of a 409 still holds: never a second poller', () => {
+    const l = rig(0);
+    l.polling = true; l.consecutive409s = 2; l.last409AtMs = Date.now();
+    intent(false); l.reconcilePolling();
+    advance(5_000); intent(true); l.reconcilePolling();
+    advance(21_000); intent(true); l.reconcilePolling();
+    expect(flushes).toHaveLength(0);
+    expect(l.polling).toBe(false);
+  });
+
+  it('a 409 count with no 409 for two minutes no longer holds the start', () => {
+    const l = rig(0);
+    l.consecutive409s = 3; l.last409AtMs = Date.now() - RECENT_409_WINDOW_MS - 1;
+    intent(true); l.reconcilePolling();
+    advance(21_000); intent(true); l.reconcilePolling();
+    expect(flushes).toHaveLength(1);
+  });
+
+  it('a stale count left by a 401 stop lapses the same way', () => {
+    const l = rig(0);
+    l.consecutive409s = 4; l.last409AtMs = Date.now() - RECENT_409_WINDOW_MS; // polling ended by a 401 long ago
+    intent(true); l.reconcilePolling();
+    advance(21_000); intent(true); l.reconcilePolling();
+    expect(flushes).toHaveLength(1);
+  });
+
+  it('a fresh 409 still holds the start: never a second poller', () => {
+    const l = rig(0);
+    l.consecutive409s = 1; l.last409AtMs = Date.now();
+    intent(true); l.reconcilePolling();
+    advance(21_000); intent(true); l.reconcilePolling();
+    expect(flushes).toHaveLength(0);
+    expect(l.polling).toBe(false);
+  });
+});
+
+describe('the watchdog still times a new 409 fight', () => {
+  it('a 409 after the stuck time was cleared starts it again', async () => {
+    const l = Object.create(TelegramLifeline.prototype) as Rig & {
+      getUpdates: () => Promise<never>; pollBackoffMs: number; config: object; consecutive429s: number; pollTimeout: ReturnType<typeof setTimeout> | null;
+    };
+    Object.assign(l, {
+      polling: true, pollLoopId: 1, consecutive409s: 3, last409AtMs: 0, conflict409StartedAt: null, consecutive429s: 0,
+      pollBackoffMs: 2000, config: {}, pollTimeout: null,
+      getUpdates: () => Promise.reject(new Error('Telegram API error (409): Conflict: terminated by other getUpdates request')),
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await (TelegramLifeline.prototype as unknown as { poll: (id: number) => Promise<void> }).poll.call(l, 1);
+    warn.mockRestore();
+    if (l.pollTimeout) clearTimeout(l.pollTimeout);
+    expect(l.conflict409StartedAt).toBe(Date.now());
+    expect(l.last409AtMs).toBe(Date.now());
+    expect(l.consecutive409s).toBe(4);
   });
 });

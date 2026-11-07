@@ -1,3 +1,4 @@
+import { NotificationSelectivityGate } from '../../src/messaging/NotificationSelectivityGate.js';
 /**
  * Files sent from the app into a Telegram topic and a Slack conversation, over the real HTTP
  * pipeline (docs/specs/mobile-native-chat-media.md §4.9, increment 3): uploads named for the
@@ -65,7 +66,7 @@ function stubBotApi(): Array<{ method: string; body: FormData | string }> {
   return seen;
 }
 
-async function setup(opts: { mediaEnabled?: boolean; owner?: string | null } = {}) {
+async function setup(opts: { mediaEnabled?: boolean; owner?: string | null; enforceQuiet?: boolean; recordMirror?: boolean } = {}) {
   const mediaEnabled = opts.mediaEnabled ?? true;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm2p-'));
   dirs.push(dir);
@@ -96,6 +97,8 @@ async function setup(opts: { mediaEnabled?: boolean; owner?: string | null } = {
   // Telegram: a real adapter makes the media request (its fetch is stubbed per test); the rest is a stand-in.
   const realTg = new TelegramAdapter({ token: 'test-token-123', chatId: '-100123', pollIntervalMs: 100 }, dir);
   cleanups.push(() => realTg.stop());
+  const gate = opts.enforceQuiet ? new NotificationSelectivityGate(dir, 'test-machine', () => ({ enabled: true, dryRun: false })) : null;
+  if (gate) { realTg.selectivity = gate; cleanups.push(() => gate.close()); }
   const tgRows: Array<Record<string, unknown>> = [];
   const textMirrors: string[] = [];
   const mediaMirrors: Array<{ count: number; caption: string | null }> = [];
@@ -103,10 +106,10 @@ async function setup(opts: { mediaEnabled?: boolean; owner?: string | null } = {
     getOwnerUserId: () => 4242,
     getAllTopicMappings: () => [{ topicId: TOPIC, topicName: 'Lifeline' }],
     getTopicHistory: (id: number, limit: number) => tgRows.filter((r) => r.topicId === id).slice(-limit),
-    sendToTopic: async (_t: number, text: string) => { textMirrors.push(text); return { messageId: 1, topicId: TOPIC }; },
+    sendToTopic: async (_t: number, text: string, options?: Parameters<TelegramAdapter['sendToTopic']>[2]) => { textMirrors.push(text); return gate ? realTg.sendToTopic(_t, text, options) : { messageId: 1, topicId: TOPIC }; },
     sendMediaToTopic: async (...a: Parameters<TelegramAdapter['sendMediaToTopic']>) => {
       mediaMirrors.push({ count: a[1].length, caption: a[2] });
-      return realTg.sendMediaToTopic(...a);
+      return opts.recordMirror ? { recorded: true, delivered: false, quietId: 'recorded-copy' } : realTg.sendMediaToTopic(...a);
     },
   };
   const ctx = {
@@ -169,7 +172,7 @@ async function setup(opts: { mediaEnabled?: boolean; owner?: string | null } = {
   const c = pairing.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST });
   if (!c.ok) throw new Error('setup');
   const code = pairing.confirm.issue(c.device.id, Date.now() + 60_000);
-  const e = { app, dir, svc, dev, deviceId: c.device.id, ingested, ingestRefusals, textMirrors, mediaMirrors, slackPosts, slackUploads, slackDispatched, channelId, threadId, slackKeyOf, slackKills: () => slackKills };
+  const e = { app, dir, svc, dev, gate, realTg, deviceId: c.device.id, ingested, ingestRefusals, textMirrors, mediaMirrors, slackPosts, slackUploads, slackDispatched, channelId, threadId, slackKeyOf, slackKills: () => slackKills };
   expect((await signed(e, 'POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
   return e;
 }
@@ -200,6 +203,31 @@ async function upload(e: Env, ref: string, bytes: Buffer, over: Record<string, u
 }
 
 describe('app → Telegram topic with files', () => {
+  it('preserves an authenticated media mirror under enforcement while later automation stays quiet', async () => {
+    const e = await setup({ enforceQuiet: true }); const seen = stubBotApi();
+    const bytes = png(), uploadId = await upload(e, `telegram:${TOPIC}`, bytes);
+    const body = { text: 'My actual photo', requestId: rid(), attachments: [{ uploadId, ...describeFile(bytes) }] };
+    e.gate!.observeInbound(TOPIC, 'waiting-human');
+    const result = await signed(e, 'POST', `/mobile/chat/${TOPIC}`, body);
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    expect(result.body).toMatchObject({ outcome: 'delivered', mirrored: true, mirror: 'sent' });
+    expect(seen.filter(row => row.method === 'sendPhoto')).toHaveLength(1);
+    expect((await signed(e, 'POST', `/mobile/chat/${TOPIC}`, body)).body).toEqual(result.body);
+    expect(seen.filter(row => row.method === 'sendPhoto')).toHaveLength(1);
+    expect(e.gate!.decide(TOPIC, { origin: 'automated', category: 'presence-standby', sourceContext: 'presence', inboundMessageId: 'waiting-human' }).decision).toBe('deliver');
+    const before = seen.length;
+    expect(await e.realTg.sendMediaToTopic(TOPIC, [{ data: bytes, filename: 'routine.png', mediaType: 'image/png', kind: 'photo' }], 'Routine screenshot')).toMatchObject({ recorded: true });
+    expect(seen).toHaveLength(before);
+  });
+  it('keeps core ingress delivered when a mirror is terminally recorded instead of sent', async () => {
+    const e = await setup({ recordMirror: true }); const seen = stubBotApi();
+    const bytes = png(), uploadId = await upload(e, `telegram:${TOPIC}`, bytes);
+    const result = await signed(e, 'POST', `/mobile/chat/${TOPIC}`, { text: 'Accepted input', requestId: rid(), attachments: [{ uploadId, ...describeFile(bytes) }] });
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ outcome: 'delivered', mirrored: false, mirror: 'recorded', mirrorQuietId: 'recorded-copy', partiallyMirrored: false });
+    expect(e.ingested).toHaveLength(1); expect(seen).toHaveLength(0);
+  });
+
   it('a photo is stored under telegram:<topicId>, reaches the session as a path, mirrors as sendPhoto, and shows in device history', async () => {
     const e = await setup();
     const seen = stubBotApi();

@@ -1,0 +1,42 @@
+{
+  "version": 3,
+  "slug": "measurement-coverage-view",
+  "sessionId": "30384209-0957-44f8-9037-d33d452ffbc6",
+  "timestamp": "2026-11-06T01:57:55.178Z",
+  "artifactPath": "upgrades/side-effects/measurement-coverage-view.md",
+  "artifactSha256": "0c162078227e245724e894005bd541533aca12f57fc6f6aa38ab72567fb80555",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-06T01-57-34-562Z-measurement-coverage-view.json",
+    ".instar/instar-dev-traces/2026-11-06T01-57-05-982Z-measurement-coverage-view-36285254.json",
+    "dashboard/console/console.css",
+    "dashboard/console/maturation-board.js",
+    "dashboard/console/measurement-coverage.js",
+    "docs/specs/measurement-coverage-view.eli16.md",
+    "docs/specs/measurement-coverage-view.md",
+    "src/monitoring/BlockerLifecycleService.ts",
+    "src/monitoring/MeasurementCoverage.ts",
+    "src/server/maturationBoardRoutes.ts",
+    "src/server/measurementCoverageRead.ts",
+    "tests/e2e/maturation-board-alive.test.ts",
+    "tests/integration/maturation-board-route.test.ts",
+    "tests/integration/maturation-outcome-route.test.ts",
+    "tests/unit/MeasurementCoverage.test.ts",
+    "tests/unit/measurement-coverage-view.test.ts",
+    "upgrades/next/measurement-coverage-view.md",
+    "upgrades/side-effects/measurement-coverage-view.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible read-only board projection, no new shipped config keys, catalog, migration or effect authority. Classifier new-config signal is synthetic enabled flags in integration fixtures. Exact existing-owner joins and bounded read only.",
+  "eli16Path": "docs/specs/measurement-coverage-view.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/measurement-coverage-view.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

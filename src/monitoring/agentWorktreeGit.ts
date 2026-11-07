@@ -9,8 +9,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { withSyncOp } from '../core/InFlightSyncOpMarker.js';
 import { classifyPorcelain } from '../core/worktreeDirtyCheck.js';
 import type { AgentWorktreeReaperDeps, WorktreeInfo } from './AgentWorktreeReaper.js';
@@ -28,6 +30,81 @@ export const REAPER_RESIDUE_DENYLIST: readonly string[] = [];
 
 /** Read-only git executor signature (injected so this module is testable). */
 export type ReadGit = (args: string[], cwd: string) => string;
+
+/**
+ * The commit gate's own per-change records. Only names the gate itself writes
+ * match (ISO timestamp prefix, directly in the record folder, `.json`): a
+ * hand-named file there is still treated as work and keeps the checkout.
+ */
+const GATE_RECORD_PATH = /^\.instar\/instar-dev-(?:decisions|traces)\/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[^/]+\.json$/;
+
+export function isGateRecordPath(relPath: string): boolean {
+  return GATE_RECORD_PATH.test(relPath);
+}
+
+/**
+ * Untracked only. A staged record is someone's in-progress commit, and a locally
+ * edited tracked record cannot be put back here (the source-tree guard refuses
+ * `git restore`, deliberately), so both keep the checkout.
+ */
+function isUntrackedGateRecord(line: string): boolean {
+  return line.startsWith('?? ') && isGateRecordPath(line.slice(3));
+}
+
+function statusLines(porcelain: string): string[] {
+  return porcelain.split('\n').map((l) => l.replace(/\r$/, '')).filter((l) => l.length > 0);
+}
+
+/** `--untracked-files=all` so a wholly-untracked record folder lists each file, not the folder. */
+const statusArgs = (p: string): string[] => ['-C', p, 'status', '--porcelain', '--untracked-files=all'];
+const ignoredArgs = (p: string): string[] => ['-C', p, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'];
+
+/**
+ * Copy a checkout's gate records out to `<archiveRoot>/<worktree>/<relative path>`,
+ * verify each copy byte for byte, then delete the untracked ones, which would
+ * otherwise make a non-forced `git worktree remove` refuse. Throws (the reaper then keeps the checkout) on
+ * anything that is not a plain gate record, BEFORE changing the checkout.
+ */
+export function preserveGateRecords(p: string, archiveRoot: string, readGit: ReadGit): number {
+  const untracked: string[] = [];
+  for (const line of statusLines(readGit(statusArgs(p), p))) {
+    if (!isUntrackedGateRecord(line)) throw new Error(`not gate-records-only: ${line}`);
+    untracked.push(line.slice(3));
+  }
+  const ignored = readGit(ignoredArgs(p), p).split('\0').filter(Boolean);
+  for (const relPath of ignored) {
+    if (!isGateRecordPath(relPath)) throw new Error(`not gate-records-only: ${relPath}`);
+  }
+  const toCopy = [...untracked, ...ignored];
+  for (const relPath of toCopy) {
+    if (!fs.lstatSync(path.join(p, relPath)).isFile()) throw new Error(`not a regular file: ${relPath}`);
+  }
+  // A locked checkout will refuse removal, so leave its records where they are.
+  if (fs.existsSync(path.join(readGit(['-C', p, 'rev-parse', '--absolute-git-dir'], p).trim(), 'locked'))) {
+    throw new Error('checkout is locked');
+  }
+  const worktreeArchive = path.join(archiveRoot, path.basename(p));
+  for (const relPath of toCopy) {
+    const bytes = fs.readFileSync(path.join(p, relPath));
+    let dest = path.join(worktreeArchive, relPath);
+    if (fs.existsSync(dest) && !fs.readFileSync(dest).equals(bytes)) {
+      dest = `${dest}.${crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 8)}`;
+    }
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    // Machine-local, like the ignored traces it holds: state sync must not pick it up.
+    const ignoreFile = path.join(archiveRoot, '.gitignore');
+    if (!fs.existsSync(ignoreFile)) fs.writeFileSync(ignoreFile, '*\n');
+    // On disk before the original can be deleted.
+    const fd = fs.openSync(dest, 'w');
+    try { fs.writeSync(fd, bytes); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    if (!fs.readFileSync(dest).equals(bytes)) throw new Error(`archive verification failed: ${relPath}`);
+  }
+  for (const relPath of untracked) {
+    SafeFsExecutor.safeUnlinkSync(path.join(p, relPath), { operation: 'src/monitoring/agentWorktreeGit.ts:preserveGateRecords' });
+  }
+  // Ignored records are archived above; `git worktree remove` takes them with the checkout.
+  return toCopy.length;
+}
 
 const defaultReadGit: ReadGit = (args, cwd) =>
   SafeGitExecutor.readSync(args, {
@@ -151,9 +228,13 @@ export function makeAgentWorktreeReaperDeps(opts: {
   githubMergeCheck?: boolean;
   /** Override the merged-PR map source (testing). Returns headRefName→headRefOid. */
   mergedPrMap?: () => Map<string, string>;
+  /** Where gate records go before a checkout is removed. Default: `<agent home>/.instar/instar-dev-decisions-archive`. */
+  gateRecordArchiveDir?: string;
   now?: () => number;
 }): AgentWorktreeReaperDeps {
   const readGit = opts.readGit ?? defaultReadGit;
+  const gateRecordArchiveDir = opts.gateRecordArchiveDir
+    ?? path.join(path.dirname(opts.worktreesDir), '.instar', 'instar-dev-decisions-archive');
   const repo = opts.instarRepo;
   const githubMergeCheck = opts.githubMergeCheck ?? true;
   const worktreesReal = (() => { try { return fs.realpathSync(opts.worktreesDir); } catch { return opts.worktreesDir; } })();
@@ -256,18 +337,17 @@ export function makeAgentWorktreeReaperDeps(opts: {
     },
 
     isClean: (p: string): boolean => {
-      // Residue-aware via the PURE classifyPorcelain (NOT the fail-OPEN
-      // makeWorktreeDirtyCheck wrapper): a worktree whose only entries are
-      // No file is assumed disposable. ANY change — tracked, untracked, or
-      // ignored — is dirty, because even a marker name may hold unique bytes.
+      // ANY change — tracked, untracked, or ignored — is dirty, because even a
+      // marker name may hold unique bytes. The one exception is the commit gate's
+      // own records: removeWorktree archives those before anything is deleted.
       // FAIL-CLOSED on any error: cannot determine cleanliness → treat as dirty
       // (KEEP). This is the deletion-safe direction (spec
       // worktree-reaper-untracked-blindspot, convergence BLOCKER): a transient
       // `git status` failure must never make a worktree look reapable.
       try {
-        if (classifyPorcelain(readGit(['-C', p, 'status', '--porcelain'], p), REAPER_RESIDUE_DENYLIST)) return false;
-        const ignored = readGit(['-C', p, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'], p);
-        return ignored.length === 0;
+        const work = statusLines(readGit(statusArgs(p), p)).filter((line) => !isUntrackedGateRecord(line));
+        if (classifyPorcelain(work.join('\n'), REAPER_RESIDUE_DENYLIST)) return false;
+        return readGit(ignoredArgs(p), p).split('\0').filter(Boolean).every(isGateRecordPath);
       }
       catch { return false; }
     },
@@ -335,6 +415,9 @@ export function makeAgentWorktreeReaperDeps(opts: {
       // with uncommitted changes or a lock, so it can never destroy in-flight work.
       // The SourceTreeGuard mirrors this — it allows `worktree remove` against the
       // source tree only without --force (see isAllowedWorktreeManagerSubcommand).
+      // Gate records go to the archive first; if that fails this throws and the
+      // reaper keeps the checkout.
+      preserveGateRecords(p, gateRecordArchiveDir, readGit);
       SafeGitExecutor.execSync(['-C', repo, 'worktree', 'remove', p], {
         timeout: 60_000,
         operation: 'src/monitoring/agentWorktreeGit.ts:removeWorktree',

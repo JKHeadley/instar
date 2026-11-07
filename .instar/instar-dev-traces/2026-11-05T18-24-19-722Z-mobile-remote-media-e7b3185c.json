@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "mobile-remote-media",
+  "sessionId": "501849a3-8fc5-483e-b8f2-b09fce0f4d96",
+  "timestamp": "2026-11-05T18:24:19.722Z",
+  "artifactPath": "upgrades/side-effects/mobile-remote-media.md",
+  "artifactSha256": "1248aa581af2cb03066bf17a3aa64c5566b16165cbd94e35e14421c0ece4cbd9",
+  "specPath": "docs/specs/mobile-remote-media.md",
+  "coveredFiles": [
+    "docs/specs/mobile-remote-media.eli16.md",
+    "docs/specs/mobile-remote-media.md",
+    "docs/specs/reports/mobile-remote-media-convergence.md",
+    "src/server/AgentServer.ts",
+    "src/server/middleware.ts",
+    "src/server/mobileMediaHolderProxy.ts",
+    "tests/integration/mobile-remote-media.test.ts",
+    "tests/unit/mobile-media-holder-proxy.test.ts",
+    "upgrades/side-effects/mobile-remote-media.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Coordinator-required fixes from the final re-read of the same owner read.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "A bounded read with slots and deadlines; adds no loop or self-action."
+  }
+}

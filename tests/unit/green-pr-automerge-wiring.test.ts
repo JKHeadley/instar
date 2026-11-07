@@ -302,7 +302,7 @@ describe('the watcher runs the INSTALLED safe-merge, never the checkout copy (AC
 
 describe('buildGreenPrDeps — codeOwnedPaths reads CODEOWNERS from the base branch on GitHub (directive 2026-10-22)', () => {
   const CODEOWNERS = '# ownership\ndocs/STANDARDS-REGISTRY.md   @JKHeadley\n.github/CODEOWNERS @JKHeadley\n';
-  const ghFor = (o: { codeowners?: { code: number; stdout?: string; stderr?: string }; files?: string[]; filesCode?: number }) => {
+  const ghFor = (o: { codeowners?: { code: number; stdout?: string; stderr?: string }; files?: string[]; filesCode?: number; reviews?: object[]; reviewsCode?: number; reviewsRaw?: string }) => {
     const calls: string[][] = [];
     const ghExec = async (args: string[]) => {
       calls.push(args);
@@ -312,6 +312,7 @@ describe('buildGreenPrDeps — codeOwnedPaths reads CODEOWNERS from the base bra
         return { stdout: c.stdout ?? '', stderr: c.stderr ?? '', code: c.code };
       }
       if (p.endsWith('/files')) return { stdout: (o.files ?? []).join('\n'), stderr: '', code: o.filesCode ?? 0 };
+      if (p.endsWith('/reviews')) return { stdout: o.reviewsRaw ?? (o.reviews ?? []).map((r) => JSON.stringify(r)).join('\n'), stderr: '', code: o.reviewsCode ?? 0 };
       return { stdout: '', stderr: '', code: 0 };
     };
     return { ghExec, calls };
@@ -324,6 +325,20 @@ describe('buildGreenPrDeps — codeOwnedPaths reads CODEOWNERS from the base bra
     const v = await depsWith(g).codeOwnedPaths(prOf as never);
     expect(v).toEqual({ touches: true, files: ['docs/STANDARDS-REGISTRY.md'], protectedFiles: [], unverifiable: false });
     expect(g.calls.some((c) => c[1] === 'repos/JKHeadley/instar/contents/.github/CODEOWNERS?ref=main')).toBe(true);
+  });
+
+  it('an empty review decision is answered from the reviews: the owner on this head counts, nothing else does', async () => {
+    const owned = { files: ['docs/STANDARDS-REGISTRY.md'] };
+    const yes = { login: 'JKHeadley', state: 'APPROVED', commitId: 'h', submittedAt: '2026-11-06T07:46:00Z' };
+    const pr = { ...prOf, reviewDecision: null } as never;
+    expect((await depsWith(ghFor({ ...owned, reviews: [yes] })).codeOwnedPaths(pr)).ownerApproved).toBe(true);
+    expect((await depsWith(ghFor({ ...owned, reviews: [{ ...yes, commitId: 'old' }] })).codeOwnedPaths(pr)).ownerApproved).toBeUndefined();
+    expect((await depsWith(ghFor({ ...owned, reviews: [{ ...yes, login: 'someone' }] })).codeOwnedPaths(pr)).ownerApproved).toBeUndefined();
+    expect((await depsWith(ghFor({ ...owned, reviewsCode: 1 })).codeOwnedPaths(pr)).ownerApproved).toBeUndefined();
+    expect((await depsWith(ghFor({ ...owned, reviewsRaw: 'not json' })).codeOwnedPaths(pr)).ownerApproved).toBeUndefined();
+    const stated = ghFor({ ...owned, reviews: [yes] });
+    expect((await depsWith(stated).codeOwnedPaths({ ...prOf, reviewDecision: 'REVIEW_REQUIRED' } as never)).ownerApproved).toBeUndefined();
+    expect(stated.calls.some((c) => (c[1] ?? '').endsWith('/reviews'))).toBe(false);
   });
 
   it('protected-but-not-code-owned paths (safe-merge, the watcher, .github/workflows) are not code-owned', async () => {

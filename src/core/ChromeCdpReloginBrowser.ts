@@ -1,3 +1,4 @@
+import { assertNotSigninProfile } from './SigninProfileGuard.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -232,6 +233,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
   async open(url: string): Promise<void> {
     if (this.transport) throw new Error('relogin-browser-already-open');
     if (!fs.existsSync(this.chromePath)) throw new Error('chrome-not-installed');
+    assertNotSigninProfile(this.userDataDir);
     fs.mkdirSync(this.userDataDir, { recursive: true, mode: 0o700 });
     fs.chmodSync(this.userDataDir, 0o700);
     if (this.passkeyMode) return this.openPipe(url);

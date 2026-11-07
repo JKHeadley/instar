@@ -184,6 +184,11 @@ export interface LeaseCoordinatorDeps {
    * single machine and a pool with a named captain are untouched.
    */
   survivorMayHold?: () => boolean;
+  /**
+   * session-pool-takeover-at-pairing: a joined machine that has not yet proved a lasting link to
+   * its peer. It cannot tell a dead peer from a lost one, so it does not take the lease at all.
+   */
+  acquireHeldBack?: () => boolean;
   logger?: (msg: string) => void;
 }
 
@@ -828,6 +833,7 @@ export class LeaseCoordinator {
   }
 
   private identityIneligibleLogged = false;
+  private heldBackLogged = false;
 
   async acquireIfEligible(): Promise<boolean> {
     // §1.1 lease rule: an unprovisioned machine that can see a live provisioned sibling does
@@ -846,6 +852,12 @@ export class LeaseCoordinator {
       return false;
     }
     this.identityIneligibleLogged = false;
+    if (this.d.acquireHeldBack?.()) {
+      if (!this.heldBackLogged) this.log('acquire skipped: no lasting link to the other machine has been proved yet');
+      this.heldBackLogged = true;
+      return false;
+    }
+    this.heldBackLogged = false;
     if (this.suspended) {
       // A suspended holder may resume only by re-acquiring cleanly below.
       this.suspended = false;

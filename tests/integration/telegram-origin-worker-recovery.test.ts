@@ -45,7 +45,7 @@ async function harness(storageTimeouts: { requestTimeoutMs?: number; stallTimeou
     projectDir: process.cwd(), configuredModel: 'gpt-6-astra' });
   const app = express(); app.use(express.json());
   app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer agent-test') { res.sendStatus(401); return; } next(); });
-  app.use(createRoutes({ config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
+  app.use(createRoutes({ state: { getSession: () => undefined }, config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
     messaging: [{ type: 'telegram', enabled: true, config: { token: botToken, chatId: '-100123', lifelineTopicId: 7848 } }] },
     telegramOrigin: runtime, verifyDashboardOperatorSession: (proof: string) => proof === 'operator-test',
     telegram: { sendToTopic: async (topicId: number, text: string) => {

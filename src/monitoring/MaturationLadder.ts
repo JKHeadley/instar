@@ -14,6 +14,7 @@
 
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import type { MaturationEvaluationContract } from '../core/InitiativeTracker.js';
+import { parseMaturationOutcome, type MaturationOutcomeContract } from './MaturationOutcome.js';
 
 export const LADDERS_SCHEMA = 'feature-ladders/1';
 export const LADDER_RESPONSE_SCHEMA = 'maturation-ladder/1';
@@ -61,6 +62,7 @@ export interface LadderRung {
   soakDays: number;
   advance: RungAdvance;
   metrics: LadderMetric[];
+  outcome?: MaturationOutcomeContract;
 }
 
 export interface LadderPreference { decidedBy: string; reason: string; decidedAt: string; ref: string }
@@ -75,11 +77,15 @@ export interface LadderEntry {
    * `on`: the value meaning fully live, default `enabled: true`.
    * `dryRunPath`: where its dry-run lives when not `<path>.dryRun`.
    * `dryRunDefault`: the code treats an absent dry-run as on, with no shipped key to read.
+   * `runsEverywhere`: the code starts it on every machine and it has no enabled key, so
+   * only its dry-run says the rung.
    */
-  flag: { path: string; on?: string | boolean; dryRunPath?: string; dryRunDefault?: boolean } | null;
-  disposition: 'ladder' | 'composed' | 'retire';
+  flag: { path: string; on?: string | boolean; dryRunPath?: string; dryRunDefault?: boolean; runsEverywhere?: boolean } | null;
+  disposition: 'ladder' | 'composed' | 'retire' | 'finished';
   composedInto?: string;
   retire?: { reason: string; ref: string };
+  /** Finished and live with no rollout left, so there is no bar to earn. `ref` names where the code shows it. */
+  finished?: { reason: string; ref: string };
   final: 'default-on' | 'default-off-by-preference';
   preference?: LadderPreference;
   risk: 'standard' | 'sensitive';
@@ -89,6 +95,11 @@ export interface LadderEntry {
   start?: { set: Record<string, string | number | boolean> };
   /** The setting is read at boot, so a move needs a restart to take effect. */
   restartNeeded?: boolean;
+  /**
+   * The shipped code switches it on for every machine and no longer reads its
+   * setting, so the setting cannot say its rung. `ref` names the change.
+   */
+  shippedOn?: { ref: string };
   tracking: { state: 'measured' | 'needed'; plan: string };
   rungs: Partial<Record<TargetRung, LadderRung>>;
 }
@@ -216,6 +227,7 @@ function rungError(raw: unknown, flagPath: string | null): string | null {
   // Enough to judge: it must show it ran AND how it did.
   if (!roles.has('ran')) return 'needs-a-ran-metric';
   if (!judgeRoleFromOwnBehaviour) return 'needs-a-quality-or-harm-metric';
+  if (r.outcome !== undefined && !parseMaturationOutcome(r.outcome, [...ids])) return 'outcome';
   return null;
 }
 
@@ -252,12 +264,20 @@ export function parseLadderRegistry(text: string): LadderParseResult {
     subjects.add(subject);
     if (e.rare !== undefined && typeof e.rare !== 'boolean') return { ok: false, reason: `${at}.rare` };
     if (e.restartNeeded !== undefined && typeof e.restartNeeded !== 'boolean') return { ok: false, reason: `${at}.restartNeeded` };
+    if (e.shippedOn !== undefined) {
+      const so = e.shippedOn as Record<string, unknown> | null;
+      if (!so || typeof so !== 'object' || Array.isArray(so) || !isText(so.ref, 200)) return { ok: false, reason: `${at}.shippedOn` };
+      // On in code is the default-on end: only a default-on ladder can be there, and there is nothing left to start.
+      if (e.disposition !== 'ladder' || e.final !== 'default-on') return { ok: false, reason: `${at}.shippedOn-needs-a-default-on-ladder` };
+      if (e.start !== undefined) return { ok: false, reason: `${at}.shippedOn-has-nothing-to-start` };
+    }
     if (e.flag !== null) {
       const f = e.flag as Record<string, unknown> | undefined;
       if (!f || typeof f !== 'object' || typeof f.path !== 'string' || !/^[A-Za-z][A-Za-z0-9.]{0,200}$/.test(f.path)) return { ok: false, reason: `${at}.flag` };
       if (f.on !== undefined && typeof f.on !== 'string' && typeof f.on !== 'boolean') return { ok: false, reason: `${at}.flag.on` };
       if (f.dryRunPath !== undefined && (typeof f.dryRunPath !== 'string' || !/^[A-Za-z][A-Za-z0-9.]{0,200}$/.test(f.dryRunPath))) return { ok: false, reason: `${at}.flag.dryRunPath` };
       if (f.dryRunDefault !== undefined && typeof f.dryRunDefault !== 'boolean') return { ok: false, reason: `${at}.flag.dryRunDefault` };
+      if (f.runsEverywhere !== undefined && typeof f.runsEverywhere !== 'boolean') return { ok: false, reason: `${at}.flag.runsEverywhere` };
     }
     if (e.risk !== 'standard' && e.risk !== 'sensitive') return { ok: false, reason: `${at}.risk` };
     const t = e.tracking as Record<string, unknown> | undefined;
@@ -284,6 +304,12 @@ export function parseLadderRegistry(text: string): LadderParseResult {
     } else if (e.disposition === 'retire') {
       const r = e.retire as Record<string, unknown> | undefined;
       if (!r || !isText(r.reason) || !isText(r.ref, 200)) return { ok: false, reason: `${at}.retire` };
+    } else if (e.disposition === 'finished') {
+      const fin = e.finished as Record<string, unknown> | undefined;
+      if (!fin || !isText(fin.reason) || !isText(fin.ref, 200)) return { ok: false, reason: `${at}.finished` };
+      // A rung would be a bar with nothing left to earn, and a user-preference final is still a staged feature.
+      if (Object.keys(rungs).length) return { ok: false, reason: `${at}.finished-has-no-rungs` };
+      if (e.final !== 'default-on') return { ok: false, reason: `${at}.finished-needs-default-on` };
     } else if (e.disposition === 'ladder') {
       if (!e.flag) return { ok: false, reason: `${at}.ladder-needs-a-flag` };
       if (e.start !== undefined) {
@@ -311,12 +337,14 @@ export function parseLadderRegistry(text: string): LadderParseResult {
       disposition: e.disposition as LadderEntry['disposition'],
       ...(e.composedInto ? { composedInto: e.composedInto as string } : {}),
       ...(e.retire ? { retire: e.retire as LadderEntry['retire'] } : {}),
+      ...(e.finished ? { finished: e.finished as LadderEntry['finished'] } : {}),
       final: e.final,
       ...(e.preference ? { preference: e.preference as LadderPreference } : {}),
       risk: e.risk,
       ...(e.rare ? { rare: true } : {}),
       ...(e.start ? { start: e.start as LadderEntry['start'] } : {}),
       ...(e.restartNeeded ? { restartNeeded: true } : {}),
+      ...(e.shippedOn ? { shippedOn: { ref: (e.shippedOn as { ref: string }).ref } } : {}),
       tracking: { state: t.state as 'measured' | 'needed', plan: t.plan as string },
       rungs: rungs as LadderEntry['rungs'],
     });
@@ -348,6 +376,9 @@ function dryRunOf(flag: NonNullable<LadderEntry['flag']>, root: unknown, obj: Re
 function readFlag(entry: LadderEntry, root: unknown, gateConfig: { developmentAgent?: boolean } | null): FlagRead {
   const flag = entry.flag!;
   const raw = readPath(root, flag.path);
+  if (flag.runsEverywhere) {
+    return { fullyOn: true, dryRun: dryRunOf(flag, root, raw && typeof raw === 'object' ? raw as Record<string, unknown> : null) };
+  }
   if (flag.on !== undefined) {
     // A stage-style flag: fully on means this exact value (or, for a boolean `on`, this boolean).
     const obj = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null;
@@ -363,16 +394,20 @@ function readFlag(entry: LadderEntry, root: unknown, gateConfig: { developmentAg
 /**
  * The rung comes from what is shipped and what runs here, never from a label.
  * The shipped default alone decides `fleet`; a shipped dry-run is not fleet.
+ * A feature the code switches on regardless of its setting (`shippedOn`) is fleet.
  */
 export function deriveLadderRung(
   entry: LadderEntry,
   liveConfig: unknown,
   shippedDefaults: unknown,
 ): { rung: ObservedRung; flagMissing: boolean } {
+  if (entry.disposition === 'finished') return { rung: 'fleet', flagMissing: false };
   if (!entry.flag) return { rung: 'dark', flagMissing: true };
+  // The code turns it on everywhere and ignores the setting, so the setting cannot say otherwise.
+  if (entry.shippedOn) return { rung: 'fleet', flagMissing: false };
   const shippedRaw = readPath(shippedDefaults, entry.flag.path);
   const liveRaw = readPath(liveConfig, entry.flag.path);
-  const flagMissing = shippedRaw === undefined && liveRaw === undefined
+  const flagMissing = !entry.flag.runsEverywhere && shippedRaw === undefined && liveRaw === undefined
     && !(liveConfig as { developmentAgent?: boolean } | null)?.developmentAgent;
   const shipped = readFlag(entry, shippedDefaults, null);
   if (shipped.fullyOn && !shipped.dryRun) return { rung: 'fleet', flagMissing: false };
@@ -410,6 +445,7 @@ export function contractForRung(rung: LadderRung): MaturationEvaluationContract 
       threshold: m.threshold,
       minSamples: m.minSamples,
     })),
+    ...(rung.outcome ? { outcome: rung.outcome } : {}),
   };
 }
 
@@ -543,6 +579,7 @@ export function computeLadderState(input: LadderStateInput): LadderStateResult {
 
   if (entry.disposition === 'retire') return done('retire-pending');
   if (entry.disposition === 'composed') return done('composed');
+  if (entry.disposition === 'finished') return done('at-final', 'finished');
   if (heldReason) return done('held', heldReason);
 
   if (lastMoveAt !== null && now - lastMoveAt <= HARM_WATCH_DAYS * DAY_MS) {

@@ -58,7 +58,8 @@ describe('thread→session: the live message path consults the routing key', () 
   });
 
   it('the resume map is consulted + cleared on the routing key', () => {
-    expect(handlerBlock).toContain('getChannelResume(routingKey)');
+    // session-swap-any-conversation §3.1: the lookup also names the engine it may resume.
+    expect(handlerBlock).toContain('getChannelResume(routingKey,');
     expect(handlerBlock).toContain('removeChannelResume(routingKey)');
   });
 
@@ -80,7 +81,7 @@ describe('WS1.1 Slack dispatch-to-owner: inbound consults pool placement', () =>
   // The onMessage handler (distinct from slackInboundDispatch) must route the
   // inbound message through the SessionRouter BEFORE local dispatch — the exact
   // fix for "a Slack channel pinned to a peer machine still injected locally".
-  const onMsgStart = SERVER_TS.indexOf('slackAdapter.onMessage(async (message)');
+  const onMsgStart = SERVER_TS.indexOf('const slackRouteAndDispatch = async (');
   const onMsgEnd = SERVER_TS.indexOf('await slackAdapter.start();', onMsgStart);
   const onMsgBlock = SERVER_TS.slice(onMsgStart, onMsgEnd > onMsgStart ? onMsgEnd : onMsgStart + 6000);
 
@@ -88,7 +89,8 @@ describe('WS1.1 Slack dispatch-to-owner: inbound consults pool placement', () =>
     expect(onMsgStart).toBeGreaterThan(-1);
     // ownership-gated-spawn threads the router verdict through the dispatch
     // (the SpawnAdmission TOCTOU guard) — the call now carries a second arg.
-    expect(onMsgBlock).toContain('await slackInboundDispatch(message, _slackAdmissionVerdict)');
+    expect(onMsgBlock).toContain('return dispatch(message, _slackAdmissionVerdict)');
+    expect(onMsgBlock).toContain('await slackRouteAndDispatch(message, slackDispatchOrHold)');
   });
 
   it('the handler consults the SessionRouter on the routing key (not bare channelId)', () => {

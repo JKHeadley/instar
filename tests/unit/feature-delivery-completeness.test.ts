@@ -1,3 +1,4 @@
+import ts from 'typescript';
 /**
  * Feature Delivery Completeness — ensures no gaps between init and migrate.
  *
@@ -123,6 +124,7 @@ describe('Feature Delivery Completeness', () => {
     // When you add a new CLAUDE.md section to templates.ts, add a key phrase here.
     // The test will verify it exists in both files. If it's only in one, CI fails.
     const featureSections = [
+      '### Quiet by Default notifications', // shared template/migrator operational awareness, including confirmed preferences
       '### Who can answer my Telegram buttons', // ACT-115: owner checks fail closed
       '**Memory privacy**', // memory-privacy spec: audience by place
       'An update never turns it on', // memory-privacy spec: opt-in for existing agents
@@ -166,6 +168,8 @@ describe('Feature Delivery Completeness', () => {
       'Registry First — capability registry:',
       // channel-registry: which peer channels work right now (templates.ts + migrator parity).
       'Registry First — channel registry:',
+      'Registry First — people:',
+      'Registry First — team access:',
       'Decision journal — principle is required:',
       'Decision journal confidence contract:', // ACT-1522: finite [0,1] write contract + legacy-unmeasurable posture; template, existing-agent migrator, and Codex/Gemini shadow parity.
       'Alignment score — N/A means not assessed:',
@@ -307,6 +311,7 @@ describe('Feature Delivery Completeness', () => {
     // Some migrator sections are legacy patches for old agents that have since been
     // absorbed into the base template differently. These don't need template parity.
     const legacyMigratorSections = [
+      '## Attribution paper trail', // attribution-paper-trail spec: generateClaudeMd and migrateClaudeMd both append the shared ATTRIBUTION_CLAUDEMD_SECTION, so templates.ts holds the constant reference rather than this heading
       '| Can I use a browser?', // normal-chrome-linux: a Registry First row, inserted after "What can I do?" in template and migration alike.
       'Find verified topic names across my machines:', // Telegram capability addendum; migrateClaudeMd inserts it once and the framework shadow mirrors the same line.
       'replies are forwarded to the holder', // a2a-single-agent-identity §4 (ACT-058): generateClaudeMd and migrateClaudeMd both append the shared telegramOriginForwardAwareness(port) helper, so templates.ts holds the function reference rather than this literal; the migrator sniffs the helper's own sentence so it lands exactly once.
@@ -334,6 +339,7 @@ describe('Feature Delivery Completeness', () => {
       'Honest progress messaging (silent-freeze watchdog + promise beacon)', // HONEST-PROGRESS-MESSAGING C: behavioral-awareness section (what the two notifiers are + their defaults + how to tune/disable) added via migrator AND emitted by the template directly (so a fresh init self-matches, never double-patched) — like the cartographer sections above; not a user-invokable capability needing template-shadow parity.
       'Command-watchdog test-runner floor:', // watchdog-test-runner-floor (ACT-069): behavioral awareness of the deterministic 60-min test-runner protection + live threshold reads; emitted by the fresh-agent template and migrated idempotently. No framework-specific invocation surface.
       'A test run that is still working is not interrupted at the hour mark:', // watchdog-test-runner-progress: the floor above expired on elapsed time alone, so a healthy suite was interrupted at 61 minutes (2026-10-20) — behavioral awareness of the CPU-progress extension (subtree CPU, three-hour absolute bound, unmeasurable platforms unchanged) and of the interruption NOTICE that replaced a silent Ctrl+C; emitted by the fresh-agent template and migrated idempotently for existing agents. Same migrator-only classification as the floor section it extends; no framework-specific invocation surface.
+      'Xcode test runs get the test-runner floor too:', // watchdog-xcodebuild-test-floor (fb-412e8332-ee1): behavioral awareness that xcodebuild test / xctest runs get the same bounded floor, matched on the active Xcode's identity rather than a basename, and where to read an interruption; emitted by the fresh-agent template and migrated idempotently for existing agents. Same migrator-only classification as the two sections above; no framework-specific invocation surface.
       'retained per-version copy of the executable (CMT-798)', // retained-claude-executable (CMT-798): behavioral awareness of the per-version retained Claude executable (why sessions launch from <state>/claude-bin/<version>/claude, the GET /sessions/claude-binary read, the sessions.retainedClaudeBinary off switch); emitted by the fresh-agent template and migrated idempotently for existing agents. Machine-local spawn mechanics, no framework-specific invocation surface.
       'Throwaway test agents', // test-agent-leak-guard (CMT-1058, 2026-10-21 rtcheck leak): behavioral awareness of the throwaway-agent rules (no self-installed auto-start, recorded expiry + self-teardown, scheduled-job refusal, the --keep/--expires-in/--force/allowOnThrowawayAgent overrides); emitted by the fresh-agent template and migrated idempotently for existing agents. Machine-local, no framework-specific invocation surface.
       'TCC-protected path guard', // avoid-tcc-protected-directories (operator mandate 2026-10-14): behavioral awareness of the macOS protected-folder refusal at init, the boot-time detection (loud line + ONE deduped HIGH attention item + GET /guards row monitoring.tccProtectedPathGuard + instar doctor 'Project location'), and the move runbook docs/runbooks/move-agent-out-of-documents.md; emitted by the fresh-agent template and migrated idempotently for existing agents. Machine-local placement rule, no framework-specific invocation surface.
@@ -486,6 +492,7 @@ describe('Feature Delivery Completeness', () => {
       'What `relayStatus` means (honest delivery)', // a2a-honest-delivery-outcomes §7: READ-surface awareness (templated + migrator parity, own sniff key) for the relayStatus/retryLater/banSuspected fields on threadline_send + the failedCount/unconfirmedCount peer-health fields — same READ-surface class as 'Is my channel to a peer alive? (A2A delivery health)', not a framework-shadowed user-invokable capability
       'Is my own relay connection up? (displaced vs retrying)', // relay-displaced reclaim: READ-surface awareness (templated + migrator parity) for GET /threadline/health relay.state — the agent checks its OWN relay before blaming a quiet peer; same READ-surface class as 'Is my channel to a peer alive? (A2A delivery health)', not a framework-shadowed user-invokable capability
       'Agent-Signature Provenance',                        // agent-signature-provenance (ASP v1, Window 16): the "### Agent-Signature Provenance — proving which messages an agent wrote" section, emitted by BOTH templates.ts generateClaudeMd (new agents) AND migrateClaudeMd (existing agents) from the shared AGENT_SIGNATURE_PROVENANCE_CLAUDEMD_SECTION constant — the literal heading text lives in PostUpdateMigrator.ts, like the Mesh Self-Healing / Write Admission / External-Hog constants. A READ + verify surface (GET /provenance, POST /provenance/verify) plus the automatic inbound classifier's verdict vocabulary and the load-bearing AUTHORITY BOUNDARY (a signature settles WHO wrote a message, never what it may DECIDE) — observability the agent READS to answer "can you prove which messages were you rather than me?", same READ-surface class as 'Is my channel to a peer alive? (A2A delivery health)' / '/metrics/features' / '/session/clock', NOT a framework-shadowed user-invokable capability (the classifier runs server-side on the messaging seam regardless of which framework a session runs, and there is deliberately no sign-on-demand route for any framework to shadow). Always-on rather than dark, so no rollout gate to mirror. Awareness-only migration: the routes and the classifier need no config or state migration.
+      '/notifications/jobs/:slug/push',                     // notification-job-opt-in: a sentence inside the already-tracked Quiet by Default section.
       'Windows sign-in repair (WSL, opt-in)',               // windows-signin-repair: a bullet inside the already-tracked subscription-pool sign-in repair block (inserted before 'Why a sign-in repair did not start'), emitted by BOTH templates.ts generateClaudeMd (new agents) AND migrateClaudeMd (existing agents). Opt-in (navigation: agent-session on a WSL agent); the helper runs as a Claude Code session, so no framework-shadow parity applies.
     ];
 
@@ -545,4 +552,39 @@ describe('Feature Delivery Completeness', () => {
       expect(versionedGuides.length).toBeGreaterThan(0);
     });
   });
+});
+
+
+describe('Fleet autonomous reporting awareness parity', () => {
+  it('teaches new and existing agents the same live reporting contract', () => {
+    const heading = '## Autonomous-run silence backstop (AutonomousProgressHeartbeat)';
+    const section = renderedTemplate.split(heading)[1]?.split('\n## ')[0];
+    expect(section).toContain('Autonomous-run reporting is live on every machine');
+    expect(section).toContain('30 minutes');
+    expect(section).toContain('owner machine');
+    expect(section).not.toContain('Ships dark');
+    expect(section).not.toContain('hard cap');
+    expect(migratorSource).toContain('Autonomous-run reporting is live on every machine');
+  });
+});
+
+
+it('starts autonomous reporting independently of the intelligence provider and PromiseBeacon', () => {
+  const source = fs.readFileSync(path.join(srcDir, 'commands/server.ts'), 'utf8');
+  const file = ts.createSourceFile('server.ts', source, ts.ScriptTarget.Latest, true);
+  const initializers: ts.NewExpression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isNewExpression(node) && node.expression.getText(file) === 'AutonomousProgressHeartbeat') initializers.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  expect(initializers).toHaveLength(1);
+  let checkedBootstrap = false;
+  for (let parent: ts.Node | undefined = initializers[0].parent; parent; parent = parent.parent) {
+    if (ts.isIfStatement(parent)) expect(parent.expression.getText(file)).not.toContain('sharedIntelligence');
+    if (ts.isTryStatement(parent) && !checkedBootstrap) {
+      expect(parent.tryBlock.getText(file)).not.toContain('new PromiseBeacon');
+      checkedBootstrap = true;
+    }
+  }
 });

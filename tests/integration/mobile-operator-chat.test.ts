@@ -1,9 +1,11 @@
+import { NotificationSelectivityGate } from '../../src/messaging/NotificationSelectivityGate.js';
+import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 /**
  * HTTP pipeline for native operator chat (docs/specs/mobile-operator-chat.md): a device-signed
  * message goes through the REAL shared inbound core (createRoutes' telegram-forward handler)
  * with the owner's identity, is recorded once per requestId, and never binds the topic operator.
  */
-import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -87,7 +89,7 @@ function setup(opts: { peerUrl?: string; history?: Array<Record<string, unknown>
   const created = svc.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST });
   if (!created.ok) throw new Error('setup');
   svc.devices.applyConfirm(created.device.id, { ok: true });
-  return { app, svc, dev, deviceId: created.device.id, spies, dir, lease };
+  return { app, svc, dev, deviceId: created.device.id, spies, dir, lease, ctx };
 }
 
 let tick = 0;
@@ -102,6 +104,29 @@ function chat(c: ReturnType<typeof setup>, body: Record<string, unknown>, topic 
 const rid = (t = Date.now()) => `${t}-${crypto.randomUUID()}`;
 
 describe('mobile operator chat', () => {
+  it('mirrors only authenticated admitted human text through the enforcing gate, once, without answering it', async () => {
+    const c = setup();
+    const gate = new NotificationSelectivityGate(c.dir, 'test-machine', () => ({ enabled: true, dryRun: false }));
+    const adapter = new TelegramAdapter({ token: '123:test', chatId: '-1001', ownerUserId: OWNER }, c.dir, { suppressLifelineAutoCreate: true });
+    adapter.selectivity = gate;
+    c.ctx.telegram!.sendToTopic = adapter.sendToTopic.bind(adapter);
+    const wire = vi.fn(async () => new Response(JSON.stringify({ ok: true, result: { message_id: 22 } })));
+    vi.stubGlobal('fetch', wire); gate.observeInbound(TOPIC, 'waiting-human');
+    try {
+      const body = { text: 'Hello from my authenticated phone', requestId: rid() };
+      const rejected = await request(c.app).post(`/mobile/chat/${TOPIC}`).set('Authorization', 'Bearer tok-1').send(body);
+      expect(rejected.status).toBe(403); expect(wire).not.toHaveBeenCalled();
+      const result = await chat(c, body);
+      expect(result.status, JSON.stringify(result.body)).toBe(200);
+      expect(result.body).toMatchObject({ outcome: 'delivered', mirrored: true });
+      expect(wire).toHaveBeenCalledOnce();
+      expect((await chat(c, body)).body).toEqual(result.body); expect(wire).toHaveBeenCalledOnce();
+      expect(gate.decide(TOPIC, { origin: 'automated', category: 'presence-standby', sourceContext: 'presence', inboundMessageId: 'waiting-human' }).decision).toBe('deliver');
+      expect(await adapter.sendToTopic(TOPIC, 'Unrelated automation')).toMatchObject({ recorded: true });
+      expect(wire).toHaveBeenCalledOnce();
+    } finally { vi.unstubAllGlobals(); await gate.close(); }
+  });
+
   it('delivers an app message through the inbound core as the owner, labelled, with one history row and a mirror', async () => {
     const c = setup();
     const r = await chat(c, { text: 'hello from the phone', requestId: rid() });

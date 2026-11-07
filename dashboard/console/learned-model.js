@@ -111,6 +111,7 @@ export function correctionStatusWords(r) {
 
 /** "Still watching" = not yet a preference and not noise; everything else is "Earlier". */
 export function isWatching(r) {
+  // warning-path: row
   return r && (r.status === 'open' || r.status === 'reopened') && r.kind !== 'noise';
 }
 
@@ -122,6 +123,7 @@ export function correctionRow(r, now = Date.now()) {
     main: summary,
     sub: correctionStatusWords(r),
     end: when || '',
+    // warning-path: row
     tone: r.status === 'reopened' ? 'attn' : isWatching(r) ? null : 'unknown',
     record: r,
   };
@@ -179,6 +181,7 @@ export function buildConflicts(res, { machines = {}, now = Date.now() } = {}) {
       key: `conflict:${c.conflictId}`, id: c.conflictId,
       main: `${who} learned different versions of one preference. I use both as hints until it is settled.`,
       sub: `first seen ${ago(c.firstSeenAt, now) || 'at an unknown time'}${c.recurrenceCount > 1 ? ` · seen again ${c.recurrenceCount} times` : ''}`,
+      // warning-path: row
       tone: 'attn',
       record: c,
     };
@@ -208,6 +211,7 @@ export function learnedFacts({ prefs, corrections, conflicts }) {
   facts.push(prefs && prefs.ok ? { n: prefs.total, label: prefs.total === 1 ? 'preference kept' : 'preferences kept' } : { n: '?', label: 'preferences kept' });
   if (corrections && corrections.ok) facts.push({ n: corrections.watching.length, label: corrections.watching.length === 1 ? 'correction being watched' : 'corrections being watched' });
   else if (!corrections || !corrections.off) facts.push({ n: '?', label: 'corrections being watched' });
+  // warning-path: pageHead
   if (conflicts && conflicts.ok && conflicts.rows.length) facts.push({ n: conflicts.rows.length, label: conflicts.rows.length === 1 ? 'disagreement between machines' : 'disagreements between machines', tone: 'attn' });
   return facts.slice(0, 4);
 }

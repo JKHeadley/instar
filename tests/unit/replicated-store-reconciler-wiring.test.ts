@@ -1,3 +1,4 @@
+import { CorrectionLedger } from '../../src/monitoring/CorrectionLedger.js';
 // safe-fs-allow: test fixture teardown uses SafeFsExecutor.safeRmSync on tmp dirs only.
 /**
  * Wiring ratchet — ReplicatedStoreReconciler (docs/specs/statesync-writer-agnostic-reconciler.md
@@ -125,7 +126,7 @@ describe('coverage ratchet', () => {
       gitCarried: async () => 'local',
       config: () => ({}),
     });
-    expect(rec.seamedStores.length).toBe(6);
+    expect(rec.seamedStores.length).toBe(7);
     expect(rec.clock).toBe(emitter.clock); // the reconciler fences against the emitter's clock
   });
 
@@ -173,6 +174,11 @@ describe('the seam builds the same record as the in-process hook (per store)', (
     const action = {
       id: 'ACT-001', title: 'Ship it', description: 'd', priority: 'high', status: 'pending', commitTo: 'Justin', createdAt: '2026-10-01T00:00:00.000Z',
     } as unknown as ActionItem;
+
+    const failures = new CorrectionLedger({ dbPath: path.join(stateDir, 'correction-ledger.db'), machineId: ORIGIN });
+    failures.record({ kind: 'infra-gap', severity: 'failure-callout', learning: 'Keep setup agent owned', scrubbedSummary: 'Setup handed back', deterministicWeight: 3,
+      failureContext: { turns: [{ text: 'Bad handoff', fromUser: true, at: 1 }], missing: ['instructions'] } });
+    failures.close();
 
     const seams = new Map<string, ReconcileStoreSeam>(
       buildReconcilerSeams({ stateDir, relationshipsDir: relDir, evolution: { listLearnings: () => [learning], listActions: () => [action] } })
@@ -255,11 +261,15 @@ describe('the seam builds the same record as the in-process hook (per store)', (
   it('fingerprints are independent of hlc and observed', async () => {
     const t = await setup();
     for (const [store, seam] of t.seams) {
-      const row = onlyRow(seam);
+      const snapshot = seam.snapshot();
+      expect(snapshot.present).toBe(true);
+      expect(snapshot.rows.length).toBeGreaterThan(0);
+      for (const row of snapshot.rows) {
       const reg = t.regs.get(store)!;
       const a = fp(reg, row.build(H, ORIGIN, undefined) as Record<string, unknown>);
       const b = fp(reg, row.build({ physical: 5, logical: 3, node: ORIGIN }, ORIGIN, { physical: 4, logical: 0, node: 'm_peer' }) as Record<string, unknown>);
       expect(b, store).toBe(a);
+      }
     }
   });
 

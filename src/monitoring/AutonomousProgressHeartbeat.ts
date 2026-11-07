@@ -18,11 +18,14 @@
  * purely-observational wording, a per-topic cooldown, a widening per-run backoff
  * + hard cap, and the shared one-voice ProxyCoordinator lease.
  *
- * Signal-only: it emits a liveness message and never gates, blocks, delays, or
- * rewrites anything. Every predicate fails CLOSED (no emit) on any uncertainty.
+ * The fleet wiring uses guaranteedReporting: output evidence determines honest
+ * wording, while missing output, a missing session, and a paused local record
+ * still produce a bounded status message. The old gated mode remains for
+ * compatibility with direct callers. This component never blocks a run.
  */
 
 import { EventEmitter } from 'node:events';
+import { DegradationReporter } from './DegradationReporter.js';
 import type { ProxyCoordinator } from './ProxyCoordinator.js';
 import { scrubFocus } from './autonomousHeartbeatScrub.js';
 import type {
@@ -33,6 +36,8 @@ import type {
 // ─── Config & types ─────────────────────────────────────────────────────────
 
 export interface AutonomousHeartbeatConfig {
+  /** Fleet reporting contract: observe every local autonomous run, including pauses. */
+  guaranteedReporting?: boolean;
   /** Master switch (resolved by the dev-gate; refreshed at each tick). */
   enabled?: boolean;
   /** dryRun: log the intended heartbeat instead of sending. Default true. */
@@ -50,9 +55,10 @@ export interface AutonomousHeartbeatConfig {
 /** A topic with a live autonomous run, surfaced for the per-topic predicate. */
 export interface ActiveAutonomousRun {
   topicId: number;
+  paused?: boolean;
   /** The tmux session bound to the topic (for #4 alive + #8 snapshot lookup). */
   sessionName: string | null;
-  /** Seconds remaining on the run window (from autonomousRunRemainingForTopic). */
+  /** Seconds remaining on a bounded run; zero for unbounded or expired paused runs. */
   remainingSeconds: number;
 }
 
@@ -60,6 +66,7 @@ export interface ActiveAutonomousRun {
 export interface RunMarkers {
   movedTo: string | null;
   moveSuspended: boolean;
+  stopped?: boolean;
   startedAtMs: number | null;
   /** Stable autonomous-run identity; null fails closed. */
   runId: string | null;
@@ -76,6 +83,8 @@ export interface OutboundHistoryEntry {
 export interface AutonomousHeartbeatDeps {
   /** Cheap, in-memory: topics with a live autonomous run (predicate #1). */
   listActiveAutonomousRuns: () => ActiveAutonomousRun[];
+  /** True only with confirmed local ownership; null when ownership is unknown. */
+  isLocalTopicOwner?: (topicId: number) => boolean | null;
   /** Read the run-state markers for #2 (mid-move) + #3 (warmup). Null fails closed. */
   getRunMarkers: (topicId: number) => RunMarkers | null;
   /** Predicate #4: is the bound session alive? */
@@ -145,6 +154,7 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
   private cfg: {
     enabled: boolean;
     dryRun: boolean;
+    guaranteedReporting: boolean;
     silenceThresholdMs: number;
     tickIntervalMs: number;
     maxHeartbeatsPerRun: number;
@@ -198,6 +208,7 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
       tickIntervalMs: tickMs,
       maxHeartbeatsPerRun: configuredMax,
       recentOutputChangeWindowMs: configuredOutputWindowMs,
+      guaranteedReporting: raw.guaranteedReporting === true,
     };
   }
 
@@ -231,6 +242,7 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
   status(): {
     enabled: boolean;
     dryRun: boolean;
+    guaranteedReporting: boolean;
     silenceThresholdMinutes: number;
     tickIntervalMs: number;
     maxHeartbeatsPerRun: number;
@@ -245,6 +257,7 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
     return {
       enabled: this.cfg.enabled,
       dryRun: this.cfg.dryRun,
+      guaranteedReporting: this.cfg.guaranteedReporting,
       silenceThresholdMinutes: Math.round(this.cfg.silenceThresholdMs / 60_000),
       tickIntervalMs: this.cfg.tickIntervalMs,
       maxHeartbeatsPerRun: this.cfg.maxHeartbeatsPerRun,
@@ -308,12 +321,22 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
   private async evaluateTopic(run: ActiveAutonomousRun, now: number, markers: RunMarkers | null): Promise<void> {
     const topicId = run.topicId;
 
+    const localOwner = this.deps.isLocalTopicOwner?.(topicId) ?? null;
+    if (this.cfg.guaranteedReporting && localOwner === false) {
+      this.recordSuppressed(topicId, now, 'owned-by-another-machine');
+      return;
+    }
+
     // #2 Not mid-handoff + #3 destination warmup elapsed (markers fail closed).
-    if (!markers || !markers.runId) {
+    if (!markers || !markers.runId || markers.stopped) {
       this.recordSuppressed(topicId, now, 'run-markers-unreadable');
       return;
     }
-    if (markers.movedTo || markers.moveSuspended) {
+    if (markers.movedTo && !(markers.moveSuspended && this.cfg.guaranteedReporting && localOwner === true)) {
+      this.recordSuppressed(topicId, now, 'mid-move-marker');
+      return;
+    }
+    if (markers.moveSuspended && !this.cfg.guaranteedReporting) {
       this.recordSuppressed(topicId, now, 'mid-move-marker');
       return;
     }
@@ -324,7 +347,14 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
     }
 
     // #4 Session alive.
-    if (!run.sessionName || !this.deps.isSessionAlive(run.sessionName)) {
+    let sessionAlive = false;
+    try {
+      sessionAlive = !!run.sessionName && this.deps.isSessionAlive(run.sessionName);
+    } catch {
+      // A failed liveness read must be described as unavailable, not let one
+      // topic abort the entire fleet tick.
+    }
+    if (!sessionAlive && !this.cfg.guaranteedReporting) {
       this.recordSuppressed(topicId, now, 'session-not-alive');
       return;
     }
@@ -348,19 +378,25 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
     }
 
     // #7 Per-run heartbeat budget not exhausted.
-    if (state.count >= this.cfg.maxHeartbeatsPerRun) {
+    if (!this.cfg.guaranteedReporting && state.count >= this.cfg.maxHeartbeatsPerRun) {
       this.recordSuppressed(topicId, now, 'budget-exhausted');
       return;
     }
 
     // #8 Recent output change — from the SHARED snapshot (no own capture).
-    const lastOutputAt = this.deps.getSharedLastOutputAt(run.sessionName);
-    if (lastOutputAt == null || lastOutputAt <= 0) {
+    let lastOutputAt: number | null | undefined = null;
+    try {
+      lastOutputAt = sessionAlive && run.sessionName
+        ? this.deps.getSharedLastOutputAt(run.sessionName) : null;
+    } catch {
+      // Unknown output selects the honest uncertainty message below.
+    }
+    if (!this.cfg.guaranteedReporting && (lastOutputAt == null || lastOutputAt <= 0)) {
       // Snapshot unavailable / lastOutputAt absent → fail CLOSED, never capture.
       this.recordSuppressed(topicId, now, 'shared-snapshot-unavailable');
       return;
     }
-    if (now - lastOutputAt > this.cfg.recentOutputChangeWindowMs) {
+    if (!this.cfg.guaranteedReporting && lastOutputAt != null && now - lastOutputAt > this.cfg.recentOutputChangeWindowMs) {
       // Output has NOT advanced recently (e.g. frozen spinner) → suppress.
       this.recordSuppressed(topicId, now, 'no-recent-output-change');
       return;
@@ -372,9 +408,16 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
       return;
     }
     try {
-      const rawFocus = this.deps.getFocusForTopic(topicId);
+      const outputFresh = lastOutputAt != null && lastOutputAt > 0
+        && now - lastOutputAt <= this.cfg.recentOutputChangeWindowMs;
+      let rawFocus: string | null = null;
+      if (outputFresh) {
+        try { rawFocus = this.deps.getFocusForTopic(topicId); } catch { /* generic wording */ }
+      }
       const scrub = scrubFocus(rawFocus);
-      const text = this.buildMessage(scrub.focus);
+      const text = this.cfg.guaranteedReporting
+        ? this.buildRunStatusMessage(run, markers, sessionAlive, outputFresh, scrub.focus)
+        : this.buildMessage(scrub.focus);
 
       const previousState = { ...state };
       const reservedState: RunState = {
@@ -427,6 +470,22 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
     return `I haven't posted here in a while on this autonomous run. Message me if you need me.`;
   }
 
+  private buildRunStatusMessage(
+    run: ActiveAutonomousRun,
+    markers: RunMarkers,
+    sessionAlive: boolean,
+    outputFresh: boolean,
+    focus: string | null,
+  ): string {
+    if (run.paused) return 'This autonomous run is paused in its local run state. This reporter has no recorded pause reason; it needs a resume before work can continue.';
+    if (markers.moveSuspended) return 'This autonomous run is paused because its move to another machine was suspended. It needs the move resumed or cancelled before work can continue.';
+    if (!sessionAlive) return 'This autonomous run is still registered, but its session is not running on this machine. Work is paused until the session is recovered.';
+    if (!outputFresh) return 'This autonomous run is still registered, but I cannot verify recent session activity. Work may be paused; the session needs checking.';
+    return focus
+      ? `Autonomous run update: recent session activity was observed around «${focus}». This confirms activity, not task progress.`
+      : 'Autonomous run update: recent session activity was observed. This confirms activity, not task progress.';
+  }
+
   // ─── Internals ──────────────────────────────────────────────────────────────
 
   /** Most-recent outbound (fromUser===false) entry time, or null when none. */
@@ -434,13 +493,19 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
     let history: OutboundHistoryEntry[];
     try {
       history = this.deps.getTopicHistory(topicId) ?? [];
-    } catch {
-      // @silent-fallback-ok: this is fail-CLOSED, not a degraded fallback — when history
-      // can't be read we treat the topic as "spoke just now" (MAX_SAFE_INTEGER sentinel)
-      // so the silence gate CANNOT fire on missing evidence. Suppressing a heartbeat on
-      // an unreadable read is the safe direction; reporting degradation here would be
-      // noise on the common transient-read case.
-      return Number.MAX_SAFE_INTEGER;
+    } catch (err) {
+      DegradationReporter.getInstance().report({
+        feature: 'AutonomousProgressHeartbeat.history',
+        primary: 'Read recent outbound messages to measure topic silence',
+        fallback: this.cfg.guaranteedReporting ? 'Use durable cooldown and run-start anchor' : 'Suppress this heartbeat',
+        reason: err instanceof Error ? err.message : String(err),
+        impact: 'The most recent topic reply cannot be verified for this tick',
+        internalOnly: true,
+      });
+      // In guaranteed mode, the durable cooldown and run-start anchor bound a
+      // possible repeat if history is temporarily unreadable. Legacy mode keeps
+      // its fail-closed behavior.
+      return this.cfg.guaranteedReporting ? null : Number.MAX_SAFE_INTEGER;
     }
     let latest: number | null = null;
     for (const e of history) {

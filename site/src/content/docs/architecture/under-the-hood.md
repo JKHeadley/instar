@@ -207,12 +207,18 @@ Every 60 seconds, captures terminal output from each active session and generate
 Every 30 minutes, creates condensed digests of what each session accomplished. Splits activity into meaningful chunks, summarizes each via LLM, and stores them in episodic memory. When a session completes, generates a full synthesis. This is how the agent builds long-term memory of what it's done.
 
 ### NotificationBatcher
-Three tiers of notification urgency:
-- **Immediate** — quota exhaustion, critical stalls (sent instantly)
+Three scheduling tiers, applied after notification delivery policy:
+- **Immediate** — quota exhaustion, critical stalls (immediate scheduling when delivery is admitted)
 - **Summary** — job completions, session lifecycle (batched every 30 minutes)
 - **Digest** — routine system notices (batched every 2 hours)
 
 Uses state-change-only deduplication: repeated identical notifications are suppressed until the content actually changes. Supports quiet hours (demotes Summary → Digest during configured times).
+
+### Quiet by Default delivery
+
+`NotificationSelectivityGate` decides whether automated output reaches Telegram or stays in the readable quiet feed. Urgency and batch tier do not grant delivery: trusted reply provenance, specific-inbound recovery floors, confirmed category choices and bounded incident exceptions govern the final send. Batches keep producer categories separate, and a quiet receipt ends delivery work without generating a mobile push or a delivered counter.
+
+`QuietNotificationStore` durably appends the first occurrence and coalesces repeat counts into bounded updates. `NotificationPreferences` is the sole confirmed preference writer and retains pending cross-machine changes through bounded retries. Dark or unavailable peers remain explicitly unknown. See [Quiet by Default notifications](../features/quiet-notifications/) for operator controls, storage limits and staged rollout.
 
 ### DeliveryRetryManager
 Three layers of retry for inter-agent messages:

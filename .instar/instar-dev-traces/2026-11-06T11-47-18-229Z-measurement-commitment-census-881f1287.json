@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "measurement-commitment-census",
+  "sessionId": "30384209-0957-44f8-9037-d33d452ffbc6",
+  "timestamp": "2026-11-06T11:47:18.229Z",
+  "artifactPath": "upgrades/side-effects/measurement-commitment-census.md",
+  "artifactSha256": "d7567b06ef50dd152d70a779d69689689c56271f4d2c483df78611cf6d1d40cd",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-06T11-46-46-830Z-measurement-commitment-census.json",
+    ".instar/instar-dev-traces/2026-11-06T11-45-53-739Z-measurement-commitment-census-cc8eec9e.json",
+    "dashboard/console/measurement-coverage.js",
+    "docs/specs/measurement-commitment-census.eli16.md",
+    "docs/specs/measurement-commitment-census.md",
+    "site/src/content/docs/features/measurement-evidence.md",
+    "src/server/maturationBoardRoutes.ts",
+    "src/server/measurementCoverageRead.ts",
+    "tests/e2e/maturation-board-alive.test.ts",
+    "tests/integration/maturation-board-route.test.ts",
+    "tests/unit/measurement-commitment-census.test.ts",
+    "upgrades/next/measurement-commitment-census.md",
+    "upgrades/side-effects/measurement-commitment-census.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive read census and plain-language hint over existing owners; no durable state or new authority. Most changed lines are tests and required explanations; a revert fully removes it.",
+  "eli16Path": "docs/specs/measurement-commitment-census.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/measurement-commitment-census.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

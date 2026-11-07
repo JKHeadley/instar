@@ -27,6 +27,7 @@
  * this agent ⇒ 503 `slack-not-configured`. `mobilePairing.slackOwnerUserId` unset ⇒ 503
  * `slack-owner-unset` (the owner's Slack identity is a config field, never inferred).
  */
+import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
 import { DEFAULT_ORIGIN_DISPLAY } from '../messaging/telegram-origin/OriginPresentation.js';
 import type { OriginDisplaySettings } from '../messaging/telegram-origin/types.js';
 import { deviceOriginRow, type MessageOriginEvidence } from '../messaging/messageOrigin.js';
@@ -204,14 +205,12 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     // read is never forwarded, so the holder's own hop cannot go on to a third machine.
     const named = req.query.machine;
     const deviceId = principalDevice(req);
-    const stillOwner = () => {
-      const rec = deviceId === null ? undefined : deps.pairing.devices.get(deviceId);
-      if (!rec || rec.status !== 'active') return false;
-      const person = deps.pairing.personOfDevice(rec);
-      return person.ok === true && person.role === 'owner';
-    };
+    const admission = mobileOwnerDeviceAdmission(deps.pairing, req);
+    const stillOwner = () => admission?.isCurrent() === true;
     if (deps.holderRead && typeof named === 'string' && named && named !== deps.machineId() && stillOwner()) {
       const answer = await deps.holderRead({ id, machine: named, limit, before: typeof req.query.before === 'string' ? req.query.before : null, stillOwner });
+      // The helper has parsed/formatted the body; reread at the actual emission boundary.
+      if (answer.status === 200 && !stillOwner()) { ownerOnly(res); return; }
       res.status(answer.status).json(answer.body);
       return;
     }
@@ -383,7 +382,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
       at: receivedAt, machineId: s.deps.machineId(), receivedAt,
       ...(signed.origin ? { origin: signed.origin } : {}), ...(signed.receipt ? { receipt: signed.receipt } : {}),      // People and roles §3.3: who sent it, recorded at accept time.
       ...(sendPerson ? { senderName: sendPerson.name, senderRole: sendPerson.role } : {}),
-      ...(sendPerson && sendPerson.role === 'msp' && sendPerson.userId ? { senderPerson: { machineId: deps.pairing.machineId(), userId: sendPerson.userId } } : {}),
+      ...(sendPerson && sendPerson.role !== 'owner' && sendPerson.userId ? { senderPerson: { machineId: deps.pairing.machineId(), userId: sendPerson.userId } } : {}),
     };
     const msg: MessageEvent | MediaMessageEvent = stored.length > 0 ? { ...base, kind: 'media-message', attachments: stored } : { ...base, kind: 'message' };
     if (msg.kind === 'media-message' && mediaRecordTooLarge(msg, signed.origin, s.deps.machineId())) {

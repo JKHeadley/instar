@@ -141,3 +141,27 @@ export function codeOwnedFiles(files, rules) {
     return owned;
   });
 }
+
+/**
+ * GitHub leaves `reviewDecision` empty when the code-owner requirement comes
+ * from a ruleset, even with the owner's approval on the head (PR #2812,
+ * 2026-11-05). So an EMPTY decision is no answer, and the reviews themselves
+ * are read: every owned file needs a named owner whose latest review approves
+ * exactly `headSha`. A stated decision (REVIEW_REQUIRED, CHANGES_REQUESTED) is
+ * GitHub's answer and stands. A team owner cannot be matched to a login here,
+ * so it never counts. GitHub still enforces the rule at merge; this only stops
+ * a false refusal.
+ */
+export function codeOwnerApprovedAtHead({ reviewDecision, files, rules, reviews, headSha } = {}) {
+  if (reviewDecision) return false;
+  if (!headSha) return false;
+  const owned = codeOwnedFiles(files, rules);
+  if (owned.length === 0) return false;
+  return owned.every((f) => {
+    let owners = [];
+    for (const r of rules ?? []) if (r.re.test(f)) owners = r.owners;
+    return owners
+      .filter((o) => /^@[^/@]+$/.test(o))
+      .some((o) => approvedAtHead(reviews, o.slice(1), headSha).approved);
+  });
+}

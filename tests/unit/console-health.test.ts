@@ -37,6 +37,15 @@ describe('health-model', () => {
     expect(rows).toEqual([{ key: 'iMessage', title: 'iMessage isn’t connected', detail: 'Messages won’t reach me.', href: '#/capacity/health?s=iMessage' }]);
   });
 
+  it('each problem names its machine on Home, and says nothing when the agent named none', async () => {
+    const { healthNeedRows, machineWords } = await model();
+    const rows = healthNeedRows(answer('attention', [issue({ machine: { key: 'k1', name: 'Mac Studio' } })]));
+    expect(rows[0].detail).toBe('On Mac Studio · Messages won’t reach me.');
+    expect(machineWords(issue())).toBe('');
+    expect(machineWords(issue({ machine: { key: 'k1', name: null } }))).toBe('');
+    expect(machineWords(issue({ machine: { key: 'k1', name: '  ' } }))).toBe('');
+  });
+
   it('the Ask link carries the question, encoded', async () => {
     const { askHref } = await model();
     const href = askHref(issue());
@@ -86,6 +95,127 @@ describe('the page', () => {
     expect(main.querySelector('[data-focus-key="h:GitSync.gitHygiene"]').hasAttribute('open')).toBe(true);
     expect(main.querySelector('details.list-section').hasAttribute('open')).toBe(true);
     expect(main.querySelector('h1').textContent).toBe('iMessage isn’t connected.');
+  });
+
+  it('a problem card says which machine it is on', async () => {
+    const { renderHealth } = await import(path.join(CONSOLE, 'health.js'));
+    const main = document.querySelector('main');
+    await renderHealth(main, { get: vi.fn(async () => answer('attention', [issue({ machine: { key: 'k1', name: 'Mac Studio' } })])) });
+    const card = main.querySelector('[data-focus-key="h:iMessage"]');
+    expect(card.querySelector('summary').nextElementSibling.textContent).toBe('On Mac Studio');
+    await renderHealth(main, { get: vi.fn(async () => answer('attention', [issue()])) });
+    expect(main.textContent).not.toContain('On ');
+  });
+
+  // ── Quick actions (docs/specs/health-quick-actions.md) ──
+
+  const says = 'I’ll stop recording this problem.';
+  const withChoices = (over = {}) => issue({ keys: ['iMessage'], choices: ['snooze', 'hide', 'ignore'], ignoreSays: says, ...over });
+  const buttons = (root) => [...root.querySelectorAll('button')].map((b) => b.textContent);
+  const click = (root, text) => [...root.querySelectorAll('button')].find((b) => b.textContent === text).click();
+  const settle = () => new Promise((r) => setTimeout(r, 5));
+
+  it('a problem offers what the answer says: one tap for each duration, and an older agent shows no buttons', async () => {
+    const { renderHealth } = await import(path.join(CONSOLE, 'health.js'));
+    const main = document.querySelector('main');
+    await renderHealth(main, { get: vi.fn(async () => answer('attention', [withChoices()])), post: vi.fn() });
+    expect(buttons(main)).toEqual(['1 hour', '1 day', '1 week', 'Hide from me', 'Ignore completely']);
+    await renderHealth(main, { get: vi.fn(async () => answer('attention', [issue()])), post: vi.fn() });
+    expect(buttons(main)).toEqual([]);
+    await renderHealth(main, { get: vi.fn(async () => answer('attention', [issue({ keys: ['x'], choices: ['snooze'], choiceNote: 'This one involves security or your data.' })])), post: vi.fn() });
+    expect(buttons(main)).toEqual(['1 hour', '1 day', '1 week']);
+    expect(main.textContent).toContain('This one involves security or your data.');
+    await renderHealth(main, { get: vi.fn(async () => answer('unsure', [issue({ impact: 'unclassified', choices: [], choiceNote: 'This one has no name I can follow.' })])), post: vi.fn() });
+    expect(buttons(main)).toEqual([]);
+    expect(main.textContent).toContain('This one has no name I can follow.');
+  });
+
+  it('a duration is one tap, and the page reads again', async () => {
+    const { renderHealth } = await import(path.join(CONSOLE, 'health.js'));
+    const main = document.querySelector('main');
+    const get = vi.fn(async () => answer('attention', [withChoices()]));
+    const post = vi.fn(async () => ({ ok: true, data: { note: null } }));
+    await renderHealth(main, { get, post });
+    click(main, '1 day');
+    await settle();
+    expect(post).toHaveBeenCalledWith('/mobile/health-issues/choices', { id: 'iMessage', keys: ['iMessage'], choice: 'snooze', hours: 24 });
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it('Ignore asks once, in its own sentence, with nothing to type', async () => {
+    const { renderHealth } = await import(path.join(CONSOLE, 'health.js'));
+    const main = document.querySelector('main');
+    const post = vi.fn(async () => ({ ok: true, data: {} }));
+    await renderHealth(main, { get: vi.fn(async () => answer('attention', [withChoices()])), post });
+    click(main, 'Ignore completely');
+    expect(post).not.toHaveBeenCalled();
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog.textContent).toContain(says);
+    expect(dialog.querySelector('input')).toBeNull();
+    click(dialog, 'Ignore it');
+    await settle();
+    expect(post).toHaveBeenCalledWith('/mobile/health-issues/choices', { id: 'iMessage', keys: ['iMessage'], choice: 'ignore' });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('a refused choice says why in plain words and changes nothing', async () => {
+    const { renderHealth } = await import(path.join(CONSOLE, 'health.js'));
+    const main = document.querySelector('main');
+    const get = vi.fn(async () => answer('attention', [withChoices()]));
+    await renderHealth(main, { get, post: vi.fn(async () => ({ ok: false, reason: 'issue-gone' })) });
+    click(main, 'Hide from me');
+    await settle();
+    expect(main.textContent).toContain('This has stopped happening');
+    expect(main.textContent).not.toContain('issue-gone');
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it('a machine that didn’t answer is said on the page', async () => {
+    const { renderHealth } = await import(path.join(CONSOLE, 'health.js'));
+    const main = document.querySelector('main');
+    await renderHealth(main, { get: vi.fn(async () => answer('attention', [withChoices()])), post: vi.fn(async () => ({ ok: true, data: { note: 'Saved. One machine didn’t answer.' } })) });
+    click(main, 'Hide from me');
+    await settle();
+    expect(main.textContent).toContain('Saved. One machine didn’t answer.');
+  });
+
+  const hiddenRow = (over = {}) => ({ key: 'Slack', title: 'Slack isn’t connected', mode: 'snooze', until: new Date(Date.now() + 3 * 3600_000).toISOString(), by: 'phone', happening: true, line: 'It’s happening now.', ...over });
+  const withHidden = (hidden) => ({ ok: true, status: 200, data: { verdict: 'running', headline: 'Running, with one thing you’ve hidden.', issues: [], truncated: false, hidden } });
+
+  it('the Hidden list brings one back, says when and who, and never counts on Home', async () => {
+    const { renderHealth } = await import(path.join(CONSOLE, 'health.js'));
+    const { healthNeedRows } = await model();
+    const main = document.querySelector('main');
+    const post = vi.fn(async () => ({ ok: true, data: {} }));
+    await renderHealth(main, { get: vi.fn(async () => withHidden([hiddenRow()])), post });
+    expect(main.querySelector('details.list-section summary').textContent).toBe('Hidden (1)');
+    expect(main.textContent).toContain('Comes back in 3 hours');
+    expect(main.textContent).toContain('Hidden from your phone');
+    expect([...main.querySelectorAll('a')].map((a) => a.textContent)).toContain('Ask the agent about this');
+    expect(main.querySelector('[data-operator-need]')).toBeNull();
+    expect(healthNeedRows(withHidden([hiddenRow()]))).toEqual([]);
+    click(main, 'Bring back');
+    await settle();
+    expect(post).toHaveBeenCalledWith('/mobile/health-issues/choices/undo', { key: 'Slack' });
+  });
+
+  it('a row says who when it wasn’t the phone, and when it can’t be read, says so', async () => {
+    const { renderHealth } = await import(path.join(CONSOLE, 'health.js'));
+    const main = document.querySelector('main');
+    await renderHealth(main, { get: vi.fn(async () => withHidden([hiddenRow({ mode: 'ignore', until: null, by: 'dashboard-or-agent', happening: null })])), post: vi.fn() });
+    expect(main.textContent).toContain('Ignored');
+    expect(main.textContent).toContain('Hidden from the dashboard, or by the agent');
+    const unread = withHidden([]);
+    unread.data.hiddenUnreadable = true;
+    await renderHealth(main, { get: vi.fn(async () => unread), post: vi.fn() });
+    expect(main.textContent).toContain('couldn’t read what you’ve hidden');
+  });
+
+  it('a problem that came back says it was hidden before', async () => {
+    const { renderHealth } = await import(path.join(CONSOLE, 'health.js'));
+    const main = document.querySelector('main');
+    await renderHealth(main, { get: vi.fn(async () => answer('attention', [withChoices({ returnNote: 'You hid this earlier. It stopped, and then it came back.' })])), post: vi.fn() });
+    expect(main.textContent).toContain('It stopped, and then it came back.');
   });
 
   it('a failed read says so', async () => {

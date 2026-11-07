@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "model-settings-notices",
+  "sessionId": "15e3c22c-65b6-483d-8e75-0fd19111b2fc",
+  "timestamp": "2026-11-06T01:48:48.261Z",
+  "artifactPath": "upgrades/side-effects/model-settings-notices.md",
+  "artifactSha256": "7dd8341f0e0614f6a2592ec2fd1af5c2b105ec3b9659d1a251bc90a9163929ce",
+  "coveredFiles": [
+    "docs/specs/model-settings-notices.eli16.md",
+    "tests/e2e/threadline-pairing-v2-relay-agents.test.ts",
+    "upgrades/side-effects/model-settings-notices.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible test-only repair removes a random-word assumption that exercises no production code; API denial coverage is preserved and strengthened.",
+  "eli16Path": "docs/specs/model-settings-notices.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/model-settings-notices.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

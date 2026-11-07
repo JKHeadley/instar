@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "skill-learning-sentinel-ladder-entry",
+  "sessionId": "f1d7515b-8a10-4206-94b6-7c0f689d2d22",
+  "timestamp": "2026-11-06T20:49:05.549Z",
+  "artifactPath": "upgrades/side-effects/skill-learning-sentinel-ladder-entry.md",
+  "artifactSha256": "b0e932ee5a696b5bc92644a0f7aef0144560e26cb3b9b166e4227e4e065412a5",
+  "specPath": "docs/specs/skill-learning-sentinel.md",
+  "coveredFiles": [
+    "docs/specs/carriers/skill-learning-sentinel.json",
+    "docs/specs/skill-learning-sentinel.eli16.md",
+    "docs/specs/skill-learning-sentinel.md",
+    "src/data/feature-ladders.json",
+    "upgrades/side-effects/skill-learning-sentinel-ladder-entry.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "data-only ladder registration plus tracked-marker links in an approved, converged spec",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

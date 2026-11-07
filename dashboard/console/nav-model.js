@@ -61,10 +61,12 @@ export const GROUPS = [
     id: 'people', label: 'People', icon: 'people',
     question: 'Who is talking to whom, and with what permission?',
     tabs: [
+      { id: 'reach', label: 'Who can reach me', icon: 'people', desc: 'Everyone who can reach this agent, how, and what each person can see.' },
       { id: 'threadline', label: 'Other agents', icon: 'chat', desc: 'Who is waiting on you, whether each agent I work with is actually there, pairing new ones, and our conversations.' },
+      { id: 'notifications', label: 'Notifications', icon: 'chat', desc: 'Quiet reports and the categories you want pushed to you.' },
       { id: 'origins', label: 'Messages to you', icon: 'chat', desc: 'Who wrote each message I sent you, and the who-wrote-this footer.' },
       { id: 'mandates', label: 'Permission slips', icon: 'stamp', desc: 'What you have let agents do together, who is waiting for your approval, and every allow and refusal.' },
-      { id: 'phones', label: 'Phones', icon: 'phone', desc: 'Pair the Instar iPhone app: a waiting phone’s code, large with a Copy button, after your PIN (when there is no Telegram), and the phones already paired.' },
+      { id: 'phones', label: 'Phones', icon: 'phone', desc: 'Pair the Instar iPhone app: approve a waiting phone, or read its code, after your PIN (when there is no Telegram), and the phones already paired.' },
       { id: 'secrets', label: 'Passwords & keys', icon: 'lock', desc: 'Whether the agent is waiting on a password, a safe one-time link to hand one over, and the keys it already holds.' },
     ],
   },
@@ -96,6 +98,9 @@ export function allTabIds() {
 }
 
 /** Features rebuilt natively in the console, by legacy tab id. */
+/** Tiles with no legacy dashboard tab: new pages are built in the console only. */
+export const CONSOLE_ONLY_TABS = ['reach'];
+
 export const NATIVE_PAGES = {
   commitments: '#/work/promises',
   jobs: '#/work/schedule',
@@ -112,7 +117,9 @@ export const NATIVE_PAGES = {
   tokens: '#/capacity/costs',
   'llm-activity': '#/capacity/costs',
   'routing-map': '#/capacity/costs',
+  reach: '#/people/reach',
   origins: '#/people/messages',
+  notifications: '#/people/notifications',
   threadline: '#/people/agents',
   mandates: '#/people/mandates',
   secrets: '#/people/secrets',
@@ -144,4 +151,60 @@ export function legacyHref(tabId) {
 
 export function icon(name) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
+}
+
+// ── Phone mode (the Instar iPhone app) ────────────────────────────────────
+// The app shows one console page inside its own frame:
+//   /dashboard/console/?phone=1#/<page>   (or #/<page>?phone=1)
+// shows only that page's content, with no top bar, nav or Legacy link.
+// Without phone=1 nothing changes.
+
+/** Short page names the app may use, by the console's own hash path. */
+export const PHONE_PAGE_ALIASES = {
+  promises: 'work/promises',
+  plans: 'work/plans',
+  schedule: 'work/schedule',
+  development: 'work/development',
+  maturation: 'work/maturation',
+  ideas: 'work/ideas',
+  sessions: 'work/sessions',
+  pace: 'work/pace',
+  machines: 'capacity/machines',
+  health: 'capacity/health',
+  accounts: 'capacity/accounts',
+  costs: 'capacity/costs',
+  reach: 'people/reach',
+  messages: 'people/messages',
+  agents: 'people/agents',
+  mandates: 'people/mandates',
+  secrets: 'people/secrets',
+  allowed: 'settings/allowed',
+  learned: 'settings/learned',
+  inside: 'settings/inside',
+  files: 'settings/files',
+};
+
+/** Pages that exist only in phone mode (the Pace card is a page of its own there). */
+export const PHONE_ONLY_PAGES = ['work/pace'];
+
+function queryHasPhone(query) {
+  if (typeof query !== 'string' || !query) return false;
+  try { return new URLSearchParams(query.replace(/^\?/, '')).get('phone') === '1'; } catch { return false; }
+}
+
+/**
+ * Is this load in phone mode? True when phone=1 is in the page's query
+ * (location.search) or in the hash's own query (#/accounts?phone=1).
+ */
+export function isPhoneMode(search, hash) {
+  if (queryHasPhone(search)) return true;
+  const h = typeof hash === 'string' ? hash : '';
+  const q = h.indexOf('?');
+  return q >= 0 && queryHasPhone(h.slice(q + 1));
+}
+
+/** The page path to render: in phone mode a short name resolves to its full path. */
+export function pagePath(path, phone) {
+  if (!phone) return path;
+  return Object.prototype.hasOwnProperty.call(PHONE_PAGE_ALIASES, path) ? PHONE_PAGE_ALIASES[path] : path;
 }

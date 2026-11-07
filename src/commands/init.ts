@@ -54,7 +54,7 @@ import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { packageInstallCommand } from '../core/packageInstall.js';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
-import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS, INSTAR_WILDCARD_PRETOOLUSE_HOOKS, ensureInstarWildcardPreToolUseHooks, type SettingsMatcherEntry } from '../core/instarSettingsHooks.js';
+import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS, INSTAR_WILDCARD_PRETOOLUSE_HOOKS, ensureInstarWildcardPreToolUseHooks, ensureInstarWritePreToolUseHooks, INSTAR_WRITE_PRETOOLUSE_HOOKS, INSTAR_WRITE_PRETOOLUSE_MATCHER, type SettingsMatcherEntry } from '../core/instarSettingsHooks.js';
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
@@ -3800,6 +3800,23 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       tags: ['cat:evolution', 'role:worker', 'exec:prompt', 'pair:evolution-overdue-check'],
     },
     {
+      slug: 'attribution-review',
+      name: 'Attribution Review',
+      description: 'Works through the attribution report: fixes notes that credit someone without a source. Each fix is a normal edit that passes the write gate. Runs only while attribution is in enforce mode and the report holds something.',
+      schedule: '0 9 * * *',
+      priority: 'low',
+      expectedDurationMinutes: 15,
+      model: 'sonnet',
+      enabled: true,
+      // Zero-token gate. The route answers 503 where the feature is dark, so this job is inert on the fleet.
+      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/attribution/status | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('mode')=='enforce' and d.get('sessionLine') else 1)" 2>/dev/null`,
+      execute: {
+        type: 'prompt',
+        value: `Work through the attribution report.\n\nAUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')")}"\ncurl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/attribution/status\n\nFor each item in report.unsourced and report.falseCitations, open the note and fix it with a normal edit, which passes the same write gate. If a listed suggestion really is the source, read it first, then quote the exact words with its marker. Otherwise remove the credit and label it, for example: X. An earlier note credited this to Name; source unknown. [source unknown]. Never write a marker you did not read, and never credit a person to get past a refusal. report.notFoundOnLiveMachines and report.cannotCheckNow need no edit unless the note is also wrong: a machine may be down. Stop after 20 fixes. Do not message anyone.`,
+      },
+      tags: ['cat:maintenance', 'role:worker', 'exec:prompt'],
+    },
+    {
       slug: 'dashboard-link-refresh',
       name: 'Dashboard Link Refresh',
       description: 'Refresh the pinned dashboard link in Telegram so it never goes stale.',
@@ -3827,7 +3844,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the GUARDIAN category. Your job is to review all guardian/monitoring jobs and assess the health of the monitoring system itself.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/guardian?sinceHours=24\n2. Analyze the report for:\n   - Jobs with high failure rates or consecutive failures\n   - Jobs that are being skipped excessively (especially for quota reasons)\n   - Schedule mismatches (jobs running too often or not often enough for their purpose)\n   - Model over-allocation (could any job use a cheaper model?)\n   - Contradictions between job findings (e.g., health-check says healthy but degradation-digest found issues)\n   - Coverage gaps (are there monitoring blind spots?)\n3. Read the handoff notes from each job — do they tell a coherent story?\n4. If you find actionable issues, write a clear summary. If everything is healthy, say so briefly.\n\nWrite your findings in [HANDOFF] tags for the next overseer run. Focus on trends and cross-job insights that individual jobs can't see.`,
+        value: `You are a Category Overseer for the GUARDIAN category. Your job is to review all guardian/monitoring jobs and assess the health of the monitoring system itself.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/guardian?sinceHours=24\n2. Analyze the report for:\n   - Jobs with high failure rates or consecutive failures\n   - Jobs that are being skipped excessively (especially for quota reasons)\n   - Schedule mismatches (jobs running too often or not often enough for their purpose)\n   - Model over-allocation (could any job use a cheaper model?)\n   - Contradictions between job findings (e.g., health-check says healthy but degradation-digest found issues)\n   - Coverage gaps (are there monitoring blind spots?)\n3. Read the handoff notes from each job — do they tell a coherent story?\n4. If you find actionable issues, write a clear summary. If everything is healthy, say so briefly.\n\nQuiet by Default: keep routine findings in internal records and [HANDOFF]. Own bounded checks and recovery before escalating. Post to the Bugs hub only when a concrete remaining impact needs one operator-only decision or action; use one short plain notice. Never label a scheduled report as a conversational reply. Write your findings in [HANDOFF] tags for the next overseer run. Focus on trends and cross-job insights that individual jobs can't see.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3843,7 +3860,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the LEARNING category. Your job is to review all evolution/learning jobs and assess whether the learning pipeline is producing genuine value.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/learning?sinceHours=48\n2. Analyze:\n   - Are evolution proposals being generated AND accepted? What's the accept/reject ratio?\n   - Is insight-harvest finding novel insights or recycling stale ones?\n   - Are commitments being tracked and completed, or piling up?\n   - Is reflection-trigger producing meaningful MEMORY.md updates?\n   - Are any learning jobs consistently skipped due to quota? This means the learning pipeline is being starved.\n   - Model costs: reflection-trigger uses opus — is the quality difference worth it vs sonnet?\n3. Look for the meta-pattern: is the agent actually getting smarter over time, or is the learning pipeline just busy-work?\n4. Check handoff notes for patterns across runs.\n\nWrite findings in [HANDOFF] tags. Flag if the learning pipeline is producing diminishing returns.`,
+        value: `You are a Category Overseer for the LEARNING category. Your job is to review all evolution/learning jobs and assess whether the learning pipeline is producing genuine value.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/learning?sinceHours=48\n2. Analyze:\n   - Are evolution proposals being generated AND accepted? What's the accept/reject ratio?\n   - Is insight-harvest finding novel insights or recycling stale ones?\n   - Are commitments being tracked and completed, or piling up?\n   - Is reflection-trigger producing meaningful MEMORY.md updates?\n   - Are any learning jobs consistently skipped due to quota? This means the learning pipeline is being starved.\n   - Model costs: reflection-trigger uses opus — is the quality difference worth it vs sonnet?\n3. Look for the meta-pattern: is the agent actually getting smarter over time, or is the learning pipeline just busy-work?\n4. Check handoff notes for patterns across runs.\n\nQuiet by Default: keep routine findings internal. Own bounded checks and self-healing and record the result. Bugs-hub posts must identify a remaining impact and one operator-only action; never send housekeeping or progress narration. Never label scheduled output as a reply. Write findings in [HANDOFF] tags. Flag if the learning pipeline is producing diminishing returns.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3859,7 +3876,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the MAINTENANCE category. Your job is to review all housekeeping/maintenance jobs and ensure they're keeping the system clean.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/maintenance?sinceHours=48\n2. Analyze:\n   - Is memory-hygiene actually reducing stale entries, or finding nothing each run?\n   - Is project-map-refresh keeping the map accurate? How often does it find drift?\n   - Is coherence-audit finding real misalignments or just confirming everything is fine?\n   - Are any maintenance jobs redundant with each other? (e.g., overlapping checks)\n   - Are skill-type jobs (coherence-audit, memory-hygiene) running correctly?\n   - Workload trends: are jobs processing fewer items over time (diminishing returns)?\n3. Maintenance jobs should trend toward finding LESS work over time. If they consistently find issues, something upstream is broken.\n\nWrite findings in [HANDOFF] tags. Recommend disabling or reducing frequency of jobs that consistently find nothing.`,
+        value: `You are a Category Overseer for the MAINTENANCE category. Your job is to review all housekeeping/maintenance jobs and ensure they're keeping the system clean.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/maintenance?sinceHours=48\n2. Analyze:\n   - Is memory-hygiene actually reducing stale entries, or finding nothing each run?\n   - Is project-map-refresh keeping the map accurate? How often does it find drift?\n   - Is coherence-audit finding real misalignments or just confirming everything is fine?\n   - Are any maintenance jobs redundant with each other? (e.g., overlapping checks)\n   - Are skill-type jobs (coherence-audit, memory-hygiene) running correctly?\n   - Workload trends: are jobs processing fewer items over time (diminishing returns)?\n3. Maintenance jobs should trend toward finding LESS work over time. If they consistently find issues, something upstream is broken.\n\nQuiet by Default: keep routine findings internal. Own bounded checks and self-healing and record the result. Bugs-hub posts must identify a remaining impact and one operator-only action; never send housekeeping or progress narration. Never label scheduled output as a reply. Write findings in [HANDOFF] tags. Recommend disabling or reducing frequency of jobs that consistently find nothing.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3875,7 +3892,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the INFRASTRUCTURE category. Your job is to review infrastructure/plumbing jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/infrastructure?sinceHours=48\n2. Analyze:\n   - Is git-sync succeeding? Any merge conflicts or divergence?\n   - Is dashboard-link-refresh keeping links current? Could it run less often?\n   - Is feedback-retry actually retrying anything, or is the queue always empty?\n   - Model allocation: git-sync uses high priority — is that justified by its failure rate?\n   - Are any infrastructure jobs causing issues for other jobs (e.g., git-sync holding sessions)?\n3. Infrastructure jobs should be boring and reliable. Any excitement is a problem.\n\nWrite findings in [HANDOFF] tags. Keep it brief — infrastructure overseers should be the quietest.`,
+        value: `You are a Category Overseer for the INFRASTRUCTURE category. Your job is to review infrastructure/plumbing jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/infrastructure?sinceHours=48\n2. Analyze:\n   - Is git-sync succeeding? Any merge conflicts or divergence?\n   - Is dashboard-link-refresh keeping links current? Could it run less often?\n   - Is feedback-retry actually retrying anything, or is the queue always empty?\n   - Model allocation: git-sync uses high priority — is that justified by its failure rate?\n   - Are any infrastructure jobs causing issues for other jobs (e.g., git-sync holding sessions)?\n3. Infrastructure jobs should be boring and reliable. Any excitement is a problem.\n\nQuiet by Default: keep routine findings internal. Own bounded checks and self-healing and record the result. Bugs-hub posts must identify a remaining impact and one operator-only action; never send housekeeping or progress narration. Never label scheduled output as a reply. Write findings in [HANDOFF] tags. Keep it brief — infrastructure overseers should be the quietest.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3891,7 +3908,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the DEVELOPMENT category. Your job is to review development-focused jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/development?sinceHours=48\n2. Analyze:\n   - Are development jobs consuming appropriate resources for their value?\n   - Are there CI/testing patterns that could be automated?\n3. Development jobs are only valuable when there's active development. If the codebase is stable, these could be reduced.\n\nWrite findings in [HANDOFF] tags.`,
+        value: `You are a Category Overseer for the DEVELOPMENT category. Your job is to review development-focused jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/development?sinceHours=48\n2. Analyze:\n   - Are development jobs consuming appropriate resources for their value?\n   - Are there CI/testing patterns that could be automated?\n3. Development jobs are only valuable when there's active development. If the codebase is stable, these could be reduced.\n\nQuiet by Default: keep routine findings internal. Own bounded checks and self-healing and record the result. Bugs-hub posts must identify a remaining impact and one operator-only action; never send housekeeping or progress narration. Never label scheduled output as a reply. Write findings in [HANDOFF] tags.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -4460,8 +4477,8 @@ if echo "\$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
 fi
 
 # Risky commands — behavior depends on safety level
-for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd"; do
-  if echo "\$INPUT" | grep -qi "\$pattern"; then
+for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "git +([^|;&]* +)?reset +([^|;&]* +)?--hard" "git +([^|;&]* +)?clean +([^|;&]* +)?(-[a-zA-Z]*f|--force)" "git +([^|;&]* +)?push +([^|;&]* +)?(--force|-f)([^a-zA-Z0-9-]|$)"; do
+  if echo "\$INPUT" | grep -qiE "\$pattern"; then
     if [ "\$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "\$pattern" | grep -qiE 'git push (--force|-f)'; then
       continue
     fi
@@ -4587,6 +4604,7 @@ fi
   // deferred-install gap widening). Dev-gated dark + fail-open on every
   // uncertainty, so on a fresh fleet agent it is one config read per tool call.
   fs.writeFileSync(path.join(hooksDir, 'standdown-guard.js'), migrator.getHookContent('standdown-guard'), { mode: 0o755 });
+  fs.writeFileSync(path.join(hooksDir, 'signin-profile-guard.js'), migrator.getHookContent('signin-profile-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'telegram-origin-guard.js'), migrator.getHookContent('telegram-origin-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'post-action-reflection.js'), migrator.getHookContent('post-action-reflection'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'external-communication-guard.js'), migrator.getHookContent('external-communication-guard'), { mode: 0o755 });
@@ -4607,6 +4625,10 @@ fi
   // Unjustified Stop Gate router — Stop hook that calls the server-side gate.
   // Shadow-mode by default; enforcement is controlled server-side.
   fs.writeFileSync(path.join(hooksDir, 'stop-gate-router.js'), migrator.getHookContent('stop-gate-router'), { mode: 0o755 });
+
+  // Attribution write gate — PreToolUse on Write|Edit|MultiEdit. Thin: the decision is server-side, and
+  // the route answers 503 on an agent where the feature is dark, so the hook passes.
+  fs.writeFileSync(path.join(hooksDir, 'attribution-gate.js'), migrator.getHookContent('attribution-gate'), { mode: 0o755 });
 
   // Verify-Before-Done observer — structural client-side TurnEvidence, always
   // installed; fleet-dark/dev-dry-run gating occurs inside the hook + route.
@@ -5328,6 +5350,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
       { matcher: 'Bash', hooks: instarBashHooks },
       { matcher: 'mcp__.*', hooks: instarMcpHooks },
       { matcher: '*', hooks: instarWildcardHooks },
+      { matcher: INSTAR_WRITE_PRETOOLUSE_MATCHER, hooks: INSTAR_WRITE_PRETOOLUSE_HOOKS.map((h) => ({ ...h })) },
     ];
   } else {
     const preToolUse = hooks.PreToolUse as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
@@ -5365,6 +5388,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
     // existing-agent migrator calls — so the two paths cannot drift (an anti-drift
     // test asserts both consume it).
     ensureInstarWildcardPreToolUseHooks(preToolUse as SettingsMatcherEntry[]);
+    ensureInstarWritePreToolUseHooks(preToolUse as SettingsMatcherEntry[]);
   }
 
   // SessionStart: identity injection on all lifecycle events

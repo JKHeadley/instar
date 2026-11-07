@@ -44,6 +44,12 @@ const BLOCKED_PATH_PREFIXES = new Set([
   // machine; a restored auto-install file would also start a root install on another machine.
   'state/playwright-profiles/',
   'state/xdrive/',
+  // Team access (team-roles-and-access §7): an ordinary restore must not roll back who has access.
+  // /mobile/team/restore is the only way back.
+  'state/team-access/',
+  'state/team-access-last-good/',
+  '.instar/state/team-access/',
+  '.instar/state/team-access-last-good/',
   '.instar/state/playwright-profiles/',
   '.instar/state/xdrive/',
   // includeFiles entries resolve RELATIVE TO stateDir (sourcePath = path.join(stateDir,
@@ -181,6 +187,8 @@ const DEFAULT_CONFIG: BackupConfig = {
     'state/recommended-services/',
     'state/offer-prerequisites/',
     'state/recommended-service-setup/',
+    // Attribution paper trail: a restore without pins would turn good citations into uncheckable ones.
+    'attribution/',
     // Integrated-Being v1 (gated by config.integratedBeing.enabled at snapshot
     // time — see resolveIncludedFiles()). Glob matches the active ledger and
     // any rotated .jsonl.<epoch> archives.

@@ -262,6 +262,42 @@ describe('PeerHomebaseRelay with the per-message judge', () => {
     expect(await relay.relayInbound({ threadId: 't', peers: ['fp'], senderName: 's', text: 'chatter' })).toMatchObject({ posted: false, reason: 'agent-internal' });
   });
 
+  it('reserves the topic brake before concurrent sends and counts out-of-order delivery', async () => {
+    const finish: Array<() => void> = [];
+    const send = vi.fn(() => new Promise<void>(resolve => finish.push(resolve)));
+    const relay = new PeerHomebaseRelay({ resolve, salienceGate: new SalienceGate(), userMeantJudge: judgeSaying({}), sendToTopic: send, now: () => 1000, schedule: () => {} });
+    const input = (threadId: string) => ({ threadId, peers: ['fp'], senderName: 's', text: 'Please approve' });
+    const accepted = ['a', 'b', 'c'].map(id => relay.relayInbound(input(id)));
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(3));
+    expect(await relay.relayInbound(input('d'))).toMatchObject({ posted: false, reason: 'rate-limited' });
+    for (const complete of finish.reverse()) complete();
+    expect((await Promise.all(accepted)).every(result => result.posted)).toBe(true);
+    expect(await relay.relayInbound(input('e'))).toMatchObject({ posted: false, reason: 'rate-limited' });
+    expect(send).toHaveBeenCalledTimes(3);
+  });
+
+  it('releases a quiet reservation without claiming a delivered slot', async () => {
+    const send = vi.fn().mockResolvedValueOnce({ recorded: true, delivered: false, quietId: 'quiet' }).mockResolvedValue(undefined);
+    const relay = new PeerHomebaseRelay({ resolve, salienceGate: new SalienceGate(), userMeantJudge: judgeSaying({}), sendToTopic: send, now: () => 1000, schedule: () => {} });
+    const input = (threadId: string) => ({ threadId, peers: ['fp'], senderName: 's', text: 'Please approve' });
+    expect(await relay.relayInbound(input('q'))).toMatchObject({ posted: false, recorded: true });
+    for (const id of ['a', 'b', 'c']) expect((await relay.relayInbound(input(id))).posted).toBe(true);
+    expect(await relay.relayInbound(input('d'))).toMatchObject({ posted: false, reason: 'rate-limited' });
+    expect(send).toHaveBeenCalledTimes(4);
+  });
+
+  it('reserves a first-only thread while its delivery is pending', async () => {
+    let finish!: () => void;
+    const send = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    const relay = new PeerHomebaseRelay({ resolve, salienceGate: new SalienceGate(), sendToTopic: send, now: () => 1000 });
+    const input = { threadId: 'first', peers: ['fp'], senderName: 's', text: 'First message' };
+    const first = relay.relayInbound(input);
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(await relay.relayInbound(input)).toMatchObject({ posted: false, reason: 'rate-limited' });
+    finish(); expect((await first).posted).toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   it('a judged user-meant post held by the topic brake or a failed send is retried (bounded)', async () => {
     const tasks: Array<() => void> = [];
     let now = 5;

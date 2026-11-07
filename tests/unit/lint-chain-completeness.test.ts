@@ -30,6 +30,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
  * order — order is `package.json`'s business, presence is this test's.
  */
 const REQUIRED_LINTS = [
+  'lint-notification-selectivity.mjs',
   // Round-18: added in the same commit that put this lint in the chain, which
   // is what this ratchet exists to force. Worth noting WHY it fired: the lint
   // in question is itself a gate against deferrals losing their carrier — and

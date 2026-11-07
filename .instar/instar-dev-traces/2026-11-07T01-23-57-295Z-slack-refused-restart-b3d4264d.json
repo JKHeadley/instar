@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "slack-refused-restart",
+  "sessionId": "13cfc1fc-ee49-4f68-9e20-39915cf0b8ed",
+  "timestamp": "2026-11-07T01:23:57.295Z",
+  "artifactPath": "upgrades/side-effects/slack-refused-restart.md",
+  "artifactSha256": "a78f30092dfc357f72abf7a5c148f6683f8d41f93d2fbd5e969287e77573c412",
+  "coveredFiles": [
+    "tests/e2e/claude-key-alive.test.ts",
+    "tests/unit/slack-session-relay-prompt-census.test.ts",
+    "tests/unit/slack-thread-session-wiring.test.ts",
+    "tests/unit/spawn-admission-callsite-pins.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test pins updated for the moved routing and notice code; same invariants",
+  "eli16Path": "upgrades/eli16-slack-refused-restart.md",
+  "sideEffectsPath": "upgrades/side-effects/slack-refused-restart.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

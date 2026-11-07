@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "console-sessions-width-and-settings",
+  "sessionId": "c222e4df-a8dd-4afe-a5b9-83451c6c1aa7",
+  "timestamp": "2026-11-06T16:13:53.845Z",
+  "artifactPath": "upgrades/side-effects/console-sessions-width-and-settings.md",
+  "artifactSha256": "99185551dc72dd1c220543966cace04abc40365f19e403818f96b3b8c0da0328",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-06T16-09-20-352Z-console-sessions-width-and-settings.json",
+    ".instar/instar-dev-traces/2026-11-06T16-08-50-525Z-console-sessions-width-and-settings-18f045b5.json",
+    "dashboard/console/sessions-model.js",
+    "docs/specs/console-sessions-width-and-settings.eli16.md",
+    "docs/specs/console-sessions-width-and-settings.md",
+    "src/server/mobileSessionControlsRoutes.ts",
+    "tests/e2e/mobile-session-controls-alive.test.ts",
+    "tests/unit/console-sessions.test.ts",
+    "tests/unit/mobile-session-controls.test.ts",
+    "upgrades/next/console-sessions-width-and-settings.md",
+    "upgrades/side-effects/console-sessions-width-and-settings.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "The confirmed word in the one constant; a revert undoes it",
+  "eli16Path": "docs/specs/console-sessions-width-and-settings.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-sessions-width-and-settings.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

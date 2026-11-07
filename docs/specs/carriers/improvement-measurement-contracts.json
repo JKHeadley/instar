@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-06T01:33:59.345Z",
+  "slug": "improvement-measurement-contracts",
+  "carriers": {
+    "CMT-001": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Complete topic139374: independent coverage for features, decisions, jobs, efforts and components; enforce missing-baseline claim/promotion holds; preserve versioned history; deploy parent/component trend views; verify real activity and understandable visuals; recurring review reports here with bounded corrective work. Report any remaining gap by the original November6 22:44Z ceiling."
+    }
+  }
+}

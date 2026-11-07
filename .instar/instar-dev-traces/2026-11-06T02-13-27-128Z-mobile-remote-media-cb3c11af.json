@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "mobile-remote-media",
+  "sessionId": "c222e4df-a8dd-4afe-a5b9-83451c6c1aa7",
+  "timestamp": "2026-11-06T02:13:27.128Z",
+  "artifactPath": "upgrades/side-effects/mobile-remote-media.md",
+  "artifactSha256": "cc5bc9704164caa1d65e55cd7fbbc0f7c322bf6bbd90a333ff96b1916e3e9c03",
+  "specPath": "docs/specs/mobile-remote-media.md",
+  "coveredFiles": [
+    "docs/specs/mobile-remote-media.eli16.md",
+    "docs/specs/mobile-remote-media.md",
+    "docs/specs/reports/mobile-remote-media-convergence.md",
+    "src/server/mobileMediaRoutes.ts",
+    "tests/integration/mobile-remote-media.test.ts",
+    "upgrades/side-effects/mobile-remote-media.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Coordinator-required guard on the hop socket timeout, same owner read.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Narrows a socket timeout; adds no loop or self-action."
+  }
+}

@@ -1,3 +1,4 @@
+import { inboundTopicId } from '../telegramTopicSpace.js';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -20,7 +21,7 @@ import { signMessage } from '../../core/agentSignatureProvenance.js';
 import { inspectOriginInstallation } from './OriginInstallation.js';
 import type { OriginActivationObservation } from './OriginActivation.js';
 import { OriginProductionEnrollment } from './OriginProductionEnrollment.js';
-import { OriginConfigReader } from './OriginConfigReader.js';
+import { OriginConfigReader, isOriginConfigReadTimeout } from './OriginConfigReader.js';
 import { OriginNoticePolicyObserver } from './OriginNoticePolicyObserver.js';
 import { projectOriginNoticePolicy } from './OriginNoticePolicy.js';
 import type { OriginNoticeDestinationPolicy } from './OriginNoticePolicy.js';
@@ -51,6 +52,7 @@ export function originSnapshotFailureReason(error: unknown): string {
  */
 export async function bootTelegramOrigin(options: {
   config: InstarConfig;
+  notificationGate?: import('./TelegramOriginService.js').TelegramOriginService['notificationGate'];
   /** Compiled worker seam for production-factory lifecycle tests. */
   workerUrl?: URL;
   configWorkerUrl?: URL;
@@ -94,6 +96,7 @@ export async function bootTelegramOrigin(options: {
   const demo = (config as InstarConfig & { liveTest?: { demo?: { telegramBotToken?: string; telegramChatId?: string | number } } }).liveTest?.demo;
   const additionalBots = demo?.telegramBotToken && demo.telegramChatId != null
     ? [{ token: demo.telegramBotToken, accountId: demo.telegramBotToken.split(':')[0], producerId: 'telegram-demo' }] : [];
+  const SNAPSHOT_FRESH_MS = 30_000;
   const configReader = new OriginConfigReader(config.stateDir, options.configWorkerUrl);
   let snapshot: { observedAt: number; configRevision: number; chatId: string; issuesChatId: string | null; ownerIds: string[]; hub: string | null;
     display: Partial<OriginDisplaySettings>; enabled: boolean; demoChatId: string | null;
@@ -144,7 +147,9 @@ export async function bootTelegramOrigin(options: {
       }
       snapshotFailure = null;
     } catch (error) {
-      snapshot = null;
+      // A read that ran out of time observed nothing, so the last snapshot keeps
+      // its ordinary 30 s bound. Every other failure revokes it now.
+      if (!isOriginConfigReadTimeout(error) || !snapshot || Date.now() - snapshot.observedAt > SNAPSHOT_FRESH_MS) snapshot = null;
       // Record WHY, once per change: the reason was previously discarded, which
       // left "config missing" refusals undiagnosable on standbys.
       const reason = originSnapshotFailureReason(error);
@@ -153,7 +158,7 @@ export async function bootTelegramOrigin(options: {
     }
   };
   await refresh();
-  const healthy = () => !closed && snapshot !== null && snapshot.configRevision === configReader.revision && Date.now() - snapshot.observedAt <= 30_000;
+  const healthy = () => !closed && snapshot !== null && snapshot.configRevision === configReader.revision && Date.now() - snapshot.observedAt <= SNAPSHOT_FRESH_MS;
   const unhealthyReason = (): string => closed ? 'origin-closed' : snapshot === null ? (snapshotFailure ?? 'origin-config-unavailable')
     : snapshot.configRevision !== configReader.revision ? 'origin-config-changed-not-yet-reread' : 'origin-config-snapshot-stale';
   const currentChatId = () => snapshot?.chatId;
@@ -234,6 +239,9 @@ export async function bootTelegramOrigin(options: {
     holdsLease: options.holdsLease,
     noticeProcess: { role: options.noticeOwner ? 'owner' : 'client', socketPath: path.join(config.stateDir, 'origin-notice.sock') },
   }).catch(error => { noticePolicyObserver?.close(); configReader.close(); throw error; });
+  runtime.service.notificationGate = options.notificationGate ?? null;
+  runtime.service.notificationTopicId = (chatId, topicId) => inboundTopicId(conversationChatId(chatId), topicId === null ? 1 : Number(topicId), { mainChatId: snapshot?.chatId, issuesChatId: snapshot?.issuesChatId });
+
   const close = async () => { closed = true; if (timer) clearTimeout(timer); if (configTimer) clearTimeout(configTimer);
     noticePolicyObserver?.close(); configReader.close();
     await Promise.all([detectorCanary.close(), nativeCanary.close()]); await runtime.close(); };

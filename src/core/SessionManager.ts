@@ -1,3 +1,4 @@
+import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
 /**
  * Session Manager — spawn and monitor Claude Code sessions via tmux.
  *
@@ -6,6 +7,8 @@
  * and can be monitored/reaped by the server.
  */
 
+import { isSafeSessionRef } from './claudeResumeTranscript.js';
+import { conversationRefOf, type TeamConfinement } from '../users/TeamConfinement.js';
 import type { MemoryPrivacyRecovery } from '../users/MemoryPrivacyRecovery.js';
 import { isCredentialEnvName, CLAUDE_CONFINED_PERMISSION_ARGS } from './credentialEnvNames.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -28,6 +31,7 @@ import { resolveGhTokenFromVault } from './ghToken.js';
 import type { ReapGuard, ReapKeepReason } from './ReapGuard.js';
 import { DRAINED_CLOSE_BYPASSED_REASONS, drainProcessShape, analyseTranscriptSinceBoundary } from './standDownDrain.js';
 import { clampWorkEvidence, isMidWork } from './WorkEvidence.js';
+import { confirmSessionUsageLimit } from '../monitoring/sessionUsageLimitEvidence.js';
 import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 import type { OriginSessionLaunch, OriginSessionLifecycle } from '../messaging/telegram-origin/OriginSessionRegistry.js';
 import { captureOriginHookSettings } from '../messaging/telegram-origin/OriginNativeHookProof.js';
@@ -145,6 +149,7 @@ import { VetoedKillBackoff, normalizeReasonKey, IDLE_ZOMBIE_ESCALATION_REASONS }
 import type { IncidentDedupe } from '../monitoring/IncidentDedupe.js';
 import { ensureAgentOwnedMemory, defaultClaudeConfigHome } from './AgentOwnedMemory.js';
 import { topicRef } from '../messaging/shared/topicRef.js';
+import { redactSpawnError } from './redactSpawnError.js';
 import {
   CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS,
   type ThreadlineMcpSpawnWiring,
@@ -980,7 +985,8 @@ export class SessionManager extends EventEmitter {
   }
 
   private originSpawnError(error: unknown): string {
-    return String(error).replace(/ior1_[A-Za-z0-9_-]{43}/g, '[origin-token-redacted]');
+    // #2184: the raw error carries the full tmux argv, including `-e GH_TOKEN=…`.
+    return redactSpawnError(error);
   }
 
   private originConfirmsProcessGone(tmuxSession: string): boolean {
@@ -1056,6 +1062,8 @@ export class SessionManager extends EventEmitter {
   /** Memory privacy (docs/specs/memory-privacy.md). Unwired means today's behaviour. */
   private memoryPrivacyWiring?: {
     privacy: MemoryPrivacy;
+    /** The confined list (team-roles-and-access §3.5). */
+    confinement?: TeamConfinement;
     /** The whole Telegram group's place key, or null when there is no group. */
     telegramGroupKey: () => string | null;
     /** True when the boot probe proved the OS sandbox starts here. */
@@ -1070,6 +1078,9 @@ export class SessionManager extends EventEmitter {
     /** Finds the Slack channel of a session started before places were recorded. */
     slackChannelForSession?: (sessionName: string) => string | null;
   };
+  private readonly conversationLocks = new Map<string, Promise<void>>();
+  /** Forgets a conversation's resume binding. Wired at boot, where the binding store lives. */
+  conversationResumeDropper: ((ref: string) => void) | null = null;
   private memoryInboundClaims = new Map<string, { place: string; dev: number; ino: number; size: number; mtimeMs: number; claimedAt: number }>();
 
   /**
@@ -1763,6 +1774,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   private planMemorySession(framework: string, tmuxSession: string, input: SessionPlaceInput): MemorySessionPlan | null {
     const wiring = this.memoryPrivacyWiring;
+    // Before the off-switch check: with privacy off a confined conversation cannot be confined at all.
+    if (wiring?.confinement?.refuseSpawn(input, wiring.privacy.enabled)) throw new MemoryPrivacyUnavailableError(framework);
     if (!wiring || !wiring.privacy.enabled) return null;
     const place = wiring.privacy.placeFor(input, wiring.telegramGroupKey());
     const audience = wiring.privacy.audienceFor(place);
@@ -1892,6 +1905,20 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return `${staged}\n[File access: If one referenced file fails to open, retry that file once. Then say which file failed and ask the sender to resend it. Do not conclude that other files cannot open in this session.]`;
   }
 
+  /**
+   * The inbox of a confined conversation's scope folder, or null when it is not confined. `key` is an
+   * app conversation key or `telegram:<topic>`, the forms the conversation store uses.
+   */
+  confinedInboxFor(key: string): string | null {
+    const wiring = this.memoryPrivacyWiring;
+    if (!wiring?.confinement || !wiring.privacy.enabled) return null;
+    const input: SessionPlaceInput = key.startsWith('telegram:') ? { telegramTopicId: Number(key.slice(9)) } : { memoryPlaceKey: `app:${key}` };
+    const place = wiring.confinement.place(input);
+    if (!place) return null;
+    const scopeDir = wiring.privacy.ensureScopeDir(wiring.privacy.audienceFor(place), 'inbox');
+    return scopeDir ? path.join(scopeDir, 'inbox') : null;
+  }
+
   /** The audience kind a place would get, for callers that shape what they send there. */
   memoryAudienceKind(input: SessionPlaceInput): MemoryAudience['kind'] {
     const wiring = this.memoryPrivacyWiring;
@@ -1901,7 +1928,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   /** Sessions whose output may feed agent-wide digests: never one inside the boundary. */
   sessionsForAgentDigests(): Session[] {
-    return this.listRunningSessions().filter((s) => !s.memoryScopeDir);
+    return this.listRunningSessions().filter((s) => this.feedsAgentDigests(s));
+  }
+
+  /** The same rule for one session, for callers holding a finished one. */
+  feedsAgentDigests(session: Pick<Session, 'memoryScopeDir'>): boolean {
+    return !session.memoryScopeDir;
   }
 
   /** What the status route reports. No people's names beyond the owner's id. */
@@ -1937,7 +1969,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
   /** Clean up after a session that ran inside the boundary. */
   releaseMemorySession(session: Pick<Session, 'id' | 'memoryScopeDir' | 'memorySettingsPath' | 'memoryAudience'>): void {
     if (!session.memoryScopeDir) return;
-    this.memoryPrivacyWiring?.privacy.revokeSessionTokens(session.id);
+    const privacy = this.memoryPrivacyWiring?.privacy;
+    if (privacy && !privacy.sessionReplied(session.id)) {
+      featureEvidence.record('memoryPrivacy', { kind: 'error', reason: 'session ended with no reply', context: { audience: session.memoryAudience ?? null } });
+    }
+    privacy?.revokeSessionTokens(session.id);
     const op = 'SessionManager.releaseMemorySession';
     if (session.memorySettingsPath) SafeFsExecutor.safeRmSync(session.memorySettingsPath, { force: true, operation: op });
     if (session.memoryAudience === 'none') SafeFsExecutor.safeRmSync(session.memoryScopeDir, { recursive: true, force: true, operation: op });
@@ -3167,6 +3203,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   setClaudeSessionId(instarSessionId: string, claudeSessionId: string): void {
     if (!claudeSessionId) return;
+    // A hook reports this, and a confined session can call that route itself.
+    if (!isSafeSessionRef(claudeSessionId)) { console.warn(`[SessionManager] refused a session id for ${instarSessionId}`); return; }
     const sessions = this.state.listSessions({ status: 'running' });
     const session = sessions.find(s => s.id === instarSessionId);
     if (!session || session.claudeSessionId === claudeSessionId) return;
@@ -4561,7 +4599,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (headlessFramework === 'claude-code') {
       const continuityFlags: string[] = options.sessionId
         ? ['--session-id', options.sessionId]
-        : options.resumeSessionId
+        : isSafeSessionRef(options.resumeSessionId)
           ? ['--resume', options.resumeSessionId]
           : [];
       if (continuityFlags.length > 0) {
@@ -4601,6 +4639,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         this.ensurePinnedHomeInteractiveReady(pinnedHome, 'headless pin');
       }
     }
+    assertBrowserMcpProfilesSafe(resolvedCwd, headlessFramework, this.originConfigHome(headlessFramework, headlessSpec.envOverrides), this.config.projectDir);
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(headlessSpec.envOverrides)) {
       frameworkEnvFlags.push('-e', `${k}=${v}`);
@@ -5044,6 +5083,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       this.defaultHomeFirstRunChecked = true;
       this.ensurePinnedHomeInteractiveReady(process.env.CLAUDE_CONFIG_DIR || null, 'default login');
     }
+    assertBrowserMcpProfilesSafe(resolvedCwd, 'claude-code', this.originConfigHome('claude-code', launchSpec.envOverrides), this.config.projectDir);
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(launchSpec.envOverrides)) {
       frameworkEnvFlags.push('-e', `${k}=${v}`);
@@ -6324,6 +6364,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
   /** Frameworks whose closed-headless-lane fallback has already been disclosed. */
   private readonly closedHeadlessLaneDisclosed = new Set<string>();
 
+  /** A helper's limit is never evidence that the session serving the topic is
+   * unable to reply. Corroborate the exact main transcript and account home. */
+  confirmSessionUsageLimit(tmuxSession: string): string | false {
+    const session = this.listRunningSessions().find(s => s.tmuxSession === tmuxSession);
+    if (!session?.claudeSessionId || (session.framework ?? 'claude-code') !== 'claude-code') return false;
+    const configHome = this.configHomeForSession(tmuxSession, { defaultWhenUnset: true });
+    if (!configHome) return false;
+    return confirmSessionUsageLimit(resolveFrameworkTranscriptPath({
+      framework: 'claude-code', sessionId: session.claudeSessionId,
+      projectDir: session.cwd ?? this.config.projectDir, configHome,
+    }), session.claudeSessionId) ? session.claudeSessionId : false;
+  }
+
   /**
    * Last-modified time of the session's framework transcript, in ms, or null when
    * it cannot be read (no session id, no resolvable path, missing file, stat
@@ -7481,7 +7534,56 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Used for Telegram-driven conversational sessions.
    * Optionally sends an initial message after Claude is ready.
    */
-  async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; framework?: IntelligenceFramework; codexLocalProvider?: 'ollama' | 'lmstudio'; defaultModel?: string;
+  /**
+   * One change to who may read a conversation, against every spawn of it: a spawn holds this lock from
+   * resolving its audience through launch, so a grant can never interleave (team-roles-and-access §4.1).
+   */
+  async withConversationLock<T>(ref: string, fn: () => Promise<T>): Promise<T> {
+    const prior = this.conversationLocks.get(ref) ?? Promise.resolve();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const tail = prior.then(() => held);
+    this.conversationLocks.set(ref, tail);
+    await prior;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.conversationLocks.get(ref) === tail) this.conversationLocks.delete(ref);
+    }
+  }
+
+  /**
+   * A change to who may read a conversation, for team access: under the conversation's lock, end its
+   * live session so a new one resolves the new place, then run the change.
+   */
+  async applyConversationChange<T>(ref: string, change: () => Promise<T> | T): Promise<T> {
+    return this.withConversationLock(ref, async () => {
+      const input: SessionPlaceInput = ref.startsWith('telegram:') ? { telegramTopicId: Number(ref.slice(9)) } : { memoryPlaceKey: `app:${ref}` };
+      for (const session of this.listRunningSessions()) {
+        const place = session.memoryPlaceInput;
+        const same = input.telegramTopicId !== undefined
+          ? (session.telegramTopicId === input.telegramTopicId || place?.telegramTopicId === input.telegramTopicId)
+          : place?.memoryPlaceKey === input.memoryPlaceKey;
+        // A session that will not end means the change must not go through under it.
+        if (same && !(await this.retireMemorySession(session))) throw new Error('team-access-session-still-running');
+      }
+      // A failed spawn can record the new audience without launching, so the next one must not be
+      // left to notice the change: the old transcript belongs to the old audience.
+      this.conversationResumeDropper?.(ref);
+      return change();
+    });
+  }
+
+  /** Spawn under the conversation's lock when it names one. See `spawnInteractiveSessionUnlocked`. */
+  async spawnInteractiveSession(...args: Parameters<SessionManager['spawnInteractiveSessionUnlocked']>): Promise<string> {
+    const options = args[2];
+    const ref = conversationRefOf({ telegramTopicId: options?.telegramTopicId, memoryPlaceKey: options?.memoryPlaceKey });
+    if (!ref) return this.spawnInteractiveSessionUnlocked(...args);
+    return this.withConversationLock(ref, () => this.spawnInteractiveSessionUnlocked(...args));
+  }
+
+  async spawnInteractiveSessionUnlocked(initialMessage?: string, name?: string, options?: { shapedForAudience?: string; reshapeForAudience?: (kind: string, message: string) => string; telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; framework?: IntelligenceFramework; codexLocalProvider?: 'ollama' | 'lmstudio'; defaultModel?: string;
     /** durable-conversation-identity §7: the authenticated bootstrap
      *  conversation ids this session may open durable state on (a Slack spawn
      *  passes its minted conversation id). Falls back to [telegramTopicId]. */
@@ -7641,6 +7743,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
       memoryPlaceKey: options?.memoryPlaceKey,
       memoryPlace: options?.memoryPlace,
     });
+    // A caller that shaped its message for one audience gets it reshaped if a grant changed that.
+    const actualAudience = memoryPlan?.audience.kind ?? 'open';
+    if (initialMessage && options?.reshapeForAudience && options.shapedForAudience !== undefined && options.shapedForAudience !== actualAudience) {
+      initialMessage = options.reshapeForAudience(actualAudience, initialMessage);
+    }
     if (memoryPlan?.dropResume && options?.resumeSessionId) {
       options = { ...options, resumeSessionId: undefined };
     }
@@ -7742,6 +7849,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (resumeReopenFailed && effectiveInitialMessage) {
       effectiveInitialMessage = `${RESUME_REOPEN_FAILED_NOTE}\n\n${effectiveInitialMessage}`;
     }
+    assertBrowserMcpProfilesSafe(options?.cwd ?? this.config.projectDir, framework, effectiveConfigHome, this.config.projectDir);
     const { plan: interactiveThreadline, mcpFlags: interactiveMcpFlags, tag: interactiveTransportTag } =
       this.planInteractiveThreadlineMcp(framework, binaryPath, options); // threadline-mcp-local-http D3
     const launchSpec = buildInteractiveLaunch(framework, {
@@ -8130,7 +8238,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         const retryMessage = this.resumeFollowsAccountEnabled() && !initialMessage.startsWith(RESUME_REOPEN_FAILED_NOTE)
           ? `${RESUME_REOPEN_FAILED_NOTE}\n\n${initialMessage}`
           : initialMessage;
-        await this.spawnInteractiveSession(retryMessage, originalName, {
+        await this.spawnInteractiveSessionUnlocked(retryMessage, originalName, {
           telegramTopicId: options.telegramTopicId,
           slackChannelId: options.slackChannelId,
           slackThreadTs: options.slackThreadTs,
@@ -8495,7 +8603,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
       tmuxArgs.push('--permission-mode', options.permissionMode);
 
-      if (options.resumeSessionId) {
+      if (isSafeSessionRef(options.resumeSessionId)) {
         tmuxArgs.push('--resume', options.resumeSessionId);
         console.log(`[SessionManager] Resuming triage session: ${options.resumeSessionId}`);
       }

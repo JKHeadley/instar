@@ -6,8 +6,8 @@
 //   cancel a sign-in          POST /subscription-pool/follow-me/cancel     bearer
 //   repair / retry / cancel   POST /subscription-relogin/repair-cell       operator session
 
-import { buildAccountsPage, frameworkName } from './accounts-model.js';
-import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell, askPin, forgetOperatorSession, firstPaint, arrivalScroll, markNeed } from './ui.js';
+import { buildAccountsPage, frameworkName, resetWords } from './accounts-model.js';
+import { el, setKids, pageHead, askLink, sheet, closeSheet, story, details, note, cantTell, askPin, forgetOperatorSession, firstPaint, arrivalScroll, markNeed } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName } from './display-identity.js';
 
@@ -26,7 +26,8 @@ export async function renderAccounts(main, ctx) {
   const [pool, relogin, inUse, machines] = await Promise.all([get('/subscription-pool?scope=pool', 8000), get('/subscription-relogin?scope=pool', 8000), get('/subscription-pool/in-use'), get('/pool')]);
   const names = machines.ok && Array.isArray(machines.data && machines.data.machines) ? Object.fromEntries(machines.data.machines.map((m) => [m.machineId, m.nickname])) : {};
   const episodes = relogin.ok && Array.isArray(relogin.data && relogin.data.episodes) ? relogin.data.episodes : [];
-  const page = buildAccountsPage(pool, Date.now(), { episodes, inUse: inUse.ok ? inUse.data : null, names });
+  const blockers = relogin.ok && Array.isArray(relogin.data && relogin.data.blockers) ? relogin.data.blockers : [];
+  const page = buildAccountsPage(pool, Date.now(), { episodes, blockers, inUse: inUse.ok ? inUse.data : null, names });
   if (!page.ok) { setKids(main, pageHead({ eyebrow: 'Capacity · Accounts', headline: 'Accounts', tone: 'muted' }), cantTell(page.reason), legacyLink()); return; }
   const refresh = () => renderAccounts(main, ctx);
 
@@ -60,12 +61,19 @@ export async function renderAccounts(main, ctx) {
       return row;
     })))));
 
+  // The notice spot: nothing unless something needs the person; each notice carries its action.
+  const notices = page.notices.length ? el('section', { class: 'page-sections', id: 'sec-notices' },
+    page.notices.map((n) => el('div', { class: 'need-card', 'data-tone': n.tone },
+      el('span', { class: 'need-title', text: n.title }),
+      n.returnsAt && resetWords(n.returnsAt) ? el('span', { class: 'row-sub', text: `Room returns: ${resetWords(n.returnsAt).replace(/^resets /, '')}` }) : null,
+      el('p', { class: 'hero-ask' }, n.action.kind === 'sign-in' ? el('a', { href: '#/capacity/accounts?s=needs', text: 'Sign in' }) : askLink(n.action.about))))) : null;
+
   markNeed(needs, 'accounts');
   setKids(main,
     pageHead({ eyebrow: 'Capacity · Accounts', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
     page.partial ? note(page.partial) : null,
     !relogin.ok ? note(`Couldn't read sign-in repairs: ${relogin.reason}.`) : null,
-    needs, list, legacyLink());
+    notices, needs, list, legacyLink());
   const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
   if (want === 'needs') arrivalScroll(needs);
 }
@@ -86,7 +94,7 @@ function openAccount(a, refresh) {
       el('span', { class: c.state === 'attn' ? 'dot attn' : c.state === 'ok' ? 'dot live' : 'dot unknown' }),
       el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: c.machine }), el('span', { class: 'row-sub', text: c.state === 'attn' && !c.actionable ? 'Needs sign-in; a unique account and machine name are needed first.' : c.label })),
       el('span', { class: 'row-end' }));
-    if (c.state === 'attn' && c.actionable) r.querySelector('.row-end').append(el('button', { class: 'btn-quiet', type: 'button', text: 'Sign in', onclick: () => startNeed({ accountId: a.id, machineId: c.machineId, machine: c.machine, title: `Sign in ${a.email || a.name} on ${c.machine}`, action: c.episode && (c.episode.state === 'failed' || c.episode.state === 'suggested') ? (c.episode.state === 'failed' ? 'retry' : 'approve') : 'start', episodeId: c.episode ? c.episode.id : null }, refresh) }));
+    if ((c.state === 'attn' || c.state === 'waiting') && c.actionable) r.querySelector('.row-end').append(el('button', { class: 'btn-quiet', type: 'button', text: 'Sign in', onclick: () => startNeed({ accountId: a.id, machineId: c.machineId, machine: c.machine, title: `Sign in ${a.email || a.name} on ${c.machine}`, action: c.episode && (c.episode.state === 'failed' || c.episode.state === 'suggested') ? (c.episode.state === 'failed' ? 'retry' : 'approve') : 'start', episodeId: c.episode ? c.episode.id : null }, refresh) }));
     return r;
   }));
   sheet({ title: a.name }, story(lines), el('section', { class: 'sheet-block' }, el('h3', { class: 'eyebrow', text: 'On each machine' }), machines),

@@ -108,6 +108,10 @@ describe('owner health reading — production wiring', () => {
     const r2 = await phone.send('GET', '/mobile/health-issues');
     expect(r2.status).toBe(200);
     const row = r2.body.issues.find((i: { id: string }) => i.id === 'GitSync.gitHygiene');
+    // Wiring: production names the machine that answered (no pool here, so this computer's own name), on the row too.
+    expect(typeof r2.body.machine?.name).toBe('string');
+    expect(r2.body.machine.name.length).toBeGreaterThan(0);
+    expect(row?.machine).toEqual(r2.body.machine);
     expect(row).toMatchObject({ impact: 'internal', title: 'Some files were kept out of sync on purpose' });
     expect(row.ask).toContain('GitSync.gitHygiene');
     expect(r2.body.verdict).not.toBe('healthy');
@@ -116,6 +120,40 @@ describe('owner health reading — production wiring', () => {
     const health = await request(app).get('/health');
     expect(health.body.status).toBe('degraded');
     expect(health.body).not.toHaveProperty('verdict');
+
+    // Quick actions (docs/specs/health-quick-actions.md), on the real server, reporter and /health:
+    // an event the table doesn't name, so nothing else in this run can be mistaken for it.
+    const feature = 'E2eQuickAction.thing';
+    reporter.report({ feature, primary: 'p', fallback: 'Using a backup', reason: 'r', impact: 'A thing was late.' });
+    await new Promise((r) => setTimeout(r, HEALTH_READ_CACHE_MS + 100));
+    const shown = await phone.send('GET', '/mobile/health-issues');
+    expect(shown.body.issues.find((i: { id: string }) => i.id === feature)).toMatchObject({ impact: 'unclassified', choices: ['snooze', 'hide', 'ignore'] });
+    const eventCount = async () => (await auth(request(app).get('/health/degradations'))).body.events.filter((e: { feature: string }) => e.feature === feature).length;
+    expect(await eventCount()).toBe(1);
+
+    // Hide from me: it leaves the phone's list, the agent still has it, and it's on the Hidden list.
+    const hid = await phone.send('POST', '/mobile/health-issues/choices', { id: feature, keys: [feature], choice: 'hide' });
+    expect(hid.status).toBe(200);
+    expect(hid.body.issues.find((i: { id: string }) => i.id === feature)).toBeUndefined();
+    expect(hid.body.hidden.find((h: { key: string }) => h.key === feature)).toMatchObject({ mode: 'hide', by: 'phone', happening: true });
+    expect(await eventCount()).toBe(1);
+    expect((await phone.send('POST', '/mobile/health-issues/choices/undo', { key: feature })).status).toBe(200);
+
+    // Ignore completely: the real reporter stops recording it, and the running /health stops counting it.
+    await new Promise((r) => setTimeout(r, HEALTH_READ_CACHE_MS + 100));
+    const before = (await request(app).get('/health')).body.degradations as number;
+    const ignored = await phone.send('POST', '/mobile/health-issues/choices', { id: feature, keys: [feature], choice: 'ignore' });
+    expect(ignored.status).toBe(200);
+    expect(ignored.body.hidden.find((h: { key: string }) => h.key === feature)).toMatchObject({ mode: 'ignore', happening: null });
+    expect(await eventCount()).toBe(0);
+    expect((await request(app).get('/health')).body.degradations).toBe(before - 1);
+    reporter.report({ feature, primary: 'p', fallback: 'Using a backup', reason: 'r', impact: 'A thing was late.' });
+    expect(await eventCount()).toBe(0);
+
+    // Bring it back: the event from before is counted again, and the choice survives a real file read.
+    expect(fs.existsSync(path.join(stateDir(dir), 'state', 'health-choices.json'))).toBe(true);
+    expect((await phone.send('POST', '/mobile/health-issues/choices/undo', { key: feature })).status).toBe(200);
+    expect(await eventCount()).toBe(1);
 
     // The console's bearer reads the same answer; no credentials means no answer.
     expect((await auth(request(app).get('/mobile/health-issues'))).status).toBe(200);

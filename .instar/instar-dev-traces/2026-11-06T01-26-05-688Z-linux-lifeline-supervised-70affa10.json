@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "linux-lifeline-supervised",
+  "sessionId": "70617f5f-4d21-4359-9b3d-447af4aa9677",
+  "timestamp": "2026-11-06T01:26:05.688Z",
+  "artifactPath": "upgrades/side-effects/linux-lifeline-supervised.md",
+  "artifactSha256": "1f8acce30a56945cf48c5dc007883e7ccede90d4bfa0c7a91412877fef98549c",
+  "specPath": "docs/specs/linux-lifeline-supervised.md",
+  "coveredFiles": [
+    "docs/specs/linux-lifeline-supervised.eli16.md",
+    "docs/specs/linux-lifeline-supervised.md",
+    "docs/specs/reports/linux-lifeline-supervised-convergence.md",
+    "src/commands/setup.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/lifeline/RestartOrchestrator.ts",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/lifeline/rateLimitState.ts",
+    "tests/unit/lifeline/rateLimitState.test.ts",
+    "tests/unit/linux-lifeline-supervised.test.ts",
+    "upgrades/next/linux-lifeline-supervised.md",
+    "upgrades/side-effects/linux-lifeline-supervised.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Fleet-wide systemd unit migration plus a bound on lifeline self-restarts on every platform",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

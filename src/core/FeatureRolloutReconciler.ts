@@ -14,7 +14,7 @@
  * or ships-staged specs become `active` tracks (anti-flood).
  */
 
-import type { InitiativeTracker, PipelineStage, Initiative, MaturationEvaluationContract, RolloutAccountingDisposition, MaturationLadderRung } from './InitiativeTracker.js';
+import type { InitiativeTracker, PipelineStage, Initiative, MaturationEvaluationContract, RolloutAccountingDisposition, RolloutAccountingInfo, MaturationLadderRung } from './InitiativeTracker.js';
 import {
   deriveRolloutStage,
   rolloutPhaseStatuses,
@@ -136,6 +136,10 @@ export class FeatureRolloutReconciler {
         evidenceSource: art.evidenceSource, graduationCriterion: art.promotionCriteria,
         maturationEvaluation: art.maturationEvaluation, maturationContractError: art.maturationContractError }
       : undefined;
+    const nextAccounting = rolloutAccounting ?? (observedStage && existing?.rolloutAccounting
+      ? { ...existing.rolloutAccounting, rung: accountingRung(observedStage),
+        maturationEvaluation: art.maturationEvaluation, maturationContractError: art.maturationContractError }
+      : undefined);
 
     if (!existing) {
       // ── CREATE ──
@@ -151,7 +155,7 @@ export class FeatureRolloutReconciler {
         phases, kind: 'task', pipelineStage: stage, specPath: art.specPath,
         prNumber: art.prNumber,
         rollout: rolloutEligible
-          ? { flagPath: art.flagPath!, stage: observedStage!, evidenceSource: art.evidenceSource, promotionCriteria: art.promotionCriteria, maturationEvaluation: art.maturationEvaluation }
+          ? { flagPath: art.flagPath!, stage: observedStage!, evidenceSource: art.evidenceSource, promotionCriteria: art.promotionCriteria, maturationEvaluation: art.maturationEvaluation, maturationContractError: art.maturationContractError }
           : undefined,
         rolloutAccounting,
       });
@@ -184,27 +188,21 @@ export class FeatureRolloutReconciler {
       const prevStage = existing.rollout?.stage;
       if (prevStage && isRegression(prevStage, observedStage)) {
         await this.deps.tracker.update(id, { pipelineStage: 'regressed', status: 'active', ifMatch: this.deps.tracker.get(id)?.version });
-        await this.applyRolloutStage(id, observedStage);
-        const latest = this.deps.tracker.get(id);
-        if (latest?.rolloutAccounting) await this.deps.tracker.update(id, {
-          rolloutAccounting: { ...latest.rolloutAccounting, rung: accountingRung(observedStage) }, ifMatch: latest.version,
-        });
+        await this.applyRolloutStage(id, observedStage, art, nextAccounting);
         summary.regressed.push(id);
         return;
       }
       if (prevStage !== observedStage) {
-        await this.applyRolloutStage(id, observedStage);
-        const latest = this.deps.tracker.get(id);
-        if (latest?.rolloutAccounting) await this.deps.tracker.update(id, {
-          rolloutAccounting: { ...latest.rolloutAccounting, rung: accountingRung(observedStage) }, ifMatch: latest.version,
-        });
+        await this.applyRolloutStage(id, observedStage, art, nextAccounting);
         if (shouldArchiveAtStage(observedStage)) summary.archived.push(id);
         else summary.advanced.push(id);
         return;
       }
-      if (JSON.stringify(existing.rollout?.maturationEvaluation) !== JSON.stringify(art.maturationEvaluation)) {
+      if (JSON.stringify(existing.rollout?.maturationEvaluation) !== JSON.stringify(art.maturationEvaluation) ||
+          existing.rollout?.maturationContractError !== art.maturationContractError) {
         await this.deps.tracker.update(id, {
-          rollout: { ...existing.rollout!, maturationEvaluation: art.maturationEvaluation },
+          rollout: { ...existing.rollout!, maturationEvaluation: art.maturationEvaluation, maturationContractError: art.maturationContractError },
+          ...(nextAccounting ? { rolloutAccounting: nextAccounting } : {}),
           ifMatch: this.deps.tracker.get(id)?.version,
         });
         summary.advanced.push(id);
@@ -212,8 +210,8 @@ export class FeatureRolloutReconciler {
       }
     }
 
-    if (rolloutAccounting && JSON.stringify(existing.rolloutAccounting) !== JSON.stringify(rolloutAccounting)) {
-      await this.deps.tracker.update(id, { rolloutAccounting, ifMatch: this.deps.tracker.get(id)?.version });
+    if (nextAccounting && JSON.stringify(existing.rolloutAccounting) !== JSON.stringify(nextAccounting)) {
+      await this.deps.tracker.update(id, { rolloutAccounting: nextAccounting, ifMatch: this.deps.tracker.get(id)?.version });
       summary.advanced.push(id);
       return;
     }
@@ -224,7 +222,7 @@ export class FeatureRolloutReconciler {
 
   /** Apply a rollout stage: sync phase statuses + the rollout block; archive
    *  (reopenable) at default-on rather than completing. */
-  private async applyRolloutStage(id: string, stage: string): Promise<void> {
+  private async applyRolloutStage(id: string, stage: string, art: SpecArtifact, accounting?: RolloutAccountingInfo): Promise<void> {
     const cur = this.deps.tracker.get(id);
     if (!cur) return;
     const statuses = rolloutPhaseStatuses(stage as never);
@@ -236,7 +234,8 @@ export class FeatureRolloutReconciler {
     }
     const fresh = this.deps.tracker.get(id);
     await this.deps.tracker.update(id, {
-      rollout: { flagPath: fresh?.rollout?.flagPath ?? '', stage: stage as never, evidenceSource: fresh?.rollout?.evidenceSource, promotionCriteria: fresh?.rollout?.promotionCriteria, maturationEvaluation: fresh?.rollout?.maturationEvaluation, lastDigestNotifiedAt: fresh?.rollout?.lastDigestNotifiedAt },
+      rollout: { flagPath: fresh?.rollout?.flagPath ?? '', stage: stage as never, evidenceSource: fresh?.rollout?.evidenceSource, promotionCriteria: fresh?.rollout?.promotionCriteria, maturationEvaluation: art.maturationEvaluation, maturationContractError: art.maturationContractError, lastDigestNotifiedAt: fresh?.rollout?.lastDigestNotifiedAt },
+      ...(accounting ? { rolloutAccounting: accounting } : {}),
       // 'paused' (non-terminal, reopenable) at default-on — NOT 'archived'
       // (which maps to TaskFlow's terminal `cancelled` and would seal the
       // record against a later regression). 'active' for live/dry-run.

@@ -10,6 +10,7 @@
  * Entries auto-prune after 24 hours.
  */
 
+import { isSafeSessionRef } from './claudeResumeTranscript.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -180,6 +181,8 @@ export class TopicResumeMap {
    * is a silent no-op — the gate's caller owns disclosure.
    */
   save(topicId: number, uuid: string, sessionName: string, provenance: ResumeProvenance = 'hook'): void {
+    // It came from a hook event: never store what could become a flag or a path at the next launch.
+    if (!isSafeSessionRef(uuid)) { console.warn(`[TopicResumeMap] refused a resume id for topic ${topicId}`); return; }
     if (!this.gateAllows(topicId)) return;
     const map = this.load();
 
@@ -474,6 +477,7 @@ export class TopicResumeMap {
 
   /** Claude layouts only: this project's ~/.claude transcript dir, then every pooled login home. */
   private claudeTranscriptExists(uuid: string): boolean {
+    if (!isSafeSessionRef(uuid)) return false;
     // Claude: flat <project-jsonl-dir>/<uuid>.jsonl.
     const jsonlPath = path.join(this.claudeProjectJsonlDir(), `${uuid}.jsonl`);
     try {

@@ -19,8 +19,9 @@ def attempt(fn, *a):
     except xd.Refuse as r:
         return {'code': r.code, 'message': r.message}
 `;
+// Import the shipped driver without writing __pycache__ into the source tree.
 function py(body: string): any {
-  const out = execFileSync('python3', ['-c', `${PRELUDE}\nprint(json.dumps(${body}))`], { encoding: 'utf8' });
+  const out = execFileSync('python3', ['-B', '-c', `${PRELUDE}\nprint(json.dumps(${body}))`], { encoding: 'utf8' });
   return JSON.parse(out);
 }
 const dest = (uri: string, host: string) => py(`attempt(xd.check_secret_destination, ${JSON.stringify(uri)}, ${JSON.stringify(host)})`);

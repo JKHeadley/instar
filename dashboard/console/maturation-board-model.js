@@ -10,6 +10,7 @@
 
 /** Plain groups, in the order they are shown. Each maps review verdicts to one plain word. */
 export const GROUPS = [
+  // warning-path: askLink
   { id: 'broken', label: 'Broken', tone: 'bad', verdicts: ['regressed'], blurb: 'Was working, now isn’t.', open: true },
   { id: 'stuck', label: 'Stuck', tone: 'warn', verdicts: ['stalled'], blurb: 'Not moving forward.', open: true },
   { id: 'unmeasured', label: 'Not measured', tone: 'blind', verdicts: ['blind'], blurb: 'Nothing records whether it works.', open: false },
@@ -87,6 +88,7 @@ export function ownerChip(f) {
   if (fu.state === 'unknown') return { text: 'Can’t tell', tone: 'muted' };
   if (fu.state === 'none-linked') {
     if (!ATTENTION.has(groupOf(f).id)) return null;
+    // warning-path: askLink
     return hasWrittenPlan(f) ? { text: 'Fix planned, not started', tone: 'warn' } : { text: 'No fix planned', tone: 'bad' };
   }
   const open = fu.items.some((i) => i.status === 'pending' || i.kind === 'initiative');
@@ -312,8 +314,10 @@ export function card(f) {
     { label: 'What it does', text: r.purpose || '' },
     { label: 'Where it is', text: ladderLine(f), tone: (ladderOf(f) || {}).state === 'harmed' ? 'bad' : (ladderOf(f) || {}).state === 'ready-to-advance' ? 'ok' : '' },
     { label: 'To move up', text: r.goal || '' },
+    // warning-path: askLink
     { label: 'Now', text: measureText(r.measure) || r.summary || '', tone: r.measure && r.measure.trend === 'worse' ? 'bad' : r.measure && r.measure.trend === 'better' ? 'ok' : '' },
     { label: 'Plan', text: r.plan || r.nextStep || '' },
+    // warning-path: askLink
     { label: 'Due', text: due, tone: d && d.overdueDays != null ? 'bad' : '' },
   ].filter((x) => x.text);
 }
