@@ -1,3 +1,4 @@
+import { activeSlackRefusedHold } from '../core/SlackRefusedHold.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/AgentServer.ts');
 const stampSpendNotification = notificationStamper('src/server/AgentServer.ts', 'spend-alert-dispatcher');
@@ -6568,6 +6569,7 @@ export class AgentServer {
         dispatch: () => options.slackInboundDispatch?.() ?? null,
         killAllSessions: () => {
           try { holdAllSetups(options.config.stateDir); } catch { /* @silent-fallback-ok — the stop itself must never fail over this */ }
+          try { activeSlackRefusedHold()?.dropAll('emergency stop'); } catch { /* @silent-fallback-ok — the stop itself must never fail over this */ }
           let any = false;
           for (const sess of options.sessionManager.listRunningSessions()) { try { options.sessionManager.killSession(sess.id); any = true; } catch { /* @silent-fallback-ok — already gone */ } }
           return any;

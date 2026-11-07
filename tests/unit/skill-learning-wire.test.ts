@@ -10,7 +10,9 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SKILL_LEARNING_DEFAULTS } from '../../src/config/ConfigDefaults.js';
-import { resolveSkillLearningConfig, startSkillLearning, type StartSkillLearningInput } from '../../src/monitoring/skillLearning/wire.js';
+import os from 'node:os';
+import { resolveSkillLearningConfig, startSkillLearning, skillLearningEnv, type StartSkillLearningInput } from '../../src/monitoring/skillLearning/wire.js';
+import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 
 const baseInput = (over: Partial<StartSkillLearningInput> = {}): StartSkillLearningInput => ({
   reconciler: { start: () => {} },
@@ -131,19 +133,56 @@ describe('server.ts production wiring (source-level integrity)', () => {
     expect(calls).toHaveLength(1);
     const at = src.indexOf('startSkillLearning({');
     const stmt = src.slice(at, src.indexOf('\n', at));
-    for (const seam of ['reconciler: learnedSkillReconciler', 'provenance: () => _judgmentProvenance', 'operatorStore: () => _agentServerRef?.getTopicOperatorStore()', 'sharedIntelligence:', 'topicMemory:', 'holdsLease:', 'featureEvidence', 'degradationReporter: DegradationReporter.getInstance()', 'ladder: () => _agentServerRef?.getMaturationLadder() ?? null']) {
+    for (const seam of ['reconciler: learnedSkillReconciler', 'provenance: () => _judgmentProvenance', 'operatorStore: () => _agentServerRef?.getTopicOperatorStore()', 'skillLearningEnv({ config, identity: coordinator.identity, telegram, slack: slackAdapter, sharedIntelligence, topicMemory })', 'holdsLease:', 'featureEvidence', 'ladder: () => _agentServerRef?.getMaturationLadder() ?? null']) {
       expect(stmt, seam).toContain(seam);
     }
     expect(stmt).toContain('SkillLearningSentinel.create(deps)');
   });
 
-  it('binds the sentinel to AgentServer right after construction, on its own line (the routes read it through the server)', () => {
+  it('binds the sentinel to AgentServer on its own line after the server reference is stored, before start()', () => {
     const ctor = src.indexOf('const server = new AgentServer({');
-    expect(ctor).toBeGreaterThan(0);
+    const ref = src.indexOf('_agentServerRef = server;');
     const bind = src.indexOf('server.setSkillLearningSentinel(skillLearningSentinel);');
-    expect(bind).toBeGreaterThan(ctor);
-    // The bind is a statement of its own, not an argument on the constructor line every PR extends.
+    const start = src.indexOf('await server.start();');
+    expect(ctor).toBeGreaterThan(0);
+    expect(ref).toBeGreaterThan(ctor);
+    expect(bind).toBeGreaterThan(ref);
+    expect(start).toBeGreaterThan(bind);
+    // Not an argument on the constructor line every PR extends.
     expect(src.slice(ctor, src.indexOf('\n', ctor))).not.toContain('skillLearningSentinel');
     expect(src).not.toContain('learnedSkillReconciler.start();');
+  });
+
+  it('keeps the conditional wiring out of startServer (TS2563): the env helper owns the branches', () => {
+    const at = src.indexOf('startSkillLearning({');
+    const stmt = src.slice(at, src.indexOf('\n', at));
+    for (const forbidden of ['os.hostname()', 'telegram ?', 'slackAdapter ??', 'sharedIntelligence ??', 'topicMemory ??', 'new UserManager(', 'DegradationReporter.getInstance()']) {
+      expect(stmt, forbidden).not.toContain(forbidden);
+    }
+  });
+});
+
+describe('skillLearningEnv', () => {
+  const config = { stateDir: '/tmp/x', users: [] } as unknown as Parameters<typeof skillLearningEnv>[0]['config'];
+  it('falls back to the hostname and null collaborators when nothing is wired', () => {
+    const env = skillLearningEnv({ config, identity: null, telegram: null, slack: undefined, sharedIntelligence: undefined, topicMemory: undefined });
+    expect(env.machineId).toBe(os.hostname());
+    expect(env.sharedIntelligence).toBeNull();
+    expect(env.topicMemory).toBeNull();
+    expect(env.slack).toBeNull();
+    expect(env.createAttentionItem).toBeUndefined();
+    expect(env.clearAttentionCondition).toBeUndefined();
+    expect(env.degradationReporter).toBe(DegradationReporter.getInstance());
+    expect(typeof env.userManager?.listUsers).toBe('function');
+  });
+  it('uses the mesh machine id and forwards attention calls to the adapter', () => {
+    const calls: string[] = [];
+    const telegram = { createAttentionItem: (item: never) => { calls.push('create:' + JSON.stringify(item)); return 1; }, clearAttentionCondition: (sel: { conditionKey: string }) => { calls.push('clear:' + sel.conditionKey); return 2; } };
+    const env = skillLearningEnv({ config, identity: { machineId: 'm_mesh' }, telegram, slack: { onMessageLogged: null }, sharedIntelligence: null, topicMemory: null });
+    expect(env.machineId).toBe('m_mesh');
+    expect(env.createAttentionItem!({ title: 't' } as never)).toBe(1);
+    expect(env.clearAttentionCondition!({ conditionKey: 'k' }, 'r', { reconcile: true })).toBe(2);
+    expect(calls).toEqual(['create:{"title":"t"}', 'clear:k']);
+    expect(env.slack).toEqual({ onMessageLogged: null });
   });
 });

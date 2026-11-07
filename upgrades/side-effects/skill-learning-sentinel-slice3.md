@@ -333,3 +333,13 @@ existed for late binds and tests; the routes read the sentinel through a getter,
 `listen`), and the `mandatePin` import sits in a long-stable part of the import block. No behaviour
 changes: same object, same lifetime, same routes. The wire test now asserts the own-line bind. Second-pass
 reviewer: concurred (wiring placement only).
+
+### Note 2026-11-07 — conditional wiring moved into `skillLearningEnv` (TS2563)
+
+Main grew by one statement inside `startServer`, which sits at TypeScript's control-flow size limit, and
+the sentinel's start statement carried about a dozen conditional flow nodes (`??`, `?.`, ternaries and
+constructor calls). Those now live in `skillLearningEnv()` in `wire.ts`, a function of its own, and the
+call site spreads its result; the bind moved after `_agentServerRef = server;` (before `start()`), away
+from the constructor line. Same values, same objects, same order of effects. The wire test asserts the
+call site carries none of the branches, and two unit tests cover the helper (hostname fallback, null
+collaborators, attention forwarding). Second-pass reviewer: concurred (wiring placement only).

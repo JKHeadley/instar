@@ -19,8 +19,11 @@
  * settles, so the server's boot pass — which now sits AFTER this expression — always runs after recovery.
  * The protocol, the version store and the fence are handed to the sentinel through `create()`.
  */
+import os from 'node:os';
 import { SKILL_LEARNING_DEFAULTS } from '../../config/ConfigDefaults.js';
-import type { IntelligenceProvider } from '../../core/types.js';
+import type { IntelligenceProvider, InstarConfig } from '../../core/types.js';
+import { UserManager } from '../../users/UserManager.js';
+import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
 import type { IntelligenceFramework } from '../../core/intelligenceProviderFactory.js';
 import type { SessionFramework } from '../../core/FrameworkSessionStore.js';
 import type { DecisionRowInput } from '../../core/JudgmentProvenanceLog.js';
@@ -137,6 +140,35 @@ export function resolveSkillLearningConfig(raw: unknown): SkillLearningConfig {
 }
 
 /** Synchronous: the sentinel's own `start()` opens its ledger cache off the boot path. */
+/**
+ * The server-side pieces of `StartSkillLearningInput` that need optional chaining or a branch.
+ * Computed in this function body, not in `startServer`: that function sits at TypeScript's
+ * control-flow size limit (TS2563), so the call site must contribute no conditional flow nodes.
+ * Pure apart from constructing the UserManager and reading the DegradationReporter singleton.
+ */
+export function skillLearningEnv(a: {
+  config: InstarConfig;
+  /** The mesh identity, when the coordinator has one. Falls back to the hostname. */
+  identity: { machineId?: string } | null | undefined;
+  telegram: { createAttentionItem(item: never): unknown; clearAttentionCondition(sel: { conditionKey: string }, reason: string, opts: { reconcile: true }): unknown } | null | undefined;
+  slack: StartSkillLearningInput['slack'] | undefined;
+  sharedIntelligence: IntelligenceProvider | null | undefined;
+  topicMemory: StartSkillLearningInput['topicMemory'];
+}): Pick<StartSkillLearningInput, 'machineId' | 'frameworks' | 'sharedIntelligence' | 'topicMemory' | 'createAttentionItem' | 'clearAttentionCondition' | 'slack' | 'userManager' | 'degradationReporter'> {
+  const { config, telegram } = a;
+  return {
+    machineId: a.identity?.machineId ?? os.hostname(),
+    frameworks: { enabled: config.enabledFrameworks ?? config.sessions?.enabledFrameworks, default: config.sessions?.framework, overrides: config.sessions?.componentFrameworks?.overrides },
+    sharedIntelligence: a.sharedIntelligence ?? null,
+    topicMemory: a.topicMemory ?? null,
+    createAttentionItem: telegram ? ((item) => telegram.createAttentionItem(item as never)) : undefined,
+    clearAttentionCondition: telegram ? ((sel, reason, opts) => telegram.clearAttentionCondition(sel, reason, opts)) : undefined,
+    slack: a.slack ?? null,
+    userManager: new UserManager(config.stateDir, config.users),
+    degradationReporter: DegradationReporter.getInstance(),
+  };
+}
+
 export function startSkillLearning(
   input: StartSkillLearningInput,
   create: (deps: Parameters<typeof SkillLearningSentinel.create>[0]) => SkillLearningSentinel,
