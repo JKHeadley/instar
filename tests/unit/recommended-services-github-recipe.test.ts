@@ -5,9 +5,9 @@
  * pushes refused to anything public, one attention item when a backup repository has gone public.
  * Both sides of every decision, against a stand-in for GitHub and the state repository.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { RECOMMENDED_SERVICE_CATALOG } from '../../src/recommended/catalog.js';
-import { SETUP_RECIPES, catalogWithProving, recipeFor, type StopDeps, type SyncDeps } from '../../src/recommended/recipes.js';
+import { GITHUB_FIRST_PUSH_RETRY_MS, SETUP_RECIPES, catalogWithProving, recipeFor, type StopDeps, type SyncDeps } from '../../src/recommended/recipes.js';
 import { backupRepoName, parseGitHubRepo, type GitHubBackupSurface, type GitHubRepoInfo } from '../../src/recommended/githubBackup.js';
 
 const recipe = SETUP_RECIPES.find((r) => r.id === 'github-v1')!;
@@ -146,12 +146,12 @@ describe('GitHub backup recipe: switching off', () => {
 describe('GitHub backup recipe: the brief, the names, and the catalog', () => {
   const brief = recipe.brief({ port: 4321 });
 
-  it('is dark: proving agents only, until its live proof', () => {
+  it('is available on every agent after its live proof (2026-11-07), and a proving list no longer changes that', () => {
     expect(recipe.service).toBe('github-state-backup');
     expect(recipe.secretName).toBe('github_backup_token');
-    expect(RECOMMENDED_SERVICE_CATALOG.find((r) => r.id === 'github-state-backup')!.setupRecipe).toBeNull();
-    expect(recipeFor(catalogWithProving(['github-v1'], () => true).find((r) => r.id === 'github-state-backup')!)?.id).toBe('github-v1');
-    expect(catalogWithProving(['github-v1'], () => false).find((r) => r.id === 'github-state-backup')!.setupRecipe).toBeNull();
+    expect(RECOMMENDED_SERVICE_CATALOG.find((r) => r.id === 'github-state-backup')!.setupRecipe).toBe('github-v1');
+    expect(recipeFor(RECOMMENDED_SERVICE_CATALOG.find((r) => r.id === 'github-state-backup')!)?.id).toBe('github-v1');
+    expect(catalogWithProving([], () => false).find((r) => r.id === 'github-state-backup')!.setupRecipe).toBe('github-v1');
   });
 
   it('keeps the token out of chat, files and commands, and the push out of the session', () => {
@@ -170,5 +170,37 @@ describe('GitHub backup recipe: the brief, the names, and the catalog', () => {
     expect(parseGitHubRepo('git@github.com:octo/instar-echo-state.git')).toBe('octo/instar-echo-state');
     expect(parseGitHubRepo('https://gitlab.com/octo/x.git')).toBeNull();
     expect(parseGitHubRepo('https://github.com/octo')).toBeNull();
+  });
+});
+
+describe('github-v1 sync: the first push to a repository it just created gets one retry', () => {
+  it('retries once after the wait when the fresh repository refuses the first push, and not for a repository that already existed', async () => {
+    vi.useFakeTimers();
+    try {
+      const recipe = recipeFor({ setupRecipe: 'github-v1' } as never)!;
+      // Fresh repository: the first push fails, the second succeeds.
+      const g = fakeGitHub({ pushFails: true });
+      const realPush = g.surface.pushState;
+      let attempts = 0;
+      g.surface.pushState = (t, url) => { attempts += 1; if (attempts === 1) return null; g.state.pushFails = false; return realPush(t, url); };
+      const pending = recipe.sync!({ readSecret: secrets({ github_backup_token: 'tok' }), github: g.surface, agentName: 'echo' } as SyncDeps);
+      await vi.advanceTimersByTimeAsync(GITHUB_FIRST_PUSH_RETRY_MS);
+      const out = await pending;
+      expect(attempts).toBe(2);
+      expect(out.ok).toBe(true);
+      expect(g.created).toEqual(['octo/instar-echo-state']);
+
+      // Existing repository: a failed push is reported at once, no retry.
+      const h = fakeGitHub({ pushFails: true, repos: { 'octo/instar-echo-state': { fullName: 'octo/instar-echo-state', private: true, htmlUrl: 'https://github.com/octo/instar-echo-state', cloneUrl: 'https://github.com/octo/instar-echo-state.git' } } });
+      let tries = 0;
+      const base = h.surface.pushState;
+      h.surface.pushState = (t, url) => { tries += 1; return base(t, url); };
+      const out2 = await recipe.sync!({ readSecret: secrets({ github_backup_token: 'tok' }), github: h.surface, agentName: 'echo' } as SyncDeps);
+      expect(tries).toBe(1);
+      expect(out2.ok).toBe(false);
+      expect(out2.detail).toBe('The push to octo/instar-echo-state failed.');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

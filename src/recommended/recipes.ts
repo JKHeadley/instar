@@ -328,14 +328,21 @@ ${RULES('github-state-backup', port)}`,
       const target = (remote && parseGitHubRepo(remote)) ?? `${owner}/${backupRepoName(agentName ?? 'agent')}`;
       let repo = await github.repo(token, target);
       if (repo === undefined) return { ok: false, copied: [], detail: 'GitHub did not answer.' };
+      let created = false;
       if (repo === null) {
         if (remote && parseGitHubRepo(remote)) return { ok: false, copied: [], detail: `The repository ${target} this machine points at does not exist or is not reachable with this token.` };
         repo = await github.createPrivateRepo(token, backupRepoName(agentName ?? 'agent'), `${agentName ?? 'agent'}: Instar agent state backup (private)`);
         if (!repo) return { ok: false, copied: [], detail: 'GitHub refused to create the private repository.' };
+        created = true;
       }
       // Never push to a repository that is not private: this is the person's memory and settings.
       if (!repo.private) return { ok: false, copied: [], detail: `The repository ${repo.fullName} is public, so nothing was pushed.` };
-      const pushed = github.pushState(token, repo.cloneUrl);
+      let pushed = github.pushState(token, repo.cloneUrl);
+      if (!pushed && created) {
+        // A repository GitHub has just created can refuse its first push for a moment (seen in the live proof). One more try, once.
+        await new Promise((resolve) => setTimeout(resolve, GITHUB_FIRST_PUSH_RETRY_MS));
+        pushed = github.pushState(token, repo.cloneUrl);
+      }
       if (!pushed) return { ok: false, copied: [repo.fullName], detail: `The push to ${repo.fullName} failed.` };
       return { ok: true, copied: [repo.fullName], detail: `The state folder is pushed to the private repository ${repo.fullName}.` };
     },
@@ -355,6 +362,9 @@ ${RULES('github-state-backup', port)}`,
     },
   },
 ]);
+
+/** How long the GitHub recipe waits before its one retry of the first push to a repository it just created. */
+export const GITHUB_FIRST_PUSH_RETRY_MS = 3000;
 
 const TAILSCALE_PROGRAMS = ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/usr/local/bin/tailscale', '/opt/homebrew/bin/tailscale'];
 
