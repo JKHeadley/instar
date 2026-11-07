@@ -220,3 +220,5 @@ Not checked by the reviewer: the full unit suite beyond the nine touched files; 
 **Follow-up (2026-11-06, PR #2877 CI):** the no-silent-fallbacks ratchet flagged the 11 catch blocks this slice added; each is a designed fail-safe (absent file ⇒ null; corrupt baseline shard ⇒ treated missing ⇒ LOCK rather than overwrite; unparseable frontmatter ⇒ no canonical, logged by the caller) and now carries an in-window `@silent-fallback-ok` with its reason. No behaviour change; the scanner reports exactly 494 again.
 
 **Docs addition (2026-11-07):** `docs/TEST-AS-SELF.md` documents the `instar test-as-self` throwaway-deploy harness used for this feature's test-agent rung (the Docs Coverage command floor is 60%; the merged tree sat at 59% after main's newest command). Documentation only, no runtime surface.
+
+**Docs-site addition (2026-11-07):** `site/src/content/docs/reference/cli.md` (new section) and `site/src/content/docs/guides/test-as-self.md` document `instar test-as-self`; the docs-coverage check reads the site tree, not `docs/`, and the command floor (60%) sat at 59% on the merged tree. Documentation only, no runtime surface.
