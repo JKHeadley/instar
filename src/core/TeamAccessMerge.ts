@@ -49,13 +49,12 @@ const ROLE_RANK: Readonly<Record<string, number>> = { guest: 0, member: 1, admin
 export const rankOf = (role: string): number => ROLE_RANK[role] ?? 0;
 
 /** What stands without the rows a gone machine wrote past its last good one. */
-interface Standing { roleRank: ReadonlyMap<string, number>; usable: ReadonlySet<string> }
+interface Standing { roleRank: ReadonlyMap<string, number> }
 
 /** Does this event give anyone anything? Only these are void from a returning gone origin. */
 function widens(e: MergeEvent, standing: Standing): boolean {
   if (e.type === 'person-set') return !e.lower && rankOf(e.role) > (standing.roleRank.get(e.personKey) ?? 0);
-  if (e.type === 'grant') return e.access !== 'read' || !standing.usable.has(`${e.personKey}\u0000${e.ref}`);
-  return e.type === 'person-add' || e.type === 'team-on';
+  return e.type === 'grant' || e.type === 'person-add' || e.type === 'team-on';
 }
 
 interface Change { row: MergeRow; index: number; event: MergeEvent }
@@ -89,15 +88,13 @@ export function mergeRows(input: ReadonlyArray<MergeRow>): MergedAccess {
   for (const r of rows) for (const e of r.events) if (e.type === 'origin-gone') gone.push(e);
   const pastGone = (r: MergeRow): boolean => gone.some((g) => g.machine === r.origin && g.incarnation === r.incarnation && r.seq > g.throughSeq);
   const roleRank = new Map<string, number>();
-  const usable = new Set<string>();
   for (const r of rows) {
     if (pastGone(r)) continue;
     for (const e of r.events) {
       if (e.type === 'person-add' || e.type === 'person-set') roleRank.set(e.personKey, Math.min(roleRank.get(e.personKey) ?? Infinity, rankOf(e.role)));
-      if (e.type === 'grant') usable.add(`${e.personKey}\u0000${e.ref}`);
     }
   }
-  const isVoid = (c: Change): boolean => widens(c.event, { roleRank, usable })
+  const isVoid = (c: Change): boolean => widens(c.event, { roleRank })
     && gone.some((g) => g.machine === c.row.origin && g.incarnation === c.row.incarnation && c.row.seq > g.throughSeq);
 
   const all: Change[] = rows.flatMap((row) => row.events.map((event, index) => ({ row, index, event })));

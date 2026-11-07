@@ -221,12 +221,12 @@ describe('what a gone machine\'s rows can still do', () => {
     const merged = mergeRows([row('A', 1, [on, add('p', 'admin'), gone]), row('B', 1, [{ type: 'person-set', personKey: 'p', role: 'member' }])]);
     expect(merged.people.get('p')?.role).toBe('member');
   });
-  it('taking a grant down to read still counts', () => {
+  it('a read grant past the settled row cannot bring back what the owner removed', () => {
     const merged = mergeRows([
-      row('A', 1, [on, add('p', 'member'), { type: 'grant', personKey: 'p', ref: 'c', access: 'use' }, gone]),
-      row('B', 1, [{ type: 'grant', personKey: 'p', ref: 'c', access: 'read' }]),
+      row('A', 1, [on, add('p', 'member'), { type: 'grant', personKey: 'p', ref: 'c', access: 'use' }, { type: 'grant-remove', personKey: 'p', ref: 'c' }, gone]),
+      row('B', 1, [{ type: 'grant', personKey: 'p', ref: 'c', access: 'read' }], { [streamKey('A', 'i1')]: 1 }),
     ]);
-    expect(merged.grants.get('p')?.get('c')).toBe('read');
+    expect(merged.grants.get('p')?.has('c') ?? false).toBe(false);
   });
   it('a new read grant from past the settled row is void', () => {
     const merged = mergeRows([row('A', 1, [on, add('p', 'member'), gone]), row('B', 1, [{ type: 'grant', personKey: 'p', ref: 'c', access: 'read' }])]);

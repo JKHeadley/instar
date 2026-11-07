@@ -101,6 +101,8 @@ export function rowPayload(row: Omit<RequestRow, 'machineSig'> | Omit<MachineRow
 
 export { UNCHAINED_INCARNATION };
 
+const VERIFIED_FOR_MS = 30_000;
+
 /** A signed row's `seen` also says which messages its machine held, under this prefix. */
 const MESSAGE_STREAM = 'msg:';
 
@@ -434,14 +436,18 @@ export class TeamAccessLog {
   private readonly opts: TeamAccessLogOptions;
 
   constructor(options: TeamAccessLogOptions) {
-    // A signature check costs real time and a verified row stays verified, so each is done once.
-    const verified = new WeakSet<TeamAccessRow>();
+    // A signature check costs real time, so a verified row is not checked again on every read.
+    // Only for a short while, because a revocation arriving later can fail a row.
+    const verifiedAt = new WeakMap<TeamAccessRow, number>();
+    const clock = options.now ?? Date.now;
     this.opts = {
       ...options,
       verify: (row) => {
-        if (verified.has(row)) return 'verified';
+        const at = verifiedAt.get(row);
+        if (at !== undefined && clock() - at < VERIFIED_FOR_MS) return 'verified';
         const verdict = options.verify(row);
-        if (verdict === 'verified') verified.add(row);
+        if (verdict === 'verified') verifiedAt.set(row, clock());
+        else verifiedAt.delete(row);
         return verdict;
       },
     };
@@ -515,6 +521,7 @@ export class TeamAccessLog {
 
   /** Read both files. Never throws: a failure is health 'unreadable'. */
   load(): void {
+    this.gapsCache = null; this.grantsCache.clear(); this.goneCache.clear();
     this.seedSeq = this.readLastGoodHighestSeq();
     if (!fs.existsSync(this.logFile)) {
       // A snapshot with no live log means the log was lost, not that there never was one.
@@ -548,23 +555,29 @@ export class TeamAccessLog {
    * machine join under the merge rules, so only this machine's own record has to be whole for it.
    */
   private intact(rows: ReadonlyArray<TeamAccessRow>): boolean {
-    // With peers the gap rules see this, and a peer can fill it, so it holds rather than reads as lost.
-    if (new Set(rows.map(originOf)).size > 1) return true;
-    const sorted = [...rows].sort((a, b) => a.seq - b.seq);
+    const own = this.opts.signer?.machineId();
+    const single = new Set(rows.map(originOf)).size <= 1;
+    const sorted = [...rows].filter((r) => single || originOf(r) === own).sort((a, b) => a.seq - b.seq);
     let from = 0;
     for (const r of sorted) {
       if (r.kind !== 'machine' || this.opts.verify(r) !== 'verified') continue;
       for (const e of r.events) if (e.type === 'restored') from = Math.max(from, e.throughSeq);
     }
-    // A machine that moved to a new stream may later receive its old rows back, so numbers can overlap
-    // across streams. Each stream must still hold together, and a fork in one reads as a gap, not a loss.
+    // With peers, a lost row is a gap the rules see and a peer can fill. A row that fails its own
+    // signature is neither: the chain still links, so only a repair replaces it.
+    if (!single) return !sorted.some((r) => r.seq > from && this.opts.verify(r) === 'failed');
+    // A machine that moved to a new stream may get its old rows back, so numbers overlap across
+    // streams. Past the last accepted restore, each stream must still hold together.
     const chained = new Set(rows.flatMap((r) => (r.incarnation ? [r.incarnation] : [])));
     if (chained.size > 1) {
       for (const stream of chained) {
         const list = sorted.filter((r) => r.incarnation === stream && r.seq > from);
-        for (let i = 1; i < list.length; i += 1) if (list[i].seq > list[i - 1].seq + 1) return false;
+        for (let i = 0; i < list.length; i += 1) {
+          if (this.opts.verify(list[i]) === 'failed') return false;
+          if (i > 0 && (list[i].seq !== list[i - 1].seq + 1 || list[i].prev !== rowHash(list[i - 1]))) return false;
+        }
       }
-      return !rows.some((r) => this.opts.verify(r) === 'failed');
+      return true;
     }
     let expected = from + 1;
     for (const r of sorted) {
@@ -924,7 +937,10 @@ export class TeamAccessLog {
     this.mintIncarnation();
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     this.writeConfined(locks);
-    return this.ingest([...salvaged, ...rows]);
+    const result = this.ingest([...salvaged, ...rows]);
+    // Recorded, as a restore is, or what this repair accepted would read as damage at the next boot.
+    if (this.opts.signer) this.appendMachineEvents([{ type: 'restored', throughSeq: this.folded.highestSeq }]);
+    return result;
   }
 
   /** Every lock this machine can still find. The list only ever grows, and a restore's sweep is in no row. */
@@ -1062,16 +1078,23 @@ export class TeamAccessLog {
   backfillConfineRows(): number {
     if (!this.opts.signer || this.health !== 'ok') return 0;
     // Once, for what 2a confined. A later restore's sweep stays on this machine, and a boot must not tell it.
-    const marker = path.join(this.dir, 'confine-told.json');
-    if (fs.existsSync(marker)) return 0;
+    if (fs.existsSync(this.confineToldFile())) return 0;
+    const list = this.readConfined();
+    if (list === null && fs.existsSync(this.confinedFile)) return 0; // told once it can be read
     const told = new Set(this.rows.flatMap((r) => (r.kind === 'machine' ? r.events.flatMap((e) => (e.type === 'confine' ? [e.ref] : [])) : [])));
-    const missing = (this.readConfined() ?? []).filter((e) => !told.has(e.ref));
+    const missing = (list ?? []).filter((e) => !told.has(e.ref));
     for (const e of missing) {
       this.appendMachineEvents([{ type: 'confine', ref: e.ref, ...(e.placeKey ? { placeKey: e.placeKey } : {}), ...(e.personKey ? { personKey: e.personKey } : {}) }]);
     }
-    fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(marker, '{}', { mode: 0o600 });
+    this.markConfineTold();
     return missing.length;
+  }
+
+  private confineToldFile(): string { return path.join(this.dir, 'confine-told.json'); }
+
+  private markConfineTold(): void {
+    fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(this.confineToldFile(), '{}', { mode: 0o600 });
   }
 
   isConfined(ref: string): boolean | null {
@@ -1156,6 +1179,8 @@ export class TeamAccessLog {
 
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     this.writeConfined([...byRef.values()]);
+    // A sweep stays on this machine, whichever boot comes next.
+    this.markConfineTold();
     const tmp = `${this.logFile}.restore`;
     const fd = fs.openSync(tmp, 'w', 0o600);
     try {

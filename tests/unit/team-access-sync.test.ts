@@ -1210,13 +1210,146 @@ describe('what the second review found', () => {
     expect(a.wasRemoved('n')).toBe(false);
   });
 
-  it('each row is verified once, however often it is asked about', () => {
+  it('a row is not verified again on every read, and is checked again after a while', () => {
     let calls = 0;
-    const a = new TeamAccessLog({ stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'team-memo-')), signer: signerFor('A'), verify: (r) => { calls += 1; return verify(r); } });
+    const clock = { now: 1_000 };
+    const a = new TeamAccessLog({ stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'team-memo-')), signer: signerFor('A'), now: () => clock.now, verify: (r) => { calls += 1; return verify(r); } });
     start(a);
     a.isGone('B');
     const after = calls;
     for (let i = 0; i < 20; i += 1) { a.isGone('B'); a.state(); a.mayRead('p', 'c', { origin: 'A', incarnation: 'i', seq: 1, access: {} }, null); }
     expect(calls - after).toBeLessThanOrEqual(0);
+    clock.now += 31_000;
+    a.ingest([]);
+    a.isGone('B');
+    expect(calls).toBeGreaterThan(after);
+  });
+});
+
+describe('what the final review found', () => {
+  const files = (l: TeamAccessLog) => l as unknown as { logFile: string; confinedFile: string; dir: string };
+  const tmp = (name: string) => fs.mkdtempSync(path.join(os.tmpdir(), `team-${name}-`));
+  const open = (dir: string, id = 'A') => new TeamAccessLog({ stateDir: dir, signer: signerFor(id), verify });
+  const lines = (l: TeamAccessLog): string[] => fs.readFileSync(files(l).logFile, 'utf8').trim().split('\n');
+  const corrupt = (l: TeamAccessLog, i: number): void => {
+    const all = lines(l);
+    const row = JSON.parse(all[i]);
+    row.machineSig.sig = 'bad';
+    all[i] = JSON.stringify(row);
+    fs.writeFileSync(files(l).logFile, `${all.join('\n')}\n`);
+  };
+
+  it('an owner\'s restore on one machine survives a reboot, though a bad row stays below it', () => {
+    const dir = tmp('rst');
+    const a = open(dir);
+    start(a);
+    a.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+    a.appendMachineEvents([{ type: 'confine', ref: 'c2' }]);
+    corrupt(a, 1);
+    a.load();
+    expect(a.healthState()).toBe('unreadable');
+    a.restore({ teamRefs: [], allRefs: () => [] });
+    expect(a.healthState()).toBe('ok');
+    expect(open(dir).healthState()).toBe('ok');
+  });
+
+  it('after a restore on one machine, a row replaced later is still caught', () => {
+    const dir = tmp('rpl');
+    const a = open(dir);
+    start(a);
+    (a as unknown as { mintIncarnation(): string }).mintIncarnation();
+    a.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+    a.appendMachineEvents([{ type: 'confine', ref: 'c2' }]);
+    a.appendMachineEvents([{ type: 'confine', ref: 'c3' }]);
+    const all = lines(a);
+    fs.writeFileSync(files(a).logFile, `${[...all.slice(0, -2), all[all.length - 1]].join('\n')}\n`);
+    expect(open(dir).healthState()).toBe('unreadable');
+  });
+
+  it('with a peer, a corrupted row of this machine\'s is repaired from the peer', async () => {
+    const dir = tmp('cor');
+    const a = open(dir);
+    const b = machine('B');
+    start(a); sync(a, b);
+    a.appendMachineEvents([{ type: 'lower', personKey: 'p', remove: true }]);
+    b.appendMachineEvents([{ type: 'confine', ref: 'c0' }]);
+    sync(a, b);
+    corrupt(a, lines(a).findIndex((l) => l.includes('"lower"')));
+    const back = open(dir);
+    expect(back.healthState()).toBe('unreadable');
+    await new TeamAccessPuller({ log: () => back, afterIngest: () => undefined, peers: () => [{ machineId: 'B', fetchRows: async (have, heads) => ({ rows: b.rowsBeyond(have, heads), vector: b.vector() }) }] }).tick();
+    expect(back.healthState()).toBe('ok');
+    expect(back.state().people.has('p')).toBe(false);
+  });
+
+  it('a torn list at first boot does not stop what 2a confined being told later', () => {
+    const a = machine('A');
+    start(a);
+    a.ensureConfinedFile();
+    (a as unknown as { confineHere(e: { ref: string }): boolean }).confineHere({ ref: 'old' });
+    const good = fs.readFileSync(files(a).confinedFile, 'utf8');
+    fs.writeFileSync(files(a).confinedFile, 'broken');
+    expect(a.backfillConfineRows()).toBe(0);
+    fs.writeFileSync(files(a).confinedFile, good);
+    expect(a.backfillConfineRows()).toBe(1);
+  });
+
+  it('a sweep is never told, even if the first boot on this build found damage', () => {
+    const dir = tmp('swp2');
+    const a = open(dir);
+    start(a);
+    a.ensureConfinedFile();
+    fs.writeFileSync(files(a).confinedFile, 'broken');
+    fs.writeFileSync(files(a).logFile, 'not json\n{}\n');
+    a.load();
+    expect(a.backfillConfineRows()).toBe(0);
+    a.restore({ teamRefs: [], allRefs: () => [{ ref: 'swept' }] });
+    const again = open(dir);
+    expect(again.backfillConfineRows()).toBe(0);
+    expect(JSON.stringify(again.allRows())).not.toContain('swept');
+  });
+
+  it('on one machine past a restore, a row with a bad signature is still caught', () => {
+    const dir = tmp('bad');
+    const a = open(dir);
+    start(a);
+    (a as unknown as { mintIncarnation(): string }).mintIncarnation();
+    a.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+    a.appendMachineEvents([{ type: 'confine', ref: 'c2' }]);
+    corrupt(a, lines(a).length - 1);
+    expect(open(dir).healthState()).toBe('unreadable');
+  });
+
+  it('a repair that took a hole from a peer does not read as damage at the next boot', async () => {
+    const dir = tmp('hole');
+    const a = open(dir);
+    start(a);
+    a.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+    a.appendMachineEvents([{ type: 'confine', ref: 'c2' }]);
+    const rows = [...a.allRows()] as TeamAccessRow[];
+    fs.writeFileSync(files(a).logFile, 'not json\n{}\n');
+    a.load();
+    const served = rows.filter((r) => r !== rows[2]);
+    await new TeamAccessPuller({ log: () => a, afterIngest: () => undefined, peers: () => [{ machineId: 'B', fetchRows: async () => ({ rows: served, vector: {} }) }] }).tick();
+    expect(a.healthState()).toBe('ok');
+    expect(open(dir).healthState()).toBe('ok');
+  });
+
+  it('a second read after a failed one brings its gaps with it', () => {
+    let bad = false;
+    const a = machine('A'); const b = machine('B');
+    start(a);
+    a.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+    bind(b);
+    const rows = a.allRows() as TeamAccessRow[];
+    b.ingest(rows.filter((r) => r !== rows[1]));
+    const stateDir = path.resolve((b as unknown as { dir: string }).dir, '..', '..');
+    const again = new TeamAccessLog({ stateDir, signer: signerFor('B'), verify: (r) => { if (bad) throw new Error('read failed'); return verify(r); } });
+    bad = true;
+    again.load();
+    expect(again.gaps()).toEqual([]);
+    bad = false;
+    again.load();
+    expect(again.gaps().map((g) => g.kind)).toEqual(['chain-break']);
   });
 });
