@@ -796,7 +796,7 @@ describe('recommended services setup', () => {
 
   describe('which agents can reach a recipe', () => {
     it('the proven recipes by default, plus only the recipes it names', () => {
-      const proven = ['tailscale', 'jev'];
+      const proven = ['tailscale', 'jev', 'bitwarden'];
       expect(catalogWithProving(undefined, () => true).filter(isServiceAvailable).map((r) => r.id)).toEqual(proven);
       expect(catalogWithProving([], () => true).filter(isServiceAvailable).map((r) => r.id)).toEqual(proven);
       expect(catalogWithProving(['made-up'], () => true).filter(isServiceAvailable).map((r) => r.id)).toEqual(proven);
@@ -804,7 +804,7 @@ describe('recommended services setup', () => {
     });
 
     it('a fleet agent ignores the list, whatever its config says, and keeps the proven ones', () => {
-      expect(catalogWithProving(['jev-v1', 'made-up'], () => false).filter(isServiceAvailable).map((r) => r.id)).toEqual(['tailscale', 'jev']);
+      expect(catalogWithProving(['jev-v1', 'made-up'], () => false).filter(isServiceAvailable).map((r) => r.id)).toEqual(['tailscale', 'jev', 'bitwarden']);
     });
 
     it('every recipe names a real service, and its brief gives the person no task', () => {

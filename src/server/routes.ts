@@ -16505,7 +16505,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // A fresh agent still keeps its first secrets in the config file, so the copy covers those too.
     readSecretNames: () => copySourceNames(new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).read(), ctx.config as unknown as Record<string, unknown>),
     readCopyValue: (name) => {
-      if (name.startsWith('config.')) return configHeldSecrets(ctx.config as unknown as Record<string, unknown>)[name] ?? null;
+      // A config-held name first; anything else, and a `config.`-prefixed name the config does not know, from the vault.
+      const held = name.startsWith('config.') ? configHeldSecrets(ctx.config as unknown as Record<string, unknown>)[name] : undefined;
+      if (held) return held;
       const v = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).get(name);
       return typeof v === 'string' && v ? v : null;
     },
@@ -16554,7 +16556,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     clearStuck: (service) => { void ctx.telegram?.updateAttentionStatus(`recommended-service-setup:${service}`, 'DONE', { silent: true }).catch((err) => { DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: `Close the stopped notice for ${service}`, fallback: 'The notice stays open.', reason: err instanceof Error ? err.message : String(err), impact: 'An old notice may still show.' }); }); },
     tellOwner: (text) => {
       const topicId = ctx.telegram?.getLifelineTopicId?.();
-      if (topicId !== undefined) void withNotificationEnvelope(stampNotification(), async () => ctx.telegram?.sendToTopic(topicId, text)).catch((err) => { DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: 'Tell the owner a service was already working', fallback: 'The dashboard row still shows it.', reason: err instanceof Error ? err.message : String(err), impact: 'The person was not told.' }); });
+      if (topicId !== undefined) void withNotificationEnvelope(stampNotification(), async () => ctx.telegram?.sendToTopic(topicId, text)).catch((err) => { DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: 'Tell the owner about a service (already working, switched off, or stopped working)', fallback: 'The dashboard row still shows the state.', reason: err instanceof Error ? err.message : String(err), impact: 'The person was not told by message.' }); });
     },
     finishCommitment: (id) => { ctx.commitmentTracker?.deliver(id); },
     withdrawCommitment: (id, reason) => { ctx.commitmentTracker?.withdraw(id, reason); },

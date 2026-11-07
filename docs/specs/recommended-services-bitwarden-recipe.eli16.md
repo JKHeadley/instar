@@ -1,10 +1,10 @@
-# Your agent can keep a copy of its own secrets in Bitwarden (test agents only, for now)
+# Your agent can keep a copy of its own secrets in Bitwarden
 
 ## What this is
 
 An agent holds secrets: the token that lets it talk to Telegram, its dashboard PIN, keys for services it uses. Today they live only on the machine the agent runs on. Lose that machine and they're gone, and the agent can't be brought back as itself. Bitwarden is one of the recommended services: with a yes, the agent copies its own secrets into a Bitwarden vault, in a folder of its own, so they survive the machine.
 
-Each recommended service needs a recipe: the instructions a setup session follows after your yes, plus a check that decides whether the service really works. Jev and Tailscale have theirs. This change adds the third, for Bitwarden. Like the others before their live proof, it runs only on test agents until it has been proven for real.
+Each recommended service needs a recipe: the instructions a setup session follows after your yes, plus a check that decides whether the service really works. Jev and Tailscale have theirs. This change adds the third, for Bitwarden, and marks it available on every agent, because it was proven live on a test agent on 2026-11-07: the agent took a yes, received the login through one secure form, had its server write the copy, and its check passed; a confirmed no with "switch it off" then removed the stored password and signed the machine out, leaving the copies in the vault.
 
 ## What the setup session does
 
@@ -25,8 +25,8 @@ A no stops the copying. If you also tick "switch it off on this machine", the ag
 - Only the agent's own folder is ever written. Nothing of yours is read.
 - The master password never appears in a process list, a log, a page or a message; the same change moves the agent's existing Bitwarden code off the command line too.
 - The check says "unknown" rather than guessing when the program can't be reached or the folder can't be read, so nothing starts on a guess.
-- The recipe is dark: available only to a test agent that lists it, until the live proof.
+- Only what the recipe's live proof showed is promised: a copy in the agent's own folder, refreshed daily, switched off cleanly on a no.
 
 ## What you need to decide
 
-Nothing yet. This recipe is being proven on a test agent next; once proven, a separate change marks Bitwarden available on every agent, like Jev and Tailscale.
+Nothing. Bitwarden joins Jev and Tailscale as a service your agent can set up after your yes. The agent still offers nothing on its own; that is the next piece of work.

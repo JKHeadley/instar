@@ -144,12 +144,12 @@ describe('Bitwarden recipe: switching off', () => {
 describe('Bitwarden recipe: the brief and the catalog', () => {
   const brief = recipe.brief({ port: 4321 });
 
-  it('is dark: proving agents only, until its live proof', () => {
+  it('is the Bitwarden row\'s proven recipe on every agent', () => {
     expect(recipe.service).toBe('bitwarden');
     expect(recipe.secretName).toBe('bitwarden_master_password');
-    expect(RECOMMENDED_SERVICE_CATALOG.find((r) => r.id === 'bitwarden')!.setupRecipe).toBeNull();
-    expect(recipeFor(catalogWithProving(['bitwarden-v1'], () => true).find((r) => r.id === 'bitwarden')!)?.id).toBe('bitwarden-v1');
-    expect(catalogWithProving(['bitwarden-v1'], () => false).find((r) => r.id === 'bitwarden')!.setupRecipe).toBeNull();
+    // Proven live 2026-11-07, so the catalog itself carries it: a fleet agent with no proving list has it too.
+    expect(RECOMMENDED_SERVICE_CATALOG.find((r) => r.id === 'bitwarden')!.setupRecipe).toBe('bitwarden-v1');
+    expect(recipeFor(catalogWithProving(undefined, () => false).find((r) => r.id === 'bitwarden')!)?.id).toBe('bitwarden-v1');
   });
 
   it('keeps the password off every command line and the copy out of the session', () => {
@@ -183,6 +183,10 @@ describe('what gets copied', () => {
     // A placeholder means the vault holds it: the leaf walk covers it, the config walk skips it.
     expect(configHeldSecrets({ authToken: { secret: true } })).toEqual({});
     expect(copySourceNames({ github_token: 'g' }, { authToken: 'A' })).toEqual(['config.authToken', 'github_token']);
+    // A vault twin of the same name wins: the config copy is left out, so one secret is not copied twice.
+    expect(copySourceNames({ authToken: 'A', dashboardPin: '1' }, { authToken: 'A', dashboardPin: '1', tunnel: { token: 'T' } })).toEqual(['authToken', 'config.tunnel.token', 'dashboardPin']);
+    // Two entries of one messaging type keep both tokens, under distinct names.
+    expect(Object.keys(configHeldSecrets({ messaging: [{ type: 'telegram', config: { token: 'a' } }, { type: 'telegram', config: { token: 'b' } }] }))).toEqual(['config.messaging.telegram.token', 'config.messaging.telegram.2.token']);
   });
 
   it('every stored string leaf, by dotted name, except transient drops and the vault password itself', () => {
