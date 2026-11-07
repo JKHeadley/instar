@@ -163,7 +163,7 @@ function sanitizePeerMessage(raw: unknown, machine: string, display?: OriginDisp
     originVerified: 'unknown', machine,
     ...(files > 0 ? { filesOnOtherMachine: files } : {}),
     ...(typeof m.senderName === 'string' && m.senderName.length > 0 ? { senderName: m.senderName.slice(0, 128) } : {}),
-    ...(m.senderRole === 'owner' || m.senderRole === 'msp' ? { senderRole: m.senderRole } : {}),
+    ...(m.senderRole === 'owner' || m.senderRole === 'msp' || m.senderRole === 'team' ? { senderRole: m.senderRole } : {}),
     // A peer's origin row is re-checked; its display bits are replaced by this machine's (§4).
     ...(m.role === 'agent' && display ? { origin: validateDeviceOriginRow(m.origin, display) ?? deviceOriginRow(null, display, 'other-machine') } : {}),
   };
@@ -422,7 +422,10 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const ownerPerson = creator ? conversationOwnerFor(creator, deps.pairing.machineId()) : null;
     mutation(res, deviceId, body.requestId, hashOf('create', title),
       { op: 'create', conversationKey, title, ...(ownerPerson ? { ownerMachine: ownerPerson.machineId, ownerUser: ownerPerson.userId } : {}) },
-      () => svc!.applyCreate(deviceId, body.requestId as string, conversationKey, title, ownerPerson));
+      () => {
+        if (creator?.role === 'team' && creator.userId) deps.pairing.confineOwnConversation(conversationKey, creator.userId);
+        return svc!.applyCreate(deviceId, body.requestId as string, conversationKey, title, ownerPerson);
+      });
   });
 
   // ── List ──
@@ -473,7 +476,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // People and roles §3.4: an MSP phone sees Telegram topics and its own app conversations only
     // (filtered after the merge, so the cursor still advances over rows it does not see).
     const visible = (rows: ConversationListRow[]): ConversationListRow[] => rows.filter((r) => {
-      if (r.platform === 'telegram') return true;
+      if (r.platform === 'telegram') return deviceMayUse(deps.pairing, req, `telegram:${String(r.id)}`);
       if (r.platform === 'slack') return deviceMayUse(deps.pairing, req, 'slack:');
       return deviceMayUse(deps.pairing, req, String(r.id));
     });
@@ -685,7 +688,10 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       res.status(status).json(b);
     };
 
-    const memoryPersonId = sender?.role === 'msp' ? sender.userId : null;
+    const memoryPersonId = sender && sender.role !== 'owner' ? sender.userId : null;
+    // A team member's stop ends their own conversation only. Team access needs a one-machine agent, so a
+    // forwarded stop never carries this scope (team-roles-and-access step 2a).
+    const stopScope = sender?.role === 'team' ? 'conversation' : undefined;
     const router = s.poolRouter();
     const forwardOf = (urgent?: AppUrgent) => buildAppForward({ event: msg, seed, ownerName: sender?.name ?? null, memoryPersonId, ...(urgent ? { urgent } : {}) });
     const envelope = { via: 'mobile-device' as const, deviceId, eventId };
@@ -700,7 +706,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       if (!s.deps.holdsLease()) {
         if (here) return true;
         // A stop that reaches a machine that isn't the holder runs today's local stop, which stops nothing here.
-        if (urgent === 'stop') s.emergencyStop(key);
+        if (urgent === 'stop') s.emergencyStop(key, stopScope);
         finish(503, { error: 'stop-not-confirmed', detail: STOP_NOT_CONFIRMED, conversationKey: key, eventId, messageId, ...extras });
         return false;
       }
@@ -723,7 +729,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (exactStop) {
       if (!(await urgentRoute('stop', 'sentinel-kill'))) return;
       s.noteEmergency(key);
-      const stop = s.emergencyStop(key);
+      const stop = s.emergencyStop(key, stopScope);
       s.appendDelivery(key, messageId, 'intercepted', seed);
       featureEvidence.record('mobilePairing.native', { kind: 'held', reason: 'intercepted: exact emergency stop', context: { messageId, deviceId, stopped: typeof stop.stopped === 'number' ? stop.stopped : null } });
       finish(200, { ok: true, outcome: 'sentinel-kill', stopped: stop.stopped, conversationKey: key, eventId, messageId, deliveryState: 'intercepted', ...extras });
@@ -743,7 +749,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         if (d.disposition === 'kill' || d.disposition === 'pause') {
           if (!(await urgentRoute(d.disposition === 'kill' ? 'stop' : 'pause', d.disposition === 'kill' ? 'sentinel-kill' : 'sentinel-pause'))) return;
           s.noteEmergency(key);
-          const out = d.disposition === 'kill' ? { outcome: 'sentinel-kill', stopped: s.emergencyStop(key).stopped } : { outcome: 'sentinel-pause', paused: s.pause(key) };
+          const out = d.disposition === 'kill' ? { outcome: 'sentinel-kill', stopped: s.emergencyStop(key, stopScope).stopped } : { outcome: 'sentinel-pause', paused: s.pause(key) };
           s.appendDelivery(key, messageId, 'intercepted', seed);
           featureEvidence.record('mobilePairing.native', { kind: 'held', reason: `intercepted: sentinel ${d.disposition}`, context: { messageId, deviceId, disposition: d.disposition } });
           finish(200, { ok: true, ...out, conversationKey: key, eventId, messageId, deliveryState: 'intercepted', ...extras });

@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-07T07:48:15.513Z",
+  "slug": "team-2a",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 75,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/core/TopicResumeMap.ts",
+      "src/core/claudeResumeTranscript.ts",
+      "src/core/frameworkSessionLaunch.ts",
+      "src/core/memorySessionPolicy.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/server/routes.ts",
+      "src/users/MemoryPrivacy.ts"
+    ],
+    "addedLines": 61,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

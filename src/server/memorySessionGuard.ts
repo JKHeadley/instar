@@ -29,8 +29,8 @@ interface Rule {
 const slack = (id: string) => `slack:${id}`;
 const imessage = (id: string) => `imessage:${id}`;
 const whatsapp = (id: string) => `whatsapp:${id}`;
-/** Every Telegram topic is one place: the group. The topic id says nothing more. */
-const telegram = () => 'telegram:';
+/** Every Telegram topic is one place, the group, unless a team shares it (see placeMatches). */
+const telegram = (topicId: string) => `telegram:${topicId}`;
 
 export const MEMORY_SESSION_ROUTES: readonly Rule[] = [
   // Replies, one per channel.
@@ -41,6 +41,8 @@ export const MEMORY_SESSION_ROUTES: readonly Rule[] = [
   { method: 'POST', pattern: /^\/whatsapp\/send\/([^/]+)$/, limit: 'own-place', place: whatsapp },
   { method: 'POST', pattern: /^\/slack\/session-reply$/, limit: 'any' },
   { method: 'POST', pattern: /^\/app\/session-reply$/, limit: 'any' },
+  // An earlier file of this conversation: the route's own bind check holds it to the session's conversation.
+  { method: 'GET', pattern: /^\/app\/media-path\/[^/]+$/, limit: 'any' },
   { method: 'POST', pattern: /^\/messaging\/preflight$/, limit: 'any' },
   { method: 'POST', pattern: /^\/events\/delivery-failed$/, limit: 'any' },
   { method: 'POST', pattern: /^\/telegram\/origins\/operations\/[^/]+\/outcome$/, limit: 'any' },
@@ -63,7 +65,11 @@ export function memoryReplyChannel(method: string, path: string): string | null 
 
 function placeMatches(expected: string, own: string | null): boolean {
   if (!own) return false;
-  return expected === 'telegram:' ? own.startsWith('telegram:') : expected === own;
+  if (!expected.startsWith('telegram:')) return expected === own;
+  // A topic shared with a team has its own place, and its session is held to that topic.
+  const topic = /^telegram:topic:(.+)$/.exec(own);
+  if (topic) return expected === `telegram:${topic[1]}`;
+  return own.startsWith('telegram:');
 }
 
 /** The decision for one request. A refusal names no store, so it reveals nothing. */

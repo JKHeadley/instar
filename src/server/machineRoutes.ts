@@ -67,6 +67,8 @@ export { identityRecoveryBearerResponseMessage } from '../core/IdentityRecoveryB
 // ── Types ──────────────────────────────────────────────────────────
 
 export interface MachineRouteContext {
+  /** True when this agent has had team members: a second machine would know none of it (team-roles-and-access §4.1). */
+  teamJoinBlocked?: () => boolean;
   /** Machine identity manager */
   identityManager: MachineIdentityManager;
   /** Heartbeat manager for coordination */
@@ -573,6 +575,10 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
   const handlePair = async (req: Request, res: Response): Promise<void> => {
     const { pairingCode, machineIdentity, ephemeralPublicKey, advertisedUrl, endpoints } = req.body ?? {};
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    if (ctx.teamJoinBlocked?.()) {
+      res.status(409).json({ error: 'team-needs-one-machine', detail: 'This agent has had team members, so a second machine has to wait for support for several machines.' });
+      return;
+    }
 
     if (!pairingCode || !machineIdentity || !ephemeralPublicKey) {
       res.status(400).json({ error: 'Missing required pairing fields' });

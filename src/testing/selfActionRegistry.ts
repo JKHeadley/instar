@@ -55,6 +55,7 @@ import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/lane
 import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
 import { decideKeyRefresh, REFRESH_MAX_ATTEMPTS } from '../core/ClaudeKeyHealth.js';
+import { decideRefusedRetry, RETRY_DELAYS_MS } from '../core/SlackRefusedHold.js';
 import { raiseDue } from '../monitoring/MaturationLadder.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
 import { decideRescueGate, WALL_RESCUE_LIMITS } from '../core/UsageWallRescue.js';
@@ -3309,6 +3310,37 @@ const claudeKeySessionRefresh: SelfActionController = {
 };
 
 /**
+ * slack-refused-hold-retry — a refused Slack conversation start is retried. Under the pinned fixture
+ * every retry is refused. The REAL brake is `decideRefusedRetry`: a fixed schedule of 6 tries over
+ * about two hours, then the person is asked to resend and the messages are dropped. Nothing re-adds
+ * them unless the person sends again.
+ */
+const slackRefusedHoldRetry: SelfActionController = {
+  id: 'slack-refused-hold-retry',
+  actionVerb: 'session-spawn',
+  models: 'src/core/SlackRefusedHold.ts (decideRefusedRetry: 6 tries per conversation, then dropped)',
+  modelsPath: 'src/core/SlackRefusedHold.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Attempts are persisted with the held messages, so a restart resets nothing, and a restart is never caused by this controller.' },
+  boundK: RETRY_DELAYS_MS.length,
+  perTargetBoundK: RETRY_DELAYS_MS.length,
+  ticks: 60,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const TARGET = 'refused-conversation';
+    let attempts = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (decideRefusedRetry({ attempts }) !== 'attempt') return;
+        attempts += 1;
+        sink.emit({ verb: 'session-spawn', target: TARGET });
+        if (!f.targetAlwaysRejects()) { attempts = 0; } // it got through (never under the fixture)
+      },
+    };
+  },
+};
+
+/**
  * device-limit-session-move — codex-device-limit-tripwire §4. A live interactive Codex session on
  * an account benched for a (suspected) device limit is moved to another Codex account. Under the
  * pinned fixture every move is refused, so the bench never clears its sessions. The REAL brake is
@@ -4222,6 +4254,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   linuxBrowserInstallRetry,
   codex429ExitNotice,
   claudeKeySessionRefresh,
+  slackRefusedHoldRetry,
   desktopRelockGuardReplacement,
   desktopLockedHelperRespawn,
   sessionPoolStagePromotion,

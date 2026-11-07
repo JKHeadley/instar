@@ -382,7 +382,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
       at: receivedAt, machineId: s.deps.machineId(), receivedAt,
       ...(signed.origin ? { origin: signed.origin } : {}), ...(signed.receipt ? { receipt: signed.receipt } : {}),      // People and roles §3.3: who sent it, recorded at accept time.
       ...(sendPerson ? { senderName: sendPerson.name, senderRole: sendPerson.role } : {}),
-      ...(sendPerson && sendPerson.role === 'msp' && sendPerson.userId ? { senderPerson: { machineId: deps.pairing.machineId(), userId: sendPerson.userId } } : {}),
+      ...(sendPerson && sendPerson.role !== 'owner' && sendPerson.userId ? { senderPerson: { machineId: deps.pairing.machineId(), userId: sendPerson.userId } } : {}),
     };
     const msg: MessageEvent | MediaMessageEvent = stored.length > 0 ? { ...base, kind: 'media-message', attachments: stored } : { ...base, kind: 'message' };
     if (msg.kind === 'media-message' && mediaRecordTooLarge(msg, signed.origin, s.deps.machineId())) {

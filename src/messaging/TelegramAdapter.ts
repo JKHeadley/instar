@@ -320,6 +320,8 @@ interface LogEntry {
   topicId: number | null;
   text: string;
   fromUser: boolean;
+  /** Sent by a team member's phone: not the owner's words, whatever else this row says. */
+  teamPhone?: boolean;
   timestamp: string;
   sessionName: string | null;
   senderName?: string;
@@ -338,7 +340,7 @@ interface LogEntry {
   deviceId?: string;
   eventId?: string;
   /** People and roles: the app sender's role and registry person (MSP only; namespaced by machine). */
-  senderRole?: 'owner' | 'msp';
+  senderRole?: 'owner' | 'msp' | 'team';
   senderPerson?: { machineId: string; userId: string };
   /** Structural origin, stamped at the send/receive seam. */
   provenance: MessageProvenance;
@@ -842,7 +844,7 @@ export class TelegramAdapter implements MessagingAdapter {
   // Message log callback — fires on every message logged (inbound and outbound).
   // Used by TopicMemory to dual-write to SQLite for search and summarization.
   // Includes sender identity fields (Phase 1C/1D — User-Agent Topology Spec).
-  public onMessageLogged: ((entry: { messageId: number; topicId: number | null; text: string; fromUser: boolean; timestamp: string; sessionName: string | null; senderName?: string; senderUsername?: string; telegramUserId?: number; forwarded?: boolean; provenance?: MessageProvenance }) => void) | null = null;
+  public onMessageLogged: ((entry: { messageId: number; topicId: number | null; text: string; fromUser: boolean; teamPhone?: boolean; timestamp: string; sessionName: string | null; senderName?: string; senderUsername?: string; telegramUserId?: number; forwarded?: boolean; provenance?: MessageProvenance }) => void) | null = null;
 
   /**
    * Scope-accretion ratification observer (spec autonomous-scope-accretion-
@@ -1651,7 +1653,7 @@ export class TelegramAdapter implements MessagingAdapter {
     via?: 'mobile-device';
     deviceId?: string;
     eventId?: string;
-    senderRole?: 'owner' | 'msp';
+    senderRole?: 'owner' | 'msp' | 'team';
     senderPerson?: { machineId: string; userId: string };
   }): void {
     const fromApp = entry.via === 'mobile-device';

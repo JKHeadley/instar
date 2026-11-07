@@ -126,7 +126,27 @@ const staged = stagedOutput
   .map((s) => s.trim())
   .filter(Boolean);
 
-if (staged.length === 0) {
+// Paths this commit removes (rename sources included) or changes the type of.
+// They have no staged content worth reading, so they stay out of `staged`,
+// which the content checks below read. They still belong in the decision
+// scope: the PR-boundary check (decision-audit-presence-check.mjs) takes every
+// changed path, and without them a PR deleting an in-scope file could never
+// pass it (PR #2821). --no-renames because a commit-level rename can read as a
+// plain delete across the whole PR once the new file drifts further.
+let scopeOnlyPaths = [];
+try {
+  scopeOnlyPaths = execSync('git diff --cached --name-only --no-renames --diff-filter=DT', {
+    cwd: ROOT,
+    encoding: 'utf8',
+  })
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
+} catch {
+  // Same fail-open as the read above; that read just succeeded.
+}
+
+if (staged.length === 0 && scopeOnlyPaths.length === 0) {
   // No staged files — nothing to check.
   process.exit(0);
 }
@@ -243,7 +263,7 @@ function inScope(file) {
   return false;
 }
 
-const inScopeFiles = staged.filter(inScope);
+const inScopeFiles = [...new Set([...staged, ...scopeOnlyPaths])].filter(inScope);
 
 if (inScopeFiles.length === 0) {
   // Pure docs / release notes / config — pass through.
@@ -401,7 +421,7 @@ for (const entry of traceEntries) {
 if (!freshestTrace || !freshestTraceEntry) {
   blockCommit(
     inScopeFiles,
-    'No fresh complete trace covers this staged change. Run the /instar-dev skill for the files being committed.',
+    'No fresh complete trace covers this staged change, deleted and renamed-away paths included. Run the /instar-dev skill for the files being committed.',
   );
 }
 try {
@@ -1417,7 +1437,10 @@ function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, risk
       files,
       loc,
       scope: {
-        basis: 'staged-in-scope-additions-plus-deletions',
+        // Any value but the old 'staged-in-scope-additions-plus-deletions':
+        // decision-audit-presence-check.mjs reads that one as a record written
+        // before deleted paths entered scope.
+        basis: 'staged-in-scope-paths-including-deleted',
         files: scopeFiles,
         addedLines,
         deletedLines,
