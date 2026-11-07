@@ -45,7 +45,7 @@ Today a phone is either the owner's (everything) or an MSP's (all Telegram topic
 
 `operator` and `contributor` keep their meaning for Slack action ceilings. In the app they are members. **MSP is not a role.** It is `relationship: 'msp'` on an admin: the same access, with a label saying the person is from outside the organization. Guest stays because it costs one operation check and covers a client or auditor who should see one conversation and not speak in it.
 
-**A new phone role, `team`.** A `team` phone's standing comes from the access log (§3.3), read through `resolveStanding`. Its tier is the lower of the log and any explicit `orgRole` on the profile, so the registry can lower a team phone and can never raise it. Lower-of applies only to `team` phones, and an absent `orgRole` caps nothing.
+**A new phone role, `team`.** A `team` phone's standing comes from the access log (§3.3), read through `resolveStanding`. Its tier comes from the log alone. A registry edit to `orgRole` has no effect on a team phone in either direction, so nothing the agent can be talked into editing can raise one. Lowering goes through the log too, as a `lower` event (§3.3).
 
 **Existing phones do not change.** An `owner` phone stays as it is. An `msp` phone keeps exactly today's reach and limits: it is not read through tiers, and it gains nothing automatically. The owner can convert an MSP phone to an admin with one signed action in the app. This keeps "Updates never restrict existing agents", and it also never widens what an owner agreed to without asking them. Once the app has its People screen, the owner sees one prefilled offer per MSP: "Give <name> maintenance access".
 
@@ -87,9 +87,9 @@ Each phone-written event stores the phone's whole signed request as `signedOrigi
 - An event naming an unknown person, or signed by a key this machine's ledger does not know yet, is quarantined, and the fold reruns when the ledger or log gains rows. The ledger gains an ingest hook for this. A quarantined event is not accepted, whichever way it points. If it carries a valid machine receipt and would remove or lower access, the person's affected access is **held** until the row verifies: a temporary denial, kept apart from accepted state, and cleared when the row is either applied or dropped. A row with no valid receipt holds nothing, so an unknown key cannot lock anyone out.
 - A row that fails verification outright is ignored.
 
-Events: `phone-bind`, `owner-pin`, `privacy-required`, `person-add { personKey, name, tier, relationship?, links }`, `person-set`, `person-remove`, `grant { personKey, ref, access }`, `grant-remove`, `place-applied { ref, rev, machineId }` (machine-signed, §3.5), `lower` (machine-signed, below). `phone-bind` is described below.
+Events: `phone-bind`, `owner-pin`, `privacy-required`, `person-add { personKey, name, tier, relationship?, links }`, `person-set`, `person-remove`, `grant { personKey, ref, access }`, `grant-remove`, `place-applied { ref, generation, machineId }` (machine-signed, §3.5), `lower` (machine-signed, below). `phone-bind` is described below.
 
-**Identity.** `personKey` is a random id minted at invite, the same on every machine. Folding the log writes a local `UserProfile` with that id and a channel `{ type: 'instar-app', identifier: personKey }`, and sets `orgRole`, so Slack on that machine agrees. The fold never raises an `orgRole` already set lower, so a registry lowering survives a re-fold, and `person-remove` clears the role. An existing person is linked by their Slack or Telegram id in `links`.
+**Identity.** `personKey` is a random id minted at invite, the same on every machine. Folding the log writes a local `UserProfile` with that id and a channel `{ type: 'instar-app', identifier: personKey }`, and writes `orgRole` as a one-way copy of the log's role, so Slack on that machine agrees. The fold never reads that copy back. `person-remove` clears it. An existing person is linked by their Slack or Telegram id in `links`.
 
 **State is an in-memory fold**, rebuilt at boot and updated on append, so a request costs no file read. An unreadable log means no team phone is admitted: fail closed.
 
@@ -135,7 +135,7 @@ Redeem requires the phone to declare `appCaps: ['standing']`, so an older app ge
 
 **A granted conversation is a shared place with its own key.** Any conversation with a live grant to a non-owner resolves as `shared` with a per-conversation `placeKey`, never `soleReaderId`, whatever the Telegram count says. Telegram's `memoryPlaceKey` is group-wide today, so the per-topic key is computed at the inbound site and in `placeFor` for granted topics. `memorySessionGuard` treats every Telegram topic as one place today, so a session with a per-topic key is also held to that topic: it cannot post into another. Its session is confined and loads only that place's memory. The owner loses their private memory there while it is shared, and the sheet says so. When the last grant is removed the conversation returns to its earlier place. The shared folder is kept and is not merged into the owner's memory.
 
-**A grant activates in two steps.** The grant event is written, then the machine running that conversation (by pool placement, else the lease holder when it is idle) ends its live session, recomputes the place from the folded log, and writes a machine-signed `place-applied`. The person can read only after that event exists. Until then People shows "Waiting for <machine>". On one machine this is immediate.
+**A grant activates in two steps.** The grant event is written, then the machine running that conversation (by pool placement, else the lease holder when it is idle) ends its live session, recomputes the place from the folded log, and writes a machine-signed `place-applied`. Each conversation has an access generation, a hash of its current reader set, and `place-applied` names that generation and the serving machine. The person can read, get previews and get pushes only while a `place-applied` matches the current generation and serving machine exactly, so an old acknowledgment means nothing after a revoke, a regrant or a session move. Until then People shows "Waiting for <machine>". On one machine this is immediate.
 
 A machine taking over a conversation pulls `teamAccess` from reachable peers before serving it. If none is reachable it serves with what it has, because an agent must work on a single machine. That leaves a stated window: a machine cut off at the moment of a grant can hold owner reach for that conversation until it next syncs.
 
@@ -233,7 +233,7 @@ Steps 2 and 3 are useful together, not separately. A user-facing step is done on
 
 | Decision | Classification | Justification |
 |---|---|---|
-| Tier from log, lower-of for `team` | invariant | Authorization must be deterministic (Know Your Principal). |
+| Tier from the log alone for `team` | invariant | Authorization must be deterministic (Know Your Principal). |
 | Route admission by tier | invariant | Enumerated ceilings. Default-deny by test. |
 | `mayDo` | invariant | Existing invariant, extended, fail closed. |
 | Who may write the log; fold re-check | invariant | The stored signature is the proof of a person's choice. |
@@ -248,7 +248,7 @@ Steps 2 and 3 are useful together, not separately. A user-facing step is done on
 
 - **Tier.** Symbol: a log row. State: "the owner or an allowed admin chose this". Corroboration: `verifyTeamAccessOrigin` against the replicated key ledger, and the fold's standing check. Unmeasurable: the row is ignored, or a failed log admits no team phone. Both directions: a deleted row is not detectable on one machine (§3.2), and a valid but stale row is bounded by replication.
 - **Reach.** Symbol: allowlists, phones, observed senders. State: "this person can reach the agent". A silent reader in a Telegram group is not a sender, so the row says the list is incomplete. One human with two unlinked ids can read as two, and marking it fine covers that.
-- **Grant applied.** Symbol: `place-applied`. State: the conversation's session is confined. Corroboration: it is written after the session ended and the place recomputed, and the spawn fails if confinement cannot apply. Unmeasurable: the grant stays pending.
+- **Grant applied.** Symbol: a `place-applied` matching the current generation and serving machine. State: the conversation's session is confined. Corroboration: it is written after the session ended and the place recomputed, and the spawn fails if confinement cannot apply. Unmeasurable: the grant stays pending.
 - **Privacy required.** Symbol: `enabled` and the probe, read live, and each peer's report. State: team sessions are confined. Unknown refuses.
 
 ## Frontloaded Decisions
@@ -273,7 +273,7 @@ Steps 2 and 3 are useful together, not separately. A user-facing step is done on
 ## 5. Security
 
 - A phone cannot reach an unlisted route, and a listed route without a tier fails a test.
-- The bearer token cannot raise anyone, and a registry edit cannot raise a team phone or change the pinned owner.
+- The bearer token cannot raise anyone, and a registry edit changes neither a team phone's tier nor the pinned owner.
 - `404` prevents probing, and list filters run after the pool merge.
 - Non-owner phones pass no Telegram sender id, as today.
 - Conversation titles and proposal text are display data, never instructions.
@@ -301,7 +301,7 @@ Step 1 is a plain revert. From step 2 on, older builds since v1.3.1631 refuse a 
 
 ## 9. Tests
 
-- Unit: tier map; lower-of, including no `orgRole` and an `msp` phone untouched; a banned-literal test; every allowlist entry has a tier; notify-token tier; `mayDo` for each tier, op and ref form; log fold with bad signature, fields changed beside the signed body, a re-appended old grant, standing exceeded, the same events in shuffled orders, an admin's grant surviving the admin's removal in both clock directions, a quarantined grant, a quarantined removal holding access and clearing both ways, an unknown key with no receipt holding nothing, an MSP-signed `owner-pin`, `owner-pin` matching an existing profile on a second machine, a lowering surviving a re-fold; a per-topic session refused on another topic; an admin with `read` cannot grant `use`; owner pin beats `orgRole`; `alwaysPerson`; place with grants; `ReachablePeople` with privacy off.
+- Unit: tier map; a registry `orgRole` edit changing nothing for a team phone in either direction; incremental folding equal to fresh rebuild, including promotions and late events; an `msp` phone with no `orgRole` untouched; a stale `place-applied` refused after revoke, regrant and session move; a banned-literal test; every allowlist entry has a tier; notify-token tier; `mayDo` for each tier, op and ref form; log fold with bad signature, fields changed beside the signed body, a re-appended old grant, standing exceeded, the same events in shuffled orders, an admin's grant surviving the admin's removal in both clock directions, a quarantined grant, a quarantined removal holding access and clearing both ways, an unknown key with no receipt holding nothing, an MSP-signed `owner-pin`, `owner-pin` matching an existing profile on a second machine; a per-topic session refused on another topic; an admin with `read` cannot grant `use`; owner pin beats `orgRole`; `alwaysPerson`; place with grants; `ReachablePeople` with privacy off.
 - Integration (HTTP): a status table across owner, `msp` with no `orgRole`, admin, member, guest and removed person on every route; bearer cannot raise; admin limits; invite refusals; `426` from an older app; two-step grant; second-person item once, updated in place, suppressed for shared people.
 - E2E: production init path, `/team/people` 200 with real wiring; a member reaches a granted conversation and gets `404` on another.
 - Live: a real session proving a member cannot get another member's fact, or the owner's, in a granted conversation.
