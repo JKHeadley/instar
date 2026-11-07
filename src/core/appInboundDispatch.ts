@@ -69,6 +69,10 @@ export interface AppInboundDispatchDeps {
   channels: SessionChannelRegistry;
   store: AppConversationStore;
   stateDir: string;
+  /** The owner's display name, for history lines stored before senders were recorded. */
+  ownerDisplayName?: () => string;
+  /** The inbox of a confined conversation's scope folder, or null (team-roles-and-access §4.1). */
+  confinedInbox?: (conversationKey: string) => string | null;
   spawnAdmission?: () => AppDispatchAdmission | null | undefined;
   /** Whether the app reply relay is installed and current (spawn refused otherwise). */
   relayReady?: () => { ready: true } | { ready: false; reason: string };
@@ -177,7 +181,8 @@ function writeContext(deps: AppInboundDispatchDeps, input: Pick<AppDispatchInput
       lines.push(`--- Conversation History (last ${history.length} messages) ---`);
       for (const m of history) {
         const time = new Date(m.at).toISOString().slice(11, 19);
-        const who = m.role === 'agent' ? 'Agent' : (cleanConversationTitle(input.ownerName) ?? 'Operator');
+        // A shared conversation has several speakers: each line names the one stored with it.
+        const who = m.role === 'agent' ? 'Agent' : (cleanConversationTitle(m.senderName ?? deps.ownerDisplayName?.() ?? input.ownerName) ?? 'Operator');
         // Lazy on purpose (media spec §4.5): earlier files are named, never copied or pulled here.
         for (const a of m.attachments ?? []) lines.push(`[${time}] ${who}: ${historyLine(a)}`);
         if (m.text || !m.attachments) lines.push(`[${time}] ${who}: ${m.text}`);
@@ -194,11 +199,13 @@ function writeContext(deps: AppInboundDispatchDeps, input: Pick<AppDispatchInput
     lines.push('EOF');
     lines.push('');
     lines.push('Strip the [app:] prefix before interpreting the message.');
-    lines.push('To send files, add --file <path> before the text (repeat it for several); the text can be an argument or piped in as usual.');
+    const confinedInbox = deps.confinedInbox?.(input.conversationKey) ?? null;
+    // Sending a file is refused from a confined session, so its context does not offer it.
+    if (!confinedInbox) lines.push('To send files, add --file <path> before the text (repeat it for several); the text can be an argument or piped in as usual.');
     lines.push('Only relay conversational text and the files you mean to send — not tool output or internal reasoning.');
     lines.push(`Conversation id: ${input.alias} — the durable identity of THIS app conversation on this machine. Use it as the topicId when opening durable state (e.g. POST /commitments).`);
     const contextData = lines.join('\n');
-    const tmpDir = path.join(deps.stateDir, 'state', 'app-dispatch');
+    const tmpDir = confinedInbox ?? path.join(deps.stateDir, 'state', 'app-dispatch');
     fs.mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
     const ctxPath = path.join(tmpDir, `ctx-${input.alias}-${Date.now()}.txt`);
     fs.writeFileSync(ctxPath, contextData, { mode: 0o600 }); /* state-registry: app-conversations */

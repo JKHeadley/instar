@@ -7,6 +7,7 @@
  * sessions inside the boundary. State lives in `state/memory-privacy.json`.
  */
 
+import type { TeamConfinement } from './TeamConfinement.js';
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -356,9 +357,15 @@ export class MemoryPrivacy {
     return proof && this.now() - proof.at < READER_PROOF_MS ? proof.personId : null;
   }
 
+  /** Set at boot; reads the confined list. */
+  confinement: TeamConfinement | null = null;
+
   /** The place a session serves. Nothing recognised means `unknown`, which fails closed. */
   placeFor(input: SessionPlaceInput, telegramGroupKey: string | null): MemoryPlace {
     if (input.memoryPlace) return input.memoryPlace;
+    // A conversation shared with a team stays confined for good (team-roles-and-access §3.5).
+    const confined = this.confinement?.place(input);
+    if (confined) return confined;
     const key = input.memoryPlaceKey
       ?? (input.slackChannelId ? `slack:${input.slackChannelId}` : null)
       ?? (input.telegramTopicId !== undefined ? telegramGroupKey : null);

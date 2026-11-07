@@ -18,6 +18,7 @@ import { MemoryInboundTracker } from './MemoryInboundTracker.js';
 import { memoryFixText, MemoryPrivacyRecovery, type RecoveryFacts } from './MemoryPrivacyRecovery.js';
 import { MemoryPrivacy, type MemoryPrivacyConfig, type ReachableLists } from './MemoryPrivacy.js';
 import { ReachablePeople, type PhoneFact } from './ReachablePeople.js';
+import { TeamConfinement } from './TeamConfinement.js';
 
 /** The oldest Claude Code these session settings were verified on. */
 export const MEMORY_PRIVACY_CLAUDE_FLOOR = '2.1.316';
@@ -125,11 +126,15 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
     }),
   });
 
+  const confinement = new TeamConfinement(input.stateDir);
+  privacy.confinement = confinement;
+
   let sandboxReady = false;
   let claudePath = input.claudePath;
   let blockerFacts: RecoveryFacts | null = null;
   input.sessionManager.setMemoryPrivacy({
     privacy,
+    confinement,
     telegramGroupKey: () => telegramKey(),
     slackChannelForSession: input.slackChannelForSession,
     sandboxReady: () => sandboxReady,

@@ -64,3 +64,5 @@ Pending, before the PR opens.
 ## Conclusion
 
 Foundation only.
+
+- Added: confined list reader, per-topic reply guard, spawn refusal, intercept skip, scoped stop, confined inbox for app context and files, stored speaker names.

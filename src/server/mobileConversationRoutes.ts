@@ -639,7 +639,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     };
 
     if (exactStop) {
-      const stop = s.emergencyStop(key);
+      const stop = s.emergencyStop(key, sender?.role === 'team' ? 'conversation' : undefined);
       s.appendDelivery(key, messageId, 'intercepted', seed);
       featureEvidence.record('mobilePairing.native', { kind: 'held', reason: 'intercepted: exact emergency stop', context: { messageId, deviceId, stopped: typeof stop.stopped === 'number' ? stop.stopped : null } });
       finish(200, { ok: true, outcome: 'sentinel-kill', stopped: stop.stopped, conversationKey: key, eventId, messageId, deliveryState: 'intercepted', ...extras });
