@@ -101,3 +101,5 @@ The resume id check sits in the launch abstraction and applies to every framewor
 No sandbox escape on a default install. Fixed: the crash-recovery confinement was wired only on a path production does not use (now set where every path passes, and it blocks until pairing is ready); a scoped session's hook events could name file paths that optional consumers read on the server (those fields are now removed for a scoped session); the resume dropper depended on the scheduler being on; a late-landing file skipped the session inbox; a row that could not be placed yet stayed unfolded until restart.
 
 - Added: Fourth review fixes with tests.
+
+- Added: Moved setAsideUnlessRealFolder so no new file enters the certified set.

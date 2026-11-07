@@ -7,7 +7,6 @@
  * sessions inside the boundary. State lives in `state/memory-privacy.json`.
  */
 
-import { setAsideUnlessRealFolder } from '../core/memorySessionPolicy.js';
 import type { TeamConfinement } from './TeamConfinement.js';
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
@@ -23,6 +22,14 @@ export const READER_PROOF_MS = 5 * 60_000;
 
 /** Stands for the baseline operator on an agent with no profile for them. */
 export const OPERATOR_PERSON_ID = 'operator';
+
+/** A session can leave a link or a file where the server expects a folder: move it out of the way. */
+export function setAsideUnlessRealFolder(dir: string): void {
+  let info: fs.Stats;
+  try { info = fs.lstatSync(dir); } catch { return; } // @silent-fallback-ok — nothing there is the normal first run
+  if (!info.isSymbolicLink() && info.isDirectory()) return;
+  fs.renameSync(dir, `${dir}.set-aside-${randomBytes(8).toString('hex')}`);
+}
 
 export interface MemoryPrivacyConfig {
   enabled?: boolean;
