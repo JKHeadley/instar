@@ -53,6 +53,7 @@ import type { SessionHandle } from '../../../types.js';
 import { sessionHandle } from '../../../types.js';
 import { CapabilityFlag } from '../../../capabilities.js';
 import { UnexpectedError } from '../../../errors.js';
+import { redactSpawnError } from '../../../../core/redactSpawnError.js';
 import { OPENAI_CODEX_ID } from '../errors.js';
 import { resolveCliModelFlag } from '../models.js';
 import { normalizeCodexJsonlEvent } from '../observability/eventNormalizer.js';
@@ -122,10 +123,11 @@ class OpenAiCodexAgenticSession implements AgenticSessionHeadless {
         /* nice-to-have */
       }
     } catch (err) {
+      // #2184: the raw error quotes the tmux argv, credentials included, so
+      // neither its message nor the error itself travels on as the cause.
       throw new UnexpectedError(
-        `Failed to spawn codex tmux session: ${(err as Error).message}`,
+        `Failed to spawn codex tmux session: ${redactSpawnError(err)}`,
         OPENAI_CODEX_ID,
-        err,
       );
     }
 

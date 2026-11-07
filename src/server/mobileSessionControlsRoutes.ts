@@ -177,7 +177,9 @@ function chatWords(row: Rec): string {
 
 const NOT_A_TOPIC = `${DOOR.Word} and machine can be changed for a session that has a conversation. This session has none, so there is nothing to switch.`;
 /** Moving app and Slack conversations between machines is part 3 of session-swap-any-conversation. */
-const MOVE_TELEGRAM_ONLY = 'Moving to another machine works for Telegram conversations today. App and Slack conversations get it next; until then this one stays on its machine.';
+const MOVE_TELEGRAM_ONLY = 'Moving to another machine works for Telegram conversations today. App conversations get it next; until then this one stays on its machine.';
+/** A Slack conversation stays with its Slack connection (slack-conversations-stay-with-connection §2.4). */
+const SLACK_STAYS = 'This Slack conversation stays on the machine that holds your Slack connection.';
 const ONE_MACHINE = 'This agent runs on one machine, so there is nowhere to move it.';
 const CANT_READ_DOORS = `Can't read the ${DOOR.words} and models right now.`;
 const CANT_READ_MACHINES = "Can't read the machines right now.";
@@ -220,6 +222,7 @@ export function summarizeControls(parts: ControlsParts, actions: unknown, now: n
 
   let move: Rec;
   if (conv === null) move = { state: 'not-this-chat', reason: NOT_A_TOPIC, choices: [] };
+  else if (conv.kind === 'slack') move = { state: 'stays', reason: SLACK_STAYS, choices: [] };
   else if (topic === null) move = { state: 'not-yet', reason: MOVE_TELEGRAM_ONLY, choices: [] };
   else if (parts.pool.status !== 200) move = { state: 'unavailable', reason: CANT_READ_MACHINES, choices: [] };
   else if (!machines) move = { state: 'one-machine', reason: ONE_MACHINE, choices: [] };

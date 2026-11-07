@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-07T01:00:19.570Z",
+  "slug": "slack-conversations-stay-with-connection",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 91,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/OwnershipReconciler.ts",
+      "src/core/SessionDrainRunner.ts",
+      "src/core/SlackForwardBridge.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/mobileSessionControlsRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 87,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "adds refusals only: the drain and reconciler stop acting on Slack keys; the one action added is the owner aborting a mid-transfer Slack record once, which converges in one tick"
+  },
+  "verdict": "pass"
+}

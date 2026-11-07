@@ -36,6 +36,11 @@ export interface MemoryInboundDeps {
   framework: () => string;
   /** The owner's way out of the fixed reply. */
   recovery?: MemoryPrivacyRecovery;
+  /**
+   * Told about every verified sender, whatever the privacy setting (team-roles-and-access §3.10).
+   * A record only: it must not throw, and nothing here depends on it.
+   */
+  onSender?: (senderKey: string) => void;
 }
 
 export type InboundVerdict = 'deliver' | 'unavailable';
@@ -91,6 +96,7 @@ export class MemoryInboundTracker {
 
   async onInbound(facts: InboundFacts): Promise<InboundVerdict> {
     const { privacy } = this.deps;
+    if (facts.senderKey) this.deps.onSender?.(facts.senderKey);
     if (!privacy.enabled) return 'deliver';
 
     privacy.establishBaseline();

@@ -20,8 +20,11 @@
  * Cloudflare named tunnel, else a verified Tailscale own name) unless an active sibling claims that
  * host; otherwise the paired host the signature was verified against. It never carries a token or PIN:
  * the dashboard asks for its PIN as usual. When the conversation runs on another machine of the
- * pool, the answer is `active:false` naming that machine (`ownerMachine`); this route does not
- * proxy to it.
+ * pool, the route finds that machine's session in the pool's session listing (rows carry their
+ * `conversationRef`) and answers it as `active:true, remote:true` with `machineId`, so the phone opens
+ * it natively through the relay routes (`/mobile/sessions/relay/:name/*`). No dashboard link is given
+ * for it: the phone never has to go to another machine's dashboard. If that machine isn't answering,
+ * the answer says so plainly with `retry:true` (Justin, topic 134088, 2026-11-06 22:08: "The session should just open, regardless of which machine it's running on").
  */
 import os from 'node:os';
 import { Router, type Request, type Response } from 'express';
@@ -66,7 +69,20 @@ export interface OpenSessionAnswer {
   reason?: string;
   /** Present when the conversation runs on another machine of the pool. */
   ownerMachine?: { machineId: string; nickname: string | null };
+  /** True when the session runs on `ownerMachine`; the phone opens it through the relay routes. */
+  remote?: boolean;
+  /** The machine running the session (for `remote`). */
+  machineId?: string;
+  /** True when trying again later may work (that machine isn't answering right now). */
+  retry?: boolean;
 }
+
+/** What the pool listing says about the conversation's session on its owner machine. */
+export type RemoteSessionLookup =
+  | { state: 'found'; name: string; startedAt?: string | null; framework?: string | null }
+  | { state: 'none' }
+  | { state: 'unreachable' }
+  | { state: 'too-old' };
 
 /** The dashboard deep link for a session (no token, no PIN). Null when no usable origin. */
 export function dashboardSessionUrl(origin: string | null, sessionName: string): string | null {
@@ -88,6 +104,8 @@ export function resolveOpenSession(input: {
   ownerNickname: string | null;
   selfNickname: string | null;
   origin: string | null;
+  /** The pool listing's answer for the owner machine (absent when there is no other owner). */
+  remote?: RemoteSessionLookup | null;
 }): OpenSessionAnswer {
   const base = { machineNickname: input.selfNickname };
   const s = input.localSession;
@@ -104,12 +122,25 @@ export function resolveOpenSession(input: {
   const owner = input.ownerMachineId;
   if (owner && input.selfMachineId && owner !== input.selfMachineId) {
     const nick = input.ownerNickname;
+    const where = nick ?? 'another of your machines, whose name I could not confirm,';
+    const ownerMachine = { machineId: owner, nickname: nick };
+    const r = input.remote ?? { state: 'unreachable' as const };
+    if (r.state === 'found') {
+      // Opened natively through the relay routes; never a link to another machine's dashboard.
+      return {
+        active: true, remote: true, sessionName: r.name, machineId: owner,
+        ...(r.startedAt ? { startedAt: r.startedAt } : {}),
+        ...(r.framework ? { framework: r.framework } : {}),
+        machineNickname: nick, ownerMachine,
+      };
+    }
+    if (r.state === 'none') return { active: false, ...base, reason: NO_SESSION_REASON, ownerMachine };
+    if (r.state === 'too-old') {
+      return { active: false, ...base, ownerMachine, reason: `${nick ?? 'The machine running this chat'} needs the latest Instar update before its session can open here.` };
+    }
     return {
-      active: false, ...base,
-      reason: nick
-        ? `This chat runs on ${nick}. Open the dashboard on ${nick} to see its session.`
-        : 'This chat runs on another of your machines, whose name I could not confirm.',
-      ownerMachine: { machineId: owner, nickname: nick },
+      active: false, ...base, ownerMachine, retry: true,
+      reason: `This chat's session runs on ${where}, which isn't answering right now, so it can't open here. Try again in a moment.`,
     };
   }
   return { active: false, ...base, reason: NO_SESSION_REASON };
@@ -127,6 +158,29 @@ export interface MobileSessionRouteDeps {
   ownerMachineFor(ref: SessionConversationRef): string | null;
   selfMachineId(): string | null;
   nicknameOf(machineId: string): string | null;
+  /** The owner machine's session for the conversation, from the pool's session listing. */
+  remoteSession?(ref: SessionConversationRef, ownerMachineId: string): Promise<RemoteSessionLookup>;
+}
+
+/**
+ * Read the owner machine's session from a pool listing (`GET /sessions?scope=pool`): its row whose
+ * `conversationRef` names this conversation. A listing that marks the machine failed is unreachable;
+ * a machine whose rows carry no `conversationRef` at all runs an older version.
+ */
+export function findRemoteSession(listing: unknown, ref: SessionConversationRef, ownerMachineId: string): RemoteSessionLookup {
+  if (!listing || typeof listing !== 'object') return { state: 'unreachable' };
+  const o = listing as { sessions?: unknown; pool?: { failed?: unknown } };
+  const failed = Array.isArray(o.pool?.failed) ? (o.pool!.failed as Array<{ machineId?: unknown }>) : [];
+  if (failed.some((f) => f && f.machineId === ownerMachineId)) return { state: 'unreachable' };
+  const rows = (Array.isArray(o.sessions) ? o.sessions : Array.isArray(listing) ? listing : []) as Array<Record<string, unknown>>;
+  const theirs = rows.filter((r) => r && r.machineId === ownerMachineId && r.remote === true);
+  const want = ref.kind === 'app' ? `app:${ref.key}` : ref.ref;
+  const row = theirs.find((r) => r.conversationRef === want && (r.status === undefined || r.status === 'running' || r.status === 'starting'));
+  if (row && typeof row.tmuxSession === 'string' && row.tmuxSession) {
+    return { state: 'found', name: row.tmuxSession, startedAt: typeof row.startedAt === 'string' ? row.startedAt : null, framework: typeof row.framework === 'string' ? row.framework : null };
+  }
+  if (theirs.length > 0 && !theirs.some((r) => typeof r.conversationRef === 'string')) return { state: 'too-old' };
+  return { state: 'none' };
 }
 
 type Principal = { kind: string };
@@ -155,7 +209,7 @@ export function selfMachineNickname(deps: Pick<MobileSessionRouteDeps, 'selfMach
 
 export function createMobileSessionRouter(deps: MobileSessionRouteDeps): Router {
   const router = Router();
-  router.get('/mobile/conversations/session', (req: Request, res: Response) => {
+  router.get('/mobile/conversations/session', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!deps.pairing.enabled()) { res.status(503).json({ error: 'mobile-pairing-off' }); return; }
     if (principalOf(req).kind !== 'device') { res.status(403).json({ error: 'operator-device-required' }); return; }
@@ -177,7 +231,13 @@ export function createMobileSessionRouter(deps: MobileSessionRouteDeps): Router 
     let origin: string | null = null;
     try { origin = dashboardOriginFor(deps.pairing, deviceAdmittedHost(req)); } catch { origin = null; } // @silent-fallback-ok — answered without a link, with the reason
     const nick = (id: string): string | null => { try { return deps.nicknameOf(id); } catch { return null; } }; // @silent-fallback-ok — an unconfirmed name is said so
+    // Another machine runs it: look it up there, so the phone can open it natively.
+    let remote: RemoteSessionLookup | null = null;
+    if (!(name && rec) && owner && selfId && owner !== selfId) {
+      try { remote = deps.remoteSession ? await deps.remoteSession(ref, owner) : { state: 'unreachable' }; } catch { /* @silent-fallback-ok — worded as "isn't answering, try again" with retry:true */ remote = { state: 'unreachable' }; }
+    }
     res.json(resolveOpenSession({
+      remote,
       localSession: name && rec ? { name, startedAt: rec.startedAt ?? null, framework: rec.framework ?? null } : null,
       ownerMachineId: owner,
       selfMachineId: selfId,
