@@ -124,6 +124,8 @@ export const OPERATOR_CREATED = 'dashboard-operator';
 export function isInternalSession(s) {
   if (!s) return false;
   if (s.jobSlug || s.type === 'job') return true;
+  // An app conversation's session reports no chat platform, but it is a conversation.
+  if (typeof s.conversationRef === 'string' && s.conversationRef) return false;
   return (s.platform || 'headless') === 'headless' && s.triggeredBy !== OPERATOR_CREATED;
 }
 
@@ -364,32 +366,52 @@ export function machineChoices(poolRes) {
   return { choices: out, selfMachineId: self };
 }
 
+/**
+ * An id for one intended create, kept across retries until a definite answer. The server's request
+ * store needs `<epoch ms>-<uuid v4>` (the phone's format), so a retry finds the first create.
+ */
+export function newRequestId(now = Date.now()) {
+  let uuid = '';
+  try { if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') uuid = globalThis.crypto.randomUUID(); } catch { /* fall through */ }
+  if (!uuid) {
+    const h = () => Math.floor(Math.random() * 16).toString(16);
+    const r = (n) => Array.from({ length: n }, h).join('');
+    uuid = `${r(8)}-${r(4)}-4${r(3)}-${'89ab'[Math.floor(Math.random() * 4)]}${r(3)}-${r(12)}`;
+  }
+  return `${String(now).padStart(13, '0')}-${uuid}`;
+}
+
 export const PLATFORMS = [
   { value: 'auto', label: 'Automatic' },
   { value: 'telegram', label: 'Telegram topic' },
   { value: 'slack', label: 'Slack' },
-  { value: 'headless', label: 'No chat (terminal only)' },
+  { value: 'app', label: 'Instar app conversation' },
+  { value: 'headless', label: 'No conversation (terminal only)' },
 ];
 
-/** Door and model apply to Telegram topics only (v1); so does the machine choice. */
+/** Engine and model can be picked for a Telegram topic or an app conversation (session-conversation-for-every-session §2.3). */
 export function platformAllowsDoor(platform) { return platform !== 'headless' && platform !== 'slack'; }
+/** A new session's machine choice stays Telegram-only: an app conversation starts on the lease holder and moves afterwards. */
+export function platformAllowsMachine(platform) { return platform === 'auto' || platform === 'telegram'; }
 
 /**
  * The exact POST /sessions/create body. An unchanged door/model pick sends nothing,
  * so the server seeds its own default, exactly as the legacy modal does.
  */
-export function createBody({ name, platform = 'auto', framework = '', model = '', machine = '' }, options) {
+export function createBody({ name, platform = 'auto', framework = '', model = '', machine = '', requestId = '' }, options) {
   const n = String(name || '').trim();
   if (!n) return { ok: false, problems: ['Give it a name.'] };
   const body = { name: n, headless: platform === 'headless' };
   if (platform !== 'auto') body.platform = platform;
+  // A repeat of the same create (a double tap, a retry) answers the first one, never a second conversation.
+  if (platform === 'app' || platform === 'auto') body.requestId = requestId || newRequestId();
   if (platformAllowsDoor(platform) && framework) {
     const def = options && options.newTopicDefault;
     const pick = { framework, model: model || null };
     const differs = !def || !def.framework || def.framework !== pick.framework || (def.model || null) !== pick.model;
     if (differs) { body.framework = pick.framework; body.model = pick.model; }
   }
-  if (platformAllowsDoor(platform) && machine) body.machine = machine;
+  if (platformAllowsMachine(platform) && machine) body.machine = machine;
   return { ok: true, body };
 }
 
@@ -402,7 +424,11 @@ export function createResultWords(status, data, name) {
   if (d.ownership === 'superseded' || d.ownership === 'not-confirmed') return { ok: true, warn: true, text: d.error || `“${name}” was created, but which machine owns it is not settled yet. Send it a message.` };
   if (d.started === 'unknown') return { ok: true, warn: true, text: d.error || `“${name}” may still be starting on ${machineName}.` };
   if (d.started === 'requested' && d.machine) return { ok: true, text: `Starting “${name}” on ${machineName}.` };
-  return { ok: true, text: `Started “${name}”${d.topicId ? ` with a Telegram topic${where}` : ' with no chat'}${d.machine ? ` on ${machineName}` : ''}.` };
+  if (d.state === 'in-progress') return { ok: true, warn: true, text: d.message || `“${name}” is still being created.` };
+  // session-conversation-for-every-session §2.5: an app conversation is opened in the app.
+  if (d.platform === 'app' && d.started === false) return { ok: true, warn: true, text: d.message || `“${name}” was created as an app conversation, but its session didn’t start yet. Its first message will start it.` };
+  if (d.platform === 'app') return { ok: true, text: `Started “${d.name || name}”. Open it in the app’s conversations to talk to it.` };
+  return { ok: true, text: `Started “${name}”${d.topicId ? ` with a Telegram topic${where}` : d.slackChannelId ? ' with a Slack channel' : ' with no conversation'}${d.machine ? ` on ${machineName}` : ''}.` };
 }
 
 /** The new-topic default in words, for the "Change the default" line. */

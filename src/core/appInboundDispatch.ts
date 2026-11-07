@@ -48,11 +48,11 @@ export interface AppDispatchSessions {
   waitForClaudeReady?(tmuxSession: string, timeoutMs?: number): Promise<boolean>;
   injectMessage(tmuxSession: string, text: string, opts?: { conversationId?: string }): boolean;
   killSession?(sessionId: string): boolean;
-  spawnInteractiveSession(initialMessage?: string, name?: string, options?: { memoryPlaceKey?: string; bootstrapConversationIds?: number[]; framework?: string; defaultModel?: string; thinkingMode?: string; effort?: string }): Promise<string>;
+  spawnInteractiveSession(initialMessage?: string, name?: string, options?: { memoryPlaceKey?: string; bootstrapConversationIds?: number[]; framework?: string; defaultModel?: string; thinkingMode?: string; effort?: string; triggeredBy?: string }): Promise<string>;
 }
 
 export interface AppDispatchAdmission {
-  admit(input: { sessionKey: string; callsite: 'app-inbound-spawn' | 'app-respawn' }): { allow: boolean; reason: string };
+  admit(input: { sessionKey: string; callsite: 'app-inbound-spawn' | 'app-respawn' | 'app-new-session' }): { allow: boolean; reason: string };
 }
 
 /** The engine and model a conversation is set to (session-swap-any-conversation §3.1); null fields mean the agent default. */
@@ -288,46 +288,81 @@ function reportSpawned(deps: AppInboundDispatchDeps, conversationKey: string, tm
 
 /** What `startApp` needs beyond the dispatch's own deps. */
 export interface AppStartDeps {
-  /** True when this machine serves the conversation. */
-  isOwner: () => boolean;
+  /** True when this machine serves the conversation (app-conversations-in-the-pool §2.1). */
+  serves: (conversationKey: string) => boolean;
   /** The conversation's local alias, or null when it has none here. */
   aliasFor: (conversationKey: string) => number | null;
   /** The conversation's title (null when it is gone). */
   titleFor: (conversationKey: string) => string | null;
   ownerName: () => string;
+  /**
+   * Memory privacy: record the conversation's place exactly as its inbound messages do, and say
+   * whether a session may serve it (false: private memory isn't available for it here). Absent ⇒
+   * allowed. Without it, a session started before the first message would run in the wrong memory
+   * scope and be retired by that first message (session-conversation-for-every-session §2.1 step 5).
+   */
+  memoryPlace?: (conversationKey: string) => Promise<boolean>;
+  /** Told why a start started nothing (for the create answer's words). */
+  onRefused?: (conversationKey: string, refusal: AppStartRefusal) => void;
 }
 
 /**
- * Start an app conversation's session with no new message (spec §3.3): after an engine switch the
- * orchestrator kills the old session and calls this. It answers what the session landed on, or null
- * when nothing was started (not served here, admission or relay refused, a session that isn't on the
- * requested profile already running).
+ * Why a session is started with no message: an engine switch restarting the conversation's session
+ * (part 1), or a new session someone created with this conversation (part 2,
+ * docs/specs/session-conversation-for-every-session.md §2.1).
  */
-export function createAppSessionStarter(deps: AppInboundDispatchDeps, start: AppStartDeps): (conversationKey: string, resolved: AppProfile) => Promise<AppProfile | null> {
+export type AppStartReason = 'engine-switch' | 'new';
+
+/** Why a start started nothing. */
+export type AppStartRefusal = 'not-served' | 'gone' | 'other-session' | 'relay' | 'admission' | 'memory' | 'spawn-failed';
+
+/**
+ * A start's options beyond the profile: why. Never a session name: `SessionManager` reuses a running
+ * session whose name matches, and one session would then serve two conversations (part 2 §2.1).
+ */
+export interface AppStartOptions { reason?: AppStartReason }
+
+/**
+ * Start an app conversation's session with no new message. After an engine switch the orchestrator
+ * kills the old session and calls this (part 1 §3.3); a New session with an app conversation calls it
+ * once the conversation exists (part 2 §2.1). It answers what the session landed on, or null when
+ * nothing was started, telling `onRefused` why.
+ */
+export function createAppSessionStarter(deps: AppInboundDispatchDeps, start: AppStartDeps): (conversationKey: string, resolved: AppProfile, opts?: AppStartOptions) => Promise<AppProfile | null> {
   const log = deps.log ?? (() => undefined);
-  return async (conversationKey, resolved) => {
-    if (!start.isOwner()) { log(`[app→session] start for ${conversationKey} skipped: not served on this machine`); return null; }
+  const refuse = (key: string, why: AppStartRefusal, line: string): null => {
+    log(`[app→session] start for ${key} refused: ${line}`);
+    try { start.onRefused?.(key, why); } catch { /* @silent-fallback-ok — words only */ }
+    return null;
+  };
+  return async (conversationKey, resolved, opts) => {
+    if (!start.serves(conversationKey)) return refuse(conversationKey, 'not-served', 'not served on this machine');
     const alias = start.aliasFor(conversationKey);
     const title = start.titleFor(conversationKey);
-    if (alias === null || title === null) return null;
-    return withStartLock(deps, conversationKey, () => startLocked(conversationKey, alias, title, resolved));
+    if (alias === null || title === null) return refuse(conversationKey, 'gone', 'the conversation is gone');
+    return withStartLock(deps, conversationKey, () => startLocked(conversationKey, alias, title, resolved, opts?.reason ?? 'engine-switch'));
   };
-  async function startLocked(conversationKey: string, alias: number, title: string, resolved: AppProfile): Promise<AppProfile | null> {
+  async function startLocked(conversationKey: string, alias: number, title: string, resolved: AppProfile, reason: AppStartReason): Promise<AppProfile | null> {
     const channelKey = String(alias);
     const live = liveSession(deps, alias);
     if (live) {
       // A message that arrived in the kill window may already have started it on the new profile.
       const on = deps.launchedOn?.(live) ?? null;
       const same = !!on && (on.framework ?? null) === (resolved.framework ?? null) && (resolved.model == null || on.model === resolved.model);
-      return same ? on : null;
+      return same ? on : refuse(conversationKey, 'other-session', 'a session on another profile is already running');
     }
     const relay = deps.relayReady?.() ?? { ready: true as const };
-    if (!relay.ready) { log(`[app→session] start refused: app reply relay not ready (${relay.reason})`); return null; }
+    if (!relay.ready) return refuse(conversationKey, 'relay', `app reply relay not ready (${relay.reason})`);
+    if (start.memoryPlace) {
+      let may = false;
+      try { may = await start.memoryPlace(conversationKey); } catch { may = false; } // @silent-fallback-ok — refused below: an unreadable memory rule never starts an unscoped session
+      if (!may) return refuse(conversationKey, 'memory', 'this conversation needs private memory, which isn\'t available here');
+    }
     const admission = deps.spawnAdmission?.();
     if (admission) {
       try {
-        const d = admission.admit({ sessionKey: `app:${conversationKey}`, callsite: 'app-respawn' });
-        if (!d.allow) { log(`[app→session] start refused by admission: ${d.reason}`); return null; }
+        const d = admission.admit({ sessionKey: `app:${conversationKey}`, callsite: reason === 'new' ? 'app-new-session' : 'app-respawn' });
+        if (!d.allow) return refuse(conversationKey, 'admission', `admission: ${d.reason}`);
       } catch (err) { // @silent-fallback-ok — admission errors fail open toward reachability, as the inbound spawn does
         log(`[app→session] admission error (fail-open): ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -335,12 +370,21 @@ export function createAppSessionStarter(deps: AppInboundDispatchDeps, start: App
     const ownerName = start.ownerName();
     const { ctxPath } = writeContext(deps, { conversationKey, alias, ownerName, messageId: null });
     const tag = appInjectionTag(alias, title, ownerName, 'none');
-    const bootstrap = `${tag} [Your session restarted on a new ${'engine'}. There is no new message to answer. Read ${ctxPath} for the conversation so far and the app relay instructions, then wait for the next message.]`;
+    const opening = reason === 'new'
+      ? `This session was just started for a new app conversation, "${cleanConversationTitle(title) ?? 'Untitled'}". There is no message yet.`
+      : 'Your session restarted on a new engine. There is no new message to answer.';
+    const bootstrap = `${tag} [${opening} Read ${ctxPath} for the conversation so far and the app relay instructions, then wait for the next message.]`;
     const engine = toSpawnOptions(resolved);
-    const name = await deps.sessions.spawnInteractiveSession(bootstrap, undefined, { bootstrapConversationIds: [alias], memoryPlaceKey: `app:${conversationKey}`, ...engine });
-    if (!name) return null;
+    const name = await deps.sessions.spawnInteractiveSession(bootstrap, undefined, {
+      bootstrapConversationIds: [alias], memoryPlaceKey: `app:${conversationKey}`, ...engine,
+      // A session someone started from New session is theirs, as the dashboard's other creates are.
+      ...(reason === 'new' ? { triggeredBy: 'dashboard-operator' } : {}),
+    });
+    if (!name) return refuse(conversationKey, 'spawn-failed', 'the session did not start');
     deps.channels.register(channelKey, name, title);
     log(`[app→session] started ${name} for app conversation ${alias} on ${resolved.framework ?? 'the agent default'}`);
+    // A new session is no orchestrator start: record what it launched on, as an inbound spawn does.
+    if (reason === 'new') return reportSpawned(deps, conversationKey, name, engine);
     return deps.launchedOn?.(name) ?? { framework: resolved.framework ?? null, model: resolved.model ?? null };
   }
 }

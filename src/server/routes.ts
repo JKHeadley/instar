@@ -91,6 +91,11 @@ import type { Request as ExpressRequest, Response as ExpressResponse } from 'exp
 import { execFileSync } from 'node:child_process';
 import { activeClaudeKeyHealth } from '../core/ClaudeKeyHealth.js';
 import { createHash, createHmac, timingSafeEqual, randomBytes, randomUUID } from 'node:crypto';
+import { isSlackConversationKey } from '../core/SlackForwardBridge.js';
+import { conversationKeys } from '../core/conversationKeys.js';
+import { getAppPoolMoves } from '../core/appConversationMove.js';
+import { cleanConversationTitle, newAppConversationKey } from '../core/appConversationText.js';
+import { requestIdAgeOk } from '../core/MobileChatRequests.js';
 import { governor as selfActionGovernorSurface } from '../monitoring/selfaction/governor.js';
 import { classifyActionClaim, classifyApprovalRequest, excerptAround } from '../core/action-claim.js';
 import { sharedG3SoakLedger, decideLeaseGatedSpawn } from '../core/leaseGatedSpawn.js';
@@ -1385,6 +1390,14 @@ export interface RouteContext {
      *  both under one spawningTopics token. Absent/not-wired ⇒ the
      *  `telegram-routing-not-wired` refusal. A spawn throw propagates. */
     spawnForTopic?: (topicId: number, name: string) => Promise<import('../core/dashboardTopicProfile.js').SpawnForTopicResult>;
+    /**
+     * session-conversation-for-every-session §2.1: start a new session for a just-created app
+     * conversation, on its profile, with no message. Null when nothing was started (not served
+     * here, admission or relay refused); `session` is the registered tmux name.
+     */
+    /** Whether a session for an app conversation could start here now (the app reply relay is ready). */
+    appSessionReady?: () => { ready: true } | { ready: false; reason: string };
+    startAppSession?: (conversationKey: string) => Promise<{ session: string | null; refusal: import('../core/appInboundDispatch.js').AppStartRefusal | null }>;
     /** §3.3 2b — the pool seam, evaluated at call time. Absent ⇒ `dark`. */
     sessionPoolLocalClaim?: () => import('../core/dashboardTopicProfile.js').SessionPoolLocalClaimAnswer;
     /** dashboard-new-session-machine-choice §3.4 step 3 — place a new topic on a
@@ -2087,7 +2100,7 @@ export interface RouteContext {
    *  topic has a live autonomous run before the holder authorizes a move. */
   autonomousRunOnMachine?: ((machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>) | null;
   /** Working-set acquire kick for an explicit transfer target. */
-  kickWorkingSetOnMachine?: ((machineId: string, topic: number) => void) | null;
+  kickWorkingSetOnMachine?: ((machineId: string, topic: number | string) => void) | null;
   /** Ownership Follows Live Work Part B for POST /sessions/spawn (see AgentServer
    *  option of the same name). Null/absent = not wired (single-machine). */
   claimTopicOwnershipOnSpawn?: ((topicId: number) => import('../core/ownershipFollowsLiveWork.js').ClaimOnSpawnOutcome) | null;
@@ -11299,7 +11312,11 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ error: 'working-set handoff not enabled (requires coherenceJournal.replication.enabled)' });
       return;
     }
-    const topic = Number(req.body?.topic);
+    // An app conversation's key resolves to this machine's own alias (app-conversations-in-the-pool §2.5).
+    const appRef = conversationKeys(req.body?.topic);
+    const appAlias = appRef?.kind === 'app' ? ctx.conversationRegistry?.appAliasFor(appRef.id) ?? null : null;
+    if (appRef?.kind === 'app' && appAlias === null) { res.json({ topic: appRef.ref, scheduled: false, skipReason: 'no-alias-here' }); return; }
+    const topic = appAlias ?? Number(req.body?.topic);
     if (!Number.isFinite(topic)) {
       res.status(400).json({ error: 'topic (number) is required' });
       return;
@@ -12985,6 +13002,108 @@ export function createRoutes(ctx: RouteContext): Router {
   // Create an interactive session from the dashboard.
   // Set platform to 'telegram', 'slack', or 'headless'.
   // Legacy: headless=true is equivalent to platform='headless'.
+  /** session-conversation-for-every-session §2.1: a create in flight, so a concurrent repeat waits for it. */
+  const appCreateInFlight = new Map<string, { hash: string; answer: Promise<{ status: number; body: Record<string, unknown> }> }>();
+  /** One create request's identity: its name and its engine pick. */
+  const appCreateHash = (a: { title: string; framework?: unknown; model?: unknown }): string =>
+    createHash('sha256').update(`dashboard-create\u0000${a.title}\u0000${typeof a.framework === 'string' ? a.framework : ''}\u0000${typeof a.model === 'string' ? a.model : ''}`).digest('hex');
+
+  /**
+   * session-conversation-for-every-session §2.1 steps 3–6: the conversation (durably keyed by the
+   * request), its engine seed, and its session. A repeat of a finished create resumes it: same
+   * conversation, no second seed, and the start finds the session already running.
+   */
+  async function createAppSession(
+    svc: NonNullable<RouteContext['appConversations']>,
+    tp: NonNullable<RouteContext['topicProfile']>,
+    a: { rid: string; title: string; served: boolean; hasPreference: boolean; framework: unknown; model: unknown },
+  ): Promise<{ status: number; body: Record<string, unknown> }> {
+    const DEVICE = 'dashboard';
+    // The request is its name and engine pick: the same id with either changed is a different request.
+    const hash = appCreateHash(a);
+    const requests = svc.deps.requests;
+    const prior = requests.lookup(DEVICE, a.rid, hash);
+    let conversationKey: string;
+    let resumed = false;
+    if (prior.kind === 'done') {
+      const key = (prior.body as { conversationKey?: unknown }).conversationKey;
+      if (prior.status !== 200 || typeof key !== 'string') {
+        const b = prior.body as { error?: string; detail?: string };
+        return { status: prior.status, body: { ok: false, code: b.error ?? 'conversation-unavailable', error: b.detail ?? 'The conversation could not be created on this machine. Try again.' } };
+      }
+      conversationKey = key; resumed = true;
+    } else if (prior.kind === 'in-progress') {
+      return { status: 202, body: { ok: true, state: 'in-progress', message: `"${a.title}" is still being created. Check the sessions list in a moment.` } };
+    } else if (prior.kind === 'outcome-unknown') {
+      return { status: 409, body: { ok: false, code: 'outcome-unknown', error: `"${a.title}" may or may not have been created. Check your app conversations before trying again.` } };
+    } else if (prior.kind === 'request-id-reused') {
+      return { status: 409, body: { ok: false, code: 'request-id-reused', error: 'This request was already used for a different session. Try again.' } };
+    } else {
+      // Step 3 — the conversation, as the phone's create route makes one (the key is in the reservation first).
+      conversationKey = newAppConversationKey();
+      const r = requests.reserve(DEVICE, a.rid, hash, 0, { op: 'create', conversationKey, title: a.title });
+      if (r.kind === 'full') return { status: 429, body: { ok: false, code: 'too-many-requests', error: 'Too many sessions are being created right now. Try again in a moment.' } };
+      if (r.kind !== 'reserved') return createAppSession(svc, tp, a);
+      let created: { status: number; body: Record<string, unknown> };
+      try { created = svc.applyCreate(DEVICE, a.rid, conversationKey, a.title, null); } catch (err) {
+        requests.markUnknown(DEVICE, a.rid);
+        svc.deps.reportDegradation?.('AppConversations.mutation', err instanceof Error ? err.message : String(err));
+        return { status: 409, body: { ok: false, code: 'outcome-unknown', error: `"${a.title}" may or may not have been created. Check your app conversations before trying again.` } };
+      }
+      // A refused create wrote nothing: release the request, so a retry runs again rather than replaying it.
+      if (created.status === 200) requests.finish(DEVICE, a.rid, created);
+      else requests.release(DEVICE, a.rid);
+      if (created.status !== 200) {
+        const b = created.body as { error?: string; detail?: string };
+        return { status: created.status, body: { ok: false, step: 'create-conversation', code: b.error ?? 'conversation-unavailable', error: b.detail ?? 'The conversation could not be created on this machine. Try again.' } };
+      }
+    }
+
+    // Step 4 — seed its engine, only where it is served. The seed writes only if nothing is recorded
+    // yet, so a resumed create (after a seed failure or a crash) seeds what the first try missed.
+    let pinRetained = false;
+    if (a.served) {
+      const def = a.hasPreference ? null : (tp.newTopicDefault?.read() ?? null);
+      const source = a.hasPreference ? 'dashboard-create' as const : (def ? 'new-topic-default' as const : null);
+      if (source) {
+        try {
+          const seed = await seedTopicProfileAtCreation({
+            ...dashboardChoiceDeps(tp),
+            store: tp.store,
+            regime: () => tp.surface.currentRegime(),
+            audit: (event) => tp.audit?.(event),
+            // No separate creation notice: the conversation's first line is the session's own.
+            disclose: () => Promise.resolve(undefined),
+          }, `app:${conversationKey}`, source, a.hasPreference ? { framework: a.framework, model: a.model } : { framework: def!.framework, model: def!.model });
+          pinRetained = seed.outcome === 'seeded';
+          if (pinRetained && source === 'new-topic-default') newTopicDefaultSeedsSinceBoot++;
+        } catch (err) {
+          return { status: 500, body: { ok: false, step: 'seed', conversationKey, error: `The conversation was created, but its starting engine couldn't be recorded: ${err instanceof Error ? err.message : String(err)}. Its first message runs on the default.` } };
+        }
+      }
+    }
+    if (resumed && !pinRetained) pinRetained = tp.store.resolve(`app:${conversationKey}`) != null;
+    const base = { ok: true, name: a.title, platform: 'app', conversationKey, pinRetained, topicId: null, slackChannelId: null, headless: false };
+
+    // A standby leaves the session to the machine that serves app conversations.
+    if (!a.served) {
+      return { status: 201, body: { ...base, started: false, refusal: 'not-served', message: `"${a.title}" was created as an app conversation. Another of your machines runs your app conversations; its first message starts the session there.` } };
+    }
+
+    // Step 5 — the session (memory place first; the starter finds a session already running on a resume).
+    let started: { session: string | null; refusal: string | null } = { session: null, refusal: 'spawn-failed' };
+    try { started = await tp.startAppSession!(conversationKey); } catch { /* @silent-fallback-ok — answered below as not started */ }
+    if (!started.session) {
+      const why = started.refusal;
+      const message = why === 'memory'
+        ? `"${a.title}" was created as an app conversation, but it needs private memory, which isn't available on this agent yet, so no session started.`
+        : why === 'relay'
+          ? `"${a.title}" was created as an app conversation, but sessions can't start here until the reply helper is updated. Restart the agent, then send it a message.`
+          : `"${a.title}" was created as an app conversation, but its session didn't start yet. Its first message will start it.`;
+      return { status: 201, body: { ...base, started: false, refusal: why, message } };
+    }
+    return { status: 201, body: { ...base, started: true, session: started.session } };
+  }
   router.post('/sessions/create', spawnLimiter, async (req, res) => {
     const { name, headless, platform } = req.body;
     // dashboard-door-model-controls §3.3 — an optional door (framework) + model.
@@ -13003,7 +13122,11 @@ export function createRoutes(ctx: RouteContext): Router {
     const topicName = name.trim();
     let topicId: number | undefined;
     let slackChannelId: string | undefined;
-    const resolvedPlatform = platform || (headless ? 'headless' : (ctx.telegram ? 'telegram' : (ctx.slack ? 'slack' : 'headless')));
+    // session-conversation-for-every-session §2.2: with no Telegram or Slack, the automatic choice is
+    // a native app conversation wherever app conversations run; terminal-only only where they don't.
+    const appAvailable = !!ctx.appConversations && !!ctx.topicProfile?.startAppSession;
+    const resolvedPlatform = (platform && platform !== 'auto' ? platform : null)
+      || (headless ? 'headless' : (ctx.telegram ? 'telegram' : (ctx.slack ? 'slack' : (appAvailable ? 'app' : 'headless'))));
     const tp = ctx.topicProfile;
 
     // dashboard-new-session-machine-choice §3.2 — a machine pick is a placement
@@ -13022,7 +13145,9 @@ export function createRoutes(ctx: RouteContext): Router {
           ok: false,
           code: 'machine-needs-telegram',
           error: resolvedPlatform !== 'telegram'
-            ? `Choosing a machine needs a Telegram topic — "${resolvedPlatform}" sessions don't support it`
+            ? (resolvedPlatform === 'app'
+              ? 'Choosing a machine works for Telegram topics today; an app conversation starts on the machine that runs your app conversations.'
+              : `Choosing a machine needs a Telegram topic — "${resolvedPlatform}" sessions don't support it`)
             : 'Choosing a machine needs a Telegram topic, and Telegram is not connected on this server',
         });
         return;
@@ -13131,7 +13256,7 @@ export function createRoutes(ctx: RouteContext): Router {
         res.status(403).json({ error: 'Choosing a door/model requires the X-Instar-Request: 1 intent header' });
         return;
       }
-      if (resolvedPlatform !== 'telegram' || !ctx.telegram) {
+      if (resolvedPlatform !== 'app' && (resolvedPlatform !== 'telegram' || !ctx.telegram)) {
         // Never a silent headless fallback that drops the choice.
         res.status(400).json({
           error: resolvedPlatform !== 'telegram'
@@ -13150,6 +13275,57 @@ export function createRoutes(ctx: RouteContext): Router {
         res.status(400).json({ ok: false, code: valid.code, error: valid.reason, ...(valid.chatPinAllowed ? { chatPinAllowed: true } : {}) });
         return;
       }
+    }
+
+    // session-conversation-for-every-session §2.1 — a session with its own native app conversation.
+    if (resolvedPlatform === 'app') {
+      const svc = ctx.appConversations;
+      if (!svc || !tp?.startAppSession) {
+        res.status(503).json({ ok: false, code: 'app-conversations-unavailable', error: 'App conversations aren\'t running on this agent, so a session can\'t get one. Pick Telegram, Slack or terminal-only.' });
+        return;
+      }
+      // Step 1 — everything that would refuse, before anything is created.
+      const title = cleanConversationTitle(topicName);
+      if (!title) {
+        res.status(400).json({ ok: false, code: 'bad-conversation-name', error: 'An app conversation\'s name must be 80 characters or fewer, and not only quotes or brackets. Give it a shorter name.' });
+        return;
+      }
+      const served = svc.servesNewConversations();
+      // A standby's profile store isn't read by the serving machine, so a pick made here would be lost.
+      if (!served && hasPreference) {
+        res.status(400).json({ ok: false, code: 'engine-choice-needs-serving-machine', error: 'Pick the engine from the machine that runs your app conversations, or leave it on Automatic.' });
+        return;
+      }
+      if (served) {
+        const ready = tp.appSessionReady?.() ?? { ready: true as const };
+        if (!ready.ready) {
+          res.status(503).json({ ok: false, code: 'app-relay-not-ready', error: 'Sessions for app conversations can\'t start on this machine until its reply helper is updated. Restart the agent, or pick Telegram, Slack or terminal-only.' });
+          return;
+        }
+      }
+      // Step 2 — repeat protection. The create goes through the phone's durable request store (device
+      // 'dashboard'): a retry, even after a restart, finds the first create and resumes it; a create cut off
+      // mid-way is finished at boot by `recoverStranded`. A concurrent repeat waits for the one in flight.
+      const rid = typeof body.requestId === 'string' && requestIdAgeOk(body.requestId, Date.now()) ? body.requestId : `${Date.now()}-${randomUUID()}`;
+      const want = { title, framework: body.framework, model: body.model };
+      const inFlight = appCreateInFlight.get(rid);
+      if (inFlight) {
+        if (inFlight.hash !== appCreateHash(want)) { res.status(409).json({ ok: false, code: 'request-id-reused', error: 'This request was already used for a different session. Try again.' }); return; }
+        const p = await inFlight.answer; res.status(p.status).json(p.body); return;
+      }
+      let settle!: (a: { status: number; body: Record<string, unknown> }) => void;
+      appCreateInFlight.set(rid, { hash: appCreateHash(want), answer: new Promise((r) => { settle = r; }) });
+      let outcome: { status: number; body: Record<string, unknown> } = { status: 500, body: { ok: false, error: 'The session could not be created. Try again.' } };
+      try {
+        outcome = await createAppSession(svc, tp, { rid, title, served, hasPreference, framework: body.framework, model: body.model });
+      } catch (err) { // @silent-fallback-ok — answered in words; the request record says what landed
+        outcome = { status: 500, body: { ok: false, error: `The session could not be created: ${err instanceof Error ? err.message : String(err)}. Try again.` } };
+      } finally {
+        settle(outcome);
+        appCreateInFlight.delete(rid);
+      }
+      res.status(outcome.status).json(outcome.body);
+      return;
     }
 
     // Telegram — the create saga (§3.3): the seed, once written, is retained;
@@ -25043,6 +25219,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: 'topic and to are required, e.g. {"topic":13481,"to":"Laptop"}' });
       return;
     }
+    // slack-conversations-stay-with-connection §2.2: a Slack conversation stays with its Slack
+    // connection. Refused before proxying or planning; the drain runner refuses it too, for every mover.
+    {
+      const slackRaw = topicId.startsWith('slack:') ? topicId.slice('slack:'.length) : topicId;
+      const slackKey = isSlackConversationKey(topicId) ? slackRaw : (() => {
+        const k = conversationKeys(topicId);
+        return k && k.kind === 'slack' ? k.id : null;
+      })();
+      if (slackKey) {
+        const ownerId = ctx.sessionOwnershipRegistry?.ownerOf(slackKey) ?? null;
+        const nick = ownerId ? (ctx.machinePoolRegistry?.getCapacities().find((c) => c.machineId === ownerId)?.nickname ?? null) : null;
+        res.status(409).json({
+          ok: false,
+          code: 'slack-stays-with-connection',
+          error: nick
+            ? `This Slack conversation stays on ${nick}, which holds your Slack connection.`
+            : 'This Slack conversation stays on the machine that holds your Slack connection.',
+        });
+        return;
+      }
+    }
     if (!ctx.sessionOwnershipRegistry || !ctx.topicPinStore) {
       res.status(503).json({ error: 'session pool not available (dark / single-machine install)' });
       return;
@@ -25089,6 +25286,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(502).json({ error: `could not reach lease-holder to perform transfer: ${err instanceof Error ? err.message : String(err)}` });
       }
       return;
+    }
+    // app-conversations-in-the-pool §2.5: an app conversation moves only by a completed drain. Its own
+    // flow on the holder: no pin, no release-then-place tail, a failed drain leaves everything where it was.
+    {
+      const appKeys = conversationKeys(topicId);
+      if (appKeys?.kind === 'app') {
+        const pool = getAppPoolMoves();
+        if (!pool || !pool.active()) { res.status(503).json({ error: 'session pool not available (dark / single-machine install)' }); return; }
+        const answer = await pool.move({
+          conversationKey: appKeys.id, to,
+          confirm: body.confirm === true,
+          ...(typeof body.confirmationChallenge === 'string' ? { confirmationChallenge: body.confirmationChallenge } : {}),
+        });
+        res.status(answer.status).json(answer.body);
+        return;
+      }
     }
     // We are the holder (or single-machine) — perform authoritatively.
     const self = ctx.meshSelfId ?? null;
@@ -25277,6 +25490,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             // not un-suspended on abort (same as the emergency-stop abort).
             autonomousRunSuspended: drainRunSuspended,
           });
+          return;
+        }
+        // slack-conversations-stay-with-connection §2.1: the owner refused a Slack conversation. Never
+        // fall through to the pin — that is the split this refusal exists to prevent.
+        if (r.status === 'refused-slack-stays') {
+          res.status(409).json({ ok: false, code: 'slack-stays-with-connection', error: 'This Slack conversation stays on the machine that holds your Slack connection.', drain: drainLeg });
           return;
         }
       }
@@ -25556,6 +25775,36 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ...(drainLeg.attempted ? { drain: drainLeg } : {}),
       ...(escalationHintFiled ? { escalationHintFiled: true } : {}),
     });
+  });
+
+  // POST /pool/bring-back — "Bring it back here" (app-conversations-in-the-pool §2.2): the operator's
+  // explicit, confirmed takeover of a moved app conversation whose machine isn't answering. A
+  // non-holder proxies to the holder. Body: { conversation: "app:<key>", confirm? }.
+  router.post('/pool/bring-back', async (req, res) => {
+    const body = (req.body ?? {}) as { conversation?: unknown; confirm?: unknown };
+    const keys = conversationKeys(body.conversation);
+    if (!keys || keys.kind !== 'app') { res.status(400).json({ error: 'conversation must be an app conversation reference, e.g. {"conversation":"app:<key>"}' }); return; }
+    const pool = getAppPoolMoves();
+    if (!pool || !pool.active()) { res.status(503).json({ error: 'session pool not available (dark / single-machine install)' }); return; }
+    const holderUrl = ctx.resolveRouterUrl?.() ?? null;
+    if (holderUrl) {
+      try {
+        const r = await fetch(`${holderUrl}/pool/bring-back`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversation: keys.ref, confirm: body.confirm === true }),
+        });
+        // @silent-fallback-ok — the status is the signal when the holder's body isn't JSON.
+        const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+        res.status(r.status).json({ ...j, handledBy: 'holder-proxy' });
+      } catch (err) {
+        // @silent-fallback-ok — NOT silent: an explicit 502 with the reason; nothing was taken over.
+        res.status(502).json({ error: `could not reach lease-holder: ${err instanceof Error ? err.message : String(err)}` });
+      }
+      return;
+    }
+    const answer = pool.bringBack({ conversationKey: keys.id, confirmed: body.confirm === true });
+    res.status(answer.status).json(answer.body);
   });
 
   // POST /pool/unpin — U4.1 §2B: the deliberate UNPIN surface. Body: { topic }.

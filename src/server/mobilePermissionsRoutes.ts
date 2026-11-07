@@ -31,6 +31,7 @@ import type { Request, Response, Router } from 'express';
 import { ownerOrBearer, rowKey } from './mobileCapacityRoutes.js';
 import { cleanText } from './mobilePlansPeopleRoutes.js';
 import { conversationKeys } from '../core/conversationKeys.js';
+import { cleanConversationTitle } from '../core/appConversationText.js';
 import { TOKEN_RUN } from './mobileSecretsRoutes.js';
 import { activeOwnerPhone, isConsoleTicketEnabled, normalHost, verifyPresenceSignature } from './mobileConsoleTicket.js';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
@@ -89,11 +90,13 @@ export type PermissionAction =
   | { kind: 'cancel-secret'; target: string }
   | { kind: 'session-door'; target: string; framework: string; model: string | null; machine: string | null }
   | { kind: 'session-move'; target: string; to: string; confirmation: string | null }
+  /** "Bring it back here" (app-conversations-in-the-pool §2.2): Face ID, behind the same write gate as Move. */
+  | { kind: 'session-bring-back'; target: string; confirmed: boolean }
   | { kind: 'session-close'; target: string; tmux: string; machine: string | null }
   | { kind: 'session-new'; target: 'new'; name: string; platform: SessionPlatformChoice; framework: string | null; model: string | null; machine: string | null }
   | { kind: 'session-default'; target: 'new-topic-default'; framework: string | null; model: string | null };
 
-export type SessionPlatformChoice = 'auto' | 'telegram' | 'slack' | 'headless';
+export type SessionPlatformChoice = 'auto' | 'telegram' | 'slack' | 'app' | 'headless';
 export type SessionAction = Extract<PermissionAction, { kind: `session-${string}` }>;
 export const MAX_SESSION_NAME_CHARS = 120;
 /** A door, model or machine as an action line can carry it: one word, nothing a line could be split on. */
@@ -117,6 +120,7 @@ export function actionLine(a: PermissionAction): string {
     case 'cancel-secret': return `cancel-secret ${a.target}`;
     case 'session-door': return `session-door ${a.target} ${a.machine ?? 'here'} ${a.framework} ${a.model ?? 'none'}`;
     case 'session-move': return `session-move ${a.target} ${a.to} ${a.confirmation ?? 'none'}`;
+    case 'session-bring-back': return `session-bring-back ${a.target} ${a.confirmed ? 'confirmed' : 'ask'}`;
     case 'session-close': return `session-close ${a.target} ${a.tmux} ${a.machine ?? 'here'}`;
     case 'session-new': return `session-new new ${reasonHash(a.name)} ${a.platform} ${a.framework ?? 'none'} ${a.model ?? 'none'} ${a.machine ?? 'auto'}`;
     case 'session-default': return `session-default new-topic-default ${a.framework ?? 'none'} ${a.model ?? 'none'}`;
@@ -167,7 +171,7 @@ export function buildAction(kind: unknown, target: unknown, extra: { value?: unk
     if (!/^[0-9a-f]{16}$/.test(target)) return { ok: false, error: 'bad-target' };
     return { ok: true, action: { kind, target } };
   }
-  if (kind === 'session-door' || kind === 'session-move' || kind === 'session-close' || kind === 'session-new' || kind === 'session-default') return buildSessionAction(kind, target, extra);
+  if (kind === 'session-door' || kind === 'session-move' || kind === 'session-bring-back' || kind === 'session-close' || kind === 'session-new' || kind === 'session-default') return buildSessionAction(kind, target, extra);
   return { ok: false, error: 'bad-action' };
 }
 
@@ -188,10 +192,16 @@ function buildSessionAction(kind: SessionAction['kind'], target: string, x: { fr
     return { ok: true, action: { kind, target, framework: x.framework, model, machine } };
   }
   if (kind === 'session-move') {
-    if (!TOPIC_ID.test(target)) return { ok: false, error: 'bad-target' };
+    // A Telegram topic or an app conversation (app-conversations-in-the-pool §2.5), re-validated with
+    // its real case. A Slack conversation stays with its connection, so it has no move to sign.
+    if (!TOPIC_ID.test(target) && conversationKeys(target)?.kind !== 'app') return { ok: false, error: 'bad-target' };
     if (!word(x.to)) return { ok: false, error: 'bad-machine' };
     if (!absent(x.confirmation) && !(typeof x.confirmation === 'string' && CONFIRMATION.test(x.confirmation))) return { ok: false, error: 'bad-confirmation' };
     return { ok: true, action: { kind, target, to: x.to, confirmation: absent(x.confirmation) ? null : x.confirmation as string } };
+  }
+  if (kind === 'session-bring-back') {
+    if (conversationKeys(target)?.kind !== 'app') return { ok: false, error: 'bad-target' };
+    return { ok: true, action: { kind, target, confirmed: x.confirmation === 'confirmed' } };
   }
   if (kind === 'session-close') {
     if (typeof x.tmux !== 'string' || !TMUX_NAME.test(x.tmux)) return { ok: false, error: 'bad-session-name' };
@@ -210,9 +220,13 @@ function buildSessionAction(kind: SessionAction['kind'], target: string, x: { fr
   if (name !== name.trim() || name.length > MAX_SESSION_NAME_CHARS) return { ok: false, error: 'bad-name' };
   if (CONTROL_CHARS.test(name) || holdsToken(name)) return { ok: false, error: 'bad-name' };
   const platform = x.platform ?? 'auto';
-  if (platform !== 'auto' && platform !== 'telegram' && platform !== 'slack' && platform !== 'headless') return { ok: false, error: 'bad-platform' };
-  // Door, model and machine apply to Telegram topics only. A signed line never names a choice the route would drop.
+  if (platform !== 'auto' && platform !== 'telegram' && platform !== 'slack' && platform !== 'app' && platform !== 'headless') return { ok: false, error: 'bad-platform' };
+  // Engine, model and machine never apply to Slack or terminal-only. A signed line never names a choice the route would drop.
   if ((platform === 'slack' || platform === 'headless') && (framework !== null || model !== null || machine !== null)) return { ok: false, error: 'bad-platform' };
+  // An app conversation takes an engine and model, but no machine until part 3.
+  if (platform === 'app' && machine !== null) return { ok: false, error: 'bad-platform' };
+  // An app conversation's title is at most 80 characters: refused here, before Face ID, not after.
+  if (platform === 'app' && cleanConversationTitle(name) !== name) return { ok: false, error: 'bad-name' };
   if (framework === null && model !== null) return { ok: false, error: 'bad-framework' };
   return { ok: true, action: { kind, target, name, platform, framework, model, machine } };
 }
@@ -802,6 +816,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   };
   sessionRoute('/mobile/sessions/door/:topic', 'session-door', (req) => String(req.params.topic));
   sessionRoute('/mobile/sessions/move/:topic', 'session-move', (req) => String(req.params.topic));
+  sessionRoute('/mobile/sessions/bring-back/:conversation', 'session-bring-back', (req) => String(req.params.conversation));
   sessionRoute('/mobile/sessions/close/:id', 'session-close', (req) => String(req.params.id));
   sessionRoute('/mobile/sessions/new', 'session-new', () => 'new');
   sessionRoute('/mobile/sessions/default', 'session-default', () => 'new-topic-default');

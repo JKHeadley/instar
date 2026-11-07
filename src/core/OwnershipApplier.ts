@@ -31,9 +31,10 @@
  */
 
 import { topicRef } from '../messaging/shared/topicRef.js';
-import type { SessionOwnershipRecord } from './SessionOwnership.js';
+import { appRowWinsTie, isAppOwnershipKey, type SessionOwnershipRecord } from './SessionOwnership.js';
 import type { SessionOwnershipStore } from './SessionOwnershipRegistry.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { APP_PLACEMENT_KEY } from './CoherenceJournal.js';
 
 /** The minimal slice of CoherenceJournalReader the applier needs (for testability). */
 /** One entry as returned by the reader. `ts`/`seq` are the cursor key fields. */
@@ -176,7 +177,7 @@ export class OwnershipApplier {
       type Best = {
         owner: string; epoch: number; streamOwner: string;
         status: 'active' | 'transferring' | 'released'; transferTo?: string;
-        timestamp?: number; drainInFlight?: boolean;
+        timestamp?: number; drainInFlight?: boolean; takeover?: boolean;
       };
       const bestByTopic = new Map<string, Best>();
 
@@ -236,11 +237,13 @@ export class OwnershipApplier {
         if (entries.length === 0) break;
 
         for (const e of entries) {
-          if (e.topic == null) continue;
+          // An app row carries its key in the data and has no numeric topic (app-conversations-in-the-pool §2.7).
+          const appKey = typeof e.data.sessionKey === 'string' && APP_PLACEMENT_KEY.test(e.data.sessionKey) ? e.data.sessionKey : null;
+          if (e.topic == null && !appKey) continue;
           const owner = typeof e.data.owner === 'string' ? e.data.owner : '';
           const epoch = typeof e.data.epoch === 'number' ? e.data.epoch : Number(e.data.epoch);
           if (!owner || !Number.isFinite(epoch) || epoch <= 0) continue;
-          const key = String(e.topic);
+          const key = appKey ?? String(e.topic);
           const cur = bestByTopic.get(key);
           const cand: Best = {
             owner, epoch, streamOwner: e.machine,
@@ -258,9 +261,13 @@ export class OwnershipApplier {
             transferTo: typeof e.data.transferTo === 'string' ? e.data.transferTo : undefined,
             timestamp: typeof e.data.timestamp === 'number' && Number.isFinite(e.data.timestamp) ? e.data.timestamp : undefined,
             drainInFlight: e.data.drainInFlight === true ? true : undefined,
+            takeover: e.data.takeover === true ? true : undefined,
           };
           if (!cur || epoch > cur.epoch) {
             bestByTopic.set(key, cand);
+          } else if (appKey) {
+            // App rows use their own deterministic tie rule (§2.2), so every machine picks the same row.
+            if (epoch === cur.epoch && appRowWinsTie(cand, cur)) bestByTopic.set(key, cand);
           } else if (epoch === cur.epoch && cur.streamOwner !== cur.owner && cand.streamOwner === cand.owner) {
             // Owner-anchored equal-epoch tie-break (Finding SE6): prefer the entry whose
             // stream-owner == entry.owner (a `transferring` from the true owner is canonical),
@@ -324,6 +331,20 @@ export class OwnershipApplier {
           }
           continue;
         }
+        // App rows only: an equal epoch still converges to one owner on every machine (§2.2), through
+        // the store's own method, never a looser casWrite.
+        if (local && best.epoch === localEpoch && isAppOwnershipKey(sessionKey) && local.ownerMachineId !== best.owner
+          && typeof this.d.store.adoptAppTieWinner === 'function') {
+          const adopted = this.d.store.adoptAppTieWinner({
+            sessionKey, ownerMachineId: best.owner, ownershipEpoch: best.epoch,
+            status: best.status === 'released' ? 'released' : 'active',
+            ...(best.takeover ? { takeover: true } : {}),
+            nonce: `applier:${best.owner}:${best.epoch}`,
+            timestamp: this.now(), updatedAt: new Date(this.now()).toISOString(),
+          });
+          if (adopted) { materialized++; this.log(`app tie at epoch ${best.epoch}: ${sessionKey} settled on ${best.owner}`); }
+          continue;
+        }
         if (best.epoch <= localEpoch) continue; // not newer → nothing to adopt (fast-forward only)
         // Epoch fence (Finding SE2): a corrupt huge epoch jump can't wedge a topic forever.
         if (best.epoch - localEpoch > maxEpochJump) {
@@ -369,6 +390,7 @@ export class OwnershipApplier {
           status,
           ...(transferTo ? { transferTo } : {}),
           ...(drainInFlight ? { drainInFlight } : {}),
+          ...(best.takeover ? { takeover: true } : {}),
           // Adoption nonce keyed on (owner, epoch) — the same ordering identity the
           // journal uses; never a local action nonce.
           nonce: `applier:${best.owner}:${best.epoch}`,

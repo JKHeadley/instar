@@ -21,7 +21,8 @@ export interface ConversationPortsDeps {
   inFlight: Set<string>;
   app: () => {
     sessionFor(conversationKey: string): string | null;
-    isOwner(): boolean;
+    /** May a reply land from here (app-conversations-in-the-pool §2.1), the drain's last turn included. */
+    mayReply(conversationKey: string): boolean;
     /** The conversation key a running session serves, or null. */
     conversationOfSession(tmuxSession: string): string | null;
     start(conversationKey: string, want: Want): Promise<Landed | null>;
@@ -79,13 +80,14 @@ export function createConversationPorts(deps: ConversationPortsDeps): Conversati
     disclose: async (profileKey, text) => {
       const app = appKeyOf(profileKey);
       const a = app ? deps.app() : null;
-      if (app && a) { if (a.isOwner()) await a.disclose(app, text); return; }
+      if (app && a) { if (a.mayReply(app)) await a.disclose(app, text); return; }
       const slack = slackRoutingKeyOf(profileKey);
       const sl = slack ? deps.slack() : null;
       if (slack && sl) await sl.send(slack, text);
     },
     canDisclose: (profileKey) => {
-      if (appKeyOf(profileKey)) return deps.app()?.isOwner() === true;
+      const app = appKeyOf(profileKey);
+      if (app) return deps.app()?.mayReply(app) === true;
       if (slackRoutingKeyOf(profileKey)) return deps.slack() !== null;
       return false;
     },

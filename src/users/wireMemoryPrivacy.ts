@@ -63,6 +63,7 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
   users: () => UserProfile[];
   ready: Promise<void>;
   recovery: MemoryPrivacyRecovery;
+  sandboxReady: () => boolean;
 } {
   const users = (): UserProfile[] => readJson(path.join(input.stateDir, 'users.json'), input.initialUsers ?? []);
   const entry = (type: string) => input.messaging().find((m) => m.type === type && (m as { enabled?: boolean }).enabled !== false)?.config ?? {};
@@ -190,5 +191,5 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
     });
   });
 
-  return { privacy, tracker, users, ready, recovery };
+  return { privacy, tracker, users, ready, recovery, sandboxReady: () => sandboxReady };
 }

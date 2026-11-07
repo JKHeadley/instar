@@ -16,7 +16,7 @@ import {
   partialWords, titleLine, closeRequest, closeConfirmWords, closeResultWords, doorChoices, modelChoices, doorModelWords,
   regimeWords, machineChoices, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded, canSwitchDoor, profileKeyOf,
   KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, HISTORY_MAX,
-  isInternalSession, attachmentMessage, OPERATOR_CREATED,
+  isInternalSession, attachmentMessage, OPERATOR_CREATED, PLATFORMS, platformAllowsDoor, platformAllowsMachine,
   historyUrl, historyErrorWords, historyText, topicOf, topicHistoryUrl, topicHistoryEntry,
 } from '../../dashboard/console/sessions-model.js';
 import { NATIVE_PAGES, tabHref, GROUPS } from '../../dashboard/console/nav-model.js';
@@ -254,14 +254,39 @@ describe('doors, models, machines, create', () => {
   });
   it('create: a name is required; an unchanged pick sends nothing; door and machine only for Telegram', () => {
     expect(createBody({ name: '  ' }, options)).toEqual({ ok: false, problems: ['Give it a name.'] });
-    expect(createBody({ name: ' Bug ', platform: 'auto' }, options)).toEqual({ ok: true, body: { name: 'Bug', headless: false } });
+    expect(createBody({ name: ' Bug ', platform: 'auto' }, options)).toEqual({ ok: true, body: { name: 'Bug', headless: false, requestId: expect.any(String) } });
     expect(createBody({ name: 'B', platform: 'telegram', framework: 'claude-code', model: 'claude-opus-5-5', machine: 'b' }, options)).toEqual({ ok: true, body: { name: 'B', headless: false, platform: 'telegram', framework: 'claude-code', model: 'claude-opus-5-5', machine: 'b' } });
-    expect(createBody({ name: 'B', framework: 'claude-code', model: 'claude-opus-5-5' }, { ...options, newTopicDefault: { framework: 'claude-code', model: 'claude-opus-5-5' } })).toEqual({ ok: true, body: { name: 'B', headless: false } });
+    expect(createBody({ name: 'B', framework: 'claude-code', model: 'claude-opus-5-5' }, { ...options, newTopicDefault: { framework: 'claude-code', model: 'claude-opus-5-5' } })).toEqual({ ok: true, body: { name: 'B', headless: false, requestId: expect.any(String) } });
     expect(createBody({ name: 'B', platform: 'headless', framework: 'claude-code', machine: 'b' }, options)).toEqual({ ok: true, body: { name: 'B', headless: true, platform: 'headless' } });
+  });
+  it('an Instar app conversation: engine and model yes, machine no; each create carries its own request id', () => {
+    // session-conversation-for-every-session §2.1–2.3
+    expect(PLATFORMS.map((p) => p.value)).toEqual(['auto', 'telegram', 'slack', 'app', 'headless']);
+    expect(PLATFORMS.find((p) => p.value === 'headless')?.label).toBe('No conversation (terminal only)');
+    expect(platformAllowsDoor('app')).toBe(true);
+    expect(platformAllowsMachine('app')).toBe(false);
+    expect(platformAllowsMachine('telegram')).toBe(true);
+    expect(platformAllowsMachine('auto')).toBe(true);
+    const a = createBody({ name: 'Plans', platform: 'app', framework: 'codex-cli', model: '', machine: 'b' }, options);
+    expect(a).toEqual({ ok: true, body: { name: 'Plans', headless: false, platform: 'app', framework: 'codex-cli', model: null, requestId: expect.any(String) } });
+    // The sheet's own id is kept across retries; without one, each body gets a fresh one.
+    expect((createBody({ name: 'Plans', platform: 'app', requestId: 'sheet-0001' }, options) as { body: { requestId: string } }).body.requestId).toBe('sheet-0001');
+    const b = createBody({ name: 'Plans', platform: 'app' }, options);
+    expect((b as { body: { requestId: string } }).body.requestId).not.toBe((a as { body: { requestId: string } }).body.requestId);
+  });
+  it('an app create answers in words: started, or created but not started yet', () => {
+    expect(createResultWords(201, { platform: 'app', started: true, session: 's' }, 'Plans')).toEqual({ ok: true, text: 'Started “Plans”. Open it in the app’s conversations to talk to it.' });
+    expect(createResultWords(201, { platform: 'app', started: false, message: 'x' }, 'Plans')).toMatchObject({ ok: true, warn: true });
+    expect(createResultWords(201, { platform: 'app', started: false }, 'Plans').text).not.toContain('no chat');
+  });
+  it('a session with a conversation is never hidden as internal', () => {
+    expect(isInternalSession({ platform: 'headless', conversationRef: 'app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f' })).toBe(false);
+    expect(isInternalSession({ platform: 'headless' })).toBe(true);
+    expect(isInternalSession({ jobSlug: 'x', conversationRef: 'telegram:5' })).toBe(true);
   });
   it('create answers in words, the server’s own sentence when it is unsettled', () => {
     expect(createResultWords(201, { topicId: 5, profile: { label: 'Claude Code', model: 'claude-opus-5-5' } }, 'B')).toEqual({ ok: true, text: 'Started “B” with a Telegram topic on Claude Code · Opus 5.5.' });
-    expect(createResultWords(200, {}, 'B').text).toBe('Started “B” with no chat.');
+    expect(createResultWords(200, {}, 'B').text).toBe('Started “B” with no conversation.');
     expect(createResultWords(200, { started: 'requested', machine: { nickname: 'Mac Mini' } }, 'B').text).toBe('Starting “B” on Mac Mini.');
     expect(createResultWords(200, { ownership: 'not-confirmed', error: 'Ownership unsettled.' }, 'B')).toEqual({ ok: true, warn: true, text: 'Ownership unsettled.' });
     expect(createResultWords(400, { error: 'Name taken' }, 'B')).toEqual({ ok: false, text: 'Name taken' });

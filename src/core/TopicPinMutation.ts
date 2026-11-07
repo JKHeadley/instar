@@ -24,6 +24,7 @@
  */
 
 import type { HlcTimestamp } from './HybridLogicalClock.js';
+import { isAppOwnershipKey } from './SessionOwnership.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { TopicPlacementPinStore, TopicPinnedBy } from './TopicPlacementPinStore.js';
 import {
@@ -57,6 +58,8 @@ export function setPinWithOneHlc(
   pinned = true,
   pinnedBy?: TopicPinnedBy,
 ): { hlc?: HlcTimestamp } {
+  // app-conversations-in-the-pool §2.2: nothing pins an app conversation. It moves only by a completed drain.
+  if (isAppOwnershipKey(sessionKey)) return {};
   const topicNum = Number(sessionKey);
   let minted: HlcTimestamp | undefined;
   if (deps.emitter && Number.isFinite(topicNum)) {

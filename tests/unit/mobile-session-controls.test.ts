@@ -194,14 +194,17 @@ describe('the menu', () => {
     expect((c.door as { reason: string }).reason).not.toContain('Telegram');
     expect(c.typing).toEqual({ can: true, reason: null });
   });
-  it('an app or Slack conversation gets the engine switch; moving it waits for the pool (part 3), said plainly', () => {
+  it('an app or Slack conversation gets the engine switch; an app conversation says moving is off where it is off, Slack stays with its connection, said plainly', () => {
     const app = 'app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f';
     const c = summarizeControls(parts({ row: { ...ROW, platform: 'headless', platformId: undefined, conversationRef: app } }), {}, 0);
     expect(c.door).toMatchObject({ state: 'ok', topic: app });
     expect(c.move).toMatchObject({ state: 'not-yet' });
-    expect((c.move as { reason: string }).reason).toContain('App and Slack conversations get it next');
+    expect((c.move as { reason: string }).reason).toContain('isn\'t turned on for this agent yet');
     const slack = summarizeControls(parts({ row: { ...ROW, platform: 'slack', platformId: 'C0ABC', conversationRef: 'slack:T0XYZ:C0ABC' } }), {}, 0);
     expect(slack.door).toMatchObject({ state: 'ok', topic: 'slack:T0XYZ:C0ABC' });
+    // slack-conversations-stay-with-connection §2.4: a Slack conversation stays with its connection.
+    expect(slack.move).toMatchObject({ state: 'stays' });
+    expect((slack.move as { reason: string }).reason).toBe('This Slack conversation stays on the machine that holds your Slack connection.');
     // A Telegram door keeps the bare topic id, so an older app signs the same line.
     expect(summarizeControls(parts(), {}, 0).door).toMatchObject({ topic: '7' });
     // Topic 1 (the General topic) stays as before: no switch.
@@ -281,6 +284,17 @@ describe('what a route answered, in plain words', () => {
     expect(newSessionAnswer(ok({ ownership: 'not-confirmed' }), 'Bug', null).body).toMatchObject({ ok: true, warn: true });
     expect(newSessionAnswer(ok({ started: 'unknown' }), 'Bug', null).body).toMatchObject({ ok: true, warn: true });
     expect(newSessionAnswer({ status: 429, body: { error: 'Too many' } }, 'Bug', null).body).toMatchObject({ ok: false, message: 'Too many' });
+  });
+  it('new session with an app conversation: started, or created and waiting, in the server\'s words', () => {
+    // session-conversation-for-every-session §2.5
+    expect((newSessionAnswer(ok({ platform: 'app', started: true, session: 's' }), 'Plans', null).body as { message: string }).message).toBe('Started "Plans". Open it in Conversations to talk to it.');
+    const waiting = newSessionAnswer(ok({ platform: 'app', started: false, message: 'Another of your machines runs your app conversations; its first message starts the session there.' }), 'Plans', null).body;
+    expect(waiting).toMatchObject({ ok: true, warn: true });
+    expect((waiting as { message: string }).message).toContain('Another of your machines');
+  });
+  it('the create body for an app conversation carries engine and model, never a machine', () => {
+    const body = createBody({ kind: 'session-new', target: 'new', name: 'Plans', platform: 'app', framework: 'codex-cli', model: null, machine: 'm_b' } as Extract<SessionAction, { kind: 'session-new' }>, null);
+    expect(body).toEqual({ name: 'Plans', headless: false, platform: 'app', framework: 'codex-cli', model: null });
   });
   it('the create body: an unchanged pick sends nothing, and Slack carries no door', () => {
     const a = (over: Partial<Extract<SessionAction, { kind: 'session-new' }>>): Extract<SessionAction, { kind: 'session-new' }> => ({ kind: 'session-new', target: 'new', name: 'x', platform: 'auto', framework: null, model: null, machine: null, ...over });
