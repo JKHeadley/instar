@@ -11,7 +11,7 @@ import { validMaturationOutcomeDetail } from '../monitoring/MaturationOutcome.js
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
 import { registerRecommendedServiceRoutes } from './recommendedServiceRoutes.js';
 import { catalogWithProving } from '../recommended/recipes.js';
-import { copiedSecretNames, realBitwardenSurface } from '../recommended/bitwardenVault.js';
+import { configHeldSecrets, copySourceNames, realBitwardenSurface } from '../recommended/bitwardenVault.js';
 import { classifyLocation, readThrowawayRecord } from '../core/ThrowawayAgentGuard.js';
 import { browserCapability, provisionLinuxBrowser } from '../core/linuxBrowserProvision.js';
 import { holdSetupForSession } from '../recommended/setupState.js';
@@ -16497,7 +16497,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     writeSecret: (name, value) => { new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).set(name, value); },
     deleteSecret: (name) => { new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).delete(name); },
     // Names only: the Bitwarden recipe's copy is written inside the recipe, and the confirm page lists what it would copy.
-    readSecretNames: () => copiedSecretNames(new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).read()),
+    // A fresh agent still keeps its first secrets in the config file, so the copy covers those too.
+    readSecretNames: () => copySourceNames(new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).read(), ctx.config as unknown as Record<string, unknown>),
+    readCopyValue: (name) => {
+      if (name.startsWith('config.')) return configHeldSecrets(ctx.config as unknown as Record<string, unknown>)[name] ?? null;
+      const v = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).get(name);
+      return typeof v === 'string' && v ? v : null;
+    },
     bitwarden: realBitwardenSurface(ctx.config.projectName ?? path.basename(ctx.config.projectDir)),
     // Setup talks to the person from this machine, which needs a channel and the lease. An unreadable lease reads as not held.
     canReachOwner: () => { try { return !!ctx.telegram && (ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true); } catch { return false; } }, // @silent-fallback-ok — not held means a yes waits, never a yes on a machine that can't talk

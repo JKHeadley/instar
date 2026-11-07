@@ -56,7 +56,8 @@ describe('Bitwarden setup through the routes', () => {
       startSetup: start, stopSetup: () => { running = []; return true; }, sessionForTopic: () => null,
       isSetupRunning: (id) => running.includes(id), notifyStuck: async () => true, clearStuck: () => undefined, tellOwner: told,
       readSecret: (n) => store[n] ?? null, writeSecret: (n, v) => { store[n] = v; }, deleteSecret: (n) => { delete store[n]; },
-      readSecretNames: () => Object.keys(store).filter((n) => n !== 'bitwarden_master_password').sort(),
+      readSecretNames: () => [...Object.keys(store).filter((n) => n !== 'bitwarden_master_password'), 'config.authToken'].sort(),
+      readCopyValue: (n) => (n === 'config.authToken' ? 'CFG-A' : store[n] ?? null),
       bitwarden: surface(),
       onReady: (r) => { reconcile = r; },
     });
@@ -85,10 +86,10 @@ describe('Bitwarden setup through the routes', () => {
   });
   afterEach(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/recommended-services-bitwarden.test.ts' }));
 
-  it('the page lists what would be copied, by name only', async () => {
+  it('the page lists what would be copied, by name only, config-held secrets included', async () => {
     const { body } = await page(app());
-    expect(body.copies).toEqual(['authToken', 'dashboardPin', 'tunnel.token']);
-    expect(JSON.stringify(body)).not.toMatch(/"A"|1234|"T"/);
+    expect(body.copies).toEqual(['authToken', 'config.authToken', 'dashboardPin', 'tunnel.token']);
+    expect(JSON.stringify(body)).not.toMatch(/"A"|1234|"T"|CFG-A/);
   });
 
   it('the whole job: a yes starts setup, the session logs in, stores the password, has the server write the copy, and the check passes', async () => {
@@ -103,13 +104,13 @@ describe('Bitwarden setup through the routes', () => {
     expect((await key(a, 'pw')).status).toBe(200);
     const copied = await sync(a);
     expect(copied.status).toBe(200);
-    expect(copied.body).toMatchObject({ ok: true, copied: ['authToken', 'dashboardPin', 'tunnel.token'] });
-    expect(vault.writes).toEqual(['authToken', 'dashboardPin', 'tunnel.token', VAULT_CHECK_ITEM]);
-    expect(JSON.stringify(copied.body)).not.toMatch(/"A"|1234/);
-    expect(readSetupStates(dir).bitwarden).toMatchObject({ lastSyncAt: expect.any(String), copies: 3 });
+    expect(copied.body).toMatchObject({ ok: true, copied: ['authToken', 'config.authToken', 'dashboardPin', 'tunnel.token'] });
+    expect(vault.writes).toEqual(['authToken', 'config.authToken', 'dashboardPin', 'tunnel.token', VAULT_CHECK_ITEM]);
+    expect(JSON.stringify(copied.body)).not.toMatch(/"A"|1234|CFG-A/);
+    expect(readSetupStates(dir).bitwarden).toMatchObject({ lastSyncAt: expect.any(String), copies: 4 });
     const checked = await verify(a);
     expect(checked.body.result).toBe('pass');
-    expect(checked.body.detail).toMatch(/3 items/);
+    expect(checked.body.detail).toMatch(/4 items/);
     expect(readSetupStates(dir).bitwarden?.keyStoredBySetup).toBe(true);
   });
 
@@ -135,7 +136,7 @@ describe('Bitwarden setup through the routes', () => {
     now += 25 * 60 * 60_000;
     await reconcile();
     expect(vault.writes).toContain('github_token');
-    expect(readSetupStates(dir).bitwarden?.copies).toBe(4);
+    expect(readSetupStates(dir).bitwarden?.copies).toBe(5);
     expect(told).not.toHaveBeenCalledWith(expect.stringMatching(/copied/));
   });
 

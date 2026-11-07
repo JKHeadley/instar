@@ -176,6 +176,15 @@ describe('Bitwarden recipe: the brief and the catalog', () => {
 });
 
 describe('what gets copied', () => {
+  it('includes the secrets a fresh agent still keeps in its config file, named apart from vault leaves', async () => {
+    const { configHeldSecrets, copySourceNames } = await import('../../src/recommended/bitwardenVault.js');
+    const config = { authToken: 'A', dashboardPin: '123456', tunnel: { token: 'T' }, messaging: [{ type: 'telegram', config: { token: 'B', chatId: '-1' } }, { type: 'slack', config: { botToken: 'S', appToken: { secret: true } } }] };
+    expect(configHeldSecrets(config)).toEqual({ 'config.authToken': 'A', 'config.dashboardPin': '123456', 'config.tunnel.token': 'T', 'config.messaging.telegram.token': 'B', 'config.messaging.slack.botToken': 'S' });
+    // A placeholder means the vault holds it: the leaf walk covers it, the config walk skips it.
+    expect(configHeldSecrets({ authToken: { secret: true } })).toEqual({});
+    expect(copySourceNames({ github_token: 'g' }, { authToken: 'A' })).toEqual(['config.authToken', 'github_token']);
+  });
+
   it('every stored string leaf, by dotted name, except transient drops and the vault password itself', () => {
     const names = copiedSecretNames({
       authToken: 'a', dashboardPin: '1', portal: { instarReadToken: 't' }, tunnel: { token: 'x' },

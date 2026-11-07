@@ -12,7 +12,7 @@ First it looks whether Bitwarden's program is on the machine and installs it if 
 
 It logs in and opens the vault. The master password never goes on a command line, where any program on the machine could read it; it travels in the one command's environment and nowhere else. The session then stores the master password with your agent, so the agent can open the vault later on its own.
 
-The copy itself is written by your agent's server, not by the session. The server reads its own stored secrets and puts each one, by name, as a Secure Note in the folder "instar/<agent name>". The session only hears the names of what was copied and tells you those. The confirm page shows the same list before you say yes: names only, never values. The check passes when the vault opens with the stored password and the agent's folder holds its marker.
+The copy itself is written by your agent's server, not by the session. The server reads its own stored secrets, including the first ones a new agent still keeps in its settings file before pairing moves them into its vault (its own key, your dashboard PIN, its messaging token), and puts each one, by name, as a Secure Note in the folder "instar/<agent name>". The session only hears the names of what was copied and tells you those. The confirm page shows the same list before you say yes: names only, never values. The check passes when the vault opens with the stored password and the agent's folder holds its marker.
 
 From then on the server refreshes the copy once a day, so a secret stored later reaches the vault too. Nothing else in your vault is read or changed.
 

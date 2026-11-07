@@ -61,6 +61,8 @@ export interface RecommendedServiceRouteDeps {
   deleteSecret?: (name: string) => void;
   /** The names of this agent's stored secrets (never values), for a recipe that keeps a copy elsewhere. */
   readSecretNames?: () => string[];
+  /** The value behind one of those names, wherever it lives (the vault, or the config file on a fresh agent). Defaults to readSecret. */
+  readCopyValue?: (name: string) => string | null;
   /** This machine's Bitwarden, scoped to the agent's folder; tests pass a stand-in. */
   bitwarden?: BitwardenSurface;
   /**
@@ -203,7 +205,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   const syncCopy = async (row: CatalogRow): Promise<{ ok: boolean; copied: string[]; detail: string } | null> => {
     const recipe = recipeFor(row);
     if (!recipe?.sync) return null;
-    const outcome = await recipe.sync({ ...recipeDeps(), secretNames: () => deps.readSecretNames?.() ?? [] });
+    const outcome = await recipe.sync({ ...recipeDeps(), readSecret: (name) => (deps.readCopyValue ?? deps.readSecret)(name), secretNames: () => deps.readSecretNames?.() ?? [] });
     const before = readSetupStates(deps.stateDir)[row.id];
     updateSetupState(deps.stateDir, row.id, outcome.ok
       ? { lastSyncAt: nowIso(), lastSyncAttemptAt: nowIso(), copies: outcome.copied.length, syncFailures: undefined }
