@@ -81,6 +81,10 @@ export class LocalLeaseStore implements LeaseStore {
     }
   }
 
+  hasNoSharedMedium(): boolean {
+    return true;
+  }
+
   read(): { lease: LeaseRecord | null; epoch: number } {
     this.load();
     return { lease: this.cached, epoch: this.cached?.epoch ?? 0 };
