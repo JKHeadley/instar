@@ -6,7 +6,7 @@ Today an Instar agent mostly belongs to one person. A phone is either the owner'
 
 ## What already exists
 
-The agent already keeps a list of people, and that list already has roles, used by Slack. Each phone already has its own secure key and belongs to a named person. The owner already has two switches for an MSP. Memory privacy already keeps one person's private facts away from another, once the owner turns it on.
+The agent already keeps a list of people, and that list already has roles, used by Slack. Each phone already has its own secure key and belongs to a named person. The owner already has two switches for an MSP. Memory privacy already keeps one person's private facts away from another, once the owner turns it on. The app already keeps signed copies of what a phone sent, and can check them on any of the agent's machines.
 
 ## What is new
 
@@ -25,15 +25,17 @@ For several agents, each agent stays independent, with no central service. Your 
 
 ## Safeguards
 
-- **The agent can take access away but can never give it.** Only the owner's phone can raise someone, and making someone an admin also needs Face ID. So nobody can talk the agent into giving them more. Admins can add members, but only to conversations they can use themselves.
-- **Inviting a member needs memory privacy on.** If privacy goes off later, members are locked out until it's back. Without this, "members can't see each other's private facts" wouldn't be true.
-- **A shared conversation stops using the owner's private memory.** Once someone else can read a conversation, the agent treats it as a shared place. The owner is told this before sharing.
+- **The agent can take access away but can never give it.** Every change is a request signed by a person's phone, and the signed request itself is kept in a log copied to all the agent's machines. A forged entry is ignored. So nobody can talk the agent into giving them more. If someone asks the agent for access, the owner gets an Approve button instead.
+- **Only the owner's phone can make someone an admin,** and that also needs Face ID. Admins can add members, but only to conversations they can read themselves.
+- **Everyone on the team needs memory privacy on.** Their chats run in a locked-down session. Without that, one person could ask the agent to read files they shouldn't see, and the roles would mean nothing. If privacy goes off, those phones stop working until it's back.
+- **A shared conversation stops using the owner's private memory.** Once someone else can read a conversation, the agent treats it as a shared place, and that person can read it only after this has taken effect. The owner is told before sharing.
+- **Admins maintain, and don't get the keys.** They can fix health problems, pause jobs, close sessions and update the agent. They can't create jobs, type into a session, use Remote Desktop, or see passwords, because each of those reaches everything.
 - **Telegram and Slack keep their own rules.** Anyone in the Telegram group can read every topic there, and Instar can't change that. So the app warns about it, and restricted people use the app instead of joining the group.
 - **Everything is logged:** who changed what, and who was refused.
 
 ## What doesn't change
 
-Existing agents work exactly as they do now, and nothing is restricted by an update. Restrictions only appear when an owner invites someone. An existing MSP keeps what they can see, and also gains the maintenance screens. The owner is told once, with a button to close their access.
+Existing agents work exactly as they do now. An update neither restricts anyone nor gives anyone more. An existing MSP phone stays as it is until the owner chooses to convert it to an admin. Restrictions begin only when an owner invites someone, and the invite says what changes. One example: once a team member exists, an MSP can read but not send in the owner's private conversations.
 
 ## What it costs
 
@@ -41,10 +43,11 @@ Existing agents work exactly as they do now, and nothing is restricted by an upd
 - A person given a conversation can see its past, not just what comes next.
 - The owner can read everything, including members' chats. Members are told this when they join.
 - The dashboard stays the owner's. The app is everyone else's way in.
+- An agent that runs only on Codex can't have team members yet, because memory privacy only works with Claude Code.
 
 ## What comes first
 
-The first piece restricts nobody. It lets an owner see who can reach their agent and what they can see, and it warns the owner when a second person can reach an agent with memory privacy off. That warning had no owner in the Thursday B2Lead report. After that come member phones, the People screens in the app, admin maintenance, admins adding members, adding people across several agents, and Slack conversations for members.
+The first piece restricts nobody. It lets an owner see who can reach their agent and what they can see, and it warns the owner when a second person can reach an agent with memory privacy off. That warning had no owner in the Thursday B2Lead report. After that come member phones, the People screens in the app, admin maintenance, adding people across several agents, and Slack conversations for members.
 
 ## What you need to decide
 
