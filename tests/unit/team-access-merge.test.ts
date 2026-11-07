@@ -200,3 +200,36 @@ describe('mayReadMessage', () => {
     expect(mayReadMessage({ ...msg(5), incarnation: 'i2' }, 'mia', [grantRow])).toBe(false);
   });
 });
+
+describe('what a gone machine\'s rows can still do', () => {
+  const gone: MergeEvent = { type: 'origin-gone', machine: 'B', incarnation: 'i1', throughSeq: 0 };
+  const on: MergeEvent = { type: 'team-on' };
+  const add = (key: string, role: string): MergeEvent => ({ type: 'person-add', personKey: key, role });
+
+  it('a change cannot bring back someone whose add was voided', () => {
+    const merged = mergeRows([row('A', 1, [on, gone]), row('B', 1, [add('x', 'member')]), row('B', 2, [{ type: 'person-set', personKey: 'x', role: 'guest' }])]);
+    expect(merged.people.has('x')).toBe(false);
+  });
+  it('a role cannot rise past where it stands', () => {
+    const merged = mergeRows([
+      row('A', 1, [on, add('p', 'admin'), { type: 'person-set', personKey: 'p', role: 'guest' }, gone]),
+      row('B', 1, [{ type: 'person-set', personKey: 'p', role: 'member' }]),
+    ]);
+    expect(merged.people.get('p')?.role).toBe('guest');
+  });
+  it('a role set lower than it stands still counts, though it is not a machine lowering it', () => {
+    const merged = mergeRows([row('A', 1, [on, add('p', 'admin'), gone]), row('B', 1, [{ type: 'person-set', personKey: 'p', role: 'member' }])]);
+    expect(merged.people.get('p')?.role).toBe('member');
+  });
+  it('taking a grant down to read still counts', () => {
+    const merged = mergeRows([
+      row('A', 1, [on, add('p', 'member'), { type: 'grant', personKey: 'p', ref: 'c', access: 'use' }, gone]),
+      row('B', 1, [{ type: 'grant', personKey: 'p', ref: 'c', access: 'read' }]),
+    ]);
+    expect(merged.grants.get('p')?.get('c')).toBe('read');
+  });
+  it('a new read grant from past the settled row is void', () => {
+    const merged = mergeRows([row('A', 1, [on, add('p', 'member'), gone]), row('B', 1, [{ type: 'grant', personKey: 'p', ref: 'c', access: 'read' }])]);
+    expect(merged.grants.get('p')?.has('c') ?? false).toBe(false);
+  });
+});

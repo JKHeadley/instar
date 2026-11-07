@@ -23,7 +23,7 @@ import {
   type LedgerView, type MachineKeyLookup, type MachineSignature, type MachineSigner,
 } from './AppRecordSignatures.js';
 import { DEVICE_TIME_WINDOW_MS, isStrictLowSDer, parseDevicePublicKey } from './MobileDeviceKeys.js';
-import { UNCHAINED_INCARNATION, findGaps, mayReadMessage, mergeRows, rankOf, streamKey, type AccessStamp, type Gap, type ReaderGrant, type MergeEvent, type MergeRow } from './TeamAccessMerge.js';
+import { UNCHAINED_INCARNATION, findGaps, hasSeen, mayReadMessage, mergeRows, rankOf, streamKey, type AccessStamp, type Gap, type ReaderGrant, type MergeEvent, type MergeRow } from './TeamAccessMerge.js';
 import type { GrantAccess } from '../permissions/TeamAccess.js';
 import type { OrgRole } from '../permissions/types.js';
 
@@ -420,16 +420,32 @@ export class TeamAccessLog {
   private health: LogHealth = 'absent';
   private seedSeq = 0;
   private refoldPending = false;
+  private unknownRows = -1;
   private incarnationCache: string | null = null;
   private gapsCache: Gap[] | null = null;
   private messageState: { stream: string; seen: Record<string, number> } | null = null;
   /** Conversations whose sharing just changed here, with the log as it stood before. */
   private frozen: Map<string, Record<string, number>> | null = null;
   private readonly grantsCache = new Map<string, ReaderGrant[]>();
+  private readonly goneCache = new Map<string, boolean>();
   /** Rows that reached this machine from a peer since it started. */
   private readonly foreign = new WeakSet<TeamAccessRow>();
 
-  constructor(private readonly opts: TeamAccessLogOptions) {
+  private readonly opts: TeamAccessLogOptions;
+
+  constructor(options: TeamAccessLogOptions) {
+    // A signature check costs real time and a verified row stays verified, so each is done once.
+    const verified = new WeakSet<TeamAccessRow>();
+    this.opts = {
+      ...options,
+      verify: (row) => {
+        if (verified.has(row)) return 'verified';
+        const verdict = options.verify(row);
+        if (verdict === 'verified') verified.add(row);
+        return verdict;
+      },
+    };
+    const opts = this.opts;
     this.dir = path.join(opts.stateDir, TEAM_ACCESS_DIR);
     this.lastGoodDir = path.join(opts.stateDir, TEAM_ACCESS_LAST_GOOD_DIR);
     this.logFile = path.join(this.dir, 'log.jsonl');
@@ -515,7 +531,7 @@ export class TeamAccessLog {
       // phone is in the ledger, so a row it cannot place means the ledger failed: strict, not empty.
       const own = this.opts.signer?.machineId();
       const unknown = rows.filter((r) => r.kind === 'request' && this.opts.verify(r) === 'unknown');
-      const unplaced = unknown.some((r) => originOf(r) === own);
+      const unplaced = unknown.some((r) => originOf(r) === own) && new Set(rows.map(originOf)).size <= 1;
       // A peer's row can wait for its key to arrive: it counts for nothing until then.
       this.refoldPending = unknown.length > 0 && !unplaced;
       // A lost or altered row in the middle could be a downgrade: the fold would quietly give back
@@ -532,13 +548,23 @@ export class TeamAccessLog {
    * machine join under the merge rules, so only this machine's own record has to be whole for it.
    */
   private intact(rows: ReadonlyArray<TeamAccessRow>): boolean {
-    const own = this.opts.signer?.machineId();
-    const single = new Set(rows.map(originOf)).size <= 1;
-    const sorted = [...rows].filter((r) => single || originOf(r) === own).sort((a, b) => a.seq - b.seq);
+    // With peers the gap rules see this, and a peer can fill it, so it holds rather than reads as lost.
+    if (new Set(rows.map(originOf)).size > 1) return true;
+    const sorted = [...rows].sort((a, b) => a.seq - b.seq);
     let from = 0;
     for (const r of sorted) {
       if (r.kind !== 'machine' || this.opts.verify(r) !== 'verified') continue;
       for (const e of r.events) if (e.type === 'restored') from = Math.max(from, e.throughSeq);
+    }
+    // A machine that moved to a new stream may later receive its old rows back, so numbers can overlap
+    // across streams. Each stream must still hold together, and a fork in one reads as a gap, not a loss.
+    const chained = new Set(rows.flatMap((r) => (r.incarnation ? [r.incarnation] : [])));
+    if (chained.size > 1) {
+      for (const stream of chained) {
+        const list = sorted.filter((r) => r.incarnation === stream && r.seq > from);
+        for (let i = 1; i < list.length; i += 1) if (list[i].seq > list[i - 1].seq + 1) return false;
+      }
+      return !rows.some((r) => this.opts.verify(r) === 'failed');
     }
     let expected = from + 1;
     for (const r of sorted) {
@@ -569,8 +595,14 @@ export class TeamAccessLog {
   allRows(): ReadonlyArray<TeamAccessRow> { return this.rows; }
   state(): TeamAccessState {
     if (this.refoldPending) {
-      this.folded = foldLog(this.rows, this.opts.verify);
-      this.refoldPending = this.rows.some((r) => this.opts.verify(r) === 'unknown');
+      // Only a row that became placeable changes the answer.
+      const unknown = this.rows.filter((r) => this.opts.verify(r) === 'unknown').length;
+      if (unknown !== this.unknownRows) {
+        this.folded = foldLog(this.rows, this.opts.verify);
+        this.gapsCache = null; this.grantsCache.clear(); this.goneCache.clear();
+      }
+      this.unknownRows = unknown;
+      this.refoldPending = unknown > 0;
     }
     return this.folded;
   }
@@ -705,13 +737,17 @@ export class TeamAccessLog {
     return this.rows.some((r) => r.kind === 'request' && (bodyEvents(r) ?? []).some((e) => e.type === 'person-add' && e.personKey === personKey));
   }
 
-  /** Is there a verified row taking this person away? Silence from a log that failed to read is not one. */
+  /** Did this person leave, by rows that can be trusted? Silence is not leaving, and a team-off they joined after is not either. */
   wasRemoved(personKey: string): boolean {
-    return this.rows.some((r) => {
-      if (this.opts.verify(r) !== 'verified') return false;
-      if (r.kind === 'machine') return knownEvents(r).some((e) => e.type === 'lower' && e.personKey === personKey && e.remove === true);
-      return (bodyEvents(r) ?? []).some((e) => e.type === 'team-off' || (e.type === 'person-remove' && e.personKey === personKey));
-    });
+    const plain = this.state();
+    const owners = this.rows.filter((r): r is RequestRow => r.kind === 'request' && this.opts.verify(r) === 'verified' && plain.bindings.get(r.signedOrigin.keyHash) === 'owner');
+    const has = (r: RequestRow, match: (e: RequestEvent) => boolean): boolean => (bodyEvents(r) ?? []).some(match);
+    const adds = owners.filter((r) => has(r, (e) => e.type === 'person-add' && e.personKey === personKey));
+    if (adds.length === 0) return false;
+    if (owners.some((r) => has(r, (e) => e.type === 'person-remove' && e.personKey === personKey))) return true;
+    if (this.rows.some((r) => r.kind === 'machine' && this.opts.verify(r) === 'verified' && knownEvents(r).some((e) => e.type === 'lower' && e.personKey === personKey && e.remove === true))) return true;
+    const view = (r: TeamAccessRow): MergeRow => toMergeRow(r, []);
+    return owners.filter((r) => has(r, (e) => e.type === 'team-off')).some((off) => adds.every((add) => !hasSeen(view(add), view(off))));
   }
 
   /** Could this agent have a team, going by any row at all? For decisions where a wrong no is the harm. */
@@ -719,14 +755,18 @@ export class TeamAccessLog {
     return this.rows.some((r) => r.kind === 'request' && (bodyEvents(r) ?? []).some((e) => e.type === 'team-on'));
   }
 
-  /** Has the owner named every stream this log holds from that machine as gone? */
+  /** Has the owner named every chained stream this log holds from that machine as gone? */
   isGone(machineId: string): boolean {
+    const cached = this.goneCache.get(machineId);
+    if (cached !== undefined) return cached;
     const plain = this.state();
     const named = new Set(this.rows.flatMap((r) => (r.kind === 'request' && this.opts.verify(r) === 'verified' && plain.bindings.get(r.signedOrigin.keyHash) === 'owner'
       ? (bodyEvents(r) ?? []).flatMap((e) => (e.type === 'origin-gone' && e.machine === machineId ? [e.incarnation] : []))
       : [])));
-    if (named.size === 0) return false;
-    return this.rows.filter((r) => originOf(r) === machineId).every((r) => named.has(r.incarnation ?? UNCHAINED_INCARNATION));
+    // Rows from before chains are only a machine's start: naming its stream covers them.
+    const answer = named.size > 0 && this.rows.filter((r) => originOf(r) === machineId && r.incarnation !== undefined).every((r) => named.has(r.incarnation as string));
+    this.goneCache.set(machineId, answer);
+    return answer;
   }
 
   /** What this machine holds: origin/incarnation to highest seq. */
@@ -758,6 +798,19 @@ export class TeamAccessLog {
     // Two rows with one number look the same to a vector, so the hash of a peer's last row is compared too.
     const forked = (r: TeamAccessRow): boolean => r.seq === have[streamOf(r)] && heads[streamOf(r)] !== undefined && heads[streamOf(r)] !== rowHash(r);
     return this.rows.filter((r) => r.seq > (have[streamOf(r)] ?? 0) || forked(r));
+  }
+
+  /** Rows on a number two rows claim: a peer must see both, or only this machine knows of the fork. */
+  disputed(): TeamAccessRow[] {
+    const forks = new Set(this.gaps().flatMap((g) => (g.kind === 'fork' ? [`${streamKey(g.origin, g.incarnation)}#${g.seq}`] : [])));
+    return this.rows.filter((r) => forks.has(`${streamOf(r)}#${r.seq}`));
+  }
+
+  /** The first number held on each stream, so a peer can tell this machine is missing a stream's start. */
+  starts(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const r of this.rows) out[streamOf(r)] = Math.min(out[streamOf(r)] ?? r.seq, r.seq);
+    return out;
   }
 
   /** The hash of the last row held on each stream. */
@@ -798,7 +851,7 @@ export class TeamAccessLog {
     }
     // A row that could not be placed may be placeable now, so this is worked out afresh after a pull.
     this.gapsCache = null;
-    this.grantsCache.clear();
+    this.grantsCache.clear(); this.goneCache.clear();
     if (added > 0) {
       this.folded = foldLog(this.rows, this.opts.verify);
       this.refoldPending = this.rows.some((r) => this.opts.verify(r) === 'unknown');
@@ -843,7 +896,7 @@ export class TeamAccessLog {
     this.writeLine(row);
     this.rows.push(row);
     this.gapsCache = null;
-    this.grantsCache.clear();
+    this.grantsCache.clear(); this.goneCache.clear();
     if (new Set(this.rows.map(originOf)).size > 1) this.folded = foldLog(this.rows, this.opts.verify);
     else foldRowInto(this.folded, row, this.opts.verify);
     // A row that cannot be placed yet (a key cache after an identity change) must not be lost.
@@ -865,7 +918,7 @@ export class TeamAccessLog {
     for (const file of [this.logFile, this.confinedFile]) {
       if (fs.existsSync(file)) fs.renameSync(file, `${file}.damaged-${stamp}`);
     }
-    this.rows = []; this.folded = emptyState(); this.gapsCache = null; this.grantsCache.clear(); this.refoldPending = false;
+    this.rows = []; this.folded = emptyState(); this.gapsCache = null; this.grantsCache.clear(); this.goneCache.clear(); this.refoldPending = false;
     this.seedSeq = 0;
     this.health = 'ok';
     this.mintIncarnation();
@@ -1008,11 +1061,16 @@ export class TeamAccessLog {
   /** Writes a `confine` row for every entry a 2a build confined, once. */
   backfillConfineRows(): number {
     if (!this.opts.signer || this.health !== 'ok') return 0;
+    // Once, for what 2a confined. A later restore's sweep stays on this machine, and a boot must not tell it.
+    const marker = path.join(this.dir, 'confine-told.json');
+    if (fs.existsSync(marker)) return 0;
     const told = new Set(this.rows.flatMap((r) => (r.kind === 'machine' ? r.events.flatMap((e) => (e.type === 'confine' ? [e.ref] : [])) : [])));
     const missing = (this.readConfined() ?? []).filter((e) => !told.has(e.ref));
     for (const e of missing) {
       this.appendMachineEvents([{ type: 'confine', ref: e.ref, ...(e.placeKey ? { placeKey: e.placeKey } : {}), ...(e.personKey ? { personKey: e.personKey } : {}) }]);
     }
+    fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(marker, '{}', { mode: 0o600 });
     return missing.length;
   }
 
@@ -1108,7 +1166,7 @@ export class TeamAccessLog {
     }
     fs.renameSync(tmp, this.logFile);
     this.rows = merged;
-    this.gapsCache = null; this.grantsCache.clear();
+    this.gapsCache = null; this.grantsCache.clear(); this.goneCache.clear();
     this.folded = foldLog(merged, this.opts.verify);
     this.seedSeq = Math.max(this.seedSeq, this.folded.highestSeq);
     this.health = 'ok';

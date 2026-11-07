@@ -2176,7 +2176,7 @@ export class AgentServer {
         this.mobilePairing?.teamPuller?.noteInbound(senderId, missing.length === 0);
         const privacy = options.sessionManager.memoryPrivacyStatus?.();
         return {
-          rows: missing.slice(0, ROWS_PER_CALL), vector: log?.vector() ?? {},
+          rows: missing.slice(0, ROWS_PER_CALL), vector: log?.vector() ?? {}, starts: log?.starts() ?? {},
           standing: { enforcement: TEAM_ENFORCEMENT_VERSION, native: isMobileNativeEnabled(options.config), privacy: !!privacy?.enabled && !!privacy.sandboxReady },
         };
       };

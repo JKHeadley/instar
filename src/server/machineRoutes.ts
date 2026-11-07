@@ -71,7 +71,7 @@ export interface MachineRouteContext {
   /** A joiner on this version would not understand the team here. */
   teamJoinBlocked?: (enforcement: number) => boolean;
   /** Team access: the rows a peer lacks, from any origin (team-roles-and-access, "Step 2b"). */
-  teamAccessRows?: (have: Record<string, number>, heads: Record<string, string>, senderId: string) => { rows: unknown[]; vector: Record<string, number> };
+  teamAccessRows?: (have: Record<string, number>, heads: Record<string, string>, senderId: string) => { rows: unknown[]; vector: Record<string, number>; starts?: Record<string, number> };
   /** A peer sent rows this machine lacks. */
   teamAccessPush?: (rows: unknown[], senderId: string) => Promise<{ added: number; refused: number }>;
   /** Machine identity manager */

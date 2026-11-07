@@ -1074,3 +1074,149 @@ describe('what the access review found', () => {
     expect(a.wasRemoved('p')).toBe(true);
   });
 });
+
+describe('what the second review found', () => {
+  const files = (l: TeamAccessLog) => l as unknown as { logFile: string; confinedFile: string; lastGoodDir: string; dir: string };
+  const peer = (b: TeamAccessLog, id = 'B') => ({ machineId: id, fetchRows: async (have: Record<string, number>, heads: Record<string, string>) => ({ rows: b.rowsBeyond(have, heads), vector: b.vector(), starts: b.starts() }), pushRows: async (rows: TeamAccessRow[]) => { b.ingest(rows); } });
+  const pulling = (a: TeamAccessLog, ...peers: Array<ReturnType<typeof peer>>) => new TeamAccessPuller({ log: () => a, afterIngest: () => undefined, peers: () => peers });
+
+  it('a repaired machine that later receives its own lost rows still boots healthy', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-boot-'));
+    const open = () => new TeamAccessLog({ stateDir: dir, signer: signerFor('A'), verify });
+    const a = open();
+    const mini = machine('M'); const laptop = machine('L');
+    start(a); sync(a, mini); sync(a, laptop);
+    const lost = a.appendMachineEvents([{ type: 'confine', ref: 'c7' }]);
+    laptop.ingest([lost]);
+    fs.writeFileSync(files(a).logFile, 'not json\n{}\n');
+    if (fs.existsSync(files(a).lastGoodDir)) fs.renameSync(files(a).lastGoodDir, `${files(a).lastGoodDir}.aside`);
+    a.load();
+    await pulling(a, peer(mini, 'M')).tick();
+    a.appendMachineEvents([{ type: 'confine', ref: 'c8' }]);
+    a.ingest(laptop.rowsBeyond(a.unbroken()));
+    a.load();
+    expect(a.healthState()).toBe('ok');
+    expect(open().healthState()).toBe('ok');
+  });
+
+  it('a read that failed once does not cost a good log', async () => {
+    let bad = true;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-once-'));
+    const v = (r: TeamAccessRow) => (bad && r.kind === 'request' ? 'unknown' as const : verify(r));
+    const seed = new TeamAccessLog({ stateDir: dir, signer: signerFor('A'), verify });
+    start(seed);
+    const a = new TeamAccessLog({ stateDir: dir, signer: signerFor('A'), verify: v });
+    expect(a.healthState()).toBe('unreadable');
+    bad = false;
+    const stream = a.currentIncarnation();
+    const b = machine('B');
+    await pulling(a, peer(b)).tick();
+    expect(a.healthState()).toBe('ok');
+    expect(a.currentIncarnation()).toBe(stream);
+  });
+
+  it('a restore\'s sweep is not told to peers at a later boot', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-swp-'));
+    const open = () => new TeamAccessLog({ stateDir: dir, signer: signerFor('A'), verify });
+    const a = open();
+    start(a);
+    a.ensureConfinedFile();
+    a.backfillConfineRows();
+    fs.writeFileSync(files(a).confinedFile, 'broken');
+    fs.writeFileSync(files(a).logFile, 'not json\n{}\n');
+    a.load();
+    a.restore({ teamRefs: [], allRefs: () => [{ ref: 'swept' }] });
+    expect(a.isConfined('swept')).toBe(true);
+    const again = open();
+    expect(again.backfillConfineRows()).toBe(0);
+    expect(JSON.stringify(again.allRows())).not.toContain('swept');
+  });
+
+  it('what 2a confined is told once', () => {
+    const a = machine('A');
+    start(a);
+    a.ensureConfinedFile();
+    (a as unknown as { confineHere(e: { ref: string }): boolean }).confineHere({ ref: 'old' });
+    expect(a.backfillConfineRows()).toBe(1);
+    expect(a.backfillConfineRows()).toBe(0);
+  });
+
+  it('a peer that stopped answering does not keep this machine behind', async () => {
+    const a = machine('A');
+    let up = true;
+    const p = new TeamAccessPuller({ log: () => a, afterIngest: () => undefined, peers: () => [{ machineId: 'B', fetchRows: async () => { if (!up) throw new Error('no'); return { rows: [], vector: { 'B/i': 5 } }; } }] });
+    await p.tick();
+    expect(p.behind()).toBe(true);
+    up = false;
+    await p.tick();
+    expect(p.behind()).toBe(false);
+  });
+
+  it('a fork found by one machine reaches the other', async () => {
+    const a = machine('A'); const b = machine('B');
+    start(a); sync(a, b);
+    bind(b);
+    const row = a.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+    const next = a.appendMachineEvents([{ type: 'confine', ref: 'c2' }]);
+    b.ingest([row, next]);
+    const { machineSig: _s, ...rest } = row;
+    const other = { ...rest, at: '2020-01-01T00:00:00.000Z' };
+    const c = machine('C');
+    c.ingest((a.allRows() as TeamAccessRow[]).filter((r) => r !== row && r !== next));
+    bind(c);
+    c.ingest([{ ...other, machineSig: signerFor('A').sign(rowPayload(other as never)) } as TeamAccessRow]);
+    await pulling(c, peer(b)).tick();
+    expect(c.gaps().map((g) => g.kind)).toContain('fork');
+    expect(b.gaps().map((g) => g.kind)).toContain('fork');
+  });
+
+  it('a refused first row of a stream comes again', async () => {
+    let refuse = true;
+    const a = machine('A');
+    const rows = [a.appendMachineEvents([{ type: 'confine', ref: 'first' }]), a.appendMachineEvents([{ type: 'confine', ref: 'second' }])];
+    const b = new TeamAccessLog({ stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'team-head-')), signer: signerFor('B'), verify: (r) => (refuse && r === rows[0] ? 'failed' : verify(r)) });
+    bind(b);
+    b.ingest(rows);
+    expect(b.allRows()).toHaveLength(2);
+    refuse = false;
+    await pulling(b, peer(a, 'A')).tick();
+    expect(b.allRows()).toHaveLength(3);
+  });
+
+  it('naming a machine\'s stream covers its rows from before chains', () => {
+    const a = machine('A');
+    const b = machine('B');
+    start(a); start(b);
+    const row = b.allRows()[0] as TeamAccessRow;
+    const { origin: _o, incarnation: _i, prev: _p, seen: _n, machineSig: _m, ...bare } = row as never as Record<string, unknown>;
+    const old = { ...bare, seq: 9 };
+    a.ingest([{ ...old, machineSig: signerFor('B').sign(rowPayload(old as never)) } as never]);
+    a.ingest(b.allRows() as TeamAccessRow[]);
+    a.appendSignedRequest(signed([{ type: 'origin-gone', machine: 'B', incarnation: b.currentIncarnation(), throughSeq: 0 }]));
+    expect(a.isGone('B')).toBe(true);
+  });
+
+  it('an old team-off is not a removal of someone added since, or never held', () => {
+    const a = machine('A');
+    start(a);
+    a.appendSignedRequest(signed([{ type: 'team-off' }]));
+    expect(a.wasRemoved('p')).toBe(true);
+    a.appendSignedRequest(signed([{ type: 'team-on' }, { type: 'person-add', personKey: 'n', name: 'New', role: 'member' }]));
+    expect(a.wasRemoved('n')).toBe(false);
+    expect(a.wasRemoved('never-here')).toBe(false);
+    const forged = signed([{ type: 'person-remove', personKey: 'n' }]);
+    forged.signedOrigin = { ...forged.signedOrigin, keyHash: 'stranger' };
+    a.appendSignedRequest(forged);
+    expect(a.wasRemoved('n')).toBe(false);
+  });
+
+  it('each row is verified once, however often it is asked about', () => {
+    let calls = 0;
+    const a = new TeamAccessLog({ stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'team-memo-')), signer: signerFor('A'), verify: (r) => { calls += 1; return verify(r); } });
+    start(a);
+    a.isGone('B');
+    const after = calls;
+    for (let i = 0; i < 20; i += 1) { a.isGone('B'); a.state(); a.mayRead('p', 'c', { origin: 'A', incarnation: 'i', seq: 1, access: {} }, null); }
+    expect(calls - after).toBeLessThanOrEqual(0);
+  });
+});

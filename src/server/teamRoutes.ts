@@ -300,6 +300,8 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
       ownerPersonKey: log?.state().ownerPersonKey ?? owner.userId, ownerLinks: owner.links, several: owner.several,
       teamOn: svc.teamOn(), refusal: svc.teamRefusal(), held: log?.gaps() ?? [],
       machinesBelowFloor: svc.teamPuller?.belowFloor() ?? [], waitingOn: svc.teamPuller?.waitingOn() ?? [],
+      // What marking a machine as gone has to name: each stream held here and how far it runs.
+      streams: log?.vector() ?? {},
       people: [...(log?.state().people.values() ?? [])].map((p) => ({ personKey: p.personKey, name: p.name, role: p.role })),
     });
   });

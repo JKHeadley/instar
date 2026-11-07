@@ -15,7 +15,7 @@ export const TEAM_ENFORCEMENT_VERSION = 1;
 /** What a machine says about itself on each exchange. */
 export interface MachineStanding { enforcement: number; native: boolean; privacy: boolean }
 
-export interface PeerRows { rows: TeamAccessRow[]; vector: Record<string, number>; standing?: MachineStanding }
+export interface PeerRows { rows: TeamAccessRow[]; vector: Record<string, number>; standing?: MachineStanding; starts?: Record<string, number> }
 
 /** A peer on a build with no log route answers this way, and is not waited for. */
 export class PeerHasNoLog extends Error {}
@@ -36,7 +36,7 @@ export const ROWS_PER_CALL = 500;
 const MAX_PAGES = 40;
 
 /** Ask each peer for what is missing, and give it what it lacks. A peer that does not answer is not an error: laptops sleep. */
-export async function pullFromPeers(log: Pick<TeamAccessLog, 'vector' | 'unbroken' | 'heads' | 'ingest' | 'rowsBeyond'>, peers: ReadonlyArray<SyncPeer>, now: () => number = Date.now): Promise<PullResult> {
+export async function pullFromPeers(log: Pick<TeamAccessLog, 'vector' | 'unbroken' | 'heads' | 'ingest' | 'rowsBeyond' | 'starts' | 'disputed'>, peers: ReadonlyArray<SyncPeer>, now: () => number = Date.now): Promise<PullResult> {
   const outcomes: PeerOutcome[] = [];
   const touched = new Set<string>();
   let lastAnsweredAt: number | null = null;
@@ -55,12 +55,23 @@ export async function pullFromPeers(log: Pick<TeamAccessLog, 'vector' | 'unbroke
         refused += result.refused;
         for (const ref of result.touched) touched.add(ref);
       }
+      // A stream whose start this machine refused looks whole from here, so the peer's start is compared.
+      const mine = log.starts();
+      const short = Object.entries(page.starts ?? {}).filter(([stream, first]) => mine[stream] !== undefined && first < mine[stream]).map(([stream]) => stream);
+      if (short.length > 0) {
+        const have = log.unbroken();
+        for (const stream of short) delete have[stream];
+        const again = log.ingest((await peer.fetchRows(have, log.heads())).rows);
+        added += again.added;
+        refused += again.refused;
+        for (const ref of again.touched) touched.add(ref);
+      }
       const { vector, standing } = page;
       const held = log.vector();
       const behind = Object.entries(vector).some(([stream, seq]) => (held[stream] ?? 0) < seq);
       outcomes.push({ machineId: peer.machineId, answered: true, added, refused, behind, ...(standing ? { standing } : {}) });
       lastAnsweredAt = now();
-      const theirs = log.rowsBeyond(vector).slice(0, ROWS_PER_CALL);
+      const theirs = [...log.disputed(), ...log.rowsBeyond(vector)].slice(0, ROWS_PER_CALL);
       // @silent-fallback-ok — the peer answered; rows it lacks go at the next exchange.
       if (theirs.length > 0) await peer.pushRows?.(theirs).catch(() => undefined);
     } catch (err) {
@@ -164,6 +175,8 @@ export class TeamAccessPuller {
     if (this.running || !log) return null;
     this.running = true;
     try {
+      // A read that failed once at boot is not damage, so it gets a second look before anything changes.
+      if (log.healthState() === 'unreadable') log.load();
       if (log.healthState() === 'unreadable' || log.listDamaged()) {
         await this.repair(log);
         if (log.healthState() === 'unreadable' || log.listDamaged()) return null;
@@ -177,7 +190,8 @@ export class TeamAccessPuller {
           this.noLog.add(o.machineId);
           this.recordStanding(o.machineId, { enforcement: 0, native: false, privacy: false });
         } else if (o.answered) this.noLog.delete(o.machineId);
-        if (o.behind) this.behindPeers.add(o.machineId); else if (o.answered) this.behindPeers.delete(o.machineId);
+        // Only a peer that can be reached counts: one that stopped answering must not hold the lease back for good.
+        if (o.behind) this.behindPeers.add(o.machineId); else this.behindPeers.delete(o.machineId);
         if (o.standing) this.recordStanding(o.machineId, o.standing);
         if (o.answered) {
           this.evidence.set(o.machineId, now);
