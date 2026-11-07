@@ -425,6 +425,16 @@ describe('with no access log able to open', () => {
   });
 });
 
+describe('a phone reading its own standing', () => {
+  it('a team phone gets its tier and tabs, from the log; a guest has no composer; the owner has no standing', async () => {
+    const { e, mia, owner } = await withMember();
+    expect((await send(e, mia, 'GET', '/mobile/device')).body.standing).toEqual({ tier: 'member', screens: ['chat', 'composer', 'new-conversation', 'my-access'] });
+    await send(e, owner, 'POST', '/mobile/team/people/mia', { events: [{ type: 'person-set', personKey: 'mia', role: 'guest' }] });
+    expect((await send(e, mia, 'GET', '/mobile/device')).body.standing).toEqual({ tier: 'guest', screens: ['chat', 'my-access'] });
+    expect((await send(e, owner, 'GET', '/mobile/device')).body.standing).toBeUndefined();
+  });
+});
+
 describe('a second machine', () => {
   it('is free to join an agent that never had a team, and refused once it has', async () => {
     const e = await setup();

@@ -839,9 +839,11 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       if (!built.ok || !proven(req, res, g, built.action)) return;
       let r: ActionResult;
       try {
-        r = deps.teamAction ? await deps.teamAction(kind, req, g.deviceId) : { status: 503, body: { error: 'team-access-unavailable' } };
+        r = deps.teamAction ? await deps.teamAction(kind, req, g.deviceId) : { status: 503, body: { error: 'team-access-unavailable', detail: 'Team access is not available on this agent.' } };
       } catch (err) {
-        r = { status: 500, body: { error: err instanceof Error ? err.message : 'team-action-failed' } };
+        // The reason goes to the log. The phone gets words a person can use.
+        console.warn(`[team-access] ${kind} failed: ${err instanceof Error ? err.message : String(err)}`);
+        r = { status: 500, body: { error: 'team-action-failed', detail: 'That did not work, and nothing changed. Try again.' } };
       }
       finish(res, 'team-changed', built.action, g, r);
     });

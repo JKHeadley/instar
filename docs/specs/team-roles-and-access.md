@@ -191,7 +191,7 @@ Admin actions on the agent are these and no more: health quick actions, pause an
 
 ### 3.8 What each role sees in the app
 
-Tabs come from `standing.screens`. The server enforces. The app shows a plain "You don't have access to this" on `403 tier-required` rather than "Not signed in".
+Tabs come from `standing.screens`: a guest gets `chat` and `my-access`, a member also `composer` and `new-conversation`. The server enforces. The app shows a plain "You don't have access to this" on `403 tier-required` rather than "Not signed in".
 
 - **Owner:** today's app, plus People under More, with Requests and Activity inside it.
 - **Admin:** Home, Chat, Work (Sessions, Schedule), Capacity (Machines, Accounts, Spend), More (Phones, People).
@@ -291,6 +291,7 @@ Built in 2a:
 
 **Left for later steps, known from the rounds:**
 
+- Step 3: redeem answers a team phone with `approval: 'inviter'` and no code page. `GET /mobile/team/context` carries `record { health, restoreNeeded }` and `mspPhones`, and gate refusals carry a `detail`.
 - Step 3: the Requests list screen in the app. The server half is built: `POST /team/proposals` takes a typed `change` (`grant`, `role` or `invite`) with an optional `reason`, `GET /mobile/team/requests` lists what waits with a line built from typed fields, `POST /mobile/team/requests/:id/decline` closes one, and Approve is the owner's usual signed write with `requestId` added, refused with `409 request-mismatch` unless it does exactly what was asked. Requests expire after three days, a week at most.
 
 - 2b: a canonical receipt when one signed request reaches two machines. Holding the lock through launch across machines rather than checking after spawn. A live session on another machine after a grant syncs, with generation checks at reply acceptance. `ownerOf` naming a dead machine until re-placed. `personKey` on `InboundSenderEnvelope` and `SenderEnvelope`. Slack's `routingKey` mapping.

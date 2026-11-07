@@ -250,6 +250,63 @@ describe('redeeming a team link', () => {
   });
 });
 
+describe('what the app needs to show', () => {
+  const code = (link: string) => new URLSearchParams(link.split('#')[1]).get('c')!;
+
+  it('redeem says the code is with the inviter, and offers no page to open', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    const inv = await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    const dev = makeDevice();
+    const r = await request(e.app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code: code(inv.body.link), deviceName: 'Mia', devicePublicKey: dev.publicKey, appCaps: ['standing'] });
+    expect(r.body.approval).toBe('inviter');
+    expect(r.body.codePageUrl).toBeUndefined();
+    expect(r.body.codeAt).toBeUndefined();
+  });
+
+  it('every gate refusal a phone can hit has words with it', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    const member = phone(e, { userId: 'p-1', role: 'team' });
+    const r = await send(e, member, 'GET', '/mobile/team/context');
+    expect(r.body.error).toBe('owner-phone-required');
+    expect(r.body.detail).toMatch(/owner/);
+    e.gate.now = 'memory-privacy-required';
+    const off = await send(e, member, 'GET', '/mobile/team/people');
+    expect(off.body.error).toBe('memory-privacy-required');
+    expect(off.body.detail).toMatch(/memory privacy/);
+  });
+
+  it('a Face ID action that fails tells the phone nothing of the exception', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    e.svc.teamActionRunner = async () => { throw new Error('ENOENT /secret/path/log.jsonl'); };
+    const r = await faceId(e, owner, 'team-off', '/mobile/team/off', { events: [{ type: 'team-off' }] });
+    expect(r.status).toBe(500);
+    expect(JSON.stringify(r.body)).not.toContain('secret');
+    expect(r.body.detail).toMatch(/Try again/);
+  });
+
+  it('context says when the record needs restoring, before any write fails', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    expect((await send(e, owner, 'GET', '/mobile/team/context')).body.record).toEqual({ health: 'ok', restoreNeeded: false });
+    fs.writeFileSync(path.join(e.dir, 'state', 'team-access', 'confined.json'), 'not json');
+    expect((await send(e, owner, 'GET', '/mobile/team/context')).body.record.restoreNeeded).toBe(true);
+  });
+
+  it('context lists the MSP phones an invite will make read-only', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    expect((await send(e, owner, 'GET', '/mobile/team/context')).body.mspPhones).toEqual([]);
+    phone(e, { userId: 'mo', role: 'msp' });
+    expect((await send(e, owner, 'GET', '/mobile/team/context')).body.mspPhones).toEqual([{ deviceName: 'iPhone', personName: 'Mo' }]);
+  });
+});
+
 describe('reading people', () => {
   it('the owner sees everyone; a member sees only their own row', async () => {
     const e = await setup();

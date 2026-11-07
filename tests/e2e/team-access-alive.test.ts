@@ -121,11 +121,15 @@ describe('team access — production wiring', () => {
     const miaDev = makeDevice();
     const redeemed = await request(app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code, deviceName: 'Mia phone', devicePublicKey: miaDev.publicKey, appCaps: ['standing'] });
     expect(redeemed.status).toBe(200);
+    expect(redeemed.body.approval).toBe('inviter');
+    expect(redeemed.body.codePageUrl).toBeUndefined();
     const mia = client(app, redeemed.body.deviceId, miaDev);
     const waiting = await owner('GET', '/mobile/team/invites/mia');
     expect(waiting.body.waiting).toHaveLength(1);
     expect((await mia('POST', '/mobile/device/confirm', { code: waiting.body.waiting[0].code.replace(/\s/g, '') })).body.status).toBe('active');
 
+    expect((await mia('GET', '/mobile/device')).body.standing.tier).toBe('member');
+    expect((await owner('GET', '/mobile/team/context')).body.record.restoreNeeded).toBe(false);
     // She sees and talks only in what she was given.
     const list = await mia('GET', '/mobile/conversations');
     expect(list.status).toBe(200);

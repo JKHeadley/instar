@@ -6,3 +6,6 @@
 **Signal vs authority:** a request is a signal. The owner's signature stays the only authority.
 **Confined sessions:** gain one route, `POST /team/proposals`. The requester comes from the session, and `GET /team/people` stays refused.
 **Rollback:** remove the routes and the allowlist line; stored requests are ignored.
+
+## What the app needed
+From building against the routes: redeem says the code is with the inviter, `GET /mobile/device` carries `standing`, gate refusals carry words and a failed Face ID action no longer returns exception text, and context reports record health and the MSP phones an invite will affect. All additive. `detail` beside an `error` changes nothing for a client reading only `error`.

@@ -276,7 +276,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
 
   svc.teamActionRunner = (kind, req, deviceId) => inTurn(async () => {
     const log = svc.teamLog();
-    if (!log) return { status: 503, body: { error: 'team-access-unavailable' } };
+    if (!log) return { status: 503, body: { error: 'team-access-unavailable', detail: 'Team access is not available on this agent.' } };
     if (kind === 'team-memory-privacy') {
       const restarting = await deps.requireMemoryPrivacy();
       return { status: restarting ? 200 : 503, body: restarting ? { ok: true, restarting: true } : { error: 'restart-unavailable', detail: 'Memory privacy is set, but this machine could not restart itself.' } };
@@ -294,7 +294,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     }
     if (log.healthState() === 'unreadable') return { status: 409, body: { error: LOG_UNREADABLE.error, detail: LOG_UNREADABLE.detail } };
     const events = parseSignedEvents(req.body);
-    if (events?.length !== 1 || events[0].type !== 'team-off') return { status: 400, body: { error: 'bad-events' } };
+    if (events?.length !== 1 || events[0].type !== 'team-off') return { status: 400, body: { error: 'bad-events', detail: 'The request does not hold valid access changes.' } };
     await underLocks((log.readConfined() ?? []).map((entry) => entry.ref), () => appendRequest(req, deviceId));
     svc.revokePersonPhones(null);
     return { status: 200, body: { ok: true } };
@@ -337,6 +337,13 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     res.json({
       ownerPersonKey: log?.state().ownerPersonKey ?? owner.userId, ownerLinks: owner.links, several: owner.several,
       teamOn: svc.teamOn(), refusal: svc.teamRefusal(), openRequests: requests.open().length,
+      // Restore is offered up front, not only after a write fails.
+      record: { health: log?.healthState() ?? 'absent', restoreNeeded: !!log && (log.healthState() === 'unreadable' || log.readConfined() === null) },
+      // An invite makes these phones read-only into sessions with the owner's reach (§3.2).
+      mspPhones: svc.devices.list().filter((d) => d.role === 'msp' && d.status === 'active').map((d) => {
+        const p = svc.personOfDevice(d);
+        return { deviceName: d.deviceName, personName: p.ok ? p.name : null };
+      }),
       people: [...(log?.state().people.values() ?? [])].map((p) => ({ personKey: p.personKey, name: p.name, role: p.role })),
     });
   });
