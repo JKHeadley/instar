@@ -312,3 +312,13 @@ No raw `rmSync`/`unlinkSync`/`rmdirSync` was introduced by the fixes. No remaini
 **Follow-up (CI, 2026-11-07):** the ledger cache registers/unregisters its better-sqlite3 handle per the SqliteRegistry contract and is allowlisted in the wiring test (same fix as slices 1 and 2). No behaviour change.
 
 **Docs-site addition (2026-11-07):** `site/src/content/docs/reference/cli.md` and `site/src/content/docs/guides/test-as-self.md` document `instar test-as-self` (docs-coverage command floor). Documentation only.
+
+### Note 2026-11-07 — skip guards removed (verifier skip ratchet)
+
+The Studio's local-verify record for this branch was flagged `skipsAdded` by two guards that were
+scaffolding, not tests of behaviour: `describe.skipIf(!hasPython)` on the telemetry-hook test
+(python3 is already an unconditional requirement of 30+ unit tests) and `it.skipIf(!realSentinelOnDisk)`
+on the e2e alive test (the real sentinel module has existed since slice 1). Both now run unconditionally;
+no test body changed. A flagged record would otherwise wait on an independent-review trace in the tree
+before the `instar/local-verify` status could pass. Second-pass reviewer: concurred (no decision surface
+touched — test registration only).

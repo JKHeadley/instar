@@ -9,9 +9,8 @@
  * a PIN); and the wiring is the real one (source guards: the mount next to queue-pace, the setter,
  * routes.ts delegating its `checkMandatePin` closure to mandatePin.ts).
  *
- * The 200 path with the REAL sentinel class (src/monitoring/SkillLearningSentinel.ts, builder 1B)
- * is the last `it`: it runs only once that module exists on disk and is reported as skipped (not
- * passed) until then.
+ * The 200 path with the REAL sentinel class (src/monitoring/SkillLearningSentinel.ts) is the last
+ * `it`: the real sentinel over the real ledger and provenance log.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
@@ -26,8 +25,6 @@ import type { InstarConfig } from '../../src/core/types.js';
 import type { SkillLearningSentinelLike, SkillLearningStatus } from '../../src/monitoring/skillLearning/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
-const REAL_SENTINEL = path.join(process.cwd(), 'src/monitoring/SkillLearningSentinel.ts');
-const realSentinelOnDisk = fs.existsSync(REAL_SENTINEL);
 
 function createMockSessionManager() {
   return { listRunningSessions: () => [], getSession: () => null };
@@ -132,7 +129,7 @@ describe('skill-learning E2E lifecycle (feature is alive on the production init 
     expect(dark.status).toBe(503);
   });
 
-  it.skipIf(!realSentinelOnDisk)('200 path with the REAL SkillLearningSentinel over the REAL ledger and provenance log (runs once builder 1B\'s src/monitoring/SkillLearningSentinel.ts exists)', async () => {
+  it('200 path with the REAL SkillLearningSentinel over the REAL ledger and provenance log', async () => {
     const [{ SkillLearningSentinel }, { Ledger }, { JudgmentProvenanceLog }, { SKILL_LEARNING_DEFAULTS }] = await Promise.all([
       import('../../src/monitoring/SkillLearningSentinel.js'),
       import('../../src/monitoring/skillLearning/Ledger.js'),

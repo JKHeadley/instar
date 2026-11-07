@@ -19,7 +19,6 @@ import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 
-const hasPython = spawnSync('python3', ['-c', 'print(1)'], { encoding: 'utf-8' }).status === 0;
 const STAMP = 'c0ffee'.repeat(10) + 'abcd';
 
 interface Row {
@@ -31,7 +30,7 @@ function hookSource(): string {
   return m.getHookContent('skill-usage-telemetry');
 }
 
-describe.skipIf(!hasPython)('skill-usage-telemetry hook (run for real)', () => {
+describe('skill-usage-telemetry hook (run for real)', () => {
   let home: string;
   let hookPath: string;
 
