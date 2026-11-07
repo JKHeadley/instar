@@ -426,7 +426,7 @@ export class FeedbackTriageService {
           }
           if (selected.account.usedPercent >= this.tickQuotaCeiling) { out.reason = 'quota-margin-lost'; return; }
           primary = this.beginPrimaryCall(authority, epoch, selected.account, retriage ? 'retriage' : null);
-          if (!primary) { out.reason = this.opts.isCanonicalOwner() ? 'call-cap-reached' : 'owner-lost'; return; }
+          if (!primary) { out.reason = this.primaryRefusalReason(authority, epoch, retriage); return; }
           out.calls++;
         } else if (attempt === 1) {
           if (!this.reserveCall(authority, epoch, retriage ? 'retriage' : null)) break;
@@ -513,6 +513,15 @@ export class FeedbackTriageService {
         'An unreadable reading that persists usually means the usage source for that provider is broken, not that quota is spent.',
       category: 'monitoring', priority: 'NORMAL', sourceContext: 'feedback-triage:quota-paused',
     });
+  }
+
+  /** Names why a primary call was refused; only a counter actually at its limit is a cap. */
+  private primaryRefusalReason(authority: AuthorityRecord, epoch: number, retriage: boolean): string {
+    if (!this.opts.isCanonicalOwner() || this.opts.ownerEpoch() !== epoch) return 'owner-lost';
+    if (this.now() >= this.tickDeadline) return 'triage-time-exhausted-rest-due';
+    const capped = this.opts.drainStore.authorityCallsToday(authority, this.now()) >= this.opts.config().maxCallsPerDay ||
+      (retriage && this.opts.store.subcapUsed('retriage') >= RETRIAGE_SUBCAP);
+    return capped ? 'call-cap-reached' : 'authority-admission-refused';
   }
 
   private beginPrimaryCall(authority: AuthorityRecord, epoch: number, account: VerifiedTriageAccount,
