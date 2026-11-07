@@ -802,3 +802,20 @@ describe('a grant this machine would have refused', () => {
     expect(rows[rows.length - 1]).toMatchObject({ kind: 'machine', events: [{ type: 'lower', personKey: 'p-1', ref: 'telegram:50' }] });
   });
 });
+
+describe('a message that waited', () => {
+  it('is judged at delivery: a person removed or a read-only grant is refused, and a hold stops everyone', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1', [grant('telegram:50'), { ...grant('telegram:51'), access: 'read' }]));
+    expect(e.svc.teamMayDeliver('p-1', 'telegram:50')).toBe(true);
+    expect(e.svc.teamMayDeliver('p-1', 'telegram:51')).toBe(false);
+    expect(e.svc.teamMayDeliver('p-1', 'telegram:52')).toBe(false);
+    expect(e.svc.teamMayDeliver('stranger', 'telegram:50')).toBe(false);
+    e.gate.now = 'memory-privacy-required';
+    expect(e.svc.teamMayDeliver('p-1', 'telegram:50')).toBe(false);
+    e.gate.now = 'ok';
+    await send(e, owner, 'POST', '/mobile/team/people/p-1', { events: [{ type: 'person-remove', personKey: 'p-1' }] });
+    expect(e.svc.teamMayDeliver('p-1', 'telegram:50')).toBe(false);
+  });
+});

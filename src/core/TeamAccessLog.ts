@@ -113,20 +113,25 @@ export function toMergeRow(row: TeamAccessRow, events: ReadonlyArray<MergeEvent>
   };
 }
 
+/** The events of a machine row this build understands. */
+function knownEvents(row: MachineRow): MachineEvent[] {
+  return row.events.filter((e) => validateMachineEvent(e) !== null);
+}
+
 /** Enough of a row to hash and verify it. */
 function isRowShaped(r: unknown): r is TeamAccessRow {
   const row = r as { seq?: unknown; kind?: unknown; origin?: unknown; incarnation?: unknown; events?: unknown; machineSig?: { sig?: unknown; machineId?: unknown }; signedOrigin?: { bodyB64?: unknown } } | null;
   if (!row || typeof row !== 'object' || !Number.isSafeInteger(row.seq) || (row.seq as number) < 1) return false;
   if (typeof row.machineSig?.sig !== 'string' || typeof row.machineSig.machineId !== 'string') return false;
   if (row.origin !== undefined && (typeof row.origin !== 'string' || typeof row.incarnation !== 'string')) return false;
-  if (row.kind === 'machine') return Array.isArray(row.events) && row.events.every((e) => validateMachineEvent(e) !== null);
+  if (row.kind === 'machine') return Array.isArray(row.events) && row.events.every((e) => typeof (e as { type?: unknown } | null)?.type === 'string');
   return row.kind === 'request' && typeof row.signedOrigin?.bodyB64 === 'string';
 }
 
 /** What a row locks: its `confine` events, and any conversation it grants. */
 function confinesIn(row: TeamAccessRow): ConfinedEntry[] {
   if (row.kind === 'machine') {
-    return row.events.flatMap((e) => (e.type === 'confine' ? [{ ref: e.ref, ...(e.placeKey ? { placeKey: e.placeKey } : {}), ...(e.personKey ? { personKey: e.personKey } : {}) }] : []));
+    return knownEvents(row).flatMap((e) => (e.type === 'confine' ? [{ ref: e.ref, ...(e.placeKey ? { placeKey: e.placeKey } : {}), ...(e.personKey ? { personKey: e.personKey } : {}) }] : []));
   }
   return (bodyEvents(row) ?? []).flatMap((e) => (e.type === 'grant' ? [{ ref: e.ref, ...(e.ref.startsWith('telegram:') ? {} : { placeKey: `app:${e.ref}` }) }] : []));
 }
@@ -140,7 +145,7 @@ function mergeEventsOf(row: TeamAccessRow): MergeEvent[] {
     return (bodyEvents(row) ?? []).flatMap((e): MergeEvent[] => (
       e.type === 'origin-gone' || e.type === 'team-on' || e.type === 'team-off' || e.type === 'person-add' || e.type === 'person-set' || e.type === 'person-remove' || e.type === 'grant' || e.type === 'grant-remove' ? [e] : []));
   }
-  return row.events.flatMap((e): MergeEvent[] => {
+  return knownEvents(row).flatMap((e): MergeEvent[] => {
     if (e.type !== 'lower') return [];
     if (e.ref) return [{ type: 'grant-remove', personKey: e.personKey, ref: e.ref }];
     if (e.remove) return [{ type: 'person-remove', personKey: e.personKey }];
@@ -192,7 +197,8 @@ export function gapsIn(rows: ReadonlyArray<TeamAccessRow>, verify: (row: TeamAcc
   const gaps = findGaps(merge, (o) => first.get(o) ?? null);
   const settled = new Set(merge.flatMap((r) => r.events.flatMap((e) => (e.type === 'origin-gone' ? [streamKey(e.machine, e.incarnation)] : []))));
   for (const r of rows) {
-    if (verify(r) === 'unknown' && !settled.has(streamOf(r))) gaps.push({ kind: 'unplaced', origin: originOf(r), incarnation: r.incarnation ?? UNCHAINED_INCARNATION, seq: r.seq });
+    const unread = r.kind === 'machine' && knownEvents(r).length < r.events.length;
+    if ((verify(r) === 'unknown' || unread) && !settled.has(streamOf(r))) gaps.push({ kind: 'unplaced', origin: originOf(r), incarnation: r.incarnation ?? UNCHAINED_INCARNATION, seq: r.seq });
   }
   return gaps;
 }
@@ -367,7 +373,7 @@ export function foldRowInto(s: TeamAccessState, row: TeamAccessRow, verify: (row
   s.highestSeq = Math.max(s.highestSeq, row.seq);
   if (verify(row) !== 'verified') return;
   if (row.kind === 'machine') {
-    for (const e of row.events) applyMachineEvent(s, e);
+    for (const e of knownEvents(row)) applyMachineEvent(s, e);
     return;
   }
   if (s.bindings.get(row.signedOrigin.keyHash) !== 'owner') return;
@@ -451,7 +457,8 @@ export class TeamAccessLog {
       try {
         const r = JSON.parse(line) as TeamAccessRow;
         if (!r || typeof r.seq !== 'number' || (r.kind !== 'request' && r.kind !== 'machine')) return null;
-        if (r.kind === 'machine' && (!Array.isArray(r.events) || r.events.some((e) => !validateMachineEvent(e)))) return null;
+        // An event from a newer build is kept and held on (`gapsIn`), never a reason to lose the log.
+        if (r.kind === 'machine' && (!Array.isArray(r.events) || r.events.some((e) => typeof (e as { type?: unknown } | null)?.type !== 'string'))) return null;
         rows.push(r);
       } catch {
         // @silent-fallback-ok — an unparseable middle line makes the whole log unreadable, reported by health().

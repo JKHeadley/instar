@@ -533,8 +533,8 @@ describe('the regular exchange', () => {
     const local = machine('A');
     start(local);
     const before = local.allRows().length;
-    const r = local.ingest([null, {}, { seq: 'x' }, { seq: 1, kind: 'machine', events: [{ type: 'nope' }], machineSig: { sig: 's', machineId: 'B' } }] as never);
-    expect(r.refused).toBe(4);
+    const r = local.ingest([null, {}, { seq: 'x' }, { seq: 1, kind: 'machine', events: [{ type: 'nope' }], machineSig: { sig: 's', machineId: 'B' } }, { seq: 1, kind: 'machine', events: [null], machineSig: { sig: 's', machineId: 'B' } }] as never);
+    expect(r.refused).toBe(5);
     expect(local.allRows()).toHaveLength(before);
   });
 });
@@ -708,3 +708,28 @@ describe('what a peer says about itself', () => {
   });
 });
 const rigAt = async (p: TeamAccessPuller): Promise<boolean> => { await p.tick(); return p.behind(); };
+
+describe('an event from a newer build', () => {
+  const fromNewer = (log: TeamAccessLog) => log.appendMachineEvents([{ type: 'from-the-future', personKey: 'p' } as never]);
+
+  it('is kept, survives a restart and holds, rather than losing the log', () => {
+    const a = machine('A'); const b = machine('B');
+    start(a); sync(a, b);
+    b.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+    fromNewer(a);
+    sync(a, b);
+    expect(b.healthState()).toBe('ok');
+    expect(b.gaps().map((g) => g.kind)).toEqual(['unplaced']);
+    b.load();
+    expect(b.healthState()).toBe('ok');
+    expect(view(b)).toBe(view(a));
+  });
+
+  it('it changes nothing in the state', () => {
+    const a = machine('A');
+    start(a);
+    const before = view(a);
+    fromNewer(a);
+    expect(view(a)).toBe(before);
+  });
+});

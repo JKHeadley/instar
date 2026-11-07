@@ -49,3 +49,8 @@ With native off a machine still keeps the log and the locks, starts nothing in a
 **Over-block:** a native-off machine that is the only one awake leaves the agent with no serving machine while a team is on. Spec position: that only binds an agent whose owner turned team access on.
 **Under-block:** a machine on an old build that returns after a grant cannot be made to refuse, the stated limit in §3.6. Cutting such a peer from `appConversations` replication is not built yet.
 **Rollback:** this is the step that lets a team reach a second machine; restore the `teamGate` machine count and the join refusal to go back.
+
+## Rolling updates and messages that waited
+A machine row with an event this build does not know is kept and holds every team phone, so an older machine waits for its update and never loses its log. A team phone's message carries its person, and the machine that delivers it judges them on what it knows, at the drain and when a peer hands it over: a queued message can outlive a removal.
+**Under-block:** a request row of a kind this build does not know is refused on arrival, and shows as a gap until the machine updates.
+**Not built, on purpose:** `place-applied`. The spec keeps it only as a signal that sessions ended, and nothing reads it, so a machine ending its own sessions on a fold covers what it was for. `eventId` is not built either: one signed request cannot reach two machines, and the spec says so.

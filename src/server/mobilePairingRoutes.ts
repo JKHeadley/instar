@@ -583,6 +583,13 @@ export class MobilePairingService {
   /** Set by the team router: voids a grant from another machine that this machine would have refused. */
   teamGrantCheck: (() => void) | null = null;
 
+  /** May this team person send here, on this machine's own knowledge? */
+  teamMayDeliver(personKey: string, ref: string): boolean {
+    const log = this.teamLog();
+    if (!log || !this.teamStanding(personKey) || this.teamRefusal()) return false;
+    return log.state().owned.get(ref) === personKey || log.grantOf(personKey, ref) === 'use';
+  }
+
   /** The exchange with peers; absent on an agent with no machine identity. */
   teamPuller: TeamAccessPuller | null = null;
 
