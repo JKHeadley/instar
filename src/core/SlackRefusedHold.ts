@@ -297,7 +297,12 @@ export class SlackRefusedHold {
     if (this.deps.manualTimers || !this.started) return;
     const needed = this.state.conversations.length > 0;
     if (needed && !this.timer) {
-      this.timer = setInterval(() => { void this.tick().catch((err) => this.logger.warn(`[SlackRefusedHold] ${err instanceof Error ? err.message : String(err)}`)); }, TICK_MS);
+      this.timer = setInterval(() => {
+        void this.tick().catch((err) => {
+          // @silent-fallback-ok: the next tick retries, and held messages stay on disk
+          this.logger.warn(`[SlackRefusedHold] ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }, TICK_MS);
       this.timer.unref?.();
     } else if (!needed && this.timer) {
       clearInterval(this.timer);
