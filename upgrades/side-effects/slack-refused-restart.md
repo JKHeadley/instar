@@ -60,3 +60,5 @@ Round 1: concern raised, 8 issues (retry bypassing routing, boot race, spawn aft
 ## Later change: Local Verify findings
 
 The ELI16 file moved to the `.eli16.md` name the upgrade checks expect, and two catch blocks gained their in-block marker for the fallback ratchet. No behaviour change.
+
+The emergency-stop `dropAll` line pushed `holdAllSetups` past a fixed 400-character window in `tests/integration/recommended-services-setup.test.ts`. The hold still runs. That test now reads from the emergency-stop branch to the stop message, and it fails when the hold line is deleted. No behaviour change.
