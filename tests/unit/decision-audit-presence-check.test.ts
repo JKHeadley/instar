@@ -102,6 +102,60 @@ describe('evaluateDecisionAuditPresence', () => {
     expect(malformedScope.uncoveredFiles).toEqual(['src/core/Config.ts']);
   });
 
+  describe('deleted in-scope files (PR #2821)', () => {
+    const OLD_BASIS = 'staged-in-scope-additions-plus-deletions';
+    const NEW_BASIS = 'staged-in-scope-paths-including-deleted';
+    const deleted = { status: 'D', file: 'scripts/run-migration.js' };
+
+    it('passes a deleted file under a record written before deleted paths entered scope', () => {
+      const r = evaluateDecisionAuditPresence({
+        changes: [srcChange, deleted, entry],
+        records: [{ scope: { basis: OLD_BASIS, files: ['src/core/Config.ts'] } }],
+      });
+      expect(r.ok).toBe(true);
+    });
+
+    it('passes a deleted file a current record lists', () => {
+      const r = evaluateDecisionAuditPresence({
+        changes: [deleted, entry],
+        records: [{ scope: { basis: NEW_BASIS, files: ['scripts/run-migration.js'] } }],
+      });
+      expect(r.ok).toBe(true);
+    });
+
+    it('fails a deleted file a current record leaves out', () => {
+      const r = evaluateDecisionAuditPresence({
+        changes: [srcChange, deleted, entry],
+        records: [{ scope: { basis: NEW_BASIS, files: ['src/core/Config.ts'] } }],
+      });
+      expect(r.ok).toBe(false);
+      expect(r.uncoveredFiles).toEqual(['scripts/run-migration.js']);
+    });
+
+    it('fails a deleted file with no record at all', () => {
+      const r = evaluateDecisionAuditPresence({ changes: [deleted] });
+      expect(r.ok).toBe(false);
+      expect(r.inScopeFiles).toEqual(['scripts/run-migration.js']);
+    });
+
+    it('does not excuse a deleted file on an unreadable record', () => {
+      for (const record of [{}, { scope: { basis: OLD_BASIS } }]) {
+        const r = evaluateDecisionAuditPresence({ changes: [deleted, entry], records: [record] });
+        expect(r.ok).toBe(false);
+        expect(r.uncoveredFiles).toEqual(['scripts/run-migration.js']);
+      }
+    });
+
+    it('still fails a modified uncovered file under an older record', () => {
+      const r = evaluateDecisionAuditPresence({
+        changes: [srcChange, deleted, entry],
+        records: [{ scope: { basis: OLD_BASIS, files: ['scripts/other.js'] } }],
+      });
+      expect(r.ok).toBe(false);
+      expect(r.uncoveredFiles).toEqual(['src/core/Config.ts']);
+    });
+  });
+
   it('does not treat a directory scope string as covering descendant files', () => {
     const r = evaluateDecisionAuditPresence({
       changes: [srcChange, entry],
