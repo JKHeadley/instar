@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Request } from 'express';
 import {
+  summarizeResourceMachines, MAX_SESSIONS_PER_MACHINE,
   summarizeAccounts, accountCellState, usageWindows, accountEmail, kindWord,
   summarizeSpend, summarizeRecorded, summarizeLimits, summarizeConversations, windowOf, basisWord, modelWord, doorWord, routeStatusWord,
   summarizeResources, ownerOrBearer, singleFlight, rowKey,
@@ -381,6 +382,63 @@ describe('resources', () => {
     expect(old.total!.stale).toBe(true);
     expect(old.headline).toBe('Last recorded 20 min ago: Instar was using 12% CPU and 1.0 GB of memory (peak 24% in the last hour). No newer reading.');
     expect(summarizeResources([], new Map(), 'Studio', NOW).headline).toBe('No total reading yet.');
+  });
+});
+
+describe('resources across every machine', () => {
+  const proc = (key: string, cpu: number, mem = 1e9, ageMs = 30_000) => ({ key, name: key, ended: false, stale: ageMs > SAMPLE_STALE_MS, cpuPercent: cpu, memoryBytes: mem, avgCpuPercent: cpu, peakCpuPercent: cpu, peakMemoryBytes: mem, newestAt: new Date(NOW - ageMs).toISOString() });
+  const info = (key: string, name: string, extra: Partial<{ isSelf: boolean; leading: boolean; sessions: number; maxSessions: number }> = {}) => ({ key, name, isSelf: false, leading: false, sessions: 2, maxSessions: 10, version: '1.3.1703', ...extra });
+  const body = (cpu: number, mem: number, sessions = 0) => ({ enabled: true, headline: 'x', total: proc('total', cpu, mem), server: proc('server', 1), sessions: Array.from({ length: sessions }, (_, i) => proc(`s${i}`, 10 - i)) });
+
+  it('combines every machine, names the busiest, and keeps a silent machine at no numbers (never zeros)', () => {
+    const r = summarizeResourceMachines([
+      { info: info('a', 'Mac Studio', { isSelf: true, leading: true, sessions: 14, maxSessions: 25 }), answer: { ok: true, body: body(43, 6.1e9, 8) } },
+      { info: info('b', 'Laptop', { sessions: 3, maxSessions: 15 }), answer: { ok: true, body: body(12, 2e9) } },
+      { info: info('c', 'Mama PC'), answer: { ok: false, reason: 'not-answering' } },
+    ], NOW);
+    expect(r.combined).toMatchObject({ machines: 3, answering: 2, notAnswering: ['Mama PC'], memoryBytes: 8.1e9, runningSessions: 19, maxSessions: 50 });
+    expect(r.combined.headline).toBe('2 of 3 machines · 8.1 GB of memory · 19 sessions');
+    expect(r.combined.busiest).toBe('Busiest: Mac Studio, 43% CPU');
+    const mama = r.machines.find((m) => m.name === 'Mama PC')!;
+    expect(mama).toMatchObject({ state: 'not-answering', line: 'Not answering', total: null, server: null, sessions: [] });
+    // Not answering first, so the warning is on top; then the leading machine.
+    expect(r.machines.map((m) => m.name)).toEqual(['Mama PC', 'Mac Studio', 'Laptop']);
+    const studio = r.machines.find((m) => m.name === 'Mac Studio')!;
+    expect(studio.sessions).toHaveLength(MAX_SESSIONS_PER_MACHINE);
+    expect(studio).toMatchObject({ sessionsShownOf: 8, line: '43% CPU · 6.1 GB' });
+  });
+
+  it('a machine that answers without recording is "not recorded there"; offline is named', () => {
+    const r = summarizeResourceMachines([
+      { info: info('a', 'Studio'), answer: { ok: true, body: { enabled: false, headline: 'off' } } },
+      { info: info('b', 'Mini'), answer: { ok: false, reason: 'offline' } },
+    ], NOW);
+    expect(r.machines.map((m) => [m.name, m.state, m.line])).toEqual([['Mini', 'not-answering', 'Offline'], ['Studio', 'off', 'Not recorded there']]);
+    expect(r.combined).toMatchObject({ answering: 0, off: ['Studio'], memoryBytes: null });
+    expect(r.combined.headline).toBe("No machine's resource use could be read right now.");
+  });
+
+  it('a stale reading is dated and left out of the combined memory', () => {
+    const r = summarizeResourceMachines([
+      { info: info('a', 'Studio'), answer: { ok: true, body: { enabled: true, headline: 'x', total: proc('total', 30, 1e9, 20 * 60_000), sessions: [] } } },
+      { info: info('b', 'Mini'), answer: { ok: true, body: body(5, 2e9) } },
+    ], NOW);
+    expect(r.machines.find((m) => m.name === 'Studio')!.line).toBe('Last read 20 min ago: 30% CPU · 1.0 GB');
+    expect(r.combined.memoryBytes).toBe(2e9);
+    expect(r.combined.busiest).toBe('Busiest: Mini, 5% CPU');
+  });
+
+  it("a peer's answer is re-read through the allowlist: bad keys dropped, text scrubbed and capped", () => {
+    const r = summarizeResourceMachines([
+      { info: info('a', 'Studio'), answer: { ok: true, body: { enabled: true, headline: 'h', total: proc('total', 1), extra: '/etc/secret', sessions: [
+        { ...proc('ok1', 3), name: `token=${'z'.repeat(30)} ${'n'.repeat(200)}`, pid: 99, path: '/Users/x' },
+        { ...proc('bad key with spaces', 2) },
+      ] } } },
+    ], NOW);
+    const m = r.machines[0];
+    expect(m.sessions).toHaveLength(1);
+    expect(m.sessions[0].name.length).toBeLessThanOrEqual(80);
+    expect(JSON.stringify(r)).not.toMatch(/z{30}|\/etc\/secret|\/Users\/x|"pid"/);
   });
 });
 
