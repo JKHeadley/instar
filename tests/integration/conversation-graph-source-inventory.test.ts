@@ -209,6 +209,16 @@ describe('all-member durable source inventory preserves exact machine-local open
   const files=fs.readdirSync(path.join(members[0].identity.baseDir,'state','conversation-graph-source-observations'));
   for(const file of files)expect(fs.readFileSync(path.join(members[0].identity.baseDir,'state','conversation-graph-source-observations',file),'utf8')).not.toContain('private');
  });
+ it('adds no source record for a new message, and a rename still adds one',()=>{
+  const member=members[0],flat=member.flat,base=flat.telegramTopics,first=member.capture.capturePage();
+  try{
+   flat.telegramTopics=()=>base!().map(topic=>({...topic,lastActivity:'2026-11-05T10:05:00.000Z'}));
+   expect(member.capture.capturePage().observations.map(row=>row.capture.sourceId)).toEqual(first.observations.map(row=>row.capture.sourceId));
+   flat.telegramTopics=()=>base!().map(topic=>({...topic,topicName:'renamed telegram title'}));
+   const renamed=member.capture.capturePage().observations.map(row=>row.capture.sourceId);
+   expect(renamed.filter(id=>!first.observations.some(row=>row.capture.sourceId===id))).toHaveLength(1);
+  }finally{flat.telegramTopics=base;}
+ });
  it('reconstructs all exact aliases on survivor after origin loss without consulting origin registry',async()=>{
   const expected=members.flatMap(m=>localConversationListPage(m.flat,100,null).rows.map(({id,platform,title,lastActivity,machine})=>({id,platform,title,lastActivity,...(machine===undefined?{}:{machine})})));
   const records=await certifyAll();expect(records).toHaveLength(4);

@@ -31,7 +31,7 @@ export class ConversationGraphSourceInventoryRuntime {
  private readonly counts={lastTickAt:null as string|null,lastPassPartial:true,observed:0,pending:0,committed:0,failed:0};
  constructor(private readonly options:ConversationGraphSourceInventoryRuntimeOptions){
   this.capture=new ConversationGraphSourceInventoryCapture({agentId:options.membership().agentId,identity:options.identity,ownerPublicKey:options.ownerPublicKey,
-   membership:options.membership,flat:options.flatDeps,registry:options.conversations,telegramChatId:options.telegramChatId,localErasure:options.runtime.localErasure,acceptedInventory:()=>({source:options.runtime.source,reader:options.runtime.reader,dropped:options.runtime.droppedOriginRegistry})});
+   membership:options.membership,flat:options.flatDeps,registry:options.conversations,telegramChatId:options.telegramChatId,localErasure:options.runtime.localErasure,noteLocalActivity:(ref,lastActivity)=>options.runtime.noteLocalActivity?.(ref,lastActivity),acceptedInventory:()=>({source:options.runtime.source,reader:options.runtime.reader,dropped:options.runtime.droppedOriginRegistry})});
   this.sweep=options.runtime.source&&options.runtime.reader&&options.runtime.droppedOriginRegistry?new ConversationGraphSourceSweepCapture({agentId:options.membership().agentId,identity:options.identity,ownerPublicKey:options.ownerPublicKey,membership:options.membership,flat:options.flatDeps,registry:options.conversations,telegramChatId:options.telegramChatId,localErasure:options.runtime.localErasure,source:options.runtime.source,reader:options.runtime.reader,dropped:options.runtime.droppedOriginRegistry}):null;
  }
  start():void {

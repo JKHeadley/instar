@@ -37,6 +37,18 @@ export interface GraphSourceObservationCore {
 }
 /** No transcript/preview or claimed owner role is part of inventory. */
 export type GraphSourceFlatRow=Pick<ConversationListRow,'id'|'platform'|'title'|'lastActivity'|'machine'>;
+/** How old a signed activity time may get before one new record refreshes it. */
+export const GRAPH_SOURCE_ACTIVITY_REFRESH_MS=7*24*60*60*1000;
+/** Every record is permanent and a removal carries them all, so a new message
+ * must not add one. Only a real change of the row, or an activity time that has
+ * fallen a week behind, does. This machine's live activity reaches the read
+ * through `noteLocalActivity`, so ordering does not wait for a record. */
+export function graphSourceRowUnchanged(prior:GraphSourceFlatRow,row:GraphSourceFlatRow):boolean{
+ const {lastActivity:priorActivity,...priorRest}=prior,{lastActivity:activity,...rest}=row;
+ if(canonicalJson(priorRest)!==canonicalJson(rest))return false;
+ if(!activity||priorActivity===activity)return true;if(!priorActivity)return false;
+ return Date.parse(activity)-Date.parse(priorActivity)<GRAPH_SOURCE_ACTIVITY_REFRESH_MS;
+}
 export interface GraphSourceObservationPayload {v:1;salt:string;sourceId:string;subject:ConversationRef;producerMachineId:string;producerSequence:number;row:GraphSourceFlatRow}
 export interface CapturedGraphSourceObservation {capture:SignedGraphSourceObservation;encryptedPayload:GraphEncryptedBundle}
 export type SignedGraphSourceOperation=SignedGraphSourceObservation|SignedGraphSourceSweepCheckpoint;
@@ -180,6 +192,7 @@ export interface GraphSourceInventoryCaptureDeps {
  agentId:string;identity:MachineIdentityManager;ownerPublicKey:crypto.KeyLike;membership():GraphMembershipEpoch;
  flat:MobileConversationRouteDeps;registry:ConversationRegistry;telegramChatId:string|null;now?:()=>number;
  localErasure?:ConversationGraphLocalErasureFence;
+ noteLocalActivity?(ref:ConversationRef,lastActivity:string|null):void;
  acceptedInventory():{source:ConversationGraphReplication;reader:ReplicatedStoreReader;dropped:DroppedOriginRegistry};
 }
 /** Capture accepts no wire row, title, canonical id or owner claim. The input
@@ -235,6 +248,7 @@ export class ConversationGraphSourceInventoryCapture {
   for(const raw of page.rows){
    const ref=this.ref(raw);const row:GraphSourceFlatRow={id:raw.id,platform:raw.platform,title:raw.title,lastActivity:raw.lastActivity,...(Object.hasOwn(raw,'machine')?{machine:raw.machine}:{})};
    if(!ref||!validRow(row,ref,local.machineId)){partial=true;continue;}
+   this.deps.noteLocalActivity?.(ref,row.lastActivity);
    if(fs.existsSync(this.fence(ref))||this.localErasure.isDenied({sourceKind:'conversation-metadata',sourceId:canonicalHash(ref)})){partial=true;continue;}
    const slot=canonicalHash({agentId:this.deps.agentId,producerMachineId:local.machineId,subject:ref,alias:{platform:row.platform,id:row.id,...(Object.hasOwn(row,'machine')?{machine:row.machine}:{})}});
    const file=path.join(this.deps.identity.baseDir,'state','conversation-graph-source-observations',`${slot}.json`);
@@ -244,7 +258,7 @@ export class ConversationGraphSourceInventoryCapture {
      if(exactFields(old,['capture','encryptedPayload'])&&verifyGraphSourceObservationCapture(old.capture,m)){
       const bytes=openGraphBundle(old.encryptedPayload,local.machineId,this.deps.identity.loadEncryptionKey(),{agentId:this.deps.agentId,eventId:sourceObservationEventId(old.capture.sourceId)});
       let prior:GraphSourceObservationPayload|null;try{prior=validateGraphSourceObservationPayload(JSON.parse(bytes.toString()),old.capture);}finally{bytes.fill(0);}
-      if(prior&&old.capture.producerSequence===frontier.sequence&&old.capture.sourceId===frontier.sourceId&&old.capture.payloadHash===frontier.payloadHash&&canonicalJson(prior.row)===canonicalJson(row)){observations.push(old);continue;}
+      if(prior&&old.capture.producerSequence===frontier.sequence&&old.capture.sourceId===frontier.sourceId&&old.capture.payloadHash===frontier.payloadHash&&graphSourceRowUnchanged(prior.row,row)){observations.push(old);continue;}
      }
     }catch{/* @silent-fallback-ok: corrupt cache explicitly marks returned capture partial and grants no cached authority. */partial=true;} // corrupt cache never grants authority; new actual observation is independently captured
    }

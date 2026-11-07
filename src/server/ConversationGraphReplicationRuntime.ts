@@ -52,7 +52,7 @@ import type {GraphLocalOwnerIntentInput,GraphLocalOwnerIntent,GraphQueuedIntentV
 import type {GraphAuthorizationProof} from '../core/ConversationGraphReplicationProof.js';
 import {sealGraphBundle} from '../core/GraphWitnessCrypto.js';
 import {validateGraphOperationCore,graphOperationIdentity,deriveGraphErasureIdentity,validateGraphApplicationSource} from '../core/ConversationGraphOperation.js';
-import {validateGraphEvent,validateNodeRef} from '../core/conversationGraph.js';
+import {nodeKey,validateGraphEvent,validateNodeRef,type ConversationRef} from '../core/conversationGraph.js';
 import {ReplicatedStoreReader} from '../core/ReplicatedStoreReader.js';
 import {ReplicatedPeerStreamReader} from '../core/ReplicatedPeerStreamReader.js';
 import type {ReplicatedKindRegistry} from '../core/ReplicatedRecordEnvelope.js';
@@ -492,8 +492,12 @@ export class ConversationGraphReplicationRuntime {
   else{const inventory=inspectGraphCustodyRoleFiles(this.options.stateDir);if(inventory.roles.length||inventory.debt.length)throw new GraphCustodyRolePurgeDebt([...inventory.debt,...inventory.roles.map(role=>({scope:'custody-role:'+canonicalHash(role.databasePath),reason:'authority-unconfirmed'}))]);custodyRoles=inventory.inventoryHash;}
   return {purgeInventoryHash:canonicalHash({v:1,target,source:hashes[0],intake:hashes[1],transfer:hashes[2],cache,custodyRoles,ownedControlFrames:this.ownedControlFrames?.assertLocalErasurePurged(target)??null})};
  }
+ /** Newest activity seen on this machine. Ordering only: it adds no conversation and no authority. */
+ private readonly localActivity=new Map<string,string>();
+ noteLocalActivity(ref:ConversationRef,lastActivity:string|null):void{if(lastActivity)this.localActivity.set(nodeKey(ref),lastActivity);}
  inventory(){const retained=this.retainedProjection();const inventory=materializeGraphSourceInventory({source:this.source,reader:this.reader,dropped:this.options.droppedOrigins,membership:this.config.membership});
-  return {...inventory,partial:inventory.partial||retained.partial,olderRevision:retained.olderRevision,verifiedAt:retained.verifiedAt};}
+  const conversations=inventory.conversations.map(row=>{const live=this.localActivity.get(nodeKey(row.ref));return live&&live>(row.lastActivity??'')?{...row,lastActivity:live}:row;});
+  return {...inventory,conversations,partial:inventory.partial||retained.partial,olderRevision:retained.olderRevision,verifiedAt:retained.verifiedAt};}
  /** Negative-only lookup: historical certified opaque creator identity may
   * select a forget target before restored serving readiness is established. */
  erasureHeaderId(rawEffort:unknown):string|null{

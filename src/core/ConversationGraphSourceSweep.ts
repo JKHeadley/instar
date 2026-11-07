@@ -28,8 +28,8 @@ export interface GraphSourceSweepCore {
  receipt:{kind:'source-observation-record';id:string};machineId:string;createdAt:string;payloadHash:string;
 }
 export interface CapturedGraphSourceSweepCheckpoint {capture:SignedGraphSourceSweepCheckpoint;encryptedPayload:GraphEncryptedBundle}
-/** An unchanged inventory republishes only this often: each checkpoint is about ten permanent files. */
-export const GRAPH_SOURCE_SWEEP_HEARTBEAT_MS=60*60*1000;
+/** An unchanged inventory republishes only this often: each checkpoint is about ten permanent files, and a removal must carry them all. */
+export const GRAPH_SOURCE_SWEEP_HEARTBEAT_MS=24*60*60*1000;
 /** Must outlast missed heartbeats. Stale only marks coverage; rows stay readable. */
 export const GRAPH_SOURCE_SWEEP_STALE_MS=3*GRAPH_SOURCE_SWEEP_HEARTBEAT_MS;
 /** Publish only when the inventory changed or the heartbeat is due. Unchanged checkpoints are permanent files, so an idle agent must not write one per scan. */

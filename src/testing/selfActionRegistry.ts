@@ -4103,14 +4103,14 @@ const presenceUsageNotice: SelfActionController = {
 const graphSourceSweepCheckpointRetry: SelfActionController = {
   id: 'graph-source-sweep-checkpoint-retry',
   actionVerb: 'retry',
-  models: 'src/server/ConversationGraphSourceInventoryRuntime.ts (run — sourceSweepCheckpointDue, publish on change plus an hourly heartbeat)',
+  models: 'src/server/ConversationGraphSourceInventoryRuntime.ts (run — sourceSweepCheckpointDue, publish on change plus a daily heartbeat)',
   modelsPath: 'src/server/ConversationGraphSourceInventoryRuntime.ts',
   restartPosture: { pressureSurvives: false, resetSafeReason: 'The last checkpoint is remembered in memory, so a restart publishes one more checkpoint and then settles.' },
   boundK: 170,
   perTargetBoundK: 170,
   ticks: 60 * 24 * 7,
   tickMs: 60_000,
-  eternalSentinel: { reason: 'Coverage readers need a recent signed checkpoint, so a live producer keeps publishing once an hour while nothing changes.', rateFloorMs: GRAPH_SOURCE_SWEEP_HEARTBEAT_MS },
+  eternalSentinel: { reason: 'Coverage readers need a recent signed checkpoint, so a live producer keeps publishing once a day while nothing changes.', rateFloorMs: GRAPH_SOURCE_SWEEP_HEARTBEAT_MS },
   delegatedGiveUp: 'The hourly heartbeat; a scan that does not commit publishes nothing new',
   makeUnderPressure(f, sink) {
     let last: { hash: string; at: number } | null = null;
