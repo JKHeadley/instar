@@ -14,6 +14,7 @@ import { createRoutes } from '../../src/server/routes.js';
 import { MachinePoolRegistry } from '../../src/core/MachinePoolRegistry.js';
 import type { MachineLoadReport } from '../../src/core/machineLoadReport.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { heavyReservations, acceptedHeavy } from '../../src/core/heavyWorkPlacement.js';
 
 const GIB = 1024 ** 3;
 interface Server { url: string; close: () => Promise<void> }
@@ -49,6 +50,9 @@ describe('resource-aware placement routes', () => {
   }
 
   beforeEach(async () => {
+    // The reservation lists are process-wide; each test starts from none.
+    heavyReservations.clear();
+    acceptedHeavy.clear();
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rap-'));
     registry = new MachinePoolRegistry({
       listMachines: () => [

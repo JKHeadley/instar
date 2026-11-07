@@ -213,6 +213,10 @@ export class PendingHeavyWork {
     this.prune();
     return this.entries.filter((e) => e.machineId === machineId).length;
   }
+  /** Drop every entry (test isolation; never called by runtime code). */
+  clear(): void {
+    this.entries = [];
+  }
   private prune(): void {
     const cutoff = this.now() - PENDING_HEAVY_TTL_MS;
     if (this.entries.length && this.entries[0].at < cutoff) this.entries = this.entries.filter((e) => e.at >= cutoff);
