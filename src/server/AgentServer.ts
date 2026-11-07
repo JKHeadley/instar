@@ -28,6 +28,7 @@ import { createHash, createHmac, timingSafeEqual, createPrivateKey, createPublic
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
 import { resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { resolveCorrectionLearningMode } from '../core/correctionLearningMode.js';
 import { JobCostReport } from '../scheduler/JobCostReport.js';
 import { mountJobCostRoutes } from './jobCostRoutes.js';
 import { JobTriageStateStore } from '../scheduler/JobTriageStateStore.js';
@@ -366,6 +367,7 @@ import { sendMentorVisibleEcho, type MentorVisibleEchoOptions } from '../core/Me
 import { registerBurnDetectionSubscriber } from '../monitoring/BurnDetectionSubscriber.js';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { bridgeNativeHealToDegradation } from '../monitoring/NativeHealDegradationBridge.js';
+import { failureReplicationEmitter, type FailureReplicaReader } from '../core/FailureCalloutReplicatedStore.js';
 import { CLASS_REVIEW_STORE_KEY, buildClassReviewRecordData } from '../core/ClassReviewReplicatedStore.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
 import { DarkFlagMaturationRegistry } from '../monitoring/DarkFlagMaturationRegistry.js';
@@ -847,6 +849,8 @@ export class AgentServer {
 
   /** Late-bound after the peer-stream reader exists. The ClassReviewStore folds
    * local + peer lifecycle rows at its lowest read primitive. */
+  setFailureReplicaReader(reader: FailureReplicaReader | null): void { this.correctionLedger?.setFailureReplicaReader(reader); }
+
   setClassReviewRemoteReader(reader: import('../monitoring/ClassReviewStore.js').ClassReviewRemoteReader | null): void {
     this.classReviewStore?.setRemoteReader(reader);
   }
@@ -4082,16 +4086,15 @@ export class AgentServer {
       this.revertDetector = null;
     }
 
-    // Correction & Preference Learning Sentinel (docs/specs/CORRECTION-PREFERENCE-
-    // LEARNING-SENTINEL-SPEC.md) — Slice 1b ledger. Ships OFF; constructed only
-    // when enabled (else the inline /corrections routes 503-stub via the null
-    // ledger). SIGNAL-ONLY — never blocks/rewrites an outbound message. Own
-    // try/catch so a failure here can never cascade into other init.
+    // Shared correction ledger: serious-failure forensics are default-on;
+    // preference learning/promotion remains separately opt-in. Turning off
+    // both leaves /corrections unavailable. SIGNAL-ONLY: never blocks messages.
     try {
-      if (options.config.monitoring?.correctionLearning?.enabled === true && options.config.stateDir) {
+      if (options.config.stateDir && (resolveCorrectionLearningMode(options.config).captureEnabled || fs.existsSync(path.join(options.config.stateDir, 'correction-ledger.db')))) {
         this.correctionLedger = new CorrectionLedger({
           dbPath: path.join(options.config.stateDir, 'correction-ledger.db'),
         });
+        if (options.replicatedRecordEmitter) this.correctionLedger.setFailureReplicationEmitter(failureReplicationEmitter(options.replicatedRecordEmitter));
       }
     } catch (err) {
       console.warn('[instar] correction-learning ledger init failed (non-fatal):', err);
