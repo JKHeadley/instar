@@ -92,3 +92,22 @@ Limits on that claim:
 **Disclosed limit, not fixed:** owner-reach scheduled jobs can read member words from message logs, and nothing but model behaviour stops those words steering a job. The overseer ruled it not blocking 2a (it sits inside the owner role) with its own fix tracked as fb-27cc594b-a49.
 
 Most valuable finds in 2a: slash commands and intercept words reaching agent-wide controls from a team phone; confined sessions unable to read their own context; a Slack stop killing every session; member text loading into owner-reach sessions after a revoke; backup restore rolling back revocations; a clock moving backward undoing a removal.
+
+## Code review of step 2a (2026-11-06 to 2026-11-07)
+
+The spec rounds above read the design. Once 2a was built, reviewers read the code: six rounds from the same model family and four passes from Codex, each given the code and not the reasoning.
+
+They found over thirty real defects the spec rounds and a full route-by-role table had not. The ones that mattered most:
+
+- Any team phone could read any Telegram topic through an altered address, because the gate matched fewer paths than the allow rule and the handler parsed `51x` as 51.
+- The conversation list showed every topic's name and a preview.
+- A person's own conversation was never confined.
+- A confined session could plant a link and have the unsandboxed server overwrite an owner's file.
+- A confined session could report a flag-shaped session id that reached `--resume` at the next launch. This and the Linux `.curlrc` write were on main for any confined session, so they shipped separately in PR 2910.
+- On an ordinary agent the owner could invite people but not turn team access off.
+- A restore could lock an owner out of every conversation.
+- A row lost from the middle of the log could quietly give back what it took away.
+
+What this says about the process: a design review cannot see wiring, and a test that stops at the gate says nothing about what a handler serves. Several fixes were themselves wrong the first time. One was wired only on a path production does not use, and a stop handler had a second unfixed copy. Removing each fix to confirm its test goes red caught three tests that could not fail.
+
+Stopped on content. The last two rounds found no way to gain access, only ordering and recovery edges, which were fixed. Codex's label read SERIOUS ISSUES on every pass, including the last, so a clean label was never reached. A live run on the final build passed; a model's reply under confinement was not seen, because the test agent's session stopped at "Login expired".
