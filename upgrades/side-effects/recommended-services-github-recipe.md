@@ -97,6 +97,7 @@ A revert removes the recipe, the surface and the attention plumbing; `listsCopie
 | Repository made public → check fails, push refused, ONE attention item (HIGH) | `github-verify-while-public.json`, `github-sync-while-public.json`, `github-attention-while-public.json`; a second failing check raised no second item; `pushed_at` unchanged |
 | Private again → check passes | `github-verify-after-private-again.json` |
 | No with switch-off on the confirm page | `github-confirm-no-switchoff-response.json` (shutdown authorized, 23:48:48Z); `github-setup-state-after-switch-off.json` (stopped 23:48:49Z); token gone from the vault; `gitBackup.enabled: false` written; repository still present and private (GitHub API) |
+| Owner told, in plain words: the public-repository attention item (msg 114, attention topic, 23:48:16Z) and the switch-off notice (msg 115, lifeline topic, 23:48:56Z) | `group-80-after-switchoff.json`. The notice's first send was held (`destination-not-authorized`, logged as a degradation) and delivered seven seconds later by the origin service's recovery; the person saw one message. |
 
 Found in the proof, triaged:
 - The first push right after GitHub created the repository failed once; the setup session retried and it worked. Fixed here: `sync` retries the first push once, after 3 s, only for a repository it just created (`GITHUB_FIRST_PUSH_RETRY_MS`), pinned by a unit test.
