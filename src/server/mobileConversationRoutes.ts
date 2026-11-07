@@ -382,7 +382,10 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const ownerPerson = creator ? conversationOwnerFor(creator, deps.pairing.machineId()) : null;
     mutation(res, deviceId, body.requestId, hashOf('create', title),
       { op: 'create', conversationKey, title, ...(ownerPerson ? { ownerMachine: ownerPerson.machineId, ownerUser: ownerPerson.userId } : {}) },
-      () => svc!.applyCreate(deviceId, body.requestId as string, conversationKey, title, ownerPerson));
+      () => {
+        if (creator?.role === 'team' && creator.userId) deps.pairing.confineOwnConversation(conversationKey, creator.userId);
+        return svc!.applyCreate(deviceId, body.requestId as string, conversationKey, title, ownerPerson);
+      });
   });
 
   // ── List ──
@@ -433,7 +436,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // People and roles §3.4: an MSP phone sees Telegram topics and its own app conversations only
     // (filtered after the merge, so the cursor still advances over rows it does not see).
     const visible = (rows: ConversationListRow[]): ConversationListRow[] => rows.filter((r) => {
-      if (r.platform === 'telegram') return true;
+      if (r.platform === 'telegram') return deviceMayUse(deps.pairing, req, `telegram:${String(r.id)}`);
       if (r.platform === 'slack') return deviceMayUse(deps.pairing, req, 'slack:');
       return deviceMayUse(deps.pairing, req, String(r.id));
     });

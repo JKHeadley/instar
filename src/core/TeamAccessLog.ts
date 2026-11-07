@@ -88,6 +88,20 @@ export const TEAM_ACCESS_WRITE_PATHS: readonly RegExp[] = [
   /^\/mobile\/team\/invites$/, /^\/mobile\/team\/grants$/, /^\/mobile\/team\/people\/[^/]+$/, /^\/mobile\/team\/off$/,
 ];
 
+/** Which events each route may carry. A row's signature covers its path, so this binds what was signed. */
+export function eventsFitPath(pathWithQuery: string, events: ReadonlyArray<{ type: string; personKey?: string }>): boolean {
+  const person = /^\/mobile\/team\/people\/([^/]+)$/.exec(pathWithQuery);
+  if (person) {
+    let key = person[1];
+    try { key = decodeURIComponent(key); } catch { return false; } // @silent-fallback-ok — a malformed path fits nothing
+    return events.every((e) => (e.type === 'person-set' || e.type === 'person-remove') && e.personKey === key);
+  }
+  const allowed = pathWithQuery === '/mobile/team/invites' ? ['team-on', 'owner-pin', 'person-add', 'grant']
+    : pathWithQuery === '/mobile/team/grants' ? ['grant', 'grant-remove']
+      : pathWithQuery === '/mobile/team/off' ? ['team-off'] : [];
+  return events.every((e) => allowed.includes(e.type));
+}
+
 /**
  * A row's verdict. The phone's signature is re-checked over the stored body, the path must be an
  * access route, and the machine must have signed both the receipt and the row. A key this machine
@@ -120,6 +134,10 @@ export function verifyTeamAccessRow(row: TeamAccessRow, ledger: LedgerView, mach
   if (!Number.isFinite(activated) || atMs < activated || (revoked !== null && atMs >= revoked)) return 'failed';
   if (!/^\d{10,16}$/.test(o.timeMs) || Math.abs(Number(o.timeMs) - atMs) > DEVICE_TIME_WINDOW_MS) return 'failed';
   if (!row.receipt) return 'failed';
+  // The signature binds the path, and the path binds what it may carry: `/off` is the Face ID route.
+  let signed: ReturnType<typeof parseSignedEvents> = null;
+  try { signed = parseSignedEvents(JSON.parse(Buffer.from(o.bodyB64 ?? '', 'base64').toString('utf8'))); } catch { signed = null; } // @silent-fallback-ok — an unparseable body is a failed row, on the next line
+  if (!signed || !eventsFitPath(o.pathWithQuery as string, signed)) return 'failed';
   const receipt = verifyMachineSignature(machineKey, row.receipt, receiptPayload(sha256Hex(canonical), row.receivedAt, row.receipt.machineId), atMs);
   if (receipt === 'bad') return 'failed';
   return receipt === 'ok' && rowSig === 'ok' ? 'verified' : 'unknown';
@@ -265,8 +283,10 @@ export class TeamAccessLog {
       if (!rows) { this.rows = []; this.folded = emptyState(); this.health = 'unreadable'; return; }
       this.rows = rows;
       this.folded = foldRows(rows, this.opts.verify);
-      // A log below last-good was rolled back: count it as lost, whatever it says.
-      this.health = this.folded.highestSeq < this.seedSeq ? 'unreadable' : 'ok';
+      // A log below last-good was rolled back: count it as lost, whatever it says. On one machine every
+      // phone is in the ledger, so a row it cannot place means the ledger failed: strict, not empty.
+      const unplaced = rows.some((r) => r.kind === 'request' && this.opts.verify(r) === 'unknown');
+      this.health = this.folded.highestSeq < this.seedSeq || unplaced ? 'unreadable' : 'ok';
     } catch (err) {
       console.warn(`[team-access] log unreadable: ${err instanceof Error ? err.message : String(err)}`);
       this.rows = []; this.folded = emptyState(); this.health = 'unreadable';
@@ -301,6 +321,14 @@ export class TeamAccessLog {
     this.rows.push(row);
     this.folded = foldRows(this.rows, this.opts.verify);
     this.health = 'ok';
+    this.snapshot();
+  }
+
+  /** The snapshot a rollback is judged against. Failing to take one never undoes a change. */
+  private snapshot(): void {
+    try { this.writeLastGood(); } catch (err) {
+      console.warn(`[team-access] last-good not written: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   private requireSigner(): MachineSigner {
@@ -310,6 +338,7 @@ export class TeamAccessLog {
 
   appendMachineEvents(events: MachineEvent[]): MachineRow {
     const signer = this.requireSigner();
+    if (this.health === 'unreadable') throw new Error('team-access-unreadable');
     const base = { seq: this.nextSeq(), kind: 'machine' as const, at: new Date((this.opts.now ?? Date.now)()).toISOString(), events };
     const row: MachineRow = { ...base, machineSig: signer.sign(rowPayload(base)) };
     this.appendLine(row);
@@ -320,6 +349,9 @@ export class TeamAccessLog {
     const signer = this.requireSigner();
     const base = { seq: this.nextSeq(), kind: 'request' as const, ...req };
     const row: RequestRow = { ...base, machineSig: signer.sign(rowPayload(base)) };
+    if (this.health === 'unreadable') throw new Error('team-access-unreadable');
+    // A row the fold would ignore must never answer ok: the change would not have happened.
+    if (this.opts.verify(row) !== 'verified') throw new Error('team-access-row-refused');
     this.appendLine(row);
     return row;
   }
@@ -372,6 +404,7 @@ export class TeamAccessLog {
     if (!entries) throw new Error('team-access-confined-unreadable');
     if (entries.some((e) => e.ref === entry.ref)) return;
     this.writeConfined([...entries, entry]);
+    this.snapshot();
   }
 
   isConfined(ref: string): boolean | null {

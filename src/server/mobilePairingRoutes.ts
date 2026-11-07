@@ -489,6 +489,18 @@ export class MobilePairingService {
     return { ok: true, link: buildPairLink(origin, m.code, this.deps.config.projectName), expiresAt: new Date(m.expiresAt).toISOString() };
   }
 
+  /**
+   * A conversation a team person creates is theirs, and confined from its first moment: its audience
+   * is that person for good, whoever sends into it later (§3.5). Throws if the list cannot be read.
+   */
+  confineOwnConversation(ref: string, personKey: string): void {
+    const log = this.teamLog();
+    if (!log) throw new Error('team-access-unavailable');
+    log.ensureConfinedFile();
+    log.confine({ ref, placeKey: `app:${ref}`, personKey });
+    log.appendMachineEvents([{ type: 'conversation-own', ref, personKey }]);
+  }
+
   /** Set by the team router: the Face ID team actions (§3.6, §4.1). */
   teamActionRunner: ((kind: 'team-off' | 'team-restore' | 'team-memory-privacy', req: Request, deviceId: string) => Promise<{ status: number; body: unknown }>) | null = null;
 
@@ -1862,6 +1874,8 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['GET', /^\/topic\/list$/, 'guest'],
   ['GET', /^\/telegram\/topics$/, 'guest'],
   ['GET', /^\/telegram\/topics\/[^/]+\/messages$/, 'guest'],
+  ['GET', /^\/attention$/, 'admin'],
+  ['GET', /^\/sessions$/, 'admin'],
   ['GET', /^\/mobile\/conversations$/, 'guest'],
   ['GET', /^\/mobile\/team\/people$/, 'guest'],
   ['GET', new RegExp(`^/mobile/chat/app/${UUID}/messages$`), 'guest'],
@@ -1883,8 +1897,12 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
 export function teamConversationTarget(method: string, pathNorm: string): { ref: string; op: ConversationOp } | null {
   let m = /^\/mobile\/chat\/(\d+)$/.exec(pathNorm);
   if (m && method === 'POST') return { ref: `telegram:${m[1]}`, op: 'send' };
-  m = /^\/telegram\/topics\/(\d+)\/messages$/.exec(pathNorm);
+  // Matches everything the allow rule does. A topic that is not plain digits names no grant, so it is
+  // refused here; the handler would parseInt it into a real topic.
+  m = /^\/telegram\/topics\/([^/]+)\/messages$/.exec(pathNorm);
   if (m && method === 'GET') return { ref: `telegram:${m[1]}`, op: 'read' };
+  m = /^\/mobile\/chat\/slack\/(-?\d+)$/.exec(pathNorm);
+  if (m && method === 'POST') return { ref: `slack:${m[1]}`, op: 'send' };
   m = new RegExp(`^/mobile/chat/app/(${UUID})(/messages|/events|/preview/.+)?$`).exec(pathNorm);
   if (m) return { ref: m[1], op: method === 'POST' && !m[2] ? 'send' : 'read' };
   m = new RegExp(`^/mobile/conversations/(${UUID})$`).exec(pathNorm);
@@ -2057,7 +2075,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
   ];
   return rules.map((rule) => {
     const named = TEAM_ROUTE_TIERS.find(([method, re]) => method === rule.method && re.source === rule.re.source);
-    return { ...rule, tier: rule.ownerOnly ? 'owner' : named ? named[2] : 'admin' };
+    // Closed by default (§3.7): a route opens to a team phone only by being named.
+    return { ...rule, tier: rule.ownerOnly ? 'owner' : named ? named[2] : 'owner' };
   });
 })();
 

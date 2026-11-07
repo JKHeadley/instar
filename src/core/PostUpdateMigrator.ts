@@ -9314,7 +9314,7 @@ setTimeout(() => process.exit(0), 2000);
     }
 
     if (!content.includes('Registry First — team access:')) {
-      content += '\n- **Registry First — team access:** the owner gives access only from their own phone in the Instar app, and each change is a signed record. On a one-machine agent the owner can invite people, share chosen conversations and set a role (admin, member or guest); a person\'s phone sees only what they were given. I can read `GET /team/people` and I can only take access away (`POST /team/people/:personKey/lower`), never give it. Tell people plainly: scheduled jobs run for the owner and can read messages in shared conversations; once a conversation has been shared it stays locked to that audience; and an agent that has had team members cannot add a second machine until multi-machine team support lands.';
+      content += '\n- **Registry First — team access:** the owner gives access only from their own phone in the Instar app, and each change is a signed record. On a one-machine agent the owner can invite people, share chosen conversations and set a role (member or guest); a person\'s phone sees only what they were given. I can read `GET /team/people` and I can only take access away (`POST /team/people/:personKey/lower`), never give it. Tell people plainly: scheduled jobs run for the owner and can read messages in shared conversations; once a conversation has been shared it stays locked to that audience; and an agent that has had team members cannot add a second machine until multi-machine team support lands.';
       patched = true;
       result.upgraded.push('CLAUDE.md: added team access Registry First awareness');
     }

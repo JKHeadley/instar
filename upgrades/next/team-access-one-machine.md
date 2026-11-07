@@ -2,7 +2,7 @@
 
 ## What Changed
 
-An owner can now give other people limited access to an agent that runs on one machine. The server side is complete: the owner's phone invites a person, chooses their role (admin, member or guest) and shares chosen conversations. Each change is a record the phone signs, kept in a log on the machine. A team phone sees only what it was given, and every route checks the person's role and the conversation.
+An owner can now give other people limited access to an agent that runs on one machine. The server side is complete: the owner's phone invites a person, chooses their role (member or guest) and shares chosen conversations. Each change is a record the phone signs, kept in a log on the machine. A team phone sees only what it was given, and every route checks the person's role and the conversation.
 
 Nothing changes for an agent until its owner sends a first invite, so existing agents keep working exactly as they did. The app screens for this are the next step, so no one can start it from the app yet.
 
@@ -16,4 +16,4 @@ Owner-only invites, grants and role changes under `/mobile/team/`, with Face ID 
 
 ## Evidence
 
-A status table runs owner, MSP, admin, member, guest and removed phones against every route in the device allowlist, with team access never on, on, and after turning off. The paths are generated from the allowlist, so a new route is covered automatically. An end-to-end test on a real AgentServer runs the whole journey: pair the owner, invite a member, share one conversation, pair the member, read and send there, be refused elsewhere, and lose access on removal. Spec: `docs/specs/team-roles-and-access.md`.
+A status table runs owner, MSP, member, guest and removed phones against every route in the device allowlist, with team access never on, on, and after turning off. The paths are generated from the allowlist, so a new route is covered automatically. Each guard past the gate has its own test from both sides, written after an independent review found several untested and some open; removing each fix was checked to turn its test red. An end-to-end test on a real AgentServer runs the whole journey: pair the owner, invite a member, share one conversation, pair the member, read and send there, be refused elsewhere, and lose access on removal. Spec: `docs/specs/team-roles-and-access.md`.

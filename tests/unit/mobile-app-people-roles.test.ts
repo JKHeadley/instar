@@ -371,8 +371,8 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
     ['POST', '/mobile/media/purge', 'member'],
     ['GET', '/attention', 'admin'],
     ['GET', '/sessions', 'admin'],
-    ['GET', '/mobile/people', 'admin'],
-    ['POST', '/mobile/console-ticket', 'admin'],
+    ['GET', '/mobile/people', 'owner'],
+    ['POST', '/mobile/console-ticket', 'owner'],
     ['GET', '/mobile/files', 'owner'],
     ['GET', '/mobile/machines', 'owner'],
   ])('%s %s needs %s', (method, p, tier) => {

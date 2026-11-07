@@ -251,6 +251,66 @@ describe('reading people', () => {
   });
 });
 
+describe('a write means what it says', () => {
+  it('refuses an address the log would not accept, before anything changes', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    for (const url of ['/mobile/team/grants/', '/mobile/team/grants?x=1']) {
+      const r = await send(e, owner, 'POST', url, { events: [grant('telegram:50')] });
+      expect(r.status).toBe(400);
+    }
+    expect(e.spy.changed).toEqual([]);
+    expect(e.svc.teamLog()!.isConfined('telegram:50')).toBe(false);
+  });
+
+  it('team-off cannot ride the invite route to skip Face ID', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    const r = await send(e, owner, 'POST', '/mobile/team/invites', { events: [{ type: 'team-off' }, { type: 'person-add', personKey: 'p-2', name: 'B', role: 'guest' }] });
+    expect(r.status).toBe(400);
+    expect(e.svc.teamOn()).toBe(true);
+  });
+
+  it('a phone the ledger does not know gets a plain failure, never an ok that changed nothing', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    const stranger = makeDevice();
+    const c = e.svc.devices.createPending({ deviceName: 'x', label: null, publicKey: stranger.publicKey, host: HOST });
+    if (!c.ok) throw new Error('setup');
+    e.svc.devices.applyConfirm(c.device.id, { ok: true }); // active, but never written to the ledger
+    const r = await send(e, { dev: stranger, presence: stranger, id: c.device.id }, 'POST', '/mobile/team/grants', { events: [grant('telegram:50')] });
+    expect(r.status).toBe(500);
+    expect(r.body.detail).toMatch(/not saved/);
+    expect(e.svc.teamLog()!.grantOf('p-1', 'telegram:50')).toBeNull();
+  });
+
+  it('removing a person ends their own conversations too', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1', [grant('telegram:50')]));
+    e.svc.confineOwnConversation('-77', 'p-1');
+    e.spy.changed.length = 0;
+    await bearer(e, '/team/people/p-1/lower', { remove: true });
+    expect(e.spy.changed.sort()).toEqual(['-77', 'telegram:50']);
+  });
+
+  it('a snapshot is kept, so a rolled-back log is noticed', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    const log = path.join(e.dir, 'state', 'team-access', 'log.jsonl');
+    const before = fs.readFileSync(log, 'utf8');
+    await send(e, owner, 'POST', '/mobile/team/grants', { events: [grant('telegram:50')] });
+    fs.writeFileSync(log, before); // an attacker, or a restore, puts the older log back
+    e.svc.teamLog()!.load();
+    expect(e.svc.teamLog()!.healthState()).toBe('unreadable');
+    expect(e.svc.teamOn()).toBe(true); // the strict direction
+  });
+});
+
 describe('the activity history', () => {
   it('keeps a removed person\'s name, because the log still holds it', async () => {
     const e = await setup();
@@ -273,8 +333,13 @@ describe('changing access', () => {
     expect((await send(e, member, 'POST', '/mobile/team/people/p-1', { events: [{ type: 'person-set', personKey: 'p-1', role: 'admin' }] })).status).toBe(403);
     expect(e.svc.teamStanding('p-1')?.tier).toBe('member');
     expect((await send(e, owner, 'POST', '/mobile/team/grants', events)).status).toBe(200);
-    expect((await send(e, owner, 'POST', '/mobile/team/people/p-1', { events: [{ type: 'person-set', personKey: 'p-1', role: 'admin' }] })).status).toBe(200);
-    expect(e.svc.teamStanding('p-1')?.tier).toBe('admin');
+    expect((await send(e, owner, 'POST', '/mobile/team/people/p-1', { events: [{ type: 'person-set', personKey: 'p-1', role: 'guest' }] })).status).toBe(200);
+    expect(e.svc.teamStanding('p-1')?.tier).toBe('guest');
+    // Admins are not part of step 2a.
+    const admin = await send(e, owner, 'POST', '/mobile/team/people/p-1', { events: [{ type: 'person-set', personKey: 'p-1', role: 'admin' }] });
+    expect(admin.status).toBe(409);
+    expect(admin.body.error).toBe('admin-not-yet');
+    expect(e.svc.teamStanding('p-1')?.tier).toBe('guest');
   });
 
   it('a people route refuses events about someone else, and a grants route refuses anything but grants', async () => {
@@ -298,6 +363,9 @@ describe('changing access', () => {
     expect((await bearer(e, '/team/people/p-1/lower', { ref: 'telegram:50' })).status).toBe(200);
     expect(e.svc.teamLog()!.grantOf('p-1', 'telegram:50')).toBeNull();
     expect((await bearer(e, '/team/people/p-1/lower', {})).body.error).toBe('nothing-to-lower');
+    // Two changes at once must not answer ok having done one.
+    expect((await bearer(e, '/team/people/p-1/lower', { ref: 'telegram:50', remove: true })).body.error).toBe('one-change-at-a-time');
+    expect(e.svc.teamStanding('p-1')).not.toBeNull();
     expect((await bearer(e, '/team/people/nobody/lower', { remove: true })).status).toBe(404);
   });
 

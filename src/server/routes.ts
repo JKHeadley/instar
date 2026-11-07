@@ -25,7 +25,7 @@ import type { OriginDisplaySettings, TelegramOriginProducer } from '../messaging
 import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyOriginDeps } from './replyOrigin.js';
 import { consolePageUrl } from './dashboardPaths.js';
 import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
-import { filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures } from './mobilePairingRoutes.js';
+import { deviceMayUse, filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
@@ -11788,7 +11788,7 @@ export function createRoutes(ctx: RouteContext): Router {
       }
 
       res.json({
-        sessions: allSessionsMerged,
+        sessions: maskSessionsForPhone(ctx.mobilePairingService, req, allSessionsMerged as unknown as Array<Record<string, unknown>>),
         pool: {
           enabled: !!ctx.machinePoolRegistry,
           selfMachineId,
@@ -20736,6 +20736,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const topicId = parseInt(req.params.topicId, 10);
     if (isNaN(topicId)) {
       res.status(400).json({ error: 'topicId must be a number' });
+      return;
+    }
+    // The gate checked the path; this checks the number the handler will actually serve (§3.5).
+    if (ctx.mobilePairingService && !deviceMayUse(ctx.mobilePairingService, req, `telegram:${topicId}`, 'read')) {
+      res.status(404).json({ error: 'unknown-conversation' });
       return;
     }
     if (req.query.scope !== undefined && req.query.scope !== 'pool') {

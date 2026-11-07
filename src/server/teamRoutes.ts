@@ -9,7 +9,7 @@ import { Router, type Request, type Response } from 'express';
 import { deviceKeyHashOf, type MachineSigner } from '../core/AppRecordSignatures.js';
 import { displayCode } from '../core/MobileDeviceKeys.js';
 import { parseSignedEvents, type RequestEvent } from '../core/TeamAccessEvents.js';
-import type { ConfinedEntry, TeamAccessRow } from '../core/TeamAccessLog.js';
+import { TEAM_ACCESS_WRITE_PATHS, eventsFitPath, type ConfinedEntry, type TeamAccessRow } from '../core/TeamAccessLog.js';
 import { ORG_ROLES, type OrgRole } from '../permissions/types.js';
 import { tierOfRole } from '../permissions/TeamAccess.js';
 import { topicPlaceKey } from '../users/TeamConfinement.js';
@@ -128,6 +128,12 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
   /** A write that fails answers plainly: an access change must never leave a request hanging. */
   const write = (handler: (req: Request, res: Response) => Promise<void>) => (req: Request, res: Response): void => {
     if (svc.teamLog()?.healthState() === 'unreadable') { send(res, LOG_UNREADABLE); return; }
+    // Express also matches a trailing slash or a query, and the log would refuse that row after the
+    // conversation had already changed. Refuse it before anything moves.
+    if (req.originalUrl.startsWith('/mobile/') && !TEAM_ACCESS_WRITE_PATHS.some((re) => re.test(req.originalUrl))) {
+      res.status(400).json({ error: 'bad-path', detail: 'That address is not one this change can be signed for.' });
+      return;
+    }
     handler(req, res).catch((err: unknown) => {
       console.warn(`[team-access] ${req.path} failed: ${err instanceof Error ? err.message : String(err)}`);
       if (!res.headersSent) res.status(500).json({ error: 'team-access-write-failed', detail: 'That change was not saved. Try again.' });
@@ -163,8 +169,22 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
 
   const eventsOf = (req: Request, res: Response): RequestEvent[] | null => {
     const events = parseSignedEvents(req.body);
-    if (!events) res.status(400).json({ error: 'bad-events', detail: 'The request does not hold valid access changes.' });
+    if (!events || !eventsFitPath(req.originalUrl, events)) {
+      res.status(400).json({ error: 'bad-events', detail: 'The request does not hold valid access changes.' });
+      return null;
+    }
+    if (events.some((e) => (e.type === 'person-add' || e.type === 'person-set') && tierOfRole(e.role) === 'admin')) {
+      res.status(409).json({ error: 'admin-not-yet', detail: 'Team members can be members or guests for now. Admin access comes with the maintenance step.' });
+      return null;
+    }
     return events;
+  };
+
+  /** Every conversation a change to this person touches: what they were given, and what is theirs. */
+  const refsOf = (personKey: string): string[] => {
+    const state = svc.teamLog()?.state();
+    const owned = [...(state?.owned.entries() ?? [])].filter(([, key]) => key === personKey).map(([ref]) => ref);
+    return [...new Set([...(state?.grants.get(personKey)?.keys() ?? []), ...owned])];
   };
 
   /** Every refusal check, then the confined list, then each session ended, then the event. */
@@ -197,6 +217,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
       const result = log.restore(deps.restoreRefs());
       return { status: 200, body: { ok: true, ...result } };
     }
+    if (log.healthState() === 'unreadable') return { status: 409, body: { error: LOG_UNREADABLE.error, detail: LOG_UNREADABLE.detail } };
     const events = parseSignedEvents(req.body);
     if (events?.length !== 1 || events[0].type !== 'team-off') return { status: 400, body: { error: 'bad-events' } };
     for (const entry of log.readConfined() ?? []) await deps.applyConversationChange(entry.ref, () => undefined);
@@ -264,7 +285,6 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (stop) { res.status(409).json({ error: stop, detail: refuseText[stop] }); return; }
     const events = eventsOf(req, res);
     if (!events) return;
-    if (events.some((e) => e.type !== 'grant' && e.type !== 'grant-remove')) { res.status(400).json({ error: 'bad-events', detail: 'Only grants belong here.' }); return; }
     const refused = await applyGrants(events);
     if (refused) { send(res, refused); return; }
     for (const e of events) if (e.type === 'grant-remove') await deps.applyConversationChange(e.ref, () => undefined);
@@ -277,13 +297,9 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (!deviceId) return;
     const events = eventsOf(req, res);
     if (!events) return;
-    if (events.some((e) => (e.type !== 'person-set' && e.type !== 'person-remove') || e.personKey !== req.params.personKey)) {
-      res.status(400).json({ error: 'bad-events', detail: 'Only changes to this person belong here.' });
-      return;
-    }
     const log = svc.teamLog();
     if (!log?.state().people.has(String(req.params.personKey))) { res.status(404).json({ error: 'unknown-person', detail: 'That person is not on this agent.' }); return; }
-    for (const ref of log.state().grants.get(String(req.params.personKey))?.keys() ?? []) await deps.applyConversationChange(ref, () => undefined);
+    for (const ref of refsOf(String(req.params.personKey))) await deps.applyConversationChange(ref, () => undefined);
     appendRequest(req, deviceId);
     res.json({ ok: true });
   }));
@@ -320,7 +336,9 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (role && (role === 'owner' || rank(role) >= rank(person.role))) { res.status(403).json({ error: 'can-only-lower' }); return; }
     const ref = typeof b.ref === 'string' ? b.ref : undefined;
     if (!ref && !role && b.remove !== true) { res.status(400).json({ error: 'nothing-to-lower' }); return; }
-    const refs = ref ? [ref] : [...(log.state().grants.get(personKey)?.keys() ?? [])];
+    // One change per row: the log applies only one, so asking for two must not answer ok.
+    if ([ref, role, b.remove === true ? true : undefined].filter((x) => x !== undefined).length > 1) { res.status(400).json({ error: 'one-change-at-a-time' }); return; }
+    const refs = ref ? [ref] : refsOf(personKey);
     for (const r of refs) await deps.applyConversationChange(r, () => undefined);
     log.appendMachineEvents([{ type: 'lower', personKey, ...(ref ? { ref } : {}), ...(role ? { role } : {}), ...(b.remove === true ? { remove: true } : {}) }]);
     res.json({ ok: true });

@@ -76,3 +76,9 @@ Foundation only.
 - Added: Spec wording: attention filtering reads contextTopicIds only; the journey test now checks the history by name.
 
 - Added: Spec wording: attention filtering reads contextTopicIds only; the journey test now checks the history by name.
+
+## Independent code review, 2026-11-06
+Nine findings, all confirmed by reading the code, all fixed: non-digit topic paths reached any topic (gate matched fewer paths than the allow rule; now both the gate and the handler check); the conversation list showed every topic; a person's own conversation was never confined (now confined at creation, with `conversation-own`); `/sessions?scope=pool` skipped the mask; last-good was never written (now after each append and confine); `lower` could answer ok having done part of a request; removal missed a person's own sessions; admin role was open and unnamed routes defaulted to admin (now refused in 2a, default owner per §3.7); a write could answer ok with no effect, or carry `team-off` past Face ID (rows now checked before writing, events bound to their route). Also: an unplaced row reads as unreadable; team-off refuses on an unreadable log; the Slack send route is mapped.
+Each fix was removed in turn to confirm its test goes red.
+
+- Added: Review fixes with guard tests from both sides.

@@ -1,5 +1,5 @@
 /**
- * The §9 status table: owner, `msp` with no orgRole, admin, member, guest and a removed person, on
+ * The §9 status table: owner, `msp` with no orgRole, member, guest and a removed person (no admins in step 2a), on
  * EVERY route in the device allowlist, with team access off, on and after `team-off`. Paths are
  * generated from the allowlist itself, so a route added later is in the table without anyone
  * remembering. This tests the gate alone: past it, a stub answers 299.
@@ -124,7 +124,6 @@ async function teamOn(e: Env, owner: Phone) {
   e.live.setup = true;
   const status = await post(e, owner, '/mobile/team/invites', { events: [
     { type: 'team-on' }, { type: 'owner-pin', personKey: 'owner-1' },
-    { type: 'person-add', personKey: 'p-admin', name: 'A', role: 'admin' },
     { type: 'person-add', personKey: 'p-member', name: 'M', role: 'member' },
     { type: 'person-add', personKey: 'p-guest', name: 'G', role: 'guest' },
   ] });
@@ -185,7 +184,7 @@ describe('the status table', () => {
     const e = await setup();
     await teamOn(e, e.makePhone());
     const wrong: string[] = [];
-    for (const [tier, personKey] of [['admin', 'p-admin'], ['member', 'p-member'], ['guest', 'p-guest']] as const) {
+    for (const [tier, personKey] of [['member', 'p-member'], ['guest', 'p-guest']] as const) {
       const p = e.makePhone({ userId: personKey, role: 'team' });
       for (const r of rules) {
         const s = await hit(e, p, r.rule.method, r.url, r.rule.body);
