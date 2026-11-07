@@ -4099,6 +4099,65 @@ const presenceUsageNotice: SelfActionController = {
   makeUnderPressure: makePresenceUsageNotice,
 };
 
+/**
+ * learned-skill-reconciler — the every-machine reconcile of LEARNED skill
+ * renderings (docs/specs/skill-learning-sentinel.md §3.2, decision 19;
+ * src/monitoring/LearnedSkillReconciler.ts). Its tick is self-triggered (boot,
+ * post-pull, every 10 min). The emit is a RENDER of one (skill × layout).
+ *
+ * Convergence argument — verify-then-render: a render only happens when
+ * `verifyRendering` reports drift, and a render makes the rendering equal the
+ * canonical, so once every rendering matches there are ZERO renders per tick
+ * (steady-state bound) regardless of horizon. The settling brakes: a rendering
+ * that differs from this machine's own baseline is an operator edit → locked
+ * in the durable shard and never retried; a render that throws is locked in
+ * the shard under the canonical hash that failed and is retried only when the
+ * canonical CHANGES — never on the next tick. Both locks live on disk, so a
+ * restart cannot re-arm them. Pinned pressure: N learned canonicals all
+ * drifted at once; `targetAlwaysRejects()` makes every render throw. Either
+ * way each skill is rendered at most once per canonical change ⇒ boundK = N.
+ */
+const LEARNED_SKILL_RECONCILER_N = 8;
+function makeLearnedSkillReconcilerPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const canonical = new Map<string, string>();
+  for (let i = 0; i < LEARNED_SKILL_RECONCILER_N; i++) canonical.set(`learned-skill-${i}`, 'h1');
+  // Durable (shard-backed in the real controller): the baselines of what this
+  // machine rendered and the canonical-hash-keyed failure locks.
+  const rendered = (f.durableState.get('learned-skill-reconciler:rendered') as Map<string, string> | undefined)
+    ?? new Map<string, string>();
+  const failed = (f.durableState.get('learned-skill-reconciler:failed') as Map<string, string> | undefined)
+    ?? new Map<string, string>();
+  f.durableState.set('learned-skill-reconciler:rendered', rendered);
+  f.durableState.set('learned-skill-reconciler:failed', failed);
+  return {
+    tick() {
+      sink.considered += 1;
+      for (const [name, hash] of canonical) {
+        if (rendered.get(name) === hash) continue;   // verify clean → zero writes
+        if (failed.get(name) === hash) continue;     // failure lock → wait for a canonical change
+        sink.emit({ verb: 'converge-render', target: name });
+        if (f.targetAlwaysRejects()) failed.set(name, hash);
+        else rendered.set(name, hash);
+      }
+    },
+  };
+}
+const learnedSkillReconciler: SelfActionController = {
+  id: 'learned-skill-reconciler',
+  actionVerb: 'converge-render',
+  models: 'src/monitoring/LearnedSkillReconciler.ts (reconcileOne — verify-then-render, baseline edit lock, canonical-hash-keyed failure lock)',
+  modelsPath: 'src/monitoring/LearnedSkillReconciler.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeLearnedSkillReconcilerPressure(f, sink),
+  },
+  boundK: LEARNED_SKILL_RECONCILER_N,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 10 * 60_000, // the 10-minute tick
+  eternalSentinel: undefined,
+  makeUnderPressure: makeLearnedSkillReconcilerPressure,
+};
 
 /** One unresolved occurrence survives process reconstruction unchanged. The
  * production admission decision persists its attempt before any model spawn;
@@ -4131,6 +4190,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   failureCalloutInvestigation,
   attributionAuditRetry,
   presenceUsageNotice,
+  learnedSkillReconciler,
 
   jobPortableTransferPoll,
   jobCoverageAlertRetry,
