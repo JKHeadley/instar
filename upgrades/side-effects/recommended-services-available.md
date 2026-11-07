@@ -172,3 +172,7 @@ Residues, both non-blocking:
 2. **Non-blocking — the setup-did-it flags survive a plain no and a hand change in between.** `endSetup` keeps `keyStoredBySetup`, `signedInBySetup` and `absentBeforeSetup` (`:117-121`), by design for a key that died. If, after a plain no, the person removes the agent's key or sign-in by hand and puts their own in place, a later yes passes preflight (`alreadyHeld`), the stale flag still says setup did it, and a ticked no would remove the person's own. This needs a manual change outside every surface the spec covers ("a config edit on one machine doesn't count"), and the node key or key value would have to be compared to tell the two apart, so I would record it in §2 rather than fix it now.
 
 Nothing else new: `recipeFor(catalog.find(...) ?? {...})` at `:200` is a lookup, not a decision; the `stopped` clearing moving under the grant-guaranteed pass removes the first-read race's last residue; the `absent` field never reaches the stored `verified` record or the list.
+
+## Post-review addendum
+
+- CI's docs-coverage check held the `command` category at 59% against a 60% floor on this branch (a whole-tree ratchet, not a defect in this change). Added a real `instar worktree create` paragraph to `site/src/content/docs/features/parallel-work-awareness.md` (the hands-in-worktrees convention the parallel-work index reads); the check passes locally at 60%. No runtime surface.
