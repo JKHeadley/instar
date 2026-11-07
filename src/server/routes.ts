@@ -25,7 +25,7 @@ import type { OriginDisplaySettings, TelegramOriginProducer } from '../messaging
 import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyOriginDeps } from './replyOrigin.js';
 import { consolePageUrl } from './dashboardPaths.js';
 import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
-import { filterTopicsForTeam, stripViewSignatures } from './mobilePairingRoutes.js';
+import { filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
@@ -11809,7 +11809,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    res.json(enriched);
+    res.json(maskSessionsForPhone(ctx.mobilePairingService, req, enriched as Array<Record<string, unknown>>));
   });
 
   router.post('/sessions/cleanup-stale', (_req, res) => {
@@ -19859,6 +19859,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   router.post('/telegram/reply/:topicId', async (req, res) => {
+    // A reply that went out tells the team phones holding this topic (team-roles-and-access §4.1).
+    res.on('finish', () => {
+      const id = parseInt(req.params.topicId, 10);
+      if (res.statusCode < 300 && id > 0) ctx.mobilePairingService?.teamTopicReply(id);
+    });
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
       return;
@@ -22761,7 +22766,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const localStatus = requestedStatus ? (normalizeAttentionStatus(requestedStatus) ?? requestedStatus) : undefined;
         const localLimit = parseAttentionLimit(req.query as Record<string, unknown>);
         const all = ctx.localAttention.list(localStatus).map((it) => ({ ...it, machineId: ctx.meshSelfId ?? undefined }));
-        const items = localLimit === undefined ? all : all.slice(0, localLimit);
+        const shown = filterAttentionForPhone(ctx.mobilePairingService, req, all);
+        const items = localLimit === undefined ? shown : shown.slice(0, localLimit);
         res.json({ items, count: items.length, surface: 'local' });
         return;
       }
@@ -22804,16 +22810,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         });
       }
       const merged = await attentionPoolMerge(localItems, status);
+      const shown = filterAttentionForPhone(ctx.mobilePairingService, req, merged.items as Array<Record<string, unknown>>);
       if (limit === undefined) {
-        res.json(merged);
+        res.json({ ...merged, items: shown, count: shown.length });
       } else {
-        const items = (merged.items as Array<Record<string, unknown>>).slice(0, limit);
+        const items = shown.slice(0, limit);
         res.json({ ...merged, items, count: items.length });
       }
       return;
     }
 
-    const items = limit === undefined ? localItems : localItems.slice(0, limit);
+    const shownLocal = filterAttentionForPhone(ctx.mobilePairingService, req, localItems);
+    const items = limit === undefined ? shownLocal : shownLocal.slice(0, limit);
     res.json({ items, count: items.length });
   });
 
@@ -38899,6 +38907,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
     }
     mountMobilePermissionsRoutes(router, {
+      teamAction: async (kind, req, deviceId) => {
+        const run = ctx.mobilePairingService?.teamActionRunner;
+        return run ? await run(kind, req, deviceId) as Awaited<ReturnType<NonNullable<Parameters<typeof mountMobilePermissionsRoutes>[1]['teamAction']>>> : { status: 503, body: { error: 'team-access-unavailable' } };
+      },
       // A route's words can quote a run's goal, so the phone's answer gets the same removal as anything else it reads.
       sessionAction: async (action) => {
         const r = await runSessionAction(action, { call: sessionControlCall, selfMachineId: () => ctx.meshSelfId ?? null });

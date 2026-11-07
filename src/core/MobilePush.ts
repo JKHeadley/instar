@@ -76,6 +76,8 @@ export interface MobilePushDeps {
    * Absent ⇒ every phone, as before.
    */
   mayNotify?: (deviceId: string, conversationKey: string) => boolean;
+  /** Whether a phone gets anything but reply pushes. A team phone does not (team-roles-and-access §3.7). */
+  receivesNotices?: (deviceId: string) => boolean;
 }
 
 const emptyDevice = (): DeviceState => ({ sendLog: [], urgentLog: [], lastSendAt: null, pending: null, dueAt: null, backoffUntil: null, lastSend: null });
@@ -182,6 +184,7 @@ export class MobilePushService {
         try { may = this.deps.mayNotify(d.id, t.conversationKey); } catch { may = false; } // @silent-fallback-ok — fail closed: an unanswerable check sends nothing to that phone
         if (!may) continue;
       }
+      if (t.kind !== 'reply' && this.deps.receivesNotices && !this.deps.receivesNotices(d.id)) continue;
       const ds = this.dev(st, d.id);
       prune(ds, t0);
       if (!ds.pending && this.dueFor(ds, urgent) <= t0) {

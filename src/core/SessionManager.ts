@@ -7,7 +7,7 @@ import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
  * and can be monitored/reaped by the server.
  */
 
-import type { TeamConfinement } from '../users/TeamConfinement.js';
+import { conversationRefOf, type TeamConfinement } from '../users/TeamConfinement.js';
 import type { MemoryPrivacyRecovery } from '../users/MemoryPrivacyRecovery.js';
 import { isCredentialEnvName, CLAUDE_CONFINED_PERMISSION_ARGS } from './credentialEnvNames.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -1077,6 +1077,7 @@ export class SessionManager extends EventEmitter {
     /** Finds the Slack channel of a session started before places were recorded. */
     slackChannelForSession?: (sessionName: string) => string | null;
   };
+  private readonly conversationLocks = new Map<string, Promise<void>>();
   private memoryInboundClaims = new Map<string, { place: string; dev: number; ino: number; size: number; mtimeMs: number; claimedAt: number }>();
 
   /**
@@ -7523,7 +7524,52 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Used for Telegram-driven conversational sessions.
    * Optionally sends an initial message after Claude is ready.
    */
-  async spawnInteractiveSession(initialMessage?: string, name?: string, options?: { telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; framework?: IntelligenceFramework; codexLocalProvider?: 'ollama' | 'lmstudio'; defaultModel?: string;
+  /**
+   * One change to who may read a conversation, against every spawn of it: a spawn holds this lock from
+   * resolving its audience through launch, so a grant can never interleave (team-roles-and-access §4.1).
+   */
+  async withConversationLock<T>(ref: string, fn: () => Promise<T>): Promise<T> {
+    const prior = this.conversationLocks.get(ref) ?? Promise.resolve();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const tail = prior.then(() => held);
+    this.conversationLocks.set(ref, tail);
+    await prior;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.conversationLocks.get(ref) === tail) this.conversationLocks.delete(ref);
+    }
+  }
+
+  /**
+   * A change to who may read a conversation, for team access: under the conversation's lock, end its
+   * live session so a new one resolves the new place, then run the change.
+   */
+  async applyConversationChange<T>(ref: string, change: () => Promise<T> | T): Promise<T> {
+    return this.withConversationLock(ref, async () => {
+      const input: SessionPlaceInput = ref.startsWith('telegram:') ? { telegramTopicId: Number(ref.slice(9)) } : { memoryPlaceKey: `app:${ref}` };
+      for (const session of this.listRunningSessions()) {
+        const place = session.memoryPlaceInput;
+        const same = input.telegramTopicId !== undefined
+          ? (session.telegramTopicId === input.telegramTopicId || place?.telegramTopicId === input.telegramTopicId)
+          : place?.memoryPlaceKey === input.memoryPlaceKey;
+        if (same) await this.retireMemorySession(session);
+      }
+      return change();
+    });
+  }
+
+  /** Spawn under the conversation's lock when it names one. See `spawnInteractiveSessionUnlocked`. */
+  async spawnInteractiveSession(...args: Parameters<SessionManager['spawnInteractiveSessionUnlocked']>): Promise<string> {
+    const options = args[2];
+    const ref = conversationRefOf({ telegramTopicId: options?.telegramTopicId, memoryPlaceKey: options?.memoryPlaceKey });
+    if (!ref) return this.spawnInteractiveSessionUnlocked(...args);
+    return this.withConversationLock(ref, () => this.spawnInteractiveSessionUnlocked(...args));
+  }
+
+  async spawnInteractiveSessionUnlocked(initialMessage?: string, name?: string, options?: { shapedForAudience?: string; reshapeForAudience?: (kind: string, message: string) => string; telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; framework?: IntelligenceFramework; codexLocalProvider?: 'ollama' | 'lmstudio'; defaultModel?: string;
     /** durable-conversation-identity §7: the authenticated bootstrap
      *  conversation ids this session may open durable state on (a Slack spawn
      *  passes its minted conversation id). Falls back to [telegramTopicId]. */
@@ -7683,6 +7729,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
       memoryPlaceKey: options?.memoryPlaceKey,
       memoryPlace: options?.memoryPlace,
     });
+    // A caller that shaped its message for one audience gets it reshaped if a grant changed that.
+    const actualAudience = memoryPlan?.audience.kind ?? 'open';
+    if (initialMessage && options?.reshapeForAudience && options.shapedForAudience !== undefined && options.shapedForAudience !== actualAudience) {
+      initialMessage = options.reshapeForAudience(actualAudience, initialMessage);
+    }
     if (memoryPlan?.dropResume && options?.resumeSessionId) {
       options = { ...options, resumeSessionId: undefined };
     }
@@ -8173,7 +8224,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         const retryMessage = this.resumeFollowsAccountEnabled() && !initialMessage.startsWith(RESUME_REOPEN_FAILED_NOTE)
           ? `${RESUME_REOPEN_FAILED_NOTE}\n\n${initialMessage}`
           : initialMessage;
-        await this.spawnInteractiveSession(retryMessage, originalName, {
+        await this.spawnInteractiveSessionUnlocked(retryMessage, originalName, {
           telegramTopicId: options.telegramTopicId,
           slackChannelId: options.slackChannelId,
           slackThreadTs: options.slackThreadTs,

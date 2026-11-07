@@ -90,6 +90,7 @@ export type PermissionAction =
   | { kind: 'session-door'; target: string; framework: string; model: string | null; machine: string | null }
   | { kind: 'session-move'; target: string; to: string; confirmation: string | null }
   | { kind: 'session-close'; target: string; tmux: string; machine: string | null }
+  | { kind: 'team-off' | 'team-restore' | 'team-memory-privacy'; target: 'team' }
   | { kind: 'session-new'; target: 'new'; name: string; platform: SessionPlatformChoice; framework: string | null; model: string | null; machine: string | null }
   | { kind: 'session-default'; target: 'new-topic-default'; framework: string | null; model: string | null };
 
@@ -118,6 +119,7 @@ export function actionLine(a: PermissionAction): string {
     case 'session-door': return `session-door ${a.target} ${a.machine ?? 'here'} ${a.framework} ${a.model ?? 'none'}`;
     case 'session-move': return `session-move ${a.target} ${a.to} ${a.confirmation ?? 'none'}`;
     case 'session-close': return `session-close ${a.target} ${a.tmux} ${a.machine ?? 'here'}`;
+    case 'team-off': case 'team-restore': case 'team-memory-privacy': return `${a.kind} team`;
     case 'session-new': return `session-new new ${reasonHash(a.name)} ${a.platform} ${a.framework ?? 'none'} ${a.model ?? 'none'} ${a.machine ?? 'auto'}`;
     case 'session-default': return `session-default new-topic-default ${a.framework ?? 'none'} ${a.model ?? 'none'}`;
   }
@@ -132,6 +134,7 @@ export function permissionPresenceMessage(deviceId: string, host: string, challe
 export function buildAction(kind: unknown, target: unknown, extra: { value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown; label?: unknown; note?: unknown; topicId?: unknown; framework?: unknown; model?: unknown; machine?: unknown; to?: unknown; confirmation?: unknown; tmux?: unknown; name?: unknown; platform?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
   // A session door names a conversation reference, whose Slack form has uppercase ids (checked below).
   if (typeof target !== 'string' || (kind === 'session-door' ? !conversationKeys(target) : !TARGET_PATTERN.test(target))) return { ok: false, error: 'bad-target' };
+  if (kind === 'team-off' || kind === 'team-restore' || kind === 'team-memory-privacy') return { ok: true, action: { kind, target: 'team' } };
   if (kind === 'approve-request') {
     if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
     return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
@@ -275,7 +278,7 @@ export class ActionChallengeStore {
 
 // ── audit ─────────────────────────────────────────────────────────────────────
 
-export type PermissionAuditEvent = 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
+export type PermissionAuditEvent = 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
 export interface PermissionAuditRow { at: string; event: PermissionAuditEvent; deviceId: string | null; route?: string; personId?: string | null; action?: string; target?: string; requestKey?: string; value?: string; reason?: string; status?: number }
 
 /** Metadata-only trail of every phone permission write (never a decline text, never a secret). A record, not a gate. */
@@ -572,6 +575,8 @@ export interface MobilePermissionsDeps {
   cancelSecret: (key: string) => ActionResult;
   /** A session control: runs the dashboard's own route and answers in the phone's words (mobileSessionControlsRoutes.ts). */
   sessionAction?: (action: SessionAction, deviceId: string) => Promise<ActionResult>;
+  /** Team access's Face ID actions (team-roles-and-access §3.6, §4.1). */
+  teamAction?: (kind: 'team-off' | 'team-restore' | 'team-memory-privacy', req: Request, deviceId: string) => Promise<ActionResult>;
   now?: () => number;
 }
 
@@ -805,6 +810,25 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   sessionRoute('/mobile/sessions/close/:id', 'session-close', (req) => String(req.params.id));
   sessionRoute('/mobile/sessions/new', 'session-new', () => 'new');
   sessionRoute('/mobile/sessions/default', 'session-default', () => 'new-topic-default');
+
+  const teamRoute = (routePath: string, kind: 'team-off' | 'team-restore' | 'team-memory-privacy'): void => {
+    router.post(routePath, async (req: Request, res: Response) => {
+      const g = writeGate(req, res);
+      if (!g) return;
+      const built = buildAction(kind, 'team', {});
+      if (!built.ok || !proven(req, res, g, built.action)) return;
+      let r: ActionResult;
+      try {
+        r = deps.teamAction ? await deps.teamAction(kind, req, g.deviceId) : { status: 503, body: { error: 'team-access-unavailable' } };
+      } catch (err) {
+        r = { status: 500, body: { error: err instanceof Error ? err.message : 'team-action-failed' } };
+      }
+      finish(res, 'team-changed', built.action, g, r);
+    });
+  };
+  teamRoute('/mobile/team/off', 'team-off');
+  teamRoute('/mobile/team/restore', 'team-restore');
+  teamRoute('/mobile/team/memory-privacy', 'team-memory-privacy');
 
   router.post('/mobile/permissions/features/:id', async (req: Request, res: Response) => {
     const g = writeGate(req, res);

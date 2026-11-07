@@ -119,7 +119,7 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
     ).devices ?? []).filter((d) => d.status === 'active').map((d): PhoneFact => {
       const person = d.userId ? users().find((u) => u.id === d.userId) : undefined;
       return {
-        userId: d.userId ?? null, role: d.role === 'msp' ? 'msp' : 'owner',
+        userId: d.userId ?? null, role: d.role === 'msp' || d.role === 'team' ? d.role : 'owner',
         name: person?.name ?? d.personName ?? d.userId ?? 'Unknown person',
         deviceName: d.label || d.deviceName || 'Phone',
       };

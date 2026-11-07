@@ -1535,13 +1535,15 @@ export async function spawnSessionForTopic(
   // for injection into the bootstrap message. This gives the agent awareness
   // of who it's talking to: permissions, preferences, relationship history.
   let userContextBlock = '';
+  let shapedForAudience: string | undefined;
+  let reducedUserContext = '';
   if (userProfile && hasUserContext(userProfile)) {
     // Memory privacy: in a shared place the others can ask about what is loaded, so
     // a person's bio, interests and relationship notes stay out of it.
-    const shared = ['place', 'none'].includes(sessionManager.memoryAudienceKind({ telegramTopicId: topicId }));
-    userContextBlock = shared
-      ? `[USER CONTEXT — ${userProfile.name} (${userProfile.id})]\n[SYSTEM-ENFORCED PERMISSIONS: ${userProfile.permissions.join(', ')}]`
-      : formatUserContextForSession(userProfile);
+    shapedForAudience = sessionManager.memoryAudienceKind({ telegramTopicId: topicId });
+    const shared = ['place', 'none'].includes(shapedForAudience);
+    reducedUserContext = `[USER CONTEXT — ${userProfile.name} (${userProfile.id})]\n[SYSTEM-ENFORCED PERMISSIONS: ${userProfile.permissions.join(', ')}]`;
+    userContextBlock = shared ? reducedUserContext : formatUserContextForSession(userProfile);
   }
 
   // Build the bootstrap message with inline context.
@@ -1762,6 +1764,10 @@ export async function spawnSessionForTopic(
   const profileEffort = resolvedProfile?.effort;
 
   const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, sessionName, {
+    shapedForAudience,
+    // A grant can land between shaping this message and the spawn: the entry reshapes it under the lock.
+    reshapeForAudience: (kind, message) => (['place', 'none'].includes(kind) && userContextBlock && reducedUserContext
+      ? message.replace(userContextBlock, reducedUserContext) : message),
     telegramTopicId: topicId,
     resumeSessionId,
     framework,
@@ -8554,6 +8560,10 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     if (config.scheduler.enabled && coordinator.isAwake) {
       scheduler = new JobScheduler(config.scheduler, sessionManager, state, config.stateDir);
+      scheduler.confinedTopicCheck = (topicId) => {
+        const confinement = _memoryPrivacyWired.confinement;
+        return confinement ? confinement.isConfined(`telegram:${topicId}`) : false;
+      };
       scheduler.notifyDestinationHasOtherReaders = (job) => {
         const topicId = (job as { topicId?: number }).topicId;
         const kind = sessionManager.memoryAudienceKind(telegramConfiguredForMemory(config) ? { telegramTopicId: topicId ?? 0 } : { memoryPlace: { kind: 'system' } });

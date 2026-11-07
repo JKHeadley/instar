@@ -132,5 +132,12 @@ export class PairingCodeStore {
     return { ok: false, reason: 'invalid' };
   }
 
+  /** Who a live code is for, without taking it: a refusal here must not burn the link. */
+  peekPerson(code: unknown): PairingPerson | null {
+    this.prune();
+    if (typeof code !== 'string' || !CODE_PATTERN.test(code)) return null;
+    return this.codes.get(sha(code))?.person ?? null;
+  }
+
   liveCount(): number { this.prune(); return this.codes.size; }
 }

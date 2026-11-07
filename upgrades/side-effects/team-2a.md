@@ -66,3 +66,5 @@ Pending, before the PR opens.
 Foundation only.
 
 - Added: confined list reader, per-topic reply guard, spawn refusal, intercept skip, scoped stop, confined inbox for app context and files, stored speaker names.
+
+- Added: Team routes: owner-only invites, grants and people changes store the phone's signed request; the agent token can only lower; attention and session filters, join refusal, conversation lock and reshape are in.

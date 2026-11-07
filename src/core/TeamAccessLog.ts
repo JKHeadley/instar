@@ -284,6 +284,7 @@ export class TeamAccessLog {
   }
 
   healthState(): LogHealth { return this.health; }
+  allRows(): ReadonlyArray<TeamAccessRow> { return this.rows; }
   state(): TeamAccessState { return this.folded; }
 
   private nextSeq(): number { return Math.max(this.folded.highestSeq, this.seedSeq) + 1; }

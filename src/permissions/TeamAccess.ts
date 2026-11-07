@@ -37,6 +37,28 @@ export interface ConversationFacts {
   grant: GrantAccess | null;
 }
 
+/** The attention categories an admin or MSP sees once team access is on (§3.7). Anything else is the owner's. */
+const MAINTENANCE_CATEGORIES: ReadonlySet<string> = new Set(['monitoring', 'degradation', 'agent-health', 'infrastructure', 'system']);
+
+/**
+ * What a non-owner sees of one attention item while team access is on, or null for nothing. Category
+ * says what the problem is, not who may read its words: an item with no conversation reference shows
+ * only a fixed label, and one naming a conversation this person may not read is not shown at all.
+ */
+export function attentionForNonOwner<T extends { category?: unknown; contextTopicIds?: unknown }>(
+  item: T, mayRead: (topicId: number) => boolean,
+): T | { id: unknown; category: string; title: string; summary: string; status: unknown; priority: unknown; createdAt: unknown } | null {
+  const category = typeof item.category === 'string' ? item.category : '';
+  if (!MAINTENANCE_CATEGORIES.has(category)) return null;
+  // `contextTopicIds` are the owning conversations. An item's `topicId` is only where it was delivered.
+  const refs = (Array.isArray(item.contextTopicIds) ? item.contextTopicIds : []).filter((x): x is number => typeof x === 'number');
+  if (refs.length === 0) {
+    const raw = item as unknown as Record<string, unknown>;
+    return { id: raw.id, category, title: `A ${category} item needs attention`, summary: '', status: raw.status, priority: raw.priority, createdAt: raw.createdAt };
+  }
+  return refs.every(mayRead) ? item : null;
+}
+
 const ALL_OPS: ReadonlySet<ConversationOp> = new Set(['read', 'send', 'upload', 'rename', 'delete', 'purge']);
 const USE_OPS: ReadonlySet<ConversationOp> = new Set(['read', 'send', 'upload']);
 

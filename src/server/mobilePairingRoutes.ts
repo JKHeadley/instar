@@ -52,7 +52,8 @@ import { APP_CONVERSATION_KEY_PATTERN, derivedEventId, hideCredentialSpans, remo
 import type { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { deviceKeyHashOf, identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
 import { TeamAccessLog, verifyTeamAccessRow } from '../core/TeamAccessLog.js';
-import { tierAtLeast, tierOfRole, type ConversationOp, type Tier } from '../permissions/TeamAccess.js';
+import { TeamConfinement } from '../users/TeamConfinement.js';
+import { attentionForNonOwner, tierAtLeast, tierOfRole, type ConversationOp, type Tier } from '../permissions/TeamAccess.js';
 import { buildSignedOrigin } from './mobileConversationRoutes.js';
 import { activeOwnerPhone, mountConsoleTicketDeviceRoutes } from './mobileConsoleTicket.js';
 import { mountPairingApprovalDeviceRoutes } from './mobilePairingApproval.js';
@@ -478,6 +479,56 @@ export class MobilePairingService {
     return gate === 'ok' ? null : gate;
   }
 
+  /** A one-time link for a team person. Their phone's standing comes from the log, never the link. */
+  mintTeamLink(personKey: string, label: string | null): { ok: true; link: string; expiresAt: string } | { ok: false; status: number; error: string } {
+    const chosen = this.pairingOrigin();
+    if (!chosen) return { ok: false, status: 503, error: 'no-pairing-origin' };
+    const origin = `https://${chosen.host}`;
+    const m = this.codes.mint(codeTtlMs(this.deps.config.mobilePairing), cleanText(label), this.deps.config.authToken ?? '', { host: chosen.host, kind: chosen.kind }, { userId: personKey, role: 'team' });
+    if (!m.ok) return { ok: false, status: 429, error: m.reason };
+    return { ok: true, link: buildPairLink(origin, m.code, this.deps.config.projectName), expiresAt: new Date(m.expiresAt).toISOString() };
+  }
+
+  /** Set by the team router: the Face ID team actions (§3.6, §4.1). */
+  teamActionRunner: ((kind: 'team-off' | 'team-restore' | 'team-memory-privacy', req: Request, deviceId: string) => Promise<{ status: number; body: unknown }>) | null = null;
+
+  /** Tell a team phone's readers about a reply in a Telegram topic they hold. */
+  teamTopicReply(topicId: number): void {
+    const log = this.teamLog();
+    const ref = `telegram:${topicId}`;
+    if (!log || !log.state().on) return;
+    if (![...log.state().grants.values()].some((g) => g.has(ref))) return;
+    this.push?.onAppReply(ref, `topic-${topicId}-${Date.now()}`);
+  }
+
+  /** A second machine has to wait: it would know none of this (§4.1). */
+  teamJoinBlocked(): boolean {
+    const log = this.teamLog();
+    if (log && this.teamOn()) return true;
+    const entries = new TeamConfinement(this.deps.stateDir).entries();
+    return entries === null || entries.size > 0;
+  }
+
+  /** Is team access on? An unreadable log counts as on, the strict direction (§3.3). */
+  teamOn(): boolean {
+    const log = this.teamLog();
+    if (!log) return false;
+    return log.healthState() === 'unreadable' || log.state().on;
+  }
+
+  /**
+   * While team access is on, a send into a session with owner reach is refused for any non-owner,
+   * or they could ask that session for a member's private folder (§3.2). Their own conversations and
+   * confined ones have no owner reach.
+   */
+  sendReachesOwner(person: ResolvedPerson, ref: string): boolean {
+    if (isOwnerPerson(person) || !this.teamOn()) return false;
+    const key = ref.startsWith('app:') ? ref.slice(4) : ref;
+    const own = this.appConversationOwner?.(key);
+    if (own && own.machineId === this.machineId() && own.userId === person.userId) return false;
+    return this.teamLog()?.isConfined(key) !== true;
+  }
+
   /** May this phone's person do this to this conversation? (one shared check, spec §3.5) */
   mayUse(person: ResolvedPerson, ref: string, op: ConversationOp = 'read'): boolean {
     return mayUseConversation(person, ref, this.machineId(), this.appConversationOwner, op, (key, r) => {
@@ -888,6 +939,13 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       res.status(409).json({ error: 'approval-unavailable', detail: 'This agent cannot send you the confirmation code right now (no Telegram owner chat on this machine).' });
       return;
     }
+    // A team invite needs an app that reads its standing, and a person still in the log (§3.4). Peeked,
+    // so an old app does not burn the link.
+    const invited = svc.codes.peekPerson(body.code);
+    if (invited?.role === 'team') {
+      if (!Array.isArray(body.appCaps) || !body.appCaps.includes('standing')) { res.status(426).json({ error: 'app-update-required', detail: 'Update the Instar app, then open this link again.' }); return; }
+      if (!invited.userId || !svc.teamStanding(invited.userId)) { res.status(403).json({ error: 'That link has expired or was already used.' }); return; }
+    }
     if (svc.devices.pairingPaused()) { featureEvidence.recordAtMostEvery('mobilePairing', 'redeem|pairing-paused', 60_000, { kind: 'held', reason: 'redeem refused: pairing-paused' }); res.status(429).json({ error: 'pairing-paused' }); return; }
     // Take-and-delete happens synchronously inside redeem(), before any async work.
     const r = svc.codes.redeem(body.code, token);
@@ -927,7 +985,8 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     // already on phones send digits only, so everything else keeps today's 6-digit code.
     const codeFormat: CodeFormat = Array.isArray(body.codeFormats) && body.codeFormats.length <= 8 && body.codeFormats.includes('word') ? 'word' : 'digits';
     const code = svc.confirm.issue(device.id, Date.parse(device.expiresAt!), codeFormat);
-    if (approval === 'dashboard') {
+    if (approval === 'dashboard' || device.role === 'team') {
+      // A team phone's code is held for the owner's People screen (§3.4), whatever the owner's channel.
       // No DM to wait for: the code (plaintext, memory only) is shown on the dashboard's Phones
       // card to an operator session; the phone shows "confirm on your dashboard".
       svc.holdDashboardCode(device.id, code, Date.parse(device.expiresAt!));
@@ -1398,7 +1457,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       return { title: cleanText(it.title, 160) ?? '', priority: typeof it.priority === 'string' ? it.priority : null };
     };
     if (!machine || machine === deps.selfMachineId) {
-      const item = poolCtx?.telegram?.getAttentionItem?.(id) ?? poolCtx?.localAttention?.get(id);
+      const raw = poolCtx?.telegram?.getAttentionItem?.(id) ?? poolCtx?.localAttention?.get(id);
+      const item = raw ? filterAttentionForPhone(svc, req, [raw])[0] : undefined;
       if (!item) { res.status(404).json({ error: 'not-found' }); return; }
       res.json(view(item));
       return;
@@ -1726,7 +1786,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
 }
 
 type Principal = { kind: 'device'; deviceId: string } | { kind: 'device-notify'; deviceId: string } | { kind: 'token' };
-function principalOf(req: Request): Principal {
+export function principalOf(req: Request): Principal {
   return ((req as unknown as { instarPrincipal?: Principal }).instarPrincipal) ?? { kind: 'token' };
 }
 
@@ -1803,6 +1863,7 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['GET', /^\/telegram\/topics$/, 'guest'],
   ['GET', /^\/telegram\/topics\/[^/]+\/messages$/, 'guest'],
   ['GET', /^\/mobile\/conversations$/, 'guest'],
+  ['GET', /^\/mobile\/team\/people$/, 'guest'],
   ['GET', new RegExp(`^/mobile/chat/app/${UUID}/messages$`), 'guest'],
   ['GET', new RegExp(`^/mobile/chat/app/${UUID}/events$`), 'guest'],
   ['GET', new RegExp(`^/mobile/chat/app/${UUID}/preview/[a-z0-9._:-]{1,128}$`), 'guest'],
@@ -1863,6 +1924,15 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Reply notification preview (chat-media §4.11); the read token opens it too (NOTIFY_TOKEN_PATHS).
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/preview/[a-z0-9._:-]{1,128}$`), statuses: active, conversationRef: true },
     { method: 'POST', re: /^\/mobile\/device\/push$/, statuses: active },
+    // Team access (team-roles-and-access §4.1): the owner writes; a member reads their own row.
+    { method: 'GET', re: /^\/mobile\/team\/people$/, statuses: active, body: 'none' },
+    { method: 'GET', re: /^\/mobile\/team\/context$/, statuses: active, body: 'none', ownerOnly: true },
+    { method: 'GET', re: /^\/mobile\/team\/activity$/, statuses: active, body: 'none', ownerOnly: true },
+    { method: 'GET', re: /^\/mobile\/team\/invites\/[^/]{1,128}$/, statuses: active, body: 'none', ownerOnly: true },
+    { method: 'POST', re: /^\/mobile\/team\/invites$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
+    { method: 'POST', re: /^\/mobile\/team\/grants$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
+    { method: 'POST', re: /^\/mobile\/team\/people\/[^/]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
+    { method: 'POST', re: /^\/mobile\/team\/(off|restore|memory-privacy)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // People and roles §3.5: the owner's grant switches (owner phones only, checked in the route).
     { method: 'GET', re: /^\/mobile\/people$/, statuses: active },
     { method: 'POST', re: /^\/mobile\/people\/[^/]{1,128}\/grants$/, statuses: active },
@@ -2096,6 +2166,10 @@ export function deviceAuthenticator(svc: MobilePairingService) {
         const target = teamConversationTarget(req.method, pathNorm);
         if (target && !svc.mayUse(person, target.ref, target.op)) return refuse(404, 'unknown-conversation');
       }
+      if (!isOwnerPerson(person)) {
+        const target = teamConversationTarget(req.method, pathNorm);
+        if (target?.op === 'send' && svc.sendReachesOwner(person, target.ref)) return refuse(403, 'read-only-owner-reach');
+      }
       (req as unknown as { instarDevicePerson: ResolvedPerson }).instarDevicePerson = person;
     }
     (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device', deviceId: v.deviceId };
@@ -2138,6 +2212,29 @@ export function deviceMayUse(svc: MobilePairingService, req: Request, ref: strin
   if (principalOf(req).kind === 'token') return true;
   const p = devicePersonOf(req);
   return p !== null && svc.mayUse(p, ref, op);
+}
+
+/** A phone's view of attention items: the owner and the bearer see all; others follow §3.7 while team access is on. */
+export function filterAttentionForPhone<T extends object>(svc: MobilePairingService | null | undefined, req: Request, items: T[]): T[] {
+  const p = devicePersonOf(req);
+  if (!svc || !p || isOwnerPerson(p) || !svc.teamOn()) return items;
+  return items.flatMap((item) => {
+    const shown = attentionForNonOwner(item as { category?: unknown }, (topicId) => svc.mayUse(p, `telegram:${topicId}`, 'read'));
+    return shown ? [shown as T] : [];
+  });
+}
+
+/** While team access is on, a session a phone may not read shows as "Private session". */
+export function maskSessionsForPhone<T extends Record<string, unknown>>(svc: MobilePairingService | null | undefined, req: Request, rows: T[]): T[] {
+  const p = devicePersonOf(req);
+  if (!svc || !p || isOwnerPerson(p) || !svc.teamOn()) return rows;
+  return rows.map((row) => {
+    const topic = row.telegramTopicId;
+    const place = (row.memoryPlaceInput as { memoryPlaceKey?: unknown } | undefined)?.memoryPlaceKey;
+    const ref = typeof topic === 'number' ? `telegram:${topic}` : typeof place === 'string' ? place : null;
+    if (ref && svc.mayUse(p, ref, 'read')) return row;
+    return { id: row.id, status: row.status, name: 'Private session' } as unknown as T;
+  });
 }
 
 /** Keep only the Telegram topics a team phone may read. Every other caller sees them all. */

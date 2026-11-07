@@ -1,6 +1,7 @@
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/AgentServer.ts');
 const stampSpendNotification = notificationStamper('src/server/AgentServer.ts', 'spend-alert-dispatcher');
+import { TeamConfinement } from '../users/TeamConfinement.js';
 import { requireTelegramDelivery } from '../messaging/NotificationSelectivityGate.js';
 import { decisionQualityMachineSegment } from '../core/decisionQualityTypes.js';
 import { readMeasurementTargets } from './measurementCoverageRead.js';
@@ -200,6 +201,8 @@ import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, sl
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
+import { confinedEntryFor, createTeamRouter } from './teamRoutes.js';
+import { deriveRole } from '../permissions/SlackPrincipalResolver.js';
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
 import { buildSlackHolderRead } from './mobileSlackHolderProxy.js';
 import { buildMediaHolderStream, holderBearerOk } from './mobileMediaHolderProxy.js';
@@ -1782,6 +1785,20 @@ export class AgentServer {
     // Mobile pairing links (docs/specs/mobile-pairing-link.md): the public redeem + ping are
     // registered here, before the bearer gate; mint + devices mount on the authed router below.
     this.mobilePairing = new MobilePairingService({
+      // Team phones need the sandbox on, and one machine until multi-machine support lands (§3.6, §4.1).
+      teamGate: () => {
+        const status = options.sessionManager.memoryPrivacyStatus?.();
+        if (!status?.enabled || !status.sandboxReady) return 'memory-privacy-required';
+        try {
+          const identity = options.coordinator?.managers?.identityManager;
+          const self = options.coordinator?.identity?.machineId;
+          if (identity?.getActiveMachines().some((m) => m.machineId !== self)) return 'team-needs-one-machine';
+        } catch {
+          // @silent-fallback-ok — an unreadable registry counts as several machines, the strict direction.
+          return 'team-needs-one-machine';
+        }
+        return 'ok';
+      },
       config: this.config,
       stateDir: options.config.stateDir,
       tunnel: () => options.tunnel,
@@ -1858,6 +1875,7 @@ export class AgentServer {
         enabled: () => isMobilePushEnabled(this.config),
         // People and roles: a reply push goes only to phones that may use that conversation.
         mayNotify: (deviceId, conversationKey) => mp.deviceMayUseConversation(deviceId, conversationKey),
+        receivesNotices: (deviceId) => mp.devices.get(deviceId)?.role !== 'team',
         credentials: () => {
           const keyPem = pushKeys.get('apns_key_p8');
           const keyId = pushKeys.get('apns_key_id');
@@ -2066,6 +2084,11 @@ export class AgentServer {
           ? options.config.multiMachine?.identityReannounce?.sharedBearerToken
           : undefined,
         resolveIdentityReannounceContext: options.resolveIdentityReannounceContext,
+      };
+      machineRouteContext.teamJoinBlocked = () => {
+        if (this.mobilePairing) return this.mobilePairing.teamJoinBlocked();
+        const entries = new TeamConfinement(options.config.stateDir).entries();
+        return entries === null || entries.size > 0;
       };
       this.machineRouteContext = machineRouteContext;
       const machineRoutes = createMachineRoutes(machineRouteContext);
@@ -6690,6 +6713,48 @@ export class AgentServer {
       }
       this.mobilePairing.pushPoolCtx = routeCtx;
       this.app.use(createMobilePairingRouter(this.mobilePairing, this.mobilePairing.deps, routeCtx));
+      const pairingSvc = this.mobilePairing;
+      const appStore = this.appConversations?.store ?? null;
+      const topicNumber = (key: string) => options.state.get<number>(key) ?? null;
+      this.app.use(createTeamRouter(pairingSvc, {
+        signer: () => loadMachineSigner(options.config.stateDir),
+        applyConversationChange: (ref, change) => options.sessionManager.applyConversationChange(ref, change),
+        isSystemTopic: (id) => id === topicNumber('agent-attention-topic') || id === topicNumber('agent-updates-topic') || id === options.telegram?.getLifelineTopicId(),
+        isJobTopic: (id) => Object.values(options.state.get<Record<string, number>>('job-topic-mappings') ?? {}).includes(id),
+        isUnconfinableTopic: (id) => {
+          const framework = options.topicProfile?.store.resolve(id)?.framework;
+          return !!framework && framework !== 'claude-code';
+        },
+        ownerProfile: () => {
+          const users = new UserManager(options.config.stateDir, options.config.users).listUsers();
+          const owners = users.filter((u) => deriveRole(u.permissions ?? [], u.orgRole) === 'owner');
+          const id = options.sessionManager.memoryPrivacyStatus?.().ownerUserId ?? owners[0]?.id ?? null;
+          const owner = users.find((u) => u.id === id);
+          return { userId: id, several: owners.length > 1, links: (owner?.telegramUserId ? { telegram: owner.telegramUserId } : {}) as Record<string, string | number> };
+        },
+        logsDir: path.join(options.config.stateDir, 'logs'),
+        restoreRefs: () => {
+          const keys = appStore?.liveConversationKeys() ?? [];
+          const teamDevices = new Set(pairingSvc.devices.list().filter((d) => d.role === 'team').map((d) => d.id));
+          const holdsTeamWords = (key: string): boolean => {
+            let cursor: string | null = null;
+            for (;;) {
+              const page = appStore!.syncEvents(key, cursor, 500);
+              if (page.events.some((e) => 'origin' in e && teamDevices.has((e as { origin?: { deviceId?: string } }).origin?.deviceId ?? ''))) return true;
+              if (page.events.length === 0 || page.cursor === cursor) return false;
+              cursor = page.cursor;
+            }
+          };
+          return {
+            teamRefs: keys.filter(holdsTeamWords).map(confinedEntryFor),
+            allRefs: () => [...keys, ...(options.telegram?.getAllTopicMappings() ?? []).map((m) => `telegram:${m.topicId}`)].map(confinedEntryFor),
+          };
+        },
+        requireMemoryPrivacy: () => {
+          options.liveConfig?.set('memoryPrivacy.enabled', true);
+          return this.requestSupervisedRestart('memory privacy turned on for team members', 'team-memory-privacy');
+        },
+      }));
     }
 
     // File viewer routes (after auth middleware)
