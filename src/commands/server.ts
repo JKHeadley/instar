@@ -1,3 +1,5 @@
+import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
+import { observeRecoveryPeer } from '../recovery/RecoveryPoolHealth.js';
 import { hasPromotedUpgradeAnnouncement, LEGACY_NOTIFICATION_GATES, scheduledJobSlug } from '../messaging/notificationCategories.js';
 import { readPeerNotifications } from '../server/notificationPoolRead.js';
 import { NotificationPreferences } from '../messaging/NotificationPreferences.js';
@@ -27280,6 +27282,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               const c = cmd as Extract<import('../core/MeshRpc.js').MeshCommand, { type: 'ssh-proof-publish' }>;
               return mutualSshRuntime.handleProof(c.proof, sender);
             },
+            'recovery-enrollment-advert': async () => {
+              const setup = (globalThis as { __instarRecoverySetup?: import('../recovery/RecoverySetupRuntime.js').RecoverySetupRuntime }).__instarRecoverySetup;
+              if (!setup) throw new Error('recovery-setup-unavailable');
+              return setup.advert();
+            },
             'capacity-report': () => machinePoolRegistry?.getCapacities() ?? [],
             'session-status': () => {
               const base = machinePoolRegistry?.getCapacity(meshSelfId) ?? { machineId: meshSelfId };
@@ -27309,7 +27316,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               // copy on the self beat was stamped up to 30 s ago, which would let a
               // receiver's 60 s freshness check pass a ~90 s-old report.
               const liveLoadReport = _machineLoadSampler?.read() ?? null;
-              return { ...base, ...(liveLoadReport ? { loadReport: liveLoadReport } : {}), journalAdvert, peerSightings, ...(commitmentsAdvert ? { commitmentsAdvert } : {}), ...(preferencesAdvert ? { preferencesAdvert } : {}) };
+              return { ...base, serverDownRecovery:currentRecoveryStatus(), ...(liveLoadReport ? { loadReport: liveLoadReport } : {}), journalAdvert, peerSightings, ...(commitmentsAdvert ? { commitmentsAdvert } : {}), ...(preferencesAdvert ? { preferencesAdvert } : {}) };
             },
             // A2A cross-machine route (docs/specs/a2a-cross-machine-route.md).
             // Both verbs are ALWAYS registered; with the gate off both refuse.
@@ -28257,6 +28264,105 @@ export async function startServer(options: StartOptions): Promise<void> {
               mutualSshRuntime = null;
               console.warn(`[mutual-ssh] initialization blocked: ${err instanceof Error ? err.message : String(err)}`);
             }
+          }
+          // The main process observes recovery; its separately supervised SSH and
+          // relay listeners remain alive across this server's restart/shutdown.
+          {
+            const { RecoveryRuntime } = await import('../recovery/RecoveryRuntime.js');
+            const { RecoverySetupRuntime } = await import('../recovery/RecoverySetupRuntime.js');
+            // A machine's pairedAt is its membership epoch, not a pair epoch.
+            // The symmetric maximum changes when either membership changes and
+            // is identical from both sides of an agreed MachineAuth registry.
+            const recoveryPaired = () => {
+              const active=meshIdMgr.getActiveMachines(),self=active.find(row=>row.machineId===meshSelfId);
+              const selfEpoch=Date.parse(self?.entry.pairedAt??'');
+              if(!Number.isSafeInteger(selfEpoch)||selfEpoch<1)return [];
+              return active.filter(row=>row.machineId!==meshSelfId).map(row=>({machineId:row.machineId,
+                pairingEpoch:Math.max(selfEpoch,Date.parse(row.entry.pairedAt)),publicKey:meshIdMgr.getSigningPublicKeyPem(row.machineId)??''}));
+            };
+
+            const directHost = (getSelfMeshEndpoints?.() ?? []).flatMap(endpoint => {
+              try { return [new URL(endpoint.url).hostname]; } catch { return []; }
+            }).find(host => /^(100\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host)) ?? '';
+            const setup = new RecoverySetupRuntime({
+              stateDir: config.stateDir, agentId: config.projectName, machineId: meshSelfId,
+              machineSigningKey: localSigningKeyPem,
+              membershipEpochs:()=>Object.fromEntries(meshIdMgr.getActiveMachines().map(row=>[row.machineId,Date.parse(row.entry.pairedAt)])),
+              machineName:verifiedEntityName(meshSelfId,meshIdMgr.getActiveMachines().find(r=>r.machineId===meshSelfId)?.entry.nickname)??'This machine',
+              machineNames:()=>Object.fromEntries(meshIdMgr.getActiveMachines().filter(r=>r.machineId!==meshSelfId).map(r=>[r.machineId,verifiedEntityName(r.machineId,r.entry.nickname??r.entry.name)??'Another machine'])),
+              paired: recoveryPaired,
+              releaseRoot: () => {
+                const root = path.resolve(__dirname, '../keys/instar-recovery-certification-root.pem');
+                try { return fs.readFileSync(root, 'utf8'); } catch { DegradationReporter.getInstance().report({feature:'ServerDownRecovery.releaseRoot',primary:'Installed release certification public key',fallback:'Recovery setup remains incomplete',reason:'Installed release certification key cannot be read',impact:'No recovery authority or host admission can be trusted.'});return null; }
+              },
+              activate:async()=>{liveConfig.set('multiMachine.serverDownRecovery.enabled',true);if(config.multiMachine)config.multiMachine.serverDownRecovery={...config.multiMachine.serverDownRecovery,enabled:true};await runtime.enable();},
+              peerAdvert: async machineId => {
+                const url=peerUrl(machineId); if (!url) throw new Error('recovery-peer-unreachable');
+                const result=await meshClient.send({machineId,url},{type:'recovery-enrollment-advert'},0,{timeoutMs:15_000});
+                if (!result.ok) throw new Error('recovery-peer-unreachable');
+                return result.result as import('../recovery/RecoveryProtocol.js').Signed<import('../recovery/RecoveryEnrollment.js').RecoveryEnrollmentAdvert>;
+              },
+              directHost, sshPort:config.multiMachine?.peerExecution?.port ?? 22,
+              sshHostPublicKey: (() => { try { return fs.readFileSync('/etc/ssh/ssh_host_ed25519_key.pub','utf8'); } catch { DegradationReporter.getInstance().report({feature:'ServerDownRecovery.hostSshKey',primary:'Pinned local host sshd key',fallback:'Recovery setup remains incomplete',reason:'Host SSH public key cannot be read',impact:'The direct recovery route cannot be enrolled or counted as ready.'});return ''; } })(),
+              username:os.userInfo().username,agentHome:os.homedir(),
+              mainServicePlist:path.join(os.homedir(),'Library','LaunchAgents',`ai.instar.${config.projectName}.plist`),
+              mainHealthPort:config.port,mainAuthToken:config.authToken ?? '',
+              entrypoint:path.resolve(__dirname,'../../scripts/recovery-entrypoint.mjs'),
+            });
+            (globalThis as { __instarRecoverySetup?: import('../recovery/RecoverySetupRuntime.js').RecoverySetupRuntime }).__instarRecoverySetup=setup;
+
+            const { RecoveryRepairCoordinator } = await import('../recovery/RecoveryRepairCoordinator.js');
+            const repair = new RecoveryRepairCoordinator({
+              stateDir:config.stateDir,
+              lease:()=>({eligible:coordinator.isRouter(),epoch:coordinator.getLeaseEpoch()}),
+              paired:target=>recoveryPaired().some(row=>row.machineId===target.targetMachineId&&row.pairingEpoch===target.pairingEpoch),
+              notify:async(key,message)=>{
+                if(!telegramOriginBoot)throw new Error('recovery-notice-outbox-unavailable');
+                const savedTopic=state.get<number>('recovery-notice-topic:'+key),topic=savedTopic??state.get<number>('agent-attention-topic');
+                if(!topic)throw new Error('recovery-notice-destination-unavailable');
+                if(!savedTopic)state.set('recovery-notice-topic:'+key,topic);
+                const runtime=telegramOriginBoot.runtime,producerId='server-down-recovery-notice';
+                const operationId=runtime.service.automationOperationId(producerId,topic,key);
+                const {postOriginAutomationReply}=await import('../messaging/telegram-origin/OriginAutomationReply.js');
+                const {deterministicAutomationAuthor}=await import('../messaging/telegram-origin/OriginAutomationAuthor.js');
+                const response=await postOriginAutomationReply({service:runtime.service,port:config.port,authToken:config.authToken??'',producerId,topicId:topic,
+                  logicalSendId:key,author:deterministicAutomationAuthor(),body:{text:message,metadata:{messageKind:'health-alert'}}});
+                await response.body?.cancel();
+                const record=await runtime.store.getOperation(operationId);
+                if(!record?.operation||record.operation.operationId!==operationId)throw new Error('recovery-notice-outbox-pending');
+                return {operationId};
+              },
+            });
+            const runtime = new RecoveryRuntime({
+              stateDir: config.stateDir, agentId: config.projectName, machineId: meshSelfId,
+              enabled: resolveDevAgentGate(config.multiMachine?.serverDownRecovery?.enabled,config),
+              entrypoint: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../scripts/recovery-entrypoint.mjs'),
+              onStatus:(target,route,healthy,evidence)=>repair.observe(target,route,healthy,evidence),
+              repairStatus:target=>repair.status(target),
+              onPending:target=>repair.retryPending(target),
+              onRouteFailure:(target,route,security)=>repair.routeLost(target,route,security),
+              onRouteSuccess:(target,route,evidence)=>repair.routeRestored(target,route,evidence),
+              onSetupRequired:async reason=>{
+                if(!coordinator.isRouter()||state.get<string>('recovery-setup-blocker-id'))return;
+                try {
+                  const response=await fetch(`http://127.0.0.1:${config.port}/blockers`,{method:'POST',headers:{Authorization:`Bearer ${config.authToken??''}`,'Content-Type':'application/json','X-Instar-Request':'1'},
+                    body:JSON.stringify({detectedText:'Paired machines do not have verified server-down recovery. Recovery setup must inspect existing authority and owner-phone enrollment, then prepare the phone approval surface before any human handoff.',origin:'server-down-recovery:'+meshSelfId+':'+reason}),signal:AbortSignal.timeout(5_000)});
+                  if(response.ok){const opened=await response.json() as {id?:string};if(opened.id)state.set('recovery-setup-blocker-id',opened.id);}
+                  else {await response.body?.cancel();console.warn('[recovery] setup blocker ledger unavailable; recovery remains visibly degraded');}
+                } catch {console.warn('[recovery] setup blocker recording unavailable; recovery remains visibly degraded');}
+              },
+
+              paired: recoveryPaired,
+            });
+            (globalThis as { __instarRecoveryRuntime?: import('../recovery/RecoveryRuntime.js').RecoveryRuntime }).__instarRecoveryRuntime = runtime;
+            if(resolveDevAgentGate(config.multiMachine?.serverDownRecovery?.enabled,config)){
+              try{await setup.refreshOwnedBindings();}
+              catch{DegradationReporter.getInstance().report({feature:'ServerDownRecovery.mainBindingRefresh',primary:'Current trusted local main credentials',fallback:'Existing recovery binding remains degraded',reason:'Owned binding refresh could not be verified',impact:'Recovery cannot be counted ready until its exact main-service binding is restored.'});}
+            }
+            await runtime.start();
+            guardRegistry.register('multiMachine.serverDownRecovery.enabled', () => ({
+              enabled: resolveDevAgentGate(config.multiMachine?.serverDownRecovery?.enabled,config), status: runtime.status(),
+            }));
           }
           // Pool Dashboard Streaming requesting side (§2.2): build the connector
           // the WebSocketManager uses to open an upstream /pool-stream to a peer.
@@ -29719,6 +29825,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             fetchPeerCapacity: async (machineId, url) => {
               const res = await meshClient.send({ machineId, url }, { type: 'session-status' }, 0);
               if (res.ok && res.result && typeof res.result === 'object') {
+                observeRecoveryPeer(machineId,(res.result as {serverDownRecovery?:unknown}).serverDownRecovery);
                 // The journal advert is the one slice that needs closure context
                 // (the machine-id-keyed unwrap), so it is computed HERE; the rest
                 // of the narrowing — commitmentsAdvert (#930), quotaState (A2/#804),
@@ -33080,7 +33187,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         try {
           const { ensureStableNodeSymlink } = await import('./setup.js');
           ensureStableNodeSymlink(config.projectDir);
-        } catch { /* non-critical */ }
+        } catch (error) { console.warn('[recovery] Approved main bootstrap could not be preserved; recovery stays degraded:',error instanceof Error?error.message:'unavailable'); }
 
         if (!needsReinstall && autostartInstalled) {
           const { autoStartNeedsLifeline } = await import('./setup.js');
@@ -33298,6 +33405,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       wakeSocketServer?.stop();
       pipeSpawner?.killAll();
       try { stopHeartbeat?.(); } catch { /* non-critical during shutdown */ }
+      (globalThis as { __instarRecoveryRuntime?: import('../recovery/RecoveryRuntime.js').RecoveryRuntime }).__instarRecoveryRuntime?.stop();
+      delete (globalThis as { __instarRecoverySetup?: import('../recovery/RecoverySetupRuntime.js').RecoverySetupRuntime }).__instarRecoverySetup;
+      delete (globalThis as { __instarRecoveryRuntime?: import('../recovery/RecoveryRuntime.js').RecoveryRuntime }).__instarRecoveryRuntime;
       try { await (globalThis as { __instarMutualSshRuntime?: import('../core/MutualSshRuntime.js').MutualSshRuntime }).__instarMutualSshRuntime?.rollback(); } catch { /* @silent-fallback-ok: shutdown continues; endpoint sockets also die with the process */ }
       delete (globalThis as { __instarMutualSshRuntime?: import('../core/MutualSshRuntime.js').MutualSshRuntime }).__instarMutualSshRuntime;
       // pid-guarded: only remove OUR OWN registration. An unguarded
