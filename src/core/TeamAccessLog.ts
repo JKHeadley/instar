@@ -501,6 +501,11 @@ export class TeamAccessLog {
     return Math.max(mine, this.seedSeq) + 1;
   }
 
+  /** Did the log ever hold this person, present or gone? */
+  everHeld(personKey: string): boolean {
+    return this.rows.some((r) => r.kind === 'request' && (bodyEvents(r) ?? []).some((e) => e.type === 'person-add' && e.personKey === personKey));
+  }
+
   /** What this machine holds: origin/incarnation to highest seq. */
   vector(): Record<string, number> {
     const out: Record<string, number> = {};

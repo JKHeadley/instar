@@ -18,3 +18,6 @@ New rows carry origin, incarnation, a hash of the row before and a signed seen-v
 
 ## Confined list across machines
 Each conversation locked here is told to peers as a `confine` row, and a peer writes its file before folding. A grant locks its conversation on arrival even if its row cannot be placed yet, since locking is the safe direction. Owned beats shared for one conversation, in any order. A restore's sweep stays local. 2a's entries are told once at boot.
+
+## Phones across machines
+A team phone is bound in the log at activation, with a pass at boot for 2a's phones. `reconcileTeamPhones` revokes a phone here when its person was removed elsewhere. A phone whose person the log has never held is left alone, because it can pair before the row arrives.

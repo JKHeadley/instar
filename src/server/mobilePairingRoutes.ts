@@ -460,7 +460,10 @@ export class MobilePairingService {
       stateDir, signer: loadMachineSigner(stateDir),
       verify: (row) => verifyTeamAccessRow(row, ledger.view(), lookup),
     });
-    try { this.teamLogInstance.backfillConfineRows(); } catch (err) { this.deps.reportDegradation?.('TeamAccess.backfill', err); } // @silent-fallback-ok — reported; retried at the next boot
+    try {
+      this.teamLogInstance.backfillConfineRows();
+      this.bindTeamPhones();
+    } catch (err) { this.deps.reportDegradation?.('TeamAccess.backfill', err); } // @silent-fallback-ok — reported; retried at the next boot
     return this.teamLogInstance;
   }
 
@@ -510,6 +513,28 @@ export class MobilePairingService {
       try { this.keyLedger?.recordRevocation(d, at); } catch (err) { this.deps.reportDegradation?.('MobilePairing.keyLedger', err); } // @silent-fallback-ok — reported; a failed ledger write never blocks a revocation
       this.devices.revoke(d.id, at);
       this.confirm.drop(d.id);
+    }
+  }
+
+  /** A team phone's key, in the log, so every machine can tell whose it is (Step 2b). */
+  bindTeamPhones(): void {
+    const log = this.teamLog();
+    if (!log || log.healthState() !== 'ok') return;
+    for (const d of this.devices.list()) {
+      if (d.role !== 'team' || d.status !== 'active' || !d.publicKey || !d.userId) continue;
+      const keyHash = deviceKeyHashOf(d.publicKey);
+      if (log.state().bindings.get(keyHash) !== d.userId) log.appendMachineEvents([{ type: 'phone-bind', keyHash, deviceId: d.id, boundTo: d.userId }]);
+    }
+  }
+
+  /** A removal can arrive from another machine: this machine then revokes its own phones for that person. */
+  reconcileTeamPhones(): void {
+    const log = this.teamLog();
+    if (!log || log.healthState() !== 'ok') return;
+    for (const d of this.devices.list()) {
+      if (d.role !== 'team' || d.status === 'revoked' || !d.userId) continue;
+      // A phone can pair before its person's row arrives here, so only someone the log once held counts.
+      if (log.everHeld(d.userId) && !this.teamStanding(d.userId)) this.revokePersonPhones(d.userId);
     }
   }
 
@@ -1372,6 +1397,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       svc.dropDashboardCode(d.id);
       svc.noteActivated(d.id);
       for (const [n, id] of svc.declineNonces) if (id === d.id) svc.declineNonces.delete(n);
+      try { if (d.role === 'team') svc.bindTeamPhones(); } catch (err) { deps.reportDegradation?.('TeamAccess.bind', err); } // @silent-fallback-ok — reported; bound at the next boot
       featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'confirmed', context: { deviceId: d.id, approvedVia, role: d.role ?? 'owner' } });
       res.json({ status: 'active' });
       return;

@@ -92,18 +92,6 @@ export class TeamRefusalLog {
 
 const grantRefs = (events: RequestEvent[]): string[] => events.flatMap((e) => (e.type === 'grant' || e.type === 'grant-remove' ? [e.ref] : []));
 
-/** Every person the log has ever held, present or gone. */
-export function keysEverAdded(rows: ReadonlyArray<TeamAccessRow>): Set<string> {
-  const keys = new Set<string>();
-  for (const row of rows) {
-    if (row.kind !== 'request') continue;
-    let events: RequestEvent[] | null = null;
-    try { events = parseSignedEvents(JSON.parse(Buffer.from(row.signedOrigin.bodyB64, 'base64').toString('utf8'))); } catch { events = null; } // @silent-fallback-ok — an unreadable row names nobody
-    for (const e of events ?? []) if (e.type === 'person-add') keys.add(e.personKey);
-  }
-  return keys;
-}
-
 /** Plain lines for Activity, from the signed log. */
 export function activityLines(rows: ReadonlyArray<TeamAccessRow>): Array<{ seq: number; text: string }> {
   const out: Array<{ seq: number; text: string }> = [];
@@ -310,7 +298,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
       res.status(400).json({ error: 'first-invite-incomplete', detail: 'The first invite also turns team access on.' });
       return;
     }
-    if (keysEverAdded(log.allRows()).has(add.personKey)) { res.status(409).json({ error: 'person-key-used', detail: 'That person was on this agent before. Invite them as someone new.' }); return; }
+    if (log.everHeld(add.personKey)) { res.status(409).json({ error: 'person-key-used', detail: 'That person was on this agent before. Invite them as someone new.' }); return; }
     // The link first: its code means nothing until the person is in the log, and a mint that fails here
     // leaves nothing saved or confined, so a plain retry works.
     const link = svc.mintTeamLink(add.personKey, typeof body.label === 'string' ? body.label : null);

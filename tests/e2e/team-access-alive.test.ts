@@ -126,6 +126,8 @@ describe('team access — production wiring', () => {
     expect(waiting.body.waiting).toHaveLength(1);
     expect((await mia('POST', '/mobile/device/confirm', { code: waiting.body.waiting[0].code.replace(/\s/g, '') })).body.status).toBe('active');
 
+    // Her phone is bound in the log, so another machine could tell whose key it is.
+    expect(server.mobilePairing!.teamLog()!.allRows().some((r) => r.kind === 'machine' && r.events.some((e) => e.type === 'phone-bind' && e.boundTo === 'mia'))).toBe(true);
     // She sees and talks only in what she was given.
     const list = await mia('GET', '/mobile/conversations');
     expect(list.status).toBe(200);
