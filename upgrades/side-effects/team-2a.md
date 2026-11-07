@@ -135,3 +135,5 @@ The team access awareness section is tracked in the completeness test.
 A sweep of 480 related test files before the PR found the bookkeeping these changes needed: closure entries, owner-only route lists, spies that follow the unlocked spawn, and catch annotations.
 
 Rebased onto main after its engine-change work: the safe inbox path now sits in `writeContext`, which the new session-switch path also uses.
+
+Merged main after PR 2910 landed: its changes match this branch, so only an import line differed.
