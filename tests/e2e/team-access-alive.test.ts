@@ -143,6 +143,9 @@ describe('team access — production wiring', () => {
     expect(lowered.status).toBe(200);
     expect((await mia('GET', '/mobile/conversations')).status).toBe(401); // the phone itself is revoked
     expect(server.mobilePairing!.teamLog()!.isConfined(shared)).toBe(true);
+    // A topic reference that is not the standard form is refused before anything is written.
+    const odd = await owner('POST', '/mobile/team/grants', { events: [{ type: 'grant', personKey: 'mia', ref: 'telegram:01', access: 'use' }] });
+    expect(odd.status).toBeGreaterThanOrEqual(400);
     // Two invites at once for one new key: the second sees the first.
     const twin = { events: [{ type: 'person-add', personKey: 'twin', name: 'Twin', role: 'member' }] };
     const both = await Promise.all([owner('POST', '/mobile/team/invites', twin), owner('POST', '/mobile/team/invites', twin)]);

@@ -187,6 +187,7 @@ function applyMachineEvent(s: TeamAccessState, e: MachineEvent): void {
   switch (e.type) {
     case 'phone-bind': s.bindings.set(e.keyHash, e.boundTo); return;
     case 'conversation-own': s.owned.set(e.ref, e.personKey); return;
+    case 'restored': return;
     case 'lower': {
       if (e.ref) { s.grants.get(e.personKey)?.delete(e.ref); return; }
       if (e.remove) { s.people.delete(e.personKey); s.grants.delete(e.personKey); return; }
@@ -309,11 +310,29 @@ export class TeamAccessLog {
       // A log below last-good was rolled back: count it as lost, whatever it says. On one machine every
       // phone is in the ledger, so a row it cannot place means the ledger failed: strict, not empty.
       const unplaced = rows.some((r) => r.kind === 'request' && this.opts.verify(r) === 'unknown');
-      this.health = this.folded.highestSeq < this.seedSeq || unplaced ? 'unreadable' : 'ok';
+      // A lost or altered row in the middle could be a downgrade: the fold would quietly give back
+      // what it took away. Past the last accepted restore, every row must be there and verify.
+      this.health = this.folded.highestSeq < this.seedSeq || unplaced || !this.intact(rows) ? 'unreadable' : 'ok';
     } catch (err) {
       console.warn(`[team-access] log unreadable: ${err instanceof Error ? err.message : String(err)}`);
       this.rows = []; this.folded = emptyState(); this.health = 'unreadable';
     }
+  }
+
+  private intact(rows: ReadonlyArray<TeamAccessRow>): boolean {
+    const sorted = [...rows].sort((a, b) => a.seq - b.seq);
+    let from = 0;
+    for (const r of sorted) {
+      if (r.kind !== 'machine' || this.opts.verify(r) !== 'verified') continue;
+      for (const e of r.events) if (e.type === 'restored') from = Math.max(from, e.throughSeq);
+    }
+    let expected = from + 1;
+    for (const r of sorted) {
+      if (r.seq <= from) continue;
+      if (r.seq !== expected || this.opts.verify(r) === 'failed') return false;
+      expected += 1;
+    }
+    return true;
   }
 
   private readLastGoodHighestSeq(): number {
@@ -531,6 +550,8 @@ export class TeamAccessLog {
     this.folded = foldRows(merged, this.opts.verify);
     this.seedSeq = Math.max(this.seedSeq, this.folded.highestSeq);
     this.health = 'ok';
+    // Recorded, or the gap a repair accepted would read as damage again at the next boot.
+    if (this.opts.signer) this.appendMachineEvents([{ type: 'restored', throughSeq: this.folded.highestSeq }]);
     return { logLost, listLost };
   }
 }

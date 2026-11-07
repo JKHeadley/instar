@@ -19,7 +19,9 @@ export type RequestEvent =
 export type MachineEvent =
   | { type: 'phone-bind'; keyHash: string; deviceId: string; boundTo: string }
   | { type: 'conversation-own'; ref: string; personKey: string }
-  | { type: 'lower'; personKey: string; ref?: string; role?: OrgRole; remove?: boolean };
+  | { type: 'lower'; personKey: string; ref?: string; role?: OrgRole; remove?: boolean }
+  /** The owner accepted the log as it stood after a restore, gaps included, through this row. */
+  | { type: 'restored'; throughSeq: number };
 
 const MAX_EVENTS = 50;
 const str = (v: unknown, max = 256): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
@@ -91,6 +93,8 @@ export function validateMachineEvent(raw: unknown): MachineEvent | null {
       return str(e.keyHash) && str(e.deviceId) && str(e.boundTo) ? { type: 'phone-bind', keyHash: e.keyHash, deviceId: e.deviceId, boundTo: e.boundTo } : null;
     case 'conversation-own':
       return str(e.ref) && str(e.personKey) ? { type: 'conversation-own', ref: e.ref, personKey: e.personKey } : null;
+    case 'restored':
+      return Number.isInteger(e.throughSeq) && (e.throughSeq as number) >= 0 ? { type: 'restored', throughSeq: e.throughSeq as number } : null;
     case 'lower':
       if (!str(e.personKey)) return null;
       if (e.ref !== undefined && !str(e.ref)) return null;

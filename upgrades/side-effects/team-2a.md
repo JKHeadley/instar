@@ -121,3 +121,6 @@ Confirmed the earlier fixes on the real code. Fixed: with no list left at all, r
 
 ## Final internal review, 2026-11-07
 No path to more access. Fixed: restore could lock an owner out of everything on an agent with nothing to restore (it now runs only when the log or list is damaged, sweeps only when the log is visibly damaged, and leaves system and job topics alone); a failed link after an invite was saved blocked a retry (the link is made first); a session that would not end let the change through (the change now stops). Stated limit: if the list, its snapshot and the final row of the log are all lost, that grant cannot be seen and is not restored.
+
+## Outside-family code review, third pass, 2026-11-07
+Fixed: a non-standard topic reference such as `telegram:01` could sit apart from the topic the handler served (refused at grant, and a send now names the topic by number); a row lost from the middle of the log could quietly give back what it took away (past the last accepted restore, every row must be present and verify, or the log reads as unreadable and team phones are refused; a restore records what it accepted, so its gap does not read as damage at the next boot).

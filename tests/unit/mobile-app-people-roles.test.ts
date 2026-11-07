@@ -354,6 +354,11 @@ describe('role literals', () => {
 });
 
 describe('route tiers (team-roles-and-access §3.7)', () => {
+  it('a send names a topic the way its handler reads it', () => {
+    expect(teamConversationTarget('POST', '/mobile/chat/01')).toEqual({ ref: 'telegram:1', op: 'send' });
+    expect(teamConversationTarget('POST', '/mobile/chat/50')).toEqual({ ref: 'telegram:50', op: 'send' });
+  });
+
   it('every allowlist entry has a tier, and owner-only entries read owner', () => {
     for (const rule of DEVICE_ALLOWLIST) {
       expect(rule.tier, rule.re.source).toBeTruthy();

@@ -1908,7 +1908,8 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
 /** The conversation and operation a team phone's request acts on, read from its path. */
 export function teamConversationTarget(method: string, pathNorm: string): { ref: string; op: ConversationOp } | null {
   let m = /^\/mobile\/chat\/(\d+)$/.exec(pathNorm);
-  if (m && method === 'POST') return { ref: `telegram:${m[1]}`, op: 'send' };
+  // By number, as the handler reads it: `01` is topic 1, whatever the address says.
+  if (m && method === 'POST') return { ref: `telegram:${Number(m[1])}`, op: 'send' };
   // Matches everything the allow rule does. A topic that is not plain digits names no grant, so it is
   // refused here; the handler would parseInt it into a real topic.
   m = /^\/telegram\/topics\/([^/]+)\/messages$/.exec(pathNorm);

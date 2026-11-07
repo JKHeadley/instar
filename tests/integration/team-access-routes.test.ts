@@ -197,6 +197,13 @@ describe('team invites', () => {
     expect(e.svc.teamLog()!.isConfined(ref)).toBe(false);
   });
 
+  it.each(['telegram:01', 'telegram:0', 'telegram:1e3', 'telegram:'])('a non-standard reference %s is refused', async (ref) => {
+    const e = await setup();
+    const r = await send(e, phone(e), 'POST', '/mobile/team/invites', firstInvite('p-1', [grant(ref)]));
+    expect(r.status).toBeGreaterThanOrEqual(400);
+    expect(e.svc.teamOn()).toBe(false);
+  });
+
   it('an ordinary topic and a shared app conversation can be granted', async () => {
     const e = await setup();
     const r = await send(e, phone(e), 'POST', '/mobile/team/invites', firstInvite('p-1', [grant('telegram:50', 'read'), grant('-7')]));
@@ -411,6 +418,47 @@ describe('restoring with damaged history', () => {
     e.spy.changed.length = 0;
     await faceId(e, owner, 'team-restore', '/mobile/team/restore');
     expect(e.spy.changed.sort()).toEqual(['telegram:50', 'telegram:60']);
+  });
+});
+
+describe('a log with a row missing from the middle', () => {
+  const dropMiddleRow = (e: Env) => {
+    const log = path.join(e.dir, 'state', 'team-access', 'log.jsonl');
+    const rows = fs.readFileSync(log, 'utf8').trim().split('\n');
+    fs.writeFileSync(log, `${[...rows.slice(0, -2), rows[rows.length - 1]].join('\n')}\n`);
+  };
+
+  it('cannot quietly give back what a lost row took away', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    const member = phone(e, { userId: 'p-1', role: 'team' });
+    await send(e, owner, 'POST', '/mobile/team/people/p-1', { events: [{ type: 'person-set', personKey: 'p-1', role: 'guest' }] });
+    await send(e, owner, 'POST', '/mobile/team/grants', { events: [grant('telegram:50', 'read')] });
+    expect(e.svc.teamStanding('p-1')?.tier).toBe('guest');
+    dropMiddleRow(e); // the downgrade
+    e.svc.teamLog()!.load();
+    expect(e.svc.teamLog()!.healthState()).toBe('unreadable');
+    expect(e.svc.teamStanding('p-1')).toBeNull();
+    expect((await send(e, member, 'GET', '/mobile/team/people')).status).toBe(403);
+  });
+
+  it('after a restore the owner accepted it, the same log reads as fine at the next boot', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    await send(e, owner, 'POST', '/mobile/team/grants', { events: [grant('telegram:50', 'read')] });
+    await send(e, owner, 'POST', '/mobile/team/grants', { events: [grant('telegram:60', 'read')] });
+    SafeFsExecutor.safeRmSync(path.join(e.dir, 'state', 'team-access-last-good'), { recursive: true, force: true, operation: 'test' });
+    dropMiddleRow(e);
+    e.svc.teamLog()!.load();
+    expect(e.svc.teamLog()!.healthState()).toBe('unreadable');
+    expect((await faceId(e, owner, 'team-restore', '/mobile/team/restore')).status).toBe(200);
+    e.svc.teamLog()!.load();
+    expect(e.svc.teamLog()!.healthState()).toBe('ok');
+    expect((await send(e, owner, 'POST', '/mobile/team/grants', { events: [grant('telegram:70', 'read')] })).status).toBe(200);
+    e.svc.teamLog()!.load();
+    expect(e.svc.teamLog()!.healthState()).toBe('ok');
   });
 });
 

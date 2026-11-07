@@ -51,6 +51,7 @@ const refuseText: Record<string, string> = {
 /** Why this conversation cannot be shared, or null. Runs before anything is written. */
 export function grantRefusal(svc: MobilePairingService, deps: TeamRouteDeps, ref: string): Refusal | null {
   if (ref.startsWith('slack:')) return { status: 409, error: 'slack-not-yet', detail: 'Slack conversations cannot be shared in the app yet.' };
+  if (ref.startsWith('telegram:') && !/^telegram:[1-9]\d*$/.test(ref)) return { status: 400, error: 'bad-conversation', detail: 'That is not a conversation on this agent.' };
   const topic = /^telegram:(\d+)$/.exec(ref);
   if (topic) {
     const id = Number(topic[1]);
