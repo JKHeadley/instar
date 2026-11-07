@@ -95,6 +95,7 @@ describe('team access — production wiring', () => {
     const ownerCode = /is (\d{3}) (\d{3})\./.exec(dms[0]!)!.slice(1).join('');
     expect((await owner('POST', '/mobile/device/confirm', { code: ownerCode })).body.status).toBe('active');
 
+    server.mobilePairing!.devices.setPresenceKey(r.body.deviceId, makeDevice().publicKey);
     const shared = (await owner('POST', '/mobile/conversations', { title: 'Client work', requestId: rid() })).body.conversationKey as string;
     const secret = (await owner('POST', '/mobile/conversations', { title: 'My notes', requestId: rid() })).body.conversationKey as string;
     expect(shared).toBeTruthy();
@@ -140,7 +141,7 @@ describe('team access — production wiring', () => {
     // The agent can take access away, and it is gone at once.
     const lowered = await auth(request(app).post('/team/people/mia/lower')).send({ remove: true });
     expect(lowered.status).toBe(200);
-    expect((await mia('GET', '/mobile/conversations')).status).toBe(403);
+    expect((await mia('GET', '/mobile/conversations')).status).toBe(401); // the phone itself is revoked
     expect(server.mobilePairing!.teamLog()!.isConfined(shared)).toBe(true);
     // The history still reads by name after the person has gone.
     const history = await owner('GET', '/mobile/team/activity');

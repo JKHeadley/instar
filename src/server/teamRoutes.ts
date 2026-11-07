@@ -89,6 +89,18 @@ export class TeamRefusalLog {
   }
 }
 
+/** Every person the log has ever held, present or gone. */
+export function keysEverAdded(rows: ReadonlyArray<TeamAccessRow>): Set<string> {
+  const keys = new Set<string>();
+  for (const row of rows) {
+    if (row.kind !== 'request') continue;
+    let events: RequestEvent[] | null = null;
+    try { events = parseSignedEvents(JSON.parse(Buffer.from(row.signedOrigin.bodyB64, 'base64').toString('utf8'))); } catch { events = null; } // @silent-fallback-ok — an unreadable row names nobody
+    for (const e of events ?? []) if (e.type === 'person-add') keys.add(e.personKey);
+  }
+  return keys;
+}
+
 /** Plain lines for Activity, from the signed log. */
 export function activityLines(rows: ReadonlyArray<TeamAccessRow>): Array<{ seq: number; text: string }> {
   const out: Array<{ seq: number; text: string }> = [];
@@ -222,6 +234,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (events?.length !== 1 || events[0].type !== 'team-off') return { status: 400, body: { error: 'bad-events' } };
     for (const entry of log.readConfined() ?? []) await deps.applyConversationChange(entry.ref, () => undefined);
     appendRequest(req, deviceId);
+    svc.revokePersonPhones(null);
     return { status: 200, body: { ok: true } };
   };
 
@@ -241,6 +254,8 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (!deviceId) return;
     const stop = svc.teamRefusal();
     if (stop) { res.status(409).json({ error: stop, detail: refuseText[stop] }); return; }
+    // Nobody may invite a person they could not later remove: turning access off takes Face ID.
+    if (!svc.devices.get(deviceId)?.presenceKey) { res.status(409).json({ error: 'face-id-required', detail: 'Set up Face ID for this phone in the app first, so you can turn team access off later.' }); return; }
     const log = svc.teamLog();
     if (!log || !deps.signer()) { res.status(409).json({ error: 'team-access-no-identity', detail: 'This machine has no identity key, so it cannot sign access changes.' }); return; }
     if (!svc.pairingOrigin()) { res.status(503).json({ error: 'no-pairing-origin', detail: 'This agent has no secure address for a phone to reach yet.' }); return; }
@@ -263,6 +278,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
       res.status(400).json({ error: 'first-invite-incomplete', detail: 'The first invite also turns team access on.' });
       return;
     }
+    if (keysEverAdded(log.allRows()).has(add.personKey)) { res.status(409).json({ error: 'person-key-used', detail: 'That person was on this agent before. Invite them as someone new.' }); return; }
     const refused = await applyGrants(events);
     if (refused) { send(res, refused); return; }
     appendRequest(req, deviceId);
@@ -301,6 +317,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (!log?.state().people.has(String(req.params.personKey))) { res.status(404).json({ error: 'unknown-person', detail: 'That person is not on this agent.' }); return; }
     for (const ref of refsOf(String(req.params.personKey))) await deps.applyConversationChange(ref, () => undefined);
     appendRequest(req, deviceId);
+    if (events.some((e) => e.type === 'person-remove')) svc.revokePersonPhones(String(req.params.personKey));
     res.json({ ok: true });
   }));
 
@@ -341,6 +358,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     const refs = ref ? [ref] : refsOf(personKey);
     for (const r of refs) await deps.applyConversationChange(r, () => undefined);
     log.appendMachineEvents([{ type: 'lower', personKey, ...(ref ? { ref } : {}), ...(role ? { role } : {}), ...(b.remove === true ? { remove: true } : {}) }]);
+    if (b.remove === true) svc.revokePersonPhones(personKey);
     res.json({ ok: true });
   }));
 

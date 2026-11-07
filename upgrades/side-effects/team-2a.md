@@ -103,3 +103,8 @@ No sandbox escape on a default install. Fixed: the crash-recovery confinement wa
 - Added: Fourth review fixes with tests.
 
 - Added: Moved setAsideUnlessRealFolder so no new file enters the certified set.
+
+## Fifth independent review, 2026-11-06
+No escape and no way to gain access. Fixed: on an ordinary agent invites worked while team-off, restore and memory privacy were refused, because those hung on a separate switch and the console PIN (they now answer to the same conditions as invites, an invite needs Face ID set up on the owner's phone, and enrolment works wherever native conversations do); `teamOn` read false when no log could open (now on when there are signs of a team); removing a person left their phones active and re-adding the key would revive them (phones are revoked on removal and team-off, and a used key cannot be added again).
+
+- Added: Fifth review fixes with tests.

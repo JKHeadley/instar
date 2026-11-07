@@ -31,7 +31,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/team-access-routes.test.ts' });
 });
 
-async function setup() {
+async function setup(overrides: Record<string, unknown> = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-int-'));
   dirs.push(dir);
   fs.writeFileSync(path.join(dir, 'users.json'), JSON.stringify([{ id: 'mo', name: 'Mo', channels: [], permissions: ['user'] }]));
@@ -39,6 +39,7 @@ async function setup() {
   const config = {
     projectName: 'echo', projectDir: dir, stateDir: dir, port: 0, authToken: 'tok-1', developmentAgent: true, dashboardPin: '424242',
     tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST }, mobilePairing: { multiRoute: { enabled: false } },
+    ...overrides,
   };
   const gate = { now: 'ok' as 'ok' | 'memory-privacy-required' | 'team-needs-one-machine' };
   const deps: MobilePairingDeps = {
@@ -79,14 +80,14 @@ async function setup() {
 type Env = Awaited<ReturnType<typeof setup>>;
 type Phone = { dev: ReturnType<typeof makeDevice>; presence: ReturnType<typeof makeDevice>; id: string };
 
-function phone(e: Env, person?: { userId: string; role: 'msp' | 'team' }): Phone {
+function phone(e: Env, person?: { userId: string; role: 'msp' | 'team' }, withFaceId = true): Phone {
   const dev = makeDevice();
   const presence = makeDevice();
   const c = e.svc.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST, ...(person ?? {}) });
   if (!c.ok) throw new Error('setup');
   e.svc.devices.applyConfirm(c.device.id, { ok: true });
   e.svc.keyLedger!.recordActivation(e.svc.devices.get(c.device.id)!, 'telegram-dm', new Date(Date.now() - 60_000).toISOString());
-  e.svc.devices.setPresenceKey(c.device.id, presence.publicKey);
+  if (withFaceId) e.svc.devices.setPresenceKey(c.device.id, presence.publicKey);
   return { dev, presence, id: c.device.id };
 }
 
@@ -419,7 +420,8 @@ describe('failures answer plainly', () => {
     const member = phone(e, { userId: 'p-1', role: 'team' });
     expect((await send(e, member, 'GET', '/mobile/team/people')).status).toBe(200);
     await bearer(e, '/team/people/p-1/lower', { remove: true });
-    expect((await send(e, member, 'GET', '/mobile/team/people')).status).toBe(403);
+    expect((await send(e, member, 'GET', '/mobile/team/people')).status).toBe(401);
+    expect(e.svc.devices.get(member.id)!.status).toBe('revoked');
   });
 
   it('the invite and a member\'s own row carry the scheduled-jobs disclosure; the owner\'s list does not need it', async () => {
@@ -443,6 +445,54 @@ describe('failures answer plainly', () => {
     t += 60_001;
     log.record('d1', '/x', 'no');
     expect(fs.readFileSync(file, 'utf8').trim().split('\n')).toHaveLength(3);
+  });
+});
+
+describe('on an ordinary agent', () => {
+  it('the owner can invite and can always turn it off, with no development switch or console PIN', async () => {
+    const e = await setup({ developmentAgent: false, dashboardPin: undefined, mobilePairing: { enabled: true, multiRoute: { enabled: false } } });
+    const owner = phone(e);
+    expect((await send(e, owner, 'POST', '/mobile/team/invites', firstInvite())).status).toBe(200);
+    const r = await faceId(e, owner, 'team-off', '/mobile/team/off', { events: [{ type: 'team-off' }] });
+    expect(r.status).toBe(200);
+    expect(e.svc.teamOn()).toBe(false);
+  });
+
+  it('an owner phone with no Face ID cannot invite, because it could not turn this off', async () => {
+    const e = await setup();
+    const owner = phone(e, undefined, false);
+    const r = await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    expect(r.status).toBe(409);
+    expect(r.body.error).toBe('face-id-required');
+    expect(e.svc.teamOn()).toBe(false);
+  });
+});
+
+describe('after someone leaves', () => {
+  it('their phones are revoked, on removal and on team-off, and the owner\'s stay', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    await send(e, owner, 'POST', '/mobile/team/invites', { events: [{ type: 'person-add', personKey: 'p-2', name: 'Bo', role: 'guest' }] });
+    const one = phone(e, { userId: 'p-1', role: 'team' });
+    const two = phone(e, { userId: 'p-2', role: 'team' });
+    await send(e, owner, 'POST', '/mobile/team/people/p-1', { events: [{ type: 'person-remove', personKey: 'p-1' }] });
+    expect(e.svc.devices.get(one.id)!.status).toBe('revoked');
+    expect(e.svc.devices.get(two.id)!.status).toBe('active');
+    await faceId(e, owner, 'team-off', '/mobile/team/off', { events: [{ type: 'team-off' }] });
+    expect(e.svc.devices.get(two.id)!.status).toBe('revoked');
+    expect(e.svc.devices.get(owner.id)!.status).toBe('active');
+  });
+
+  it('their key cannot be added again, so nothing of theirs comes back', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    await send(e, owner, 'POST', '/mobile/team/people/p-1', { events: [{ type: 'person-remove', personKey: 'p-1' }] });
+    const again = await send(e, owner, 'POST', '/mobile/team/invites', { events: [{ type: 'person-add', personKey: 'p-1', name: 'Mia', role: 'member' }] });
+    expect(again.status).toBe(409);
+    expect(again.body.error).toBe('person-key-used');
+    expect((await send(e, owner, 'POST', '/mobile/team/invites', { events: [{ type: 'person-add', personKey: 'p-new', name: 'Mia', role: 'member' }] })).status).toBe(200);
   });
 });
 

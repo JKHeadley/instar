@@ -501,6 +501,17 @@ export class MobilePairingService {
     log.appendMachineEvents([{ type: 'conversation-own', ref, personKey }]);
   }
 
+  /** A removed person's phones stop being phones, so re-adding the key could never revive them (§3.4). */
+  revokePersonPhones(personKey: string | null): void {
+    for (const d of this.devices.list()) {
+      if (d.role !== 'team' || d.status === 'revoked' || (personKey !== null && d.userId !== personKey)) continue;
+      const at = new Date().toISOString();
+      try { this.keyLedger?.recordRevocation(d, at); } catch (err) { this.deps.reportDegradation?.('MobilePairing.keyLedger', err); }
+      this.devices.revoke(d.id, at);
+      this.confirm.drop(d.id);
+    }
+  }
+
   /** Set by the team router: the Face ID team actions (§3.6, §4.1). */
   teamActionRunner: ((kind: 'team-off' | 'team-restore' | 'team-memory-privacy', req: Request, deviceId: string) => Promise<{ status: number; body: unknown }>) | null = null;
 
@@ -524,7 +535,8 @@ export class MobilePairingService {
   /** Is team access on? An unreadable log counts as on, the strict direction (§3.3). */
   teamOn(): boolean {
     const log = this.teamLog();
-    if (!log) return false;
+    // No log can open, for example native switched off after a team existed: strict, not empty.
+    if (!log) return new TeamConfinement(this.deps.stateDir).signsOfTeamUse();
     return log.healthState() === 'unreadable' || log.state().on;
   }
 

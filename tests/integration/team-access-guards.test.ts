@@ -111,6 +111,7 @@ function phone(e: Env, person?: { userId: string; role: 'msp' | 'team' }): Phone
   if (!c.ok) throw new Error('setup');
   e.pairing.devices.applyConfirm(c.device.id, { ok: true });
   e.pairing.keyLedger!.recordActivation(e.pairing.devices.get(c.device.id)!, 'telegram-dm', new Date(Date.now() - 60_000).toISOString());
+  e.pairing.devices.setPresenceKey(c.device.id, makeDevice().publicKey);
   return { dev, id: c.device.id };
 }
 let tick = 0;
@@ -296,6 +297,19 @@ describe('hook events from a scoped session', () => {
     seen.length = 0;
     await request(app).post('/hooks/events').send(body);
     expect(JSON.stringify(seen)).toContain('/etc/passwd');
+  });
+});
+
+describe('with no access log able to open', () => {
+  it('team access counts as on once there are signs of a team, and stays off on an agent that never had one', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    expect(e.pairing.teamOn()).toBe(false);
+    await send(e, owner, 'POST', '/mobile/team/invites', { events: [{ type: 'team-on' }, { type: 'owner-pin', personKey: 'owner-1' }, { type: 'person-add', personKey: 'mia', name: 'Mia', role: 'member' }] });
+    e.pairing.teamLogInstance = null;
+    e.pairing.keyLedger = null;
+    expect(e.pairing.teamLog()).toBeNull();
+    expect(e.pairing.teamOn()).toBe(true);
   });
 });
 

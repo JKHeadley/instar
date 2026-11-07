@@ -96,7 +96,7 @@ async function setup() {
   return { app, svc, log, makePhone, live };
 }
 type Env = Awaited<ReturnType<typeof setup>>;
-type Phone = ReturnType<Env['makePhone']>;
+type Phone = ReturnType<Env['makePhone']> & { presence?: ReturnType<typeof makeDevice> };
 
 let tick = 0;
 async function hit(e: Env, p: Phone, method: string, url: string, body: string | undefined): Promise<number> {
@@ -121,6 +121,8 @@ async function post(e: Env, p: Phone, url: string, body: unknown): Promise<numbe
 /** Real signed invites, so standing comes from the real log. */
 async function teamOn(e: Env, owner: Phone) {
   e.svc.keyLedger!.recordActivation(e.svc.devices.get(owner.id)!, 'telegram-dm', new Date(Date.now() - 60_000).toISOString());
+  owner.presence = makeDevice();
+  e.svc.devices.setPresenceKey(owner.id, owner.presence.publicKey);
   e.live.setup = true;
   const status = await post(e, owner, '/mobile/team/invites', { events: [
     { type: 'team-on' }, { type: 'owner-pin', personKey: 'owner-1' },
@@ -133,8 +135,7 @@ async function teamOn(e: Env, owner: Phone) {
 }
 /** The real Face ID route, so the signed `team-off` row is the real one. */
 async function teamOff(e: Env, owner: Phone) {
-  const presence = makeDevice();
-  e.svc.devices.setPresenceKey(owner.id, presence.publicKey);
+  const presence = owner.presence!;
   e.live.setup = true;
   const raw = (url: string, body: unknown) => {
     const text = JSON.stringify(body);

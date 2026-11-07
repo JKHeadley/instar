@@ -678,7 +678,9 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   });
 
   /** Steps 1–6 of the write gate (spec §3.3). Answers and returns null on refusal. */
-  const writeGate = (req: Request, res: Response): { deviceId: string; personId: string | null; host: string; presenceKey: string; svc: MobilePairingService } | null => {
+  // `teamControl`: turning team access off, restoring it and requiring privacy must always work for
+  // whoever could invite, so they do not hang on this feature's switch or the console PIN (§3.6).
+  const writeGate = (req: Request, res: Response, teamControl = false): { deviceId: string; personId: string | null; host: string; presenceKey: string; svc: MobilePairingService } | null => {
     res.set('Cache-Control', 'no-store');
     // Every refusal leaves a trace before the answer (A Refusal Stays a Refusal); the bearer has no device id.
     const refuse = (r: Refusal, deviceId: string | null = principalDevice(req)): null => {
@@ -688,13 +690,13 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     };
     const svc = deps.pairing();
     const config = deps.config();
-    if (!svc || !svc.enabled() || !isPermissionActionsEnabled(config)) return refuse({ status: 503, error: 'permission-actions-off', detail: 'Changing permissions from the phone is turned off on this agent. Open the console to change this.' });
+    if (!svc || !svc.enabled() || (!teamControl && !isPermissionActionsEnabled(config))) return refuse({ status: 503, error: 'permission-actions-off', detail: 'Changing permissions from the phone is turned off on this agent. Open the console to change this.' });
     const p = (req as unknown as { instarPrincipal?: { kind: string; deviceId?: string } }).instarPrincipal;
     if (!p || p.kind !== 'device' || typeof p.deviceId !== 'string') return refuse({ status: 403, error: 'device-signature-required', detail: 'Only the owner\'s paired phone can do this here. Open the console to change this.' });
     const deviceId = p.deviceId;
     if (!overLocalTls(req)) return refuse({ status: 403, error: 'secure-transport-required' }, deviceId);
     if (!activeOwnerPhone(svc, deviceId)) return refuse({ status: 403, error: 'owner-phone-required' }, deviceId);
-    if (!config.dashboardPin) return refuse({ status: 503, error: 'console-pin-not-set', detail: 'The console has no PIN set, so it cannot approve or switch either. Set a PIN first.' }, deviceId);
+    if (!teamControl && !config.dashboardPin) return refuse({ status: 503, error: 'console-pin-not-set', detail: 'The console has no PIN set, so it cannot approve or switch either. Set a PIN first.' }, deviceId);
     const d = svc.devices.get(deviceId);
     if (!d?.presenceKey) return refuse({ status: 409, error: 'presence-key-missing' }, deviceId);
     const raw = (req as unknown as { instarDeviceHost?: unknown }).instarDeviceHost;
@@ -704,9 +706,9 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   };
 
   router.post('/mobile/permissions/challenge', (req: Request, res: Response) => {
-    const g = writeGate(req, res);
-    if (!g) return;
     const b = rec(req.body);
+    const g = writeGate(req, res, b.action === 'team-off' || b.action === 'team-restore' || b.action === 'team-memory-privacy');
+    if (!g) return;
     const built = buildAction(b.action, b.target, actionExtras(b));
     if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
     const line = actionLine(built.action);
@@ -813,7 +815,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
 
   const teamRoute = (routePath: string, kind: 'team-off' | 'team-restore' | 'team-memory-privacy'): void => {
     router.post(routePath, async (req: Request, res: Response) => {
-      const g = writeGate(req, res);
+      const g = writeGate(req, res, true);
       if (!g) return;
       const built = buildAction(kind, 'team', {});
       if (!built.ok || !proven(req, res, g, built.action)) return;

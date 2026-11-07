@@ -40,7 +40,7 @@ export class TeamConfinement {
   }
 
   /** Any sign the agent has been in team use, with the list gone. */
-  private signsOfTeamUse(): boolean {
+  signsOfTeamUse(): boolean {
     if (fs.existsSync(path.join(this.stateDir, TEAM_ACCESS_DIR, 'log.jsonl'))) return true;
     if (fs.existsSync(path.join(this.stateDir, TEAM_ACCESS_LAST_GOOD_DIR, 'log.jsonl'))) return true;
     try {
