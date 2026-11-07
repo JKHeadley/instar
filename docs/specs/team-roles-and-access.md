@@ -147,7 +147,7 @@ A machine taking over a conversation pulls `teamAccess` from reachable peers bef
 - At invite, native app conversations must be on (`mobilePairing.native.enabled`, which also turns on the replicated `teamAccess` log), and every machine that answers must report native on, memory privacy on, the sandbox working, and the `claude-code` framework. Otherwise `409 memory-privacy-required`, with the reason. A machine that does not answer never blocks an invite, because a sleeping laptop must not stop a team.
 - `POST /mobile/team/memory-privacy` (owner phone, Face ID) writes an owner-signed `privacy-required` log event. Phones cannot be forwarded to a peer, which has no record of them, so the log carries it: each machine applies each `eventId` once, records that it did, sets `memoryPrivacy.enabled`, and restarts when idle. An owner who later turns privacy off is not overridden; the team phones are refused until it is back. A machine with native off cannot receive the log, so the invite's refusal names that machine, and the agent turns native on there when the owner says so. The app shows the costs before Face ID: the owner's private memory is not used in shared groups, inbound agent-to-agent sessions are refused, a Slack or Telegram channel keeps its own memory, and the restart ends live sessions.
 - At every request, on both the signed and the notify-token branch, `deviceAuthenticator` refuses a team phone with `403 memory-privacy-required` if privacy is off here or the sandbox failed, and raises one attention item. A late machine is covered by this check. A forward to a peer last known to have privacy off is refused at the sender, and the destination decides for itself: before injecting or spawning a forwarded team message it re-checks its own current privacy setting, sandbox, the person, the access generation and the audience, and refuses if any differ.
-- A Codex-only agent cannot have team phones, because memory privacy has no sandbox adapter for it. The invite says so plainly. That adapter is memory privacy's own work, so it goes to the feedback queue.
+- A Codex-only agent cannot have team phones, because memory privacy has no sandbox adapter for it. The invite says so plainly. That adapter is build step 7.
 
 ### 3.7 Tiers on the server
 
@@ -227,6 +227,7 @@ An empty Telegram allowlist means anyone in the group can message the agent. Tha
 4. **Admin maintenance:** admin routes and layout, owner capabilities, convert an MSP phone, `manageTeam`.
 5. **Fleet invite and remove,** role badges.
 6. **Slack conversations in the app for members.**
+7. **Memory privacy on Codex,** so team phones work on a Codex-only agent (*Framework-Agnostic*). Until then the invite refuses plainly on such an agent. This is a sandbox adapter inside memory privacy, and nothing else in this design depends on the framework.
 
 Steps 2 and 3 are useful together, not separately. A user-facing step is done only after a real run as that role on a throwaway agent, per *Live-User-Channel Proof Before Done*.
 
