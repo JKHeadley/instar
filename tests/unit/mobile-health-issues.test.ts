@@ -115,14 +115,51 @@ describe('summarizeHealth', () => {
     expect(s.verdict).toBe('unsure');
     expect(s.headline).not.toMatch(/healthy|normally/i);
     expect(s.issues[0]).toMatchObject({ id: 'SomethingNew.happened', impact: 'unclassified', action: null });
-    expect(s.issues[0].evidence).toContain('SomethingNew.happened used a backup.');
+    // Its own title names the part it is about; its words carried a code name, so they are left out.
+    expect(s.issues[0].title).toBe('Something in my something new used a backup path');
+    expect(s.issues[0].evidence).toBeNull();
   });
 
   it('an unknown id never shows the reporter\'s words as its title; they stay in the details', () => {
     const raw = 'threadline.encryptToPinned is enforce on a 5-machine agent, but multiMachine.stateSync.threadlinePairing.enabled is off';
     const [i] = summarizeHealth(degraded, [ev('Threadline.encryptToPinned', { narrative: raw })]).issues;
-    expect(i.title).toBe('Something inside me used a backup path');
-    expect(i.evidence).toContain('threadline.encryptToPinned');
+    expect(i.title).toBe('Messaging with other agents used a backup path');
+    // Setting names are internal: never on the owner's screen, as the title or as its words.
+    expect(i.evidence).toBeNull();
+  });
+
+  // ── Justin, 2026-11-06 22:49: two different rows, one title, and internal words ──
+  it('two different unsorted problems get their own plain titles and plain words', () => {
+    const s = summarizeHealth(degraded, [
+      ev('feedback-execute:deps-unavailable', { impact: 'Feedback fixes wait; triage is unaffected.', narrative: 'Feedback fixes wait; triage is unaffected. I\'ll keep trying, but this may need a restart to fully resolve.' }),
+      ev('StuckInputSentinel.recover', { impact: 'Recovery keypress sent (survives server restart); outcome observed on the following tick', narrative: 'Recovery keypress sent (survives server restart); outcome observed on the following tick. Using Persistent sentinel re-fires Enter after in-process verifyInjection window expired in the meantime — everything else is working fine.' }),
+    ]);
+    const byId = Object.fromEntries(s.issues.map((i) => [i.id, i]));
+    expect(byId['feedback-execute:deps-unavailable'].title).toBe('Feedback fixes are waiting');
+    expect(byId['feedback-execute:deps-unavailable'].evidence).toBe("Feedback fixes wait; triage is unaffected. I'll keep trying, but this may need a restart to fully resolve.");
+    expect(byId['StuckInputSentinel.recover'].title).toBe('I pressed Enter for a stuck session');
+    expect(byId['StuckInputSentinel.recover'].evidence).not.toMatch(/verifyInjection|sentinel|tick/i);
+    // The "not sorted yet" line stays; the title is what changed.
+    expect(byId['StuckInputSentinel.recover'].detail).toContain('I haven’t sorted this one yet');
+  });
+
+  it('an unknown part is named in plain words, a plain impact line can be its title, and no two rows share a title', () => {
+    const s = summarizeHealth(degraded, [
+      ev('BrandNewThing.a', { impact: 'Reports may arrive late', narrative: 'Reports may arrive late. Using the old path in the meantime — everything else is working fine.' }),
+      ev('OtherNewThing.x', { impact: 'checkpoint_v2 failed for pid 4242' }),
+      ev('OtherNewThing.y', { impact: 'checkpoint_v2 failed for pid 4243' }),
+      ev('GitSync.pull'), ev('GitSync.push'),
+    ]);
+    const titles = s.issues.map((i) => i.title);
+    expect(titles).toContain('Reports may arrive late');
+    // The "Using … in the meantime" tail is dropped; the plain rest stays.
+    expect(s.issues.find((i) => i.id === 'BrandNewThing.a')?.evidence).toBe('Reports may arrive late.');
+    // A code-shaped impact never becomes a title: the part is named instead.
+    expect(titles).toContain('Something in my other new thing used a backup path');
+    expect(new Set(titles).size).toBe(titles.length);
+    expect(titles).toContain('Background sync used a backup path');
+    expect(titles.some((t) => /^Background sync used a backup path \(/.test(t))).toBe(true);
+    for (const i of s.issues) expect(i.ask).toContain(i.title);
   });
 
   it('iMessage follows the present state, not the event window', () => {
@@ -177,9 +214,14 @@ describe('summarizeHealth', () => {
   });
 
   it('scrubs a secret out of the evidence and caps its length', () => {
-    const [i] = summarizeHealth(degraded, [ev('X.y', { narrative: `token ghp_${'a'.repeat(36)} ${'z'.repeat(5000)}` })]).issues;
+    // A named row keeps its reporter's words, scrubbed and capped.
+    const [i] = summarizeHealth(degraded, [ev('SessionManager.verifyInjection', { narrative: `token ghp_${'a'.repeat(36)} ${'z'.repeat(5000)}` })]).issues;
     expect(i.evidence).not.toContain('ghp_aaaa');
     expect(i.evidence!.length).toBeLessThanOrEqual(300);
+    // An unnamed row never shows it either, whatever else it shows.
+    const [u] = summarizeHealth(degraded, [ev('X.y', { narrative: `token ghp_${'a'.repeat(36)} ${'z'.repeat(5000)}` })]).issues;
+    expect(u.evidence ?? '').not.toContain('ghp_aaaa');
+    expect((u.evidence ?? '').length).toBeLessThanOrEqual(300);
   });
 
   it('never shows a local path', () => {

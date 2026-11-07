@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "health-plain-titles",
+  "sessionId": "c222e4df-a8dd-4afe-a5b9-83451c6c1aa7",
+  "timestamp": "2026-11-07T07:09:39.936Z",
+  "artifactPath": "upgrades/side-effects/health-plain-titles.md",
+  "artifactSha256": "87a2d37ad7122f29556da0d2093a2e823bba9670527d23013d71b6acd5106733",
+  "coveredFiles": [
+    "src/monitoring/healthIssues.ts",
+    "tests/unit/mobile-health-issues.test.ts",
+    "upgrades/next/health-plain-titles.md",
+    "upgrades/side-effects/health-plain-titles.eli16.md",
+    "upgrades/side-effects/health-plain-titles.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Display wording for unnamed health rows; deterministic; a revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/health-plain-titles.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/health-plain-titles.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no action is taken: display strings only; spawn/restart appear as words in a text filter and titles, not as calls"
+  }
+}
