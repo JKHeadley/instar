@@ -21,7 +21,7 @@ import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApp
 import { effectChecks, evaluateSessionCanary, failureTail, findSessionTranscript, linkEffectChecks, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, sessionReadTargets, sessionToolTargets, transcriptChecks, verdictOf, canaryStamp, canaryLinkPaths, PROBE_TAIL_CHARS, SESSION_CANARY_STEPS } from '../../../src/feedback-factory/execute/confinementCanary.js';
 import { readCallLines, toolCallLines } from '../../fixtures/feedbackExecuteHarness.js';
 import { resolveSandboxRuntime, runCapped, shortTmpDir, treeBytes, SandboxRuntimeRunner, type ConfinedRunner } from '../../../src/feedback-factory/execute/ConfinedRunner.js';
-import { DepsCache, rebuildFailureTail, FIX_SCRIPT_SIBLINGS } from '../../../src/feedback-factory/execute/depsCache.js';
+import { DepsCache, dependencyManifestText, rebuildFailureTail, FIX_SCRIPT_SIBLINGS } from '../../../src/feedback-factory/execute/depsCache.js';
 import { removeAttemptTree, sweepTrash } from '../../../src/feedback-factory/execute/attemptFs.js';
 import { isCredentialEnvName } from '../../../src/core/credentialEnvNames.js';
 import { claudeHeadlessExtraFlags } from '../../../src/core/frameworkSessionLaunch.js';
@@ -832,6 +832,62 @@ describe('runner and filesystem helpers', () => {
 });
 
 describe('dependency cache', () => {
+  it('a release that only bumps the project version reuses the cache; a dependency change does not', async () => {
+    const root = tmp();
+    let installs = 0;
+    const manifest = (version: string, dep = '1.0.0') => JSON.stringify({ name: 'x', version, dependencies: { d: dep } });
+    const locked = (version: string, dep = '1.0.0') => JSON.stringify({ name: 'x', version, lockfileVersion: 3,
+      packages: { '': { name: 'x', version, dependencies: { d: dep } }, 'node_modules/d': { version: dep } } });
+    const files: Record<string, string> = { 'package.json': manifest('1.3.1702'), 'package-lock.json': locked('1.3.1702') };
+    const cache = new DepsCache({
+      root: path.join(root, 'deps'), agentHome: path.join(root, 'home'), trashRoot: path.join(root, '.instar', 'trash'),
+      runner: { available: () => ({ ok: true, version: '0.0.77' }), run: async () => ({ exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false, outputCapped: false }) },
+      readAtCommit: (_s, _sha, f) => files[f] ?? null, listAtCommit: () => [],
+      install: async (dir) => { installs++; fs.mkdirSync(path.join(dir, 'node_modules'), { recursive: true }); },
+      hasPnpm: () => false, testRunnerHoldersFile: path.join(root, 'h.json'),
+    });
+    const first = await cache.ensure('/src', 'a'.repeat(40));
+    Object.assign(files, { 'package.json': manifest('1.3.1703'), 'package-lock.json': locked('1.3.1703') });
+    const released = await cache.ensure('/src', 'b'.repeat(40));
+    expect(installs).toBe(1);
+    expect(first.ok && released.ok && released.hash === first.hash).toBe(true);
+    // The base gate is keyed per release even though the cache is not.
+    expect(first.ok && released.ok && released.gateKey !== first.gateKey).toBe(true);
+    Object.assign(files, { 'package.json': manifest('1.3.1703', '2.0.0'), 'package-lock.json': locked('1.3.1703', '2.0.0') });
+    const changed = await cache.ensure('/src', 'c'.repeat(40));
+    expect(installs).toBe(2);
+    expect(first.ok && changed.ok && changed.hash !== first.hash).toBe(true);
+    expect(dependencyManifestText('lockfileVersion: 9.0')).toBe('lockfileVersion: 9.0');
+  });
+
+  it('reuses a same-version native binary from another ready cache for this ABI instead of compiling', async () => {
+    const root = tmp();
+    const deps = path.join(root, 'deps');
+    const bin = path.join('node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
+    const seed = (name: string, abi: string, version: string, content: string, ready = true) => {
+      write(path.join(deps, name), bin, content);
+      write(path.join(deps, name), 'node_modules/better-sqlite3/package.json', JSON.stringify({ version }));
+      if (ready) write(path.join(deps, name), '.ready', JSON.stringify({ nodeAbi: abi }));
+    };
+    // Wrong sources sort first, so only the filters can skip them.
+    seed('0'.repeat(20), 'other-abi', '1.0.0', 'wrong-abi');
+    seed('1'.repeat(20), process.versions.modules, '0.9.0', 'wrong-version');
+    seed('2'.repeat(20), process.versions.modules, '1.0.0', 'not-ready', false);
+    seed('f'.repeat(20), process.versions.modules, '1.0.0', 'right-binary');
+    const runs: string[] = [];
+    const cache = new DepsCache({
+      root: deps, agentHome: path.join(root, 'home'), trashRoot: path.join(root, '.instar', 'trash'),
+      runner: { available: () => ({ ok: true, version: '0.0.77' }), run: async (cmd) => { runs.push(cmd.command); return { exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false, outputCapped: false }; } },
+      readAtCommit: (_s, _sha, f) => (f === 'package.json' || f === 'package-lock.json' ? '{"name":"x"}' : null), listAtCommit: () => [],
+      install: async (dir) => { write(dir, 'node_modules/better-sqlite3/package.json', JSON.stringify({ version: '1.0.0' })); },
+      hasPnpm: () => false, testRunnerHoldersFile: path.join(root, 'h.json'),
+    });
+    const result = await cache.ensure('/src', 'd'.repeat(40));
+    expect(result.ok).toBe(true);
+    expect(runs).toEqual([]);
+    if (result.ok) expect(fs.readFileSync(path.join(result.dir, bin), 'utf8')).toBe('right-binary');
+  });
+
   it('builds from the base SHA manifests only, reuses a ready cache, evicts all but the two newest unless in use', async () => {
     const root = tmp();
     const installs: Array<{ dir: string; tool: string }> = [];

@@ -705,7 +705,7 @@ export class FeedbackExecutorService {
       const paths = this.confinementPaths(p.workspace, p.publishClone, p.tmpDir, deps.dir);
 
       // Confinement canary, both application paths, before every attempt.
-      const canary = await this.runCanary(row, paths, deps.hash, cfg);
+      const canary = await this.runCanary(row, paths, deps.gateKey ?? deps.hash, cfg);
       epoch = this.carryPreparationEpoch(row, epoch);
       if (!canary.ok) { await this.profileUnenforceable(epoch, canary.probes); this.endAttempt(row, epoch, 'stopped', 'profile-unenforceable'); return false; }
 
