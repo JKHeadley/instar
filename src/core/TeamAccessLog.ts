@@ -23,7 +23,7 @@ import {
   type LedgerView, type MachineKeyLookup, type MachineSignature, type MachineSigner,
 } from './AppRecordSignatures.js';
 import { DEVICE_TIME_WINDOW_MS, isStrictLowSDer, parseDevicePublicKey } from './MobileDeviceKeys.js';
-import { streamKey, type MergeEvent, type MergeRow } from './TeamAccessMerge.js';
+import { mergeRows, streamKey, type MergeEvent, type MergeRow } from './TeamAccessMerge.js';
 import type { GrantAccess } from '../permissions/TeamAccess.js';
 import type { OrgRole } from '../permissions/types.js';
 
@@ -109,6 +109,48 @@ export function toMergeRow(row: TeamAccessRow, events: ReadonlyArray<MergeEvent>
     incarnation: row.incarnation ?? UNCHAINED_INCARNATION,
     seq: row.seq, prev: row.prev ?? null, hash: rowHash(row), seen: row.seen ?? {}, events,
   };
+}
+
+const originOf = (r: TeamAccessRow): string => r.origin ?? r.machineSig.machineId;
+const streamOf = (r: TeamAccessRow): string => streamKey(originOf(r), r.incarnation ?? UNCHAINED_INCARNATION);
+
+/** A row's access events in the merge rules' terms. */
+function mergeEventsOf(row: TeamAccessRow): MergeEvent[] {
+  if (row.kind === 'request') {
+    return (bodyEvents(row) ?? []).flatMap((e): MergeEvent[] => (
+      e.type === 'team-on' || e.type === 'team-off' || e.type === 'person-add' || e.type === 'person-set' || e.type === 'person-remove' || e.type === 'grant' || e.type === 'grant-remove' ? [e] : []));
+  }
+  return row.events.flatMap((e): MergeEvent[] => {
+    if (e.type !== 'lower') return [];
+    if (e.ref) return [{ type: 'grant-remove', personKey: e.personKey, ref: e.ref }];
+    if (e.remove) return [{ type: 'person-remove', personKey: e.personKey }];
+    return e.role ? [{ type: 'person-set', personKey: e.personKey, role: e.role }] : [];
+  });
+}
+
+/**
+ * The state of a log. Rows from one machine replay in order. Rows from several go through the merge
+ * rules, so the answer depends on the rows and not the order they arrived in. Names and bindings come
+ * from the plain fold, which only ever adds them.
+ */
+export function foldLog(rows: ReadonlyArray<TeamAccessRow>, verify: (row: TeamAccessRow) => RowVerdict): TeamAccessState {
+  const plain = foldRows(rows, verify);
+  if (new Set(rows.map(originOf)).size <= 1) return plain;
+  const counted = rows.filter((r) => verify(r) === 'verified' && (r.kind === 'machine' || plain.bindings.get(r.signedOrigin.keyHash) === 'owner'));
+  const merged = mergeRows(counted.map((r) => toMergeRow(r, mergeEventsOf(r))));
+  const known = new Map<string, TeamPerson>();
+  for (const r of counted) {
+    if (r.kind !== 'request') continue;
+    for (const e of bodyEvents(r) ?? []) {
+      if (e.type === 'person-add') known.set(e.personKey, { personKey: e.personKey, name: e.name, role: e.role, links: e.links ?? {}, ...(e.relationship ? { relationship: e.relationship } : {}) });
+    }
+  }
+  const people = new Map<string, TeamPerson>();
+  for (const [key, p] of merged.people) {
+    const person = known.get(key);
+    if (person) people.set(key, { ...person, role: p.role as OrgRole });
+  }
+  return { ...plain, on: merged.on, people, grants: merged.grants };
 }
 
 /** A row's place in its origin's chain. */
@@ -334,12 +376,8 @@ export class TeamAccessLog {
     const incarnation = this.incarnation();
     const mine = this.rows.filter((r) => r.origin === origin && r.incarnation === incarnation);
     const last = mine[mine.length - 1];
-    const seen: Record<string, number> = {};
-    for (const r of this.rows) {
-      const key = streamKey(r.origin ?? r.machineSig.machineId, r.incarnation ?? UNCHAINED_INCARNATION);
-      seen[key] = Math.max(seen[key] ?? 0, r.seq);
-    }
-    return { origin, incarnation, prev: last ? rowHash(last) : (this.rows.length > 0 ? prefixHash(this.rows) : null), seen };
+    const ownEarlier = this.rows.filter((r) => originOf(r) === origin);
+    return { origin, incarnation, prev: last ? rowHash(last) : (ownEarlier.length > 0 ? prefixHash(ownEarlier) : null), seen: this.vector() };
   }
 
   private lastGoodLog(): string { return path.join(this.lastGoodDir, 'log.jsonl'); }
@@ -382,7 +420,7 @@ export class TeamAccessLog {
       const rows = this.parseLines(fs.readFileSync(this.logFile, 'utf8'));
       if (!rows) { this.rows = []; this.folded = emptyState(); this.health = 'unreadable'; return; }
       this.rows = rows;
-      this.folded = foldRows(rows, this.opts.verify);
+      this.folded = foldLog(rows, this.opts.verify);
       // A log below last-good was rolled back: count it as lost, whatever it says. On one machine every
       // phone is in the ledger, so a row it cannot place means the ledger failed: strict, not empty.
       const unplaced = rows.some((r) => r.kind === 'request' && this.opts.verify(r) === 'unknown');
@@ -395,8 +433,14 @@ export class TeamAccessLog {
     }
   }
 
+  /**
+   * Past the last accepted restore, each origin's rows must all be here and verify. Rows from another
+   * machine join under the merge rules, so only this machine's own record has to be whole for it.
+   */
   private intact(rows: ReadonlyArray<TeamAccessRow>): boolean {
-    const sorted = [...rows].sort((a, b) => a.seq - b.seq);
+    const own = this.opts.signer?.machineId();
+    const single = new Set(rows.map(originOf)).size <= 1;
+    const sorted = [...rows].filter((r) => single || originOf(r) === own).sort((a, b) => a.seq - b.seq);
     let from = 0;
     for (const r of sorted) {
       if (r.kind !== 'machine' || this.opts.verify(r) !== 'verified') continue;
@@ -431,15 +475,56 @@ export class TeamAccessLog {
   allRows(): ReadonlyArray<TeamAccessRow> { return this.rows; }
   state(): TeamAccessState {
     if (this.refoldPending) {
-      this.folded = foldRows(this.rows, this.opts.verify);
+      this.folded = foldLog(this.rows, this.opts.verify);
       this.refoldPending = this.rows.some((r) => this.opts.verify(r) === 'unknown');
     }
     return this.folded;
   }
 
-  private nextSeq(): number { return Math.max(this.folded.highestSeq, this.seedSeq) + 1; }
+  /** Each machine numbers its own rows. Rows from before chains share the sequence they always had. */
+  private nextSeq(): number {
+    const own = this.opts.signer?.machineId();
+    const mine = this.rows.filter((r) => originOf(r) === own).reduce((m, r) => Math.max(m, r.seq), 0);
+    return Math.max(mine, this.seedSeq) + 1;
+  }
 
-  private appendLine(row: TeamAccessRow): void {
+  /** What this machine holds: origin/incarnation to highest seq. */
+  vector(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const r of this.rows) out[streamOf(r)] = Math.max(out[streamOf(r)] ?? 0, r.seq);
+    return out;
+  }
+
+  /** Rows a peer with this vector lacks, from any origin. Rows verify themselves, so any peer may serve them. */
+  rowsBeyond(have: Readonly<Record<string, number>>): TeamAccessRow[] {
+    return this.rows.filter((r) => r.seq > (have[streamOf(r)] ?? 0));
+  }
+
+  /**
+   * Take rows from a peer. A row that fails verification is left out, and one already held changes
+   * nothing, so this is safe to run with whatever a peer sends. Returns how many were new.
+   */
+  ingest(incoming: ReadonlyArray<TeamAccessRow>): { added: number; refused: number } {
+    const held = new Set(this.rows.map((r) => `${streamOf(r)}#${r.seq}#${rowHash(r)}`));
+    let added = 0;
+    let refused = 0;
+    for (const row of incoming) {
+      const id = `${streamOf(row)}#${row.seq}#${rowHash(row)}`;
+      if (held.has(id)) continue;
+      if (this.opts.verify(row) === 'failed') { refused += 1; continue; }
+      this.writeLine(row);
+      this.rows.push(row);
+      held.add(id);
+      added += 1;
+    }
+    if (added > 0) {
+      this.folded = foldLog(this.rows, this.opts.verify);
+      this.snapshot();
+    }
+    return { added, refused };
+  }
+
+  private writeLine(row: TeamAccessRow): void {
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     const fd = fs.openSync(this.logFile, 'a', 0o600);
     try {
@@ -448,8 +533,13 @@ export class TeamAccessLog {
     } finally {
       fs.closeSync(fd);
     }
+  }
+
+  private appendLine(row: TeamAccessRow): void {
+    this.writeLine(row);
     this.rows.push(row);
-    foldRowInto(this.folded, row, this.opts.verify);
+    if (new Set(this.rows.map(originOf)).size > 1) this.folded = foldLog(this.rows, this.opts.verify);
+    else foldRowInto(this.folded, row, this.opts.verify);
     // A row that cannot be placed yet (a key cache after an identity change) must not be lost.
     if (this.opts.verify(row) === 'unknown') this.refoldPending = true;
     this.health = 'ok';

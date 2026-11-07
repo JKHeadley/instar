@@ -9,3 +9,6 @@
 
 ## Chained rows
 New rows carry origin, incarnation, a hash of the row before and a signed seen-vector. Rows from a 2a build stay valid and are anchored by a prefix hash, so an existing agent keeps its log. On one machine the only behaviour change is that a replaced row now reads as damage even where the numbers still run. A restore starts a new incarnation.
+
+## Several machines in one log
+`foldLog` replays one machine's rows in order, exactly as before, and uses the merge rules once a second origin appears. `ingest` takes rows from a peer and leaves out any that fail verification. Each machine numbers its own rows. Nothing calls `ingest` yet: a second machine is still refused at the join.
