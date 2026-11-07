@@ -831,6 +831,30 @@ if [ -n "$EXPECT_HOST" ] && [ "$INPUT_CMD" = 1 ] && [ "$CMDNAME" != nav ]; then
   esac
 fi
 
+# Read the complete document text before input. A failed/incomplete read refuses the action.
+if [ "$INPUT_CMD" = 1 ]; then
+  LOCKOUT_W="${LAD}\\native-drive\\instar-$AGENT_TAG\\lockout-text-$$.txt"
+  LOCKOUT_U="$(unixpath "$LOCKOUT_W")"
+  [ -n "$LOCKOUT_U" ] || refuse 2 "ERR lockout-guard: page text path unavailable; input NOT sent"
+  drive_once lockouttext "$LOCKOUT_W" </dev/null >/dev/null; LOCKOUT_READ_RC=$?
+  if [ "$LOCKOUT_READ_RC" != 0 ]; then
+    rm -f -- "$LOCKOUT_U"; refuse "$LOCKOUT_READ_RC" "ERR lockout-guard: full page text unavailable; input NOT sent"
+  fi
+  if [ -n "${ND_USER_DATA_DIR:-}" ]; then
+    LOCKOUT_TARGET="profile:$ND_USER_DATA_DIR"
+  else
+    LOCKOUT_BINDING_U="$(unixpath "$ND_STATE_FILE")"
+    LOCKOUT_BINDING_HASH="$(shasum -a 256 <"$LOCKOUT_BINDING_U" 2>/dev/null | cut -d' ' -f1)"
+    if [ -z "$LOCKOUT_BINDING_HASH" ]; then
+      rm -f -- "$LOCKOUT_U"; refuse 2 "ERR lockout-guard: target binding unreadable; input NOT sent"
+    fi
+    LOCKOUT_TARGET="state:$ND_STATE_FILE:$LOCKOUT_BINDING_HASH"
+  fi
+  node "$HERE/lockout-guard.cjs" page "$AGENT_HOME" ndrive "$LOCKOUT_TARGET" "$(printf '%s\0' "$@" | shasum -a 256 | cut -d' ' -f1)" "$EXPECT_HOST" <"$LOCKOUT_U"
+  LOCKOUT_RC=$?; rm -f -- "$LOCKOUT_U"
+  [ "$LOCKOUT_RC" = 0 ] || refuse 2 "ERR lockout-guard: operator approval required; input NOT sent"
+fi
+
 # `url` right after a sign-in redirect would print the code/token into the transcript: the value of a
 # credential-shaped query or fragment parameter is redacted in the wrapper's output (the same key list
 # as the url rule; a bounded heuristic, stated in the skill).

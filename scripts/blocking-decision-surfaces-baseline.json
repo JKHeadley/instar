@@ -18,7 +18,7 @@
   "population": "src/templates/**/*.{sh,js,mjs}",
   "censusRef": "docs/audits/phase-b/f10-triage.md",
   "seededAt": "2026-08-06",
-  "blockingCeiling": 12,
+  "blockingCeiling": 19,
   "blocking": [
     {
       "path": "src/templates/hooks/build-stop-hook.sh",
@@ -67,14 +67,37 @@
     {
       "path": "src/templates/scripts/whatsapp-reply.sh",
       "decision": "blocks send on server tone-gate denial"
+    },
+    {
+      "path": "src/templates/scripts/browser/chrome-js.sh",
+      "decision": "refuses account-warning actions without a server-verified one-action operator approval"
+    },
+    {
+      "path": "src/templates/scripts/browser/chrome-mainworld.sh",
+      "decision": "delegates main-world account actions through the chrome-js full-page lockout safety boundary"
+    },
+    {
+      "path": "src/templates/scripts/browser/ndrive.sh",
+      "decision": "refuses native input after an account warning or incomplete full-document read without a one-action operator approval"
+    },
+    {
+      "path": "src/templates/scripts/browser/xdrive.sh",
+      "decision": "refuses Linux input after an account warning or incomplete full-document read without a one-action operator approval"
+    },
+    {
+      "path": "src/templates/scripts/secret-get.mjs",
+      "decision": "refuses named break-glass recovery/backup code reads without a one-action operator approval"
+    },
+    {
+      "path": "src/templates/scripts/credential-store.mjs",
+      "decision": "refuses named break-glass vault keys and Bitwarden custom fields without a one-action operator approval"
+    },
+    {
+      "path": "src/templates/scripts/browser/lockout-guard.cjs",
+      "decision": "shared account-warning and break-glass hard floor, with exact-action approval consumed by the TypeScript server authority"
     }
   ],
   "nonBlocking": [
-    {
-      "path": "src/templates/scripts/browser/xdrive.sh",
-      "sha256": "d11b7de0dad9621ca8b54ab249412c23cd974027de894678688409e99ed261bc",
-      "reason": "normal-chrome-linux: operator-invoked browser helper; refuses its own bad arguments or an unsafe moment on the invariant floors of docs/specs/normal-chrome-linux.md, and gates no message, session or other agent action"
-    },
     {
       "path": "src/templates/scripts/browser/x-drive.py",
       "sha256": "9fcb321165f91a89d5f80105622116e96d110547d37ef53f9c7f9e12b82fb8bf",
@@ -131,29 +154,14 @@
       "reason": "Re-reviewed 2026-09-29 (hook-paths-project-dir): the change only anchors the config read on CLAUDE_PROJECT_DIR; the hook injects context and makes no blocking decision"
     },
     {
-      "path": "src/templates/scripts/browser/chrome-js.sh",
-      "sha256": "034db30dd4d962f9376ed690fc8e3e55e1b11a9f81848ddeb99316f325064fbd",
-      "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action"
-    },
-    {
       "path": "src/templates/scripts/browser/chrome-launch.sh",
       "sha256": "f22fb68c00d9705b6de194e64a7c960f315160b99e18d8e62dfa6c62e12f1de6",
       "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action; normal-chrome-cross-platform: also refuses a non-URL in the url slot (a launch flag) and launches in the background; chrome-keep-drawing-when-locked: adds two fixed rendering flags, still no decision"
     },
     {
-      "path": "src/templates/scripts/browser/chrome-mainworld.sh",
-      "sha256": "94463cecf72307831390ee8e94355cda9f50d41c262c40efd21ba91f9d843342",
-      "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action"
-    },
-    {
       "path": "src/templates/scripts/browser/native-drive.ps1",
-      "sha256": "9bacd88a373fe524c31173906f6a667084031fd3e0b232de9b1db14bc0c99e0e",
-      "reason": "normal-chrome-cross-platform: PP's Windows normal-Chrome driver, shipped byte-identical to the live-tested v5 (Mama PC, 2026-10-21, VERDICT PASS); it refuses only its own bad arguments or an unsafe moment (no bound target, focus not on the target, operator active, a flag outside its allowlist) and gates no message, session or other agent action"
-    },
-    {
-      "path": "src/templates/scripts/browser/ndrive.sh",
-      "sha256": "d14c4fb79764308e26413b439214ffd9334df5823bfb6f4bbc8da74543266265",
-      "reason": "normal-chrome-cross-platform: the WSL wrapper for native-drive.ps1 (the Instar entry point on Windows); it refuses only its own bad arguments (no powershell.exe, the operator's Chrome profile folder, a non-local or malformed profile path, a non-URL in a url slot, a non-chrome.exe executable, an unattended-machine override with no operator record) or an unsafe moment (canfocus before invoke), and gates no message, session or other agent action"
+      "sha256": "27de10ae368227e60e92d7875cf58a85faa23beedd96d0104ffc1bfe66b68759",
+      "reason": "Windows normal-Chrome driver: the original v5 input paths plus a strict full-document TextPattern read for the wrapper lockout guard; no new input action. New read tested with wrapper stubs, not live-tested on Windows."
     },
     {
       "path": "src/templates/scripts/emit-session-clock.sh",
@@ -186,11 +194,6 @@
       "reason": "Re-declared 2026-11-04 (normal-chrome-linux: for a browser password it refuses stdout, --run and --consume, which is a refusal of its own operation on a value the person marked for one site; it gates no message or session). boundary case: secret-handoff error/consume semantics, not an enforcement block"
     },
     {
-      "path": "src/templates/scripts/secret-get.mjs",
-      "sha256": "c6acba715f339c63d53a889bcea35b5e7de4b46a51de375093631189668447c4",
-      "reason": "boundary case: retrieval failure containment (emits zero secret bytes), not a policy block"
-    },
-    {
       "path": "src/templates/scripts/browser/chrome-ledger.sh",
       "sha256": "a2f6cbbcbbfca746b279718013e277cda8bd8a63eefced1c1b1b03b297a3c84b",
       "reason": "machine-self-maintenance Part B: writes this agent's browser-instance ledger for the helpers that call it; refuses only a directory outside the profiles folder and gates no message, session or agent action"
@@ -209,6 +212,16 @@
       "path": "src/templates/scripts/browser/chrome-unsaved.sh",
       "sha256": "972b35531c891c778af57e5fd9172a055588c662d34693315ea196cb43da70cc",
       "reason": "machine-self-maintenance Part B: a read-only per-tab unsaved-input check; prints yes/no/unreadable per tab and gates nothing itself (the watch-only sweep and chrome-close.sh only record its answer)"
+    },
+    {
+      "path": "src/templates/scripts/secret-set.mjs",
+      "sha256": "a8c15f474708e5202dd76f37115e2ba77594c8c5f43109b544391cea9bdf0fbe",
+      "reason": "credential writer dependency: validates non-empty stdin and explicit overwrite intent; never reads a break-glass credential or decides account actions"
+    },
+    {
+      "path": "src/templates/scripts/bw-session.cjs",
+      "sha256": "bd73c607f4aa562d8fba9f32898f7b18098721bbef5ee5acbbb5794a58652d76",
+      "reason": "Bitwarden session transport: unwraps the ordinary master password through guarded secret-get; no separate account-action authority"
     }
   ]
 }

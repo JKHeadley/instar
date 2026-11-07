@@ -100,6 +100,22 @@ if [ "$is_input" = 1 ] && [ -n "$PROFILE" ]; then : >"$LATCH"; rm -f "$PARTIAL";
 case "$CMD" in type|typesecret) ;; *) exec </dev/null ;; esac
 [ -r "$STATE/display.json" ] && DISPLAY_NO="$(sed -n 's/.*"display": *\([0-9]*\).*/\1/p' "$STATE/display.json" 2>/dev/null)"
 
+# The same private profile and display are used for the pre-read, while the wrapper lock is held.
+if [ "$is_input" = 1 ]; then
+  LOCKOUT_TEXT="$AGENT_HOME/.instar/state/xdrive/out/lockout-$$.txt"
+  mkdir -p "$(dirname "$LOCKOUT_TEXT")"
+  env -i PATH="/usr/local/bin:/usr/bin:/bin" HOME="$HOME" LANG="${LANG:-C.UTF-8}" XD_HOME="$AGENT_HOME" XD_PROFILE="$PROFILE" \
+    XD_CMD_TIMEOUT="$DEADLINE" XD_WRAPPER_PID="$$" \
+    timeout --kill-after=5 "$DEADLINE" /usr/bin/python3 -I "$HERE/x-drive.py" text "$LOCKOUT_TEXT" </dev/null >/dev/null
+  LOCKOUT_RC=$?
+  if [ "$LOCKOUT_RC" != 0 ]; then
+    rm -f -- "$LOCKOUT_TEXT" "$LATCH"; refuse 2 "ERR lockout-guard: full page text unavailable or truncated; input NOT sent"
+  fi
+  node "$HERE/lockout-guard.cjs" page "$AGENT_HOME" xdrive "$PROFILE" "$(printf '%s\0' "$@" | shasum -a 256 | cut -d' ' -f1)" "${XD_EXPECT:-}" <"$LOCKOUT_TEXT"
+  LOCKOUT_RC=$?; rm -f -- "$LOCKOUT_TEXT"
+  if [ "$LOCKOUT_RC" != 0 ]; then rm -f -- "$LATCH"; refuse 2 "ERR lockout-guard: operator approval required; input NOT sent"; fi
+fi
+
 # A clean environment: the agent's keys and tokens never reach the driver or Chrome.
 env -i PATH="/usr/local/bin:/usr/bin:/bin" HOME="$HOME" LANG="${LANG:-C.UTF-8}" XD_HOME="$AGENT_HOME" XD_PROFILE="$PROFILE" \
   XD_CMD_TIMEOUT="$DEADLINE" XD_WRAPPER_PID="$$" XD_LATCH_SET="$ANY_LATCH" XD_PARTIAL_FILE="$PARTIAL" XD_LATCH_FILE="$LATCH" \

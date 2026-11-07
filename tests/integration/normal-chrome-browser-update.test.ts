@@ -67,6 +67,9 @@ describe('PostUpdateMigrator.migrate() — normal-Chrome browser (macOS + Window
       expect(md, doc).not.toContain(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1);
     }
 
+    expect(fs.readFileSync(path.join(projectDir, '.instar/scripts/browser/lockout-guard.cjs'), 'utf8')).toContain('function warning');
+    expect(fs.readFileSync(skillPath(), 'utf8')).toContain('**Break-glass account safety:**');
+
     // Second run: nothing to do for this feature; the scripts are still refreshed.
     fs.writeFileSync(path.join(projectDir, '.instar', 'scripts', 'browser', 'ndrive.sh'), 'stale');
     const second = m.migrate();
@@ -86,6 +89,21 @@ describe('PostUpdateMigrator.migrate() — normal-Chrome browser (macOS + Window
     expect(skill).toContain('## My notes\n\nkeep this');
     expect(count(skill, NORMAL_CHROME_BROWSER_SKILL_MARKER)).toBe(1);
     expect(fs.readFileSync(path.join(path.dirname(skillPath()), 'SKILL.shipped.md'), 'utf-8')).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT);
+  });
+
+  it('adds the rule to edited built-in skills once, preserving local and custom skills', () => {
+    const subscription = path.join(projectDir, '.claude/skills/subscription-signin/SKILL.md');
+    fs.mkdirSync(path.dirname(subscription), { recursive: true });
+    fs.writeFileSync(subscription, '---\nname: subscription-signin\n---\n# Local sign-in notes\nkeep me\n');
+    fs.writeFileSync(skillPath(), NORMAL_CHROME_BROWSER_SKILL_CONTENT.replace(/\*\*Break-glass account safety:\*\*[^\n]+\n/, '') + '\nkeep browser notes\n');
+    const custom = path.join(projectDir, '.claude/skills/my-custom/SKILL.md');
+    fs.mkdirSync(path.dirname(custom), { recursive: true }); fs.writeFileSync(custom, 'my custom skill');
+    const m = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: false, projectName: 'old-agent' });
+    m.migrate(); m.migrate();
+    for (const file of [subscription, skillPath()]) expect(count(fs.readFileSync(file, 'utf8'), '**Break-glass account safety:**')).toBe(1);
+    expect(fs.readFileSync(subscription, 'utf8')).toContain('keep me');
+    expect(fs.readFileSync(skillPath(), 'utf8')).toContain('keep browser notes');
+    expect(fs.readFileSync(custom, 'utf8')).toBe('my custom skill');
   });
 
   describe('from the macOS + Windows release', () => {

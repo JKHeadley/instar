@@ -30,7 +30,7 @@ const TEMPLATE_DIR = path.resolve(process.cwd(), 'src/templates/scripts/browser'
 /** The scripts pin the system python (macOS Command Line Tools; present on Linux CI images). */
 const HAS_PY = fs.existsSync('/usr/bin/python3');
 /** PP's reviewed v5, the file the Mama PC live test ran on 2026-10-21 (VERDICT: PASS). */
-const NATIVE_DRIVE_V5_SHA256 = '9bacd88a373fe524c31173906f6a667084031fd3e0b232de9b1db14bc0c99e0e';
+const NATIVE_DRIVE_V5_SHA256 = '27de10ae368227e60e92d7875cf58a85faa23beedd96d0104ffc1bfe66b68759';
 
 let tmp: string;
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-normal-chrome-')); });
@@ -136,7 +136,7 @@ describe('installBrowserScripts', () => {
   it('writes all five helpers, executable and byte-preserving', () => {
     const written = installBrowserScripts(tmp);
     expect(written).toEqual([...BROWSER_SCRIPT_NAMES, ...BROWSER_CARE_SCRIPT_NAMES, 'xdrive-provision.sh']);
-    expect(BROWSER_SCRIPT_NAMES).toEqual(['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh', 'xdrive.sh', 'x-drive.py']);
+    expect(BROWSER_SCRIPT_NAMES).toEqual(['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh', 'xdrive.sh', 'x-drive.py', 'lockout-guard.cjs']);
     expect(MACOS_BROWSER_SCRIPT_NAMES).toEqual(['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh']);
     for (const name of BROWSER_SCRIPT_NAMES) {
       const stat = fs.statSync(target(name));
@@ -495,7 +495,7 @@ describe('browser helper scripts — behaviour with stubbed system tools', () =>
     const sent = fs.readFileSync(log, 'utf-8').trim().split('\n');
     expect(sent).toHaveLength(2); // one Apple Event per call: check and action are never split
     expect(sent[0]).toContain('(location.origin==="https://claude.ai") ? (function(){try{return "nc');
-    expect(sent[0]).toContain('eval("document.querySelector(\\"b\\").click()")');
+    expect(sent[0]).toContain('lockout-guard');
   });
 
   it('chrome-js.sh: a page value that starts with ERR is just a value; only the envelope sets the exit code', () => {
@@ -531,7 +531,7 @@ describe('browser helper scripts — behaviour with stubbed system tools', () =>
     const b = run('chrome-mainworld.sh', ['prof', 'R="x"']).stdout;
     expect(a).toMatch(/mw[0-9a-f]{16}did-not-run/); // tagged did-not-run fallback
     expect(a).toContain('(function(){try{var R='); // a function scope: no global R, no clash with a page-level let/const
-    expect(a).toContain('trailing comment\\\\n;document.body.dataset.'); // newline keeps a // comment from eating the write
+    expect(a).toContain('trailing comment'); // nested guard preserves the caller and its newline
     const key = (s: string) => (s.match(/dataset\.(mw[0-9a-f]{12})/) || [])[1];
     expect(key(a)).toBeTruthy();
     expect(key(a)).not.toBe(key(b));
@@ -544,6 +544,10 @@ describe('browser helper scripts — behaviour with stubbed system tools', () =>
 # (STUB_SESSION, default 1 = a desktop), emulates the bridge registration (write out/err/rc into the work
 # dir named in the command; a canfocus runner answers STUB_CANFOCUS_RC), and echoes a direct driver call.
 A="$*"; IN="$(cat)"
+# The guard's pre-read is independent of the action result under test.
+case "$A" in *" lockouttext "*)
+  OUT="$(wslpath -u "\${@: -1}")"
+  mkdir -p "$(dirname "$OUT")"; printf '%s' "\${STUB_PAGE_TEXT:-Normal sign-in page}" > "$OUT"; exit 0;; esac
 case "$A" in
   *'$env:LOCALAPPDATA'*) printf 'probe-stdin=[%s]\\n' "$IN" >> "$STUB_DIR/probe-stdin.txt"; printf 'C:\\\\Users\\\\op\\\\AppData\\\\Local\\r\\n'; exit 0;;
   *'SessionId'*) printf 'probe-stdin=[%s]\\n' "$IN" >> "$STUB_DIR/probe-stdin.txt"; printf '%s\\r\\n' "\${STUB_SESSION:-1}"; exit 0;;
@@ -552,6 +556,10 @@ case "$A" in
   *'Register-ScheduledTask'*)
     RC_W=$(printf '%s' "$A" | grep -o "Test-Path -LiteralPath '[^']*rc.txt'" | head -1 | sed "s/Test-Path -LiteralPath '//; s/'$//")
     WD_U="$STUB_LAD/native-drive/$(printf '%s' "$RC_W" | tr '\\\\' '/' | sed 's#.*/native-drive/##; s#/rc.txt$##')"
+    case "$(cat "$WD_U/runner.ps1")" in *'"lockouttext"'*)
+      TXT_U="$(dirname "$(dirname "$WD_U")")/$(grep -o 'lockout-text-[0-9]*.txt' "$WD_U/runner.ps1" | head -1)"
+      mkdir -p "$(dirname "$TXT_U")"; printf '%s' "\${STUB_PAGE_TEXT:-Normal sign-in page}" > "$TXT_U"
+      printf '0' > "$WD_U/rc.txt"; : > "$WD_U/out.txt"; : > "$WD_U/err.txt"; exit 0;; esac
     printf '%s' "$A" > "$STUB_DIR/registration.txt"
     cp "$WD_U/runner.ps1" "$STUB_DIR/runner.copy"; cp "$WD_U/run.vbs" "$STUB_DIR/vbs.copy"; cp "$WD_U/stdin.txt" "$STUB_DIR/stdin.copy"
     case "$(cat "$WD_U/runner.ps1")" in *'"canfocus"'*) RC="\${STUB_CANFOCUS_RC:-0}";; *) RC="\${STUB_RC:-0}";; esac
@@ -589,12 +597,37 @@ esac`;
       stubDir = path.join(tmp, 'stub');
       fs.mkdirSync(path.join(lad, 'native-drive'), { recursive: true });
       fs.mkdirSync(stubDir);
+      const bindingDir = path.join(lad, 'native-drive', `instar-${agentTag()}`);
+      fs.mkdirSync(bindingDir, { recursive: true });
+      fs.writeFileSync(path.join(bindingDir, 'target.json'), JSON.stringify({ userDataDir: 'C:\\Profiles\\agent' }));
       stub('powershell.exe', PS_STUB);
       // stub wslpath: -w maps /x -> C:\x ; -u maps C:\Users\op\AppData\Local\... -> <lad>/...
       stub('wslpath', `case "$1" in
   -w) printf '%s' "$2" | sed 's#^/#C:\\\\#; s#/#\\\\#g';;
   -u) printf '%s' "$2" | sed 's#^C:\\\\Users\\\\op\\\\AppData\\\\Local#${lad}#; s#\\\\#/#g';;
 esac`);
+    });
+
+    it('a warning beyond 300 characters blocks input while a normal page permits it', () => {
+      const normal = nd(['click', 'Continue']);
+      expect(normal.status).toBe(0);
+      const held = nd(['click', 'Continue'], { STUB_PAGE_TEXT: 'Welcome '.repeat(100) + 'Warning: account suspension' });
+      expect(held.status).toBe(2);
+      expect(held.stderr).toContain('ERR lockout-guard');
+      expect(held.stdout).not.toContain('DIRECT:');
+    });
+
+    it('binds approval to target-file contents and an effective profile override', () => {
+      stub('node', `printf '%s\\n' "$@" > "$STUB_DIR/guard-args"; exec "$REAL_NODE" "$@"`);
+      const options = { REAL_NODE: process.execPath };
+      expect(nd(['click', 'Continue'], options).status).toBe(0);
+      const first = fs.readFileSync(path.join(stubDir, 'guard-args'), 'utf8');
+      const binding = path.join(lad, 'native-drive', `instar-${agentTag()}`, 'target.json');
+      fs.writeFileSync(binding, JSON.stringify({ userDataDir: 'C:/Profiles/other' }));
+      expect(nd(['click', 'Continue'], options).status).toBe(0);
+      expect(fs.readFileSync(path.join(stubDir, 'guard-args'), 'utf8')).not.toBe(first);
+      expect(nd(['click', 'Continue'], { ...options, ND_USER_DATA_DIR: 'C:/Profiles/override' }).status).toBe(0);
+      expect(fs.readFileSync(path.join(stubDir, 'guard-args'), 'utf8')).toContain('profile:C:/Profiles/override');
     });
 
     it('refuses to run without wslpath (ERR wsl-only, exit 2): Git Bash is untested', () => {

@@ -193,7 +193,7 @@ import {
 } from '../users/testIdentityMarkers.js';
 import { readRegistryHighWater, setRegistryHighWater } from './registryHighWater.js';
 import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
-import { SUBSCRIPTION_SIGNIN_SKILL_CONTENT } from '../data/builtinSkillContent.js';
+import { BREAK_GLASS_RULE, BREAK_GLASS_APPROVAL_HELP, SUBSCRIPTION_SIGNIN_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { NORMAL_CHROME_BROWSER_LINUX_SECTION, NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX } from '../data/builtinSkillContent.js';
 import { ensureAgentOwnedMemoryAllHomes } from './AgentOwnedMemory.js';
 import { migrateStageBReleaseConfig, verifyBundledStageBReleaseEvidence } from './StageBActivationGate.js';
@@ -651,6 +651,7 @@ export function NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION(): string {
     .replace(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V2, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING)
     .replace('is the proven method on macOS AND Windows:', 'is the proven method on macOS, Windows and Linux:')
     .replace('Linux with no Windows underneath is not built (ACT-138): say so plainly.', linux)
+    .replace(/\n- \*\*When to use\*\*/, `\n- ${BREAK_GLASS_RULE}\n- **When to use**`)
     .replace(/\n- \*\*When to use\*\*/, `\n- ${always}\n- **When to use**`);
 }
 
@@ -2687,6 +2688,7 @@ export class PostUpdateMigrator {
     this.migrateSubscriptionSigninApprovalBoundary(result);
     this.migrateSubscriptionSigninDeviceLimit(result);
     this.migrateNormalChromeBrowserSkill(result);
+    this.migrateBreakGlassRule(result);
     this.migrateAgentOwnedMemory(result);
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
@@ -6232,6 +6234,20 @@ export class PostUpdateMigrator {
       result.upgraded.push('skills/subscription-signin/SKILL.md (added the sign-in-by-hand section; local edits kept)');
     } catch (err) {
       result.errors.push(`skills/subscription-signin/SKILL.md by-hand migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** Known built-in skill allowlist only; preserve edits and add the safety rule once. */
+  private migrateBreakGlassRule(result: MigrationResult): void {
+    for (const name of ['normal-chrome-browser', 'subscription-signin']) {
+      const file = path.join(this.config.projectDir, '.claude', 'skills', name, 'SKILL.md');
+      try {
+        if (!fs.existsSync(file)) continue;
+        const current = fs.readFileSync(file, 'utf8');
+        if (!new RegExp(`^name: ${name}\\r?$`, 'm').test(current) || current.includes('**Break-glass account safety:**')) continue;
+        fs.writeFileSync(file, current + '\n\n' + BREAK_GLASS_RULE + '\n\n' + BREAK_GLASS_APPROVAL_HELP + '\n');
+        result.upgraded.push(`skills/${name}/SKILL.md (break-glass account safety)`);
+      } catch (err) { result.errors.push(`Break-glass skill migration: ${String(err)}`); }
     }
   }
 

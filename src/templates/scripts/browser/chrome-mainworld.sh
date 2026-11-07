@@ -12,20 +12,8 @@ fi
 [ -z "$1" ] || [ -z "$2" ] && { echo "usage: chrome-mainworld.sh <profile-id|/absolute/user-data-dir> '<js>' [expected-origin]" >&2; exit 64; }
 S="$(cd "$(dirname "$0")" && pwd)"
 MWTAG="mw$(/usr/bin/python3 -I -c 'import secrets; print(secrets.token_hex(8))')" || { echo "ERR wrap-failed" >&2; exit 1; }
-WRAPPED="$(MWTAG="$MWTAG" CODE="$2" /usr/bin/python3 -I -c '
-import json, os, secrets
-c = os.environ["CODE"]
-k = "mw" + secrets.token_hex(6)  # a fresh key per call: a stale result from an earlier call can never be read back
-m = os.environ["MWTAG"]
-# The newline after the caller code keeps a trailing // comment from swallowing the result write.
-# A function scope keeps R and any vars declared by the caller off the page globals and out of conflict
-# with a page-level let/const of the same name.
-body = "(function(){try{var R=\"\";" + c + "\n;document.body.dataset." + k + "=" + json.dumps(m + "ok:") + "+String(R)}catch(e){document.body.dataset." + k + "=" + json.dumps(m + "err:") + "+e}})()"
-print("delete document.body.dataset." + k + "; var s=document.createElement(\"script\"); s.textContent=" + json.dumps(body)
-      + "; (document.head||document.documentElement).appendChild(s); s.remove(); var v=document.body.dataset." + k
-      + "; delete document.body.dataset." + k
-      + "; v===undefined ? " + json.dumps(m + "did-not-run") + " : v")
-')" || { echo "ERR wrap-failed" >&2; exit 1; }
+WRAPPED="$(MWTAG="$MWTAG" node "$S/lockout-guard.cjs" mainworld "$(cd "$S/../../.." && pwd -P)" chrome-mainworld.sh "$1" "$2" "$3")" || { echo "ERR wrap-failed" >&2; exit 1; }
+
 SHA="$(CODE="$2" /usr/bin/python3 -I -c 'import hashlib, os; print(hashlib.sha256(os.environ["CODE"].encode()).hexdigest())')"
 BYTES="$(CODE="$2" /usr/bin/python3 -I -c 'import os; print(len(os.environ["CODE"].encode()))')"
 OUT="$(NC_CALLER_SCRIPT=chrome-mainworld.sh NC_CALLER_CODE_SHA256="$SHA" NC_CALLER_CODE_BYTES="$BYTES" "$S/chrome-js.sh" "$1" "$WRAPPED" "$3")"; RC=$?

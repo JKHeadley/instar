@@ -62,7 +62,7 @@ const __filename = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(__filename), '..');
 const MANIFEST_REL = 'scripts/blocking-decision-surfaces-baseline.json';
 const POPULATION_DIR = 'src/templates';
-const EXTENSIONS = new Set(['.sh', '.js', '.mjs', '.ps1', '.py']);
+const EXTENSIONS = new Set(['.sh', '.js', '.mjs', '.ps1', '.py', '.cjs']);
 const JSON_OUT = process.argv.includes('--json');
 
 /** Hash LF-normalized bytes so a CRLF checkout does not manufacture drift. */

@@ -1,0 +1,46 @@
+{
+  "ts": "2026-11-07T22:22:53.232Z",
+  "slug": "lockout-break-glass",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/templates/scripts/secret-get.mjs matches SecretDrop / never-on-disk invariant",
+    "safety-invariant proximity: src/templates/scripts/secret-set.mjs matches SecretDrop / never-on-disk invariant",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 18,
+  "loc": 522,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "scripts/lint-blocking-decisions-declared.mjs",
+      "src/commands/init.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/data/builtinSkillContent.ts",
+      "src/server/lockoutRoutes.ts",
+      "src/server/middleware.ts",
+      "src/server/routes.ts",
+      "src/templates/scripts/browser/chrome-js.sh",
+      "src/templates/scripts/browser/chrome-mainworld.sh",
+      "src/templates/scripts/browser/lockout-guard.cjs",
+      "src/templates/scripts/browser/native-drive.ps1",
+      "src/templates/scripts/browser/ndrive.sh",
+      "src/templates/scripts/browser/xdrive.sh",
+      "src/templates/scripts/bw-session.cjs",
+      "src/templates/scripts/credential-store.mjs",
+      "src/templates/scripts/secret-get.mjs",
+      "src/templates/scripts/secret-set.mjs"
+    ],
+    "addedLines": 475,
+    "deletedLines": 47
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

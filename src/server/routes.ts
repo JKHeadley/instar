@@ -1,3 +1,4 @@
+import { mountLockoutRoutes } from './lockoutRoutes.js';
 import { slackSessionMetadata, slackSessionMetadataAllowed } from './slackSessionMetadata.js';
 import type { SourceChannel } from '../core/attribution/marker.js';
 import { categoryForProducer } from '../messaging/notificationCategories.js';
@@ -15195,6 +15196,8 @@ export function createRoutes(ctx: RouteContext): Router {
     ctx.pinAttemptStore?.recordSuccess(ip);
     return true;
   }
+
+  mountLockoutRoutes(router, checkMandatePin, p => ctx.tunnel?.getExternalUrl(p) ?? `http://localhost:${ctx.config.port}${p}`);
 
   // Evaluate an action against a mandate (the enforcement consumption point).
   // Every call — allow AND deny — lands in the hash-chained audit.

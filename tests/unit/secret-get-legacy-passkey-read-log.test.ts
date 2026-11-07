@@ -43,6 +43,13 @@ describe('secret-get.mjs — prototype passkey reads are allowed and logged', ()
     expect(fs.readFileSync(logPath(), 'utf8')).not.toContain('PRIVATE-KEY-MATERIAL');
   });
 
+  it('preserves receiving-command options after --', () => {
+    new SecretStore({ stateDir }).write({ github_token: 'ordinary' });
+    const r = run(['github_token', '--run', '--', process.execPath, '-e', 'process.stdout.write(process.argv[1])', '--', '--operator-approval=receiver']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('--operator-approval=receiver');
+  });
+
   it('does not log reads of ordinary keys', () => {
     new SecretStore({ stateDir }).write({ github_token: 'ghp_x' });
     const r = run(['github_token']);

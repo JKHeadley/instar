@@ -539,6 +539,19 @@ switch ($Cmd) {
     exit 0
   }
 
+  # Full document text for the wrapper's account-lockout check, never the bounded tree walk.
+  'lockouttext' {
+    try {
+      $doc = Get-DocumentElement (Get-Target)
+      if ($null -eq $doc) { throw 'no document' }
+      $pattern = $doc.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+      $all = $pattern.DocumentRange.GetText(-1)
+      if ($null -eq $all) { throw 'no full text' }
+      $all | Set-Content -LiteralPath $A1 -Encoding UTF8
+      exit 0
+    } catch { Write-Output 'ERR lockout-guard: full document text unavailable'; exit 2 }
+  }
+
   'text' {
     $t = Get-Target
     $texts = New-Object System.Collections.ArrayList

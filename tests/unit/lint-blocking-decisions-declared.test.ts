@@ -25,7 +25,7 @@ describe('lint-blocking-decisions-declared', () => {
     expect(result.status, result.stdout + result.stderr).toBe(0);
   });
 
-  it('refuses an undeclared .py file in an isolated copy of the real population', () => {
+  it.each(['py', 'cjs'])('refuses an undeclared .%s file in an isolated copy of the real population', (extension) => {
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'blocking-decision-fixture-'));
     fixtures.push(fixture);
     fs.mkdirSync(path.join(fixture, 'scripts'), { recursive: true });
@@ -36,9 +36,9 @@ describe('lint-blocking-decisions-declared', () => {
     fs.cpSync(path.join(ROOT, 'src/templates'), path.join(fixture, 'src/templates'), { recursive: true });
     const clean = lint(fixture);
     expect(clean.status, clean.stdout + clean.stderr).toBe(0);
-    fs.writeFileSync(path.join(fixture, 'src/templates/scripts/zz-undeclared-test.py'), 'print("x")\n');
+    fs.writeFileSync(path.join(fixture, `src/templates/scripts/zz-undeclared-test.${extension}`), 'print("x")\n');
     const refused = lint(fixture);
     expect(refused.status).not.toBe(0);
-    expect(refused.stdout + refused.stderr).toContain('zz-undeclared-test.py');
+    expect(refused.stdout + refused.stderr).toContain(`zz-undeclared-test.${extension}`);
   });
 });

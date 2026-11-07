@@ -6,6 +6,9 @@
  * the repo SKILL.md, so new agents scaffolded stale content forever).
  */
 
+export const BREAK_GLASS_RULE = '**Break-glass account safety:** Never use recovery or backup codes, disable two-factor authentication, or act past an account suspension, lock or hold warning without the operator approving that exact action. Emergency codes can suspend an account or freeze publishing for days; ordinary passwords, passkeys, OAuth and tokens keep their normal flow.';
+export const BREAK_GLASS_APPROVAL_HELP = 'On `ERR lockout-guard`, stop; never switch tools to bypass it. For a browser refusal, request its action reference with `node .instar/scripts/browser/lockout-guard.cjs request "$PWD" request ACTION_REFERENCE`, explain the exact action and risk to the operator, and send the returned link. After approval retry with `INSTAR_OPERATOR_APPROVAL=<id>`. Credential helpers return the link directly; pass `--operator-approval=<id>` to secret-get or `--operator-approval <id>` to credential-store. Approval expires after five minutes and permits one exact action.';
+
 export const ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT = `---
 name: iterative-converging-audit
 description: Run any "find all instances of X" sweep — security audit, safety audit, code review, research, compliance check — as an iterative loop that does NOT stop at one pass. Audit, fix, RE-audit, repeat until a clean pass returns zero new discoveries. Trigger words: audit, sweep, find all, review everything, comprehensive, thorough, exhaustive, security review, did we get everything, convergence.
@@ -60,6 +63,10 @@ metadata:
 ---
 
 # /subscription-signin
+
+${BREAK_GLASS_RULE}
+
+${BREAK_GLASS_APPROVAL_HELP}
 
 How an Instar agent keeps its Claude Code and Codex subscriptions signed in, using only what has been proven on real accounts. Follow it with judgment; do not replace it with a script.
 
@@ -199,6 +206,10 @@ Use this when the machine that needs a login (the **target**) cannot run a norma
  * the current rules on disk and they cannot drift from the shipped text.
  */
 export const NORMAL_CHROME_BROWSER_SHARED_RULES = `## The rules both drivers follow
+
+${BREAK_GLASS_RULE}
+
+${BREAK_GLASS_APPROVAL_HELP}
 
 - **Normal Chrome only**, launched the ordinary way: \`open -g -na\` on macOS, \`chrome.exe\` on Windows. Never Playwright/CDP, never \`--remote-debugging-port\`, never an automation flag, in any spelling (\`--flag\`, \`-flag\`, \`/flag\`). The macOS launcher accepts no flags at all (a URL argument that is not a URL is refused); the Windows driver accepts only a short allowlist of harmless window flags.
 - **One profile per account, and never the operator's own.** macOS: profiles live inside this agent's home and the scripts refuse anything else. Windows: give automation its own profile directory; \`ndrive.sh\` refuses the operator's own Chrome profile folder. Never copy a profile between machines (a signed-in profile is cookies on one disk).

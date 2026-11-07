@@ -1,0 +1,53 @@
+{
+  "version": 3,
+  "slug": "lockout-break-glass",
+  "sessionId": "fdf9b7ff-9f37-4169-92c6-5480e93acfae",
+  "timestamp": "2026-11-07T22:20:56.368Z",
+  "artifactPath": "upgrades/side-effects/lockout-break-glass.md",
+  "artifactSha256": "769834d193ba842b61f4e19e4ec0c53bdba4b0b98ac847e20f2bae7aa635cd45",
+  "coveredFiles": [
+    "scripts/blocking-decision-surfaces-baseline.json",
+    "scripts/lint-blocking-decisions-declared.mjs",
+    "src/commands/init.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/builtinSkillContent.ts",
+    "src/server/lockoutRoutes.ts",
+    "src/server/middleware.ts",
+    "src/server/routes.ts",
+    "src/templates/scripts/browser/chrome-js.sh",
+    "src/templates/scripts/browser/chrome-mainworld.sh",
+    "src/templates/scripts/browser/lockout-guard.cjs",
+    "src/templates/scripts/browser/native-drive.ps1",
+    "src/templates/scripts/browser/ndrive.sh",
+    "src/templates/scripts/browser/xdrive.sh",
+    "src/templates/scripts/bw-session.cjs",
+    "src/templates/scripts/credential-store.mjs",
+    "src/templates/scripts/secret-get.mjs",
+    "src/templates/scripts/secret-set.mjs",
+    "tests/e2e/lockout-guard-lifecycle.test.ts",
+    "tests/e2e/normal-chrome-browser-init-lifecycle.test.ts",
+    "tests/integration/lockout-approval.test.ts",
+    "tests/integration/normal-chrome-browser-update.test.ts",
+    "tests/unit/lint-blocking-decisions-declared.test.ts",
+    "tests/unit/lockout-guard.test.ts",
+    "tests/unit/normal-chrome-browser-skill.test.ts",
+    "tests/unit/secret-get-legacy-passkey-read-log.test.ts",
+    "upgrades/eli16/lockout-break-glass.md",
+    "upgrades/next/lockout-break-glass.md",
+    "upgrades/side-effects/lockout-break-glass.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "User-requested reversible helper safety patch; no live state/schema changes. Credential and approval risk floor acknowledged below-floor: exact-action PIN boundary reused, independent guard review completed, all three related test tiers passed; PR is operator review surface. User explicitly prohibits full suite and merge.",
+  "eli16Path": "upgrades/eli16/lockout-break-glass.md",
+  "sideEffectsPath": "upgrades/side-effects/lockout-break-glass.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

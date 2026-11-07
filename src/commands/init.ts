@@ -5240,7 +5240,7 @@ function installSecretGet(projectDir: string): void {
  * with its WSL wrapper (ndrive.sh), and the Linux driver (x-drive.py, AT-SPI + XTEST on an agent-private
  * display) with its wrapper (xdrive.sh). All install everywhere; each refuses the wrong platform itself.
  */
-export const BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh', 'xdrive.sh', 'x-drive.py'] as const;
+export const BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh', 'xdrive.sh', 'x-drive.py', 'lockout-guard.cjs'] as const;
 /** Started by the agent's own boot, never by a person or the skill, so the skill does not name it. */
 export const BROWSER_PROVISION_SCRIPT_NAMES = ['xdrive-provision.sh'] as const;
 /** The three macOS (Apple Events) scripts: the ones that refuse with ERR macos-only off macOS. */
@@ -5265,6 +5265,12 @@ export function installBrowserScripts(projectDir: string): string[] {
   const scriptsDir = path.join(projectDir, '.instar', 'scripts', 'browser');
   const modDir = __dirname;
   const written: string[] = [];
+  for (const name of ['credential-store.mjs', 'bw-session.cjs', 'secret-set.mjs']) {
+    const source = [path.resolve(modDir, '..', 'templates', 'scripts', name), path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', name)].find(p => fs.existsSync(p));
+    if (!source) throw new Error(`Missing lockout credential helper: ${name}`);
+    fs.mkdirSync(path.dirname(scriptsDir), { recursive: true });
+    fs.writeFileSync(path.join(path.dirname(scriptsDir), name), fs.readFileSync(source), { mode: 0o755 });
+  }
   for (const name of [...BROWSER_SCRIPT_NAMES, ...BROWSER_CARE_SCRIPT_NAMES, ...BROWSER_PROVISION_SCRIPT_NAMES]) {
     const candidates = [
       path.resolve(modDir, '..', 'templates', 'scripts', 'browser', name),

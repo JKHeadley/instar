@@ -1,0 +1,11 @@
+# Account lockout and emergency-code safety
+
+A saved password and a recovery code are different kinds of permission. A password is part of an ordinary sign-in. A recovery code is an emergency way into an account, and a service can respond to its use by suspending access or freezing publishing for days. On November 7 an agent used a saved npm recovery code after seeing only the first 300 characters of a warning page. npm placed the operator's account on a 72-hour publishing hold.
+
+This change puts a check inside the tools, rather than relying only on instructions. Before an action in the shipped browser helpers, they read the complete page text and check for suspension, locking, publishing holds, recovery-code use, and disabling two-factor authentication. The macOS JavaScript check runs immediately before the action in the same browser evaluation. Windows and Linux use a separate native text read under the existing tool lock; an incomplete read refuses the action. Native navigation can still happen between that read and input, so this is not a guarantee against every changing page or every possible warning phrasing.
+
+The credential reader also recognizes recovery-code and backup-code names. Credential-store checks the local key, Bitwarden item name and selected custom field before opening Bitwarden. Normal password, passkey, OAuth and token names keep working. Merely mentioning that recovery codes exist does not turn an ordinary page into a warning.
+
+An operator can approve one exact action from a phone using the existing dashboard PIN. An approval expires after five minutes and is consumed once. A different profile, different code, different credential field or different store options requires another approval. There is no global disable switch. This uses the existing trusted-agent PIN boundary: the agent must not read the operator PIN and approve itself, edit the scripts, or switch to an unguarded tool to get around a refusal.
+
+New installations and updates receive the same helpers and skill rule. This PR changes source and disposable test homes only; it does not install anything into Echo's live home. A revert and normal update remove the change. The PR is for review and is not merged by the building agent.

@@ -41,8 +41,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import guard from './browser/lockout-guard.cjs';
 
-const args = process.argv.slice(2);
+const rawArgs = process.argv.slice(2);
+const receiverIdx = rawArgs.indexOf('--');
+const options = receiverIdx === -1 ? rawArgs : rawArgs.slice(0, receiverIdx);
+const approval = options.find(a => a.startsWith('--operator-approval='))?.slice('--operator-approval='.length);
+const args = [...options.filter(a => !a.startsWith('--operator-approval=')), ...(receiverIdx === -1 ? [] : rawArgs.slice(receiverIdx))];
 
 // `<keyPath> --run -- <cmd...>`: everything after the first `--` (which must
 // follow `--run`) is the command to receive the value on stdin.
@@ -63,6 +68,16 @@ const keyPath = positional[0];
 if (!namesOnly && !keyPath) {
   process.stderr.write('usage: secret-get.mjs <keyPath> | secret-get.mjs --names\n');
   process.exit(2);
+}
+
+// Refuse before loading or decrypting the vault. No value bytes on a refusal.
+if (!namesOnly) {
+  try {
+    const prior = process.env.INSTAR_OPERATOR_APPROVAL;
+    process.env.INSTAR_OPERATOR_APPROVAL = approval || '';
+    await guard.main(['credential', process.cwd(), 'secret-get', keyPath, JSON.stringify(runCmd)]);
+    if (prior === undefined) delete process.env.INSTAR_OPERATOR_APPROVAL; else process.env.INSTAR_OPERATOR_APPROVAL = prior;
+  } catch (e) { process.stderr.write(`ERR secret-get: break-glass access refused; ${e.message}\n`); process.exit(1); }
 }
 
 // Resolve the instar dist: deployed agents run from the shadow-install; the dev

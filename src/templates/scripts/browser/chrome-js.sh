@@ -67,13 +67,15 @@ var res=ev.sendEventWithOptionsTimeoutError(0x3,30,err);
 if(res.isNil()){ 'ERR apple-event-failed (tab hung, window closed, or Apple Events JS off)' } else { var d=res.paramDescriptorForKeyword(fc('----')); d.isNil()?'(nil)':ObjC.unwrap(d.stringValue) }
 OSA
 }
+# Wrap caller code with the full-page lockout check before the existing origin/nonce envelope.
+GUARDED="$(node "$(dirname "$0")/lockout-guard.cjs" wrap "$AGENT_HOME" chrome-js.sh "$1" "$2" "$3")" || exit 2
 # Exit codes: 0 ok, 1 NO_PID / ERR, 2 not macOS, 3 wrong origin, 64 bad input.
 # The code is evaluated inside an envelope tagged with a per-call nonce. The envelope runs in
 # Chrome's isolated world, so page script can neither read the nonce nor forge a status: a page
 # value that happens to start with "ERR" is just a value. Anything not carrying the nonce (nil,
 # an Apple Event failure) is reported as an ERR by this script itself.
 NONCE="nc$(/usr/bin/python3 -I -c 'import secrets; print(secrets.token_hex(8))')" || { echo "ERR wrap-failed" >&2; exit 1; }
-WRAPPED="$(NONCE="$NONCE" EXP="$3" CODE="$2" /usr/bin/python3 -I -c '
+WRAPPED="$(NONCE="$NONCE" EXP="$3" CODE="$GUARDED" /usr/bin/python3 -I -c '
 import json, os
 n, exp, code = os.environ["NONCE"], os.environ["EXP"], os.environ["CODE"]
 run = "(function(){try{return " + json.dumps(n + "ok:") + "+String(eval(" + json.dumps(code) + "))}catch(e){return " + json.dumps(n + "err:") + "+e}})()"

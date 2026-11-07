@@ -402,6 +402,11 @@ export function authMiddleware(
     // would otherwise 401 the page before it ever renders. Scoped to `/mcp/approve/<id>`
     // (trailing slash) so the agent-only `/mcp/approve` (exact) + `/mcp/approval-link`
     // + `/mcp/load|offload|session` stay Bearer-gated.
+    if (/^\/lockout\/approve\/[a-f0-9-]{36}$/.test(req.path) && ['GET', 'POST'].includes(req.method)) {
+      next();
+      return;
+    }
+
     if (req.path.startsWith('/mcp/approve/')) {
       next();
       return;
