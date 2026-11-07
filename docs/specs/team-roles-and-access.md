@@ -49,7 +49,7 @@ Today a phone is either the owner's (everything) or an MSP's (all Telegram topic
 
 **Existing phones do not change.** An `owner` phone stays as it is. An `msp` phone keeps exactly today's reach and limits: it is not read through tiers, and it gains nothing automatically. The owner can convert an MSP phone to an admin with one signed action in the app. This keeps "Updates never restrict existing agents", and it also never widens what an owner agreed to without asking them. Once the app has its People screen, the owner sees one prefilled offer per MSP: "Give <name> maintenance access".
 
-**Code hygiene.** Every `=== 'msp'` and `role !== 'owner'` site is replaced by `isOwnerPerson` or `isNonOwnerPerson` helpers, so a `team` phone cannot fall through to owner behaviour (`memoryPersonId`, `conversationOwnerFor`, `senderPerson`, `approveOutcome`, the pairing message, `mspPeople`, the Slack send). A test bans the literal comparison outside `MobilePeople.ts`.
+**Code hygiene.** Every `=== 'msp'` and `role !== 'owner'` site is replaced by `isOwnerPerson` or `isNonOwnerPerson` helpers, so a `team` phone cannot fall through to owner behaviour (`memoryPersonId`, `conversationOwnerFor`, `senderPerson`, `approveOutcome`, the pairing message, `mspPeople`, the Slack send, and the `mspDeviceUserIds` filter in `wireMemoryPrivacy.ts`, or team phones would not count as people). A test bans the literal comparison outside `MobilePeople.ts`.
 
 ### 3.2 What actually protects what
 
@@ -67,22 +67,24 @@ So the rule is: **every `team` phone, at every tier, requires memory privacy**, 
 
 **`POST /sessions/:name/input`, keys and attachments stay owner-only.** They bypass attribution and the per-message check.
 
-**Stated limit.** The agent runs as the same computer user as these files. A session the owner runs could delete log rows. The log stops persuasion, confusion and forged rows: a row without a valid signature is ignored. It does not stop a hostile owner-reach session on the machine. Such a session could delete rows, including a latest revocation, with no visible trace, or use the machine's key to bind a rogue phone. Replication makes a lone deletion come back from peers, but on a one-machine agent nothing detects it. The same limit is stated in owner-authentication.
+**Stated limit.** The agent runs as the same computer user as these files. A session the owner runs could delete log rows. The log stops persuasion, confusion and casual tampering: a row without a valid signature is ignored. It does not stop a hostile owner-reach session on the machine. Such a session could delete rows, including a latest revocation, with no visible trace, or read the machine's key and forge machine-signed rows such as a rogue `phone-bind`. Replication makes a lone deletion come back from peers, but on a one-machine agent nothing detects it. The same limit is stated in owner-authentication.
 
 ### 3.3 The access log
 
 A new append-only file `state/team-access/log.jsonl`, separate from `mobile-msp-grants.json`, so an older build never rewrites it. A new replicated store kind `teamAccess`, on whenever native conversations are on, the same way as `appConversations`, so every machine holds it. There is no second copy of the same fact: MSP switches stay in their file for `msp` phones, and a converted person moves to the log.
 
-Each event stores the phone's whole signed request as `origin`, plus the accepting machine's `receipt`, the existing §4.6 format and crypto. The app needs nothing new. The existing `verifyRecordedOrigin` is message-specific, so a new `verifyAccessEvent` reuses its signature, ledger and receipt checks and adds the rest: the method and path must be an access route, and **every event field is parsed from the signed body**, never from fields stored beside it. A row that does not verify is ignored.
+Each phone-written event stores the phone's whole signed request as `signedOrigin` (the envelope reserves `origin`), plus the accepting machine's `receipt`, using the §4.6 format and crypto. The app signs requests as it does today. A new `verifyTeamAccessOrigin` reuses the device-side signature, key-window and receipt checks from `AppRecordSignatures.ts`, and binds the path and method to the event type. `verifyRecordedOrigin` itself cannot be reused, because it requires a conversation path and a `text` field. Machine-written events (`phone-bind`, `place-applied`, `lower`) carry their own domain-separated signature under the machine's pinned identity key, checked in the store's ingest the way the key ledger checks its rows.
 
-**Who a key belongs to.** The key ledger proves a key was active, not whose it is. So at phone activation the machine writes a machine-signed `phone-bind { keyHash, personKey or 'owner' }` event. The fold reads a signer's standing from that binding plus the log.
+**Everything comes from the signed body.** The phone mints `personKey` and `eventId` and puts them in the body. The fold derives each event only from that body, never from fields stored beside it, and dedupes by the hash of the signed request, so re-appending an old grant changes nothing.
 
-**Order.** Events carry the store's hybrid logical clock and an `eventId`, and the fold is a deterministic reducer, so replicas that receive the same events in any order reach the same state:
+**Who a key belongs to.** The key ledger proves a key was active, not whose it is. So when a phone activates, and once at boot for phones already active, the machine writes `phone-bind { keyHash, deviceId, personKey or 'owner' }`. `owner-pin` names the owner's key. An MSP phone's key is bound as non-owner, so its signature on `owner-pin` counts for nothing on any machine.
 
-- Duplicates collapse by `eventId`.
-- Per person, and per person and conversation, the highest clock wins. On a tie, removal or the lower access wins.
-- Owner events are folded first. An admin event then counts only if the admin held the needed standing in the owner-only state at that event's clock. So an owner's removal beats that admin's concurrent grant.
-- An event naming an unknown person or key is held aside with no effect until its predecessor arrives.
+**Order.** The fold is a deterministic reducer over a total order: the receipt's signed `receivedAt`, then `eventId`. A late row triggers a full re-fold, which is cheap at team size. So replicas holding the same events reach the same state, in any arrival order.
+
+- Per person, and per person and conversation, the last event wins. On a tie, removal or the lower access wins.
+- Owner events are folded first. An admin event then counts only if the admin held the needed standing in the owner-only state at that event's time. So an owner's removal beats that admin's concurrent grant.
+- An event naming an unknown person, or signed by a key this machine's ledger does not know yet, is quarantined, and the fold reruns when the ledger or log gains rows. The ledger gains an ingest hook for this. **A quarantined removal or lowering is honoured at once,** because the safe direction needs no proof. A quarantined grant has no effect.
+- A row that fails verification outright is ignored.
 
 Events: `phone-bind`, `owner-pin`, `person-add { personKey, name, tier, relationship?, links }`, `person-set`, `person-remove`, `grant { personKey, ref, access }`, `grant-remove`, `place-applied { ref, rev, machineId }` (machine-signed, §3.5), `lower` (machine-signed, below). `phone-bind` is described below.
 
@@ -130,7 +132,7 @@ Redeem requires the phone to declare `appCaps: ['standing']`, so an older app ge
 
 **History.** A grant opens the conversation's past and future, the same rule memory privacy uses for someone joining a group. The sheet says so.
 
-**A granted conversation is a shared place with its own key.** Any conversation with a live grant to a non-owner resolves as `shared` with a per-conversation `placeKey`, never `soleReaderId`, whatever the Telegram count says. Its session is confined and loads only that place's memory. The owner loses their private memory there while it is shared, and the sheet says so. When the last grant is removed the conversation returns to its earlier place. The shared folder is kept and is not merged into the owner's memory.
+**A granted conversation is a shared place with its own key.** Any conversation with a live grant to a non-owner resolves as `shared` with a per-conversation `placeKey`, never `soleReaderId`, whatever the Telegram count says. Telegram's `memoryPlaceKey` is group-wide today, so the per-topic key is computed at the inbound site and in `placeFor` for granted topics. Its session is confined and loads only that place's memory. The owner loses their private memory there while it is shared, and the sheet says so. When the last grant is removed the conversation returns to its earlier place. The shared folder is kept and is not merged into the owner's memory.
 
 **A grant activates in two steps.** The grant event is written, then the machine running that conversation ends its live session, recomputes the place from the folded log, and writes a machine-signed `place-applied`. The person can read only after that event exists. Until then People shows "Waiting for <machine>". On one machine this is immediate.
 
@@ -140,7 +142,7 @@ A machine taking over a conversation pulls `teamAccess` from reachable peers bef
 
 ### 3.6 Memory privacy is required, and stays required
 
-- At invite, every installed machine must report memory privacy on, the sandbox working, and the `claude-code` framework. Unknown counts as no. Otherwise `409 memory-privacy-required`, with the reason.
+- At invite, native app conversations must be on (`mobilePairing.native.enabled`, which also turns on the replicated `teamAccess` log), and every installed machine must report memory privacy on, the sandbox working, and the `claude-code` framework. Unknown counts as no. Otherwise `409 memory-privacy-required`, with the reason.
 - `POST /mobile/team/memory-privacy` (owner phone, Face ID) turns it on across machines, forwarding the signed request, then each machine restarts. The app shows the costs before Face ID: the owner's private memory is not used in shared groups, inbound agent-to-agent sessions are refused, and a Slack or Telegram channel keeps its own memory.
 - At every request, `deviceAuthenticator` refuses a team phone with `403 memory-privacy-required` if privacy is off here or the sandbox failed, and raises one attention item. A forward to a peer last known to have privacy off is refused at the sender.
 - A Codex-only agent cannot have team phones, because memory privacy has no sandbox adapter for it. The invite says so plainly. That adapter is memory privacy's own work, so it goes to the feedback queue.
@@ -156,7 +158,7 @@ Every `DEVICE_ALLOWLIST` entry declares `tier`. `ownerOnly: true` becomes `tier:
 | admin | adds `/mobile/machines`, `/mobile/health-issues` and its choices, `/mobile/jobs`, `/mobile/resources`, `/mobile/accounts`, `/mobile/spend`, `/mobile/pace`, `/sessions` (rows the admin may not read say "Private session"), `/mobile/sessions/close/*` and `/mobile/sessions/move/*` with the admin's own Face ID, `/attention` and `/mobile/attention/*` filtered as below, `/mobile/devices`, `/mobile/team/*` reads |
 | owner | everything else: Files, Passwords and keys, Permission slips, Remote Desktop, Dashboard PIN, console pass, What I've learned, Messages, Insights, Plans, Promises, Proposals, Inside, Ideas, Development, Maturation, Other agents, session pane, typing, keys, attachments, new session, default, door, pairing approvals for owner phones, introducer |
 
-Admin actions on the agent are these and no more: health quick actions, pause and resume a job, close or move a session, apply an update, restart. Creating or editing a job stays with the owner, because jobs run with owner reach. Remote Desktop is whole-machine reach, so it stays with the owner.
+Admin actions on the agent are these and no more: health quick actions, pause and resume a job, close or move a session, and two new device routes, `POST /mobile/agent/update` and `POST /mobile/agent/restart`, each with the admin's Face ID. Creating or editing a job stays with the owner, because jobs run with owner reach. Remote Desktop is whole-machine reach, so it stays with the owner.
 
 **Needs you for admins** shows only items from an allowlist of maintenance sources. Anything else is owner-only, because attention text can quote conversations and approvals must not reach an admin.
 
@@ -191,9 +193,17 @@ Each agent stays independent. There is no central service and none is required. 
 
 The dashboard gains a People tab that reads it, for the owner. The agent answers "who has access?" from it. The app gets the same rows through `GET /mobile/team/people`: owner all, admin names and tiers, member own row.
 
-**Reach tracking runs whatever the privacy setting.** A new `ReachablePeople` tracker has its own state, `state/reachable-people.json`, records verified senders at inbound before the privacy early-return, and counts from the same config lists. It feeds nothing in memory privacy and never flips multi-person. Its first boot uses `baselineFromConfig`, so one person with several ids is not a second person.
+**Reach tracking runs whatever the privacy setting.** A new `ReachablePeople` tracker has its own state, `state/reachable-people.json`. It records verified senders in `MemoryInboundTracker.onInbound`, before the privacy early-return, which covers every channel and stays off the delivery path. It counts from the same config lists through `countReachablePeople`. It feeds nothing in memory privacy and never flips multi-person. Its first boot uses `baselineFromConfig`, so one person with several ids is not a second person. Ids it treats as one person stay visible on the owner's People row: "Treated as you: Slack U1, iMessage ...".
 
-**Second-person warning.** When memory privacy is off and the tracker shows someone besides the owner can reach the agent, the owner gets **one** attention item, updated in place and never repeated per person: "2 people can reach <agent>, and memory privacy is off, so what one person tells it can reach the other. Say 'turn on memory privacy' to change this, or mark this as fine." `*` allowlists read "anyone". `sharedMemoryPeople` are not counted. Done or Ignore holds until a new person appears. It blocks nothing. Self-heal does not apply: the fix is the owner's privacy choice, and turning it on automatically would restrict an agent.
+An empty Telegram allowlist means anyone in the group can message the agent. That is normal for a one-person group, so it does not raise the count. The People read says "Anyone in the Telegram group can message the agent", and senders there count as they are seen.
+
+**Second-person warning.** When memory privacy is off and someone besides the owner can reach the agent, the owner gets **one** attention item, keyed by condition, never one per person. The text gives counts only, because an MSP phone can read it until step 2: "2 people can reach this agent, and memory privacy is off, so what one person tells it can reach another. Say 'turn on memory privacy' to change this, or mark this as fine." An open allowlist reads "Anyone". `sharedMemoryPeople` are not counted. It blocks nothing. Self-heal does not apply: the fix is the owner's privacy choice, and turning it on automatically would restrict an agent.
+
+- **Raised** through the Telegram adapter when there is one, and the local attention list when not. `POST /attention` needs Telegram, so it is not used.
+- **The hold lives in the tracker,** because a re-raise reopens an item. It stores the count it last raised and raises again only for a higher count, so marking it done holds until someone new appears.
+- **Evaluated on the lease holder** at boot, hourly, and on a new sender, over the union of this machine's and peers' observed senders from `GET /team/people?scope=pool`. An unreachable peer means a possible under-count and is never a reason to skip.
+- **One more case, once per agent:** if the baseline folded a Slack id and a Telegram id into one person, each normally one human, one item asks "This agent treats Slack U1 and Telegram 42 as one person. If they are different people, turn memory privacy on." iMessage and WhatsApp handles are not asked about, because one person often has several.
+- **Acting on it.** The agent's reference block tells it how to turn privacy on when the owner asks in their own chat: set `memoryPrivacy.enabled` on every machine and restart. This is the existing route, and the app's Face ID switch comes in step 2.
 
 ### 3.11 Audit
 
@@ -234,7 +244,7 @@ Steps 2 and 3 are useful together, not separately. A user-facing step is done on
 
 ## Verify the state, not its symbol
 
-- **Tier.** Symbol: a log row. State: "the owner or an allowed admin chose this". Corroboration: `verifyAccessEvent` against the replicated key ledger, and the fold's standing check. Unmeasurable: the row is ignored, or a failed log admits no team phone. Both directions: a deleted row is not detectable on one machine (§3.2), and a valid but stale row is bounded by replication.
+- **Tier.** Symbol: a log row. State: "the owner or an allowed admin chose this". Corroboration: `verifyTeamAccessOrigin` against the replicated key ledger, and the fold's standing check. Unmeasurable: the row is ignored, or a failed log admits no team phone. Both directions: a deleted row is not detectable on one machine (§3.2), and a valid but stale row is bounded by replication.
 - **Reach.** Symbol: allowlists, phones, observed senders. State: "this person can reach the agent". A silent reader in a Telegram group is not a sender, so the row says the list is incomplete. One human with two unlinked ids can read as two, and marking it fine covers that.
 - **Grant applied.** Symbol: `place-applied`. State: the conversation's session is confined. Corroboration: it is written after the session ended and the place recomputed, and the spawn fails if confinement cannot apply. Unmeasurable: the grant stays pending.
 - **Privacy required.** Symbol: `enabled` and the probe, read live, and each peer's report. State: team sessions are confined. Unknown refuses.
@@ -246,7 +256,7 @@ Steps 2 and 3 are useful together, not separately. A user-facing step is done on
 3. Guest exists, as read-only.
 4. New admins start with no conversation access, and owner capabilities open read only. This is my reading of the brief's "what of the owner's conversations and memory it may see is owner-granted".
 5. `manageTeam` defaults on for a new admin, limited to members and guests and to what the admin may delegate (§3.3). Adding teammates is agent management, and an owner can switch it off.
-6. Every team phone requires memory privacy and the `claude-code` framework.
+6. Every team phone requires memory privacy, native app conversations, and the `claude-code` framework.
 7. A grant opens past and future history.
 8. The dashboard stays the owner's surface, with a People tab. No non-owner gets a PIN or console pass, and a per-person console is not built, because the native app is the team's interface.
 9. Telegram and Slack keep their own read boundaries. Instar flags them.
@@ -269,10 +279,10 @@ Steps 2 and 3 are useful together, not separately. A user-facing step is done on
 
 ## 6. Multi-machine posture
 
-- **Access log: unified.** Replicated store kind `teamAccess`, always on with native conversations, verified on every machine. Single-machine survivability holds: any machine can answer from its copy.
+- **Access log: unified.** Replicated store kind `teamAccess` (registration, the resolved-flags injection, and a commit-observer branch, as `mobileDeviceKeyLedger` has), always on with native conversations, verified on every machine. Single-machine survivability holds: any machine can answer from its copy.
 - **Device records: unchanged, machine-local.** machine-local-justification: physical-credential-locality.
 - **Writes** go to any machine and replicate. Revoking is effective at the phone's machine on arrival, and the owner's screen shows a machine that has not caught up.
-- **Reach tracking: machine-local operational state,** read through `?scope=pool`, which reports missing machines. Each machine sees only inbound it served, so the pool read is the complete view.
+- **Reach tracking: machine-local operational state,** read through `?scope=pool`, which reports missing machines. Each machine sees only inbound it served, so the pool read is the complete view, and the warning is evaluated over it.
 - **Refusal log: machine-local operational record,** bounded.
 - **Privacy setting:** checked across machines at invite and at forward (§3.6).
 - **Notices:** attention items go through the lease holder, one voice.
@@ -281,7 +291,7 @@ Steps 2 and 3 are useful together, not separately. A user-facing step is done on
 
 - `generateClaudeMd()` and the reference files gain a "Team roles and access" block and the Registry First row "Who can reach this agent?" → `GET /team/people`, with `migrateClaudeMd()` under a content guard.
 - New route prefixes go in `CapabilityIndex.ts` and `WriteDomainRegistry.ts`, and the new state files in the backup manifest.
-- No config default changes. No hook changes. No feature flag for step 1, because nothing is restricted.
+- No config default changes. No hook changes. No feature flag for step 1, because nothing is restricted. The reference block also says how to turn memory privacy on for an owner who asks.
 
 ## 8. Rollback
 
@@ -289,7 +299,7 @@ Step 1 is a plain revert. From step 2 on, older builds since v1.3.1631 refuse a 
 
 ## 9. Tests
 
-- Unit: tier map; lower-of, including no `orgRole` and an `msp` phone untouched; a banned-literal test; every allowlist entry has a tier; notify-token tier; `mayDo` for each tier, op and ref form; log fold with bad signature, fields changed beside the signed body, standing exceeded, the same events in shuffled orders, an owner removal concurrent with an admin grant, a missing predecessor; an admin with `read` cannot grant `use`; owner pin beats `orgRole`; `alwaysPerson`; place with grants; `ReachablePeople` with privacy off.
+- Unit: tier map; lower-of, including no `orgRole` and an `msp` phone untouched; a banned-literal test; every allowlist entry has a tier; notify-token tier; `mayDo` for each tier, op and ref form; log fold with bad signature, fields changed beside the signed body, a re-appended old grant, standing exceeded, the same events in shuffled orders, an owner removal concurrent with an admin grant, a quarantined grant, a quarantined removal honoured at once, an MSP-signed `owner-pin`; an admin with `read` cannot grant `use`; owner pin beats `orgRole`; `alwaysPerson`; place with grants; `ReachablePeople` with privacy off.
 - Integration (HTTP): a status table across owner, `msp` with no `orgRole`, admin, member, guest and removed person on every route; bearer cannot raise; admin limits; invite refusals; `426` from an older app; two-step grant; second-person item once, updated in place, suppressed for shared people.
 - E2E: production init path, `/team/people` 200 with real wiring; a member reaches a granted conversation and gets `404` on another.
 - Live: a real session proving a member cannot get another member's fact, or the owner's, in a granted conversation.
@@ -298,7 +308,7 @@ Step 1 is a plain revert. From step 2 on, older builds since v1.3.1631 refuse a 
 
 - **test-agent-live:** each step on a throwaway agent, with the simulator or a real phone.
 - **dev-agent-live:** Echo, with a test member on a test phone.
-- **fleet:** no flag. Steps ship live and do nothing until an owner invites someone. The warning is the one thing visible on its own.
+- **fleet:** step 1 has no flag and ships live, so the warning is visible on its own. From step 2 there is no new flag: team phones ride `mobilePairing.native.enabled`, which is dark on the fleet today. An owner who wants a team turns it on through their agent. Graduating that switch fleet-wide belongs to the app work and is not needed for a team to start.
 - **graduation criterion:** a real team of at least three people uses one agent for a week with no conversation reaching someone without a grant, and no message attributed to the wrong person.
 - **dark-window:** if no team phone is paired within 30 days of step 3, record why on the Maturation board with a new date.
 
