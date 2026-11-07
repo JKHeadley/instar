@@ -33408,7 +33408,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // unregister-by-path here deletes the successor generation's fresh
       // entry during back-to-back update restarts (registry lost-update
       // race) — the agent then vanishes from the registry until restart.
-      try { unregisterAgent(config.projectDir, { onlyIfPid: process.pid }); } catch { /* ELOCKED is non-critical during shutdown */ }
+      try { unregisterAgent(config.projectDir, { onlyIfPid: process.pid }); } catch { /* @silent-fallback-ok: ELOCKED is non-critical during shutdown */ }
       scheduler?.stop();
       shutdownStep = 'telegram';
       if (telegram) await telegram.stop();

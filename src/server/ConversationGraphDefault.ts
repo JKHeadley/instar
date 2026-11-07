@@ -1,3 +1,4 @@
+import {SOURCE_STATUS_RETRY_MS,sourceStatusPollGivesUp} from '../core/GraphSourceStatusPoll.js';
 import {GraphPreparedTransferEnvelopes} from '../core/GraphPreparedTransferEnvelopes.js';
 import type {GraphSourceCapacityPolicy} from '../core/GraphSourceCapacityLedger.js';
 import {GraphOwnedSourceStreamSessionsV2,type GraphOwnedSourceStreamStartCommandV2} from './GraphOwnedSourceStreamSessionsV2.js';
@@ -43,7 +44,6 @@ export const GRAPH_CUSTODY_ROLE_SECRET='conversation_graph_custody_role_key';
 export const GRAPH_PEER_BEARER_SECRET='conversation_graph_peer_bearer';
 const PUBLICATION_MARKER='conversation_graph_owned_publication';
 const PEER_SCOPE='conversation_graph_peer_bearer_scope';
-const SOURCE_STATUS_UNREACHABLE_LIMIT_MS=120000;
 const AGENT_MARKER='conversation_graph_custody_agent_id',PREFIX='/internal/conversation-graph-bootstrap',REQ='graph-bootstrap-peer-request-v1',RES='graph-bootstrap-peer-response-v1';
 class GraphReachablePeerUnverified extends Error{constructor(readonly reason:'authorization-refused'|'response-unverified'){super('graph-bootstrap-reachable-peer-unverified');}}
 type Native=Omit<ConversationGraphReplicationRuntimeOptions,'configuration'>;
@@ -217,7 +217,7 @@ if(!publication&&this.publishedMarker())throw new Error('graph-bootstrap-establi
     check();await this.peerRaw(machineId,'source-v2-finish',{sessionId,final:encoder.finalizeSigned()});}
    let unreachableSince:number|null=null;for(let attempt=0;attempt<1200;attempt++){check();let status:{sessionId:string;state:string;result?:unknown};
     // Polling only reads. The peer's final step can block its server for many seconds, which reads here as an unreachable peer, not a refusal.
-    try{status=await this.peerRaw(machineId,'source-v2-status',{sessionId}) as typeof status;unreachableSince=null;}catch(error){if((error as Error).message!=='graph-bootstrap-peer-unavailable')throw error;unreachableSince??=Date.now();if(Date.now()-unreachableSince>SOURCE_STATUS_UNREACHABLE_LIMIT_MS)throw error;await new Promise(resolve=>setTimeout(resolve,500));continue;}
+    try{status=await this.peerRaw(machineId,'source-v2-status',{sessionId}) as typeof status;unreachableSince=null;}catch(error){if((error as Error).message!=='graph-bootstrap-peer-unavailable')throw error;unreachableSince??=Date.now();if(sourceStatusPollGivesUp(unreachableSince,Date.now()))throw error;await new Promise(resolve=>setTimeout(resolve,SOURCE_STATUS_RETRY_MS));continue;}
     if(status.sessionId!==sessionId)throw new Error('graph-source-session-status-invalid');if(status.state==='complete')return status.result;if(status.state==='refused')throw new Error('graph-source-session-refused');await new Promise(resolve=>setTimeout(resolve,100));}throw new Error('graph-source-session-pending');
   }finally{encoder.close();}
   }finally{senderStage.close();}
@@ -280,6 +280,6 @@ if(!publication&&this.publishedMarker())throw new Error('graph-bootstrap-establi
   if(Buffer.byteLength(canonicalJson(body))>180*1024){if(packet.action!=='transition'&&packet.action!=='transition-work'&&packet.action!=='source-v2-status'&&packet.action!=='source-v2-finish')throw new Error('graph-bootstrap-peer-size-invalid');body=this.metadataFrames.retain(body,packet.sender);}
   const raw={v:1 as const,agentId:this.agentId,sender:local,target:packet.sender,requestHash:canonicalHash(packet),body};return{...raw,signature:signGraphRecord(RES,raw,this.native.identity.loadSigningKey())};
  }
- start(){if(this.timer||this.closed)return;this.timer=setInterval(()=>{if(this.tickWork||this.closed)return;this.tickWork=this.serialized(async()=>{if(!this.native)return;const publication=this.publication();if(publication){await this.distribute(publication);await this.compose(publication);}}).catch(()=>this.report('owned-custody-background-pending')).finally(()=>{this.tickWork=null;});},10000);this.timer.unref();}
+ start(){if(this.timer||this.closed)return;this.timer=setInterval(()=>{if(this.tickWork||this.closed)return;this.tickWork=this.serialized(async()=>{if(!this.native)return;const publication=this.publication();if(publication){await this.distribute(publication);await this.compose(publication);}}).catch(()=>/* @silent-fallback-ok: reports a degradation and retries on the next tick */this.report('owned-custody-background-pending')).finally(()=>{this.tickWork=null;});},10000);this.timer.unref();}
  async close(){this.closed=true;await this.closeSourceSessionsV2();this.privateFrames?.close();this.metadataFrames.close();if(this.timer)clearInterval(this.timer);this.timer=null;this.closed=true;await this.tickWork;await Promise.allSettled([...this.peerJobs]);await this.chain;await this.closeSourceSessionsV2();this.privateFrames?.close();await this.enrolledSpoolValue?.close();await this.runtimeValue?.close();this.runtimeListeners.clear();this.transitionValue?.close();this.owned?.close();await this.standalone?.close();}
 }

@@ -4,7 +4,7 @@
  */
 import {ConversationGraphSourceInventoryCapture,type CapturedGraphSourceOperation} from '../core/ConversationGraphSourceInventory.js';
 import {ConversationGraphSourceSweepCapture} from '../core/ConversationGraphSourceSweepCapture.js';
-import {GRAPH_SOURCE_SWEEP_HEARTBEAT_MS} from '../core/ConversationGraphSourceSweep.js';
+import {sourceSweepCheckpointDue} from '../core/ConversationGraphSourceSweep.js';
 import type {MobileConversationRouteDeps} from './mobileConversationRoutes.js';
 import type {ConversationRegistry} from '../core/ConversationRegistry.js';
 import type {MachineIdentityManager} from '../core/MachineIdentity.js';
@@ -62,8 +62,8 @@ export class ConversationGraphSourceInventoryRuntime {
    }
    if(!this.cursor&&!this.stopped&&this.sweep){const scan=this.sweep.capture();let acknowledged=true;
     for(const observation of scan.observations){if(this.stopped){acknowledged=false;break;}if(!this.committed.has(observation.capture.sourceId)&&!await this.observe(observation))acknowledged=false;}
-    const now=Date.now(),unchanged=this.lastCheckpoint?.hash===scan.inventoryHash&&now-this.lastCheckpoint.at<GRAPH_SOURCE_SWEEP_HEARTBEAT_MS;
-    if(acknowledged&&!this.stopped&&!unchanged&&await this.observe(scan.checkpoint))this.lastCheckpoint={hash:scan.inventoryHash,at:now};
+    const now=Date.now();
+    if(acknowledged&&!this.stopped&&sourceSweepCheckpointDue(this.lastCheckpoint,scan.inventoryHash,now)&&await this.observe(scan.checkpoint))this.lastCheckpoint={hash:scan.inventoryHash,at:now};
    }
   }catch{/* @silent-fallback-ok: worker status exposes failed count and lastPassPartial; this failed scan never publishes completeness. */this.counts.lastPassPartial=true;this.counts.failed++;}
   // A remaining cursor or pending acknowledgments never means complete.

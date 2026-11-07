@@ -54,7 +54,7 @@ Feature is off by default, so a revert of this branch suffices. No migration. Ch
 
 ## Class-Closure Declaration
 
-- `unbounded-self-action`: closure gap, tracked as ACT-606. The source inventory worker, readiness tick, bootstrap tick and status poll are timer-bounded and single-flight, and the status poll has a 120-second limit, but none has a convergence proof in the registry yet. ACT-606 must close before Conversations is enabled.
+- `unbounded-self-action`: closure guard, citing `tests/unit/self-action-convergence.test.ts`. The checkpoint publish and the status poll are registered as `graph-source-sweep-checkpoint-retry` and `graph-source-status-poll-retry` and use the real decision functions. The readiness and bootstrap ticks only reconcile on a fixed timer, are single-flight and emit no restart, kill or notice; they are not modeled in the registry.
 
 ## Evidence
 

@@ -26,7 +26,7 @@ Dashboard only. One extra read of the list after a change.
 
 ## 6b. Operator-surface quality
 
-Checked on a real CLI server in headless Chromium at 320 and 390 wide in light and dark, and 1280 wide in light.
+Checked on a real CLI server in headless Chromium: create, name and open at 390 wide in dark, and 320 and 1280 wide in light; forget name at 390 wide in light.
 
 1. Leads with the primary action: yes. "Create effort" is on the first screen, and the sheet's own action is its only primary button.
 2. Zero raw internals as primary content: yes. Efforts show their names or "Untitled".

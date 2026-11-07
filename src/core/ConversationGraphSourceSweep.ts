@@ -32,6 +32,8 @@ export interface CapturedGraphSourceSweepCheckpoint {capture:SignedGraphSourceSw
 export const GRAPH_SOURCE_SWEEP_HEARTBEAT_MS=60*60*1000;
 /** Must outlast missed heartbeats. Stale only marks coverage; rows stay readable. */
 export const GRAPH_SOURCE_SWEEP_STALE_MS=3*GRAPH_SOURCE_SWEEP_HEARTBEAT_MS;
+/** Publish only when the inventory changed or the heartbeat is due. Unchanged checkpoints are permanent files, so an idle agent must not write one per scan. */
+export function sourceSweepCheckpointDue(last:{hash:string;at:number}|null,hash:string,now:number):boolean{return last?.hash!==hash||now-last.at>=GRAPH_SOURCE_SWEEP_HEARTBEAT_MS;}
 export const sourceSweepEventId=(sourceId:string)=>`source-inventory-${sourceId}`;
 function ref(raw:unknown):raw is ConversationRef {const value=validateNodeRef(raw);return !!value&&value.kind==='conversation'&&canonicalHash(value)===canonicalHash(raw);}
 function ordered<T extends {ref:ConversationRef}>(rows:T[]):boolean {return rows.every((r,i)=>ref(r.ref)&&(i===0||nodeKey(rows[i-1].ref)<nodeKey(r.ref)));}
