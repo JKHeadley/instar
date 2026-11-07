@@ -133,6 +133,7 @@ export class Ledger implements LedgerReader, LedgerWriter {
   private readonly now: () => number;
   private readonly log: (m: string) => void;
   private db: SqliteDatabase | null = null;
+  private unregisterSqlite: (() => void) | null = null;
   private currentGeneration = 0;
   private readonly counters: LedgerCounters = {
     appended: 0, ingested: 0, deduped: 0, outcomeConflicts: 0, tornLines: 0, malformedRows: 0, rebuilds: 0, prunedSegments: 0, appendErrors: 0,
@@ -167,6 +168,9 @@ export class Ledger implements LedgerReader, LedgerWriter {
   }
 
   close(): void {
+    // Unregister BEFORE closing so a racing closeAllSqlite never double-closes this handle (SqliteRegistry contract).
+    try { this.unregisterSqlite?.(); } catch { /* @silent-fallback-ok — unregister is idempotent; nothing to report */ }
+    this.unregisterSqlite = null;
     try { this.db?.close(); } catch { /* already closed */ }
     this.db = null;
   }
@@ -310,7 +314,8 @@ export class Ledger implements LedgerReader, LedgerWriter {
     }
     db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run('schema', SCHEMA_VERSION);
     this.db = db;
-    registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
+    this.unregisterSqlite?.();
+    this.unregisterSqlite = registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
   }
 
   private createSchema(db: SqliteDatabase): void {

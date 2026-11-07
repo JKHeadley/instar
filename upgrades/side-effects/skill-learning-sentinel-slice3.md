@@ -308,3 +308,5 @@ Re-verified read-only against the code after the fixes (same worktree):
 No raw `rmSync`/`unlinkSync`/`rmdirSync` was introduced by the fixes. No remaining blocks-now or major findings.
 
 **Concur with the review.**
+
+**Follow-up (CI, 2026-11-07):** the ledger cache registers/unregisters its better-sqlite3 handle per the SqliteRegistry contract and is allowlisted in the wiring test (same fix as slices 1 and 2). No behaviour change.
