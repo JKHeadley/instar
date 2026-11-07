@@ -15,3 +15,5 @@ What this does not fix: the steady stream of short tmux and ps calls on the main
 Nothing here adds a new decision or gate, and undoing it is a plain revert with no data to repair.
 
 The update tests also changed: they now fake only the package install, so the real checks of a new install still run in them.
+
+The same change applies to one integration test of a real CLI start.

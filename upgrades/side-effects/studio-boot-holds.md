@@ -83,3 +83,5 @@ Project map on the real agent home (490 related worktrees): old 41.4s and 51.1s;
 ## Later change: tests kept honest
 
 Local verify failed three `tests/unit/UpdateChecker.test.ts` cases. They faked `execAsync` for every command; validation now goes through that helper, so the fake replaced the real node probes those tests exist to prove. They now fake npm only, so the real startup and native-module checks still run, and a loop advances fake timers until the call settles. No code changed.
+
+`tests/integration/native-update-preflight.test.ts` needed the same change, found by the next Local Verify run. Five files fake this helper: the unit and e2e ones either never reach validation or were changed above.
