@@ -17,6 +17,7 @@ import {
 import { MemoryInboundTracker } from './MemoryInboundTracker.js';
 import { memoryFixText, MemoryPrivacyRecovery, type RecoveryFacts } from './MemoryPrivacyRecovery.js';
 import { MemoryPrivacy, type MemoryPrivacyConfig, type ReachableLists } from './MemoryPrivacy.js';
+import { ReachablePeople, type PhoneFact } from './ReachablePeople.js';
 
 /** The oldest Claude Code these session settings were verified on. */
 export const MEMORY_PRIVACY_CLAUDE_FLOOR = '2.1.316';
@@ -46,6 +47,8 @@ export interface WireMemoryPrivacyInput {
   claudeCandidates?: string[];
   /** The address of a path on this server, for the owner's link. */
   linkFor?: (urlPath: string) => string | null;
+  /** The owner's display name, for the People read. */
+  ownerName?: () => string;
 }
 
 function readJson<T>(file: string, fallback: T): T {
@@ -63,6 +66,7 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
   users: () => UserProfile[];
   ready: Promise<void>;
   recovery: MemoryPrivacyRecovery;
+  reachablePeople: ReachablePeople;
 } {
   const users = (): UserProfile[] => readJson(path.join(input.stateDir, 'users.json'), input.initialUsers ?? []);
   const entry = (type: string) => input.messaging().find((m) => m.type === type && (m as { enabled?: boolean }).enabled !== false)?.config ?? {};
@@ -98,6 +102,27 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
     users,
     reachable,
     telegramGroupKey: () => telegramKey(),
+  });
+
+  // Who can reach the agent, kept whatever the privacy setting (team-roles-and-access §3.10).
+  const reachablePeople = new ReachablePeople({
+    stateDir: input.stateDir,
+    users,
+    reachable,
+    sharedMemoryPeople: () => input.memoryPrivacy()?.sharedMemoryPeople ?? [],
+    privacyOn: () => privacy.enabled,
+    ownerUserId: () => privacy.ownerUserId(),
+    ownerName: () => input.ownerName?.() ?? '',
+    phones: () => (readJson<{ devices?: Array<{ role?: string; status?: string; userId?: string; deviceName?: string; label?: string; personName?: string }> }>(
+      path.join(input.stateDir, 'state', 'mobile-devices.json'), {},
+    ).devices ?? []).filter((d) => d.status === 'active').map((d): PhoneFact => {
+      const person = d.userId ? users().find((u) => u.id === d.userId) : undefined;
+      return {
+        userId: d.userId ?? null, role: d.role === 'msp' ? 'msp' : 'owner',
+        name: person?.name ?? d.personName ?? d.userId ?? 'Unknown person',
+        deviceName: d.label || d.deviceName || 'Phone',
+      };
+    }),
   });
 
   let sandboxReady = false;
@@ -174,6 +199,12 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
     sandboxReady: () => sandboxReady,
     framework: input.framework,
     recovery,
+    onSender: (senderKey) => {
+      try { reachablePeople.observeSender(senderKey); } catch (err) {
+        // @silent-fallback-ok — the People read loses one sender; a message must never depend on it.
+        console.warn(`[reachable-people] ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
   });
 
   // With it off there is nothing to protect: no probe, no install, no report. Turning it
@@ -190,5 +221,5 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
     });
   });
 
-  return { privacy, tracker, users, ready, recovery };
+  return { privacy, tracker, users, ready, recovery, reachablePeople };
 }

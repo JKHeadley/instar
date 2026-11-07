@@ -23,6 +23,7 @@ import { claimReconciliationNotice } from '../core/TopicProfileOrchestrator.js';
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { reachNoticeDue } from '../users/ReachablePeople.js';
 import { nextAuditAfterFailure } from '../core/attribution/AttributionAudit.js';
 import { advanceEvolutionArchiveFailure, evolutionArchiveSyncAttemptDue, EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES } from '../core/EvolutionArchiveSync.js';
 import type { EvolutionArchiveSyncPeer } from '../core/EvolutionArchive.js';
@@ -353,6 +354,30 @@ const attributionAuditRetry: SelfActionController = {
         sink.emit({ verb: 'retry', target: 'attribution-audit' });
         failures += 1;
         nextRunAt = nextAuditAfterFailure(failures, now).nextRunAt;
+      },
+    };
+  },
+};
+
+const reachSecondPersonNotice: SelfActionController = {
+  id: 'reach-second-person-notice',
+  actionVerb: 'notify',
+  models: 'src/server/teamPeople.ts (runReachNotices — reachNoticeDue, held at the count last raised)',
+  modelsPath: 'src/server/teamPeople.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The count last raised is on disk in reachable-people.json, so a restart cannot reset the hold.' },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 24 * 30,
+  tickMs: 60 * 60_000,
+  makeUnderPressure(_f, sink) {
+    const steadyCount = 2;
+    let heldAt = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (!reachNoticeDue(steadyCount, heldAt)) return;
+        sink.emit({ verb: 'notify', target: 'team:second-person' });
+        heldAt = steadyCount;
       },
     };
   },
@@ -4100,6 +4125,7 @@ const presenceUsageNotice: SelfActionController = {
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   attributionAuditRetry,
+  reachSecondPersonNotice,
   presenceUsageNotice,
   jobPortableTransferPoll,
   jobCoverageAlertRetry,

@@ -43,6 +43,7 @@ Existing agents work exactly as they do now. An update neither restricts anyone 
 - A person given a conversation can see its past, not just what comes next.
 - The owner can read everything, including members' chats. Members are told this when they join.
 - The dashboard stays the owner's. The app is everyone else's way in.
+- A phone reaches one of the agent's machines, and can send only while that machine is the one serving the agent. Every phone already works this way.
 - An agent that runs only on Codex can't have team members yet, because memory privacy only works with Claude Code.
 
 ## What comes first
