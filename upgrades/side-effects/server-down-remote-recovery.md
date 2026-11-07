@@ -125,6 +125,20 @@ Authoritative M5 qualification resolved the local native-exec uncertainty: the e
 
 The same M5 candidate then passed its focused unit qualification, 115/115 across 11 files, exit 0 (45.52 seconds), covering registry wiring, admission, rollout evidence, updater/enrollment/main bindings, mobile projection and the empty-catch ratchet. Root accepts the unchanged-source M5 native and unit qualification; subsequent edits are this evidence record and commit provenance.
 
+## Compiler-limit fix (PR #2874, 2026-11-07)
+
+**What happened.** Local Verify on head 8ac75363c failed its build against main at 32dc9e820 with TS2563 ("too large for control flow analysis") in `src/commands/server.ts`. Main alone compiled. Main plus this PR's roughly 95-line recovery wiring block did not. Measured headroom after only moving the block was 2 to 5 added branches, too small to last while the PR waits in the verify line.
+
+**Change.** (1) The recovery wiring moved to `src/recovery/RecoveryMainWiring.ts`, with local renames and two extracted key-reading helpers. `server.ts` calls it and still registers the guard. (2) The existing mesh `try` statement in `server.ts` is now wrapped in an awaited inner async function, so its branches leave the startup function's flow chain. A syntax-tree scan found no top-level `return`, `break` or `continue` in that statement, and a `try` statement declares nothing visible outside itself. Measured headroom afterwards: 200 added branches compile clean. Larger amounts were not tried.
+
+**Behavior.** No intended change. Differences to check: `__dirname` now resolves from `dist/recovery` rather than `dist/commands`, and both are siblings, so the relative key and entrypoint paths resolve the same. The enable gate is read once instead of twice, with nothing changing it between the two reads. `telegramOriginBoot` is passed as a getter because it is a reassigned `let`. The other reassigned values are read once at the call, as they were at that point in the original block. An awaited inner function adds only microtask turns at that startup step, and a throw from its `catch` still propagates to the same outer scope.
+
+**Review answers for this change.** Over-block, under-block, signal vs authority, external surfaces: no issue identified, because it adds no decision and changes no output. Level of abstraction: recovery wiring belongs with recovery code. Interactions: the build itself is the gate that catches this class again; an inner function also removes TypeScript narrowing of outer variables across it, and the compile passes with no new errors. Multi-machine posture: unchanged. Rollback: revert the commit.
+
+**Evidence.** `tsc --noEmit`, `npm run build` and `npm run lint` pass on the PR merged with main at e882458030. `tests/unit/recovery-main-wiring.test.ts` is new, and the recovery unit files touched by the wiring pass.
+
+**Not caused by this PR.** The earlier failed verify, in `tests/e2e/telegram-origin-notice-policy.test.ts`, passed 5 of 5 repeated runs here and is logged as feedback fb-dd3b0619-827.
+
 ## Second-pass review
 
 **Reviewer:** independent reviewer subagent (Claude Opus 5.5, fresh context, author of neither the feature nor this fix), 2026-11-06.
@@ -138,3 +152,5 @@ The same M5 candidate then passed its focused unit qualification, 115/115 across
 **Second pass: Concur with the review.** The fix closes the routine-update path. No remaining finding blocks merging, because enrollment is explicit and no agent is exposed when this lands.
 
 **Must land before the first production or dev-soak enrollment:** an enrolled agent that is down for over an hour can drop out of the agent registry, be skipped by a sibling's fleet update, and keep stale pins. Membership selection, stale-pin repair, drift evidence in `collect-diagnostics` and in readiness, and the lesser findings are all recorded in that feedback item. <!-- tracked: fb-b9b55cb1-355 -->
+
+**Compiler-limit fix, independent reviewer subagent (Claude Opus 5.5, fresh context, author of neither the change nor this artifact), 2026-11-07: Concur with the review.** It compared the moved block field by field, ran its own syntax-tree scan of the wrapped statement, and grepped tests and scripts for pinned text; it found no behavior difference. Noted, no behavior effect: `selfEndpoints` is read before two dynamic imports instead of after, and its values do not change there. Coverage limit: `tests/unit/recovery-main-wiring.test.ts` covers the two pure helpers and the disabled start, not `activate`, `notify`, `peerAdvert`, `onSetupRequired` or the enabled path, and its server check is a text check. The reviewer did not run the full suite, a live server start, or the headroom measurement.
