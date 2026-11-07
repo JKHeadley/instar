@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { sha256Hex, type MachineSigner } from '../../src/core/AppRecordSignatures.js';
 import { TeamAccessLog, rowPayload, type RequestRow, type TeamAccessRow } from '../../src/core/TeamAccessLog.js';
+import { pullFromPeers, shouldRefuseForStaleness } from '../../src/core/TeamAccessSync.js';
 
 const signerFor = (id: string): MachineSigner => ({
   machineId: () => id, signerKeyHash: () => `k-${id}`,
@@ -131,5 +132,73 @@ describe('one machine', () => {
     a.appendSignedRequest(signed([{ type: 'person-set', personKey: 'p', role: 'guest' }]));
     a.appendSignedRequest(signed([{ type: 'person-set', personKey: 'p', role: 'member' }]));
     expect(a.state().people.get('p')?.role).toBe('member');
+  });
+});
+
+describe('pulling from peers', () => {
+  const peerOf = (log: TeamAccessLog, id = 'P') => ({ machineId: id, fetchRows: async (have: Record<string, number>) => ({ rows: log.rowsBeyond(have), vector: log.vector() }) });
+  const asleep = (id: string) => ({ machineId: id, fetchRows: async () => { throw new Error('no route'); } });
+
+  it('fetches only what is missing, and a second pull brings nothing', async () => {
+    const a = machine('A'); const b = machine('B');
+    start(a);
+    expect((await pullFromPeers(b, [peerOf(a)])).outcomes[0]).toMatchObject({ answered: true, added: 2 });
+    expect((await pullFromPeers(b, [peerOf(a)])).outcomes[0]).toMatchObject({ answered: true, added: 0 });
+  });
+
+  it('a sleeping peer is not an error, and the others still answer', async () => {
+    const a = machine('A'); const b = machine('B');
+    start(a);
+    const r = await pullFromPeers(b, [asleep('L'), peerOf(a)]);
+    expect(r.anyAnswered).toBe(true);
+    expect(r.outcomes.map((o) => o.answered)).toEqual([false, true]);
+    expect(b.state().on).toBe(true);
+  });
+
+  it('nobody answering changes nothing', async () => {
+    const b = machine('B');
+    const r = await pullFromPeers(b, [asleep('L')]);
+    expect(r).toMatchObject({ anyAnswered: false, lastAnsweredAt: null });
+  });
+
+  it('a peer\'s row whose key has not arrived waits, and counts once it can be placed', () => {
+    let placed = false;
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'team-wait-'));
+    const a = machine('A');
+    start(a);
+    const b = new TeamAccessLog({ stateDir: dirB, signer: signerFor('B'), verify: (r) => (r.kind === 'request' && !placed ? 'unknown' : verify(r)) });
+    b.ingest(a.rowsBeyond({}));
+    expect(b.state().on).toBe(false);
+    const reopened = new TeamAccessLog({ stateDir: dirB, signer: signerFor('B'), verify: (r) => (r.kind === 'request' && !placed ? 'unknown' : verify(r)) });
+    expect(reopened.healthState()).toBe('ok');
+    placed = true;
+    expect(b.state().on).toBe(true);
+    expect(reopened.state().on).toBe(true);
+  });
+
+  it('this machine\'s own row it cannot place still reads as unreadable', () => {
+    const a = machine('A');
+    start(a);
+    const dir = path.resolve((a as unknown as { dir: string }).dir, '..', '..');
+    expect(new TeamAccessLog({ stateDir: dir, signer: signerFor('A'), verify: (r) => (r.kind === 'request' ? 'unknown' : verify(r)) }).healthState()).toBe('unreadable');
+  });
+});
+
+describe('when a machine must refuse its team phones', () => {
+  const t = 10_000_000;
+  const min = 60_000;
+  it('a closed lid refuses nobody: no evidence means no judgement', () => {
+    expect(shouldRefuseForStaleness([{ machineId: 'L', lastEvidenceAt: t - 8 * 60 * min, firstUnansweredAt: t - 8 * 60 * min }], t)).toBe(false);
+    expect(shouldRefuseForStaleness([{ machineId: 'L', lastEvidenceAt: null, firstUnansweredAt: t - 60 * min }], t)).toBe(false);
+  });
+  it('a lid opening after a night refuses nobody: the clock starts at the first unanswered pull', () => {
+    expect(shouldRefuseForStaleness([{ machineId: 'L', lastEvidenceAt: t, firstUnansweredAt: t - min }], t)).toBe(false);
+    expect(shouldRefuseForStaleness([{ machineId: 'L', lastEvidenceAt: t, firstUnansweredAt: null }], t)).toBe(false);
+  });
+  it('a peer known awake that stays unanswered past the bound does', () => {
+    expect(shouldRefuseForStaleness([{ machineId: 'L', lastEvidenceAt: t - min, firstUnansweredAt: t - 16 * min }], t)).toBe(true);
+  });
+  it('no peers at all is fine', () => {
+    expect(shouldRefuseForStaleness([], t)).toBe(false);
   });
 });

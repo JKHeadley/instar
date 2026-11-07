@@ -423,7 +423,11 @@ export class TeamAccessLog {
       this.folded = foldLog(rows, this.opts.verify);
       // A log below last-good was rolled back: count it as lost, whatever it says. On one machine every
       // phone is in the ledger, so a row it cannot place means the ledger failed: strict, not empty.
-      const unplaced = rows.some((r) => r.kind === 'request' && this.opts.verify(r) === 'unknown');
+      const own = this.opts.signer?.machineId();
+      const unknown = rows.filter((r) => r.kind === 'request' && this.opts.verify(r) === 'unknown');
+      const unplaced = unknown.some((r) => originOf(r) === own);
+      // A peer's row can wait for its key to arrive: it counts for nothing until then.
+      this.refoldPending = unknown.length > 0 && !unplaced;
       // A lost or altered row in the middle could be a downgrade: the fold would quietly give back
       // what it took away. Past the last accepted restore, every row must be there and verify.
       this.health = this.folded.highestSeq < this.seedSeq || unplaced || !this.intact(rows) ? 'unreadable' : 'ok';
@@ -519,6 +523,7 @@ export class TeamAccessLog {
     }
     if (added > 0) {
       this.folded = foldLog(this.rows, this.opts.verify);
+      this.refoldPending = this.rows.some((r) => this.opts.verify(r) === 'unknown');
       this.snapshot();
     }
     return { added, refused };

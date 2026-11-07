@@ -69,6 +69,8 @@ export { identityRecoveryBearerResponseMessage } from '../core/IdentityRecoveryB
 export interface MachineRouteContext {
   /** True when this agent has had team members: a second machine would know none of it (team-roles-and-access §4.1). */
   teamJoinBlocked?: () => boolean;
+  /** Team access: the rows a peer lacks, from any origin (team-roles-and-access, "Step 2b"). */
+  teamAccessRows?: (have: Record<string, number>) => { rows: unknown[]; vector: Record<string, number> };
   /** Machine identity manager */
   identityManager: MachineIdentityManager;
   /** Heartbeat manager for coordination */
@@ -223,6 +225,15 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     if (!ctx.onDesktopAvailability) { res.status(503).json({ error: 'Remote desktop is off on this machine' }); return; }
     try { res.setHeader('Cache-Control', 'no-store'); res.json(await ctx.onDesktopAvailability()); }
     catch { res.status(503).json({ error: 'Remote desktop is unavailable on this machine' }); }
+  });
+
+  router.post('/api/team-access/rows', authMiddleware, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.teamAccessRows) { res.status(503).json({ error: 'team-access-unavailable' }); return; }
+    const raw = (req.body as { have?: unknown } | undefined)?.have;
+    const have: Record<string, number> = {};
+    if (raw && typeof raw === 'object') for (const [k, v] of Object.entries(raw)) if (typeof v === 'number') have[k] = v;
+    res.json(ctx.teamAccessRows(have));
   });
 
   // E2E-PAIRING: tests/e2e/desktop-setup-boot-lifecycle.test.ts
