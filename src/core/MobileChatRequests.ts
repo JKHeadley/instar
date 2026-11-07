@@ -136,6 +136,16 @@ export class MobileChatRequestStore {
     return null;
   }
 
+  /** The words recorded on the send that carried this message, for the app's history. Null when none. */
+  detailForMessage(messageId: string): string | null {
+    for (const r of this.records.values()) {
+      if (r.extra?.op !== 'send' || r.extra.messageId !== messageId) continue;
+      const d = r.result?.body?.detail;
+      return typeof d === 'string' && d ? d : null;
+    }
+    return null;
+  }
+
   /** Sends answered `waiting` longer ago than this: the queue should have settled them by now. */
   waitingOlderThan(minAgeMs: number): Array<{ deviceId: string; requestId: string; conversationKey: string; messageId: string }> {
     const cutoff = this.now() - minAgeMs;

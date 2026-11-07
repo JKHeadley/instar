@@ -136,3 +136,7 @@ Not closed: a forward attempt already on the wire when a stop arrives can still 
 ## Class-Closure Declaration
 
 **`unbounded-self-action`: closure `guard`.** Citation: `tests/unit/self-action-convergence.test.ts`, enforcement `ratchet`. The `app-pool-enforcer` controller runs the real enforcer under an always-older machine and an always-refusing owner: one force-claim per record, one notice per episode, and each refused drain home waits five minutes. The close-on-loss retry is a local, refusable close that starts nothing.
+
+## Full suite
+
+Run on the M5 Pro at `2beabdb2c`, one suite at a time. Integration 6,172 passed, e2e 3,897 passed. Unit 60,463 passed, 50 failed in 5 files. Two files were this change's, fixed in the next commit: the new route's write domain and the flag's feature-ladder entry. Three desktop files (`MacDesktopHostCapture`, `MacDesktopHostIdentity`, `desktop-displays`) fail with `SourceTreeGuardError` on a clean checkout of `origin/main` too, so they aren't from this change.

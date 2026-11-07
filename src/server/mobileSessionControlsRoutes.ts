@@ -204,8 +204,8 @@ function appMoveRow(ref: string, rows: MobileMachine[], pool: unknown, owner: st
   const ownerGone = !!ownerRow && !ownerRow.here && (!ownerRow.selectable || ownerLiveness === 'unreachable' || ownerLiveness === 'stale');
   const bringBack = ownerGone ? { can: true, confirm: `If ${ownerRow.label} is actually still running this conversation, its session will be stopped as soon as it reconnects.` } : { can: false };
   // No machine flagged: the feature is off on this agent, and an update wouldn't change that.
-  if (!raw.some((m) => flagged(String(m.machineId)))) return { state: 'not-yet', reason: MOVE_NOT_ON, choices: [], bringBack: { can: false } };
-  if (!everyOnlineFlagged) return { state: 'not-yet', reason: MOVE_NEEDS_UPDATE, choices: [], bringBack };
+  if (!raw.some((m) => flagged(String(m.machineId)))) return { state: 'not-yet', reason: MOVE_NOT_ON, topic: ref, choices: [], bringBack: { can: false } };
+  if (!everyOnlineFlagged) return { state: 'not-yet', reason: MOVE_NEEDS_UPDATE, topic: ref, choices: [], bringBack };
   return {
     state: 'ok', reason: null, topic: ref,
     choices: rows.filter((m) => m.machineId !== owner && flagged(m.machineId)),

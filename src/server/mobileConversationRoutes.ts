@@ -273,7 +273,10 @@ export function historyRow(m: BrowsedMessage, verify: (m: BrowsedMessage) => Ori
   const verdict = verify(m);
   // How the signing phone was approved (§4.6 display: "approved on dashboard"), only with a good verdict.
   const approvedVia = svc ? svc.originApprovedVia(m, verdict) : null;
+  // Why a send ended as it did (app-conversations-in-the-pool §2.2), from the request record on this machine. Absent once that has aged out.
+  const deliveryDetail = svc && m.role === 'operator' && (m.deliveryState === 'refused' || m.deliveryState === 'unknown') ? svc.deps.requests.detailForMessage(m.messageId) : null;
   return {
+    ...(deliveryDetail ? { deliveryDetail } : {}),
     eventId: m.eventId, messageId: m.messageId, role: m.role, text: m.text, at: m.at, machineId: m.machineId,
     deliveryState: m.deliveryState, originVerified: verdict, ...(approvedVia ? { originApprovedVia: approvedVia } : {}),
     // People and roles §3.3: who sent an operator message, as recorded when it was accepted.

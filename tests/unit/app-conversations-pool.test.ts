@@ -27,7 +27,7 @@ import {
 import { appPlacement, bringBackWarning, runAppMove, runBringBack, type AppMoveDeps } from '../../src/core/appConversationMove.js';
 import { summarizeControls, moveAnswer } from '../../src/server/mobileSessionControlsRoutes.js';
 import { buildAction, actionLine } from '../../src/server/mobilePermissionsRoutes.js';
-import { answerRouted } from '../../src/server/mobileConversationRoutes.js';
+import { answerRouted, historyRow } from '../../src/server/mobileConversationRoutes.js';
 import type { MachineCapacity } from '../../src/core/types.js';
 
 const KEY = '0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f';
@@ -199,6 +199,9 @@ describe('a send never stays waiting for good (§2.2)', () => {
     now += WAITING_OVERDUE_MS + 1;
     svc.recoverStranded();
     expect(svc.store.deliveryState('m1')).toBe('unknown');
+    expect(svc.deps.requests.detailForMessage('m1')).toContain('may not have been delivered'); // the app's history shows this
+    expect(historyRow({ eventId: 'e', messageId: 'm1', role: 'operator', text: 'x', at: '', machineId: SELF, deliveryState: 'unknown' } as never, () => 'none', svc)).toMatchObject({ deliveryDetail: expect.stringContaining('may not have been delivered') });
+    expect(historyRow({ eventId: 'e', messageId: 'm1', role: 'operator', text: 'x', at: '', machineId: SELF, deliveryState: 'delivered' } as never, () => 'none', svc).deliveryDetail).toBeUndefined();
     const after = svc.deps.requests.lookup('dev', requestId, 'h');
     expect(after).toMatchObject({ kind: 'done', status: 409, body: { error: 'outcome-unknown', outcome: 'unknown' } });
   });
@@ -1075,7 +1078,7 @@ describe('the phone (§2.5)', () => {
 
   it('an older machine online: said plainly, nothing offered', () => {
     const c = controls(ROW, [m(SELF), m(PEER, { seamlessnessFlags: {} })]);
-    expect(c.move).toMatchObject({ state: 'not-yet', reason: NEEDS_UPDATE, choices: [] });
+    expect(c.move).toMatchObject({ state: 'not-yet', reason: NEEDS_UPDATE, topic: RK, choices: [] });
   });
 
   it('offers Bring it back here when the machine running it is not answering', () => {

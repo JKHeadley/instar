@@ -380,7 +380,7 @@ describe('production wiring', () => {
       row: { tmuxSession: 's', id: 'i', name: 'n', machineId: 'm1', platform: 'headless', conversationRef: `app:${KEY}` }, remote: false, options: null, profile: null, peerInput: null,
       pool: { status: 200, body: { selfMachineId: 'm1', machines: [{ machineId: 'm1', nickname: 'One', online: true, seamlessnessFlags: { appConversationsPool: false } }, { machineId: 'm2', nickname: 'Two', online: true, seamlessnessFlags: {} }] } },
     } as never, {}, 0);
-    expect(c.move).toMatchObject({ state: 'not-yet', choices: [] });
+    expect(c.move).toMatchObject({ state: 'not-yet', topic: `app:${KEY}`, choices: [] });
     expect((c.move as { reason: string }).reason).toContain('isn\'t turned on for this agent yet');
   }, 60_000);
 });
