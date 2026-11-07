@@ -381,7 +381,7 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
 
   it('a route added without a decision stays closed to members', () => {
     const open = DEVICE_ALLOWLIST.filter((r) => r.tier === 'guest' || r.tier === 'member').length;
-    expect(open).toBe(25);
+    expect(open).toBe(26);
   });
 
   it.each([

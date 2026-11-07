@@ -2231,7 +2231,7 @@ export function maskSessionsForPhone<T extends Record<string, unknown>>(svc: Mob
   return rows.map((row) => {
     const topic = row.telegramTopicId;
     const place = (row.memoryPlaceInput as { memoryPlaceKey?: unknown } | undefined)?.memoryPlaceKey;
-    const ref = typeof topic === 'number' ? `telegram:${topic}` : typeof place === 'string' ? place : null;
+    const ref = typeof topic === 'number' ? `telegram:${topic}` : typeof place === 'string' ? place.replace(/^app:/, '') : null;
     if (ref && svc.mayUse(p, ref, 'read')) return row;
     return { id: row.id, status: row.status, name: 'Private session' } as unknown as T;
   });

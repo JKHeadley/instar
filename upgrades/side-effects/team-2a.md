@@ -68,3 +68,5 @@ Foundation only.
 - Added: confined list reader, per-topic reply guard, spawn refusal, intercept skip, scoped stop, confined inbox for app context and files, stored speaker names.
 
 - Added: Team routes: owner-only invites, grants and people changes store the phone's signed request; the agent token can only lower; attention and session filters, join refusal, conversation lock and reshape are in.
+
+- Added: Tests: status table across all allowlist routes, route tests with both sides of each role check, full journey on a real AgentServer. Added team access awareness to the template and migrator, and the scheduled-jobs disclosure to the invite and first-use answers.

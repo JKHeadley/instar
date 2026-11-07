@@ -3,11 +3,11 @@
  * and the owner's phone is the only person writer. Every write stores the phone's whole signed
  * request, and events are read from that signed body. The bearer token can only take access away.
  */
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Router, type Request, type Response } from 'express';
 import { deviceKeyHashOf, type MachineSigner } from '../core/AppRecordSignatures.js';
+import { displayCode } from '../core/MobileDeviceKeys.js';
 import { parseSignedEvents, type RequestEvent } from '../core/TeamAccessEvents.js';
 import type { ConfinedEntry, TeamAccessRow } from '../core/TeamAccessLog.js';
 import { ORG_ROLES, type OrgRole } from '../permissions/types.js';
@@ -37,6 +37,11 @@ export interface TeamRouteDeps {
 }
 
 type Refusal = { status: number; error: string; detail: string };
+
+/** Said to the owner at invite and to each person on first use (§3.6): owner-reach jobs are disclosed, not hidden. */
+export const TEAM_DISCLOSURE = 'Scheduled jobs run for the owner and can read messages here.';
+
+const LOG_UNREADABLE: Refusal = { status: 409, error: 'team-access-unreadable', detail: 'The team access record cannot be read, so no one can be changed. Restore it from the People screen.' };
 
 const refuseText: Record<string, string> = {
   'memory-privacy-required': 'Team members need memory privacy on. Turn it on first.',
@@ -112,6 +117,15 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
 
   const send = (res: Response, r: Refusal): void => { res.status(r.status).json({ error: r.error, detail: r.detail }); };
 
+  /** A write that fails answers plainly: an access change must never leave a request hanging. */
+  const write = (handler: (req: Request, res: Response) => Promise<void>) => (req: Request, res: Response): void => {
+    if (svc.teamLog()?.healthState() === 'unreadable') { send(res, LOG_UNREADABLE); return; }
+    handler(req, res).catch((err: unknown) => {
+      console.warn(`[team-access] ${req.path} failed: ${err instanceof Error ? err.message : String(err)}`);
+      if (!res.headersSent) res.status(500).json({ error: 'team-access-write-failed', detail: 'That change was not saved. Try again.' });
+    });
+  };
+
   /** The owner's phone, or a refusal already sent. */
   const ownerDevice = (req: Request, res: Response): string | null => {
     res.setHeader('Cache-Control', 'no-store');
@@ -148,12 +162,14 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
   /** Every refusal check, then the confined list, then each session ended, then the event. */
   const applyGrants = async (events: RequestEvent[]): Promise<Refusal | null> => {
     const grants = events.filter((e): e is Extract<RequestEvent, { type: 'grant' }> => e.type === 'grant');
+    const log = svc.teamLog();
+    if (!log) return { status: 503, error: 'team-access-unavailable', detail: 'Team access is not available on this agent.' };
+    const added = new Set(events.flatMap((e) => (e.type === 'person-add' ? [e.personKey] : [])));
     for (const g of grants) {
+      if (!added.has(g.personKey) && !log.state().people.has(g.personKey)) return { status: 404, error: 'unknown-person', detail: 'That person is not on this agent.' };
       const r = grantRefusal(svc, deps, g.ref);
       if (r) return r;
     }
-    const log = svc.teamLog();
-    if (!log) return { status: 503, error: 'team-access-unavailable', detail: 'Team access is not available on this agent.' };
     log.ensureConfinedFile();
     for (const g of grants) {
       log.confine(confinedEntryFor(g.ref));
@@ -191,13 +207,14 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     });
   });
 
-  router.post('/mobile/team/invites', async (req, res) => {
+  router.post('/mobile/team/invites', write(async (req, res) => {
     const deviceId = ownerDevice(req, res);
     if (!deviceId) return;
     const stop = svc.teamRefusal();
     if (stop) { res.status(409).json({ error: stop, detail: refuseText[stop] }); return; }
     const log = svc.teamLog();
     if (!log || !deps.signer()) { res.status(409).json({ error: 'team-access-no-identity', detail: 'This machine has no identity key, so it cannot sign access changes.' }); return; }
+    if (!svc.pairingOrigin()) { res.status(503).json({ error: 'no-pairing-origin', detail: 'This agent has no secure address for a phone to reach yet.' }); return; }
     if (deps.ownerProfile().several) { res.status(409).json({ error: 'several-owners', detail: 'Several people are marked as the owner on this agent. Fix that first.' }); return; }
     const body = (req.body ?? {}) as { existingPersonKey?: unknown; label?: unknown };
     const existing = typeof body.existingPersonKey === 'string' ? body.existingPersonKey : null;
@@ -206,7 +223,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
       if (!log.state().people.has(existing)) { res.status(404).json({ error: 'unknown-person', detail: 'That person is not on this agent.' }); return; }
       const link = svc.mintTeamLink(existing, typeof body.label === 'string' ? body.label : null);
       if (!link.ok) { res.status(link.status).json({ error: link.error }); return; }
-      res.json({ personKey: existing, link: link.link, expiresAt: link.expiresAt });
+      res.json({ personKey: existing, link: link.link, expiresAt: link.expiresAt, disclosure: TEAM_DISCLOSURE });
       return;
     }
     const events = eventsOf(req, res);
@@ -222,17 +239,17 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     appendRequest(req, deviceId);
     const link = svc.mintTeamLink(add.personKey, typeof body.label === 'string' ? body.label : null);
     if (!link.ok) { res.status(link.status).json({ error: link.error }); return; }
-    res.json({ personKey: add.personKey, link: link.link, expiresAt: link.expiresAt });
-  });
+    res.json({ personKey: add.personKey, link: link.link, expiresAt: link.expiresAt, disclosure: TEAM_DISCLOSURE });
+  }));
 
   router.get('/mobile/team/invites/:personKey', (req, res) => {
     if (!ownerDevice(req, res)) return;
     const key = String(req.params.personKey);
     const waiting = svc.dashboardApprovals().filter((a) => a.device.role === 'team' && a.device.userId === key);
-    res.json({ waiting: waiting.map((a) => ({ deviceId: a.device.id, deviceName: a.device.deviceName, code: a.code, expiresAt: new Date(a.expiresAt).toISOString() })) });
+    res.json({ waiting: waiting.map((a) => ({ deviceId: a.device.id, deviceName: a.device.deviceName, code: displayCode(a.code), expiresAt: new Date(a.expiresAt).toISOString() })) });
   });
 
-  router.post('/mobile/team/grants', async (req, res) => {
+  router.post('/mobile/team/grants', write(async (req, res) => {
     const deviceId = ownerDevice(req, res);
     if (!deviceId) return;
     const stop = svc.teamRefusal();
@@ -245,9 +262,9 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     for (const e of events) if (e.type === 'grant-remove') await deps.applyConversationChange(e.ref, () => undefined);
     appendRequest(req, deviceId);
     res.json({ ok: true });
-  });
+  }));
 
-  router.post('/mobile/team/people/:personKey', async (req, res) => {
+  router.post('/mobile/team/people/:personKey', write(async (req, res) => {
     const deviceId = ownerDevice(req, res);
     if (!deviceId) return;
     const events = eventsOf(req, res);
@@ -257,10 +274,11 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
       return;
     }
     const log = svc.teamLog();
-    for (const ref of log?.state().grants.get(String(req.params.personKey))?.keys() ?? []) await deps.applyConversationChange(ref, () => undefined);
+    if (!log?.state().people.has(String(req.params.personKey))) { res.status(404).json({ error: 'unknown-person', detail: 'That person is not on this agent.' }); return; }
+    for (const ref of log.state().grants.get(String(req.params.personKey))?.keys() ?? []) await deps.applyConversationChange(ref, () => undefined);
     appendRequest(req, deviceId);
     res.json({ ok: true });
-  });
+  }));
 
   router.get('/mobile/team/people', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -271,7 +289,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
       conversations: [...(log?.state().grants.get(p.personKey)?.entries() ?? [])].map(([ref, access]) => ({ ref, access })),
     }));
     if (person?.role === 'owner') { res.json({ people: rows, teamOn: svc.teamOn() }); return; }
-    res.json({ people: rows.filter((r) => r.personKey === person?.userId) });
+    res.json({ people: rows.filter((r) => r.personKey === person?.userId), disclosure: TEAM_DISCLOSURE });
   });
 
   router.get('/mobile/team/activity', (req, res) => {
@@ -282,7 +300,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
   });
 
   // The agent can take access away, and never give it (§3.3).
-  router.post('/team/people/:personKey/lower', async (req, res) => {
+  router.post('/team/people/:personKey/lower', write(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (principalOf(req).kind !== 'token') { res.status(403).json({ error: 'agent-token-required' }); return; }
     const log = svc.teamLog();
@@ -300,12 +318,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     for (const r of refs) await deps.applyConversationChange(r, () => undefined);
     log.appendMachineEvents([{ type: 'lower', personKey, ...(ref ? { ref } : {}), ...(role ? { role } : {}), ...(b.remove === true ? { remove: true } : {}) }]);
     res.json({ ok: true });
-  });
+  }));
 
   return router;
-}
-
-/** A fresh random id for a person, for callers that mint one server-side (tests). */
-export function newPersonKey(): string {
-  return crypto.randomUUID();
 }
