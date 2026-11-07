@@ -59,6 +59,7 @@ import { nextBreakerState, RECONCILE_LIMITS } from '../core/ReplicatedStoreRecon
 import { findStuckPreparingRuns, PREPARING_NOTICE_MAX_ATTEMPTS } from '../core/AutonomousStartAdmission.js';
 import type { AutonomousRunRecord } from '../core/AutonomousRunStore.js';
 import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, passBackoffDelay, postRetryDue } from '../localVerify/StatusReconciler.js';
+import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS } from '../monitoring/FailureInvestigationAdmission.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
 export interface VirtualClock {
@@ -4158,10 +4159,39 @@ const learnedSkillReconciler: SelfActionController = {
   makeUnderPressure: makeLearnedSkillReconcilerPressure,
 };
 
+/** One unresolved occurrence survives process reconstruction unchanged. The
+ * production admission decision persists its attempt before any model spawn;
+ * progress/context writes never reset it and no timer re-arms the breaker. */
+const failureCalloutInvestigation: SelfActionController = {
+  id: 'failure-callout-investigation',
+  actionVerb: 'investigation-spawn',
+  models: 'src/server/routes.ts claim endpoint and FailureInvestigationAdmission.ts durable three-attempt brake',
+  modelsPath: 'src/server/routes.ts',
+  boundK: FAILURE_INVESTIGATION_MAX_ATTEMPTS,
+  perTargetBoundK: FAILURE_INVESTIGATION_MAX_ATTEMPTS,
+  ticks: 48,
+  tickMs: 30 * 60_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => failureCalloutInvestigation.makeUnderPressure(f, sink) },
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered += 1;
+      if (!f.targetAlwaysRejects()) return;
+      const key = 'failure-callout-investigation:unchanged-occurrence';
+      const state = f.durableState.get(key) as { attempts: number; nextAt: number | null } | undefined;
+      const decision = decideFailureInvestigationAttempt(state?.attempts ?? 0, state?.nextAt ?? null, f.clock.nowMs());
+      if (!decision.admitted) return;
+      f.durableState.set(key, { attempts: decision.attempts, nextAt: decision.nextAt });
+      sink.emit({ verb: 'investigation-spawn', target: 'failure:unchanged-occurrence' });
+    } };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  failureCalloutInvestigation,
   attributionAuditRetry,
   presenceUsageNotice,
   learnedSkillReconciler,
+
   jobPortableTransferPoll,
   jobCoverageAlertRetry,
   profileReconciliationNotice,

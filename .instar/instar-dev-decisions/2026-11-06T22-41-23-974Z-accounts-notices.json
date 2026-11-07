@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-06T22:41:23.974Z",
+  "slug": "accounts-notices",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 124,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/mobileCapacityRoutes.ts"
+    ],
+    "addedLines": 112,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

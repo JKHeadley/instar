@@ -7,12 +7,14 @@ const stampReapNotification = notificationStamper('src/commands/server.ts', 'rea
 const stampResponse = responseNotificationStamper('src/commands/server.ts');
 import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, verifiedJobEnvelope, notificationContext } from '../messaging/NotificationSelectivityGate.js';
 import type { SelectivityConfig } from '../messaging/NotificationSelectivityGate.js';
+import { resolveFailureReplicationTransport, isFailureReplicationKindAllowed, filterFailureReplicationBatch } from '../core/FailureCalloutReplicatedStore.js';
 /**
  * Governed by: Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS (docs/STANDARDS-REGISTRY.md) —
  * the boot-time TCC-protected path detection + /guards row (see the
  * TccProtectedPathGuard block beside the worktree detector).
  */
 import { configureClaudeChildAuth, sweepClaudeAuthEnvFiles } from '../core/claudeChildAuth.js';
+import { resolveCorrectionLearningMode } from '../core/correctionLearningMode.js';
 import { holdAllSetups, holdSetupForSession } from '../recommended/setupState.js';
 import { SlackPrincipalResolver } from '../permissions/SlackPrincipalResolver.js';
 import type { InboundFacts } from '../users/MemoryInboundTracker.js';
@@ -5119,6 +5121,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Constructed HERE — after the coordinator (machineId available), before
     // the reaper/ownership wiring that emits into it. Writer runs even on a
     // single-machine agent (locally useful); replication is P1.3.
+    const failureReplicationTransport = resolveFailureReplicationTransport(config, resolveDevAgentGate(config.multiMachine?.coherenceJournal?.enabled, config));
     let coherenceJournal: import('../core/CoherenceJournal.js').CoherenceJournal | undefined;
     // The journal's OWN machine id (used by the journal-sync SERVE path to read
     // this machine's own stream files, which are keyed on it). Hoisted so the
@@ -5177,7 +5180,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       | undefined;
     {
       const cjCfg = config.multiMachine?.coherenceJournal;
-      const cjEnabled = resolveDevAgentGate(cjCfg?.enabled, config);
+      const cjEnabled = failureReplicationTransport.journalEnabled;
       if (cjEnabled) {
         try {
           const cjMod = await import('../core/CoherenceJournal.js');
@@ -5392,6 +5395,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     replicatedKindRegistry.register(PREF_KIND_REGISTRATION);
     const { CLASS_REVIEW_KIND_REGISTRATION } = await import('../core/ClassReviewReplicatedStore.js');
     replicatedKindRegistry.register(CLASS_REVIEW_KIND_REGISTRATION);
+    const { FAILURE_CALLOUT_KIND_REGISTRATION, failureReplicationEmitter, failureReplicaReader } = await import('../core/FailureCalloutReplicatedStore.js');
+    replicatedKindRegistry.register(FAILURE_CALLOUT_KIND_REGISTRATION);
     // mobile-native-conversations §4.8 — the `appConversations` kind. Registration is inert; the
     // store is injected into the resolved stateSync flags below whenever native app conversations
     // are on (no separate switch: for a native conversation the store is the only copy).
@@ -5756,6 +5761,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const _appNativeOn = _isMobileNativeEnabled(config);
     const _stateSyncStoresResolved: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined = (() => {
       let s = _stateSyncStoresBase ?? {};
+      s = { ...s, failureCallout: { enabled: !!coherenceJournal && resolveCorrectionLearningMode(config).failureCalloutsEnabled && (config.multiMachine?.stateSync?.failureCallout as { enabled?: boolean } | undefined)?.enabled !== false } };
       // On wherever the journal is live: a yes or no belongs to the person, not one machine
       // (docs/specs/recommended-services.md). Without the journal there is no applier, so it isn't advertised.
       const _recommendedServicesOn = !!coherenceJournal && _stateSyncStoresBase?.recommendedServices?.enabled !== false;
@@ -5765,7 +5771,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (_accountFollowMeEnabled) s = { ...s, subscriptionAccountMeta: { enabled: true } };
       if (_pinReplicateEnabled) s = { ...s, topicPins: { enabled: true } };
       if (_staleOwnerReleaseResolved) s = { ...s, topicClaimAnnotations: { enabled: true } };
-      return _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _staleOwnerReleaseResolved || _stateSyncStoresBase ? s : _stateSyncStoresBase;
+      return s.failureCallout?.enabled || _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _staleOwnerReleaseResolved || _stateSyncStoresBase ? s : _stateSyncStoresBase;
     })();
 
     // WS2 send-side: the generic journal-backed record emitter (the concrete emitter
@@ -17699,15 +17705,15 @@ export async function startServer(options: StartOptions): Promise<void> {
         // ── Correction & Preference Learning Sentinel — capture loop (Slice 1b) ─
         // Hot-path capture → distill → CorrectionLedger. VOID fire-and-forget so
         // the async distill NEVER blocks delivery and a thrown distill error
-        // NEVER propagates back to the message seam. Constructed ONLY when
-        // monitoring.correctionLearning.enabled (Layer-0 classify is the only
-        // always-on piece; the loop is dark by default). The sentinel owns its
+        // NEVER propagates back to the message seam. Failure capture is on by
+        // default; ordinary preference capture is separately opt-in. The sentinel owns its
         // OWN LlmQueue (object opts — the per-sentinel daily cap is real, NOT a
         // fleet ceiling) so a distill burst can never starve PresenceProxy/Usher.
         // Spec: docs/specs/CORRECTION-PREFERENCE-LEARNING-SENTINEL-SPEC.md §3.1.
-        if (sharedIntelligence && config.monitoring?.correctionLearning?.enabled === true) {
+        const correctionMode = resolveCorrectionLearningMode(config);
+        if (sharedIntelligence && correctionMode.captureEnabled) {
           try {
-            const cl = config.monitoring.correctionLearning;
+            const cl = config.monitoring?.correctionLearning ?? { enabled: false };
             const { CorrectionLedger } = await import('../monitoring/CorrectionLedger.js');
             const { LlmQueue } = await import('../monitoring/LlmQueue.js');
             const {
@@ -17722,6 +17728,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const correctionLedger = new CorrectionLedger({
               dbPath: path.join(config.stateDir, 'correction-ledger.db'),
             });
+            if (replicatedRecordEmitter) correctionLedger.setFailureReplicationEmitter(failureReplicationEmitter(replicatedRecordEmitter));
             correctionLedgerForClassReview = correctionLedger;
             // Per-sentinel LlmQueue — object opts (do NOT pass a bare number; that
             // is the latent PresenceProxy bug §2). Dedicated daily cap.
@@ -17812,6 +17819,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                     {
                       backlog: captureBacklog,
                       ledger: correctionLedger,
+                      failuresOnly: correctionMode.failuresOnly,
+                      captureFailureContext: correctionMode.failureCalloutsEnabled,
                       distill: correctionDistill,
                       llmAvailable: () => llmCircuitAvailable(),
                       ttlMs: backlogTtlMs,
@@ -17873,6 +17882,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                 {
                   ring,
                   ledger: correctionLedger,
+                  failuresOnly: correctionMode.failuresOnly,
+                  captureFailureContext: correctionMode.failureCalloutsEnabled,
                   distill: correctionDistill,
                   shouldShed: () => {
                     const r = quotaTracker?.getRecommendation();
@@ -17885,6 +17896,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 },
                 {
                   topicId: entry.topicId ?? null,
+                  messageId: entry.messageId,
                   text: entry.text ?? '',
                   fromUser: !!entry.fromUser,
                   sessionId: entry.sessionName ?? null,
@@ -17918,6 +17930,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                   {
                     ring,
                     ledger: correctionLedger,
+                    failuresOnly: correctionMode.failuresOnly,
+                    captureFailureContext: correctionMode.failureCalloutsEnabled,
                     distill: correctionDistill,
                     shouldShed: () => {
                       const r = quotaTracker?.getRecommendation();
@@ -17930,6 +17944,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   },
                   {
                     topicId: signal.topicId,
+                    messageId: signal.messageId,
                     text: signal.text,
                     fromUser: true,
                     sessionId: signal.sessionName,
@@ -17954,7 +17969,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
             (globalThis as Record<string, unknown>).__instarCorrectionLearningWired = true;
             (globalThis as Record<string, unknown>).__instarCorrectionCaptureBacklogWired = !!captureBacklog;
-            console.log(pc.green('  Correction & Preference Learning Sentinel wired (capture → distill → ledger; dark by default)'));
+            console.log(pc.green(`  Correction sentinel wired (${correctionMode.failuresOnly ? 'failure callouts only' : 'corrections and preferences'} → distill → ledger)`));
           } catch (err) {
             console.warn('[CorrectionLearning] init failed:', (err as Error).message);
           }
@@ -27416,6 +27431,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'journal-sync' };
               if (!journalSyncApplier) return { ok: false, reason: 'journal disabled' };
               if (c.request) {
+                if (!isFailureReplicationKindAllowed(failureReplicationTransport, c.request.kind)) return { ok: false, reason: 'journal kind disabled' };
                 // §3.4 rule 5 serve-batch byte cap (coherenceJournal.replication
                 // .maxBatchBytes; the applier defaults it when absent).
                 const maxBatchBytes = config.multiMachine?.coherenceJournal?.replication?.maxBatchBytes;
@@ -27432,7 +27448,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // never a payload field — so a forged sender is rejected + counted.
                 const r = journalSyncApplier.apply(
                   env.sender,
-                  c.batch as import('../core/JournalSyncApplier.js').ApplyBatchStream[],
+                  filterFailureReplicationBatch(failureReplicationTransport, c.batch as import('../core/JournalSyncApplier.js').ApplyBatchStream[]),
                 );
                 return { ok: true, result: r };
               }
@@ -29658,9 +29674,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           // (the default — ConfigDefaults leaves replication.enabled absent), the
           // delta deps below are left undefined and the puller behaves EXACTLY as
           // before: a presence-only poll, no journal delta ever requested/applied.
-          const _replicationEnabled =
-            (config.multiMachine?.coherenceJournal as { replication?: { enabled?: boolean } } | undefined)
-              ?.replication?.enabled === true;
+          const _replicationEnabled = failureReplicationTransport.replicationEnabled;
+          // Implicit feature activation pulls forensic chunks only. Existing
+          // explicit replication keeps its full lifecycle/placement contract.
           const _journalDeltaDeps =
             _replicationEnabled && journalSyncApplier
               ? {
@@ -29670,6 +29686,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                     kind: string,
                     fromSeq: number,
                   ): Promise<import('../core/PeerPresencePuller.js').JournalDeltaStream | null> => {
+                    if (!isFailureReplicationKindAllowed(failureReplicationTransport, kind)) return null;
                     try {
                       const res = await meshClient.send(
                         { machineId, url },
@@ -29689,7 +29706,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   applyDelta: (senderMachineId: string, batch: import('../core/PeerPresencePuller.js').JournalDeltaStream[]) => {
                     journalSyncApplier?.apply(
                       senderMachineId,
-                      batch as import('../core/JournalSyncApplier.js').ApplyBatchStream[],
+                      filterFailureReplicationBatch(failureReplicationTransport, batch) as import('../core/JournalSyncApplier.js').ApplyBatchStream[],
                     );
                   },
                   localAdvertFor: (machineId: string): Record<string, { incarnation: string; lastSeq: number }> =>
@@ -29697,7 +29714,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }
               : {};
           if (_replicationEnabled) {
-            console.log(pc.yellow('  [journal-sync] REPLICATION SEND/drive ENABLED (replication.enabled===true) — live proof mode'));
+            console.log(pc.yellow(failureReplicationTransport.failureOnly ? '  [journal-sync] forensic evidence replication enabled (failure chunks only)' : '  [journal-sync] explicit journal replication enabled'));
           }
           // Unwrap the PEER's own-stream slice (keyed on its machine id) from the
           // nested `{ [ownMachineId]: { kind → {…} } }` session-status advert to the
@@ -32292,6 +32309,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       server.setSubscriptionRelogin(subscriptionReloginRuntime ? subscriptionReloginRouteContext(subscriptionReloginRuntime) : null);
     }
     server.setWorkQueue(workQueue);
+    if (_stateSyncStoresResolved?.failureCallout?.enabled && replicatedPeerStreamReader) server.setFailureReplicaReader(failureReplicaReader(replicatedPeerStreamReader, () => droppedOriginRegistry.droppedOrigins('failureCallout')));
     if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {
       const { classReviewRemoteReader } = await import('../core/ClassReviewReplicatedStore.js');
       server.setClassReviewRemoteReader(classReviewRemoteReader(replicatedPeerStreamReader));

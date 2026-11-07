@@ -513,6 +513,110 @@ describe('verification and publication', () => {
     expect(h.execStore.latestFor(id2)!.state).toBe('pr-open');
   });
 
+  it('a lease the same machine re-acquires during preparation does not stop the attempt', async () => {
+    h = await createExecHarness();
+    const initiativeId = await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n' });
+    const scripted = h.runScript.fn;
+    h.runScript.fn = (cmd) => { h.epoch.value = 2; return scripted(cmd); };
+    const t = await h.exec.tick();
+    expect(t.started).toBe(1);
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'running', ownerEpoch: 2 });
+    expect((h.exec.summary().lastTick as { started: number }).started).toBe(1);
+    h.runScript.fn = scripted;
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.execStore.latestFor(initiativeId)!.state).toBe('running');
+  });
+
+  it('a lease lost during preparation with no epoch change still stops the attempt before its session', async () => {
+    h = await createExecHarness();
+    const initiativeId = await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n' });
+    const scripted = h.runScript.fn;
+    h.runScript.fn = (cmd) => { h.canonical.value = false; h.runScript.fn = scripted; return scripted(cmd); };
+    const t = await h.exec.tick();
+    expect(t.started).toBe(0);
+    const row = h.execStore.latestFor(initiativeId)!;
+    expect(row.state).not.toBe('running');
+    expect(row.sessionName ?? null).toBeNull();
+  });
+
+  it('after a carried epoch the tick keeps its started count and leaves other items for the next tick', async () => {
+    h = await createExecHarness();
+    const first = await h.workItem('c1');
+    const second = await h.workItem('c2');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n' });
+    const scripted = h.runScript.fn;
+    h.runScript.fn = (cmd) => { h.epoch.value = 2; return scripted(cmd); };
+    const t = await h.exec.tick();
+    expect(t.started).toBe(1);
+    expect(t.result).toBe('succeeded');
+    const started = [first, second].map((id) => h.execStore.latestFor(id)?.state).filter((state) => state === 'running');
+    expect(started).toHaveLength(1);
+  });
+
+  it('losing ownership during preparation still stops the attempt before any session starts', async () => {
+    h = await createExecHarness();
+    const initiativeId = await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n' });
+    const scripted = h.runScript.fn;
+    h.runScript.fn = (cmd) => {
+      // A new owner has written at a newer epoch and this machine no longer owns the queue.
+      h.execStore.fenced(5, () => undefined);
+      h.epoch.value = 5;
+      h.canonical.value = false;
+      h.runScript.fn = scripted;
+      return scripted(cmd);
+    };
+    const t = await h.exec.tick();
+    expect(t.started).toBe(0);
+    const row = h.execStore.latestFor(initiativeId)!;
+    expect(row.ownerEpoch).toBe(1);
+    expect(row.state).not.toBe('running');
+    expect(row.sessionName ?? null).toBeNull();
+  });
+
+  it('a lasting GitHub outage is reported once per outage, and a short one stays quiet', async () => {
+    h = await createExecHarness();
+    const notices = () => h.attentionExec.filter((a) => a.id.startsWith('feedback-execute:github-unavailable'));
+    const info = h.repo.info;
+    h.repo.info = null;
+    await h.exec.tick();
+    h.now.value += 2 * 60 * 60_000 - 1;
+    await h.exec.tick();
+    expect(notices()).toHaveLength(0);
+    h.now.value += 1;
+    expect((await h.exec.tick()).reason).toBe('github-unavailable');
+    await h.exec.tick();
+    expect(notices()).toHaveLength(1);
+    expect(notices()[0].summary).toContain('no new fixes are starting');
+    // Access returns: a later outage is a new one with its own full wait.
+    h.repo.info = info;
+    await h.exec.tick();
+    h.repo.info = null;
+    await h.exec.tick();
+    expect(notices()).toHaveLength(1);
+    h.now.value += 2 * 60 * 60_000;
+    await h.exec.tick();
+    expect(new Set(notices().map((a) => a.id)).size).toBe(2);
+  });
+
+  it('a check stopped by its time limit keeps its reason and records which check it was', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    h.runScript.fn = (cmd) => (cmd.command === 'npm run lint' && /-gate$/.test(cmd.cwd)
+      ? { exitCode: 124, stdout: 'still linting', stderr: '', timedOut: true }
+      : null);
+    finishSessions(h);
+    await h.exec.tick();
+    expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'limit:command-wall-clock' });
+    const last = h.exec.summary().lastCheckFailure as { reason: string; detail: string };
+    expect(last.reason).toBe('limit:command-wall-clock');
+    expect(last.detail).toContain('during the lint check');
+    expect(last.detail).toContain('still linting');
+  });
+
   it('a failed check run records its OWN output, so the failure is diagnosable after the clones are gone', async () => {
     h = await createExecHarness();
     const { initiativeId } = await startOne();

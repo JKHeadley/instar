@@ -89,6 +89,7 @@ export function ownerOrBearer(req: Request, bearerOk: (req: Request) => boolean)
 // ── accounts ──────────────────────────────────────────────────────────────────
 
 const NEEDS_SIGN_IN = new Set(['needs-reauth', 'signed-out', 'expired', 'broken']);
+const WRONG_LOGIN_SETTLE_MS = 24 * 60 * 60 * 1000;
 const KIND_WORDS: Record<string, string> = { 'claude-code': 'Claude', 'codex-cli': 'Codex', 'gemini-cli': 'Gemini', 'grok-build': 'Grok', 'pi-cli': 'Pi' };
 export function kindWord(framework: unknown): string { return (typeof framework === 'string' && KIND_WORDS[framework]) || 'Other'; }
 
@@ -114,9 +115,25 @@ export interface MobileAccount {
  * running an automatic sign-in repair for the row (only known for this machine's own rows). A login
  * check that found the login signed out reads as needing sign-in even while the status says active.
  */
-export function accountCellState(row: Rec, repairing = false): { state: MobileAccountMachine['state']; label: string } {
+export function accountCellState(row: Rec, repairing = false, blockerReason: string | null = null, nowMs = Date.now()): { state: MobileAccountMachine['state']; label: string } {
   const status = str(row.status);
   if (repairing) return { state: 'working', label: 'signing in now' };
+  // A slot proven to hold another account's login. Same rule as the console's accounts-model.js:
+  // a fresh mismatch may correct itself; after a day it needs a new sign-in. The other account's
+  // address stays off the phone.
+  if (row.identityDrifted === true) {
+    const drift = rec(row.identityDrift);
+    if (drift.actualAccountId === 'missing-local-login' || drift.repairState === 'owner-relogin-required') return { state: 'attn', label: 'needs sign-in' };
+    const at = Date.parse(String(drift.detectedAt ?? ''));
+    if (drift.repairState === 'repairing' || (Number.isFinite(at) && nowMs - at < WRONG_LOGIN_SETTLE_MS)) {
+      return { state: 'unknown', label: "holds another account's login; checking if it corrects itself" };
+    }
+    return { state: 'attn', label: "holds another account's login" };
+  }
+  // A repair blocker with no operator-only step is shown, not counted: `unknown` keeps the app's state list.
+  if (status && NEEDS_SIGN_IN.has(status) && blockerReason && blockerReason !== 'device-limit-benched') {
+    return { state: 'unknown', label: blockerReason === 'no-open-incident' ? 'sign-in not confirmed; still checking' : "automatic repair can't start yet" };
+  }
   if (status && NEEDS_SIGN_IN.has(status)) return { state: 'attn', label: 'needs sign-in' };
   if (status === 'active' && row.loginCheck === 'signed-out') return { state: 'attn', label: 'login check failed' };
   if (status === 'active' && row.loginCheck === 'ok') return { state: 'ok', label: 'signed in' };
@@ -156,8 +173,112 @@ export interface AccountsOptions {
   nicknameOf?: (machineId: string) => string | null;
   /** This machine's own repair episodes (accountId + state); remote rows are never matched. */
   localRepairs?: Array<{ accountId: string; state: string }>;
+  /** Repair blockers across machines; a machine with no row here keeps its pool status. */
+  blockers?: Array<{ accountId: string; machineId: string; reason: string }>;
   /** Registered machines the pool does not count as online (not asked): their ids. */
   offlineMachineIds?: string[];
+}
+
+/** A usage window at or over this share is "nearly out" (the rows' red tone uses the same line). */
+export const NEAR_OUT_PCT = 90;
+
+/**
+ * Something on the Accounts screen that needs the person or changes what they can do. The screen's
+ * notice spot shows only these, and nothing at all when the list is empty: a routine state (one
+ * account full while others have room) is already on its row and is never a notice.
+ * `action`: `sign-in` names the accounts (row keys) to sign in; `ask` is the question for the agent.
+ */
+export interface AccountNotice {
+  key: string;
+  tone: 'bad' | 'attn';
+  title: string;
+  /** When room comes back (the earliest account to free up), for an out-of-room notice. */
+  returnsAt: string | null;
+  action: { kind: 'sign-in'; accounts: string[] } | { kind: 'ask'; about: string };
+}
+
+type NoticeAccount = Pick<MobileAccount, 'key' | 'name' | 'kind' | 'signIn' | 'windows' | 'machines'>;
+
+/** When this account has room again: every window at or over the line must reset (null if one has no time). */
+function roomReturnsAt(a: NoticeAccount): number | null {
+  const full = a.windows.filter((w) => w.pct >= NEAR_OUT_PCT);
+  let latest = 0;
+  for (const w of full) {
+    const t = w.resetsAt ? Date.parse(w.resetsAt) : NaN;
+    if (!Number.isFinite(t)) return null;
+    latest = Math.max(latest, t);
+  }
+  return latest || null;
+}
+
+/**
+ * The notices, most serious first. Each rule is about the pool, never one account among several:
+ *  - this machine's own account list can't be read (and nothing else was);
+ *  - accounts need signing in (only what the person can act on: `needs-sign-in`);
+ *  - a machine has no signed-in account (none signed in or signing in there, and one to sign in);
+ *  - every usable account, or every usable account of one kind, is at or over the line,
+ *    with when room returns. A kind with an unread usable account is not concluded on.
+ */
+export function accountNotices(accounts: NoticeAccount[], opts: { localUnreadable: boolean; partial: boolean }): AccountNotice[] {
+  const out: AccountNotice[] = [];
+  const scope = opts.partial ? ' (on the machines that answered)' : '';
+  if (opts.localUnreadable && accounts.length === 0) {
+    const title = "This machine's account list can't be read right now.";
+    out.push({ key: 'list-unreadable', tone: 'bad', title, returnsAt: null, action: { kind: 'ask', about: title } });
+    return out;
+  }
+  const needing = accounts.filter((a) => a.signIn === 'needs-sign-in');
+
+  // A machine where nothing is signed in can run nothing. Grouped by the name the rows show.
+  const byMachine = new Map<string, { states: string[]; attn: string[] }>();
+  for (const a of accounts) for (const m of a.machines) {
+    const g = byMachine.get(m.name) ?? { states: [], attn: [] };
+    g.states.push(m.state);
+    if (m.state === 'attn' && !g.attn.includes(a.key)) g.attn.push(a.key);
+    byMachine.set(m.name, g);
+  }
+  const machineNotices: AccountNotice[] = [];
+  for (const [name, g] of byMachine) {
+    // Only when a sign-in would fix it: a machine whose rows are all unknown (warming up, still
+    // checking) is not concluded on.
+    if (g.states.some((s) => s === 'ok' || s === 'working') || g.attn.length === 0) continue;
+    const title = `${name} has no signed-in account, so nothing can run there.`;
+    machineNotices.push({ key: rowKey('notice-machine', name), tone: 'bad', title, returnsAt: null, action: { kind: 'sign-in', accounts: g.attn } });
+  }
+
+  // Out of room: per kind (a session uses only its own kind's accounts), or the whole pool at once.
+  const usable = accounts.filter((a) => a.machines.some((m) => m.state === 'ok'));
+  const kinds = [...new Set(usable.map((a) => a.kind))].sort();
+  const outKinds: Array<{ kind: string; list: NoticeAccount[] }> = [];
+  for (const kind of kinds) {
+    const list = usable.filter((a) => a.kind === kind);
+    if (list.some((a) => a.windows.length === 0)) continue; // one we can't read may have room
+    if (list.every((a) => (a.windows[0]?.pct ?? 0) >= NEAR_OUT_PCT)) outKinds.push({ kind, list });
+  }
+  const roomNotice = (list: NoticeAccount[], kind: string | null): AccountNotice => {
+    const usedUp = list.every((a) => (a.windows[0]?.pct ?? 0) >= 100);
+    const state = usedUp ? 'used up' : 'nearly out';
+    const noun = kind ? `${kind} account` : 'account';
+    const title = list.length === 1 ? `The only ${noun} is ${state}${scope}.` : `All ${list.length} ${noun}s are ${state}${scope}.`;
+    const times = list.map(roomReturnsAt).filter((t): t is number => t !== null);
+    return { key: rowKey('notice-room', kind ?? '*'), tone: usedUp ? 'bad' : 'attn', title,
+      returnsAt: times.length ? new Date(Math.min(...times)).toISOString() : null, action: { kind: 'ask', about: title } };
+  };
+  const roomNotices = outKinds.length && outKinds.length === kinds.length
+    ? [roomNotice(outKinds.flatMap((k) => k.list), kinds.length === 1 ? kinds[0] : null)]
+    : outKinds.map((k) => roomNotice(k.list, k.kind));
+
+  out.push(...machineNotices);
+  // An account a machine notice already asks to sign in is not asked for twice.
+  const covered = new Set(machineNotices.flatMap((n) => (n.action.kind === 'sign-in' ? n.action.accounts : [])));
+  const rest = needing.filter((a) => !covered.has(a.key));
+  if (rest.length) {
+    const more = covered.size ? ' more' : '';
+    const title = `${rest.length === 1 ? `1${more} account needs` : `${rest.length}${more} accounts need`} signing in${scope}.`;
+    out.push({ key: 'sign-in', tone: 'attn', title, returnsAt: null, action: { kind: 'sign-in', accounts: rest.map((a) => a.key) } });
+  }
+  out.push(...roomNotices);
+  return out.sort((a, b) => Number(b.tone === 'bad') - Number(a.tone === 'bad'));
 }
 
 /**
@@ -167,7 +288,7 @@ export interface AccountsOptions {
 export function summarizeAccounts(
   payload: unknown,
   opts: AccountsOptions,
-): { enabled: boolean; localUnreadable: boolean; accounts: MobileAccount[]; headline: string; needsSignIn: number; usable: number; unread: { count: number; names: string[] }; offline: { count: number; names: string[] }; truncated: boolean } {
+): { enabled: boolean; localUnreadable: boolean; accounts: MobileAccount[]; headline: string; notices: AccountNotice[]; needsSignIn: number; usable: number; unread: { count: number; names: string[] }; offline: { count: number; names: string[] }; truncated: boolean } {
   const p = rec(payload);
   const nicknameOf = opts.nicknameOf ?? (() => null);
   const selfId = str(rec(p.pool).selfMachineId);
@@ -183,7 +304,7 @@ export function summarizeAccounts(
   const offlineIds = opts.offlineMachineIds ?? [];
   const offline = { count: offlineIds.length, names: offlineIds.map((id) => phoneText(verifiedEntityName(id, nicknameOf(id)), 60)).filter((n): n is string => !!n) };
   if (p.enabled === false || !Array.isArray(p.accounts)) {
-    return { enabled: false, localUnreadable: false, accounts: [], headline: 'The account pool is not set up on this agent.', needsSignIn: 0, usable: 0, unread, offline, truncated: false };
+    return { enabled: false, localUnreadable: false, accounts: [], headline: 'The account pool is not set up on this agent.', notices: [], needsSignIn: 0, usable: 0, unread, offline, truncated: false };
   }
   const repairing = new Set((opts.localRepairs ?? []).filter((e) => REPAIR_WORKING.has(e.state)).map((e) => e.accountId));
   const groups = new Map<string, AccountGroup>();
@@ -205,7 +326,7 @@ export function summarizeAccounts(
     groups.set(id, g);
   }
   const accounts = [...groups.values()].map((g): MobileAccount & { _pct: number } => {
-    const machines = g.cells.map((c) => ({ name: c.machine, isSelf: c.isSelf, ...accountCellState(c.row, c.isSelf && repairing.has(g.id)) }));
+    const machines = g.cells.map((c) => ({ name: c.machine, isSelf: c.isSelf, ...accountCellState(c.row, c.isSelf && repairing.has(g.id), (opts.blockers ?? []).find((b) => b.accountId === g.id && b.machineId === String(c.row.machineId ?? ''))?.reason ?? null, opts.now) }));
     const windows = usageWindows(g.reading);
     const top = windows[0] ?? null;
     const signIn: MobileAccount['signIn'] = machines.some((m) => m.state === 'attn') ? 'needs-sign-in'
@@ -234,22 +355,20 @@ export function summarizeAccounts(
     || a.name.localeCompare(b.name));
   const needsSignIn = accounts.filter((a) => a.signIn === 'needs-sign-in').length;
   const usable = accounts.filter((a) => a.machines.some((m) => m.state === 'ok')).length;
-  const read = accounts.filter((a) => a._pct >= 0);
-  const busiest = read[0] ? read.reduce((x, y) => (y._pct > x._pct ? y : x), read[0]) : null;
-  const near = read.filter((a) => a._pct >= 90 && a.machines.some((m) => m.state === 'ok'));
-  // Conclusions cover only the machines that answered; a partial read says so in the headline.
+  // Conclusions cover only the machines that answered; a partial read says so.
   // An offline machine was not read: its accounts may be missing, so conclusions are scoped too.
   const partial = unread.count > 0 || localUnreadable || offline.count > 0;
-  const scope = partial ? ' (on the machines that answered)' : '';
+  const notices = accountNotices(accounts, { localUnreadable, partial });
+  const read = accounts.filter((a) => a._pct >= 0 && a.machines.some((m) => m.state === 'ok'));
+  // `headline` is kept for app builds that show it as a line of its own; current builds show `notices`
+  // and nothing when there are none. It never names one account as "nearly out".
   let headline: string;
-  if (localUnreadable && accounts.length === 0) headline = "This machine's account list can't be read right now.";
-  else if (needsSignIn) headline = `${needsSignIn === 1 ? '1 account needs' : `${needsSignIn} accounts need`} signing in${scope}.`;
+  if (notices.length) headline = notices[0].title;
   else if (accounts.length === 0) headline = partial ? 'No accounts found on the machines that answered.' : 'No accounts are set up yet.';
-  else if (near.length && near.length === read.length) headline = `Every account is nearly out${scope}.`;
-  else if (busiest) headline = busiest._pct >= 90 ? `${busiest.name} is nearly out; others have room${scope}.` : `Plenty left${scope}: the busiest account is at ${busiest._pct}%.`;
+  else if (read.length) headline = `${read.filter((a) => a._pct < NEAR_OUT_PCT).length} of ${read.length} accounts have room.`;
   else headline = 'No usage readings yet.';
   const truncated = accounts.length > MAX_ACCOUNTS;
-  return { enabled: true, localUnreadable, accounts: accounts.slice(0, MAX_ACCOUNTS).map(({ _pct, ...a }) => a), headline, needsSignIn, usable, unread, offline, truncated };
+  return { enabled: true, localUnreadable, accounts: accounts.slice(0, MAX_ACCOUNTS).map(({ _pct, ...a }) => a), headline, notices, needsSignIn, usable, unread, offline, truncated };
 }
 
 // ── spend ─────────────────────────────────────────────────────────────────────
@@ -589,6 +708,8 @@ export interface MobileCapacityDeps {
   offlineMachineIds?: () => string[];
   /** This machine's sign-in repair episodes (`/subscription-relogin`, local store). */
   localRepairs: () => Array<{ accountId: string; state: string }>;
+  /** Repair blockers across machines; unavailable means cells keep their pool status. */
+  reloginBlockers?: () => Promise<Array<{ accountId: string; machineId: string; reason: string }>>;
   /** This machine's `/routing-spend/summary?grain=day&sinceHours=N` and `/tokens/summary?since=` reads. */
   spendSummary: (sinceHours: number) => SpendPart;
   tokens: (sinceMs: number) => SpendPart;
@@ -664,11 +785,11 @@ export function mountMobileCapacityRoutes(router: Router, deps: MobileCapacityDe
     if (!guard(req, res)) return;
     try {
       const body = await cached('accounts', async () => {
-        const [payload, inUse] = await Promise.all([deps.accountsView(), deps.inUseAccountId().catch(() => null)]);
+        const [payload, inUse, blockers] = await Promise.all([deps.accountsView(), deps.inUseAccountId().catch(() => null), deps.reloginBlockers?.().catch(() => []) ?? Promise.resolve([])]);
         let repairs: Array<{ accountId: string; state: string }> = [];
         try { repairs = deps.localRepairs(); } catch { /* @silent-fallback-ok — no repair evidence: cells show their pool status */ }
         // generatedAt is stamped when the answer is built, so a cached answer keeps its own time.
-        return { ...head(), ...summarizeAccounts(payload, { inUseAccountId: inUse, now: now(), nicknameOf: deps.nicknameOf, localRepairs: repairs, offlineMachineIds: deps.offlineMachineIds?.() ?? [] }) } as unknown as Rec;
+        return { ...head(), ...summarizeAccounts(payload, { inUseAccountId: inUse, now: now(), nicknameOf: deps.nicknameOf, localRepairs: repairs, blockers, offlineMachineIds: deps.offlineMachineIds?.() ?? [] }) } as unknown as Rec;
       });
       res.json(body);
     } catch (err) {

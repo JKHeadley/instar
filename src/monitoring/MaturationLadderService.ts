@@ -29,6 +29,7 @@ import {
   type GuardPostureRef,
   type JsonlLogRef,
   type LadderEntry,
+  type RungAdvance,
   type LadderMetric,
   type LadderRegistry,
   type LadderState,
@@ -145,6 +146,18 @@ interface AuditRow {
 }
 
 const ABSENT = '__absent__';
+
+/**
+ * The kind of move a feature's next step really is. The view and `applyMove` both read this,
+ * so the ladder cannot offer a setting that is really a code move. From dark, only an entry's `start` is a
+ * setting (spec section 8); a rung's config move is for a feature already running there, so a
+ * dark feature with no `start` reaches that rung through reviewed code.
+ */
+function nextAdvance(entry: LadderEntry, rung: string, rungAdvance: RungAdvance | undefined): RungAdvance | undefined {
+  if (rung !== 'dark') return rungAdvance;
+  if (entry.start) return { kind: 'config', set: entry.start.set };
+  return rungAdvance?.kind === 'config' ? { kind: 'code' } : rungAdvance;
+}
 
 function readPath(obj: unknown, dotted: string): unknown {
   return dotted.split('.').reduce<unknown>((acc, k) => (acc && typeof acc === 'object' ? (acc as Record<string, unknown>)[k] : undefined), obj);
@@ -486,7 +499,7 @@ export class MaturationLadderService {
         stuckDays = sorted.length ? Math.floor((now - sorted[0].dueSlotMs) / DAY_MS) : 0;
         if (stuckDays >= STUCK_BLIND_DAYS) stuck = result.state === 'no-data' ? 'stuck-blind' : 'stuck-rare';
       }
-      const adv = rung === 'dark' && entry.start ? { kind: 'config' as const, set: entry.start.set } : rungDef?.advance;
+      const adv = nextAdvance(entry, rung, rungDef?.advance);
       out.push({
         id: entry.id,
         subject: entry.subject,
@@ -624,9 +637,7 @@ export class MaturationLadderService {
     const startable = feature.state === 'not-started';
     if (!startable && feature.state !== 'ready-to-advance') return { ok: false, refused: 'not-ready', detail: feature.state };
     if (feature.next !== input.target) return { ok: false, refused: 'not-ready', detail: `next is ${feature.next}` };
-    const adv = startable
-      ? (entry.start ? { kind: 'config' as const, set: entry.start.set } : { kind: 'code' as const })
-      : entry.rungs[input.target]?.advance;
+    const adv = nextAdvance(entry, feature.rung, entry.rungs[input.target]?.advance);
     if (!adv || adv.kind !== 'config') return { ok: false, refused: 'not-a-config-move', detail: adv?.kind };
     if (entry.risk !== 'standard') return { ok: false, refused: 'sensitive' };
     if (Object.keys(adv.set).some(k => this.deps.isCoherenceCritical(k)) || (entry.flag && this.deps.isCoherenceCritical(`${entry.flag.path}.enabled`))) {

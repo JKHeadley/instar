@@ -1,0 +1,26 @@
+{
+  "version": 3,
+  "slug": "mobile-pairing-introducer",
+  "sessionId": "c222e4df-a8dd-4afe-a5b9-83451c6c1aa7",
+  "timestamp": "2026-11-06T20:35:06.303Z",
+  "artifactPath": "upgrades/side-effects/mobile-pairing-introducer.md",
+  "artifactSha256": "c41ad2cedc396927fc89a2320ec313c1b15b54bcfd25a0cbbafe8b8a1d71983b",
+  "specPath": "docs/specs/mobile-pairing-introducer.md",
+  "coveredFiles": [
+    "docs/specs/mobile-pairing-introducer.md",
+    "src/server/machineRoutes.ts",
+    "src/server/mobilePairingIntroducer.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Local Verify fixes for the introducer PR: ladder line names the registry entry; silent-fallback exemptions inside the catch blocks",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

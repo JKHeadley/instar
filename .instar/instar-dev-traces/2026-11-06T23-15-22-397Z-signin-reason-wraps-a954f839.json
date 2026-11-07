@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "signin-reason-wraps",
+  "sessionId": "31f8d38c-6396-4900-9bac-bea7294fdb04",
+  "timestamp": "2026-11-06T23:15:22.397Z",
+  "artifactPath": "upgrades/side-effects/signin-reason-wraps.md",
+  "artifactSha256": "d953f12779b066e471b46d70885eb5e655d45c3bd9b091abd3efed19718165c4",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "tests/unit/console-accounts.test.ts",
+    "upgrades/next/signin-reason-wraps.md",
+    "upgrades/side-effects/signin-reason-wraps.eli16.md",
+    "upgrades/side-effects/signin-reason-wraps.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "one style rule, a revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/signin-reason-wraps.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/signin-reason-wraps.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

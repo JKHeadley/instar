@@ -103,3 +103,22 @@ These older jobs still exist in some agent installations for backward compatibil
 | `dispatch-check` | AutoDispatcher (built-in server component — no session needed) |
 
 Both replacements are server-side components that don't spawn Claude sessions, saving quota.
+
+
+## Failure investigation and promise review
+
+The `failure-callout-investigator` job investigates serious agent failures using
+the correction ledger. It runs at minutes 11 and 41, reserves a bounded batch
+before starting a model session, and retains the reservation during capacity
+queuing. Three unchanged attempts exhaust the automatic budget; a timer cannot
+reset it. The agent must provide diagnosis, class repair and current verification
+before closure. New occurrences reopen the case. Read the
+[correction learning guide](/features/correction-preference-learning/) for evidence,
+origin ownership and opt-out behavior.
+
+The separate `promise-review` job reviews tracked commitments against their
+actual state and records progress or evidence through the commitment system.
+It is not a substitute for investigating the root cause of a failure and does
+not authorize closing a failure case without its replay and legitimate-behavior
+checks. Both jobs keep unfinished work visible without asking the user to manage
+a second task list.

@@ -16,6 +16,8 @@ import { CLAUDE_CONFINED_PERMISSION_ARGS, isCredentialEnvName } from '../../core
 export { CLAUDE_CONFINED_PERMISSION_ARGS, isCredentialEnvName };
 
 export const HOUR_MS = 60 * 60_000;
+/** How long GitHub may stay unreachable before the stopped fixes are reported. */
+export const GITHUB_OUTAGE_NOTICE_MS = 2 * HOUR_MS;
 export const DAY_MS = 24 * HOUR_MS;
 /** Claim lease (§4 step 2). A session's wall clock never exceeds it. */
 export const EXECUTION_LEASE_MS = 6 * HOUR_MS;
