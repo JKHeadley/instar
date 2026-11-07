@@ -8,7 +8,7 @@ import ssh2 from 'ssh2';
 const { utils } = ssh2;
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-const MARKER = 'instar-peer-access';
+export type PeerKeyNamespace = 'instar-peer-access' | 'instar-recovery-access';
 
 export interface PeerAuthorizedKey {
   agentId: string;
@@ -16,6 +16,8 @@ export interface PeerAuthorizedKey {
   pairingEpoch: number;
   clientKeyGeneration: number;
   publicKey: string;
+  /** Absolute path to an Instar-owned forced-command wrapper. Omitted for legacy callers. */
+  forcedCommand?: string;
 }
 
 /**
@@ -26,7 +28,7 @@ export class PeerAuthorizedKeys {
   readonly file: string;
   private activeLockToken: string | null = null;
 
-  constructor(agentHome: string, private readonly dryRun: boolean) {
+  constructor(agentHome: string, private readonly dryRun: boolean, private readonly marker: PeerKeyNamespace = 'instar-peer-access') {
     const root = path.resolve(agentHome);
     this.file = path.join(root, '.ssh', 'authorized_keys');
     if (path.dirname(path.dirname(this.file)) !== root) throw new Error('peer-authorized-keys-scope-invalid');
@@ -35,12 +37,12 @@ export class PeerAuthorizedKeys {
   reconcile(key: PeerAuthorizedKey): { changed: boolean; dryRun: boolean } {
     return this.withLock(() => {
       const parsed = parsePublicKey(key.publicKey);
-      const comment = `${MARKER}:${encodeURIComponent(key.agentId)}:${encodeURIComponent(key.machineId)}:${key.pairingEpoch}:${key.clientKeyGeneration}`;
-      const line = `${parsed.type} ${parsed.body} ${comment}`;
+      const comment = `${this.marker}:${encodeURIComponent(key.agentId)}:${encodeURIComponent(key.machineId)}:${key.pairingEpoch}:${key.clientKeyGeneration}`;
+      const line = managedLine(parsed, comment, key.forcedCommand);
       const current = this.read();
       const retained = current
         .split(/\r?\n/)
-        .filter(row => row.length > 0 && !isManagedForMachine(row, key.agentId, key.machineId));
+        .filter(row => row.length > 0 && !isManagedForMachine(row, key.agentId, key.machineId, this.marker));
       retained.push(line);
       const next = `${retained.join('\n')}\n`;
       if (next === current) return { changed: false, dryRun: this.dryRun };
@@ -52,7 +54,7 @@ export class PeerAuthorizedKeys {
   revoke(agentId: string, machineId: string): { changed: boolean; dryRun: boolean } {
     return this.withLock(() => {
       const current = this.read();
-      const retained = current.split(/\r?\n/).filter(row => row.length > 0 && !isManagedForMachine(row, agentId, machineId));
+      const retained = current.split(/\r?\n/).filter(row => row.length > 0 && !isManagedForMachine(row, agentId, machineId, this.marker));
       const next = retained.length > 0 ? `${retained.join('\n')}\n` : '';
       if (next === current) return { changed: false, dryRun: this.dryRun };
       if (!this.dryRun) this.write(next);
@@ -65,7 +67,7 @@ export class PeerAuthorizedKeys {
       const current = this.read();
       const retained = current.split(/\r?\n/).filter(row => {
         if (row.length === 0) return false;
-        const identity = managedIdentity(row);
+        const identity = managedIdentity(row, this.marker);
         return !identity || identity.agentId !== agentId || activeMachineIds.has(identity.machineId);
       });
       const next = retained.length > 0 ? `${retained.join('\n')}\n` : '';
@@ -77,9 +79,9 @@ export class PeerAuthorizedKeys {
 
   has(key: PeerAuthorizedKey): boolean {
     const parsed = parsePublicKey(key.publicKey);
-    return this.read().split(/\r?\n/).some(row =>
-      row === `${parsed.type} ${parsed.body} ${MARKER}:${encodeURIComponent(key.agentId)}:${encodeURIComponent(key.machineId)}:${key.pairingEpoch}:${key.clientKeyGeneration}`,
-    );
+    const comment = `${this.marker}:${encodeURIComponent(key.agentId)}:${encodeURIComponent(key.machineId)}:${key.pairingEpoch}:${key.clientKeyGeneration}`;
+    const expected = managedLine(parsed, comment, key.forcedCommand);
+    return this.read().split(/\r?\n/).some(row => row === expected);
   }
 
   private read(): string {
@@ -182,15 +184,26 @@ function parsePublicKey(value: string): { type: string; body: string } {
   return { type, body };
 }
 
-function isManagedForMachine(line: string, agentId: string, machineId: string): boolean {
-  const identity = managedIdentity(line);
+function isManagedForMachine(line: string, agentId: string, machineId: string, marker: PeerKeyNamespace): boolean {
+  const identity = managedIdentity(line, marker);
   return identity?.agentId === agentId && identity.machineId === machineId;
 }
 
-function managedIdentity(line: string): { agentId: string; machineId: string } | null {
-  const comment = line.trim().split(/\s+/, 3)[2] ?? '';
-  const fields = comment.split(':');
-  if (fields[0] !== MARKER || !fields[1] || !fields[2]) return null;
+function managedLine(parsed: { type: string; body: string }, comment: string, forcedCommand?: string): string {
+  if (forcedCommand === undefined) return `${parsed.type} ${parsed.body} ${comment}`;
+  if (!path.isAbsolute(forcedCommand) || /[\s"'\\,=\x00-\x1f\x7f]/.test(forcedCommand)) {
+    throw new Error('peer-authorized-key-forced-command-invalid');
+  }
+  return `restrict,command="${forcedCommand}" ${parsed.type} ${parsed.body} ${comment}`;
+}
+
+function managedIdentity(line: string, marker: PeerKeyNamespace): { agentId: string; machineId: string } | null {
+  // Match only the exact managed key position. This recognizes the legacy bare
+  // line and the new restricted line, while preserving unrelated operator keys.
+  const match = /^(?:restrict,command="[^"\s]+" )?ssh-ed25519 [A-Za-z0-9+/=]+ (instar-(?:peer|recovery)-access:[^\s]+)$/.exec(line.trim());
+  if (!match) return null;
+  const fields = match[1].split(':');
+  if (fields[0] !== marker || fields.length !== 5 || !fields[1] || !fields[2]) return null;
   try { return { agentId: decodeURIComponent(fields[1]), machineId: decodeURIComponent(fields[2]) }; }
   catch {
     // @silent-fallback-ok — malformed managed comments are untrusted, unmanaged lines

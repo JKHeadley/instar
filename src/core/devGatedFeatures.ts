@@ -137,6 +137,11 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true (evaluates admission and records the attempt it would start, spawning and pushing nothing). Live, every session and every command that runs attempt code is OS-sandboxed (no network, no credentials, no reads outside the workspace) behind a must-fail/must-succeed canary before each attempt; trusted code alone pushes, from its own clone, refusing tooling paths and secret-shaped content; merges happen only at the exact head the repository owner approved, and the executor refuses to run while the agent itself could act as that approver unless a PIN-bound acceptance exists.',
   },
   {
+    name:'serverDownRecovery',configPath:'multiMachine.serverDownRecovery.enabled',
+    description:'Independent SSH and relay recovery with source-verified server-down route proofs.',
+    justification:'The setup page, missing-enrollment attention and truthful pool/channel status are visible across the fleet. Active source probing remains development-agent gated until explicit setup enables it. No host grant or listener can activate without a release-certified per-agent authority, a current owner-phone grant, current MachineAuth-signed peer inventory and a target-bound checkpoint. Missing enrollment is degraded, never ready.',
+  },
+  {
     name: 'mutualSsh',
     configPath: 'multiMachine.mutualSsh.enabled',
     description: 'Mutual SSH-subsystem bootstrap and continuous proof: dedicated Instar-only keys, restricted subsystem admissions, and source-local A→B/B→A evidence.',

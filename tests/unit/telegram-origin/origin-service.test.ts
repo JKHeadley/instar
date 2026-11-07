@@ -206,9 +206,12 @@ describe('origin service durable delivery', () => {
       return service.runWithAutomationReply(token, 42, { text: input.params.text }, () => service.sendBot(input, h.network));
     };
     expect((await send(h.service, 'beacon:0')).ok).toBe(true);
+    const stableOperation=h.service.automationOperationId('telegram-server',42,'beacon:0');
+    expect((await h.store.getOperation(stableOperation))?.operation?.operationId).toBe(stableOperation);
     await h.store.close();
     const store = await OriginStore.open({ stateDir: h.stateDir, agentId: 'echo' }, worker); stores.push(store);
     const restarted = new TelegramOriginService({ ...h.service.options, store, ownerBootId: 'boot-2' });
+    expect(restarted.automationOperationId('telegram-server',42,'beacon:0')).toBe(stableOperation);
     expect((await send(restarted, 'beacon:0')).ok).toBe(true);
     expect(h.network).toHaveBeenCalledOnce();
     expect((await store.listOrigins()).records).toHaveLength(1);

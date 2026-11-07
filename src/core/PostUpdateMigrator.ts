@@ -1,3 +1,6 @@
+import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
+import { beginRecoveryFleetUpdate } from '../recovery/RecoveryFleetUpdate.js';
+import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
 const NEW_JOB_REPORT_LINE = '2. **Need periodic checks?** Create a job in `.instar/jobs.json`.';
 const NEW_JOB_REPORT_ASK = ' If it reports to the user, ask whether they want to see its reports; otherwise they stay quiet.';
 const SCHEDULER_REPORT_CHOICE_HEADING = "## Who sees this job's reports";
@@ -4436,7 +4439,9 @@ export class PostUpdateMigrator {
       return;
     }
     try {
-      installBootWrapper(this.config.projectDir);
+      if(fs.existsSync(path.join(this.config.stateDir,'recovery','host.json'))){
+        if(!installAutoStart(this.config.projectName,this.config.projectDir,this.config.hasTelegram,{noStart:true}))throw new Error('Owned recovery bootstrap update refused');
+      }else installBootWrapper(this.config.projectDir);
       result.upgraded.push('boot-wrapper ABI-check: regenerated instar-boot.cjs with ABI-aware node self-heal + version-managed node candidates');
     } catch (err) {
       result.errors.push(`boot-wrapper ABI-check regen: ${err instanceof Error ? err.message : String(err)}`);
@@ -4887,8 +4892,12 @@ export class PostUpdateMigrator {
       return;
     }
     try {
-      fs.writeFileSync(`${plistPath}.bak-${Date.now()}`, content, 'utf-8');
-      fs.writeFileSync(plistPath, next, 'utf-8');
+      const recoveryUpdate=beginRecoveryAutostartUpdate(this.config.projectDir,plistPath,next);
+      try {
+        fs.writeFileSync(`${plistPath}.bak-${Date.now()}`, content, 'utf-8');
+        fs.writeFileSync(plistPath, next, 'utf-8');
+        recoveryUpdate?.commit();
+      } catch(error) {recoveryUpdate?.rollback();throw error;}
       const raised = found.filter((v) => v < LAUNCHD_PROCESS_CEILING_FLOOR).join('/');
       result.upgraded.push(
         `launchd process ceiling: raised ${raised} → ${LAUNCHD_PROCESS_CEILING_FLOOR} (applies at next restart)`,
@@ -5743,6 +5752,11 @@ export class PostUpdateMigrator {
 </dict>
 </plist>`;
 
+    // Enrolled agents pin this script's and plist's digests in their recovery
+    // host.json. A plain overwrite here would leave every pin stale: the watchdog
+    // would then skip those agents and repair would refuse to start. Every rewrite
+    // goes through the same transaction as installFleetWatchdog, which rebinds them.
+    let recoveryFleetUpdate: ReturnType<typeof beginRecoveryFleetUpdate> = null;
     try {
       // Compare against current contents to avoid noisy re-installs.
       const scriptCurrent = fs.existsSync(scriptPath) ? fs.readFileSync(scriptPath, 'utf-8') : '';
@@ -5756,6 +5770,7 @@ export class PostUpdateMigrator {
 
       fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
       fs.mkdirSync(path.dirname(plistPath), { recursive: true });
+      recoveryFleetUpdate = beginRecoveryFleetUpdate(scriptPath, plistPath, scriptBody, plistBody);
       if (scriptChanged) fs.writeFileSync(scriptPath, scriptBody, { mode: 0o755 });
       if (plistChanged) fs.writeFileSync(plistPath, plistBody);
 
@@ -5765,8 +5780,14 @@ export class PostUpdateMigrator {
       } catch (err) {
         const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr) : '';
         result.errors.push(`fleet-watchdog: plist validation failed: ${stderr}`);
+        const failedUpdate = recoveryFleetUpdate;
+        recoveryFleetUpdate = null;
+        failedUpdate?.rollback();
         return;
       }
+
+      recoveryFleetUpdate?.commit();
+      recoveryFleetUpdate = null;
 
       // Reload only if plist changed (script-only changes don't need launchd touch).
       //
@@ -5791,6 +5812,11 @@ export class PostUpdateMigrator {
       );
     } catch (err) {
       result.errors.push(`fleet-watchdog: ${err instanceof Error ? err.message : String(err)}`);
+      try {
+        recoveryFleetUpdate?.rollback();
+      } catch (rollbackErr) {
+        result.errors.push(`fleet-watchdog: recovery rollback incomplete: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`);
+      }
     }
   }
 
@@ -8785,6 +8811,11 @@ setTimeout(() => process.exit(0), 2000);
       content += QUIET_NOTIFICATIONS_CLAUDEMD_SECTION;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Quiet by Default notifications');
+    }
+    if (!content.includes('### Server-down remote recovery')) {
+      content += recoveryAwareness(this.config.port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added server-down recovery setup and proof awareness');
     }
     if (!content.includes('/notifications/jobs/:slug/push')) {
       const anchor = 'or the PIN-confirmed dashboard toggle.';
@@ -15896,6 +15927,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // will guess. Mirrored like every agent-facing capability.
       '### Mesh Self-Healing: stale-owner release + lease hand-back',
       '### Cold-Start Lifeline Fallback',
+      '### Server-down remote recovery',
       // Durable Conversation Identity: framework-agnostic HTTP surface — a
       // Codex/Gemini agent seeing a negative topicId must know it is a minted
       // conversation id resolvable at GET /conversations/:id, or it will guess.

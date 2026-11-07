@@ -296,6 +296,7 @@ export interface CoherenceManifestExclusion {
 }
 
 export const COHERENCE_MANIFEST_EXCLUSIONS: CoherenceManifestExclusion[] = [
+  { configPath: 'multiMachine.serverDownRecovery.enabled', reason: 'machine-specific owner enrollment and host grants graduate separately; the source-verified recovery summary explicitly reports dark or missing targets as degraded, never a whole-pool guarantee' },
   { configPath: 'multiMachine.coherenceJournal.enabled', reason: 'content-free local lifecycle journal; a mixed pool degrades to no-journal on one side, not a data guarantee the guard owns' },
   { configPath: 'multiMachine.meshTransport.recoveryProbeEnabled', reason: 'per-machine transport self-heal probe; its own U4.3 episode alarm owns its skew' },
   { configPath: 'multiMachine.secretSync.enabled', reason: 'receive-only by default + per-machine sealed keys; a non-receiver simply re-enters a secret, no silent data-loss' },
