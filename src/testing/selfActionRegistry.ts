@@ -23,6 +23,7 @@ import { claimReconciliationNotice } from '../core/TopicProfileOrchestrator.js';
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { DEAD_RECOVERY_MAX_AGE_MS, deadRecoveryDue } from '../monitoring/SessionMonitor.js';
 import { reachNoticeDue } from '../users/ReachablePeople.js';
 import { nextAuditAfterFailure } from '../core/attribution/AttributionAudit.js';
 import { advanceEvolutionArchiveFailure, evolutionArchiveSyncAttemptDue, EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES } from '../core/EvolutionArchiveSync.js';
@@ -381,6 +382,33 @@ const reachSecondPersonNotice: SelfActionController = {
         if (!reachNoticeDue(steadyCount, heldAt)) return;
         sink.emit({ verb: 'notify', target: 'team:second-person' });
         heldAt = steadyCount;
+      },
+    };
+  },
+};
+
+/** session-monitor-dead-recovery: a dead conversation never comes back and the same
+ * message stays unanswered, so the monitor keeps polling it. One restart, then quiet. */
+const sessionMonitorDeadRecovery: SelfActionController = {
+  id: 'session-monitor-dead-recovery',
+  actionVerb: 'restart',
+  models: 'src/monitoring/SessionMonitor.ts (dead case — deadRecoveryDue, one fresh restart per unanswered message)',
+  modelsPath: 'src/monitoring/SessionMonitor.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: `The attempt is held in memory, so a server restart allows one more for the same message, and only within ${DEAD_RECOVERY_MAX_AGE_MS / 3_600_000} hours of it. The failure notice stays deduplicated on disk.` },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 24 * 60,
+  tickMs: 60_000,
+  eternalSentinel: undefined,
+  makeUnderPressure(f, sink) {
+    const userMessageAt = f.clock.nowMs();
+    let attempted: number | undefined;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (!deadRecoveryDue(attempted, userMessageAt, f.clock.nowMs())) return;
+        attempted = userMessageAt;
+        sink.emit({ verb: 'restart', target: 'dead-conversation' });
       },
     };
   },
@@ -4226,6 +4254,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   jobCoverageAlertRetry,
   profileReconciliationNotice,
   linuxBrowserInstallRetry,
+  sessionMonitorDeadRecovery,
   codex429ExitNotice,
   claudeKeySessionRefresh,
   slackRefusedHoldRetry,

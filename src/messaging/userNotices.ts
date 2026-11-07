@@ -43,9 +43,9 @@ export function movedMachinesMidStepNotice(targetMachineName: string | null | un
     + `The conversation carries on there. If that step matters, ask me to check it.`;
 }
 
-/** A message arrived for a conversation whose session had stopped; a new one is starting. */
+/** A message arrived with no live session, so a new one is starting. Says nothing has stopped: the conversation carries on. */
 export const SESSION_RESTARTING_NOTICE =
-  `🔄 My session for this conversation had stopped, so I'm starting a new one. Your message is saved and I'll answer it once I'm back.`;
+  `🔄 Starting a new session for this conversation. Your message is saved and I'll answer it once I'm back.`;
 
 /** The replacement session is up and no message was waiting (e.g. a stuck session was
  *  replaced). With a message waiting nothing is sent: the reply is the confirmation. */
@@ -91,9 +91,11 @@ export const LIFECYCLE_NOTICE_EXACT: ReadonlySet<string> = new Set([
 ]);
 export const LIFECYCLE_NOTICE_PREFIXES: readonly string[] = [
   '🔄 Session restarting', // legacy wording, still in history
-  '🔄 My session for this conversation had stopped', // SESSION_RESTARTING_NOTICE
+  '🔄 My session for this conversation had stopped', // legacy wording, still in history
+  '🔄 Starting a new session', // SESSION_RESTARTING_NOTICE
   'I moved this conversation to ',
   'This conversation moved machines mid-task', // legacy wording
+  'Session starting up', // spawn acknowledgement; the person's turn is still open
 ];
 
 /** Every catalogued notice rendered with realistic inputs — the test surface. */
