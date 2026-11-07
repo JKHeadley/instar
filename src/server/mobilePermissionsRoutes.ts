@@ -11,7 +11,7 @@
  *   POST /mobile/permissions/features/:id           — set a switch on or off
  *   POST /mobile/secrets/requests                   — ask someone for a password or key (docs/specs/mobile-native-secrets-writes.md)
  *   POST /mobile/secrets/requests/:key/cancel       — cancel a waiting request held here
- *   POST /mobile/sessions/door/:topic               — switch a session's door and model (docs/specs/mobile-native-session-controls.md)
+ *   POST /mobile/sessions/door/:conversation        — switch a conversation's engine and model (docs/specs/session-swap-any-conversation.md)
  *   POST /mobile/sessions/move/:topic               — move a conversation to another machine
  *   POST /mobile/sessions/close/:id                 — close a session
  *   POST /mobile/sessions/new                       — start a session
@@ -30,6 +30,7 @@ import path from 'node:path';
 import type { Request, Response, Router } from 'express';
 import { ownerOrBearer, rowKey } from './mobileCapacityRoutes.js';
 import { cleanText } from './mobilePlansPeopleRoutes.js';
+import { conversationKeys } from '../core/conversationKeys.js';
 import { TOKEN_RUN } from './mobileSecretsRoutes.js';
 import { activeOwnerPhone, isConsoleTicketEnabled, normalHost, verifyPresenceSignature } from './mobileConsoleTicket.js';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
@@ -129,7 +130,8 @@ export function permissionPresenceMessage(deviceId: string, host: string, challe
 
 /** Builds an action from its parts, or names what is wrong with them. */
 export function buildAction(kind: unknown, target: unknown, extra: { value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown; label?: unknown; note?: unknown; topicId?: unknown; framework?: unknown; model?: unknown; machine?: unknown; to?: unknown; confirmation?: unknown; tmux?: unknown; name?: unknown; platform?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
-  if (typeof target !== 'string' || !TARGET_PATTERN.test(target)) return { ok: false, error: 'bad-target' };
+  // A session door names a conversation reference, whose Slack form has uppercase ids (checked below).
+  if (typeof target !== 'string' || (kind === 'session-door' ? !conversationKeys(target) : !TARGET_PATTERN.test(target))) return { ok: false, error: 'bad-target' };
   if (kind === 'approve-request') {
     if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
     return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
@@ -179,7 +181,9 @@ function buildSessionAction(kind: SessionAction['kind'], target: string, x: { fr
   if (machine === undefined) return { ok: false, error: 'bad-machine' };
   if (model === undefined) return { ok: false, error: 'bad-model' };
   if (kind === 'session-door') {
-    if (!TOPIC_ID.test(target)) return { ok: false, error: 'bad-target' };
+    // Any conversation (session-swap-any-conversation §3.5): a reference, or a bare Telegram topic
+    // id from an older app. The signed line carries the target exactly as sent.
+    if (!conversationKeys(target)) return { ok: false, error: 'bad-target' };
     if (!word(x.framework)) return { ok: false, error: 'bad-framework' };
     return { ok: true, action: { kind, target, framework: x.framework, model, machine } };
   }

@@ -19,6 +19,7 @@ import { ownerOrBearer } from './mobileCapacityRoutes.js';
 import { DEVICE_SESSION_NAME_RE, NOT_RUNNING_REASON, redactDeep, redactForDevice, peerTooOldReason } from './mobileSessionTerminalRoutes.js';
 import type { ActionResult, SessionAction } from './mobilePermissionsRoutes.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
+import { conversationKeys } from '../core/conversationKeys.js';
 
 export const MOBILE_SESSION_CONTROLS_SCHEMA_VERSION = 1;
 /** The dashboard's attachment limit (routes.ts DASHBOARD_ATTACHMENT_MAX_BYTES). */
@@ -141,7 +142,18 @@ export function machineRows(pool: unknown): { selfMachineId: string | null; rows
   return { selfMachineId: self, rows };
 }
 
-/** The Telegram topic a session belongs to, when it has one. Door and machine work on those, as on the dashboard. */
+/** The conversation a session serves (session-swap-any-conversation §2): its reference, or null for none. */
+export function conversationOf(row: Rec): { ref: string; profileKey: string; kind: 'telegram' | 'app' | 'slack' } | null {
+  const fromRow = typeof row.conversationRef === 'string' ? conversationKeys(row.conversationRef) : null;
+  const k = fromRow ?? (topicOf(row) !== null ? conversationKeys(String(topicOf(row))) : null);
+  if (!k) return null;
+  // A Telegram topic counts only where topicOf does (topic 1, the General topic, never did).
+  if (k.kind === 'telegram' && topicOf({ platform: 'telegram', platformId: k.id }) === null) return null;
+  // A Telegram door target stays the bare topic id, so an older app signs the same line it always did.
+  return { ref: k.kind === 'telegram' ? k.id : k.ref, profileKey: k.profileKey, kind: k.kind };
+}
+
+/** The Telegram topic a session belongs to, when it has one. Moving works on those (app and Slack: part 3). */
 export function topicOf(row: Rec): number | null {
   const n = Number(row.platform === 'telegram' ? row.platformId : NaN);
   return Number.isSafeInteger(n) && n > 1 ? n : null;
@@ -154,7 +166,9 @@ function chatWords(row: Rec): string {
   return 'none (terminal only)';
 }
 
-const NOT_A_TOPIC = `${DOOR.Word} and machine can be changed for Telegram conversations. This session has no Telegram topic.`;
+const NOT_A_TOPIC = `${DOOR.Word} and machine can be changed for a session that has a conversation. This session has none, so there is nothing to switch.`;
+/** Moving app and Slack conversations between machines is part 3 of session-swap-any-conversation. */
+const MOVE_TELEGRAM_ONLY = 'Moving to another machine works for Telegram conversations today. App and Slack conversations get it next; until then this one stays on its machine.';
 const ONE_MACHINE = 'This agent runs on one machine, so there is nowhere to move it.';
 const CANT_READ_DOORS = `Can't read the ${DOOR.words} and models right now.`;
 const CANT_READ_MACHINES = "Can't read the machines right now.";
@@ -176,17 +190,18 @@ export function summarizeControls(parts: ControlsParts, actions: unknown, now: n
   const { row, remote } = parts;
   const t = rec(row.telemetry);
   const topic = topicOf(row);
+  const conv = conversationOf(row);
   const machines = parts.pool.status === 200 ? machineRows(parts.pool.body) : null;
   const machineId = str(row.machineId);
 
   let door: Rec;
-  if (topic === null) door = { state: 'not-this-chat', reason: NOT_A_TOPIC, doors: [] };
+  if (conv === null) door = { state: 'not-this-chat', reason: NOT_A_TOPIC, doors: [] };
   else if (!parts.options || parts.options.status !== 200 || !parts.profile || parts.profile.status !== 200) door = { state: 'unavailable', reason: CANT_READ_DOORS, doors: [] };
   else {
     const doors = doorRows(parts.options.body);
     const resolved = rec(rec(parts.profile.body).resolved);
     door = {
-      state: 'ok', reason: null, topic: String(topic), doors,
+      state: 'ok', reason: null, topic: conv.ref, doors,
       framework: str(resolved.framework), model: str(resolved.model),
       now: doorModelWords(doors, resolved.framework, resolved.model),
       source: profileSourceWords(parts.profile.body),
@@ -195,7 +210,8 @@ export function summarizeControls(parts: ControlsParts, actions: unknown, now: n
   }
 
   let move: Rec;
-  if (topic === null) move = { state: 'not-this-chat', reason: NOT_A_TOPIC, choices: [] };
+  if (conv === null) move = { state: 'not-this-chat', reason: NOT_A_TOPIC, choices: [] };
+  else if (topic === null) move = { state: 'not-yet', reason: MOVE_TELEGRAM_ONLY, choices: [] };
   else if (parts.pool.status !== 200) move = { state: 'unavailable', reason: CANT_READ_MACHINES, choices: [] };
   else if (!machines) move = { state: 'one-machine', reason: ONE_MACHINE, choices: [] };
   else move = { state: 'ok', reason: null, topic: String(topic), choices: machines.rows.filter((m) => m.machineId !== machineId) };
@@ -351,7 +367,10 @@ export async function runSessionAction(a: SessionAction, deps: Pick<MobileSessio
       const door = doorRows(options.body).find((d) => d.framework === a.framework);
       if (!door || !door.selectable) return fail(409, 'door-not-offered', `Not switched: ${door ? `${door.label} can't be used here (${door.reason ?? 'unavailable'})` : `that ${DOOR.word} isn't offered here`}.`);
       if (a.model !== null && !door.models.some((m) => m.id === a.model)) return fail(409, 'model-not-offered', `Not switched: that model isn't offered on ${door.label}.`);
-      const r = await deps.call('POST', `/topic-profile/${encodeURIComponent(a.target)}`, { framework: a.framework, model: a.model }, machine);
+      // The reference names the conversation; its engine lives under its profile key (spec §2).
+      const keys = conversationKeys(a.target);
+      if (!keys) return fail(400, 'bad-target', 'Not switched: this conversation can\'t be named here.');
+      const r = await deps.call('POST', `/topic-profile/${encodeURIComponent(keys.profileKey)}`, { framework: a.framework, model: a.model }, machine);
       const b = rec(r.body);
       if (r.status >= 200 && r.status < 300 && b.ok === true) {
         return { status: 200, body: { ok: true, noop: b.noop === true, message: str(b.message) ?? (b.noop === true ? 'It is already on that.' : `Switching. The session restarts on the new ${DOOR.word}.`) } };
@@ -420,10 +439,10 @@ export function mountMobileSessionControlsRoutes(router: Router, deps: MobileSes
     if (!row) { res.status(404).json({ error: 'session-not-running', reason: NOT_RUNNING_REASON }); return; }
     const remote = row.remote === true;
     const machine = remote ? str(row.machineId) : null;
-    const topic = topicOf(row);
+    const conv = conversationOf(row);
     const [options, profile, pool, relayState] = await Promise.all([
-      topic === null ? Promise.resolve(null) : deps.call('GET', '/topic-profile/options', undefined, machine),
-      topic === null ? Promise.resolve(null) : deps.call('GET', `/topic-profile/${topic}`, undefined, machine),
+      conv === null ? Promise.resolve(null) : deps.call('GET', '/topic-profile/options', undefined, machine),
+      conv === null ? Promise.resolve(null) : deps.call('GET', `/topic-profile/${encodeURIComponent(conv.profileKey)}`, undefined, machine),
       deps.call('GET', '/pool'),
       remote ? deps.call('GET', `/mobile/sessions/relay/${encodeURIComponent(name)}/state`, undefined, machine) : Promise.resolve(null),
     ]);

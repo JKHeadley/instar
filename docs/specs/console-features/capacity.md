@@ -366,8 +366,14 @@ does any sign-in need me?"*
 - "Tap Switch account" refers to a button on the provider's page without saying so.
 
 **The new design.**
-- *Arrival (glance):* **"Plenty left: the busiest account is at 62% of its 5-hour limit."** /
-  **"1 sign-in needs you."** / **"Claude is nearly out until 4:10pm; Codex has room."** Facts:
+- *Arrival (glance):* **"1 sign-in needs you."** when one does, else just **"Accounts"**. Under it,
+  the notice spot (operator 2026-11-06, topic 134088: "only show a message if it's actually useful
+  and important"): empty and hidden unless a machine has no signed-in account ("Mac Mini has no
+  signed-in account, so nothing can run there.", action: the sign-in) or every usable account, or
+  every usable account of one kind, is at or over 90% ("All 2 Claude accounts are used up." with
+  when room returns, action: ask the agent). One account full while others have room is on its
+  row and is never a notice, and a sign-in that is only waiting gets no line at the top either. Same rules as the phone's `notices` (`accountNotices` in
+  `src/server/mobileCapacityRoutes.ts`). Facts:
   *Needs you* (sign-ins, approvals; hidden at zero), *Most used* (account + % + resets in),
   *Accounts* (n working of m), *In use now* (which account this machine is serving with).
 - *Layout:*

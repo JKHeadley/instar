@@ -471,10 +471,10 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     key: 'mobileSessionControls',
     // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
     prefixes: [],
-    description: 'The Instar iPhone app\'s session screen controls (docs/specs/mobile-native-session-controls.md): GET /mobile/sessions/controls (machine, door, model and why each can or cannot change), GET /mobile/sessions/new-options, GET /mobile/sessions/history (secrets removed), POST /sessions/:name/key (the keys tray and Stop) and POST /sessions/:name/attachments for owner phones; POST /mobile/sessions/door/:topic, /move/:topic, /close/:id, /new and /default, each with Face ID over a single-use challenge behind mobilePairing.permissionActions. Every control runs the dashboard\'s own route, so its rules stay in force. Sessions on another machine go through the machine the phone reached (pool-token /mobile/sessions/relay/:name/* routes), and typing obeys that machine\'s dashboard.poolStream.allowRemoteInput.',
+    description: 'The Instar iPhone app\'s session screen controls (docs/specs/mobile-native-session-controls.md): GET /mobile/sessions/controls (machine, door, model and why each can or cannot change), GET /mobile/sessions/new-options, GET /mobile/sessions/history (secrets removed), POST /sessions/:name/key (the keys tray and Stop) and POST /sessions/:name/attachments for owner phones; POST /mobile/sessions/door/:topic, /move/:topic, /close/:id, /new and /default, each with Face ID over a single-use challenge behind mobilePairing.permissionActions. Every control runs the dashboard\'s own route, so its rules stay in force. Sessions on another machine go through the machine the phone reached (pool-token /mobile/sessions/relay/:name/* routes), and typing obeys that machine\'s dashboard.poolStream.allowRemoteInput. Engine and model switching works for every conversation (docs/specs/session-swap-any-conversation.md): the door route takes a conversation reference (telegram:N, app:<key>, slack:<team>:<channel>[:<thread>], or a bare topic id), GET /sessions rows carry conversationRef, and /topic-profile/:key accepts app:<key>; moving machines is still Telegram-only.',
     build: () => ({
       configured: true,
-      endpoints: ['GET /mobile/sessions/controls', 'GET /mobile/sessions/new-options', 'GET /mobile/sessions/history', 'POST /sessions/:name/key', 'POST /sessions/:name/attachments', 'POST /mobile/sessions/door/:topic', 'POST /mobile/sessions/move/:topic', 'POST /mobile/sessions/close/:id', 'POST /mobile/sessions/new', 'POST /mobile/sessions/default'],
+      endpoints: ['GET /mobile/sessions/controls', 'GET /mobile/sessions/new-options', 'GET /mobile/sessions/history', 'POST /sessions/:name/key', 'POST /sessions/:name/attachments', 'POST /mobile/sessions/door/:conversation', 'POST /mobile/sessions/move/:topic', 'POST /mobile/sessions/close/:id', 'POST /mobile/sessions/new', 'POST /mobile/sessions/default'],
     }),
   },
   {
@@ -485,6 +485,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({
       configured: true,
       endpoints: ['POST /mobile/secrets/requests', 'POST /mobile/secrets/requests/:key/cancel'],
+    }),
+  },
+  {
+    key: 'mobileOwnerPresence',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Remote Desktop with Face ID and the Dashboard PIN page for the owner\'s phone (docs/specs/mobile-owner-presence-pin.md): POST /mobile/desktop-unlock/challenge and POST /mobile/desktop-unlock mint a desktop-only, phone-bound 15-minute session after a fresh presence-key (Face ID / passcode) signature; POST /mobile/dashboard-pin/challenge and POST /mobile/dashboard-pin/reveal show the dashboard PIN this machine compares against and tell the owner privately. Owner phone only; the bearer is refused. Dev-gated (mobilePairing.ownerPresence.enabled).',
+    build: () => ({
+      configured: true,
+      endpoints: ['POST /mobile/desktop-unlock/challenge', 'POST /mobile/desktop-unlock', 'POST /mobile/dashboard-pin/challenge', 'POST /mobile/dashboard-pin/reveal'],
     }),
   },
   {
@@ -524,7 +534,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     description: 'What a degraded /health means for the person (docs/specs/mobile-health-issues.md): each reason sorted into user-affecting, internal or unclassified from a declared table, with plain words and a next step, and the quick actions on each one (docs/specs/health-quick-actions.md): hide for a while, hide from me, or ignore completely, undoable from the Hidden list. Owner phone or bearer. /health keeps its shape; only an ignored problem stops counting in it.',
     build: () => ({
       configured: true,
-      endpoints: ['GET /mobile/health-issues', 'POST /mobile/health-issues/choices', 'POST /mobile/health-issues/choices/undo'],
+      endpoints: ['GET /mobile/health-issues', 'POST /mobile/health-issues/choices', 'POST /mobile/health-issues/choices/undo', 'POST /mobile/attention/:id/choice'],
     }),
   },
   {

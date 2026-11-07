@@ -41,6 +41,49 @@ describe('verified primary account admission', () => {
     expect(await h.service.quotaStatus()).toEqual({ usedPercent: 70, pauseThreshold: 75 });
   });
 
+  it('a restart that moved the live owner epoch past the saved one does not stop sorting', async () => {
+    h = await createHarness({ config: { accountSelectionMode: 'on' },
+      primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: selected }), revalidate: () => true } });
+    await h.addItem('after-restart');
+    h.ownerEpoch.value = 2;
+    const result = await h.service.tick();
+    expect(result.reason).not.toBe('call-cap-reached');
+    expect(result.calls).toBe(1);
+    expect(result.decided).toBe(1);
+    expect(h.drain.ownerAuthorityEpoch()).toBe(2);
+  });
+
+  it('losing the lease during a tick is reported as losing ownership', async () => {
+    let checks = 0;
+    h = await createHarness({ config: { accountSelectionMode: 'on' },
+      primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: selected }),
+        revalidate: () => { if (++checks === 1) h.ownerEpoch.value = 2; return true; } } });
+    await h.addItem('moved');
+    const result = await h.service.tick();
+    expect(result.reason).toBe('owner-lost');
+    expect(result.calls).toBe(0);
+  });
+
+  it('a refusal below every limit is not reported as the daily call limit', async () => {
+    let checks = 0;
+    h = await createHarness({ config: { accountSelectionMode: 'on' },
+      primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: selected }),
+        revalidate: () => ++checks === 1 } });
+    await h.addItem('refused');
+    const result = await h.service.tick();
+    expect(result.reason).toBe('authority-admission-refused');
+    expect(result.calls).toBe(0);
+  });
+
+  it('a primary call refused at the real daily limit keeps the call-limit reason', async () => {
+    h = await createHarness({ config: { accountSelectionMode: 'on', maxCallsPerDay: 1, maxBatchChars: 4_000 },
+      primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: selected }), revalidate: () => true } });
+    for (const id of ['a', 'b', 'c']) await h.addItem(id, { description: 'x'.repeat(1_100) });
+    const result = await h.service.tick();
+    expect(h.calls).toHaveLength(1);
+    expect(result.reason).toBe('call-cap-reached');
+  });
+
   it('refuses pace margin when the selected account is stale or unreadable', async () => {
     let valid = false;
     h = await createHarness({ config: { accountSelectionMode: 'on' },

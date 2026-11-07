@@ -56,3 +56,7 @@ Round 1: concern raised, 8 issues (retry bypassing routing, boot race, spawn aft
 ## Class-Closure Declaration
 
 `unbounded-self-action` — closure: guard, enforcement: ratchet, citation: `tests/unit/self-action-convergence.test.ts`. The retry is registered as `slack-refused-hold-retry`: a fixed schedule of 6 tries per conversation, then the messages are dropped and the person is asked to resend. Attempts persist across restarts, and only a new message from a person adds to the hold.
+
+## Later change: Local Verify findings
+
+The ELI16 file moved to the `.eli16.md` name the upgrade checks expect, and two catch blocks gained their in-block marker for the fallback ratchet. No behaviour change.

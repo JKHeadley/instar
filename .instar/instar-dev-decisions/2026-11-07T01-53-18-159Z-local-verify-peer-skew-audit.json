@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-07T01:53:18.159Z",
+  "slug": "local-verify-peer-skew-audit",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 86,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/localVerifyWiring.ts"
+    ],
+    "addedLines": 62,
+    "deletedLines": 24
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

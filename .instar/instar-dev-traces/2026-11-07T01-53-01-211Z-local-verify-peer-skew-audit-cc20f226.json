@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "local-verify-peer-skew-audit",
+  "sessionId": "bf0c08b9-8894-4707-971f-bfb5ac379dc0",
+  "timestamp": "2026-11-07T01:53:01.211Z",
+  "artifactPath": "upgrades/side-effects/local-verify-peer-skew-audit.md",
+  "artifactSha256": "56a26b6e150b170ff456b345bedeee6a254d08e3ecd2cf8af970a16e74a533b9",
+  "coveredFiles": [
+    "docs/specs/local-verify-peer-skew-audit.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/peer.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "upgrades/next/local-verify-peer-skew-audit.md",
+    "upgrades/side-effects/local-verify-peer-skew-audit.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A bounded new hold through the existing restart-hold provider, plus audit rows; no state or config; a revert fully undoes it.",
+  "eli16Path": "docs/specs/local-verify-peer-skew-audit.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-peer-skew-audit.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -47,6 +47,7 @@ export function slackReplyRelayReadiness(stateDir: string, expectedTemplate: str
     if (sha(fs.readFileSync(destination, 'utf8')) !== sha(expectedTemplate)) return { ready: false, reason: 'canonical relay bytes do not match the packaged template' };
     return { ready: true };
   } catch (err) {
+    // @silent-fallback-ok: not silent, the caller logs this reason and refuses the spawn
     return { ready: false, reason: err instanceof Error ? err.message : String(err) };
   }
 }

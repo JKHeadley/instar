@@ -1845,6 +1845,8 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     // is enough. Exactly these two paths: the routes machines use with each other are bearer-only.
     { method: 'POST', re: /^\/mobile\/health-issues\/choices$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'health-choices' },
     { method: 'POST', re: /^\/mobile\/health-issues\/choices\/undo$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'health-choices' },
+    // Done and Ignore for a Needs-you item (docs/specs/mobile-attention-choices.md), in the same bucket.
+    { method: 'POST', re: /^\/mobile\/attention\/(?=[a-z0-9._:-]*[a-z0-9])[a-z0-9._:-]{1,200}\/choice$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'health-choices' },
     // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): read-only
     // trimmed summaries, owner phones only, with one shared bucket of their own (they read peers).
     { method: 'GET', re: /^\/mobile\/proposals$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'proposals-inside-reads' },
@@ -1857,6 +1859,23 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     { method: 'GET', re: /^\/mobile\/permissions\/slips$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
     { method: 'GET', re: /^\/mobile\/permissions\/features$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
     { method: 'POST', re: /^\/mobile\/permissions\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4): owner phone only,
+    // their own bucket so retries can't use up the approvals' allowance.
+    { method: 'POST', re: /^\/mobile\/desktop-unlock\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
+    { method: 'POST', re: /^\/mobile\/desktop-unlock$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
+    { method: 'POST', re: /^\/mobile\/dashboard-pin\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
+    { method: 'POST', re: /^\/mobile\/dashboard-pin\/reveal$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
+    // The desktop calls the app makes after a Face ID unlock (§2.2): signed by the owner phone instead of the
+    // API token, and still refused by each route without a desktop session. Reads that ask the other machines
+    // share 20/min, the two writes 12/min, and the viewer's polls 240/min.
+    { method: 'GET', re: /^\/desktop\/targets$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'owner-desktop-peers' },
+    { method: 'GET', re: /^\/desktop\/setup$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'owner-desktop-peers' },
+    { method: 'GET', re: /^\/desktop\/setup\/[^/]{1,200}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 240, bucket: 'owner-desktop' },
+    { method: 'POST', re: /^\/desktop\/setup\/[^/]{1,200}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-desktop-writes' },
+    { method: 'POST', re: /^\/desktop\/requests$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-desktop-writes' },
+    { method: 'GET', re: /^\/desktop\/requests\/[^/]{1,200}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 240, bucket: 'owner-desktop' },
+    { method: 'GET', re: /^\/desktop\/requests\/[^/]{1,200}\/(cursor|displays)$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 240, bucket: 'owner-desktop' },
+    { method: 'POST', re: /^\/desktop\/requests\/[^/]{1,200}\/(ticket|resume|revoke)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 240, bucket: 'owner-desktop' },
     { method: 'POST', re: /^\/mobile\/permissions\/requests\/[a-z0-9._:-]{1,128}\/(approve|decline)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/permissions\/features\/[a-z0-9._:-]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // Ask for a password or key, and cancel a request (docs/specs/mobile-native-secrets-writes.md): the same
@@ -1872,7 +1891,9 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     { method: 'GET', re: /^\/mobile\/sessions\/new-options$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'session-controls-reads' },
     { method: 'GET', re: /^\/mobile\/sessions\/history$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'session-history-reads' },
     // What ends, moves or starts a session: the Face ID-confirmed path and bucket above.
-    { method: 'POST', re: /^\/mobile\/sessions\/door\/[1-9][0-9]{0,15}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // Any conversation (session-swap-any-conversation §3.5): the path is lower-cased here, so a Slack
+    // reference's uppercase ids match [a-z0-9]; the route re-checks the reference with its real case.
+    { method: 'POST', re: /^\/mobile\/sessions\/door\/(?:(?:telegram:)?[1-9][0-9]{0,15}|app:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|slack:[a-z0-9._:-]{1,190})$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/sessions\/move\/[1-9][0-9]{0,15}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/sessions\/close\/[a-z0-9._:-]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/sessions\/new$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
