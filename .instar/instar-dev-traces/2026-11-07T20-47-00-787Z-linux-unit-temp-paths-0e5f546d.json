@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "linux-unit-temp-paths",
+  "sessionId": "5b800062-dfd4-4a77-b261-868fdf17b7b8",
+  "timestamp": "2026-11-07T20:47:00.787Z",
+  "artifactPath": "upgrades/side-effects/linux-unit-temp-paths.md",
+  "artifactSha256": "c7af83c47f1f487634823c0bce17e0e9bea810356bb45142838cddad13def44b",
+  "coveredFiles": [
+    "docs/specs/linux-unit-temp-paths.eli16.md",
+    "src/core/AgentOwnedMemory.ts",
+    "tests/unit/PostUpdateMigrator-throwawayAgents.test.ts",
+    "tests/unit/ThrowawayAgentGuard.test.ts",
+    "tests/unit/agent-owned-memory.test.ts",
+    "tests/unit/app-media-replicator.test.ts",
+    "upgrades/next/linux-unit-temp-paths.md",
+    "upgrades/side-effects/linux-unit-temp-paths.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible cross-platform bug fix and test fixture corrections; revert restores prior behavior without migration.",
+  "eli16Path": "docs/specs/linux-unit-temp-paths.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/linux-unit-temp-paths.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
