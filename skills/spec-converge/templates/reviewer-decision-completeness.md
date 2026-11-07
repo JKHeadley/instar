@@ -48,6 +48,26 @@ ends, and what happened during it does not un-happen. A contested tag you reject
 **MATERIAL finding that blocks convergence** — same authority as any other material
 issue.
 
+<!-- FIXED_LIMIT_CONTEST -->
+**Fixed-limit contest (Judgment Within Floors).** Inventory EVERY fixed limit on
+what/how much an agent may do, anywhere in the spec: rates, counts, sizes, growth
+ceilings, retirement thresholds and qualitative quotas. Each is a
+**judgment-candidate by default**. For each, report: location + boundary, claimed
+basis, independent evidence, a legitimate counterexample it rejects (or explicitly
+"no legitimate counterexample found" for a genuine floor), and verdict.
+An `invariant` row must declare `basis: irreversible-consequence`,
+`basis: enumerable-domain`, or `basis: external-constraint`, followed by
+`; evidence: <specific consequence, domain or source>`. Independently verify why
+this exact boundary follows from that evidence. The fields alone prove nothing.
+"Deterministic counts", "fixed cap", "bounded by design", or repeating the limit
+is a circular justification: REJECT it as **MATERIAL / DESIGN**, blocking
+convergence until resolved. If evidence does not establish a real floor, require
+intelligent assessment inside a deterministic floor (bounded action space,
+conservative default, fallback ladder ending deterministically), with the arbiter
+named. Do not invent replacement caps. Preserve evidenced safety/protocol/type
+constraints; measurements, examples and advisory defaults are not caps unless
+they actually gate behavior. Explicitly report `fixed-limits: none` when absent.
+
 Specifically check:
 
 1. **Buried decisions** — sentences like "the implementer can decide", "TBD", "we
