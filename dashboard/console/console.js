@@ -23,6 +23,7 @@ import { renderCosts } from './costs.js';
 import { renderSchedule } from './schedule.js';
 import { renderDevelopment, groupExtras } from './development.js';
 import { renderAgents } from './agents.js';
+import { renderReach } from './reach.js';
 import { renderMandates } from './mandates.js';
 import { renderSecrets } from './secrets.js';
 import { renderLearned } from './learned.js';
@@ -665,6 +666,7 @@ const NATIVE = {
   'people/messages': renderMessages,
   'people/notifications': renderNotifications,
   'people/agents': renderAgents,
+  'people/reach': renderReach,
   'people/mandates': renderMandates,
   'people/secrets': renderSecrets,
   'settings/allowed': renderAllowed,
