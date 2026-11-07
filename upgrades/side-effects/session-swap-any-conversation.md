@@ -48,3 +48,10 @@ Change: an app or Slack conversation can switch its engine and model from the da
 ## Class-Closure Declaration
 
 - **unbounded-self-action — closure: n/a.** This is a one-shot, user-driven action, not a self-triggered loop. An app or Slack session restarts only after the operator's own engine write. That restart goes through the profile orchestrator's existing debounce, its concurrency cap of 2, and its spawn-failure breaker. The app and Slack spawns still run once per inbound message, as before; they only now carry the conversation's engine.
+
+## Follow-up: the full unit run
+
+The full unit run found three failures from this change, all fixed with no behaviour change:
+- **Silent-fallback markers.** Two one-line catches carried their `@silent-fallback-ok` marker outside the braces, but the scanner reads only inside. One existing spawn-port catch, which reports a failure class, was counted after a new catch was added next to it.
+- **The app block's wiring test.** Its source-scan window was widened, because the starter wiring made the block longer.
+- **The Slack wiring test.** It now expects the engine-aware resume lookup.
