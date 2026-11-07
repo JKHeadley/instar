@@ -1,0 +1,18 @@
+<!-- bump: patch -->
+
+## What Changed
+
+The app's Session button now opens a chat's session whatever machine it runs on. `GET /mobile/conversations/session` finds a session on another machine in the pool's session listing and answers it as a remote session (`remote: true`, `machineId`). The app opens it natively through the relay routes, with live output, history, typing, keys and controls. It used to say "open the dashboard on <machine>". If that machine isn't answering, the answer says so with a retry. If it needs a newer Instar, the answer says that.
+
+## What to Tell Your User
+
+Tapping Session in a chat now opens that chat's session even when it runs on another of your machines, instead of telling you to go to that machine's dashboard.
+
+## Summary of New Capabilities
+
+- `GET /mobile/conversations/session` answers a session on another machine as `remote: true` with its `machineId`
+
+## Evidence
+
+- Unit: the remote answer for each case, and the pool listing read.
+- Integration: a remote session is found and answered; a machine that isn't answering gets a retry.

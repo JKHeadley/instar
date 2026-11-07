@@ -205,7 +205,7 @@ import { buildSlackHolderRead } from './mobileSlackHolderProxy.js';
 import { buildMediaHolderStream, holderBearerOk } from './mobileMediaHolderProxy.js';
 import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
 import { createMobileMediaRouter } from './mobileMediaRoutes.js';
-import { createMobileSessionRouter } from './mobileSessionRoutes.js';
+import { findRemoteSession, createMobileSessionRouter } from './mobileSessionRoutes.js';
 import { createMobileSessionTerminalRouter, peerRowsMatch, PEER_LOOKUP_MAX, PEER_LOOKUP_TIMEOUT_MS, type PeerLookup } from './mobileSessionTerminalRoutes.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { AttributionRuntime, type AttributionConfig } from '../core/attribution/attributionRuntime.js';
@@ -6592,6 +6592,16 @@ export class AgentServer {
         },
         selfMachineId: selfIdNow,
         nicknameOf: (id) => routeCtx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
+        // Open session on any machine: the owner machine's session, from the same pool listing the
+        // dashboard reads (each peer's rows carry its conversationRef), over this server's loopback.
+        remoteSession: async (ref, ownerMachineId) => {
+          const r = await fetch(`http://127.0.0.1:${options.config.port}/sessions?scope=pool`, {
+            headers: { Authorization: `Bearer ${options.config.authToken}` },
+            signal: AbortSignal.timeout(10_000),
+          });
+          if (!r.ok) return { state: 'unreachable' };
+          return findRemoteSession(await r.json(), ref, ownerMachineId);
+        },
       }));
       // Telegram media in the app's history (media spec §4.9): each file a Telegram topic receives is
       // also copied into the blob store as a replicated `platform-media` event. Media on only.
