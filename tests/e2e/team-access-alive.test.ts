@@ -143,6 +143,14 @@ describe('team access — production wiring', () => {
     expect(lowered.status).toBe(200);
     expect((await mia('GET', '/mobile/conversations')).status).toBe(401); // the phone itself is revoked
     expect(server.mobilePairing!.teamLog()!.isConfined(shared)).toBe(true);
+    // A removed person cannot come back under the same key, alone or hidden behind a new one.
+    const reuse = await owner('POST', '/mobile/team/invites', { events: [{ type: 'person-add', personKey: 'mia', name: 'Mia', role: 'member' }] });
+    expect(reuse.body.error).toBe('person-key-used');
+    const hidden = await owner('POST', '/mobile/team/invites', { events: [
+      { type: 'person-add', personKey: 'new-one', name: 'N', role: 'member' }, { type: 'person-add', personKey: 'mia', name: 'Mia', role: 'member' },
+    ] });
+    expect(hidden.status).toBe(400);
+    expect(server.mobilePairing!.teamStanding('mia')).toBeNull();
     // The history still reads by name after the person has gone.
     const history = await owner('GET', '/mobile/team/activity');
     expect(history.body.lines.map((l: { text: string }) => l.text)).toContain('Mia was removed');

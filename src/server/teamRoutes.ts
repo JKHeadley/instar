@@ -89,6 +89,8 @@ export class TeamRefusalLog {
   }
 }
 
+const grantRefs = (events: RequestEvent[]): string[] => events.flatMap((e) => (e.type === 'grant' || e.type === 'grant-remove' ? [e.ref] : []));
+
 /** Every person the log has ever held, present or gone. */
 export function keysEverAdded(rows: ReadonlyArray<TeamAccessRow>): Set<string> {
   const keys = new Set<string>();
@@ -192,6 +194,19 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     return events;
   };
 
+  /**
+   * End each conversation's session and write the change while holding every affected lock, so no
+   * replacement session can start under the old access. Sorted, so two changes never deadlock.
+   */
+  const underLocks = async (refs: Iterable<string>, commit: () => void): Promise<void> => {
+    const ordered = [...new Set(refs)].sort();
+    const step = async (i: number): Promise<void> => {
+      if (i === ordered.length) { commit(); return; }
+      await deps.applyConversationChange(ordered[i], () => step(i + 1));
+    };
+    await step(0);
+  };
+
   /** Every conversation a change to this person touches: what they were given, and what is theirs. */
   const refsOf = (personKey: string): string[] => {
     const state = svc.teamLog()?.state();
@@ -199,7 +214,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     return [...new Set([...(state?.grants.get(personKey)?.keys() ?? []), ...owned])];
   };
 
-  /** Every refusal check, then the confined list, then each session ended, then the event. */
+  /** Every refusal check, then the confined list. The caller ends each session and writes the event under its lock. */
   const applyGrants = async (events: RequestEvent[]): Promise<Refusal | null> => {
     const grants = events.filter((e): e is Extract<RequestEvent, { type: 'grant' }> => e.type === 'grant');
     const log = svc.teamLog();
@@ -211,10 +226,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
       if (r) return r;
     }
     log.ensureConfinedFile();
-    for (const g of grants) {
-      log.confine(confinedEntryFor(g.ref));
-      await deps.applyConversationChange(g.ref, () => undefined);
-    }
+    for (const g of grants) log.confine(confinedEntryFor(g.ref));
     return null;
   };
 
@@ -232,8 +244,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (log.healthState() === 'unreadable') return { status: 409, body: { error: LOG_UNREADABLE.error, detail: LOG_UNREADABLE.detail } };
     const events = parseSignedEvents(req.body);
     if (events?.length !== 1 || events[0].type !== 'team-off') return { status: 400, body: { error: 'bad-events' } };
-    for (const entry of log.readConfined() ?? []) await deps.applyConversationChange(entry.ref, () => undefined);
-    appendRequest(req, deviceId);
+    await underLocks((log.readConfined() ?? []).map((entry) => entry.ref), () => appendRequest(req, deviceId));
     svc.revokePersonPhones(null);
     return { status: 200, body: { ok: true } };
   };
@@ -272,8 +283,9 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     }
     const events = eventsOf(req, res);
     if (!events) return;
-    const add = events.find((e): e is Extract<RequestEvent, { type: 'person-add' }> => e.type === 'person-add');
-    if (!add) { res.status(400).json({ error: 'person-required', detail: 'An invite names a person.' }); return; }
+    const adds = events.filter((e): e is Extract<RequestEvent, { type: 'person-add' }> => e.type === 'person-add');
+    if (adds.length !== 1) { res.status(400).json({ error: 'person-required', detail: 'An invite names one person.' }); return; }
+    const add = adds[0];
     if (!log.state().on && !(events.some((e) => e.type === 'team-on') && events.some((e) => e.type === 'owner-pin'))) {
       res.status(400).json({ error: 'first-invite-incomplete', detail: 'The first invite also turns team access on.' });
       return;
@@ -281,7 +293,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (keysEverAdded(log.allRows()).has(add.personKey)) { res.status(409).json({ error: 'person-key-used', detail: 'That person was on this agent before. Invite them as someone new.' }); return; }
     const refused = await applyGrants(events);
     if (refused) { send(res, refused); return; }
-    appendRequest(req, deviceId);
+    await underLocks(grantRefs(events), () => appendRequest(req, deviceId));
     const link = svc.mintTeamLink(add.personKey, typeof body.label === 'string' ? body.label : null);
     if (!link.ok) { res.status(link.status).json({ error: link.error }); return; }
     res.json({ personKey: add.personKey, link: link.link, expiresAt: link.expiresAt, disclosure: TEAM_DISCLOSURE });
@@ -303,8 +315,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (!events) return;
     const refused = await applyGrants(events);
     if (refused) { send(res, refused); return; }
-    for (const e of events) if (e.type === 'grant-remove') await deps.applyConversationChange(e.ref, () => undefined);
-    appendRequest(req, deviceId);
+    await underLocks(grantRefs(events), () => appendRequest(req, deviceId));
     res.json({ ok: true });
   }));
 
@@ -315,8 +326,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (!events) return;
     const log = svc.teamLog();
     if (!log?.state().people.has(String(req.params.personKey))) { res.status(404).json({ error: 'unknown-person', detail: 'That person is not on this agent.' }); return; }
-    for (const ref of refsOf(String(req.params.personKey))) await deps.applyConversationChange(ref, () => undefined);
-    appendRequest(req, deviceId);
+    await underLocks(refsOf(String(req.params.personKey)), () => appendRequest(req, deviceId));
     if (events.some((e) => e.type === 'person-remove')) svc.revokePersonPhones(String(req.params.personKey));
     res.json({ ok: true });
   }));
@@ -356,8 +366,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     // One change per row: the log applies only one, so asking for two must not answer ok.
     if ([ref, role, b.remove === true ? true : undefined].filter((x) => x !== undefined).length > 1) { res.status(400).json({ error: 'one-change-at-a-time' }); return; }
     const refs = ref ? [ref] : refsOf(personKey);
-    for (const r of refs) await deps.applyConversationChange(r, () => undefined);
-    log.appendMachineEvents([{ type: 'lower', personKey, ...(ref ? { ref } : {}), ...(role ? { role } : {}), ...(b.remove === true ? { remove: true } : {}) }]);
+    await underLocks(refs, () => { log.appendMachineEvents([{ type: 'lower', personKey, ...(ref ? { ref } : {}), ...(role ? { role } : {}), ...(b.remove === true ? { remove: true } : {}) }]); });
     if (b.remove === true) svc.revokePersonPhones(personKey);
     res.json({ ok: true });
   }));

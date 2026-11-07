@@ -54,10 +54,22 @@ async function setup(overrides: Record<string, unknown> = {}) {
   svc.keyLedger = new MobileDeviceKeyLedger({ stateDir: dir, signer, keyLookup: identityKeyLookup(dir) });
   const convs = new Map<string, { ownerPerson: unknown }>([['-7', { ownerPerson: null }], ['-8', { ownerPerson: { machineId: 'm1', userId: 'mo' } }]]);
   svc.useAppConversationStore({ getConversation: (k) => (convs.get(k) as never) ?? null });
-  const spy = { changed: [] as string[], privacy: 0 };
+  const spy = { changed: [] as string[], privacy: 0, held: [] as string[], lockedDuringCommit: [] as string[] };
+  const spyOnCommit = (log: { appendSignedRequest: (...x: never[]) => unknown; appendMachineEvents: (...x: never[]) => unknown }) => {
+    for (const name of ['appendSignedRequest', 'appendMachineEvents'] as const) {
+      const real = log[name].bind(log);
+      log[name] = ((...args: never[]) => { if (spy.held.length > 0) spy.lockedDuringCommit = [...spy.held]; return real(...args); }) as never;
+    }
+  };
+  spyOnCommit(svc.teamLog() as never);
   const team: TeamRouteDeps = {
     signer: () => signer,
-    applyConversationChange: async (ref, change) => { spy.changed.push(ref); return change(); },
+    // Stands in for the real lock: `held` is what is locked while the change runs.
+    applyConversationChange: async (ref, change) => {
+      spy.changed.push(ref);
+      spy.held.push(ref);
+      try { return await change(); } finally { spy.held.pop(); }
+    },
     isSystemTopic: (id) => id === 1, isJobTopic: (id) => id === 2, isUnconfinableTopic: (id) => id === 3,
     ownerProfile: () => ({ userId: 'owner-1', several: false, links: {} }),
     logsDir: path.join(dir, 'logs'),
@@ -309,6 +321,34 @@ describe('a write means what it says', () => {
     e.svc.teamLog()!.load();
     expect(e.svc.teamLog()!.healthState()).toBe('unreadable');
     expect(e.svc.teamOn()).toBe(true); // the strict direction
+  });
+});
+
+describe('a change and its session end are one step', () => {
+  it('the row is written while every affected lock is held', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1', [grant('telegram:50'), grant('-7')]));
+    expect(e.spy.lockedDuringCommit).toEqual(['-7', 'telegram:50']);
+    e.spy.lockedDuringCommit = [];
+    await bearer(e, '/team/people/p-1/lower', { remove: true });
+    expect(e.spy.lockedDuringCommit).toEqual(['-7', 'telegram:50']);
+  });
+});
+
+describe('restoring a lost list', () => {
+  it('a read-only grant comes back, though it left no message, and an own conversation keeps its person', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1', [grant('telegram:50', 'read')]));
+    e.svc.confineOwnConversation('-77', 'p-1');
+    const dir = path.join(e.dir, 'state');
+    SafeFsExecutor.safeRmSync(path.join(dir, 'team-access', 'confined.json'), { force: true, operation: 'test' });
+    SafeFsExecutor.safeRmSync(path.join(dir, 'team-access-last-good'), { recursive: true, force: true, operation: 'test' });
+    expect((await faceId(e, owner, 'team-restore', '/mobile/team/restore')).status).toBe(200);
+    const list = e.svc.teamLog()!.readConfined()!;
+    expect(list.find((x) => x.ref === 'telegram:50')).toBeTruthy();
+    expect(list.find((x) => x.ref === '-77')).toMatchObject({ personKey: 'p-1' });
   });
 });
 

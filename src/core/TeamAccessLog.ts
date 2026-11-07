@@ -207,6 +207,25 @@ export function foldRows(rows: ReadonlyArray<TeamAccessRow>, verify: (row: TeamA
   return s;
 }
 
+/** Every conversation the log shows as ever shared or owned. An owned one keeps its person. */
+export function confinedFromRows(rows: ReadonlyArray<TeamAccessRow>, verify: (row: TeamAccessRow) => RowVerdict): ConfinedEntry[] {
+  const owned = new Map<string, string>();
+  const shared = new Set<string>();
+  for (const row of rows) {
+    if (verify(row) !== 'verified') continue;
+    if (row.kind === 'machine') {
+      for (const e of row.events) if (e.type === 'conversation-own') owned.set(e.ref, e.personKey);
+      continue;
+    }
+    for (const e of bodyEvents(row) ?? []) if (e.type === 'grant') shared.add(e.ref);
+  }
+  const entryFor = (ref: string): ConfinedEntry => (ref.startsWith('telegram:') ? { ref } : { ref, placeKey: `app:${ref}` });
+  return [
+    ...[...owned].map(([ref, personKey]) => ({ ...entryFor(ref), personKey })),
+    ...[...shared].filter((ref) => !owned.has(ref)).map(entryFor),
+  ];
+}
+
 /** One row onto a state. Rows must arrive in `seq` order, as an append does. */
 export function foldRowInto(s: TeamAccessState, row: TeamAccessRow, verify: (row: TeamAccessRow) => RowVerdict): void {
   s.highestSeq = Math.max(s.highestSeq, row.seq);
@@ -486,7 +505,10 @@ export class TeamAccessLog {
       lastGood = [];
     }
     const byRef = new Map<string, ConfinedEntry>();
-    const sources = [...(current ?? []), ...lastGood, ...input.teamRefs, ...(logLost && listLost ? input.allRefs() : [])];
+    // The log says what was ever shared or owned, even where nothing was said there: a read-only grant
+    // leaves no message, so a list rebuilt from messages alone would drop it.
+    const fromLog = confinedFromRows(merged, this.opts.verify);
+    const sources = [...(current ?? []), ...lastGood, ...fromLog, ...input.teamRefs, ...(logLost && listLost ? input.allRefs() : [])];
     for (const e of sources) if (!byRef.has(e.ref)) byRef.set(e.ref, e);
 
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });

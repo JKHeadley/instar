@@ -108,3 +108,10 @@ No sandbox escape on a default install. Fixed: the crash-recovery confinement wa
 No escape and no way to gain access. Fixed: on an ordinary agent invites worked while team-off, restore and memory privacy were refused, because those hung on a separate switch and the console PIN (they now answer to the same conditions as invites, an invite needs Face ID set up on the owner's phone, and enrolment works wherever native conversations do); `teamOn` read false when no log could open (now on when there are signs of a team); removing a person left their phones active and re-adding the key would revive them (phones are revoked on removal and team-off, and a used key cannot be added again).
 
 - Added: Fifth review fixes with tests.
+
+## Outside-family code review (Codex), 2026-11-07
+The first review of the code by another model family. Fixed: restore rebuilt the confined list without reading the log, so a read-only grant could drop out (it now reads what the log shows as ever shared or owned); an access change was written after the session's lock was released, so a replacement session could start under the old access (the row is now written while every affected lock is held, in sorted order). Its third point, a folder swapped between check and write, is a stated limit in the spec.
+
+- Added: Outside-family review fixes.
+
+An invite carries exactly one person, so a used key cannot hide behind a new one.
