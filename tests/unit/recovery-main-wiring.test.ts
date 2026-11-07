@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import ts from 'typescript';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { recoveryDirectHost, recoveryPairedPeers, startRecoveryMainWiring, type RecoveryMainWiringDeps } from '../../src/recovery/RecoveryMainWiring.js';
+import { recoveryDirectHost, recoveryPairedPeers, startRecoveryMainWiring, type RecoveryMainWiringDeps } from '../../src/commands/recoveryMainWiring.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const globals = globalThis as unknown as { __instarRecoveryRuntime?: { stop: () => void }; __instarRecoverySetup?: unknown };
@@ -73,5 +74,26 @@ describe('startRecoveryMainWiring', () => {
     expect(server).toContain('await startRecoveryMainWiring({');
     expect(server).toContain("guardRegistry.register('multiMachine.serverDownRecovery.enabled'");
     expect(server).not.toContain('new RecoverySetupRuntime(');
+  });
+});
+
+describe('recovery runtime boundary', () => {
+  // prepareRecoveryRuntimeSlot walks every module in dist/recovery and copies what
+  // they import. Anything imported at runtime from outside recovery and core lands
+  // in the runtime that must outlive the main package.
+  it('keeps src/recovery runtime imports inside recovery and core', () => {
+    const root = path.join(process.cwd(), 'src/recovery');
+    const escaping = fs.readdirSync(root).filter(name => name.endsWith('.ts')).flatMap(name => {
+      // Compile first so type-only imports are erased exactly as in dist, then let
+      // the compiler list every remaining import, whatever its form.
+      const { outputText } = ts.transpileModule(fs.readFileSync(path.join(root, name), 'utf8'), {
+        compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ESNext },
+      });
+      return ts.preProcessFile(outputText, true, true).importedFiles.map(file => file.fileName)
+        .filter(specifier => specifier.startsWith('.'))
+        .filter(specifier => !/^src\/(recovery|core)\//.test(path.posix.join('src/recovery', specifier)))
+        .map(specifier => `${name} -> ${specifier}`);
+    });
+    expect(escaping).toEqual([]);
   });
 });

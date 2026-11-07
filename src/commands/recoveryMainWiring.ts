@@ -4,7 +4,10 @@
  * and shutdown; this only observes them.
  *
  * Lives outside src/commands/server.ts because that file's startup function is
- * at the TypeScript compiler's control-flow limit (TS2563).
+ * at the TypeScript compiler's control-flow limit (TS2563). Lives outside
+ * src/recovery/ because the recovery runtime slot copies every module there plus
+ * what it imports; this one needs messaging and monitoring, which must stay out
+ * of a runtime that has to survive the loss of the main package.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,10 +23,10 @@ import type { InstarConfig, MeshEndpoint } from '../core/types.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import type { bootTelegramOrigin } from '../messaging/telegram-origin/TelegramOriginBoot.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
-import type { RecoveryEnrollmentAdvert } from './RecoveryEnrollment.js';
-import type { Signed } from './RecoveryProtocol.js';
-import type { RecoveryRuntime } from './RecoveryRuntime.js';
-import type { RecoverySetupRuntime } from './RecoverySetupRuntime.js';
+import type { RecoveryEnrollmentAdvert } from '../recovery/RecoveryEnrollment.js';
+import type { Signed } from '../recovery/RecoveryProtocol.js';
+import type { RecoveryRuntime } from '../recovery/RecoveryRuntime.js';
+import type { RecoverySetupRuntime } from '../recovery/RecoverySetupRuntime.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -82,8 +85,8 @@ function readHostSshKey(): string {
 
 export async function startRecoveryMainWiring(deps: RecoveryMainWiringDeps): Promise<RecoveryRuntime> {
   const { config, liveConfig, state, coordinator, identity, meshClient, peerUrl, machineId, machineSigningKey } = deps;
-  const { RecoveryRuntime } = await import('./RecoveryRuntime.js');
-  const { RecoverySetupRuntime } = await import('./RecoverySetupRuntime.js');
+  const { RecoveryRuntime } = await import('../recovery/RecoveryRuntime.js');
+  const { RecoverySetupRuntime } = await import('../recovery/RecoverySetupRuntime.js');
   const recoveryPaired = () => recoveryPairedPeers(identity, machineId);
 
   const setup = new RecoverySetupRuntime({
@@ -114,7 +117,7 @@ export async function startRecoveryMainWiring(deps: RecoveryMainWiringDeps): Pro
   });
   (globalThis as { __instarRecoverySetup?: RecoverySetupRuntime }).__instarRecoverySetup = setup;
 
-  const { RecoveryRepairCoordinator } = await import('./RecoveryRepairCoordinator.js');
+  const { RecoveryRepairCoordinator } = await import('../recovery/RecoveryRepairCoordinator.js');
   const repair = new RecoveryRepairCoordinator({
     stateDir: config.stateDir,
     lease: () => ({ eligible: coordinator.isRouter(), epoch: coordinator.getLeaseEpoch() }),
