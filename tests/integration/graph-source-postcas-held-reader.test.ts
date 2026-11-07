@@ -38,4 +38,22 @@ describe('actual post-CAS negative-held Source reader',()=>{
    expect(()=>preflight.assertCurrent()).toThrow();
   }finally{preflight.close();resumed?.close();}
  });
+ it('a change to the removal progress during the read window still refuses at the final check',async()=>{
+  const f=await setupNativeMemberLossFixture(0,true),r=f.runtime,record=f.knownRecord!,coordinator=f.nativeOptions.leaseCoordinator;
+  await r.intake.reserve(record.packet.idempotencyKey,canonicalHash('postcas-held-source-original'),()=>record);
+  const holdReceipt=f.authority.beginMemberLossHold(f.intent,f.context,r.machineId,f.survivor.loadSigningKey()),snapshot=await r.source.verifyMemberLossInventory(r.reader,r.droppedOriginRegistry,r.intake,f.authority,f.intent),preflight=GraphMemberLossHeldPreflight.collect({authority:f.authority,snapshot,context:f.context,intent:f.intent,holds:[holdReceipt]}),floor=await f.store.captureNativeFloor(coordinator,f.intent,f.context),progress=f.store.beginNativeOperation(f.consent,f.context,f.intent,preflight,floor);
+  let file='',bytes='';
+  try{
+   f.nativeOptions.identities.revokeDurably(f.removed,r.machineId,'synthetic Source reader member-loss fixture');const receipt=f.store.record(f.consent,f.context,f.intent),permit=NativeDecommissionLeasePermit.fromCommittedRevocations({store:f.store,coordinator,consent:f.consent,context:f.context,intent:f.intent,receipts:[receipt],floors:[floor]});expect(await coordinator.acquireOnOwnerDecommission(permit)).toBe(true);const originalLease=coordinator.currentLease()!,lease=bridge(f,originalLease),input={intent:f.intent,preflight,progress,coordinator,lease,originalLease};
+   const result=await r.source.verifyMemberLossHeldSourceReader(r.reader,r.droppedOriginRegistry,r.intake,f.authority,input);
+   // Reads inside the window recheck the stable removal state at most every few seconds. The full check when the read finishes must still catch a change.
+   file=path.join(f.survivor.baseDir,'conversation-graph','member-loss-native',canonicalHash('echo'),'operation-'+canonicalHash(f.intent)+'.json');bytes=fs.readFileSync(file,'utf8');const proof=JSON.parse(bytes);
+   await result.reader.readRecord(record.packet.eventId);
+   fs.writeFileSync(file,JSON.stringify({...proof,context:{...proof.context,newMembership:f.context.previousMembership}}));
+   // Inside the window the read is not re-checked, so it still succeeds; the full check at finalize must name the changed progress.
+   await expect(result.reader.readRecord(record.packet.eventId)).resolves.toBeTruthy();
+   let failure:unknown;try{result.reader.finalize();}catch(error){failure=error;}
+   expect(String(failure)).toMatch(/native-member-loss/);
+  }finally{if(file&&bytes)fs.writeFileSync(file,bytes);preflight.close();}
+ });
 });
