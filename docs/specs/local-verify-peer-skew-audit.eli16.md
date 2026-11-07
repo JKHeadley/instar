@@ -11,3 +11,11 @@ What already exists: the skip itself, the helper health tracking, and the audit 
 Safeguards: the code cannot block or delay anything, because it only writes a line. If it turned out to be wrong, reverting one commit removes it with no data to clean up.
 
 There is nothing to decide here. The larger question, whether a helper should be allowed to restart onto new test logic while long-running sessions are open, is a separate design question and is not changed by this work.
+
+## The second change: updates now wait for helpers
+
+Each server restart changes a number the helpers' work is tied to, so any test a helper is partway through gets thrown away and started again. An earlier change (#2835) made helpers' work visible in a file so a restart could wait for it. That did not work in practice, because the program that performs restarts on the machine, the lifeline, keeps running the code it started with and did not know about the file. On 2026-11-06 ten helper runs, about 110 machine-minutes, were lost this way, and no hold happened at all.
+
+The fix puts the same check where the update decision is made: the updater, inside the server, which always runs current code. While a helper has accepted a test and is still answering, the update waits, normally for at most 21 minutes per test. As soon as the test finishes, the update goes ahead.
+
+The tradeoff is that an update usually arrives up to 21 minutes later, and no new tests start during that wait. If the update has also been held by something else, such as open sessions, for over two hours, new tests can start again and waits can chain, up to the existing limit of about 4 hours. Local test runs already behave this way. If a helper goes quiet, the wait ends in about two minutes, and a forced update ignores it. Reverting removes it with nothing to clean up.

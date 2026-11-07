@@ -213,6 +213,11 @@ function fakePeer() {
   };
 }
 
+import { registerLocalVerifyRestartHold, updatePendingFromAutoUpdater } from '../../../src/localVerify/localVerifyWiring.js';
+import { AutoUpdater } from '../../../src/core/AutoUpdater.js';
+import type { UpdateChecker } from '../../../src/core/UpdateChecker.js';
+import type { StateManager } from '../../../src/core/StateManager.js';
+
 function coordinator(opts: { epoch?: number; holds?: boolean } = {}) {
   const h = harness();
   const peer = fakePeer();
@@ -696,6 +701,131 @@ describe('coordinator — heartbeat for a planned restart', () => {
     c.advance(PEER_LIMITS.pollMs + 1);
     await c.svc.tick();
     expect(audits().filter((e) => e.event === 'restart-peer-hold-ended').map((e) => e.reason)).toEqual(['imported']);
+  });
+
+  describe('the update restart, which never writes its request while a hold is named', () => {
+    const deferred = (c: { svc: { setUpdatePendingProvider(fn: () => { pending: boolean; pendingSinceMs: number | null; otherBlockers: boolean; restartHeldForPeer?: boolean }): void } }, heldForPeer: boolean) => {
+      let since = 1_000;
+      c.svc.setUpdatePendingProvider(() => ({ pending: true, pendingSinceMs: since++, otherBlockers: false, ...(heldForPeer ? { restartHeldForPeer: true } : {}) }));
+    };
+
+    // PR 1 runs locally in this harness and keeps its own hold; these are about the peer's.
+    const peerHolds = (c: { svc: LocalVerifyService }, maxDeferralMs = 4 * 3_600_000) => c.svc.restartHolds(maxDeferralMs).filter((h) => h.name.startsWith('local-verify:peer-'));
+
+    it('names an accepted attempt as a restart hold, bounded by the attempt and the ceiling', async () => {
+      const { c, req } = await dispatched();
+      const sentAt = c.seams.now!();
+      expect(peerHolds(c, 4 * 3_600_000)).toEqual([expect.objectContaining({ name: `local-verify:peer-pr-${req.pr}`, until: sentAt + PEER_RESTART_HOLD_MS })]);
+      expect(peerHolds(c, 60_000)[0].until).toBe(sentAt + 60_000);
+    });
+
+    it('stops naming it when the peer goes quiet, the lease moves or the attempt ends', async () => {
+      const quiet = await dispatched();
+      quiet.c.peer.setResult(() => null);
+      quiet.c.advance(2 * PEER_LIMITS.pollMs + 1);
+      expect(peerHolds(quiet.c)).toEqual([]);
+
+      const moved = await dispatched();
+      moved.c.setEpoch(8);
+      expect(peerHolds(moved.c)).toEqual([]);
+
+      const ended = await dispatched();
+      ended.c.peer.setResult(() => done(ended.req));
+      await ended.c.svc.tick();
+      expect(peerHolds(ended.c)).toEqual([]);
+    });
+
+    it('rechecks the deferred restart as soon as the attempt is imported or abandoned', async () => {
+      const imported = await dispatched();
+      let calls = 0;
+      imported.c.svc.setRunEndedListener(() => { calls++; });
+      imported.c.peer.setResult(() => done(imported.req));
+      await imported.c.svc.tick();
+      expect(calls).toBeGreaterThan(0);
+
+      const abandoned = await dispatched();
+      let abandonedCalls = 0;
+      abandoned.c.svc.setRunEndedListener(() => { abandonedCalls++; });
+      abandoned.c.setEpoch(8);
+      await abandoned.c.svc.tick();
+      expect(abandonedCalls).toBeGreaterThan(0);
+    });
+
+    it('audits the hold once across retries while the restart is deferred, then why it ended', async () => {
+      const { c, req, audits } = await dispatched();
+      deferred(c, true);
+      await c.svc.tick();
+      await c.svc.tick();
+      expect(audits().filter((e) => e.event === 'restart-held-for-peer' && e.attemptId === req.attemptId)).toHaveLength(1);
+      c.peer.setResult(() => done(req));
+      c.advance(PEER_LIMITS.pollMs + 1);
+      await c.svc.tick();
+      expect(audits().filter((e) => e.event === 'restart-peer-hold-ended').map((e) => e.reason)).toEqual(['imported']);
+    });
+
+    it('rechecks when a peer goes quiet, not only when its attempt ends', async () => {
+      const { c } = await dispatched();
+      let calls = 0;
+      c.svc.setRunEndedListener(() => { calls++; });
+      c.peer.setResult(() => null);
+      c.advance(2 * PEER_LIMITS.pollMs + 1);
+      await c.svc.tick();
+      expect(calls).toBeGreaterThan(0);
+    });
+
+    it('audits nothing while an update is deferred for something other than a peer attempt', async () => {
+      const { c, audits } = await dispatched();
+      deferred(c, false);
+      await c.svc.tick();
+      expect(audits().filter((e) => e.event === 'restart-held-for-peer')).toEqual([]);
+    });
+
+    it('through the real AutoUpdater: no restart request is written while the attempt runs, and one is once it is imported', async () => {
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+      const c = coordinator();
+      c.advance(Date.now() - c.seams.now!()); // the AutoUpdater reads the real clock: dispatch on it, so the attempt's bound is live
+      await c.svc.request(1);
+      await c.svc.request(2);
+      await c.runTimers();
+      const req = c.peer.runs()[0];
+      const audits = () => fs.readFileSync(path.join(c.stateDir, 'logs', 'local-verify.jsonl'), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as { event: string; attemptId?: string });
+      c.peer.setResult(() => ({ state: 'running' }));
+      await c.svc.tick();
+      await c.finish(0, ok(record()));
+      await c.svc.tick();
+      const checker = { getInstalledVersion: vi.fn().mockReturnValue('0.9.8'), check: vi.fn(), applyUpdate: vi.fn(), getLastCheck: vi.fn().mockReturnValue(null) } as unknown as UpdateChecker;
+      const state = { get: vi.fn().mockReturnValue(997), set: vi.fn() } as unknown as StateManager;
+      const u = new AutoUpdater(checker, state, c.stateDir, { preRestartDelaySecs: 0 });
+      const flag = path.join(c.stateDir, 'state', 'restart-requested.json');
+      try {
+        u.setSessionDeps({ listRunningSessions: () => [] });
+        registerLocalVerifyRestartHold(u, c.svc);
+        const gated = () => (u as unknown as { gatedRestart(v: string, b?: boolean): Promise<void> }).gatedRestart('0.9.9', false);
+        await gated();
+        expect(fs.existsSync(flag)).toBe(false);
+        expect(u.getStatus().restartDeferral).toMatchObject({ active: true, currentBlockers: [`local-verify:peer-pr-${req.pr}`] });
+        await c.svc.tick();
+        expect(audits().filter((e) => e.event === 'restart-held-for-peer' && e.attemptId === req.attemptId)).toHaveLength(1);
+        c.peer.setResult(() => done(req));
+        c.advance(PEER_LIMITS.pollMs + 1);
+        await c.svc.tick();
+        expect(c.svc.restartHolds(4 * 3_600_000)).toEqual([]);
+        // No manual retry: the import's recheck alone brings the restart forward.
+        for (let i = 0; i < 80 && !fs.existsSync(flag); i++) await new Promise((r) => setTimeout(r, 100));
+        expect(fs.existsSync(flag)).toBe(true);
+      } finally {
+        u.stop();
+        vi.restoreAllMocks();
+      }
+    });
+
+    it('an update waiting only on the peer hold counts as this verifier\'s own hold', () => {
+      const status = { config: { autoApply: true }, restartDeferral: { active: true, firstDeferredAt: '2026-10-21T12:00:00.000Z', currentBlockers: ['local-verify:peer-pr-2'] } };
+      expect(updatePendingFromAutoUpdater(status, ['hold:local-verify:peer-pr-2'])).toMatchObject({ pending: true, otherBlockers: false, restartHeldForPeer: true });
+      const forSessions = { ...status, restartDeferral: { ...status.restartDeferral, currentBlockers: ['echo-topic-1'] } };
+      expect(updatePendingFromAutoUpdater(forSessions, ['echo-topic-1'])).not.toHaveProperty('restartHeldForPeer');
+      expect(updatePendingFromAutoUpdater({ config: { autoApply: true } }, [])).not.toHaveProperty('restartHeldForPeer');
+    });
   });
 
   it('records the other ways a hold ends: abandoned, bypass and the bound', async () => {
