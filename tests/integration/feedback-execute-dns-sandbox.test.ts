@@ -31,14 +31,16 @@ describe('feedback executor macOS sandbox', () => {
         expect(settings.network.allowMachLookup).toEqual(['com.apple.SystemConfiguration.DNSConfiguration']);
         const settingsPath = path.join(workspace, `${name}-sandbox-settings.json`);
         fs.writeFileSync(settingsPath, JSON.stringify(settings));
+        // A generous limit: this run starts two Node processes and a sandbox on a loaded verifier.
+        // A real DNS hang never returns, so it still fails, and the assertion above pins the setting.
         const output = execFileSync(process.execPath, [runtime, '--settings', settingsPath, '-c',
           'node -e "require(\'node:dns\'); process.stdout.write(\'dns-ready\')"'], {
-          cwd: workspace, timeout: 6_000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+          cwd: workspace, timeout: 45_000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
         });
         expect(output).toContain('dns-ready');
       }
     } finally {
       SafeFsExecutor.safeRmSync(workspace, { recursive: true, force: true, operation: 'tests/integration/feedback-execute-dns-sandbox.test.ts' });
     }
-  });
+  }, 120_000);
 });

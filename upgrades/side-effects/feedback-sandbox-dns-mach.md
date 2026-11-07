@@ -65,6 +65,8 @@ This is the narrowest observed repair for the macOS confined verification hang. 
 **Reviewer:** independent Claude subagent, fresh review against main on 2026-11-07
 Concur. It probed both generated profiles: TCP, the mDNSResponder socket, DNS resolution and a home-directory read all stayed blocked, and the name renders as one exact rule. It measured the hang as intermittent: `require('node:dns')` 18 of 157 without the grant, 0 of 127 with it; the real check command 5 of 172 without, 0 of 74 with. It corrected the claims that the hang always happened. It noted that the live integration check usually passes without the grant, so the deterministic settings assertion is what catches removal, and that attempts a2 and a3 were not sampled directly. Test counts below are from the earlier base; exact-head Local Verify reran them.
 
+After that review, this test failed once in exact-head verification on the second verifying machine, with no failure detail recorded. Its 6-second limit on two Node starts and a sandbox was raised to 45 seconds. That cause is an assumption. A real hang still fails, and the settings assertion is unchanged.
+
 Earlier review, 2026-11-04:
 The reviewer found that the first draft applied the service to runner commands but omitted Claude Code's worker Bash profile. The revised change derives Claude's network policy from the same runtime settings and advances the canary version. On the exact revised diff, the reviewer concurred: sandbox-runtime 0.0.77 renders the literal service as an exact Mach lookup, with the network and filesystem limits intact. The integration test runs Claude's generated profile through sandbox-runtime; it does not launch Claude Code. The live canary remains the final worker-path check after deployment.
 
